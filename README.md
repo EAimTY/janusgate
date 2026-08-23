@@ -118,12 +118,12 @@ There is no pooling/failover/switching; every model binds to exactly one provide
 3. OAuth kinds: ensure fresh access token (§7).
 4. Dispatch:
 
-| Provider kind | Upstream treatment |
-| --- | --- |
-| `openai_oauth` | Native Responses passthrough (model swap only) |
-| `openai_compatible` · `responses` | Native Responses passthrough (model swap only) |
-| `openai_compatible` · `chat_completions` | CC emitter / reader (via IR, §9) |
-| `antigravity_oauth` | Code Assist emitter / reader (via IR, §9) |
+| Provider kind | Responses client | Chat Completions client |
+| --- | --- | --- |
+| `openai_oauth` | Native response passthrough | Translate through IR (§9) |
+| `openai_compatible` · `responses` | Native response passthrough | Translate through IR (§9) |
+| `openai_compatible` · `chat_completions` | Translate through IR (§9) | Native response passthrough |
+| `antigravity_oauth` | Translate through IR (§9) | Translate through IR (§9) |
 
 Quota/account errors surface as `upstream_error` (§11.2).
 
@@ -294,11 +294,13 @@ reasons:  stop | length | tool_calls | content_filter
 | Component | Direction | Implementations |
 | --- | --- | --- |
 | Outward parser/renderer | client ⇄ IR | Responses, Chat Completions |
-| Upstream emitter/reader | IR ⇄ upstream | OpenAI Responses (native), Chat Completions, Code Assist |
+| Upstream emitter/reader | IR ⇄ upstream | OpenAI Responses, Chat Completions, Code Assist |
 
-A Chat Completions upstream always translates — even toward Chat Completions clients — because the gateway must stamp `chunk.model` with the public name and enforce `stream_options.include_usage`; byte-level fidelity is reserved for native Responses paths (§5.1).
+The IR is used **only when the client protocol and upstream protocol differ**, or when Code Assist requires translation. A same-format request — Responses client to Responses upstream, or Chat Completions client to Chat Completions upstream — bypasses the response parser and renderer entirely. After request validation, routing, and upstream model substitution, the upstream response body is relayed in its original bytes rather than parsed into objects/events and serialized again. This applies to streaming and non-streaming successes and errors.
 
-Usage and finish reasons map across all three representations (`prompt_tokens ⇄ input_tokens ⇄ promptTokenCount`, etc.; `SAFETY → content_filter`). Non-streaming requests reuse the same converters: a complete upstream object parses into IR events, and the outward object renders from that event sequence. The native Responses path is a **byte-level passthrough** in both modes — response objects, including IDs, are the upstream's own.
+Consequently, a same-format response retains the upstream's IDs, `model`, usage fields, event sequence, JSON formatting, and any unknown fields exactly as returned. The gateway forwards `stream_options` but does not rewrite `chunk.model` or synthesize an `include_usage` chunk on this path. Those normalizations apply only when the response is translated through the IR.
+
+Usage and finish reasons map across translated representations (`prompt_tokens ⇄ input_tokens ⇄ promptTokenCount`, etc.; `SAFETY → content_filter`). A translated non-streaming response parses the complete upstream object into IR events and renders the outward object from that event sequence.
 
 ---
 
@@ -306,14 +308,14 @@ Usage and finish reasons map across all three representations (`prompt_tokens �
 
 ### 10.1 Matrix
 
-| Feature | Native Responses upstream | Translated paths (CC / Code Assist) |
+| Feature | Same-format native passthrough | Translated paths |
 | --- | --- | --- |
-| `tools` of type `function` | ✔ | ✔ |
+| `tools` of type `function` | passthrough | ✔ |
 | Other tool types (`web_search`, …) | passthrough | `400 unsupported_tool_type` |
 | `previous_response_id`, `store:true` | passthrough — effective only against upstreams that keep server-side conversation state; stateless upstreams reject it and the upstream error surfaces (§11.2) | `400 unsupported_parameter` |
-| Reasoning | native items/events | Responses out: reasoning deltas when upstream provides them; CC out: best-effort `delta.reasoning_content`, dropped if absent |
+| Reasoning | native fields/items/events | Responses out: reasoning deltas when upstream provides them; CC out: best-effort `delta.reasoning_content`, dropped if absent |
 | Image inputs | passthrough | passthrough (CC); data-URL only on Code Assist path, else `400` |
-| `n` > 1 (Chat Completions inbound) | — | `400 unsupported_parameter` |
+| `n` > 1 (Chat Completions inbound) | `400 unsupported_parameter` | `400 unsupported_parameter` |
 | Unknown top-level fields | passthrough | ignored |
 | `instructions` | passthrough | → system message / `systemInstruction` |
 
@@ -342,7 +344,9 @@ Canonical ordered scale: `minimal < low < medium < high < xhigh` (gateway-side e
 
 ### 11.2 Conventions
 
-**Lifecycle (both POST routes):** authenticate → parse/validate → resolve model → resolve provider (§5.1) → ensure fresh token (OAuth kinds, §7) → build upstream request (`stream` forwarded as-is) → relay the response (stream through, or read + translate for non-streaming).
+**Lifecycle (both POST routes):** authenticate → parse/validate → resolve model → resolve provider (§5.1) → ensure fresh token (OAuth kinds, §7) → build upstream request (`stream` forwarded as-is) → relay the upstream response directly when its protocol matches the client protocol, otherwise translate it through the IR.
+
+**Invariant — same-format response passthrough:** Responses→Responses and Chat Completions→Chat Completions responses bypass JSON/SSE parsing and serialization. The gateway preserves the upstream status, safe headers, and exact body bytes in both streaming and non-streaming modes. Raw non-streaming bytes may be buffered solely to enforce `MAX_RESPONSE_BYTES`; they are never decoded or re-encoded. Request parsing, validation, model resolution, model substitution, and thinking-level enforcement still occur before the upstream call.
 
 **Invariant — stream relay:** the client's `stream` value reaches the upstream unchanged (protocol-equivalent form, e.g. Code Assist `:streamGenerateContent?alt=sse` vs `:generateContent`) and the upstream's mode reaches the client unchanged. The gateway never converts between streaming and non-streaming modes, never buffers a stream into a non-streaming object, and never synthesizes error frames or response objects.
 
@@ -354,7 +358,7 @@ Canonical ordered scale: `minimal < low < medium < high < xhigh` (gateway-side e
 - Idle timeout: no upstream bytes for `UPSTREAM_IDLE_TIMEOUT_SECONDS` (300) → `504` if nothing was sent yet, otherwise the stream just ends.
 - Client disconnect: `request.signal` aborts the upstream fetch via `AbortController` (also during non-streaming reads).
 
-**Non-streaming failures:** per the error-transparency policy below; unparseable 2xx JSON → `502 upstream_failure`; idle timeout → `504 upstream_timeout`.
+**Non-streaming failures:** per the error-transparency policy below. On translated paths, unparseable 2xx JSON → `502 upstream_failure`. Same-format paths never parse the response body. Idle timeout → `504 upstream_timeout`.
 
 **Error envelope (all errors):**
 
@@ -375,7 +379,7 @@ Canonical ordered scale: `minimal < low < medium < high < xhigh` (gateway-side e
 
 **Error transparency (normative).** The gateway rewrites only what it must:
 
-- **Native passthrough paths** — no protocol change and no streaming-mode change (`openai_oauth` and `responses`-compatible upstreams serving Responses clients): the entire upstream response, success *or* error, is relayed byte-for-byte — status, safe headers (`Content-Type`, `Retry-After`, …), and body. Transparent pipe; no sanitization.
+- **Native passthrough paths** — no protocol change and no streaming-mode change (Responses upstream serving Responses clients, or Chat Completions upstream serving Chat Completions clients): the entire upstream response, success *or* error, bypasses parsing and re-serialization. Its status, safe headers (`Content-Type`, `Retry-After`, …), and exact body bytes are relayed unchanged. Transparent pipe; no sanitization.
 - **Translated paths** — the gateway authors the envelope: upstream `429` → `429` with the upstream `Retry-After` forwarded; every other upstream failure → `502 upstream_error`. Bodies: `openai_compatible` upstreams relay their OpenAI-shaped error object **verbatim** (admin-chosen, semi-trusted upstream — its messages are operationally valuable); OAuth kinds get **sanitized** messages — never proxied verbatim, no tokens, URLs, or internal identifiers.
 
 ### 11.3 `GET /api/openai-v1/models`
@@ -397,8 +401,8 @@ Returns enabled models sorted by internal `id`. `owned_by`: `openai_oauth` → `
 
 Accepts a standard OpenAI **Responses** request; `model` must resolve (§6.2); `stream` defaults to `false` and is forwarded as-is.
 
-- `stream:true` → SSE relay: byte-level passthrough (native Responses upstream) or IR translation.
-- `stream:false` → non-streaming upstream call; response object passed through natively (IDs and all fields are the upstream's own) or translated object→object via the IR.
+- `stream:true` → SSE relay: exact-byte passthrough from a Responses upstream, or IR translation from another upstream protocol.
+- `stream:false` → exact response-body bytes from a Responses upstream without JSON parsing/re-serialization, or object→IR→object translation from another upstream protocol.
 
 The gateway never buffers a stream to synthesize a non-streaming object.
 
@@ -406,8 +410,8 @@ The gateway never buffers a stream to synthesize a non-streaming object.
 
 Accepts a standard OpenAI **Chat Completions** request; same lifecycle.
 
-- `stream:true` → SSE chunks ending with `data: [DONE]`; `stream_options.include_usage` honored (usage-only chunk before `[DONE]`).
-- `stream:false` → complete Chat Completions JSON object (native, or IR-translated from the upstream's non-streaming object).
+- `stream:true` → exact-byte SSE passthrough from a Chat Completions upstream, or IR-rendered chunks ending with `data: [DONE]` from another upstream protocol. On translated paths, `stream_options.include_usage` is enforced with a usage-only chunk before `[DONE]`; on native paths it is forwarded and the upstream response is left unchanged.
+- `stream:false` → exact response-body bytes from a Chat Completions upstream without JSON parsing/re-serialization, or object→IR→object translation from another upstream protocol.
 - `n` > 1 → `400 unsupported_parameter` (single-choice generation only).
 
 ---
@@ -651,7 +655,7 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 4. Every model binds to exactly one provider (any type, `openai_oauth` included); no pool, no default route. A model serves iff `model.enabled ∧ provider.enabled`, else identical `404 model_not_found` — disabling ≡ nonexistent. Names are globally unique; resolution is exact, case-sensitive match among enabled models.
 5. A provider referenced by a model cannot be deleted (`RESTRICT`).
 6. Authentication derives exclusively from `Authorization` headers via constant-time digest comparison; the system has no cookies — none set, sent, or read.
-7. The client's `stream` value relays to the upstream as-is; the gateway never converts between streaming and non-streaming modes, never synthesizes error frames or response objects. Before streaming begins the client sees the upstream response (native or IR-translated) or an error — relayed verbatim on native paths, gateway-authored on translated paths (§11.2); a mid-stream failure simply ends the stream — the missing terminal event (`response.completed` / `[DONE]`) is the error signal. No hangs.
+7. The client's `stream` value relays to the upstream as-is; the gateway never converts between streaming and non-streaming modes, never synthesizes error frames or response objects. A same-format response bypasses parsing and serialization and reaches the client in the upstream's exact body bytes; only protocol-changing paths use the IR (§9, §11.2). Before streaming begins the client sees that native or translated response, or an error; a mid-stream failure simply ends the stream — the missing terminal event (`response.completed` / `[DONE]`) is the error signal. No hangs.
 8. Client disconnects deterministically cancel the upstream request.
 9. OAuth states are single-use, expire after `OAUTH_STATE_TTL_SECONDS`, and are deleted on use.
 10. Discovery never overwrites, disables, or deletes existing models; discovered rows are created disabled.
@@ -659,7 +663,7 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 12. Non-streaming upstream bodies are never read beyond `MAX_RESPONSE_BYTES`; overflow aborts the upstream fetch → `502 upstream_response_too_large`.
 13. A provider's `name` is its sole externally visible identifier — unique, immutable, displayed as-is; numeric `providers.id` never leaves storage. Prefixes are not unique. The public model identity is exactly `models.name`; `modelPrefix` affects only models created/discovered afterward; a rename permanently retires the former name (no aliases, no shadow routes).
 14. No request, response, error, or usage data is ever persisted.
-15. On native passthrough paths (§11.2) the gateway is a transparent pipe: upstream responses — success and error alike — reach the client byte-for-byte, status included. Only translated paths carry gateway-authored envelopes.
+15. Whenever the client and upstream protocols match — Responses→Responses or Chat Completions→Chat Completions — the response parser and serializer are not invoked. Upstream successes and errors reach the client with exact body bytes and status preserved (§11.2). Only protocol-changing paths carry IR-rendered responses or gateway-authored upstream-error envelopes.
 
 ### Known limitations
 
