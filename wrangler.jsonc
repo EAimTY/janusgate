@@ -1,0 +1,42 @@
+{
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "janusgate",
+    "main": "index.ts",
+    "compatibility_date": "2026-08-23",
+    "workers_dev": false,
+    "preview_urls": false,
+    "routes": [
+        {
+            "pattern": "j.eaimty.com",
+            "custom_domain": true
+        }
+    ],
+    "alias": {
+        "/api": "./api",
+        "/common": "./common",
+        "/panel-api": "./panel-api"
+    },
+    "assets": {
+        "directory": "./dist",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": [
+            "/api/*",
+            "/panel-api/*"
+        ]
+    },
+    "d1_databases": [
+        {
+            "binding": "DATABASE",
+            "database_name": "janusgate",
+            "database_id": "ee27e57e-c61c-44dd-8eac-cda8d0f17fc2"
+        }
+    ],
+    "secrets": {
+        "required": [
+            "PANEL_TOKEN_HASH",
+            "API_KEY_HASH",
+            "CREDENTIALS_AES_KEY"
+        ]
+    },
+    "upload_source_maps": true
+}

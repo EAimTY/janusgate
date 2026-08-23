@@ -1,0 +1,27 @@
+{
+    "name": "janusgate",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "dependencies": {
+        "@solidjs/web": "^2.0.0-rc.1",
+        "hono": "^4.13.3",
+        "solid-js": "^2.0.0-rc.1"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.10",
+        "@cloudflare/workers-types": "^5.20260823.1",
+        "@solidjs/vite-plugin": "^3.0.0-next.32",
+        "@tailwindcss/vite": "^4.3.3",
+        "typescript": "^7.0.2",
+        "vite": "^8.2.2",
+        "wrangler": "^4.125.0"
+    },
+    "scripts": {
+        "build": "vite build --config frontend/vite.config.ts",
+        "deploy": "npm run build && wrangler deploy",
+        "check": "biome check && npm run typecheck",
+        "fix": "biome check --write --unsafe && npm run typecheck",
+        "typecheck": "tsc --noEmit --project . && tsc --noEmit --project frontend"
+    }
+}

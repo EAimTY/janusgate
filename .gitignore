@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Cloudflare Wrangler
+/.wrangler/
+/.dev.vars
+/.env
+
+# Node.js
+/node_modules/
+/package-lock.json
+
+# Build and test results
+/dist/
+/coverage/
+
+# Pi
+/.pi/npm
