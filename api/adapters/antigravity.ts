@@ -16,8 +16,9 @@ export const ANTIGRAVITY_LOAD_CODE_ASSIST_URL = `${ANTIGRAVITY_API_BASE_URL}:loa
 export const ANTIGRAVITY_ONBOARD_USER_URL = `${ANTIGRAVITY_API_BASE_URL}:onboardUser`;
 export const ANTIGRAVITY_USER_AGENT = "antigravity/1.107.0 darwin/arm64";
 export const ANTIGRAVITY_API_CLIENT = "google-cloud-sdk vscode_cloudshelleditor/0.1";
+// The Code Assist protobuf rejects legacy platform names such as "MACOS".
 export const ANTIGRAVITY_CLIENT_METADATA =
-    '{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}';
+    '{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}';
 
 // The catalog is pinned because the internal model-list contract is not stable.
 export const ANTIGRAVITY_MODELS: readonly string[] = [

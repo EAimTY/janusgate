@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    ANTIGRAVITY_CLIENT_METADATA,
     ANTIGRAVITY_LOAD_CODE_ASSIST_URL,
     ANTIGRAVITY_ONBOARD_USER_URL,
     ANTIGRAVITY_TOKEN_URL,
@@ -253,11 +254,18 @@ describe("OAuth orchestration", () => {
                 });
             }
             if (url === ANTIGRAVITY_LOAD_CODE_ASSIST_URL) {
-                expect(JSON.parse(String(init?.body))).toMatchObject({
-                    metadata: {
-                        ideType: "ANTIGRAVITY",
-                    },
+                const expectedMetadata = {
+                    ideType: "ANTIGRAVITY",
+                    platform: "PLATFORM_UNSPECIFIED",
+                    pluginType: "GEMINI",
+                };
+                expect(JSON.parse(String(init?.body))).toEqual({
+                    metadata: expectedMetadata,
                 });
+                expect(new Headers(init?.headers).get("Client-Metadata")).toBe(
+                    ANTIGRAVITY_CLIENT_METADATA,
+                );
+                expect(JSON.parse(ANTIGRAVITY_CLIENT_METADATA)).toEqual(expectedMetadata);
                 return Response.json({
                     allowedTiers: [
                         {
