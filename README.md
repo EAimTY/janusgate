@@ -91,7 +91,7 @@ A public model ID mapping to **exactly one provider — any of the three types, 
 - Panel (`/panel-api/*`) and gateway (`/api/*`) both require `Authorization: Bearer <token>`. Secrets `PANEL_TOKEN_HASH` / `API_KEY_HASH` store hex-encoded SHA-256 digests; the presented token is hashed and compared **constant-time** (`crypto.subtle.timingSafeEqual` — a Workers-specific `SubtleCrypto` extension, not part of standard WebCrypto). Mismatch → `401`.
 - Single gateway key; recommended format `gw_<base64url(32 random bytes)>`. Rotation = setting the new secret; the old key dies immediately. No key metadata, listing, or multi-key support.
 - **No sessions, no cookies** — none are ever set, sent, or read anywhere.
-- SPA storage: panel token lives in `localStorage` (key from `web/config.ts`, default `panel_token`); the SPA attaches the header itself. A **non-dismissable full-screen overlay** prompts for the token on load and on any `401`; it verifies via `GET /panel-api/list-providers`. A "forget token" action clears storage and re-shows the overlay.
+- SPA storage: panel token lives in `localStorage` (key from `panel/config.ts`, default `panel_token`); the SPA attaches the header itself. A **non-dismissable full-screen overlay** prompts for the token on load and on any `401`; it verifies via `GET /panel-api/list-providers`. A "forget token" action clears storage and re-shows the overlay.
 
 ### 4.2 CSRF
 
@@ -607,7 +607,7 @@ SolidJS v2 SPA; client-side routing; native `fetch`; no state library.
 - `/providers` — table grouped by type, showing `name` as-is; actions: add API-key provider (form), add/reauthenticate OpenAI & Antigravity accounts (paste-back dialog collects the redirect URL plus, for creations, optional `name` and `modelPrefix`), edit, enable/disable, discover models, delete. Shows token `expiresAt` with expired/expiring-soon indication.
 - `/models` — mapping table + one create/edit form: provider selector (all providers regardless of type), upstream-name field, optional **base name** field with live preview of the final public name (prefix + base, §6.1), enable checkbox, thinking-level multi-select (blank = provider defaults — labeled “defaults, not off”, §10.2); delete.
 - `/` redirects to `/providers`; unknown paths render via SPA fallback.
-- All SPA tunables come from `web/config.ts` (§15). Panel calls address providers exclusively by `name` (§12.2).
+- All SPA tunables come from `panel/config.ts` (§15). Panel calls address providers exclusively by `name` (§12.2).
 
 ---
 
@@ -641,7 +641,7 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 | `config.ts` | global | Thinking-level scale & order (§10.2); provider `name` pattern `[a-z0-9_-]{1,64}`; `modelPrefix` rules (≤ 32 chars, `[a-z0-9._:/-]`); Unix-second convention |
 | `api/config.ts` | public API | Base path `/api/openai-v1`; `MAX_REQUEST_BYTES` 10 MB; `MAX_RESPONSE_BYTES` 25 MB; `UPSTREAM_IDLE_TIMEOUT_SECONDS` 300; `TOKEN_REFRESH_MARGIN_SECONDS` 300; `REFRESH_LEASE_SECONDS` 60; forced-refresh retry count 1; `owned_by` mapping (§11.3) |
 | `panel-api/config.ts` | panel API | Base path `/panel-api`; `OAUTH_STATE_TTL_SECONDS` 900; auto-generated name prefixes `openai-` / `antigravity-` |
-| `web/config.ts` | SPA | Token localStorage key (`panel_token`); auth-probe endpoint (`/panel-api/list-providers`); SPA routes; token expiry-warning horizon |
+| `panel/config.ts` | SPA | Token localStorage key (`panel_token`); auth-probe endpoint (`/panel-api/list-providers`); SPA routes; token expiry-warning horizon |
 
 ---
 

@@ -28,13 +28,17 @@
         "noUnusedParameters": true,
         "verbatimModuleSyntax": true,
         "types": [
-            "@cloudflare/workers-types"
+            "@cloudflare/vitest-plugin/types"
         ]
     },
     "include": [
         "api",
         "common",
+        "index.test.ts",
         "index.ts",
-        "panel-api"
+        "panel-api",
+        "tests",
+        "vitest.config.ts",
+        "worker-bindings.d.ts"
     ]
 }

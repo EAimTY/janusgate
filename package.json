@@ -10,18 +10,21 @@
     },
     "devDependencies": {
         "@biomejs/biome": "^2.5.10",
-        "@cloudflare/workers-types": "^5.20260823.1",
+        "@cloudflare/vitest-plugin": "^1.0.0",
         "@solidjs/vite-plugin": "^3.0.0-next.32",
         "@tailwindcss/vite": "^4.3.3",
         "typescript": "^7.0.2",
         "vite": "^8.2.2",
+        "vitest": "^4.1.11",
         "wrangler": "^4.125.0"
     },
     "scripts": {
-        "build": "vite build --config frontend/vite.config.ts",
-        "deploy": "npm run build && wrangler deploy",
+        "build": "npm run worker-typegen && vite build --config panel/vite.config.ts",
+        "deploy": "npm run worker-typegen && npm run build && wrangler deploy",
+        "worker-typegen": "wrangler types worker-bindings.d.ts",
+        "typecheck": "tsc --noEmit --project . && tsc --noEmit --project panel",
         "check": "biome check && npm run typecheck",
-        "fix": "biome check --write --unsafe && npm run typecheck",
-        "typecheck": "tsc --noEmit --project . && tsc --noEmit --project frontend"
+        "fix": "npm run typecheck && biome check --write --unsafe",
+        "test": "vitest run"
     }
 }

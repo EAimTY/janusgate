@@ -1,6 +1,6 @@
 import { render } from "@solidjs/web";
 import { App } from "./app";
-import "./styles.css";
+import "./tailwind.css";
 
 const root = document.getElementById("root");
 if (root === null) throw new Error("Missing root element");

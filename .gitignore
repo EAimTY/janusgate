@@ -2,6 +2,7 @@
 .DS_Store
 
 # Cloudflare Wrangler
+/worker-bindings.d.ts
 /.wrangler/
 /.dev.vars
 /.env

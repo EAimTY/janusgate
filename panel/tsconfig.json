@@ -8,8 +8,10 @@
         ],
         "jsx": "preserve",
         "jsxImportSource": "@solidjs/web",
+        "allowImportingTsExtensions": true,
         "types": [
-            "vite/client"
+            "vite/client",
+            "vitest/globals"
         ]
     },
     "include": [
