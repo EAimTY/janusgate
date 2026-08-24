@@ -140,7 +140,7 @@ describe("panel API", () => {
             enabled: true,
             modelPrefix: "custom/",
             name: "custom",
-            protocol: "responses",
+            protocol: "openai_response",
             type: "openai_compatible",
         });
         expect(savedProvider.status).toBe(200);
@@ -153,7 +153,7 @@ describe("panel API", () => {
                     apiKey: "replacement",
                     baseUrl: "https://other.test/v1",
                     name: "custom",
-                    protocol: "chat_completions",
+                    protocol: "openai_chat_completion",
                     type: "openai_compatible",
                 })
             ).status,
@@ -168,7 +168,7 @@ describe("panel API", () => {
                     expiresAt: null,
                     modelPrefix: "custom/",
                     name: "custom",
-                    protocol: "responses",
+                    protocol: "openai_response",
                     type: "openai_compatible",
                 },
             ],

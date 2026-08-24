@@ -6,11 +6,19 @@ export const PROVIDER_TYPES = [
     "openai_compatible",
 ] as const;
 export type ProviderType = (typeof PROVIDER_TYPES)[number];
+/** Wire formats spoken by upstreams; clients speak every kind except `gemini_generate_content`. */
 export const UPSTREAM_PROTOCOLS = [
-    "responses",
-    "chat_completions",
+    "openai_response",
+    "openai_chat_completion",
+    "gemini_generate_content",
 ] as const;
 export type UpstreamProtocol = (typeof UPSTREAM_PROTOCOLS)[number];
+
+export const CLIENT_PROTOCOLS = [
+    "openai_response",
+    "openai_chat_completion",
+] as const;
+export type ClientProtocol = (typeof CLIENT_PROTOCOLS)[number];
 
 export const OAUTH_FLOW_TYPES = [
     "openai",

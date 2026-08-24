@@ -23,11 +23,11 @@ api.get(`${API_VERSION_PATH}/models`, async (context) => {
 });
 
 api.post(`${API_VERSION_PATH}/responses`, (context) =>
-    handleGatewayRequest(context.req.raw, context.env, "responses"),
+    handleGatewayRequest(context.req.raw, context.env, "openai_response"),
 );
 
 api.post(`${API_VERSION_PATH}/chat/completions`, (context) =>
-    handleGatewayRequest(context.req.raw, context.env, "chat_completions"),
+    handleGatewayRequest(context.req.raw, context.env, "openai_chat_completion"),
 );
 
 export default api;

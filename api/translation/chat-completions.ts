@@ -28,7 +28,7 @@ import {
     optionalString,
 } from "./json";
 import { encodeSse } from "./sse";
-import { parseThinkingLevel, type ThinkingLevel } from "./thinking";
+import { parseReasoningEffort } from "./thinking";
 
 export interface ChatCompletionsRequestObject {
     model: string;
@@ -43,7 +43,7 @@ export interface ChatCompletionsRequestObject {
     max_completion_tokens?: number;
     stop?: string[];
     response_format?: ChatResponseFormat;
-    reasoning_effort?: ThinkingLevel;
+    reasoning_effort?: string;
 }
 
 export interface ChatRequestMessage {
@@ -153,7 +153,7 @@ export function parseChatCompletionsRequest(value: unknown): IrRequest {
     const tools =
         root["tools"] === undefined ? [] : expectArray(root["tools"], "tools").map(parseTool);
     const sampling = parseSampling(root);
-    const reasoningEffort = parseThinkingLevel(root["reasoning_effort"], "reasoning_effort");
+    const reasoningEffort = parseReasoningEffort(root["reasoning_effort"], "reasoning_effort");
     const isStreaming = optionalBoolean(root["stream"], "stream") ?? false;
     let isUsageIncluded = false;
     if (root["stream_options"] !== undefined) {
@@ -404,7 +404,7 @@ function parseResponseFormat(value: unknown): IrResponseFormat {
 export function renderChatCompletionsRequest(
     request: IrRequest,
     model: string,
-    reasoningEffort?: ThinkingLevel,
+    reasoningEffort?: string,
 ): ChatCompletionsRequestObject {
     const messages: ChatRequestMessage[] = [];
     for (const message of request["messages"]) {

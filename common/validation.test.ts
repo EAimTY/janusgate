@@ -1,7 +1,6 @@
 import { expect, test } from "vitest";
 import { ValidationError } from "/common/errors";
 import {
-    clampThinkingLevel,
     composeModelName,
     parseBaseUrl,
     parseModelPrefix,
@@ -73,26 +72,12 @@ test("thinking levels are canonical, unique, and returned in scale order", () =>
     ).toThrow(ValidationError);
 });
 
-test("reasoning effort clamps down only and empty support strips it", () => {
-    expect(
-        clampThinkingLevel("xhigh", [
-            "low",
-            "high",
-        ]),
-    ).toBe("high");
-    expect(
-        clampThinkingLevel("medium", [
-            "minimal",
-            "high",
-        ]),
-    ).toBe("minimal");
-    expect(
-        clampThinkingLevel("minimal", [
-            "low",
-            "medium",
-        ]),
-    ).toBeUndefined();
-    expect(clampThinkingLevel("high", [])).toBeUndefined();
+test("reasoning effort is no longer clamped: overrides are plain whitelists", () => {
+    // The gateway forwards effort strings verbatim (§10.2); only panel-stored override
+    // vocabularies are validated against the canonical set above.
+    expect(CANONICAL_THINKING_LEVELS.indexOf("high")).toBeGreaterThan(
+        CANONICAL_THINKING_LEVELS.indexOf("low"),
+    );
 });
 
 test("model composition is literal", () => {

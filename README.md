@@ -10,13 +10,15 @@
 
 **Provider types** (three peers; no hierarchy):
 
-| Type | Identity | Upstream protocol |
+| Type | Identity | Upstream wire format |
 | --- | --- | --- |
-| `openai_oauth` | ChatGPT account | OpenAI Responses (ChatGPT Codex backend), native passthrough |
-| `antigravity_oauth` | Google account | Google Code Assist (`generateContent`) |
-| `openai_compatible` | Static API key | `responses` or `chat_completions` |
+| `openai_oauth` | ChatGPT account | OpenAI Response (`openai_response`), native passthrough |
+| `antigravity_oauth` | Google account | Gemini GenerateContent (`gemini_generate_content`) via Google Code Assist |
+| `openai_compatible` | Static API key | `openai_response`, `openai_chat_completion`, or `gemini_generate_content` |
 
-**Outward protocols:** Responses API and Chat Completions API, each in streaming (SSE) and non-streaming mode. The client's `stream` flag is relayed upstream as-is.
+**Outward protocols:** OpenAI Response and Chat Completions APIs, each in streaming (SSE) and non-streaming mode. The client's `stream` flag is relayed upstream as-is.
+
+**Wire formats:** every upstream speaks exactly one of three named formats — `openai_response`, `openai_chat_completion`, or `gemini_generate_content`. OAuth kinds imply their format (`openai_oauth` → `openai_response`; `antigravity_oauth` → `gemini_generate_content`); API-key providers choose one explicitly.
 
 **Goals:** stateless per-request processing · zero persistence of prompts/responses/usage · minimal moving parts · single-admin operation.
 
@@ -74,9 +76,9 @@ Per-type stored config and credentials payloads:
 | --- | --- | --- |
 | `openai_oauth` | `enabled`, credentials, token `expires_at` | `{ "accessToken", "refreshToken", "accountId" }` — `accountId` parsed from the `chatgpt_account_id` claim of the OAuth `id_token` (default workspace; workspace selection unsupported) |
 | `antigravity_oauth` | `enabled`, credentials, token `expires_at` | `{ "accessToken", "refreshToken", "projectId" }` — `projectId` resolved once during onboarding (§8.4), stored with tokens |
-| `openai_compatible` | `enabled`, `baseUrl` (valid http(s) URL, canonicalized to **no** trailing slash), `protocol` ∈ {`responses`, `chat_completions`}, credentials | `{ "apiKey" }` — mandatory at creation; optional on update (omitted ⇒ preserve existing) |
+| `openai_compatible` | `enabled`, `baseUrl` (valid http(s) URL, canonicalized to **no** trailing slash), `protocol` ∈ {`openai_response`, `openai_chat_completion`, `gemini_generate_content`}, credentials | `{ "apiKey" }` — mandatory at creation; optional on update (omitted ⇒ preserve existing) |
 
-A stored `baseUrl` never ends with a slash (stripped at save); path segments are joined with an explicit `/`: `{baseUrl}/models`, `{baseUrl}/responses`, `{baseUrl}/chat/completions`.
+A stored `baseUrl` never ends with a slash (stripped at save); path segments are joined with an explicit `/`: `{baseUrl}/models`, `{baseUrl}/responses`, `{baseUrl}/chat/completions`, and for `gemini_generate_content` `{baseUrl}/models/{model}:generateContent` / `{baseUrl}/models/{model}:streamGenerateContent?alt=sse`. Authentication is `Authorization: Bearer <apiKey>` for the two OpenAI formats and `x-goog-api-key: <apiKey>` for `gemini_generate_content`. A Gemini `baseUrl` includes its version path (e.g. `https://generativelanguage.googleapis.com/v1beta`).
 
 ### 3.2 Model
 
@@ -118,11 +120,12 @@ There is no pooling/failover/switching; every model binds to exactly one provide
 3. OAuth kinds: ensure fresh access token (§7).
 4. Dispatch:
 
-| Provider kind | Responses client | Chat Completions client |
+| Provider kind | OpenAI Response client | Chat Completions client |
 | --- | --- | --- |
 | `openai_oauth` | Native response passthrough | Translate through IR (§9) |
-| `openai_compatible` · `responses` | Native response passthrough | Translate through IR (§9) |
-| `openai_compatible` · `chat_completions` | Translate through IR (§9) | Native response passthrough |
+| `openai_compatible` · `openai_response` | Native response passthrough | Translate through IR (§9) |
+| `openai_compatible` · `openai_chat_completion` | Translate through IR (§9) | Native response passthrough |
+| `openai_compatible` · `gemini_generate_content` | Translate through IR (§9) | Translate through IR (§9) |
 | `antigravity_oauth` | Translate through IR (§9) | Translate through IR (§9) |
 
 Quota/account errors surface as `upstream_error` (§11.2).
@@ -156,7 +159,8 @@ Populates models from a provider's upstream. Triggered automatically whenever a 
 
 | Provider type | Source |
 | --- | --- |
-| `openai_compatible` | `GET {baseUrl}/models` with stored API key → `data[].id` |
+| `openai_compatible` · `openai_response` / `openai_chat_completion` | `GET {baseUrl}/models` with `Authorization: Bearer <apiKey>` → `data[].id` |
+| `openai_compatible` · `gemini_generate_content` | `GET {baseUrl}/models` with `x-goog-api-key: <apiKey>` → `models[].name` minus the `models/` prefix, keeping only entries whose `supportedGenerationMethods` includes `generateContent` |
 | `openai_oauth` | Pinned Codex catalog in the adapter module |
 | `antigravity_oauth` | Pinned Gemini-family catalog in the adapter module |
 
@@ -264,7 +268,7 @@ Adapter responsibilities:
 
 - Map outward messages/parts ⇄ `contents[]` roles and parts (`text`, `inlineData` for data-URL images, `functionCall`/`functionResponse`).
 - Map sampling: `temperature`, `topP`, `maxOutputTokens`, `stop`, `responseMimeType` (`json_object`/`json_schema`).
-- Map `reasoning.effort` → `generationConfig.thinkingConfig` presets; surface `thought:true` parts as reasoning events.
+- Map `reasoning.effort` → `generationConfig.thinkingConfig` (§10.2); surface `thought:true` parts as reasoning events.
 - Synthesize tool-call IDs (`call_N`) for `functionCall` parts (Code Assist has none); match echoed `functionResponse` parts back by index/name.
 - **Preserve `thoughtSignature` blobs** wherever present, reattaching them to corresponding parts in follow-up turns within the same request history. Signatures cannot survive across independent client requests (stateless gateway); their absence degrades gracefully — accepted limitation.
 - Upstream model IDs are free-form passthrough strings (e.g. `gemini-3-pro-high`).
@@ -293,10 +297,10 @@ reasons:  stop | length | tool_calls | content_filter
 
 | Component | Direction | Implementations |
 | --- | --- | --- |
-| Outward parser/renderer | client ⇄ IR | Responses, Chat Completions |
-| Upstream emitter/reader | IR ⇄ upstream | OpenAI Responses, Chat Completions, Code Assist |
+| Outward parser/renderer | client ⇄ IR | OpenAI Response, Chat Completions |
+| Upstream emitter/reader | IR ⇄ upstream | OpenAI Response (`openai_response`), Chat Completions (`openai_chat_completion`), Gemini GenerateContent (`gemini_generate_content`) |
 
-The IR is used **only when the client protocol and upstream protocol differ**, or when Code Assist requires translation. A same-format request — Responses client to Responses upstream, or Chat Completions client to Chat Completions upstream — bypasses the response parser and renderer entirely. After request validation, routing, and upstream model substitution, the upstream response body is relayed in its original bytes rather than parsed into objects/events and serialized again. This applies to streaming and non-streaming successes and errors.
+The IR is used **only when the client protocol and upstream protocol differ**, or when a `gemini_generate_content` upstream requires translation. A same-format request — OpenAI Response client to `openai_response` upstream, or Chat Completions client to `openai_chat_completion` upstream — bypasses the response parser and renderer entirely. After request validation, routing, and upstream model substitution, the upstream response body is relayed in its original bytes rather than parsed into objects/events and serialized again. This applies to streaming and non-streaming successes and errors.
 
 Consequently, a same-format response retains the upstream's IDs, `model`, usage fields, event sequence, JSON formatting, and any unknown fields exactly as returned. The gateway forwards `stream_options` but does not rewrite `chunk.model` or synthesize an `include_usage` chunk on this path. Those normalizations apply only when the response is translated through the IR.
 
@@ -314,21 +318,23 @@ Usage and finish reasons map across translated representations (`prompt_tokens �
 | Other tool types (`web_search`, …) | passthrough | `400 unsupported_tool_type` |
 | `previous_response_id`, `store:true` | passthrough — effective only against upstreams that keep server-side conversation state; stateless upstreams reject it and the upstream error surfaces (§11.2) | `400 unsupported_parameter` |
 | Reasoning | native fields/items/events | Responses out: reasoning deltas when upstream provides them; CC out: best-effort `delta.reasoning_content`, dropped if absent |
-| Image inputs | passthrough | passthrough (CC); data-URL only on Code Assist path, else `400` |
+| Image inputs | passthrough | passthrough (CC); data-URL only on the Gemini path, else `400` |
 | `n` > 1 (Chat Completions inbound) | `400 unsupported_parameter` | `400 unsupported_parameter` |
 | Unknown top-level fields | passthrough | ignored |
 | `instructions` | passthrough | → system message / `systemInstruction` |
 
-### 10.2 Thinking levels
+### 10.2 Reasoning effort
 
-Canonical ordered scale: `minimal < low < medium < high < xhigh` (gateway-side enforcement only; not advertised via `/models`).
+Reasoning effort is an **opaque non-empty string**, not an enum. The gateway validates only its shape and otherwise passes it through as far as the wire formats allow; there is no canonical value set enforced on client requests.
 
-- Inbound effort read from Responses `reasoning.effort` or CC `reasoning_effort`; values outside the canonical set → `400 unsupported_parameter`.
-- **Effective supported set** = the model's `thinkingLevels` override, else the kind default: `minimal–high` for OpenAI kinds and `responses` compatibles, `low/medium/high` for Code Assist.
-- Requested level ∈ effective set → forwarded, mapped per upstream (`Responses reasoning.effort ⇄ CC reasoning_effort ⇄ Code Assist thinkingConfig` preset; values pinned in the adapter). Otherwise clamped to the nearest **lower** supported level; if none exists, the reasoning parameter is omitted entirely.
+- Inbound effort is read from Responses `reasoning.effort` or CC `reasoning_effort`. Non-string or empty values → `400 unsupported_parameter`; any other string is accepted.
+- **Same-format requests** relay the client's value verbatim inside the substituted body; cross-format OpenAI⇄OpenAI translation copies it verbatim into the target field.
+- **Per-model whitelist:** a model's `thinkingLevels` override (panel vocabulary ⊆ `minimal < low < medium < high < xhigh`) acts as a plain whitelist: requested effort ∈ override → forwarded verbatim; otherwise the reasoning parameter is omitted entirely. No nearest-lower clamping exists — arbitrary strings have no order to clamp along.
+- **Gemini upstreams (`gemini_generate_content`) can only express `low|medium|high`:** those strings pass through verbatim; `minimal` omits the config, `xhigh` clamps down to `high`, and any other string means the upstream default applies rather than a guessed mapping (mapping pinned in the Gemini adapter module).
 - An omitted client effort ⇒ no reasoning configuration is ever injected upstream.
-- **Clamping is not disabling.** A stripped or clamped-away reasoning parameter means “upstream default applies” — for Code Assist models that reason by default, the effective reasoning can therefore *exceed* what the client asked for. `[]` means “never inject”, never “off”.
-- Panel semantics: `thinkingLevels` omitted/`null` ⇒ adapter defaults; `[]` ⇒ reasoning always stripped (still not “off”; §14 mirrors this).
+- **Stripping is not disabling.** A stripped effort means "upstream default applies" — for Gemini models that reason by default, the effective reasoning can therefore *exceed* what the client asked for. `[]` means "never inject", never "off".
+- Panel semantics: `thinkingLevels` omitted/`null` ⇒ no filtering (pure passthrough); `[]` ⇒ reasoning always stripped (still not "off"; §14 mirrors this).
+- With no override set there are **no format defaults**: every OpenAI-format effort reaches the upstream unchanged, and the upstream owns rejecting values it cannot handle (surfacing as `upstream_error`, §11.2).
 
 ---
 
@@ -346,9 +352,9 @@ Canonical ordered scale: `minimal < low < medium < high < xhigh` (gateway-side e
 
 **Lifecycle (both POST routes):** authenticate → parse/validate → resolve model → resolve provider (§5.1) → ensure fresh token (OAuth kinds, §7) → build upstream request (`stream` forwarded as-is) → relay the upstream response directly when its protocol matches the client protocol, otherwise translate it through the IR.
 
-**Invariant — same-format response passthrough:** Responses→Responses and Chat Completions→Chat Completions responses bypass JSON/SSE parsing and serialization. The gateway preserves the upstream status, safe headers, and exact body bytes in both streaming and non-streaming modes. Raw non-streaming bytes may be buffered solely to enforce `MAX_RESPONSE_BYTES`; they are never decoded or re-encoded. Request parsing, validation, model resolution, model substitution, and thinking-level enforcement still occur before the upstream call.
+**Invariant — same-format response passthrough:** `openai_response`→`openai_response` and `openai_chat_completion`→`openai_chat_completion` responses bypass JSON/SSE parsing and serialization. The gateway preserves the upstream status, safe headers, and exact body bytes in both streaming and non-streaming modes. Raw non-streaming bytes may be buffered solely to enforce `MAX_RESPONSE_BYTES`; they are never decoded or re-encoded. Request parsing, validation, model resolution, model substitution, and reasoning-effort enforcement still occur before the upstream call.
 
-**Invariant — stream relay:** the client's `stream` value reaches the upstream unchanged (protocol-equivalent form, e.g. Code Assist `:streamGenerateContent?alt=sse` vs `:generateContent`) and the upstream's mode reaches the client unchanged. The gateway never converts between streaming and non-streaming modes, never buffers a stream into a non-streaming object, and never synthesizes error frames or response objects.
+**Invariant — stream relay:** the client's `stream` value reaches the upstream unchanged (protocol-equivalent form, e.g. Gemini `:streamGenerateContent?alt=sse` vs `:generateContent`) and the upstream's mode reaches the client unchanged. The gateway never converts between streaming and non-streaming modes, never buffers a stream into a non-streaming object, and never synthesizes error frames or response objects.
 
 **Limits:** request bodies ≤ `MAX_REQUEST_BYTES` (10 MB). Enforcement is byte-counted and never trusts `Content-Length` alone: a present `Content-Length` above the limit rejects immediately with `413` before reading; the body is then buffered through a counting stream, and crossing the limit mid-read aborts with `413 payload_too_large`. Non-streaming upstream bodies read up to `MAX_RESPONSE_BYTES` (25 MB) — overflow aborts the upstream fetch → `502 upstream_response_too_large`.
 
@@ -379,7 +385,7 @@ Canonical ordered scale: `minimal < low < medium < high < xhigh` (gateway-side e
 
 **Error transparency (normative).** The gateway rewrites only what it must:
 
-- **Native passthrough paths** — no protocol change and no streaming-mode change (Responses upstream serving Responses clients, or Chat Completions upstream serving Chat Completions clients): the entire upstream response, success *or* error, bypasses parsing and re-serialization. Its status, safe headers (`Content-Type`, `Retry-After`, …), and exact body bytes are relayed unchanged. Transparent pipe; no sanitization.
+- **Native passthrough paths** — no protocol change and no streaming-mode change (`openai_response` upstream serving OpenAI Response clients, or `openai_chat_completion` upstream serving Chat Completions clients): the entire upstream response, success *or* error, bypasses parsing and re-serialization. Its status, safe headers (`Content-Type`, `Retry-After`, …), and exact body bytes are relayed unchanged. Transparent pipe; no sanitization.
 - **Translated paths** — the gateway authors the envelope: upstream `429` → `429` with the upstream `Retry-After` forwarded; every other upstream failure → `502 upstream_error`. Bodies: `openai_compatible` upstreams relay their OpenAI-shaped error object **verbatim** (admin-chosen, semi-trusted upstream — its messages are operationally valuable); OAuth kinds get **sanitized** messages — never proxied verbatim, no tokens, URLs, or internal identifiers.
 
 ### 11.3 `GET /api/openai-v1/models`
@@ -437,7 +443,7 @@ Accepts a standard OpenAI **Chat Completions** request; same lifecycle.
 - Auth + CSRF per §4.1–4.2 (every `POST` requires matching `Origin`).
 - Responses are JSON: successes `{"ok": true}` or a resource payload; errors `{"error": "…"}` with 4xx/5xx. `POST` bodies are JSON objects.
 - Providers are addressed exclusively by their `name` in panel requests (numeric `providers.id` never appears); models are addressed by numeric `id`.
-- Validation (application-side, before write): provider `name` pattern/uniqueness/immutability, `modelPrefix` rules (§3.1), composed model-`name` uniqueness (§6.1 — duplicates fail outright), `thinkingLevels` ⊆ canonical set (§10.2), `baseUrl` http(s) stripped of any trailing slash, `protocol` enum, booleans as 0/1.
+- Validation (application-side, before write): provider `name` pattern/uniqueness/immutability, `modelPrefix` rules (§3.1), composed model-`name` uniqueness (§6.1 — duplicates fail outright), `thinkingLevels` ⊆ canonical vocabulary (§10.2), `baseUrl` http(s) stripped of any trailing slash, `protocol` enum, booleans as 0/1.
 
 ### 12.3 `GET /panel-api/list-providers`
 
@@ -452,7 +458,7 @@ Returns all providers, never credentials. Doubles as the SPA auth-probe endpoint
     { "name": "antigravity-1", "type": "antigravity_oauth", "protocol": null,
       "baseUrl": null, "expiresAt": 1785000000, "enabled": true,
       "modelPrefix": "gemini/" },
-    { "name": "openrouter", "type": "openai_compatible", "protocol": "chat_completions",
+    { "name": "openrouter", "type": "openai_compatible", "protocol": "openai_chat_completion",
       "baseUrl": "https://openrouter.ai/api/v1", "expiresAt": null, "enabled": true,
       "modelPrefix": "openrouter/" }
   ]
@@ -464,7 +470,7 @@ Returns all providers, never credentials. Doubles as the SPA auth-probe endpoint
 - **Create:** only `type: "openai_compatible"`; requires `name`, `protocol`, `baseUrl`, `apiKey`; optional `enabled`, `modelPrefix`.
 - **Update:** `name` addresses the target. `type` and `name` immutable. `openai_compatible`: `protocol`/`baseUrl`/`enabled`/`modelPrefix`, plus optional `apiKey` (omitted ⇒ preserve existing). OAuth providers: `enabled`/`modelPrefix` only.
 
-Request (update): `{ "name": "openrouter", "enabled": true, "modelPrefix": "or/", "baseUrl": "…", "protocol": "chat_completions", "apiKey": "…" }`
+Request (update): `{ "name": "openrouter", "enabled": true, "modelPrefix": "or/", "baseUrl": "…", "protocol": "openai_chat_completion", "apiKey": "…" }`
 Response: `{ "name": "openrouter" }`
 
 ### 12.5 `POST /panel-api/delete-provider`
@@ -503,7 +509,7 @@ Model→provider links exposed as `providerName`/`providerType`; storage keeps t
 
 Request: `{ "id"?, "providerName", "upstreamName", "name"?, "enabled"?, "thinkingLevels"? }`
 
-- `thinkingLevels`: array ⊆ canonical level set (§10.2); omitted/`null` ⇒ adapter defaults; `[]` ⇒ reasoning always stripped — suppressing gateway-injected reasoning config, never upstream-default reasoning (§10.2).
+- `thinkingLevels`: array ⊆ canonical vocabulary (§10.2); omitted/`null` ⇒ no filtering (pure passthrough); `[]` ⇒ reasoning always stripped — suppressing gateway-injected reasoning config, never upstream-default reasoning (§10.2).
 - `name`, when present, is the **base** — stored public name becomes `effectivePrefix(provider) + name` (§6.1); omitted ⇒ base is `upstreamName`. Supplying `name` on an update is a destructive rename (old name stops resolving immediately).
 - Validation: `providerName` references an existing provider of **any** type (`openai_oauth` included); non-empty `upstreamName`; `name` when present non-empty; composed name globally unique — duplicates → `409`-style error, never auto-renamed/suffixed.
 
@@ -562,7 +568,7 @@ CREATE TABLE models (
 
     upstream_name TEXT NOT NULL,
 
-    -- JSON array ⊆ canonical thinking levels; NULL ⇒ adapter defaults (§10.2)
+    -- JSON array ⊆ canonical thinking-level vocabulary; NULL ⇒ no filtering, pure passthrough (§10.2)
     thinking_levels TEXT,
 
     enabled INTEGER NOT NULL DEFAULT 1
@@ -605,7 +611,7 @@ SolidJS v2 SPA; client-side routing; native `fetch`; no state library.
 
 - Global **auth overlay** (§4.1): non-dismissable until the probe succeeds.
 - `/providers` — table grouped by type, showing `name` as-is; actions: add API-key provider (form), add/reauthenticate OpenAI & Antigravity accounts (paste-back dialog collects the redirect URL plus, for creations, optional `name` and `modelPrefix`), edit, enable/disable, discover models, delete. Shows token `expiresAt` with expired/expiring-soon indication.
-- `/models` — mapping table + one create/edit form: provider selector (all providers regardless of type), upstream-name field, optional **base name** field with live preview of the final public name (prefix + base, §6.1), enable checkbox, thinking-level multi-select (blank = provider defaults — labeled “defaults, not off”, §10.2); delete.
+- `/models` — mapping table + one create/edit form: provider selector (all providers regardless of type), upstream-name field, optional **base name** field with live preview of the final public name (prefix + base, §6.1), enable checkbox, thinking-level multi-select (blank = passthrough — labeled “no filter, not off”, §10.2); delete.
 - `/` redirects to `/providers`; unknown paths render via SPA fallback.
 - All SPA tunables come from `panel/config.ts` (§15). Panel calls address providers exclusively by `name` (§12.2).
 
@@ -638,7 +644,7 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 
 | Module | Scope | Owns (defaults shown) |
 | --- | --- | --- |
-| `config.ts` | global | Thinking-level scale & order (§10.2); provider `name` pattern `[a-z0-9_-]{1,64}`; `modelPrefix` rules (≤ 32 chars, `[a-z0-9._:/-]`); Unix-second convention |
+| `config.ts` | global | Canonical thinking-level vocabulary & order — panel override whitelist only, never a request-time enum (§10.2); provider `name` pattern `[a-z0-9_-]{1,64}`; `modelPrefix` rules (≤ 32 chars, `[a-z0-9._:/-]`); Unix-second convention |
 | `api/config.ts` | public API | Base path `/api/openai-v1`; `MAX_REQUEST_BYTES` 10 MB; `MAX_RESPONSE_BYTES` 25 MB; `UPSTREAM_IDLE_TIMEOUT_SECONDS` 300; `TOKEN_REFRESH_MARGIN_SECONDS` 300; `REFRESH_LEASE_SECONDS` 60; forced-refresh retry count 1; `owned_by` mapping (§11.3) |
 | `panel-api/config.ts` | panel API | Base path `/panel-api`; `OAUTH_STATE_TTL_SECONDS` 900; auto-generated name prefixes `openai-` / `antigravity-` |
 | `panel/config.ts` | SPA | Token localStorage key (`panel_token`); auth-probe endpoint (`/panel-api/list-providers`); SPA routes; token expiry-warning horizon |
@@ -659,7 +665,7 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 8. Client disconnects deterministically cancel the upstream request.
 9. OAuth states are single-use, expire after `OAUTH_STATE_TTL_SECONDS`, and are deleted on use.
 10. Discovery never overwrites, disables, or deletes existing models; discovered rows are created disabled.
-11. Client-requested thinking levels are validated against the canonical set and clamped to the model's effective supported set before any upstream translation.
+11. Client-requested reasoning effort is validated as a non-empty string and filtered against the model's `thinkingLevels` whitelist (when present) before any upstream call; it is never clamped to a value set by the gateway (§10.2).
 12. Non-streaming upstream bodies are never read beyond `MAX_RESPONSE_BYTES`; overflow aborts the upstream fetch → `502 upstream_response_too_large`.
 13. A provider's `name` is its sole externally visible identifier — unique, immutable, displayed as-is; numeric `providers.id` never leaves storage. Prefixes are not unique. The public model identity is exactly `models.name`; `modelPrefix` affects only models created/discovered afterward; a rename permanently retires the former name (no aliases, no shadow routes).
 14. No request, response, error, or usage data is ever persisted.

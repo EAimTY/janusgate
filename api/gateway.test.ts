@@ -19,7 +19,7 @@ beforeAll(async () => initializeTestDatabase(env.DATABASE));
 beforeEach(async () => clearTestDatabase(env.DATABASE));
 
 async function seedCompatibleProvider(
-    protocol: "chat_completions" | "responses",
+    protocol: "openai_chat_completion" | "openai_response" | "gemini_generate_content",
     isModelEnabled = true,
 ): Promise<void> {
     const cipher = await CredentialsCipher.create(AES_KEY);
@@ -80,7 +80,7 @@ function gatewayRequest(path: string, body: unknown): Request {
 
 describe("gateway request lifecycle", () => {
     it("preserves native response bytes while substituting only request routing fields", async () => {
-        await seedCompatibleProvider("responses");
+        await seedCompatibleProvider("openai_response");
         const exactBody = '{  "id":"upstream", "unknown": true }\n';
         const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {
             const sent: unknown = JSON.parse(String(init?.body));
@@ -91,7 +91,7 @@ describe("gateway request lifecycle", () => {
                 input: "hello",
                 model: "wire-model",
                 reasoning: {
-                    effort: "high",
+                    effort: "xhigh",
                 },
                 stream: false,
             });
@@ -117,7 +117,7 @@ describe("gateway request lifecycle", () => {
                 stream: false,
             }),
             bindings,
-            "responses",
+            "openai_response",
             fetchUpstream,
         );
 
@@ -127,7 +127,7 @@ describe("gateway request lifecycle", () => {
     });
 
     it("translates a non-streaming Responses upstream into Chat Completions", async () => {
-        await seedCompatibleProvider("responses");
+        await seedCompatibleProvider("openai_response");
         const response = await handleGatewayRequest(
             gatewayRequest("chat/completions", {
                 messages: [
@@ -139,7 +139,7 @@ describe("gateway request lifecycle", () => {
                 model: "public-model",
             }),
             bindings,
-            "chat_completions",
+            "openai_chat_completion",
             async () =>
                 Response.json({
                     id: "upstream-id",
@@ -183,7 +183,7 @@ describe("gateway request lifecycle", () => {
     });
 
     it("translates streaming events without changing streaming mode", async () => {
-        await seedCompatibleProvider("responses");
+        await seedCompatibleProvider("openai_response");
         const upstreamFrames = [
             'event: response.created\ndata: {"type":"response.created","response":{"id":"upstream"}}\n\n',
             'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"answer"}\n\n',
@@ -204,7 +204,7 @@ describe("gateway request lifecycle", () => {
                 },
             }),
             bindings,
-            "chat_completions",
+            "openai_chat_completion",
             async (_input, init) => {
                 expect(JSON.parse(String(init?.body))).toMatchObject({
                     stream: true,
@@ -220,6 +220,85 @@ describe("gateway request lifecycle", () => {
         expect(output).toContain('"content":"answer"');
         expect(output).toContain('"prompt_tokens":2');
         expect(output.endsWith("data: [DONE]\n\n")).toBe(true);
+    });
+
+    it("speaks Gemini GenerateContent to API-key upstreams and maps effort onto thinkingConfig", async () => {
+        await seedCompatibleProvider("gemini_generate_content");
+        const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {
+            expect(String(_input)).toBe(
+                "https://upstream.test/v1/models/wire-model:generateContent",
+            );
+            const headers = new Headers(init?.headers);
+            expect(headers.get("x-goog-api-key")).toBe("upstream-key");
+            expect(headers.get("Authorization")).toBeNull();
+            expect(JSON.parse(String(init?.body))).toMatchObject({
+                contents: [
+                    {
+                        role: "user",
+                        parts: [
+                            {
+                                text: "hello",
+                            },
+                        ],
+                    },
+                ],
+                generationConfig: {
+                    thinkingConfig: {
+                        includeThoughts: true,
+                        thinkingLevel: "high",
+                    },
+                },
+            });
+            return Response.json({
+                candidates: [
+                    {
+                        content: {
+                            parts: [
+                                {
+                                    text: "answer",
+                                },
+                            ],
+                        },
+                        finishReason: "STOP",
+                    },
+                ],
+                usageMetadata: {
+                    promptTokenCount: 2,
+                    candidatesTokenCount: 1,
+                    totalTokenCount: 3,
+                },
+            });
+        });
+
+        const response = await handleGatewayRequest(
+            gatewayRequest("chat/completions", {
+                messages: [
+                    {
+                        content: "hello",
+                        role: "user",
+                    },
+                ],
+                model: "public-model",
+                reasoning_effort: "xhigh",
+            }),
+            bindings,
+            "openai_chat_completion",
+            fetchUpstream,
+        );
+
+        expect(response.status).toBe(200);
+        const result = await response.json<{
+            choices: Array<{
+                message: {
+                    content: string;
+                };
+            }>;
+            usage: {
+                total_tokens: number;
+            };
+        }>();
+        expect(result.choices[0]?.message.content).toBe("answer");
+        expect(result.usage.total_tokens).toBe(3);
     });
 
     it("performs one forced OAuth refresh and exactly one retry after an upstream 401", async () => {
@@ -257,7 +336,7 @@ describe("gateway request lifecycle", () => {
                 model: "codex",
             }),
             bindings,
-            "responses",
+            "openai_response",
             fetchUpstream,
         );
         expect(response.status).toBe(200);
@@ -267,7 +346,7 @@ describe("gateway request lifecycle", () => {
     });
 
     it("makes disabled models indistinguishable from missing models", async () => {
-        await seedCompatibleProvider("responses", false);
+        await seedCompatibleProvider("openai_response", false);
         const fetchUpstream = vi.fn<typeof fetch>();
         const response = await handleGatewayRequest(
             gatewayRequest("responses", {
@@ -275,7 +354,7 @@ describe("gateway request lifecycle", () => {
                 model: "public-model",
             }),
             bindings,
-            "responses",
+            "openai_response",
             fetchUpstream,
         );
         expect(response.status).toBe(404);

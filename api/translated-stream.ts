@@ -1,7 +1,10 @@
+import type { ClientProtocol, UpstreamProtocol } from "/common/domain";
 import { upstreamFailureError } from "/common/errors";
 import { unixSeconds } from "/common/validation";
-import { type CodeAssistStreamState, parseCodeAssistStreamEvent } from "./adapters/antigravity";
-import type { ClientProtocol } from "./request-validation";
+import {
+    type GenerateContentStreamState,
+    parseGenerateContentStreamEvent,
+} from "./adapters/gemini";
 import {
     parseChatCompletionsStreamEvent,
     renderChatCompletionsStream,
@@ -10,7 +13,6 @@ import { TranslationError } from "./translation/errors";
 import type { IrEvent, IrUsage } from "./translation/ir";
 import { createResponsesStreamRenderer, parseResponsesStreamEvent } from "./translation/responses";
 import { SseParser } from "./translation/sse";
-import type { UpstreamProtocol } from "./upstream-request";
 import { readBeforeIdleTimeout } from "./upstream-response";
 
 interface EventRenderer {
@@ -56,9 +58,9 @@ class ChatCompletionsEventRenderer implements EventRenderer {
 function parseFrameEvents(
     protocol: UpstreamProtocol,
     data: string,
-    codeAssistState: CodeAssistStreamState,
+    geminiState: GenerateContentStreamState,
 ): IrEvent[] {
-    if (protocol === "chat_completions" && data === "[DONE]") {
+    if (protocol === "openai_chat_completion" && data === "[DONE]") {
         return [
             {
                 type: "done",
@@ -72,9 +74,9 @@ function parseFrameEvents(
         throw new TranslationError("upstream_failure", "The upstream returned malformed SSE data");
     }
     try {
-        if (protocol === "responses") return parseResponsesStreamEvent(value);
-        if (protocol === "chat_completions") return parseChatCompletionsStreamEvent(value);
-        return parseCodeAssistStreamEvent(value, codeAssistState);
+        if (protocol === "openai_response") return parseResponsesStreamEvent(value);
+        if (protocol === "openai_chat_completion") return parseChatCompletionsStreamEvent(value);
+        return parseGenerateContentStreamEvent(value, geminiState);
     } catch {
         throw new TranslationError(
             "upstream_failure",
@@ -97,7 +99,7 @@ export async function translateStreamingResponse(
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
     const renderer: EventRenderer =
-        clientProtocol === "responses"
+        clientProtocol === "openai_response"
             ? {
                   render: createResponsesStreamRenderer({
                       created: unixSeconds(),
@@ -106,7 +108,7 @@ export async function translateStreamingResponse(
                   }),
               }
             : new ChatCompletionsEventRenderer(publicModel, isUsageIncluded);
-    const codeAssistState: CodeAssistStreamState = {
+    const geminiState: GenerateContentStreamState = {
         isStarted: false,
         nextToolIndex: 0,
         openToolIndexes: new Map(),
@@ -114,7 +116,7 @@ export async function translateStreamingResponse(
     const pendingOutput: Uint8Array[] = [];
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
     const parser = new SseParser((frame) => {
-        const events = parseFrameEvents(upstreamProtocol, frame.data, codeAssistState);
+        const events = parseFrameEvents(upstreamProtocol, frame.data, geminiState);
         for (const output of renderer.render(events)) {
             const bytes = encoder.encode(output);
             if (controller === undefined) pendingOutput.push(bytes);

@@ -137,20 +137,6 @@ export function parseThinkingLevels(value: unknown): readonly ThinkingLevel[] | 
     return CANONICAL_THINKING_LEVELS.filter((level) => levels.includes(level));
 }
 
-export function clampThinkingLevel(
-    requested: ThinkingLevel,
-    supported: readonly ThinkingLevel[],
-): ThinkingLevel | undefined {
-    const requestedIndex = CANONICAL_THINKING_LEVELS.indexOf(requested);
-    for (let index = requestedIndex; index >= 0; index -= 1) {
-        const candidate = CANONICAL_THINKING_LEVELS[index];
-        if (candidate !== undefined && supported.includes(candidate)) {
-            return candidate;
-        }
-    }
-    return undefined;
-}
-
 export function composeModelName(prefix: string, base: string): string {
     if (base.length === 0) {
         throw new ValidationError("model base name must be non-empty");

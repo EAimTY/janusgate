@@ -1,30 +1,30 @@
+import type { ClientProtocol } from "/common/domain";
 import { GatewayError } from "/common/errors";
 import { isJsonObject, requireJsonObject } from "/common/validation";
-import { CODE_ASSIST_DEFAULT_THINKING_LEVELS } from "./adapters/antigravity";
-import { OPENAI_DEFAULT_THINKING_LEVELS } from "./adapters/openai";
 import type { ResolvedModelRoute } from "./model-routing";
-import { clampThinkingLevel, parseThinkingLevel, type ThinkingLevel } from "./translation/thinking";
 
-export type ClientProtocol = "chat_completions" | "responses";
+export type { ClientProtocol };
 
 export interface ValidatedGatewayRequest {
     body: Record<string, unknown>;
     isStreaming: boolean;
     requestedModel: string;
-    effectiveThinkingLevel: ThinkingLevel | undefined;
+    effectiveThinkingLevel: string | undefined;
 }
 
-function supportedThinkingLevels(route: ResolvedModelRoute): readonly ThinkingLevel[] {
-    if (route.thinkingLevels !== null) {
-        return route.thinkingLevels.map((value) => {
-            const level = parseThinkingLevel(value, "stored thinking level");
-            if (level === undefined) throw new Error("Stored thinking level cannot be undefined");
-            return level;
-        });
+/**
+ * Reasoning effort is an opaque string: it passes through verbatim unless the model defines
+ * a thinkingLevels override, in which case the override acts as a whitelist and any effort
+ * outside it is omitted upstream ("upstream default applies" — never an error).
+ */
+export function effectiveThinkingLevel(
+    requested: string | undefined,
+    route: ResolvedModelRoute | undefined,
+): string | undefined {
+    if (requested === undefined || route === undefined || route.thinkingLevels === null) {
+        return requested;
     }
-    return route.provider.type === "antigravity_oauth"
-        ? CODE_ASSIST_DEFAULT_THINKING_LEVELS
-        : OPENAI_DEFAULT_THINKING_LEVELS;
+    return route.thinkingLevels.includes(requested) ? requested : undefined;
 }
 
 export function validateGatewayRequest(
@@ -61,7 +61,7 @@ export function validateGatewayRequest(
             "invalid_json",
         );
     }
-    if (protocol === "chat_completions") {
+    if (protocol === "openai_chat_completion") {
         const numberOfChoices = body["n"];
         if (numberOfChoices !== undefined && typeof numberOfChoices !== "number") {
             throw new GatewayError(
@@ -82,29 +82,27 @@ export function validateGatewayRequest(
     }
 
     const effortValue =
-        protocol === "responses"
+        protocol === "openai_response"
             ? requireReasoningObject(body["reasoning"])["effort"]
             : body["reasoning_effort"];
-    let requestedEffort: ThinkingLevel | undefined;
-    try {
-        requestedEffort = parseThinkingLevel(
-            effortValue,
-            protocol === "responses" ? "reasoning.effort" : "reasoning_effort",
-        );
-    } catch (error) {
+    let requestedEffort: string | undefined;
+    if (effortValue === undefined) {
+        requestedEffort = undefined;
+    } else if (typeof effortValue === "string" && effortValue.length > 0) {
+        requestedEffort = effortValue;
+    } else {
         throw new GatewayError(
             400,
             "invalid_request_error",
-            error instanceof Error ? error.message : "Unsupported reasoning effort",
+            protocol === "openai_response"
+                ? "reasoning.effort must be a non-empty string"
+                : "reasoning_effort must be a non-empty string",
             "unsupported_parameter",
         );
     }
     return {
         body,
-        effectiveThinkingLevel:
-            route === undefined
-                ? requestedEffort
-                : clampThinkingLevel(requestedEffort, supportedThinkingLevels(route)),
+        effectiveThinkingLevel: effectiveThinkingLevel(requestedEffort, route),
         isStreaming: stream ?? false,
         requestedModel: model,
     };
@@ -130,7 +128,7 @@ export function substituteNativeModelAndThinking(
         ...request.body,
         model: upstreamModel,
     };
-    if (protocol === "chat_completions") {
+    if (protocol === "openai_chat_completion") {
         if (body["reasoning_effort"] !== undefined) {
             if (request.effectiveThinkingLevel === undefined) delete body["reasoning_effort"];
             else body["reasoning_effort"] = request.effectiveThinkingLevel;

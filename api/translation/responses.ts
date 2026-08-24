@@ -28,7 +28,7 @@ import {
     optionalString,
 } from "./json";
 import { encodeSse } from "./sse";
-import { parseThinkingLevel, type ThinkingLevel } from "./thinking";
+import { parseReasoningEffort } from "./thinking";
 
 export interface ResponsesRequestObject {
     model: string;
@@ -43,7 +43,7 @@ export interface ResponsesRequestObject {
         format: ResponsesTextFormat;
     };
     reasoning?: {
-        effort: ThinkingLevel;
+        effort: string;
     };
 }
 
@@ -156,10 +156,10 @@ export function parseResponsesRequest(value: unknown): IrRequest {
             ? []
             : expectArray(root["tools"], "tools").map(parseResponsesTool);
     const sampling = parseResponsesSampling(root);
-    let reasoningEffort: ThinkingLevel | undefined;
+    let reasoningEffort: string | undefined;
     if (root["reasoning"] !== undefined) {
         const reasoning = expectRecord(root["reasoning"], "reasoning");
-        reasoningEffort = parseThinkingLevel(reasoning["effort"], "reasoning.effort");
+        reasoningEffort = parseReasoningEffort(reasoning["effort"], "reasoning.effort");
     }
     const isStreaming = optionalBoolean(root["stream"], "stream") ?? false;
     const result: IrRequest = {
@@ -356,7 +356,7 @@ function parseResponsesTextFormat(value: unknown): IrResponseFormat {
 export function renderResponsesRequest(
     request: IrRequest,
     model: string,
-    reasoningEffort?: ThinkingLevel,
+    reasoningEffort?: string,
 ): ResponsesRequestObject {
     const systemText: string[] = [];
     const input: ResponsesRequestObject["input"] = [];

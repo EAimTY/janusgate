@@ -16,14 +16,14 @@ describe("panel input validation", () => {
                 apiKey: "secret",
                 baseUrl: "https://example.test/v1///",
                 name: "custom",
-                protocol: "responses",
+                protocol: "openai_response",
                 type: "openai_compatible",
             }),
         ).toMatchObject({
             apiKey: "secret",
             baseUrl: "https://example.test/v1",
             name: "custom",
-            protocol: "responses",
+            protocol: "openai_response",
             type: "openai_compatible",
         });
         expect(() =>

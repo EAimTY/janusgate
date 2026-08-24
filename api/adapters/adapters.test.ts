@@ -10,11 +10,15 @@ import {
     ANTIGRAVITY_REDIRECT_URI,
     ANTIGRAVITY_TOKEN_URL,
     buildCodeAssistRequest,
-    CODE_ASSIST_DEFAULT_THINKING_LEVELS,
     codeAssistRequestUrl,
-    parseCodeAssistResponse,
-    parseCodeAssistStreamEvent,
 } from "./antigravity";
+import {
+    buildGenerateContentRequest,
+    generateContentUrl,
+    mapGeminiThinkingLevel,
+    parseGenerateContentResponse,
+    parseGenerateContentStreamEvent,
+} from "./gemini";
 import {
     OPENAI_AUTHORIZE_URL,
     OPENAI_CODEX_MODELS,
@@ -97,15 +101,6 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         "Code Assist API is pinned",
     );
     assert(ANTIGRAVITY_MODELS.includes("gemini-3.1-pro-high"), "Gemini catalog is pinned");
-    assertEqual(
-        CODE_ASSIST_DEFAULT_THINKING_LEVELS,
-        [
-            "low",
-            "medium",
-            "high",
-        ],
-        "Code Assist levels are pinned",
-    );
     assert(
         codeAssistRequestUrl("project/with spaces", false).endsWith(
             "/project%2Fwith%20spaces/v1internal:generateContent",
@@ -115,6 +110,42 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
     assert(
         codeAssistRequestUrl("p", true).endsWith("/p/v1internal:streamGenerateContent?alt=sse"),
         "stream URL selects SSE",
+    );
+
+    assertEqual(
+        mapGeminiThinkingLevel("medium"),
+        "medium",
+        "known Gemini efforts pass through verbatim",
+    );
+    assertEqual(
+        mapGeminiThinkingLevel("xhigh"),
+        "high",
+        "efforts above the Gemini scale clamp down",
+    );
+    assertEqual(
+        mapGeminiThinkingLevel("minimal"),
+        undefined,
+        "efforts below the Gemini scale drop the config",
+    );
+    assertEqual(
+        mapGeminiThinkingLevel("extreme"),
+        undefined,
+        "unknown effort strings never guess a mapping",
+    );
+    assertEqual(
+        generateContentUrl(
+            "https://generativelanguage.googleapis.com/v1beta",
+            "gemini-wire",
+            false,
+        ),
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-wire:generateContent",
+        "API-key URLs address the model action directly",
+    );
+    assert(
+        generateContentUrl("https://x.test/v1beta", "m", true).endsWith(
+            "/models/m:streamGenerateContent?alt=sse",
+        ),
+        "API-key streaming selects SSE",
     );
 
     const request = parseChatCompletionsRequest({
@@ -317,6 +348,37 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         "sampling, JSON mode, and thinking map to Code Assist",
     );
 
+    const bareGemini = buildGenerateContentRequest(request, {
+        model: "gemini-wire",
+        reasoningEffort: "xhigh",
+    });
+    assertEqual(
+        bareGemini.generationConfig?.thinkingConfig,
+        {
+            includeThoughts: true,
+            thinkingLevel: "high",
+        },
+        "API-key bodies are unwrapped and clamp xhigh to high",
+    );
+    assertEqual(
+        Object.keys(bareGemini).sort(),
+        [
+            "contents",
+            "generationConfig",
+            "systemInstruction",
+            "tools",
+        ],
+        "API-key requests carry no project envelope",
+    );
+    assertEqual(
+        buildGenerateContentRequest(request, {
+            model: "m",
+            reasoningEffort: "extreme",
+        }).generationConfig?.thinkingConfig,
+        undefined,
+        "unmappable efforts omit thinkingConfig entirely",
+    );
+
     try {
         buildCodeAssistRequest(
             parseChatCompletionsRequest({
@@ -346,7 +408,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         assert(error.code === "unsupported_parameter", "non-data image uses unsupported_parameter");
     }
 
-    const responseEvents = parseCodeAssistResponse({
+    const responseEvents = parseGenerateContentResponse({
         response: {
             candidates: [
                 {
@@ -397,7 +459,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
             "usage",
             "done",
         ],
-        "Code Assist object maps to ordered IR events",
+        "Gemini object maps to ordered IR events",
     );
     assertEqual(
         responseEvents[3],
@@ -408,7 +470,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
             name: "lookup",
             thoughtSignature: "sig-tool",
         },
-        "Code Assist synthesizes stable call ids and preserves signatures",
+        "Gemini synthesizes stable call ids and preserves signatures",
     );
     assertEqual(
         responseEvents[6],
@@ -430,7 +492,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
                 cachedInputTokens: 1,
             },
         },
-        "Code Assist usage maps to IR",
+        "Gemini usage maps to IR",
     );
 
     const streamState = {
@@ -438,7 +500,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         nextToolIndex: 0,
         openToolIndexes: new Map<number, string>(),
     };
-    const firstStreamEvents = parseCodeAssistStreamEvent(
+    const firstStreamEvents = parseGenerateContentStreamEvent(
         {
             response: {
                 candidates: [
@@ -465,7 +527,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         },
         streamState,
     );
-    const secondStreamEvents = parseCodeAssistStreamEvent(
+    const secondStreamEvents = parseGenerateContentStreamEvent(
         {
             response: {
                 candidates: [
@@ -504,5 +566,5 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         secondStreamEvents.some((event) => event.type === "tool_call_done"),
         "open streamed tool calls are closed",
     );
-    assert(secondStreamEvents.at(-1)?.type === "done", "finished Code Assist stream terminates");
+    assert(secondStreamEvents.at(-1)?.type === "done", "finished Gemini stream terminates");
 });

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { verifyBearerAuthorization } from "/common/auth";
 import { CredentialsCipher } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
-import type { ProviderSummary } from "/common/domain";
+import type { ProviderSummary, UpstreamProtocol } from "/common/domain";
 import { ConfigurationError, ValidationError } from "/common/errors";
 import { composeModelName, isJsonObject } from "/common/validation";
 import { discoverProviderModels } from "./discovery";
@@ -89,11 +89,11 @@ function panelProvider(provider: StoredProvider): ProviderSummary {
 }
 
 function assertCompatibleCreationFields(input: {
-    protocol?: string;
+    protocol?: UpstreamProtocol;
     baseUrl?: string;
     apiKey?: string;
 }): asserts input is {
-    protocol: "chat_completions" | "responses";
+    protocol: UpstreamProtocol;
     baseUrl: string;
     apiKey: string;
 } {

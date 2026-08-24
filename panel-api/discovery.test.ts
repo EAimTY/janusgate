@@ -26,7 +26,7 @@ async function insertProvider(
             name,
             `${name}/`,
             type,
-            type === "openai_compatible" ? "responses" : null,
+            type === "openai_compatible" ? "openai_response" : null,
             type === "openai_compatible" ? "https://upstream.test/v1" : null,
             credentials,
         )

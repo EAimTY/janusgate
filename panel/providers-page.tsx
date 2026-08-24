@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, onSettled, Show } from "solid-js";
+import { UPSTREAM_PROTOCOLS } from "/common/domain";
 import {
     MODEL_PREFIX_MAX_LENGTH,
     MODEL_PREFIX_PATTERN,
@@ -54,7 +55,8 @@ const providerGroups: ReadonlyArray<{
     {
         type: "openai_compatible",
         label: "API-key providers",
-        description: "Static credentials for an OpenAI-compatible endpoint.",
+        description:
+            "Static credentials for an OpenAI-compatible or Gemini GenerateContent endpoint.",
     },
 ];
 
@@ -75,8 +77,9 @@ function providerTypeLabel(type: ProviderType): string {
 }
 
 function protocolLabel(protocol: CompatibleProtocol | null): string {
-    if (protocol === "chat_completions") return "Chat Completions";
-    if (protocol === "responses") return "Responses";
+    if (protocol === "openai_chat_completion") return "Chat Completions";
+    if (protocol === "openai_response") return "Responses";
+    if (protocol === "gemini_generate_content") return "Gemini GenerateContent";
     return "Managed OAuth protocol";
 }
 
@@ -120,7 +123,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
     const [editorName, setEditorName] = createSignal("");
     const [editorPrefix, setEditorPrefix] = createSignal("");
     const [editorBaseUrl, setEditorBaseUrl] = createSignal("");
-    const [editorProtocol, setEditorProtocol] = createSignal<CompatibleProtocol>("responses");
+    const [editorProtocol, setEditorProtocol] = createSignal<CompatibleProtocol>("openai_response");
     const [editorApiKey, setEditorApiKey] = createSignal("");
     const [isEditorEnabled, setIsEditorEnabled] = createSignal(true);
     const [isSavingEditor, setIsSavingEditor] = createSignal(false);
@@ -164,7 +167,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         setEditorName("");
         setEditorPrefix("");
         setEditorBaseUrl("");
-        setEditorProtocol("responses");
+        setEditorProtocol("openai_response");
         setEditorApiKey("");
         setIsEditorEnabled(true);
         setEditorError(null);
@@ -176,7 +179,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         setEditorName(provider.name);
         setEditorPrefix(provider.modelPrefix);
         setEditorBaseUrl(provider.baseUrl ?? "");
-        setEditorProtocol(provider.protocol ?? "responses");
+        setEditorProtocol(provider.protocol ?? "openai_response");
         setEditorApiKey("");
         setIsEditorEnabled(provider.enabled);
         setEditorError(null);
@@ -714,17 +717,23 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                             <select
                                 class={formControlClasses}
                                 value={editorProtocol()}
-                                onChange={(event) =>
-                                    setEditorProtocol(
-                                        event.currentTarget.value === "responses"
-                                            ? "responses"
-                                            : "chat_completions",
-                                    )
-                                }
+                                onChange={(event) => {
+                                    const value = event.currentTarget.value;
+                                    for (const protocol of UPSTREAM_PROTOCOLS) {
+                                        if (value === protocol) setEditorProtocol(protocol);
+                                    }
+                                }}
                             >
-                                <option value="responses">Responses</option>
-                                <option value="chat_completions">Chat Completions</option>
+                                <option value="openai_response">Responses</option>
+                                <option value="openai_chat_completion">Chat Completions</option>
+                                <option value="gemini_generate_content">
+                                    Gemini GenerateContent
+                                </option>
                             </select>
+                            <small>
+                                Gemini endpoints use the x-goog-api-key header; the others use a
+                                bearer token.
+                            </small>
                         </label>
                         <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
                             API key {editingProvider() === null ? "" : "(leave blank to preserve)"}

@@ -17,7 +17,7 @@ import {
     renderResponsesResponse,
 } from "./responses";
 import { encodeSse, SseParser } from "./sse";
-import { clampThinkingLevel } from "./thinking";
+import { parseReasoningEffort } from "./thinking";
 
 function assert(isTrue: boolean, message: string): asserts isTrue {
     if (!isTrue) {
@@ -61,46 +61,26 @@ function assertTranslationError(action: () => unknown, code: string): void {
 
 test("Responses and Chat Completions translate through the event IR", () => {
     assertEqual(
-        clampThinkingLevel("xhigh", [
-            "low",
-            "high",
-        ]),
-        "high",
-        "thinking levels clamp downward",
+        parseReasoningEffort("xhigh", "reasoning.effort"),
+        "xhigh",
+        "effort strings pass through verbatim",
     );
     assertEqual(
-        clampThinkingLevel("minimal", [
-            "low",
-            "medium",
-            "high",
-        ]),
-        undefined,
-        "thinking levels disappear when there is no lower level",
+        parseReasoningEffort("extreme", "reasoning_effort"),
+        "extreme",
+        "unknown effort values are opaque strings, not errors",
     );
     assertEqual(
-        clampThinkingLevel(undefined, [
-            "minimal",
-            "low",
-            "medium",
-            "high",
-        ]),
+        parseReasoningEffort(undefined, "reasoning.effort"),
         undefined,
         "omitted reasoning is never injected",
     );
-    assertEqual(
-        clampThinkingLevel("high", []),
-        undefined,
-        "an empty model override strips reasoning",
+    assertTranslationError(
+        () => parseReasoningEffort(3, "reasoning.effort"),
+        "unsupported_parameter",
     );
     assertTranslationError(
-        () =>
-            parseResponsesRequest({
-                model: "m",
-                input: "x",
-                reasoning: {
-                    effort: "extreme",
-                },
-            }),
+        () => parseReasoningEffort("", "reasoning_effort"),
         "unsupported_parameter",
     );
 
@@ -160,7 +140,7 @@ test("Responses and Chat Completions translate through the event IR", () => {
         "tool_call",
         "Responses tool calls enter IR",
     );
-    assertEqual(responseRequest.reasoningEffort, "high", "Responses effort enters IR");
+    assertEqual(responseRequest.reasoningEffort, "high", "Responses effort enters IR verbatim");
     assertEqual(responseRequest.isStreaming, true, "Responses stream is preserved");
     assertTranslationError(
         () =>

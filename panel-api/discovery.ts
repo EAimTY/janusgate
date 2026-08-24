@@ -29,6 +29,27 @@ function parseCompatibleModelList(value: unknown): string[] {
     return modelNames;
 }
 
+/** Gemini ListModels entries carry a `models/`-prefixed name; only chat-capable models apply. */
+function parseGeminiModelList(value: unknown): string[] {
+    if (!isJsonObject(value) || !Array.isArray(value["models"])) {
+        throw upstreamDiscoveryError("The upstream returned an invalid model list");
+    }
+    const modelNames: string[] = [];
+    for (const entry of value["models"]) {
+        if (!isJsonObject(entry)) {
+            throw upstreamDiscoveryError("The upstream returned an invalid model list");
+        }
+        const methods = entry["supportedGenerationMethods"];
+        if (Array.isArray(methods) && !methods.includes("generateContent")) continue;
+        const name = entry["name"];
+        if (typeof name !== "string" || !name.startsWith("models/") || name.length <= 7) {
+            throw upstreamDiscoveryError("The upstream returned an invalid model list");
+        }
+        modelNames.push(name.slice("models/".length));
+    }
+    return modelNames;
+}
+
 async function fetchCompatibleModelNames(
     provider: StoredProvider,
     cipher: CredentialsCipher,
@@ -37,17 +58,29 @@ async function fetchCompatibleModelNames(
     if (provider.baseUrl === null) {
         throw new Error("OpenAI-compatible provider is missing its base URL");
     }
+    if (provider.protocol === null) {
+        throw new Error("OpenAI-compatible provider is missing its protocol");
+    }
     const credentials = assertCredentialsMatchProvider(
         "openai_compatible",
         await cipher.decrypt(provider.encryptedCredentials),
     );
 
+    // Both protocol families list models at `{baseUrl}/models`; they differ in auth header,
+    // response shape, and (for Gemini) the `models/` name prefix.
+    const isGemini = provider.protocol === "gemini_generate_content";
+    const headers: Record<string, string> = isGemini
+        ? {
+              "x-goog-api-key": credentials.apiKey,
+          }
+        : {
+              Authorization: `Bearer ${credentials.apiKey}`,
+          };
+
     let response: Response;
     try {
         response = await fetchUpstream(`${provider.baseUrl}/models`, {
-            headers: {
-                Authorization: `Bearer ${credentials.apiKey}`,
-            },
+            headers,
             method: "GET",
         });
     } catch {
@@ -64,7 +97,7 @@ async function fetchCompatibleModelNames(
     } catch {
         throw upstreamDiscoveryError("The upstream returned an invalid model list");
     }
-    return parseCompatibleModelList(value);
+    return isGemini ? parseGeminiModelList(value) : parseCompatibleModelList(value);
 }
 
 async function discoveredUpstreamNames(

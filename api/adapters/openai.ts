@@ -1,5 +1,3 @@
-import type { ThinkingLevel } from "../translation/thinking";
-
 // Public PKCE client and wire constants shipped by the Codex CLI. Keep this fragile boundary pinned.
 export const OPENAI_OAUTH_CLIENT_ID = "app_EmoamVZd6MmPgQohKd7qKLFF";
 export const OPENAI_AUTHORIZE_URL = "https://auth.openai.com/authorize";
@@ -19,11 +17,4 @@ export const OPENAI_CODEX_MODELS: readonly string[] = [
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.3-codex-spark",
-];
-
-export const OPENAI_DEFAULT_THINKING_LEVELS: readonly ThinkingLevel[] = [
-    "minimal",
-    "low",
-    "medium",
-    "high",
 ];

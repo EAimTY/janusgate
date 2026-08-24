@@ -1,5 +1,4 @@
 import type { JsonObject, JsonValue } from "./json";
-import type { ThinkingLevel } from "./thinking";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 export type FinishReason = "stop" | "length" | "tool_calls" | "content_filter";
@@ -74,7 +73,7 @@ export interface IrRequest {
     messages: IrMessage[];
     tools: IrFunctionTool[];
     sampling: IrSampling;
-    reasoningEffort?: ThinkingLevel;
+    reasoningEffort?: string;
     isStreaming: boolean;
     isUsageIncluded: boolean;
 }

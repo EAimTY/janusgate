@@ -1,6 +1,6 @@
+import type { ClientProtocol, UpstreamProtocol } from "/common/domain";
 import { unixSeconds } from "/common/validation";
-import { parseCodeAssistResponse } from "./adapters/antigravity";
-import type { ClientProtocol } from "./request-validation";
+import { parseGenerateContentResponse } from "./adapters/gemini";
 import {
     parseChatCompletionsResponse,
     renderChatCompletionsResponse,
@@ -8,12 +8,11 @@ import {
 import { TranslationError } from "./translation/errors";
 import type { IrEvent } from "./translation/ir";
 import { parseResponsesResponse, renderResponsesResponse } from "./translation/responses";
-import type { UpstreamProtocol } from "./upstream-request";
 
 function parseUpstreamEvents(protocol: UpstreamProtocol, value: unknown): IrEvent[] {
-    if (protocol === "responses") return parseResponsesResponse(value);
-    if (protocol === "chat_completions") return parseChatCompletionsResponse(value);
-    return parseCodeAssistResponse(value);
+    if (protocol === "openai_response") return parseResponsesResponse(value);
+    if (protocol === "openai_chat_completion") return parseChatCompletionsResponse(value);
+    return parseGenerateContentResponse(value);
 }
 
 export function renderTranslatedNonStreamingResponse(
@@ -47,7 +46,7 @@ export function renderTranslatedNonStreamingResponse(
     const identifier = crypto.randomUUID().replaceAll("-", "");
     const created = unixSeconds();
     const body =
-        clientProtocol === "responses"
+        clientProtocol === "openai_response"
             ? renderResponsesResponse(events, {
                   created,
                   id: `resp_${identifier}`,
