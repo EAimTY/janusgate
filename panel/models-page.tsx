@@ -34,6 +34,33 @@ function thinkingSummary(model: Model): string {
     return model.thinkingLevels.join(", ");
 }
 
+interface ThinkingModeOptionProps {
+    isChecked: boolean;
+    onSelect: () => void;
+    title: string;
+    description: string;
+}
+
+function ThinkingModeOption(props: ThinkingModeOptionProps): JSX.Element {
+    return (
+        <label class="grid grid-cols-[15px_1fr] items-start gap-[7px] rounded-lg border border-[#e0e6e2] bg-[#fafbfa] p-2.5 text-xs font-[720] text-[#344038]">
+            <input
+                class={`${checkboxClasses} mt-0.5`}
+                type="radio"
+                name="thinking-mode"
+                checked={props.isChecked}
+                onChange={() => props.onSelect()}
+            />
+            <span class="grid gap-0.5">
+                <strong class="text-[11px]">{props.title}</strong>
+                <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
+                    {props.description}
+                </small>
+            </span>
+        </label>
+    );
+}
+
 export function ModelsPage(props: ModelsPageProps): JSX.Element {
     const [models, setModels] = createSignal<Model[]>([]);
     const [providers, setProviders] = createSignal<Provider[]>([]);
@@ -437,37 +464,18 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
                                 <legend class="mb-2 text-xs font-[720] text-[#344038]">
                                     Thinking levels
                                 </legend>
-                                <label class="grid grid-cols-[15px_1fr] items-start gap-[7px] rounded-lg border border-[#e0e6e2] bg-[#fafbfa] p-2.5 text-xs font-[720] text-[#344038]">
-                                    <input
-                                        class={`${checkboxClasses} mt-0.5`}
-                                        type="radio"
-                                        name="thinking-mode"
-                                        checked={!isThinkingOverride()}
-                                        onChange={() => setIsThinkingOverride(false)}
-                                    />
-                                    <span class="grid gap-0.5">
-                                        <strong class="text-[11px]">Provider defaults</strong>
-                                        <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
-                                            Defaults, not off. No reasoning setting is injected.
-                                        </small>
-                                    </span>
-                                </label>
-                                <label class="grid grid-cols-[15px_1fr] items-start gap-[7px] rounded-lg border border-[#e0e6e2] bg-[#fafbfa] p-2.5 text-xs font-[720] text-[#344038]">
-                                    <input
-                                        class={`${checkboxClasses} mt-0.5`}
-                                        type="radio"
-                                        name="thinking-mode"
-                                        checked={isThinkingOverride()}
-                                        onChange={() => setIsThinkingOverride(true)}
-                                    />
-                                    <span class="grid gap-0.5">
-                                        <strong class="text-[11px]">Custom supported levels</strong>
-                                        <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
-                                            An empty selection means never inject reasoning
-                                            configuration.
-                                        </small>
-                                    </span>
-                                </label>
+                                <ThinkingModeOption
+                                    isChecked={!isThinkingOverride()}
+                                    onSelect={() => setIsThinkingOverride(false)}
+                                    title="Provider defaults"
+                                    description="Defaults, not off. No reasoning setting is injected."
+                                />
+                                <ThinkingModeOption
+                                    isChecked={isThinkingOverride()}
+                                    onSelect={() => setIsThinkingOverride(true)}
+                                    title="Custom supported levels"
+                                    description="An empty selection means never inject reasoning configuration."
+                                />
                                 <div
                                     class={[
                                         "flex flex-wrap gap-[7px] pt-[7px] pl-[25px]",
