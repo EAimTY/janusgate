@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { Show } from "solid-js";
-import { Notice } from "./ui";
+import { buttonPrimaryClasses, Notice } from "./ui";
 
 interface AuthOverlayProps {
     token: string;
@@ -57,7 +57,7 @@ export function AuthOverlay(props: AuthOverlayProps): JSX.Element {
                         onInput={(event) => props.onTokenInput(event.currentTarget.value)}
                     />
                     <button
-                        class="mt-[7px] inline-flex min-h-10 w-full items-center justify-center rounded-[10px] border border-[#19784e] bg-[#289f6b] px-[15px] py-[9px] text-[13px] leading-[1.2] font-[720] text-white shadow-[0_8px_20px_rgb(25_120_78/17%)] transition-[background,transform] duration-150 enabled:hover:bg-[#126a42] enabled:active:translate-y-px focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[#29a66f]/25 disabled:cursor-not-allowed disabled:opacity-60"
+                        class={`${buttonPrimaryClasses} mt-[7px] w-full`}
                         type="submit"
                         disabled={props.isChecking || props.token.length === 0}
                     >

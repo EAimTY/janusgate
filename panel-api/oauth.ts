@@ -24,6 +24,7 @@ import { acquireCredentialLease, clearCredentialLease } from "/api/provider-acce
 import type { CredentialsCipher } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
 import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from "/common/domain";
+import { providerTypeForOAuthFlow } from "/common/domain";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject, unixSeconds } from "/common/validation";
 import {
@@ -66,10 +67,6 @@ interface AuthorizationToken {
     readonly refreshToken: string;
     readonly expiresAt: number;
     readonly idToken?: string;
-}
-
-function providerTypeForFlow(type: OAuthFlowType): "antigravity_oauth" | "openai_oauth" {
-    return type === "openai" ? "openai_oauth" : "antigravity_oauth";
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {
@@ -138,7 +135,7 @@ export async function startProviderOAuth(
     let providerId: number | null = null;
     if (input.providerName !== undefined) {
         const provider = await requireProviderByName(database, input.providerName);
-        if (provider.type !== providerTypeForFlow(input.type)) {
+        if (provider.type !== providerTypeForOAuthFlow(input.type)) {
             throw new PanelApiError(400, "Provider type does not match the OAuth flow");
         }
         providerId = provider.id;
@@ -596,7 +593,7 @@ async function createOAuthProviderAtomically(
     encryptedCredentials: Uint8Array,
     expiresAt: number,
 ): Promise<void> {
-    const providerType = providerTypeForFlow(flowType);
+    const providerType = providerTypeForOAuthFlow(flowType);
     const name = input.name ?? (await generateAvailableProviderName(database, providerType));
     const modelPrefix = input.modelPrefix ?? name;
     const results = await database.batch([
@@ -709,7 +706,7 @@ export async function completeProviderOAuth(
         if (state.provider_id !== null) {
             leasedProvider = await findProviderById(database, state.provider_id);
             if (leasedProvider === null) throw new PanelApiError(404, "Provider not found");
-            if (leasedProvider.type !== providerTypeForFlow(flowType)) {
+            if (leasedProvider.type !== providerTypeForOAuthFlow(flowType)) {
                 throw new PanelApiError(400, "Provider type does not match the OAuth flow");
             }
         }

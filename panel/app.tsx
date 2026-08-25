@@ -5,6 +5,7 @@ import { AuthOverlay } from "./auth-overlay";
 import { type AppRoute, panelConfig } from "./config";
 import { ModelsPage } from "./models-page";
 import { ProvidersPage } from "./providers-page";
+import { buttonPrimaryClasses } from "./ui";
 
 function routeFromLocation(): AppRoute {
     if (window.location.pathname === panelConfig.routes.root) {
@@ -217,7 +218,7 @@ export function App(): JSX.Element {
                                     not exist.
                                 </p>
                                 <button
-                                    class="mt-[22px] inline-flex min-h-10 items-center justify-center rounded-[10px] border border-[#19784e] bg-[#19784e] px-[15px] py-[9px] text-[13px] leading-[1.2] font-[720] text-white shadow-[0_8px_20px_rgb(25_120_78/17%)] transition-[background,transform] duration-150 hover:bg-[#126a42] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[#29a66f]/25 active:translate-y-px"
+                                    class={`${buttonPrimaryClasses} mt-[22px]`}
                                     type="button"
                                     onClick={() => navigate(panelConfig.routes.providers)}
                                 >
