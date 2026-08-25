@@ -127,7 +127,7 @@ export function StatusBadge(props: { isEnabled: boolean }): JSX.Element {
     );
 }
 
-export function CountBadge(props: { count: number }): JSX.Element {
+function CountBadge(props: { count: number }): JSX.Element {
     return (
         <span class="grid h-[29px] min-w-[29px] place-items-center rounded-lg bg-[#eaf0ec] px-2 text-[12px] font-[750] text-[#456052]">
             {props.count}

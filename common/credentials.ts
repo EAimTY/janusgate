@@ -7,7 +7,7 @@ import type {
 import { ConfigurationError, CredentialDecryptionError, ValidationError } from "/common/errors";
 import { requireJsonObject, requireStringField } from "/common/validation";
 
-export const AES_256_KEY_BYTES = 32;
+const AES_256_KEY_BYTES = 32;
 export const AES_GCM_IV_BYTES = 12;
 export const AES_GCM_TAG_BYTES = 16;
 

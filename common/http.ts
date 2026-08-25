@@ -69,7 +69,7 @@ export async function readBoundedRequestBody(
     return readBoundedStream(request.body, maximumBytes, payloadTooLargeError);
 }
 
-export function parseJson(text: string): unknown {
+function parseJson(text: string): unknown {
     try {
         const value: unknown = JSON.parse(text);
         return value;

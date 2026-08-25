@@ -14,7 +14,7 @@ export const UPSTREAM_PROTOCOLS = [
 ] as const;
 export type UpstreamProtocol = (typeof UPSTREAM_PROTOCOLS)[number];
 
-export const CLIENT_PROTOCOLS = [
+const CLIENT_PROTOCOLS = [
     "openai_response",
     "openai_chat_completion",
 ] as const;

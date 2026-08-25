@@ -4,11 +4,9 @@ import { parseStoredThinkingLevels } from "/common/validation";
 import type { ThinkingLevel } from "/config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 
-export type PanelModel = ModelSummary;
-
 interface PanelModelRow extends ModelRow {
     provider_name: string;
-    provider_type: PanelModel["providerType"];
+    provider_type: ModelSummary["providerType"];
 }
 
 export interface SaveModelRecord {
@@ -20,7 +18,7 @@ export interface SaveModelRecord {
     isEnabled: boolean;
 }
 
-export async function listPanelModels(database: D1Database): Promise<PanelModel[]> {
+export async function listPanelModels(database: D1Database): Promise<ModelSummary[]> {
     const result = await database
         .prepare(
             `SELECT

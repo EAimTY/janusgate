@@ -111,7 +111,7 @@ export function parseBaseUrl(value: unknown): string {
     return parsed.href.replace(/\/+$/, "");
 }
 
-export function parseThinkingLevel(value: unknown): ThinkingLevel {
+function parseThinkingLevel(value: unknown): ThinkingLevel {
     for (const level of CANONICAL_THINKING_LEVELS) {
         if (value === level) {
             return level;
