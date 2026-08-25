@@ -10,6 +10,7 @@ import type { CredentialsCipher } from "/common/credentials";
 import { assertCredentialsMatchProvider } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
 import type { DiscoveryResult } from "/common/domain";
+import { GatewayError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject } from "/common/validation";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
@@ -77,7 +78,26 @@ async function fetchAntigravityModelNames(
     fetchUpstream: typeof fetch,
     signal?: AbortSignal,
 ): Promise<string[]> {
-    let effectiveProvider = provider;
+    // Margin-refresh before the first call so an idle-but-expired token does not waste an
+    // upstream roundtrip; a mid-flight rejection still recovers through the forced loop below.
+    let effectiveProvider: StoredProvider;
+    try {
+        effectiveProvider = (
+            await ensureFreshProviderAccess(database, provider, cipher, {
+                fetchUpstream,
+                ...(signal === undefined
+                    ? {}
+                    : {
+                          signal,
+                      }),
+            })
+        ).provider;
+    } catch (error) {
+        if (error instanceof GatewayError) {
+            throw upstreamDiscoveryError("Antigravity credential refresh failed");
+        }
+        throw error;
+    }
     let response: Response | undefined;
     for (let attempt = 0; attempt < 2; attempt += 1) {
         const credentials = assertCredentialsMatchProvider(

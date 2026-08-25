@@ -25,7 +25,7 @@ async function insertProvider(
         `INSERT INTO providers (
             name, model_prefix, type, protocol, base_url, encrypted_credentials,
             expires_at, refresh_started_at, enabled
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 1)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
     )
         .bind(
             name,
@@ -34,6 +34,8 @@ async function insertProvider(
             type === "openai_compatible" ? "openai_response" : null,
             type === "openai_compatible" ? "https://upstream.test/v1" : null,
             credentials,
+            // OAuth providers always store a token expiry; API-key providers never do.
+            type === "openai_compatible" ? null : 2_000_000_000,
         )
         .run();
 }

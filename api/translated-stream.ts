@@ -111,7 +111,7 @@ export async function translateStreamingResponse(
     const geminiState: GenerateContentStreamState = {
         isStarted: false,
         nextToolIndex: 0,
-        openToolIndexes: new Map(),
+        openToolCallIndexes: new Set(),
     };
     const pendingOutput: Uint8Array[] = [];
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined;

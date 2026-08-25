@@ -56,10 +56,6 @@ export interface DiscoverModelsInput {
     readonly providerName: string;
 }
 
-function hasOwn(object: Record<string, unknown>, key: string): boolean {
-    return Object.hasOwn(object, key);
-}
-
 function assertAllowedFields(
     object: Record<string, unknown>,
     allowedFields: readonly string[],
@@ -113,19 +109,21 @@ export function parseSaveProviderInput(value: unknown): SaveProviderInput {
         name: parseProviderName(object["name"]),
     };
 
-    if (hasOwn(object, "type")) {
+    if (Object.hasOwn(object, "type")) {
         if (object["type"] !== "openai_compatible") {
             throw new ValidationError("type must be openai_compatible");
         }
         input.type = "openai_compatible";
     }
-    if (hasOwn(object, "protocol")) input.protocol = parseUpstreamProtocol(object["protocol"]);
-    if (hasOwn(object, "baseUrl")) input.baseUrl = parseBaseUrl(object["baseUrl"]);
-    if (hasOwn(object, "apiKey")) {
+    if (Object.hasOwn(object, "protocol"))
+        input.protocol = parseUpstreamProtocol(object["protocol"]);
+    if (Object.hasOwn(object, "baseUrl")) input.baseUrl = parseBaseUrl(object["baseUrl"]);
+    if (Object.hasOwn(object, "apiKey")) {
         input.apiKey = parseNonEmptyString(object["apiKey"], "apiKey");
     }
-    if (hasOwn(object, "enabled")) input.enabled = parseBoolean(object["enabled"], "enabled");
-    if (hasOwn(object, "modelPrefix")) {
+    if (Object.hasOwn(object, "enabled"))
+        input.enabled = parseBoolean(object["enabled"], "enabled");
+    if (Object.hasOwn(object, "modelPrefix")) {
         input.modelPrefix = parseModelPrefix(object["modelPrefix"]);
     }
     return input;
@@ -153,7 +151,7 @@ export function parseStartOAuthInput(value: unknown): StartOAuthInput {
     } = {
         type: parseOAuthFlowType(object["type"]),
     };
-    if (hasOwn(object, "providerName")) {
+    if (Object.hasOwn(object, "providerName")) {
         input.providerName = parseProviderNameField(object, "providerName");
     }
     return input;
@@ -175,11 +173,11 @@ export function parseCompleteOAuthInput(value: unknown): CompleteOAuthInput {
     } = {
         redirectUrl: parseNonEmptyString(object["redirectUrl"], "redirectUrl"),
     };
-    if (hasOwn(object, "name")) input.name = parseProviderName(object["name"]);
-    if (hasOwn(object, "modelPrefix")) {
+    if (Object.hasOwn(object, "name")) input.name = parseProviderName(object["name"]);
+    if (Object.hasOwn(object, "modelPrefix")) {
         input.modelPrefix = parseModelPrefix(object["modelPrefix"]);
     }
-    if (hasOwn(object, "projectId")) {
+    if (Object.hasOwn(object, "projectId")) {
         input.projectId = parseNonEmptyString(object["projectId"], "projectId");
     }
     return input;
@@ -206,12 +204,13 @@ export function parseSaveModelInput(value: unknown): SaveModelInput {
         providerName: parseProviderNameField(object, "providerName"),
         upstreamName: parseNonEmptyString(object["upstreamName"], "upstreamName"),
     };
-    if (hasOwn(object, "id")) input.id = parsePositiveInteger(object["id"], "id");
-    if (hasOwn(object, "name")) {
+    if (Object.hasOwn(object, "id")) input.id = parsePositiveInteger(object["id"], "id");
+    if (Object.hasOwn(object, "name")) {
         input.name = parseNonEmptyString(object["name"], "name");
     }
-    if (hasOwn(object, "enabled")) input.enabled = parseBoolean(object["enabled"], "enabled");
-    if (hasOwn(object, "thinkingLevels")) {
+    if (Object.hasOwn(object, "enabled"))
+        input.enabled = parseBoolean(object["enabled"], "enabled");
+    if (Object.hasOwn(object, "thinkingLevels")) {
         input.thinkingLevels = parseThinkingLevels(object["thinkingLevels"]);
     }
     return input;

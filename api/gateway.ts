@@ -273,18 +273,14 @@ async function handleGatewayChat(
         abortController,
         fetchUpstream,
     );
-    if (!response.ok) {
-        if (prepared.isNativeProtocol) {
-            return validated.isStreaming
-                ? relayNativeStreamingResponse(response, abortController)
-                : relayNativeNonStreaming(response, abortController);
-        }
-        return translatedUpstreamError(response, route, abortController);
-    }
+    // Native protocol: successes and errors alike relay the upstream bytes untouched.
     if (prepared.isNativeProtocol) {
         return validated.isStreaming
             ? relayNativeStreamingResponse(response, abortController)
             : relayNativeNonStreaming(response, abortController);
+    }
+    if (!response.ok) {
+        return translatedUpstreamError(response, route, abortController);
     }
     if (validated.isStreaming) {
         return translateStreamingResponse(

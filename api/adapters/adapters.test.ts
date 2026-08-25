@@ -985,7 +985,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
     const streamState = {
         isStarted: false,
         nextToolIndex: 0,
-        openToolIndexes: new Map<number, string>(),
+        openToolCallIndexes: new Set<number>(),
     };
     const firstStreamEvents = parseGenerateContentStreamEvent(
         {

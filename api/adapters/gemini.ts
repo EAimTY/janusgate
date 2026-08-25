@@ -68,7 +68,8 @@ export interface GenerateContentGenerationConfig {
 export interface GenerateContentStreamState {
     isStarted: boolean;
     nextToolIndex: number;
-    openToolIndexes: Map<number, string>;
+    /** Tool calls whose `tool_call_done` is still owed at the next finish reason. */
+    openToolCallIndexes: Set<number>;
 }
 
 /** URL for the public Generative Language API; `baseUrl` carries the version path (e.g. `/v1beta`). */
@@ -117,24 +118,24 @@ export function buildGenerateContentRequest(
     const systemParts: string[] = [];
     const contents: GenerateContentContent[] = [];
     const toolNamesByCallId = new Map<string, string>();
-    for (const message of request["messages"]) {
-        for (const part of message["parts"]) {
-            if (part["type"] === "tool_call") toolNamesByCallId.set(part["id"], part["name"]);
+    for (const message of request.messages) {
+        for (const part of message.parts) {
+            if (part.type === "tool_call") toolNamesByCallId.set(part.id, part.name);
         }
     }
-    for (const message of request["messages"]) {
-        if (message["role"] === "system") {
-            const text = message["parts"]
-                .filter((part) => part["type"] === "text")
-                .map((part) => part["text"])
+    for (const message of request.messages) {
+        if (message.role === "system") {
+            const text = message.parts
+                .filter((part) => part.type === "text")
+                .map((part) => part.text)
                 .join("");
             if (text.length > 0) systemParts.push(text);
             continue;
         }
         const parts: JsonObject[] = [];
-        if (message["reasoning"] !== undefined) {
+        if (message.reasoning !== undefined) {
             const reasoningPart: JsonObject = {
-                text: message["reasoning"],
+                text: message.reasoning,
                 thought: true,
             };
             if (message.reasoningThoughtSignature !== undefined) {
@@ -142,9 +143,9 @@ export function buildGenerateContentRequest(
             }
             parts.push(reasoningPart);
         }
-        for (const part of message["parts"])
+        for (const part of message.parts)
             parts.push(renderGenerateContentPart(part, toolNamesByCallId));
-        appendContent(contents, message["role"] === "assistant" ? "model" : "user", parts);
+        appendContent(contents, message.role === "assistant" ? "model" : "user", parts);
     }
     // GenerateContent requires a user turn first; reject rather than inventing prompt content.
     if (contents[0]?.role === "model") {
@@ -168,16 +169,15 @@ export function buildGenerateContentRequest(
             ],
         };
     }
-    if (request["tools"].length > 0) {
-        generateRequest["tools"] = [
+    if (request.tools.length > 0) {
+        generateRequest.tools = [
             {
-                functionDeclarations: request["tools"].map((tool) => {
+                functionDeclarations: request.tools.map((tool) => {
                     const declaration: GenerateContentFunctionDeclaration = {
-                        name: tool["name"],
-                        parameters: tool["parameters"],
+                        name: tool.name,
+                        parameters: tool.parameters,
                     };
-                    if (tool["description"] !== undefined)
-                        declaration["description"] = tool["description"];
+                    if (tool.description !== undefined) declaration.description = tool.description;
                     return declaration;
                 }),
             },
@@ -215,14 +215,14 @@ function buildGenerationConfig(
 ): GenerateContentGenerationConfig | undefined {
     const sampling = request.sampling;
     const result: GenerateContentGenerationConfig = {};
-    if (sampling["temperature"] !== undefined) result["temperature"] = sampling["temperature"];
+    if (sampling.temperature !== undefined) result.temperature = sampling.temperature;
     if (sampling.topP !== undefined) result.topP = sampling.topP;
     if (sampling.maxOutputTokens !== undefined) result.maxOutputTokens = sampling.maxOutputTokens;
-    if (sampling["stop"] !== undefined) result.stopSequences = sampling["stop"];
+    if (sampling.stop !== undefined) result.stopSequences = sampling.stop;
     if (sampling.responseFormat !== undefined) {
         result.responseMimeType = "application/json";
-        if (sampling.responseFormat["type"] === "json_schema") {
-            result.responseJsonSchema = sampling.responseFormat["schema"];
+        if (sampling.responseFormat.type === "json_schema") {
+            result.responseJsonSchema = sampling.responseFormat.schema;
         }
     }
     if (reasoningEffort !== undefined) {
@@ -241,28 +241,30 @@ function renderGenerateContentPart(
     part: MessagePart,
     toolNamesByCallId: ReadonlyMap<string, string>,
 ): JsonObject {
-    if (part["type"] === "text") {
+    if (part.type === "text") {
         const result: JsonObject = {
-            text: part["text"],
+            text: part.text,
         };
-        if (part["thoughtSignature"] !== undefined)
-            result["thoughtSignature"] = part["thoughtSignature"];
+        if (part.thoughtSignature !== undefined) {
+            result["thoughtSignature"] = part.thoughtSignature;
+        }
         return result;
     }
-    if (part["type"] === "image") return renderInlineData(part["url"]);
-    if (part["type"] === "tool_call") {
+    if (part.type === "image") return renderInlineData(part.url);
+    if (part.type === "tool_call") {
         const result: JsonObject = {
             functionCall: {
-                id: part["id"],
-                name: part["name"],
-                args: parseJsonObjectText(part["arguments"], `arguments for ${part.name}`),
+                id: part.id,
+                name: part.name,
+                args: parseJsonObjectText(part.arguments, `arguments for ${part.name}`),
             },
         };
-        if (part["thoughtSignature"] !== undefined)
-            result["thoughtSignature"] = part["thoughtSignature"];
+        if (part.thoughtSignature !== undefined) {
+            result["thoughtSignature"] = part.thoughtSignature;
+        }
         return result;
     }
-    const name = part["name"] ?? toolNamesByCallId.get(part.callId);
+    const name = part.name ?? toolNamesByCallId.get(part.callId);
     if (name === undefined) {
         throw new TranslationError(
             "invalid_json",
@@ -271,15 +273,16 @@ function renderGenerateContentPart(
     }
     const result: JsonObject = {
         functionResponse: {
-            id: part["callId"],
+            id: part.callId,
             name,
             response: {
-                output: part["output"],
+                output: part.output,
             },
         },
     };
-    if (part["thoughtSignature"] !== undefined)
-        result["thoughtSignature"] = part["thoughtSignature"];
+    if (part.thoughtSignature !== undefined) {
+        result["thoughtSignature"] = part.thoughtSignature;
+    }
     return result;
 }
 
@@ -370,6 +373,98 @@ function encodeBase64(bytes: Uint8Array): string {
     return result;
 }
 
+interface ParsedGenerateContentPart {
+    events: IrEvent[];
+    hasToolCall: boolean;
+}
+
+/**
+ * Shared per-part parser for streaming and non-streaming responses. It emits the opening
+ * events (a text/reasoning delta, or tool_call_start plus the full argument delta); when a
+ * tool call completes is a streaming-policy decision owned by the callers.
+ */
+function parseGenerateContentPart(
+    value: unknown,
+    toolCallIndex: number,
+): ParsedGenerateContentPart {
+    const part = expectRecord(value, "candidate part");
+    const thoughtSignature = optionalString(part["thoughtSignature"], "part.thoughtSignature");
+    if (typeof part["text"] === "string") {
+        const event: IrEvent =
+            part["thought"] === true
+                ? {
+                      type: "reasoning_delta",
+                      delta: part["text"],
+                  }
+                : {
+                      type: "text_delta",
+                      delta: part["text"],
+                  };
+        if (thoughtSignature !== undefined) event["thoughtSignature"] = thoughtSignature;
+        return {
+            events: [
+                event,
+            ],
+            hasToolCall: false,
+        };
+    }
+    if (part["functionCall"] !== undefined) {
+        const functionCall = expectRecord(part["functionCall"], "functionCall");
+        const args = functionCall["args"] === undefined ? {} : functionCall["args"];
+        if (!isJsonValue(args))
+            throw new TranslationError("upstream_failure", "functionCall.args is not JSON");
+        const start: IrEvent = {
+            type: "tool_call_start",
+            index: toolCallIndex,
+            id: generateToolCallId(functionCall),
+            name: expectNonEmptyString(functionCall["name"], "functionCall.name"),
+        };
+        if (thoughtSignature !== undefined) start["thoughtSignature"] = thoughtSignature;
+        return {
+            events: [
+                start,
+                {
+                    type: "tool_call_delta",
+                    index: toolCallIndex,
+                    delta: JSON.stringify(args),
+                },
+            ],
+            hasToolCall: true,
+        };
+    }
+    return {
+        events: [],
+        hasToolCall: false,
+    };
+}
+
+function generateToolCallId(functionCall: Record<string, unknown>): string {
+    const upstreamId = optionalString(functionCall["id"], "functionCall.id");
+    return upstreamId === undefined || upstreamId.length === 0
+        ? `call_${crypto.randomUUID().replaceAll("-", "")}`
+        : upstreamId;
+}
+
+function expectSingleCandidate(root: Record<string, unknown>): unknown[] {
+    const candidates =
+        root["candidates"] === undefined ? [] : expectArray(root["candidates"], "candidates");
+    if (candidates.length > 1) {
+        throw new TranslationError("upstream_failure", "Gemini returned multiple candidates");
+    }
+    return candidates;
+}
+
+function candidateParts(candidateValue: unknown): unknown[] {
+    const candidate = expectRecord(candidateValue, "candidate");
+    const content =
+        candidate["content"] === undefined
+            ? undefined
+            : expectRecord(candidate["content"], "candidate.content");
+    return content?.["parts"] === undefined
+        ? []
+        : expectArray(content["parts"], "candidate.content.parts");
+}
+
 export function parseGenerateContentResponse(value: unknown): IrEvent[] {
     const root = unwrapGenerateContentResponse(value);
     const events: IrEvent[] = [
@@ -384,25 +479,16 @@ export function parseGenerateContentResponse(value: unknown): IrEvent[] {
             ? undefined
             : expectRecord(root["promptFeedback"], "promptFeedback");
     let finishReason = mapGeminiFinishReason(promptFeedback?.["blockReason"], false);
-    const candidates =
-        root["candidates"] === undefined ? [] : expectArray(root["candidates"], "candidates");
-    if (candidates.length > 1) {
-        throw new TranslationError("upstream_failure", "Gemini returned multiple candidates");
-    }
-    for (const candidateValue of candidates) {
+    for (const candidateValue of expectSingleCandidate(root)) {
         const candidate = expectRecord(candidateValue, "candidate");
-        const content =
-            candidate["content"] === undefined
-                ? undefined
-                : expectRecord(candidate["content"], "candidate.content");
-        const parts =
-            content?.["parts"] === undefined
-                ? []
-                : expectArray(content["parts"], "candidate.content.parts");
-        for (const partValue of parts) {
+        for (const partValue of candidateParts(candidateValue)) {
             const parsed = parseGenerateContentPart(partValue, nextToolIndex);
             events.push(...parsed.events);
             if (parsed.hasToolCall) {
+                events.push({
+                    type: "tool_call_done",
+                    index: nextToolIndex,
+                });
                 hasToolCall = true;
                 nextToolIndex += 1;
             }
@@ -425,79 +511,6 @@ export function parseGenerateContentResponse(value: unknown): IrEvent[] {
     return events;
 }
 
-function generateToolCallId(functionCall: Record<string, unknown>): string {
-    const upstreamId = optionalString(functionCall["id"], "functionCall.id");
-    return upstreamId === undefined || upstreamId.length === 0
-        ? `call_${crypto.randomUUID().replaceAll("-", "")}`
-        : upstreamId;
-}
-
-function parseGenerateContentPart(
-    value: unknown,
-    toolIndex: number,
-): {
-    events: IrEvent[];
-    hasToolCall: boolean;
-} {
-    const part = expectRecord(value, "candidate part");
-    const thoughtSignature = optionalString(part["thoughtSignature"], "part.thoughtSignature");
-    if (typeof part["text"] === "string") {
-        const event: IrEvent =
-            part["thought"] === true
-                ? {
-                      type: "reasoning_delta",
-                      delta: part["text"],
-                  }
-                : {
-                      type: "text_delta",
-                      delta: part["text"],
-                  };
-        if (thoughtSignature !== undefined) {
-            event["thoughtSignature"] = thoughtSignature;
-        }
-        return {
-            events: [
-                event,
-            ],
-            hasToolCall: false,
-        };
-    }
-    if (part["functionCall"] !== undefined) {
-        const functionCall = expectRecord(part["functionCall"], "functionCall");
-        const args = functionCall["args"] === undefined ? {} : functionCall["args"];
-        if (!isJsonValue(args))
-            throw new TranslationError("upstream_failure", "functionCall.args is not JSON");
-        const start: IrEvent = {
-            type: "tool_call_start",
-            index: toolIndex,
-            id: generateToolCallId(functionCall),
-            name: expectNonEmptyString(functionCall["name"], "functionCall.name"),
-        };
-        if (thoughtSignature !== undefined) {
-            start["thoughtSignature"] = thoughtSignature;
-        }
-        return {
-            events: [
-                start,
-                {
-                    type: "tool_call_delta",
-                    index: toolIndex,
-                    delta: JSON.stringify(args),
-                },
-                {
-                    type: "tool_call_done",
-                    index: toolIndex,
-                },
-            ],
-            hasToolCall: true,
-        };
-    }
-    return {
-        events: [],
-        hasToolCall: false,
-    };
-}
-
 export function parseGenerateContentStreamEvent(
     value: unknown,
     state: GenerateContentStreamState,
@@ -515,86 +528,26 @@ export function parseGenerateContentStreamEvent(
             ? undefined
             : expectRecord(root["promptFeedback"], "promptFeedback");
     let finishReasonValue: unknown = promptFeedback?.["blockReason"];
-    const candidates =
-        root["candidates"] === undefined ? [] : expectArray(root["candidates"], "candidates");
-    if (candidates.length > 1) {
-        throw new TranslationError("upstream_failure", "Gemini returned multiple candidates");
-    }
-    for (const candidateValue of candidates) {
+    for (const candidateValue of expectSingleCandidate(root)) {
         const candidate = expectRecord(candidateValue, "candidate");
         finishReasonValue = candidate["finishReason"];
-        const content =
-            candidate["content"] === undefined
-                ? undefined
-                : expectRecord(candidate["content"], "candidate.content");
-        const parts =
-            content?.["parts"] === undefined
-                ? []
-                : expectArray(content["parts"], "candidate.content.parts");
-        for (const partValue of parts) {
-            const part = expectRecord(partValue, "candidate part");
-            if (part["functionCall"] !== undefined) {
-                const functionCall = expectRecord(part["functionCall"], "functionCall");
-                const index = state.nextToolIndex;
+        for (const partValue of candidateParts(candidateValue)) {
+            const parsed = parseGenerateContentPart(partValue, state.nextToolIndex);
+            events.push(...parsed.events);
+            if (parsed.hasToolCall) {
+                state.openToolCallIndexes.add(state.nextToolIndex);
                 state.nextToolIndex += 1;
-                const id = generateToolCallId(functionCall);
-                const name = expectNonEmptyString(functionCall["name"], "functionCall.name");
-                const start: IrEvent = {
-                    type: "tool_call_start",
-                    index,
-                    id,
-                    name,
-                };
-                const thoughtSignature = optionalString(
-                    part["thoughtSignature"],
-                    "part.thoughtSignature",
-                );
-                if (thoughtSignature !== undefined) {
-                    start["thoughtSignature"] = thoughtSignature;
-                }
-                events.push(start);
-                const args = functionCall["args"] === undefined ? {} : functionCall["args"];
-                if (!isJsonValue(args))
-                    throw new TranslationError("upstream_failure", "functionCall.args is not JSON");
-                events.push({
-                    type: "tool_call_delta",
-                    index,
-                    delta: JSON.stringify(args),
-                });
-                state.openToolIndexes.set(index, name);
-            } else if (typeof part["text"] === "string") {
-                const thoughtSignature = optionalString(
-                    part["thoughtSignature"],
-                    "part.thoughtSignature",
-                );
-                const event: IrEvent =
-                    part["thought"] === true
-                        ? {
-                              type: "reasoning_delta",
-                              delta: part["text"],
-                          }
-                        : {
-                              type: "text_delta",
-                              delta: part["text"],
-                          };
-                if (
-                    thoughtSignature !== undefined &&
-                    (event["type"] === "reasoning_delta" || event["type"] === "text_delta")
-                ) {
-                    event["thoughtSignature"] = thoughtSignature;
-                }
-                events.push(event);
             }
         }
     }
     if (finishReasonValue !== undefined) {
-        for (const index of state.openToolIndexes.keys())
+        for (const index of state.openToolCallIndexes)
             events.push({
                 type: "tool_call_done",
                 index,
             });
         const hasToolCall = state.nextToolIndex > 0;
-        state.openToolIndexes.clear();
+        state.openToolCallIndexes.clear();
         events.push({
             type: "finish",
             reason: mapGeminiFinishReason(finishReasonValue, hasToolCall),
