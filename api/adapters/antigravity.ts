@@ -267,13 +267,15 @@ export function buildCodeAssistRequest(
               }),
     });
     if (options.sessionId !== undefined) generateRequest.sessionId = options.sessionId;
+    // generationConfig is guaranteed from here on: the maxOutputTokens clamp below always
+    // applies on Antigravity runtimes.
     generateRequest.generationConfig ??= {};
     generateRequest.generationConfig.maxOutputTokens = Math.min(
         generateRequest.generationConfig.maxOutputTokens ??
             antigravityMaxOutputTokens(runtimeModel),
         antigravityMaxOutputTokens(runtimeModel),
     );
-    if (generateRequest.generationConfig?.responseJsonSchema !== undefined) {
+    if (generateRequest.generationConfig.responseJsonSchema !== undefined) {
         generateRequest.generationConfig.responseJsonSchema = normalizeCodeAssistJsonSchema(
             generateRequest.generationConfig.responseJsonSchema,
             false,
@@ -308,7 +310,6 @@ export function buildCodeAssistRequest(
         };
     }
     if (runtimeModel === "gemini-3.7-flash-tiered") {
-        generateRequest.generationConfig ??= {};
         generateRequest.generationConfig.thinkingConfig = {
             thinkingLevel:
                 options.reasoningEffort === "high" || options.reasoningEffort === "xhigh"
@@ -319,7 +320,7 @@ export function buildCodeAssistRequest(
         };
     } else if (
         hasFixedAntigravityThinkingRuntime(runtimeModel) &&
-        generateRequest.generationConfig?.thinkingConfig !== undefined
+        generateRequest.generationConfig.thinkingConfig !== undefined
     ) {
         // These runtimes encode their thinking tier in the model ID or expose one fixed
         // runtime. Code Assist rejects a separate thinkingConfig for them.
