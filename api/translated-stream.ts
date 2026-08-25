@@ -6,6 +6,7 @@ import {
     parseGenerateContentStreamEvent,
 } from "./adapters/gemini";
 import {
+    type ChatStreamMetadata,
     parseChatCompletionsStreamEvent,
     renderChatCompletionsStream,
 } from "./translation/chat-completions";
@@ -15,44 +16,31 @@ import { createResponsesStreamRenderer, parseResponsesStreamEvent } from "./tran
 import { SseParser } from "./translation/sse";
 import { readBeforeIdleTimeout } from "./upstream-response";
 
-interface EventRenderer {
-    render(events: readonly IrEvent[]): string[];
-}
+type EventRenderer = (events: readonly IrEvent[]) => string[];
 
-class ChatCompletionsEventRenderer implements EventRenderer {
-    readonly #metadata;
-    #hasStarted = false;
-    #usage: IrUsage | undefined;
-
-    public constructor(model: string, isUsageIncluded: boolean) {
-        this.#metadata = {
-            created: unixSeconds(),
-            id: `chatcmpl_${crypto.randomUUID().replaceAll("-", "")}`,
-            isUsageIncluded,
-            model,
-        };
-    }
-
-    public render(events: readonly IrEvent[]): string[] {
+function createChatCompletionsStreamRenderer(metadata: ChatStreamMetadata): EventRenderer {
+    let hasStarted = false;
+    let usage: IrUsage | undefined;
+    return (events): string[] => {
         const immediate: IrEvent[] = [];
         for (const event of events) {
             if (event.type === "message_start") {
-                if (!this.#hasStarted) {
-                    this.#hasStarted = true;
+                if (!hasStarted) {
+                    hasStarted = true;
                     immediate.push(event);
                 }
-            } else if (event.type === "usage") this.#usage = event.usage;
+            } else if (event.type === "usage") usage = event.usage;
             else if (event.type === "done") {
-                if (this.#usage !== undefined)
+                if (usage !== undefined)
                     immediate.push({
                         type: "usage",
-                        usage: this.#usage,
+                        usage,
                     });
                 immediate.push(event);
             } else immediate.push(event);
         }
-        return renderChatCompletionsStream(immediate, this.#metadata);
-    }
+        return renderChatCompletionsStream(immediate, metadata);
+    };
 }
 
 function parseFrameEvents(
@@ -60,6 +48,8 @@ function parseFrameEvents(
     data: string,
     geminiState: GenerateContentStreamState,
 ): IrEvent[] {
+    // The CC wire sentinel is intercepted here, before JSON decoding, as the single owner of
+    // the "[DONE]" terminal-frame rule.
     if (protocol === "openai_chat_completion" && data === "[DONE]") {
         return [
             {
@@ -100,14 +90,17 @@ export async function translateStreamingResponse(
     const encoder = new TextEncoder();
     const renderer: EventRenderer =
         clientProtocol === "openai_response"
-            ? {
-                  render: createResponsesStreamRenderer({
-                      created: unixSeconds(),
-                      id: `resp_${crypto.randomUUID().replaceAll("-", "")}`,
-                      model: publicModel,
-                  }),
-              }
-            : new ChatCompletionsEventRenderer(publicModel, isUsageIncluded);
+            ? createResponsesStreamRenderer({
+                  created: unixSeconds(),
+                  id: `resp_${crypto.randomUUID().replaceAll("-", "")}`,
+                  model: publicModel,
+              })
+            : createChatCompletionsStreamRenderer({
+                  created: unixSeconds(),
+                  id: `chatcmpl_${crypto.randomUUID().replaceAll("-", "")}`,
+                  isUsageIncluded,
+                  model: publicModel,
+              });
     const geminiState: GenerateContentStreamState = {
         isStarted: false,
         nextToolIndex: 0,
@@ -117,7 +110,7 @@ export async function translateStreamingResponse(
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
     const parser = new SseParser((frame) => {
         const events = parseFrameEvents(upstreamProtocol, frame.data, geminiState);
-        for (const output of renderer.render(events)) {
+        for (const output of renderer(events)) {
             const bytes = encoder.encode(output);
             if (controller === undefined) pendingOutput.push(bytes);
             else controller.enqueue(bytes);

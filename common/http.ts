@@ -24,9 +24,6 @@ async function readBoundedStream(
     maximumBytes: number,
     overflowError: () => GatewayError,
 ): Promise<Uint8Array> {
-    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
-        throw new RangeError("maximumBytes must be a non-negative safe integer");
-    }
     if (stream === null) {
         return new Uint8Array();
     }

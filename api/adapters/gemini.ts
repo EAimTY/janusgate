@@ -493,7 +493,11 @@ export function parseGenerateContentResponse(value: unknown): IrEvent[] {
                 nextToolIndex += 1;
             }
         }
-        finishReason = mapGeminiFinishReason(candidate["finishReason"], hasToolCall);
+        // A blocked promptFeedback must survive candidates that carry no finishReason of their own.
+        finishReason = mapGeminiFinishReason(
+            candidate["finishReason"] ?? promptFeedback?.["blockReason"],
+            hasToolCall,
+        );
     }
     events.push({
         type: "finish",
@@ -530,7 +534,8 @@ export function parseGenerateContentStreamEvent(
     let finishReasonValue: unknown = promptFeedback?.["blockReason"];
     for (const candidateValue of expectSingleCandidate(root)) {
         const candidate = expectRecord(candidateValue, "candidate");
-        finishReasonValue = candidate["finishReason"];
+        // Keep an earlier promptFeedback block signal when the candidate carries no finishReason.
+        finishReasonValue = candidate["finishReason"] ?? finishReasonValue;
         for (const partValue of candidateParts(candidateValue)) {
             const parsed = parseGenerateContentPart(partValue, state.nextToolIndex);
             events.push(...parsed.events);

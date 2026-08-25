@@ -504,7 +504,7 @@ export function renderChatCompletionsRequest(
     reasoningEffort?: string,
 ): ChatCompletionsRequestObject {
     const messages: ChatRequestMessage[] = [];
-    for (const message of request["messages"]) {
+    for (const message of request.messages) {
         const rendered = renderMessage(message);
         messages.push(...rendered);
     }
@@ -518,8 +518,8 @@ export function renderChatCompletionsRequest(
             include_usage: true,
         };
     }
-    if (request["tools"].length > 0) {
-        result["tools"] = request["tools"].map(renderTool);
+    if (request.tools.length > 0) {
+        result["tools"] = request.tools.map(renderTool);
     }
     if (request.toolChoice !== undefined) {
         result.tool_choice =
@@ -533,11 +533,11 @@ export function renderChatCompletionsRequest(
                   };
     }
     const sampling = request.sampling;
-    if (sampling["temperature"] !== undefined) result["temperature"] = sampling["temperature"];
+    if (sampling.temperature !== undefined) result["temperature"] = sampling.temperature;
     if (sampling.topP !== undefined) result["top_p"] = sampling.topP;
     if (sampling.maxOutputTokens !== undefined)
         result["max_completion_tokens"] = sampling.maxOutputTokens;
-    if (sampling["stop"] !== undefined) result["stop"] = sampling["stop"];
+    if (sampling.stop !== undefined) result["stop"] = sampling.stop;
     if (sampling.responseFormat !== undefined)
         result["response_format"] = renderResponseFormat(sampling.responseFormat);
     if (reasoningEffort !== undefined) result["reasoning_effort"] = reasoningEffort;
@@ -545,45 +545,41 @@ export function renderChatCompletionsRequest(
 }
 
 function renderMessage(message: IrMessage): ChatRequestMessage[] {
-    if (message["role"] === "tool") {
-        return message["parts"].flatMap((part) => {
-            if (part["type"] !== "tool_output") return [];
+    if (message.role === "tool") {
+        return message.parts.flatMap((part) => {
+            if (part.type !== "tool_output") return [];
             const rendered: ChatRequestMessage = {
                 role: "tool",
                 content:
-                    typeof part["output"] === "string"
-                        ? part["output"]
-                        : JSON.stringify(part["output"]),
+                    typeof part.output === "string" ? part.output : JSON.stringify(part.output),
                 tool_call_id: part.callId,
             };
-            if (part["name"] !== undefined) rendered["name"] = part["name"];
+            if (part.name !== undefined) rendered.name = part.name;
             return [
                 rendered,
             ];
         });
     }
 
-    const textParts = message["parts"].filter(
-        (part) => part["type"] === "text" || part["type"] === "image",
-    );
+    const textParts = message.parts.filter((part) => part.type === "text" || part.type === "image");
     const content = renderContent(textParts);
     const result: ChatRequestMessage = {
-        role: message["role"],
+        role: message.role,
         content,
     };
-    if (message["reasoning"] !== undefined) result["reasoning_content"] = message["reasoning"];
+    if (message.reasoning !== undefined) result["reasoning_content"] = message.reasoning;
     if (message.reasoningThoughtSignature !== undefined) {
         result.reasoning_thought_signature = message.reasoningThoughtSignature;
     }
-    const toolCalls = message["parts"].filter((part) => part["type"] === "tool_call");
+    const toolCalls = message.parts.filter((part) => part.type === "tool_call");
     if (toolCalls.length > 0) {
         result["tool_calls"] = toolCalls.map((part) => {
             const toolCall: ChatToolCall = {
-                id: part["id"],
+                id: part.id,
                 type: "function",
                 function: {
-                    name: part["name"],
-                    arguments: part["arguments"],
+                    name: part.name,
+                    arguments: part.arguments,
                 },
             };
             if (part.thoughtSignature !== undefined) {
@@ -609,11 +605,11 @@ function renderContent(
         ))[],
 ): string | null | ChatContentPart[] {
     if (parts.length === 0) return null;
-    if (parts.every((part) => part["type"] === "text")) {
-        return parts.map((part) => (part["type"] === "text" ? part["text"] : "")).join("");
+    if (parts.every((part) => part.type === "text")) {
+        return parts.map((part) => (part.type === "text" ? part.text : "")).join("");
     }
     return parts.map((part) => {
-        if (part["type"] === "text") {
+        if (part.type === "text") {
             const textPart: Extract<
                 ChatContentPart,
                 {
@@ -621,7 +617,7 @@ function renderContent(
                 }
             > = {
                 type: "text",
-                text: part["text"],
+                text: part.text,
             };
             if (part.thoughtSignature !== undefined) {
                 textPart.thought_signature = part.thoughtSignature;
@@ -632,9 +628,9 @@ function renderContent(
             url: string;
             detail?: "auto" | "low" | "high";
         } = {
-            url: part["url"],
+            url: part.url,
         };
-        if (part["detail"] !== undefined) imageUrl["detail"] = part["detail"];
+        if (part.detail !== undefined) imageUrl.detail = part.detail;
         return {
             type: "image_url",
             image_url: imageUrl,
@@ -644,11 +640,11 @@ function renderContent(
 
 function renderTool(tool: IrFunctionTool): ChatFunctionTool {
     const definition: ChatFunctionTool["function"] = {
-        name: tool["name"],
-        parameters: tool["parameters"],
+        name: tool.name,
+        parameters: tool.parameters,
     };
-    if (tool["description"] !== undefined) definition["description"] = tool["description"];
-    if (tool.isStrict !== undefined) definition["strict"] = tool.isStrict;
+    if (tool.description !== undefined) definition.description = tool.description;
+    if (tool.isStrict !== undefined) definition.strict = tool.isStrict;
     return {
         type: "function",
         function: definition,
@@ -656,7 +652,7 @@ function renderTool(tool: IrFunctionTool): ChatFunctionTool {
 }
 
 function renderResponseFormat(format: IrResponseFormat): ChatResponseFormat {
-    if (format["type"] === "json_object")
+    if (format.type === "json_object")
         return {
             type: "json_object",
         };
@@ -665,13 +661,13 @@ function renderResponseFormat(format: IrResponseFormat): ChatResponseFormat {
     } = {
         type: "json_schema",
         json_schema: {
-            name: format["name"],
-            schema: format["schema"],
+            name: format.name,
+            schema: format.schema,
         },
     };
-    if (format["description"] !== undefined)
-        jsonSchema["json_schema"]["description"] = format["description"];
-    if (format.isStrict !== undefined) jsonSchema["json_schema"]["strict"] = format.isStrict;
+    if (format.description !== undefined)
+        jsonSchema.json_schema["description"] = format.description;
+    if (format.isStrict !== undefined) jsonSchema.json_schema["strict"] = format.isStrict;
     return jsonSchema;
 }
 
@@ -759,12 +755,8 @@ function appendChatResponseToolCalls(events: IrEvent[], value: unknown): void {
 }
 
 export function parseChatCompletionsStreamEvent(value: unknown): IrEvent[] {
-    if (value === "[DONE]")
-        return [
-            {
-                type: "done",
-            },
-        ];
+    // The "[DONE]" wire sentinel never reaches this parser: the SSE framing layer that decodes
+    // frames owns the terminal rule.
     const root = expectRecord(value, "Chat Completions stream chunk");
     const events: IrEvent[] = [];
     if (root["usage"] !== undefined)
@@ -891,50 +883,50 @@ export function renderChatCompletionsResponse(
     let usage: IrUsage | undefined;
     const toolCalls = new Map<number, ChatToolCall>();
     for (const event of events) {
-        if (event["type"] === "text_delta") content += event["delta"];
-        else if (event["type"] === "reasoning_delta") {
-            reasoning += event["delta"];
+        if (event.type === "text_delta") content += event.delta;
+        else if (event.type === "reasoning_delta") {
+            reasoning += event.delta;
             reasoningThoughtSignature ??= event.thoughtSignature;
-        } else if (event["type"] === "tool_call_start") {
+        } else if (event.type === "tool_call_start") {
             const toolCall: ChatToolCall = {
-                id: event["id"],
+                id: event.id,
                 type: "function",
                 function: {
-                    name: event["name"],
+                    name: event.name,
                     arguments: "",
                 },
             };
             if (event.thoughtSignature !== undefined) {
                 toolCall.extra_content = renderGoogleThoughtSignature(event.thoughtSignature);
             }
-            toolCalls.set(event["index"], toolCall);
-        } else if (event["type"] === "tool_call_delta") {
-            const tool = toolCalls.get(event["index"]);
-            if (tool !== undefined) tool["function"]["arguments"] += event["delta"];
-        } else if (event["type"] === "finish") finishReason = event["reason"];
-        else if (event["type"] === "usage") usage = event["usage"];
+            toolCalls.set(event.index, toolCall);
+        } else if (event.type === "tool_call_delta") {
+            const tool = toolCalls.get(event.index);
+            if (tool !== undefined) tool.function["arguments"] += event.delta;
+        } else if (event.type === "finish") finishReason = event.reason;
+        else if (event.type === "usage") usage = event.usage;
     }
-    if (toolCalls.size > 0 && !events.some((event) => event["type"] === "finish"))
+    if (toolCalls.size > 0 && !events.some((event) => event.type === "finish"))
         finishReason = "tool_calls";
     const message: ChatCompletionsResponseObject["choices"][number]["message"] = {
         role: "assistant",
         content: content.length > 0 ? content : null,
     };
-    if (reasoning.length > 0) message["reasoning_content"] = reasoning;
+    if (reasoning.length > 0) message.reasoning_content = reasoning;
     if (reasoningThoughtSignature !== undefined) {
         message.reasoning_thought_signature = reasoningThoughtSignature;
     }
     if (toolCalls.size > 0)
-        message["tool_calls"] = [
+        message.tool_calls = [
             ...toolCalls.entries(),
         ]
             .sort(([left], [right]) => left - right)
             .map((entry) => entry[1]);
     const result: ChatCompletionsResponseObject = {
-        id: metadata["id"],
+        id: metadata.id,
         object: "chat.completion",
         created: metadata.created,
-        model: metadata["model"],
+        model: metadata.model,
         choices: [
             {
                 index: 0,
@@ -971,11 +963,11 @@ export function renderChatCompletionsStream(
     const frames: string[] = [];
     let usage: IrUsage | undefined;
     for (const event of events) {
-        if (event["type"] === "usage") {
-            usage = event["usage"];
+        if (event.type === "usage") {
+            usage = event.usage;
             continue;
         }
-        if (event["type"] === "done") {
+        if (event.type === "done") {
             if (metadata.isUsageIncluded && usage !== undefined)
                 frames.push(encodeSse(undefined, chatChunk(metadata, [], renderChatUsage(usage))));
             frames.push(encodeSse(undefined, "[DONE]"));
@@ -983,20 +975,20 @@ export function renderChatCompletionsStream(
         }
         const delta: Record<string, JsonValue> = {};
         let finishReason: FinishReason | null = null;
-        if (event["type"] === "message_start") delta["role"] = "assistant";
-        else if (event["type"] === "text_delta") delta["content"] = event["delta"];
-        else if (event["type"] === "reasoning_delta") {
-            delta["reasoning_content"] = event["delta"];
+        if (event.type === "message_start") delta["role"] = "assistant";
+        else if (event.type === "text_delta") delta["content"] = event.delta;
+        else if (event.type === "reasoning_delta") {
+            delta["reasoning_content"] = event.delta;
             if (event.thoughtSignature !== undefined) {
                 delta["thought_signature"] = event.thoughtSignature;
             }
-        } else if (event["type"] === "tool_call_start") {
+        } else if (event.type === "tool_call_start") {
             const toolCall: JsonObject = {
-                index: event["index"],
-                id: event["id"],
+                index: event.index,
+                id: event.id,
                 type: "function",
                 function: {
-                    name: event["name"],
+                    name: event.name,
                     arguments: "",
                 },
             };
@@ -1006,16 +998,16 @@ export function renderChatCompletionsStream(
             delta["tool_calls"] = [
                 toolCall,
             ];
-        } else if (event["type"] === "tool_call_delta")
+        } else if (event.type === "tool_call_delta")
             delta["tool_calls"] = [
                 {
-                    index: event["index"],
+                    index: event.index,
                     function: {
-                        arguments: event["delta"],
+                        arguments: event.delta,
                     },
                 },
             ];
-        else if (event["type"] === "finish") finishReason = event["reason"];
+        else if (event.type === "finish") finishReason = event.reason;
         else continue;
         frames.push(
             encodeSse(
@@ -1039,10 +1031,10 @@ function chatChunk(
     usage?: JsonValue,
 ): JsonObject {
     const chunk: JsonObject = {
-        id: metadata["id"],
+        id: metadata.id,
         object: "chat.completion.chunk",
         created: metadata.created,
-        model: metadata["model"],
+        model: metadata.model,
         choices,
     };
     if (usage !== undefined) chunk["usage"] = usage;

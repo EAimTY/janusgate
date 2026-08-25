@@ -673,7 +673,9 @@ test("Responses and Chat Completions translate through the event IR", () => {
                 total_tokens: 3,
             },
         }),
-        ...parseChatCompletionsStreamEvent("[DONE]"),
+        {
+            type: "done",
+        } as const,
     ];
     const responseSse = createResponsesStreamRenderer({
         id: "resp_2",

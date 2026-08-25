@@ -446,33 +446,33 @@ export function renderResponsesRequest(
 ): ResponsesRequestObject {
     const systemText: string[] = [];
     const input: ResponsesRequestObject["input"] = [];
-    for (const message of request["messages"]) {
-        if (message["role"] === "system") {
+    for (const message of request.messages) {
+        if (message.role === "system") {
             systemText.push(
-                message["parts"]
-                    .filter((part) => part["type"] === "text")
-                    .map((part) => part["text"])
+                message.parts
+                    .filter((part) => part.type === "text")
+                    .map((part) => part.text)
                     .join(""),
             );
             continue;
         }
-        for (const part of message["parts"]) {
-            if (part["type"] === "tool_call") {
+        for (const part of message.parts) {
+            if (part.type === "tool_call") {
                 const functionCall: ResponsesFunctionCall = {
                     type: "function_call",
-                    call_id: part["id"],
-                    name: part["name"],
-                    arguments: part["arguments"],
+                    call_id: part.id,
+                    name: part.name,
+                    arguments: part.arguments,
                 };
                 if (part.thoughtSignature !== undefined) {
                     functionCall.thought_signature = part.thoughtSignature;
                 }
                 input.push(functionCall);
-            } else if (part["type"] === "tool_output") {
+            } else if (part.type === "tool_output") {
                 const functionOutput: ResponsesFunctionOutput = {
                     type: "function_call_output",
                     call_id: part.callId,
-                    output: part["output"],
+                    output: part.output,
                 };
                 if (part.thoughtSignature !== undefined) {
                     functionOutput.thought_signature = part.thoughtSignature;
@@ -480,16 +480,13 @@ export function renderResponsesRequest(
                 input.push(functionOutput);
             }
         }
-        const contentParts = message["parts"]
-            .filter((part) => part["type"] === "text" || part["type"] === "image")
-            .map((part) => renderResponsesContentPart(part, message["role"]));
-        if (
-            contentParts.length > 0 &&
-            (message["role"] === "user" || message["role"] === "assistant")
-        ) {
+        const contentParts = message.parts
+            .filter((part) => part.type === "text" || part.type === "image")
+            .map((part) => renderResponsesContentPart(part, message.role));
+        if (contentParts.length > 0 && (message.role === "user" || message.role === "assistant")) {
             input.push({
                 type: "message",
-                role: message["role"],
+                role: message.role,
                 content: contentParts,
             });
         }
@@ -500,7 +497,7 @@ export function renderResponsesRequest(
         stream: request.isStreaming,
     };
     if (systemText.length > 0) result["instructions"] = systemText.join("\n\n");
-    if (request["tools"].length > 0) result["tools"] = request["tools"].map(renderResponsesTool);
+    if (request.tools.length > 0) result["tools"] = request.tools.map(renderResponsesTool);
     if (request.toolChoice !== undefined) {
         result.tool_choice =
             request.toolChoice.functionName === undefined
@@ -511,7 +508,7 @@ export function renderResponsesRequest(
                   };
     }
     const sampling = request.sampling;
-    if (sampling["temperature"] !== undefined) result["temperature"] = sampling["temperature"];
+    if (sampling.temperature !== undefined) result["temperature"] = sampling.temperature;
     if (sampling.topP !== undefined) result["top_p"] = sampling.topP;
     if (sampling.maxOutputTokens !== undefined)
         result["max_output_tokens"] = sampling.maxOutputTokens;
@@ -530,7 +527,7 @@ function renderResponsesContentPart(
     part: MessagePart,
     role: "system" | "user" | "assistant" | "tool",
 ): ResponsesContentPart {
-    if (part["type"] === "text") {
+    if (part.type === "text") {
         const textPart: Extract<
             ResponsesContentPart,
             {
@@ -538,14 +535,14 @@ function renderResponsesContentPart(
             }
         > = {
             type: role === "assistant" ? "output_text" : "input_text",
-            text: part["text"],
+            text: part.text,
         };
         if (part.thoughtSignature !== undefined) {
             textPart.thought_signature = part.thoughtSignature;
         }
         return textPart;
     }
-    if (part["type"] === "image") {
+    if (part.type === "image") {
         const image: Extract<
             ResponsesContentPart,
             {
@@ -553,9 +550,9 @@ function renderResponsesContentPart(
             }
         > = {
             type: "input_image",
-            image_url: part["url"],
+            image_url: part.url,
         };
-        if (part["detail"] !== undefined) image["detail"] = part["detail"];
+        if (part.detail !== undefined) image["detail"] = part.detail;
         return image;
     }
     throw new Error("non-content IR part reached Responses content renderer");
@@ -564,16 +561,16 @@ function renderResponsesContentPart(
 function renderResponsesTool(tool: IrFunctionTool): ResponsesFunctionTool {
     const result: ResponsesFunctionTool = {
         type: "function",
-        name: tool["name"],
-        parameters: tool["parameters"],
+        name: tool.name,
+        parameters: tool.parameters,
     };
-    if (tool["description"] !== undefined) result["description"] = tool["description"];
+    if (tool.description !== undefined) result["description"] = tool.description;
     if (tool.isStrict !== undefined) result["strict"] = tool.isStrict;
     return result;
 }
 
 function renderResponsesTextFormat(format: IrResponseFormat): ResponsesTextFormat {
-    if (format["type"] === "json_object")
+    if (format.type === "json_object")
         return {
             type: "json_object",
         };
@@ -584,10 +581,10 @@ function renderResponsesTextFormat(format: IrResponseFormat): ResponsesTextForma
         }
     > = {
         type: "json_schema",
-        name: format["name"],
-        schema: format["schema"],
+        name: format.name,
+        schema: format.schema,
     };
-    if (format["description"] !== undefined) result["description"] = format["description"];
+    if (format.description !== undefined) result["description"] = format.description;
     if (format.isStrict !== undefined) result["strict"] = format.isStrict;
     return result;
 }
@@ -885,32 +882,32 @@ export function renderResponsesResponse(
         }
     >();
     for (const event of events) {
-        if (event["type"] === "text_delta") {
-            text += event["delta"];
+        if (event.type === "text_delta") {
+            text += event.delta;
             textThoughtSignature ??= event.thoughtSignature;
-        } else if (event["type"] === "reasoning_delta") {
-            reasoning += event["delta"];
+        } else if (event.type === "reasoning_delta") {
+            reasoning += event.delta;
             reasoningThoughtSignature ??= event.thoughtSignature;
-        } else if (event["type"] === "tool_call_start") {
+        } else if (event.type === "tool_call_start") {
             const tool: {
                 id: string;
                 name: string;
                 arguments: string;
                 thoughtSignature?: string;
             } = {
-                id: event["id"],
-                name: event["name"],
+                id: event.id,
+                name: event.name,
                 arguments: "",
             };
             if (event.thoughtSignature !== undefined) {
                 tool.thoughtSignature = event.thoughtSignature;
             }
-            tools.set(event["index"], tool);
-        } else if (event["type"] === "tool_call_delta") {
-            const tool = tools.get(event["index"]);
-            if (tool !== undefined) tool["arguments"] += event["delta"];
-        } else if (event["type"] === "finish") finishReason = event["reason"];
-        else if (event["type"] === "usage") usage = event["usage"];
+            tools.set(event.index, tool);
+        } else if (event.type === "tool_call_delta") {
+            const tool = tools.get(event.index);
+            if (tool !== undefined) tool.arguments += event.delta;
+        } else if (event.type === "finish") finishReason = event.reason;
+        else if (event.type === "usage") usage = event.usage;
     }
     const output: JsonObject[] = [];
     if (reasoning.length > 0) {
@@ -955,9 +952,9 @@ export function renderResponsesResponse(
             id: `${metadata.id}_tool_${output.length}`,
             type: "function_call",
             status: "completed",
-            call_id: tool["id"],
-            name: tool["name"],
-            arguments: tool["arguments"],
+            call_id: tool.id,
+            name: tool.name,
+            arguments: tool.arguments,
         };
         if (tool.thoughtSignature !== undefined) {
             toolItem["thought_signature"] = tool.thoughtSignature;
@@ -966,10 +963,10 @@ export function renderResponsesResponse(
     }
     const isIncomplete = finishReason === "length" || finishReason === "content_filter";
     const result: ResponsesResponseObject = {
-        id: metadata["id"],
+        id: metadata.id,
         object: "response",
         created_at: metadata.created,
-        model: metadata["model"],
+        model: metadata.model,
         status: isIncomplete ? "incomplete" : "completed",
         output,
     };
@@ -1023,10 +1020,10 @@ export function createResponsesStreamRenderer(
     let usage: IrUsage | undefined;
     let finishReason: FinishReason = "stop";
     const responseBase: JsonObject = {
-        id: metadata["id"],
+        id: metadata.id,
         object: "response",
         created_at: metadata.created,
-        model: metadata["model"],
+        model: metadata.model,
     };
     let isResponseCreated = false;
 
@@ -1046,8 +1043,8 @@ export function createResponsesStreamRenderer(
             );
         }
         for (const event of events) {
-            if (event["type"] === "message_start") continue;
-            if (event["type"] === "text_delta") {
+            if (event.type === "message_start") continue;
+            if (event.type === "text_delta") {
                 if (textOutputIndex === undefined) {
                     textOutputIndex = nextOutputIndex;
                     nextOutputIndex += 1;
@@ -1062,13 +1059,13 @@ export function createResponsesStreamRenderer(
                     frames.push(
                         encodeSse("response.output_item.added", {
                             type: "response.output_item.added",
-                            response_id: metadata["id"],
+                            response_id: metadata.id,
                             output_index: textOutputIndex,
                             item,
                         }),
                         encodeSse("response.content_part.added", {
                             type: "response.content_part.added",
-                            response_id: metadata["id"],
+                            response_id: metadata.id,
                             output_index: textOutputIndex,
                             content_index: 0,
                             part: {
@@ -1079,15 +1076,15 @@ export function createResponsesStreamRenderer(
                         }),
                     );
                 }
-                text += event["delta"];
+                text += event.delta;
                 textThoughtSignature ??= event.thoughtSignature;
                 frames.push(
                     encodeSse("response.output_text.delta", {
                         type: "response.output_text.delta",
-                        response_id: metadata["id"],
+                        response_id: metadata.id,
                         output_index: textOutputIndex,
                         content_index: 0,
-                        delta: event["delta"],
+                        delta: event.delta,
                         ...(event.thoughtSignature === undefined
                             ? {}
                             : {
@@ -1095,7 +1092,7 @@ export function createResponsesStreamRenderer(
                               }),
                     }),
                 );
-            } else if (event["type"] === "reasoning_delta") {
+            } else if (event.type === "reasoning_delta") {
                 if (reasoningOutputIndex === undefined) {
                     reasoningOutputIndex = nextOutputIndex;
                     nextOutputIndex += 1;
@@ -1109,13 +1106,13 @@ export function createResponsesStreamRenderer(
                     frames.push(
                         encodeSse("response.output_item.added", {
                             type: "response.output_item.added",
-                            response_id: metadata["id"],
+                            response_id: metadata.id,
                             output_index: reasoningOutputIndex,
                             item,
                         }),
                         encodeSse("response.reasoning_summary_part.added", {
                             type: "response.reasoning_summary_part.added",
-                            response_id: metadata["id"],
+                            response_id: metadata.id,
                             output_index: reasoningOutputIndex,
                             summary_index: 0,
                             part: {
@@ -1125,15 +1122,15 @@ export function createResponsesStreamRenderer(
                         }),
                     );
                 }
-                reasoning += event["delta"];
+                reasoning += event.delta;
                 reasoningThoughtSignature ??= event.thoughtSignature;
                 frames.push(
                     encodeSse("response.reasoning_summary_text.delta", {
                         type: "response.reasoning_summary_text.delta",
-                        response_id: metadata["id"],
+                        response_id: metadata.id,
                         output_index: reasoningOutputIndex,
                         summary_index: 0,
-                        delta: event["delta"],
+                        delta: event.delta,
                         ...(event.thoughtSignature === undefined
                             ? {}
                             : {
@@ -1141,22 +1138,22 @@ export function createResponsesStreamRenderer(
                               }),
                     }),
                 );
-            } else if (event["type"] === "tool_call_start") {
+            } else if (event.type === "tool_call_start") {
                 const index = nextOutputIndex;
                 nextOutputIndex += 1;
                 const item: JsonObject = {
                     id: `${metadata.id}_tool_${index}`,
                     type: "function_call",
                     status: "in_progress",
-                    call_id: event["id"],
-                    name: event["name"],
+                    call_id: event.id,
+                    name: event.name,
                     arguments: "",
                 };
                 if (event.thoughtSignature !== undefined) {
                     item["thought_signature"] = event.thoughtSignature;
                 }
                 outputItems.set(index, item);
-                tools.set(event["index"], {
+                tools.set(event.index, {
                     outputIndex: index,
                     item,
                     arguments: "",
@@ -1165,26 +1162,26 @@ export function createResponsesStreamRenderer(
                 frames.push(
                     encodeSse("response.output_item.added", {
                         type: "response.output_item.added",
-                        response_id: metadata["id"],
+                        response_id: metadata.id,
                         output_index: index,
                         item,
                     }),
                 );
-            } else if (event["type"] === "tool_call_delta") {
-                const tool = tools.get(event["index"]);
+            } else if (event.type === "tool_call_delta") {
+                const tool = tools.get(event.index);
                 if (tool !== undefined) {
-                    tool.arguments += event["delta"];
+                    tool.arguments += event.delta;
                     frames.push(
                         encodeSse("response.function_call_arguments.delta", {
                             type: "response.function_call_arguments.delta",
-                            response_id: metadata["id"],
+                            response_id: metadata.id,
                             output_index: tool.outputIndex,
-                            delta: event["delta"],
+                            delta: event.delta,
                         }),
                     );
                 }
-            } else if (event["type"] === "tool_call_done") {
-                const tool = tools.get(event["index"]);
+            } else if (event.type === "tool_call_done") {
+                const tool = tools.get(event.index);
                 if (tool !== undefined && !tool.isDone) {
                     tool.isDone = true;
                     tool.item["status"] = "completed";
@@ -1192,21 +1189,21 @@ export function createResponsesStreamRenderer(
                     frames.push(
                         encodeSse("response.function_call_arguments.done", {
                             type: "response.function_call_arguments.done",
-                            response_id: metadata["id"],
+                            response_id: metadata.id,
                             output_index: tool.outputIndex,
                             arguments: tool.arguments,
                         }),
                         encodeSse("response.output_item.done", {
                             type: "response.output_item.done",
-                            response_id: metadata["id"],
+                            response_id: metadata.id,
                             output_index: tool.outputIndex,
                             item: tool.item,
                         }),
                     );
                 }
-            } else if (event["type"] === "finish") finishReason = event["reason"];
-            else if (event["type"] === "usage") usage = event["usage"];
-            else if (event["type"] === "done") {
+            } else if (event.type === "finish") finishReason = event.reason;
+            else if (event.type === "usage") usage = event.usage;
+            else if (event.type === "done") {
                 if (reasoningOutputIndex !== undefined) {
                     const item = outputItems.get(reasoningOutputIndex);
                     if (item !== undefined) {
@@ -1225,21 +1222,21 @@ export function createResponsesStreamRenderer(
                         frames.push(
                             encodeSse("response.reasoning_summary_text.done", {
                                 type: "response.reasoning_summary_text.done",
-                                response_id: metadata["id"],
+                                response_id: metadata.id,
                                 output_index: reasoningOutputIndex,
                                 summary_index: 0,
                                 text: reasoning,
                             }),
                             encodeSse("response.reasoning_summary_part.done", {
                                 type: "response.reasoning_summary_part.done",
-                                response_id: metadata["id"],
+                                response_id: metadata.id,
                                 output_index: reasoningOutputIndex,
                                 summary_index: 0,
                                 part: summaryPart,
                             }),
                             encodeSse("response.output_item.done", {
                                 type: "response.output_item.done",
-                                response_id: metadata["id"],
+                                response_id: metadata.id,
                                 output_index: reasoningOutputIndex,
                                 item,
                             }),
@@ -1264,21 +1261,21 @@ export function createResponsesStreamRenderer(
                         frames.push(
                             encodeSse("response.output_text.done", {
                                 type: "response.output_text.done",
-                                response_id: metadata["id"],
+                                response_id: metadata.id,
                                 output_index: textOutputIndex,
                                 content_index: 0,
                                 text,
                             }),
                             encodeSse("response.content_part.done", {
                                 type: "response.content_part.done",
-                                response_id: metadata["id"],
+                                response_id: metadata.id,
                                 output_index: textOutputIndex,
                                 content_index: 0,
                                 part: textPart,
                             }),
                             encodeSse("response.output_item.done", {
                                 type: "response.output_item.done",
-                                response_id: metadata["id"],
+                                response_id: metadata.id,
                                 output_index: textOutputIndex,
                                 item,
                             }),
@@ -1293,13 +1290,13 @@ export function createResponsesStreamRenderer(
                     frames.push(
                         encodeSse("response.function_call_arguments.done", {
                             type: "response.function_call_arguments.done",
-                            response_id: metadata["id"],
+                            response_id: metadata.id,
                             output_index: tool.outputIndex,
                             arguments: tool.arguments,
                         }),
                         encodeSse("response.output_item.done", {
                             type: "response.output_item.done",
-                            response_id: metadata["id"],
+                            response_id: metadata.id,
                             output_index: tool.outputIndex,
                             item: tool.item,
                         }),
