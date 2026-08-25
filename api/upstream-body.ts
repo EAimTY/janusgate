@@ -1,4 +1,5 @@
 import { upstreamResponseTooLargeError } from "/common/errors";
+import { concatenateBytes } from "/common/http";
 import { MAX_RESPONSE_BYTES } from "./config";
 import { readBeforeIdleTimeout } from "./upstream-response";
 
@@ -25,11 +26,5 @@ export async function readIdleTimedUpstreamBody(
     } finally {
         reader.releaseLock();
     }
-    const bytes = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-        bytes.set(chunk, offset);
-        offset += chunk.byteLength;
-    }
-    return bytes;
+    return concatenateBytes(chunks, totalBytes);
 }

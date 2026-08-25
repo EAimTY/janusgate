@@ -48,12 +48,6 @@ async function readRequestObject(request: Request): Promise<Record<string, unkno
     return value;
 }
 
-function arrayBufferCopy(bytes: Uint8Array): ArrayBuffer {
-    const copy = new Uint8Array(bytes.byteLength);
-    copy.set(bytes);
-    return copy.buffer;
-}
-
 function panelProvider(provider: StoredProvider): ProviderSummary {
     const shared = {
         enabled: provider.isEnabled,
@@ -125,7 +119,7 @@ async function savePanelProvider(
         });
         const created = await createProvider(environment.DATABASE, {
             baseUrl: input.baseUrl,
-            encryptedCredentials: arrayBufferCopy(encryptedCredentials),
+            encryptedCredentials,
             expiresAt: null,
             isEnabled: input.enabled ?? true,
             modelPrefix: input.modelPrefix ?? input.name,
@@ -149,11 +143,9 @@ async function savePanelProvider(
         const encryptedCredentials =
             input.apiKey === undefined
                 ? undefined
-                : arrayBufferCopy(
-                      await cipher.encrypt({
-                          apiKey: input.apiKey,
-                      }),
-                  );
+                : await cipher.encrypt({
+                      apiKey: input.apiKey,
+                  });
         await updateProvider(environment.DATABASE, {
             baseUrl: input.baseUrl ?? existing.baseUrl,
             ...(encryptedCredentials === undefined

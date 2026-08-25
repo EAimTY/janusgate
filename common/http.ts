@@ -1,7 +1,8 @@
 import { type GatewayError, invalidJsonError, payloadTooLargeError } from "/common/errors";
 import { isJsonObject } from "/common/validation";
 
-function concatenate(chunks: readonly Uint8Array[], byteLength: number): Uint8Array {
+/** Joins counted chunks into one exact-size buffer; `byteLength` must equal their sum. */
+export function concatenateBytes(chunks: readonly Uint8Array[], byteLength: number): Uint8Array {
     const bytes = new Uint8Array(byteLength);
     let offset = 0;
     for (const chunk of chunks) {
@@ -35,7 +36,7 @@ async function readBoundedStream(
         while (true) {
             const result = await reader.read();
             if (result.done) {
-                return concatenate(chunks, byteLength);
+                return concatenateBytes(chunks, byteLength);
             }
 
             byteLength += result.value.byteLength;

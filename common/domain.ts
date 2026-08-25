@@ -66,7 +66,7 @@ interface ProviderSummaryBase {
 }
 
 export interface OAuthProviderSummary extends ProviderSummaryBase {
-    readonly type: "antigravity_oauth" | "openai_oauth";
+    readonly type: OAuthProviderType;
     readonly protocol: null;
     readonly baseUrl: null;
     readonly expiresAt: number;

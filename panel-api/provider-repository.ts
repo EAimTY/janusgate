@@ -14,7 +14,7 @@ export interface CreateProviderRecord {
     type: ProviderType;
     protocol: UpstreamProtocol | null;
     baseUrl: string | null;
-    encryptedCredentials: ArrayBuffer;
+    encryptedCredentials: Uint8Array;
     expiresAt: number | null;
     isEnabled: boolean;
 }
@@ -24,7 +24,7 @@ export interface UpdateProviderRecord {
     modelPrefix: string;
     protocol: UpstreamProtocol | null;
     baseUrl: string | null;
-    encryptedCredentials?: ArrayBuffer;
+    encryptedCredentials?: Uint8Array;
     expiresAt: number | null;
     isEnabled: boolean;
 }
