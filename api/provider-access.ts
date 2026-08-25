@@ -216,11 +216,11 @@ export async function ensureFreshProviderAccess(
 
     let current = await loadProvider(database, provider.id);
     try {
+        const currentCredentials = await decryptOAuthCredentials(current, cipher);
         if (isFresh(current, now)) {
             // A forced refresh still defers to credentials another worker rotated while we
             // raced for the lease: retrying against them is the correct 401 recovery, and a
             // second IdP call would needlessly consume rotation grace.
-            const currentCredentials = await decryptOAuthCredentials(current, cipher);
             const alreadyRotated =
                 options.rejectedAccessToken !== undefined &&
                 currentCredentials.accessToken !== options.rejectedAccessToken;
@@ -232,25 +232,24 @@ export async function ensureFreshProviderAccess(
                 };
             }
         }
-        const credentials = await decryptOAuthCredentials(current, cipher);
         const refreshed = await requestRefreshedToken(
             current,
-            credentials,
+            currentCredentials,
             now,
             options.fetchUpstream ?? fetch,
             options.signal,
         );
         let nextCredentials: OAuthCredentials;
-        if (current.type === "openai_oauth" && "accountId" in credentials) {
+        if (current.type === "openai_oauth" && "accountId" in currentCredentials) {
             nextCredentials = {
                 accessToken: refreshed.accessToken,
-                accountId: credentials.accountId,
+                accountId: currentCredentials.accountId,
                 refreshToken: refreshed.refreshToken,
             };
-        } else if (current.type === "antigravity_oauth" && "projectId" in credentials) {
+        } else if (current.type === "antigravity_oauth" && "projectId" in currentCredentials) {
             nextCredentials = {
                 accessToken: refreshed.accessToken,
-                projectId: credentials.projectId,
+                projectId: currentCredentials.projectId,
                 refreshToken: refreshed.refreshToken,
             };
         } else {
