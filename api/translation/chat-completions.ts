@@ -187,7 +187,6 @@ export interface ChatStreamMetadata extends ChatResponseMetadata {
 
 export function parseChatCompletionsRequest(value: unknown): IrRequest {
     const root = expectRecord(value, "Chat Completions request");
-    const model = expectNonEmptyString(root["model"], "model");
     const numberOfChoices = optionalNonNegativeInteger(root["n"], "n");
     if (numberOfChoices !== undefined && numberOfChoices > 1) {
         throw new TranslationError("unsupported_parameter", "n > 1 is not supported");
@@ -227,7 +226,6 @@ export function parseChatCompletionsRequest(value: unknown): IrRequest {
     }
 
     const result: IrRequest = {
-        model,
         messages,
         tools,
         sampling,
@@ -742,7 +740,7 @@ function appendChatResponseToolCalls(events: IrEvent[], value: unknown): void {
             name: expectNonEmptyString(definition["name"], "tool function name"),
         };
         const thoughtSignature = parseGoogleThoughtSignature(tool, `message.tool_calls[${index}]`);
-        if (thoughtSignature !== undefined && start.type === "tool_call_start") {
+        if (thoughtSignature !== undefined) {
             start.thoughtSignature = thoughtSignature;
         }
         events.push(start);
@@ -824,7 +822,7 @@ export function parseChatCompletionsStreamEvent(value: unknown): IrEvent[] {
                         tool,
                         "delta.tool_calls[]",
                     );
-                    if (thoughtSignature !== undefined && start.type === "tool_call_start") {
+                    if (thoughtSignature !== undefined) {
                         start.thoughtSignature = thoughtSignature;
                     }
                     events.push(start);

@@ -7,13 +7,13 @@ import {
 } from "/common/database";
 import type { AntigravityOAuthCredentials, OpenAiOAuthCredentials } from "/common/domain";
 import { GatewayError } from "/common/errors";
+import { oauthUpstreamSignal } from "/common/upstream-signal";
 import {
     isJsonObject,
     requireJsonObject,
     requireStringField,
     unixSeconds,
 } from "/common/validation";
-import { MILLISECONDS_PER_SECOND, OAUTH_UPSTREAM_TIMEOUT_SECONDS } from "/config";
 import {
     ANTIGRAVITY_CLIENT_ID,
     ANTIGRAVITY_CLIENT_SECRET,
@@ -27,18 +27,6 @@ export type OAuthCredentials = AntigravityOAuthCredentials | OpenAiOAuthCredenti
 export interface ProviderAccess {
     provider: StoredProvider;
     credentials: OAuthCredentials;
-}
-
-function identityProviderSignal(signal?: AbortSignal): AbortSignal {
-    const timeoutSignal = AbortSignal.timeout(
-        OAUTH_UPSTREAM_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND,
-    );
-    return signal === undefined
-        ? timeoutSignal
-        : AbortSignal.any([
-              signal,
-              timeoutSignal,
-          ]);
 }
 
 interface RefreshedToken {
@@ -134,7 +122,7 @@ async function requestRefreshedToken(
                 "Content-Type": "application/x-www-form-urlencoded",
             },
             method: "POST",
-            signal: identityProviderSignal(signal),
+            signal: oauthUpstreamSignal(signal),
         });
     } catch {
         throw new Error("Identity provider token refresh request failed");
@@ -150,21 +138,12 @@ async function requestRefreshedToken(
     return parseRefreshResponse(await response.json(), credentials.refreshToken, now);
 }
 
-async function clearLease(
-    database: D1Database,
-    providerId: number,
-    leaseTimestamp: number,
-): Promise<void> {
-    await database
-        .prepare(
-            `UPDATE providers SET refresh_started_at = NULL
-            WHERE id = ? AND refresh_started_at = ?`,
-        )
-        .bind(providerId, leaseTimestamp)
-        .run();
-}
-
-async function acquireLease(
+/**
+ * The §7 credential-mutation lease: at most one in-flight credential write per provider.
+ * Both token refresh and OAuth reauthentication acquire it through the same compare-and-set,
+ * so an in-flight refresh and a concurrent reauth are strictly ordered.
+ */
+export async function acquireCredentialLease(
     database: D1Database,
     providerId: number,
     now: number,
@@ -178,6 +157,20 @@ async function acquireLease(
         .bind(now, providerId, now - REFRESH_LEASE_SECONDS)
         .run();
     return result.meta.changes === 1;
+}
+
+export async function clearCredentialLease(
+    database: D1Database,
+    providerId: number,
+    leaseTimestamp: number,
+): Promise<void> {
+    await database
+        .prepare(
+            `UPDATE providers SET refresh_started_at = NULL
+            WHERE id = ? AND refresh_started_at = ?`,
+        )
+        .bind(providerId, leaseTimestamp)
+        .run();
 }
 
 function isFresh(provider: StoredProvider, now: number): boolean {
@@ -205,7 +198,7 @@ export async function ensureFreshProviderAccess(
         };
     }
 
-    const hasLease = await acquireLease(database, provider.id, now);
+    const hasLease = await acquireCredentialLease(database, provider.id, now);
     if (!hasLease) {
         if (options.isForced) {
             throw new GatewayError(
@@ -232,7 +225,7 @@ export async function ensureFreshProviderAccess(
                 options.rejectedAccessToken !== undefined &&
                 currentCredentials.accessToken !== options.rejectedAccessToken;
             if (!options.isForced || alreadyRotated) {
-                await clearLease(database, provider.id, now);
+                await clearCredentialLease(database, provider.id, now);
                 return {
                     credentials: currentCredentials,
                     provider: current,
@@ -285,7 +278,7 @@ export async function ensureFreshProviderAccess(
             provider: current,
         };
     } catch (error: unknown) {
-        await clearLease(database, provider.id, now);
+        await clearCredentialLease(database, provider.id, now);
         throw new GatewayError(
             502,
             "upstream_error",

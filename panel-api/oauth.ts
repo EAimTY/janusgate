@@ -20,12 +20,12 @@ import {
     OPENAI_REDIRECT_URI,
     OPENAI_TOKEN_URL,
 } from "/api/adapters/openai";
-import { REFRESH_LEASE_SECONDS } from "/api/config";
+import { acquireCredentialLease, clearCredentialLease } from "/api/provider-access";
 import type { CredentialsCipher } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
 import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from "/common/domain";
+import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject, unixSeconds } from "/common/validation";
-import { MILLISECONDS_PER_SECOND, OAUTH_UPSTREAM_TIMEOUT_SECONDS } from "/config";
 import {
     ANTIGRAVITY_ONBOARDING_MAX_POLLS,
     ANTIGRAVITY_ONBOARDING_POLL_INTERVAL_MS,
@@ -80,18 +80,6 @@ function base64UrlEncode(bytes: Uint8Array): string {
 
 function randomBase64Url(): string {
     return base64UrlEncode(crypto.getRandomValues(new Uint8Array(OAUTH_RANDOM_VALUE_BYTES)));
-}
-
-function oauthUpstreamSignal(signal?: AbortSignal): AbortSignal {
-    const timeoutSignal = AbortSignal.timeout(
-        OAUTH_UPSTREAM_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND,
-    );
-    return signal === undefined
-        ? timeoutSignal
-        : AbortSignal.any([
-              signal,
-              timeoutSignal,
-          ]);
 }
 
 function sleepWithSignal(milliseconds: number, signal?: AbortSignal): Promise<void> {
@@ -600,36 +588,6 @@ async function completionCredentials(
     };
 }
 
-async function acquireReauthenticationLease(
-    database: D1Database,
-    providerId: number,
-    now: number,
-): Promise<boolean> {
-    const result = await database
-        .prepare(
-            `UPDATE providers SET refresh_started_at = ?
-            WHERE id = ?
-                AND (refresh_started_at IS NULL OR refresh_started_at < ?)`,
-        )
-        .bind(now, providerId, now - REFRESH_LEASE_SECONDS)
-        .run();
-    return result.meta.changes === 1;
-}
-
-async function clearReauthenticationLease(
-    database: D1Database,
-    providerId: number,
-    leaseTimestamp: number,
-): Promise<void> {
-    await database
-        .prepare(
-            `UPDATE providers SET refresh_started_at = NULL
-            WHERE id = ? AND refresh_started_at = ?`,
-        )
-        .bind(providerId, leaseTimestamp)
-        .run();
-}
-
 async function createOAuthProviderAtomically(
     database: D1Database,
     state: OAuthStateRow,
@@ -790,7 +748,7 @@ export async function completeProviderOAuth(
             return;
         }
 
-        hasLease = await acquireReauthenticationLease(database, leasedProvider.id, now);
+        hasLease = await acquireCredentialLease(database, leasedProvider.id, now);
         if (!hasLease) {
             throw new PanelApiError(409, "Provider credential mutation is already in progress");
         }
@@ -804,7 +762,7 @@ export async function completeProviderOAuth(
         );
     } catch (error: unknown) {
         if (hasLease && leasedProvider !== null) {
-            await clearReauthenticationLease(database, leasedProvider.id, now);
+            await clearCredentialLease(database, leasedProvider.id, now);
         }
         await deleteState(database, state.id);
         if (isDatabaseConstraintError(error, "providers.name")) {

@@ -452,9 +452,7 @@ function parseGenerateContentPart(
                       type: "text_delta",
                       delta: part["text"],
                   };
-        if (thoughtSignature !== undefined && event["type"] === "reasoning_delta") {
-            event["thoughtSignature"] = thoughtSignature;
-        } else if (thoughtSignature !== undefined && event["type"] === "text_delta") {
+        if (thoughtSignature !== undefined) {
             event["thoughtSignature"] = thoughtSignature;
         }
         return {
@@ -475,7 +473,7 @@ function parseGenerateContentPart(
             id: generateToolCallId(functionCall),
             name: expectNonEmptyString(functionCall["name"], "functionCall.name"),
         };
-        if (thoughtSignature !== undefined && start["type"] === "tool_call_start") {
+        if (thoughtSignature !== undefined) {
             start["thoughtSignature"] = thoughtSignature;
         }
         return {
@@ -551,7 +549,7 @@ export function parseGenerateContentStreamEvent(
                     part["thoughtSignature"],
                     "part.thoughtSignature",
                 );
-                if (thoughtSignature !== undefined && start["type"] === "tool_call_start") {
+                if (thoughtSignature !== undefined) {
                     start["thoughtSignature"] = thoughtSignature;
                 }
                 events.push(start);

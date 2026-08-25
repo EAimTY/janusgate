@@ -35,28 +35,9 @@ app.notFound(async (context) => {
             404,
         );
     }
+    // Unknown /panel-api/* routes only reach this handler after the panel middleware already
+    // enforced bearer auth and POST origin, so no re-verification is needed here.
     if (requestUrl.pathname.startsWith(`${PANEL_API_BASE_PATH}/`)) {
-        if (
-            !(await verifyBearerAuthorization(
-                context.req.header("Authorization") ?? null,
-                context.env.PANEL_TOKEN_HASH,
-            ))
-        ) {
-            return context.json(
-                {
-                    error: "Unauthorized",
-                },
-                401,
-            );
-        }
-        if (context.req.method === "POST" && context.req.header("Origin") !== requestUrl.origin) {
-            return context.json(
-                {
-                    error: "Forbidden",
-                },
-                403,
-            );
-        }
         return context.json(
             {
                 error: "Not found",

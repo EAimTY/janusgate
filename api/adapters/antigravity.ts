@@ -45,9 +45,6 @@ export interface CodeAssistEnvelope {
     requestId: string;
 }
 
-/** Kept as the named envelope field type; the shape itself lives in ./gemini. */
-export type CodeAssistGenerateRequest = GenerateContentRequest;
-
 export interface CodeAssistRequestOptions {
     projectId: string;
     model: string;

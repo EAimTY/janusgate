@@ -5,6 +5,7 @@ import {
     parseBaseUrl,
     parseModelPrefix,
     parseProviderName,
+    parseStoredThinkingLevels,
     parseThinkingLevels,
 } from "/common/validation";
 import {
@@ -70,6 +71,23 @@ test("thinking levels are canonical, unique, and returned in scale order", () =>
             "low",
         ]),
     ).toThrow(ValidationError);
+});
+
+test("stored thinking-level JSON accepts only canonical arrays or null", () => {
+    expect(parseStoredThinkingLevels(null)).toBeNull();
+    expect(parseStoredThinkingLevels('["high","low"]')).toEqual([
+        "high",
+        "low",
+    ]);
+    expect(parseStoredThinkingLevels("[]")).toEqual([]);
+    for (const invalid of [
+        '["turbo"]',
+        '"high"',
+        "{",
+        "[1]",
+    ]) {
+        expect(() => parseStoredThinkingLevels(invalid)).toThrow(/Invalid stored thinking levels/);
+    }
 });
 
 test("reasoning effort is no longer clamped: overrides are plain whitelists", () => {

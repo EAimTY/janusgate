@@ -9,7 +9,6 @@ import {
     ANTIGRAVITY_API_CLIENT,
     ANTIGRAVITY_HEADER_CLIENT_METADATA,
     ANTIGRAVITY_USER_AGENT,
-    antigravityRuntimeModel,
     buildCodeAssistRequest,
     codeAssistRequestUrl,
 } from "./adapters/antigravity";
@@ -20,8 +19,11 @@ import {
     OPENAI_CODEX_USER_AGENT,
 } from "./adapters/openai";
 import type { ResolvedModelRoute } from "./model-routing";
-import type { ValidatedGatewayRequest } from "./request-validation";
-import { substituteNativeModelAndThinking } from "./request-validation";
+import {
+    effectiveThinkingLevel,
+    substituteNativeModelAndThinking,
+    type ValidatedGatewayRequest,
+} from "./request-validation";
 import {
     parseChatCompletionsRequest,
     renderChatCompletionsRequest,
@@ -58,20 +60,14 @@ function compatibleUrl(route: ResolvedModelRoute, protocol: UpstreamProtocol): s
     const baseUrl = route.provider.baseUrl;
     if (baseUrl === null) throw new Error("Compatible provider base URL is missing");
     if (protocol === "openai_response") return `${baseUrl}/responses`;
-    if (protocol === "openai_chat_completion") return `${baseUrl}/chat/completions`;
-    return generateContentUrl(baseUrl, route.upstreamName, false);
-}
-
-function requireCompatibleBaseUrl(route: ResolvedModelRoute): string {
-    if (route.provider.baseUrl === null) throw new Error("Compatible provider base URL is missing");
-    return route.provider.baseUrl;
+    return `${baseUrl}/chat/completions`;
 }
 
 function renderTranslatedBody(
     request: IrRequest,
     route: ResolvedModelRoute,
     protocol: UpstreamProtocol,
-    effectiveThinkingLevel: ValidatedGatewayRequest["effectiveThinkingLevel"],
+    effectiveThinkingLevel: string | undefined,
 ): unknown {
     if (protocol === "openai_response") {
         return renderResponsesRequest(request, route.upstreamName, effectiveThinkingLevel);
@@ -112,16 +108,23 @@ export async function prepareUpstreamRequest(
 ): Promise<PreparedUpstreamRequest> {
     const protocol = upstreamProtocol(route);
     const isNativeProtocol = protocol === clientProtocol;
+    const effectiveEffort = effectiveThinkingLevel(
+        request.requestedThinkingLevel,
+        route.thinkingLevels,
+    );
     const headers = new Headers({
         "Content-Type": "application/json",
     });
     let url: string;
 
     if (route.provider.type === "openai_compatible") {
+        if (route.provider.baseUrl === null) {
+            throw new Error("Compatible provider base URL is missing");
+        }
         url =
             protocol === "gemini_generate_content"
                 ? generateContentUrl(
-                      requireCompatibleBaseUrl(route),
+                      route.provider.baseUrl,
                       route.upstreamName,
                       request.isStreaming,
                   )
@@ -151,11 +154,9 @@ export async function prepareUpstreamRequest(
         headers.set("X-Goog-Api-Client", ANTIGRAVITY_API_CLIENT);
         headers.set("Client-Metadata", ANTIGRAVITY_HEADER_CLIENT_METADATA);
         headers.set("Accept", request.isStreaming ? "text/event-stream" : "application/json");
-        if (
-            antigravityRuntimeModel(route.upstreamName, request.effectiveThinkingLevel).startsWith(
-                "claude-",
-            )
-        ) {
+        // Runtime routing never moves a model into or out of the Claude family, so the beta
+        // header decision can read the configured upstream name directly.
+        if (route.upstreamName.startsWith("claude-")) {
             headers.set("anthropic-beta", "interleaved-thinking-2025-05-14");
         }
         url = codeAssistRequestUrl(request.isStreaming);
@@ -163,44 +164,37 @@ export async function prepareUpstreamRequest(
 
     let body: unknown;
     if (isNativeProtocol) {
-        body = substituteNativeModelAndThinking(request, clientProtocol, route.upstreamName);
-    } else if (protocol === "gemini_generate_content") {
-        if (route.provider.type !== "antigravity_oauth") {
-            body = renderTranslatedBody(
-                parseTranslatedClientRequest(clientProtocol, request.body),
-                route,
-                protocol,
-                request.effectiveThinkingLevel,
-            );
-        } else {
-            if (oauthCredentials === undefined || !("projectId" in oauthCredentials)) {
-                throw new Error("Antigravity credentials are missing a project ID");
-            }
-            const sessionId = clientRequest.headers.get("Session-Id");
-            body = buildCodeAssistRequest(
-                parseTranslatedClientRequest(clientProtocol, request.body),
-                {
-                    model: route.upstreamName,
-                    projectId: oauthCredentials.projectId,
-                    ...(sessionId === null || sessionId.length === 0
-                        ? {}
-                        : {
-                              sessionId,
-                          }),
-                    ...(request.effectiveThinkingLevel === undefined
-                        ? {}
-                        : {
-                              reasoningEffort: request.effectiveThinkingLevel,
-                          }),
-                },
-            );
+        body = substituteNativeModelAndThinking(
+            request,
+            clientProtocol,
+            route.upstreamName,
+            effectiveEffort,
+        );
+    } else if (route.provider.type === "antigravity_oauth") {
+        if (oauthCredentials === undefined || !("projectId" in oauthCredentials)) {
+            throw new Error("Antigravity credentials are missing a project ID");
         }
+        const sessionId = clientRequest.headers.get("Session-Id");
+        body = buildCodeAssistRequest(parseTranslatedClientRequest(clientProtocol, request.body), {
+            model: route.upstreamName,
+            projectId: oauthCredentials.projectId,
+            ...(sessionId === null || sessionId.length === 0
+                ? {}
+                : {
+                      sessionId,
+                  }),
+            ...(effectiveEffort === undefined
+                ? {}
+                : {
+                      reasoningEffort: effectiveEffort,
+                  }),
+        });
     } else {
         body = renderTranslatedBody(
             parseTranslatedClientRequest(clientProtocol, request.body),
             route,
             protocol,
-            request.effectiveThinkingLevel,
+            effectiveEffort,
         );
     }
     return {

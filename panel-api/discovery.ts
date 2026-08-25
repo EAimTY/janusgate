@@ -10,21 +10,9 @@ import type { CredentialsCipher } from "/common/credentials";
 import { assertCredentialsMatchProvider } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
 import type { DiscoveryResult } from "/common/domain";
+import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject } from "/common/validation";
-import { MILLISECONDS_PER_SECOND, OAUTH_UPSTREAM_TIMEOUT_SECONDS } from "/config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
-
-function discoverySignal(signal?: AbortSignal): AbortSignal {
-    const timeoutSignal = AbortSignal.timeout(
-        OAUTH_UPSTREAM_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND,
-    );
-    return signal === undefined
-        ? timeoutSignal
-        : AbortSignal.any([
-              signal,
-              timeoutSignal,
-          ]);
-}
 
 interface ExistingModelRow {
     id: number;
@@ -110,7 +98,7 @@ async function fetchAntigravityModelNames(
                     "X-Goog-Api-Client": ANTIGRAVITY_API_CLIENT,
                 },
                 method: "POST",
-                signal: discoverySignal(signal),
+                signal: oauthUpstreamSignal(signal),
             });
         } catch {
             throw upstreamDiscoveryError("The Antigravity model discovery request failed");
@@ -194,7 +182,7 @@ async function fetchCompatibleModelNames(
         response = await fetchUpstream(`${provider.baseUrl}/models`, {
             headers,
             method: "GET",
-            signal: discoverySignal(signal),
+            signal: oauthUpstreamSignal(signal),
         });
     } catch {
         throw upstreamDiscoveryError("The upstream model discovery request failed");

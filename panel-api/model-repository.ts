@@ -1,6 +1,7 @@
 import { MODEL_COLUMNS, type ModelRow, mapModelRow, type StoredModel } from "/common/database";
 import type { ModelSummary } from "/common/domain";
-import { CANONICAL_THINKING_LEVELS, type ThinkingLevel } from "/config";
+import { parseStoredThinkingLevels } from "/common/validation";
+import type { ThinkingLevel } from "/config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 
 export type PanelModel = ModelSummary;
@@ -15,21 +16,8 @@ export interface SaveModelRecord {
     name: string;
     providerId: number;
     upstreamName: string;
-    thinkingLevels: readonly string[] | null;
+    thinkingLevels: readonly ThinkingLevel[] | null;
     isEnabled: boolean;
-}
-
-function isThinkingLevel(value: unknown): value is ThinkingLevel {
-    return CANONICAL_THINKING_LEVELS.some((level) => value === level);
-}
-
-function parseThinkingLevels(value: string | null): ThinkingLevel[] | null {
-    if (value === null) return null;
-    const parsed: unknown = JSON.parse(value);
-    if (!Array.isArray(parsed) || !parsed.every(isThinkingLevel)) {
-        throw new Error("Invalid stored thinking levels");
-    }
-    return parsed;
 }
 
 export async function listPanelModels(database: D1Database): Promise<PanelModel[]> {
@@ -58,7 +46,7 @@ export async function listPanelModels(database: D1Database): Promise<PanelModel[
             name: model.name,
             providerName: row.provider_name,
             providerType: row.provider_type,
-            thinkingLevels: parseThinkingLevels(model.thinkingLevelsJson),
+            thinkingLevels: parseStoredThinkingLevels(model.thinkingLevelsJson),
             upstreamName: model.upstreamName,
         };
     });

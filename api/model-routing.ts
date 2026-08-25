@@ -1,11 +1,13 @@
 import { mapProviderRow, type ProviderRow, type StoredProvider } from "/common/database";
+import { parseStoredThinkingLevels } from "/common/validation";
+import type { ThinkingLevel } from "/config";
 import { MODEL_OWNER_BY_PROVIDER_TYPE } from "./config";
 
 export interface ResolvedModelRoute {
     id: number;
     name: string;
     upstreamName: string;
-    thinkingLevels: string[] | null;
+    thinkingLevels: readonly ThinkingLevel[] | null;
     provider: StoredProvider;
 }
 
@@ -20,15 +22,6 @@ interface PublicModelRow {
     id: number;
     name: string;
     provider_type: StoredProvider["type"];
-}
-
-function parseThinkingLevels(json: string | null): string[] | null {
-    if (json === null) return null;
-    const value: unknown = JSON.parse(json);
-    if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
-        throw new Error("Invalid stored thinking levels");
-    }
-    return value;
 }
 
 export async function resolveEnabledModel(
@@ -63,7 +56,7 @@ export async function resolveEnabledModel(
         id: row.model_id,
         name: row.model_name,
         provider: mapProviderRow(row),
-        thinkingLevels: parseThinkingLevels(row.thinking_levels),
+        thinkingLevels: parseStoredThinkingLevels(row.thinking_levels),
         upstreamName: row.upstream_name,
     };
 }

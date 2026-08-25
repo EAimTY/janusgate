@@ -1,8 +1,8 @@
 import type { ProviderType } from "/common/domain";
 
 export const API_ROOT_PATH = "/api";
-export const API_BASE_PATH = `${API_ROOT_PATH}/openai-v1`;
-export const API_VERSION_PATH = API_BASE_PATH.slice(API_ROOT_PATH.length);
+export const API_VERSION_PATH = "/openai-v1";
+export const API_BASE_PATH = `${API_ROOT_PATH}${API_VERSION_PATH}`;
 export const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
 export const MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
 export const UPSTREAM_IDLE_TIMEOUT_SECONDS = 300;

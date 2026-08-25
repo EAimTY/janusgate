@@ -7,7 +7,6 @@ export const panelConfig = {
         models: "/models",
     },
     panelEndpoints: {
-        authProbe: "/panel-api/list-providers",
         listProviders: "/panel-api/list-providers",
         saveProvider: "/panel-api/save-provider",
         deleteProvider: "/panel-api/delete-provider",

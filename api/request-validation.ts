@@ -1,7 +1,6 @@
 import type { ClientProtocol } from "/common/domain";
 import { GatewayError } from "/common/errors";
 import { isJsonObject, requireJsonObject } from "/common/validation";
-import type { ResolvedModelRoute } from "./model-routing";
 
 export type { ClientProtocol };
 
@@ -9,7 +8,7 @@ export interface ValidatedGatewayRequest {
     body: Record<string, unknown>;
     isStreaming: boolean;
     requestedModel: string;
-    effectiveThinkingLevel: string | undefined;
+    requestedThinkingLevel: string | undefined;
 }
 
 /**
@@ -19,18 +18,17 @@ export interface ValidatedGatewayRequest {
  */
 export function effectiveThinkingLevel(
     requested: string | undefined,
-    route: ResolvedModelRoute | undefined,
+    whitelist: readonly string[] | null,
 ): string | undefined {
-    if (requested === undefined || route === undefined || route.thinkingLevels === null) {
+    if (requested === undefined || whitelist === null) {
         return requested;
     }
-    return route.thinkingLevels.includes(requested) ? requested : undefined;
+    return whitelist.includes(requested) ? requested : undefined;
 }
 
 export function validateGatewayRequest(
     value: unknown,
     protocol: ClientProtocol,
-    route?: ResolvedModelRoute,
 ): ValidatedGatewayRequest {
     let body: Record<string, unknown>;
     try {
@@ -85,11 +83,11 @@ export function validateGatewayRequest(
         protocol === "openai_response"
             ? requireReasoningObject(body["reasoning"])["effort"]
             : body["reasoning_effort"];
-    let requestedEffort: string | undefined;
+    let requestedThinkingLevel: string | undefined;
     if (effortValue === undefined) {
-        requestedEffort = undefined;
+        requestedThinkingLevel = undefined;
     } else if (typeof effortValue === "string" && effortValue.length > 0) {
-        requestedEffort = effortValue;
+        requestedThinkingLevel = effortValue;
     } else {
         throw new GatewayError(
             400,
@@ -102,9 +100,9 @@ export function validateGatewayRequest(
     }
     return {
         body,
-        effectiveThinkingLevel: effectiveThinkingLevel(requestedEffort, route),
         isStreaming: stream ?? false,
         requestedModel: model,
+        requestedThinkingLevel,
     };
 }
 
@@ -123,6 +121,7 @@ export function substituteNativeModelAndThinking(
     request: ValidatedGatewayRequest,
     protocol: ClientProtocol,
     upstreamModel: string,
+    effectiveThinkingLevel: string | undefined,
 ): Record<string, unknown> {
     const body: Record<string, unknown> = {
         ...request.body,
@@ -130,8 +129,8 @@ export function substituteNativeModelAndThinking(
     };
     if (protocol === "openai_chat_completion") {
         if (body["reasoning_effort"] !== undefined) {
-            if (request.effectiveThinkingLevel === undefined) delete body["reasoning_effort"];
-            else body["reasoning_effort"] = request.effectiveThinkingLevel;
+            if (effectiveThinkingLevel === undefined) delete body["reasoning_effort"];
+            else body["reasoning_effort"] = effectiveThinkingLevel;
         }
         return body;
     }
@@ -141,8 +140,8 @@ export function substituteNativeModelAndThinking(
             ...requireReasoningObject(reasoningValue),
         };
         if (reasoning["effort"] !== undefined) {
-            if (request.effectiveThinkingLevel === undefined) delete reasoning["effort"];
-            else reasoning["effort"] = request.effectiveThinkingLevel;
+            if (effectiveThinkingLevel === undefined) delete reasoning["effort"];
+            else reasoning["effort"] = effectiveThinkingLevel;
         }
         body["reasoning"] = reasoning;
     }

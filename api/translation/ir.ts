@@ -75,7 +75,6 @@ export interface IrToolChoice {
 }
 
 export interface IrRequest {
-    model: string;
     messages: IrMessage[];
     tools: IrFunctionTool[];
     toolChoice?: IrToolChoice;

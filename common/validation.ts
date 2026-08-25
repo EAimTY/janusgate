@@ -137,6 +137,25 @@ export function parseThinkingLevels(value: unknown): readonly ThinkingLevel[] | 
     return CANONICAL_THINKING_LEVELS.filter((level) => levels.includes(level));
 }
 
+export function isThinkingLevel(value: unknown): value is ThinkingLevel {
+    return CANONICAL_THINKING_LEVELS.some((level) => value === level);
+}
+
+/** Single parser for the stored `models.thinking_levels` JSON column; contract violations are fatal. */
+export function parseStoredThinkingLevels(json: string | null): readonly ThinkingLevel[] | null {
+    if (json === null) return null;
+    let value: unknown;
+    try {
+        value = JSON.parse(json);
+    } catch {
+        throw new Error("Invalid stored thinking levels");
+    }
+    if (!Array.isArray(value) || !value.every(isThinkingLevel)) {
+        throw new Error("Invalid stored thinking levels");
+    }
+    return value;
+}
+
 export function composeModelName(prefix: string, base: string): string {
     if (base.length === 0) {
         throw new ValidationError("model base name must be non-empty");

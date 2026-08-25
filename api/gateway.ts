@@ -48,7 +48,7 @@ function isUsageIncluded(body: Record<string, unknown>): boolean {
     return isJsonObject(streamOptions) && streamOptions["include_usage"] === true;
 }
 
-async function fetchWithHeaderTimeout(
+async function fetchUpstreamWithIdleTimeout(
     request: PreparedUpstreamRequest,
     abortController: AbortController,
     fetchUpstream: typeof fetch,
@@ -112,7 +112,7 @@ async function executeUpstream(
         cipher,
         oauthCredentials,
     );
-    let response = await fetchWithHeaderTimeout(prepared, abortController, fetchUpstream);
+    let response = await fetchUpstreamWithIdleTimeout(prepared, abortController, fetchUpstream);
     for (
         let retryCount = 0;
         response.status === 401 &&
@@ -132,7 +132,7 @@ async function executeUpstream(
             signal: abortController.signal,
         });
         currentRoute = {
-            ...route,
+            ...currentRoute,
             provider: refreshed.provider,
         };
         oauthCredentials = refreshed.credentials;
@@ -144,7 +144,7 @@ async function executeUpstream(
             cipher,
             refreshed.credentials,
         );
-        response = await fetchWithHeaderTimeout(prepared, abortController, fetchUpstream);
+        response = await fetchUpstreamWithIdleTimeout(prepared, abortController, fetchUpstream);
     }
     if (response.status === 401 && currentRoute.provider.type !== "openai_compatible") {
         await response.body?.cancel();
@@ -248,10 +248,9 @@ async function handleGatewayChat(
         throw invalidApiKeyError();
     }
     const body = await readBoundedJsonObject(request, MAX_REQUEST_BYTES);
-    const initial = validateGatewayRequest(body, protocol);
-    const route = await resolveEnabledModel(env.DATABASE, initial.requestedModel);
+    const validated = validateGatewayRequest(body, protocol);
+    const route = await resolveEnabledModel(env.DATABASE, validated.requestedModel);
     if (route === null) throw modelNotFoundError();
-    const validated = validateGatewayRequest(body, protocol, route);
     const cipher = await CredentialsCipher.create(env.CREDENTIALS_AES_KEY);
     const abortController = new AbortController();
     if (request.signal.aborted) abortController.abort(request.signal.reason);

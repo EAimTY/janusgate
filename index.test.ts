@@ -5,11 +5,13 @@ import app from "./index";
 
 const API_TOKEN = "api-secret";
 const API_TOKEN_HASH = "014c243ff960e87afc8482648f41e2084dce765aa062dcdcbf4e0e43c4db8a41";
+const PANEL_TOKEN = "panel-secret";
+const PANEL_TOKEN_HASH = "14c660b289912fe36e4caca8eb372106f19a9ed9d37adfd03c504648faa4b5e4";
 const bindings: Env = {
     API_KEY_HASH: API_TOKEN_HASH,
     CREDENTIALS_AES_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     DATABASE: env.DATABASE,
-    PANEL_TOKEN_HASH: "",
+    PANEL_TOKEN_HASH: PANEL_TOKEN_HASH,
 };
 
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
@@ -80,6 +82,30 @@ describe("Worker route aggregation", () => {
                 message: "The requested API route was not found",
                 type: "not_found_error",
             },
+        });
+    });
+
+    it("answers unknown panel routes through the panel middleware's auth and CSRF gates", async () => {
+        const unauthorized = await app.request(
+            "https://gateway.test/panel-api/unknown",
+            {},
+            bindings,
+        );
+        expect(unauthorized.status).toBe(401);
+
+        const authorized = await app.request(
+            "https://gateway.test/panel-api/unknown",
+            {
+                headers: {
+                    Authorization: `Bearer ${PANEL_TOKEN}`,
+                    Origin: "https://gateway.test",
+                },
+            },
+            bindings,
+        );
+        expect(authorized.status).toBe(404);
+        expect(await authorized.json()).toEqual({
+            error: "Not found",
         });
     });
 });

@@ -146,7 +146,6 @@ export function parseResponsesRequest(value: unknown): IrRequest {
             "store:true and previous_response_id require native Responses passthrough",
         );
     }
-    const model = expectNonEmptyString(root["model"], "model");
     const messages: IrMessage[] = [];
     const instructions = optionalString(root["instructions"], "instructions");
     if (instructions !== undefined)
@@ -191,7 +190,6 @@ export function parseResponsesRequest(value: unknown): IrRequest {
     }
     const isStreaming = optionalBoolean(root["stream"], "stream") ?? false;
     const result: IrRequest = {
-        model,
         messages,
         tools,
         sampling,
@@ -628,7 +626,7 @@ export function parseResponsesResponse(value: unknown): IrEvent[] {
                         content["thought_signature"],
                         "output text thought_signature",
                     );
-                    if (thoughtSignature !== undefined && event.type === "text_delta") {
+                    if (thoughtSignature !== undefined) {
                         event.thoughtSignature = thoughtSignature;
                     }
                     events.push(event);
@@ -646,7 +644,7 @@ export function parseResponsesResponse(value: unknown): IrEvent[] {
                 item["thought_signature"],
                 "function call thought_signature",
             );
-            if (thoughtSignature !== undefined && start.type === "tool_call_start") {
+            if (thoughtSignature !== undefined) {
                 start.thoughtSignature = thoughtSignature;
             }
             events.push(start);
@@ -678,7 +676,7 @@ export function parseResponsesResponse(value: unknown): IrEvent[] {
                         summary["thought_signature"] ?? item["thought_signature"],
                         "reasoning thought_signature",
                     );
-                    if (thoughtSignature !== undefined && event.type === "reasoning_delta") {
+                    if (thoughtSignature !== undefined) {
                         event.thoughtSignature = thoughtSignature;
                     }
                     events.push(event);
@@ -730,7 +728,7 @@ export function parseResponsesStreamEvent(value: unknown): IrEvent[] {
             root["thought_signature"],
             "event.thought_signature",
         );
-        if (thoughtSignature !== undefined && event.type === "text_delta") {
+        if (thoughtSignature !== undefined) {
             event.thoughtSignature = thoughtSignature;
         }
         return [
@@ -749,7 +747,7 @@ export function parseResponsesStreamEvent(value: unknown): IrEvent[] {
             root["thought_signature"],
             "event.thought_signature",
         );
-        if (thoughtSignature !== undefined && event.type === "reasoning_delta") {
+        if (thoughtSignature !== undefined) {
             event.thoughtSignature = thoughtSignature;
         }
         return [
@@ -769,7 +767,7 @@ export function parseResponsesStreamEvent(value: unknown): IrEvent[] {
             item["thought_signature"],
             "function call thought_signature",
         );
-        if (thoughtSignature !== undefined && event.type === "tool_call_start") {
+        if (thoughtSignature !== undefined) {
             event.thoughtSignature = thoughtSignature;
         }
         return [

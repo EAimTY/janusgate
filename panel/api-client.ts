@@ -7,6 +7,7 @@ import {
     UPSTREAM_PROTOCOLS,
     type UpstreamProtocol,
 } from "/common/domain";
+import { isJsonObject } from "/common/validation";
 import { panelConfig } from "./config";
 import { isThinkingLevel, type ThinkingLevel } from "./model-helpers";
 
@@ -65,12 +66,8 @@ class PanelContractError extends Error {
     }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function readRecord(value: unknown, context: string): Record<string, unknown> {
-    if (!isRecord(value)) throw new PanelContractError(`${context} must be an object`);
+    if (!isJsonObject(value)) throw new PanelContractError(`${context} must be an object`);
     return value;
 }
 
@@ -264,7 +261,7 @@ async function readError(response: Response): Promise<PanelApiError> {
     let message = `Panel request failed (HTTP ${response.status})`;
     try {
         const value: unknown = await response.json();
-        if (isRecord(value) && typeof value["error"] === "string") message = value["error"];
+        if (isJsonObject(value) && typeof value["error"] === "string") message = value["error"];
     } catch {
         // The status remains useful when a proxy or deployment returns a non-JSON error page.
     }
@@ -282,7 +279,7 @@ export class PanelApiClient {
 
     public async probe(token: string): Promise<Provider[]> {
         return this.#requestWithToken(
-            panelConfig.panelEndpoints.authProbe,
+            panelConfig.panelEndpoints.listProviders,
             "GET",
             token,
             parseProviders,
