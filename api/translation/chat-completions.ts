@@ -8,6 +8,7 @@ import type {
     IrRequest,
     IrResponseFormat,
     IrSampling,
+    IrToolChoice,
     IrUsage,
     MessagePart,
     ToolCallPart,
@@ -38,6 +39,16 @@ export interface ChatCompletionsRequestObject {
         include_usage: boolean;
     };
     tools?: ChatFunctionTool[];
+    tool_choice?:
+        | "auto"
+        | "none"
+        | "required"
+        | {
+              type: "function";
+              function: {
+                  name: string;
+              };
+          };
     temperature?: number;
     top_p?: number;
     max_completion_tokens?: number;
@@ -50,6 +61,7 @@ export interface ChatRequestMessage {
     role: "system" | "user" | "assistant" | "tool";
     content: string | null | ChatContentPart[];
     reasoning_content?: string;
+    reasoning_thought_signature?: string;
     tool_calls?: ChatToolCall[];
     tool_call_id?: string;
     name?: string;
@@ -72,7 +84,11 @@ export type ChatContentPart =
 export interface ChatToolCall {
     id: string;
     type: "function";
-    thought_signature?: string;
+    extra_content?: {
+        google: {
+            thought_signature: string;
+        };
+    };
     function: {
         name: string;
         arguments: string;
@@ -86,6 +102,33 @@ export interface ChatFunctionTool {
         description?: string;
         parameters: JsonObject;
         strict?: boolean;
+    };
+}
+
+function parseGoogleThoughtSignature(
+    value: Record<string, unknown>,
+    context: string,
+): string | undefined {
+    if (value["extra_content"] !== undefined) {
+        const extraContent = expectRecord(value["extra_content"], `${context}.extra_content`);
+        const google = expectRecord(extraContent["google"], `${context}.extra_content.google`);
+        return optionalString(
+            google["thought_signature"],
+            `${context}.extra_content.google.thought_signature`,
+        );
+    }
+    // Accept JanusGate's earlier direct field during transition, but always render the documented
+    // Google OpenAI-compatibility carrier.
+    return optionalString(value["thought_signature"], `${context}.thought_signature`);
+}
+
+function renderGoogleThoughtSignature(
+    thoughtSignature: string,
+): NonNullable<ChatToolCall["extra_content"]> {
+    return {
+        google: {
+            thought_signature: thoughtSignature,
+        },
     };
 }
 
@@ -114,6 +157,7 @@ export interface ChatCompletionsResponseObject {
             role: "assistant";
             content: string | null;
             reasoning_content?: string;
+            reasoning_thought_signature?: string;
             tool_calls?: ChatToolCall[];
         };
         finish_reason: FinishReason;
@@ -153,6 +197,25 @@ export function parseChatCompletionsRequest(value: unknown): IrRequest {
     const tools =
         root["tools"] === undefined ? [] : expectArray(root["tools"], "tools").map(parseTool);
     const sampling = parseSampling(root);
+    const toolChoice = parseChatToolChoice(root["tool_choice"]);
+    if (
+        toolChoice?.functionName !== undefined &&
+        !tools.some((tool) => tool.name === toolChoice.functionName)
+    ) {
+        throw new TranslationError("invalid_json", "tool_choice names an undeclared function");
+    }
+    if (
+        root["parallel_tool_calls"] !== undefined &&
+        typeof root["parallel_tool_calls"] !== "boolean"
+    ) {
+        throw new TranslationError("invalid_json", "parallel_tool_calls must be a boolean");
+    }
+    if (root["parallel_tool_calls"] === false) {
+        throw new TranslationError(
+            "unsupported_parameter",
+            "parallel_tool_calls:false is not supported on translated paths",
+        );
+    }
     const reasoningEffort = parseReasoningEffort(root["reasoning_effort"], "reasoning_effort");
     const isStreaming = optionalBoolean(root["stream"], "stream") ?? false;
     let isUsageIncluded = false;
@@ -174,13 +237,20 @@ export function parseChatCompletionsRequest(value: unknown): IrRequest {
     if (reasoningEffort !== undefined) {
         result.reasoningEffort = reasoningEffort;
     }
+    if (toolChoice !== undefined) result.toolChoice = toolChoice;
     return result;
 }
 
 function parseMessage(value: unknown, index: number): IrMessage {
     const message = expectRecord(value, `messages[${index}]`);
     const role = expectString(message["role"], `messages[${index}].role`);
-    if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
+    if (
+        role !== "developer" &&
+        role !== "system" &&
+        role !== "user" &&
+        role !== "assistant" &&
+        role !== "tool"
+    ) {
         throw new TranslationError("invalid_json", `messages[${index}].role is invalid`);
     }
 
@@ -240,9 +310,9 @@ function parseMessage(value: unknown, index: number): IrMessage {
                     `messages[${index}].tool_calls[${toolIndex}].function.arguments`,
                 ),
             };
-            const thoughtSignature = optionalString(
-                toolCall["thought_signature"],
-                `messages[${index}].tool_calls[${toolIndex}].thought_signature`,
+            const thoughtSignature = parseGoogleThoughtSignature(
+                toolCall,
+                `messages[${index}].tool_calls[${toolIndex}]`,
             );
             if (thoughtSignature !== undefined) {
                 part["thoughtSignature"] = thoughtSignature;
@@ -252,7 +322,7 @@ function parseMessage(value: unknown, index: number): IrMessage {
     }
 
     const result: IrMessage = {
-        role,
+        role: role === "developer" ? "system" : role,
         parts,
     };
     const reasoning = optionalString(
@@ -261,6 +331,13 @@ function parseMessage(value: unknown, index: number): IrMessage {
     );
     if (reasoning !== undefined) {
         result["reasoning"] = reasoning;
+    }
+    const reasoningThoughtSignature = optionalString(
+        message["reasoning_thought_signature"],
+        `messages[${index}].reasoning_thought_signature`,
+    );
+    if (reasoningThoughtSignature !== undefined) {
+        result.reasoningThoughtSignature = reasoningThoughtSignature;
     }
     return result;
 }
@@ -321,6 +398,28 @@ function parseMessageContent(value: unknown, messageIndex: number): MessagePart[
             "unsupported Chat Completions content part",
         );
     });
+}
+
+function parseChatToolChoice(value: unknown): IrToolChoice | undefined {
+    if (value === undefined || value === "auto")
+        return value === undefined
+            ? undefined
+            : {
+                  mode: "auto",
+              };
+    if (value === "none" || value === "required")
+        return {
+            mode: value,
+        };
+    const choice = expectRecord(value, "tool_choice");
+    if (choice["type"] !== "function") {
+        throw new TranslationError("unsupported_parameter", "unsupported tool_choice");
+    }
+    const definition = expectRecord(choice["function"], "tool_choice.function");
+    return {
+        mode: "required",
+        functionName: expectNonEmptyString(definition["name"], "tool_choice.function.name"),
+    };
 }
 
 function parseTool(value: unknown, index: number): IrFunctionTool {
@@ -424,6 +523,17 @@ export function renderChatCompletionsRequest(
     if (request["tools"].length > 0) {
         result["tools"] = request["tools"].map(renderTool);
     }
+    if (request.toolChoice !== undefined) {
+        result.tool_choice =
+            request.toolChoice.functionName === undefined
+                ? request.toolChoice.mode
+                : {
+                      type: "function",
+                      function: {
+                          name: request.toolChoice.functionName,
+                      },
+                  };
+    }
     const sampling = request.sampling;
     if (sampling["temperature"] !== undefined) result["temperature"] = sampling["temperature"];
     if (sampling.topP !== undefined) result["top_p"] = sampling.topP;
@@ -464,6 +574,9 @@ function renderMessage(message: IrMessage): ChatRequestMessage[] {
         content,
     };
     if (message["reasoning"] !== undefined) result["reasoning_content"] = message["reasoning"];
+    if (message.reasoningThoughtSignature !== undefined) {
+        result.reasoning_thought_signature = message.reasoningThoughtSignature;
+    }
     const toolCalls = message["parts"].filter((part) => part["type"] === "tool_call");
     if (toolCalls.length > 0) {
         result["tool_calls"] = toolCalls.map((part) => {
@@ -476,7 +589,7 @@ function renderMessage(message: IrMessage): ChatRequestMessage[] {
                 },
             };
             if (part.thoughtSignature !== undefined) {
-                toolCall.thought_signature = part.thoughtSignature;
+                toolCall.extra_content = renderGoogleThoughtSignature(part.thoughtSignature);
             }
             return toolCall;
         });
@@ -581,10 +694,19 @@ export function parseChatCompletionsResponse(value: unknown): IrEvent[] {
         },
     ];
     const reasoning = optionalString(message["reasoning_content"], "message.reasoning_content");
+    const reasoningThoughtSignature = optionalString(
+        message["reasoning_thought_signature"],
+        "message.reasoning_thought_signature",
+    );
     if (reasoning !== undefined && reasoning.length > 0)
         events.push({
             type: "reasoning_delta",
             delta: reasoning,
+            ...(reasoningThoughtSignature === undefined
+                ? {}
+                : {
+                      thoughtSignature: reasoningThoughtSignature,
+                  }),
         });
     const content = message["content"];
     if (typeof content === "string" && content.length > 0)
@@ -619,10 +741,7 @@ function appendChatResponseToolCalls(events: IrEvent[], value: unknown): void {
             id: expectNonEmptyString(tool["id"], "tool call id"),
             name: expectNonEmptyString(definition["name"], "tool function name"),
         };
-        const thoughtSignature = optionalString(
-            tool["thought_signature"],
-            "tool call thought_signature",
-        );
+        const thoughtSignature = parseGoogleThoughtSignature(tool, `message.tool_calls[${index}]`);
         if (thoughtSignature !== undefined && start.type === "tool_call_start") {
             start.thoughtSignature = thoughtSignature;
         }
@@ -664,10 +783,19 @@ export function parseChatCompletionsStreamEvent(value: unknown): IrEvent[] {
                 type: "message_start",
             });
         const reasoning = optionalString(delta["reasoning_content"], "delta.reasoning_content");
+        const thoughtSignature = optionalString(
+            delta["thought_signature"],
+            "delta.thought_signature",
+        );
         if (reasoning !== undefined && reasoning.length > 0)
             events.push({
                 type: "reasoning_delta",
                 delta: reasoning,
+                ...(thoughtSignature === undefined
+                    ? {}
+                    : {
+                          thoughtSignature,
+                      }),
             });
         const text = optionalString(delta["content"], "delta.content");
         if (text !== undefined && text.length > 0)
@@ -692,9 +820,9 @@ export function parseChatCompletionsStreamEvent(value: unknown): IrEvent[] {
                         id: id ?? `call_${index + 1}`,
                         name: name ?? "",
                     };
-                    const thoughtSignature = optionalString(
-                        tool["thought_signature"],
-                        "tool call thought_signature",
+                    const thoughtSignature = parseGoogleThoughtSignature(
+                        tool,
+                        "delta.tool_calls[]",
                     );
                     if (thoughtSignature !== undefined && start.type === "tool_call_start") {
                         start.thoughtSignature = thoughtSignature;
@@ -760,13 +888,16 @@ export function renderChatCompletionsResponse(
 ): ChatCompletionsResponseObject {
     let content = "";
     let reasoning = "";
+    let reasoningThoughtSignature: string | undefined;
     let finishReason: FinishReason = "stop";
     let usage: IrUsage | undefined;
     const toolCalls = new Map<number, ChatToolCall>();
     for (const event of events) {
         if (event["type"] === "text_delta") content += event["delta"];
-        else if (event["type"] === "reasoning_delta") reasoning += event["delta"];
-        else if (event["type"] === "tool_call_start") {
+        else if (event["type"] === "reasoning_delta") {
+            reasoning += event["delta"];
+            reasoningThoughtSignature ??= event.thoughtSignature;
+        } else if (event["type"] === "tool_call_start") {
             const toolCall: ChatToolCall = {
                 id: event["id"],
                 type: "function",
@@ -776,7 +907,7 @@ export function renderChatCompletionsResponse(
                 },
             };
             if (event.thoughtSignature !== undefined) {
-                toolCall.thought_signature = event.thoughtSignature;
+                toolCall.extra_content = renderGoogleThoughtSignature(event.thoughtSignature);
             }
             toolCalls.set(event["index"], toolCall);
         } else if (event["type"] === "tool_call_delta") {
@@ -792,6 +923,9 @@ export function renderChatCompletionsResponse(
         content: content.length > 0 ? content : null,
     };
     if (reasoning.length > 0) message["reasoning_content"] = reasoning;
+    if (reasoningThoughtSignature !== undefined) {
+        message.reasoning_thought_signature = reasoningThoughtSignature;
+    }
     if (toolCalls.size > 0)
         message["tool_calls"] = [
             ...toolCalls.entries(),
@@ -869,7 +1003,7 @@ export function renderChatCompletionsStream(
                 },
             };
             if (event.thoughtSignature !== undefined) {
-                toolCall["thought_signature"] = event.thoughtSignature;
+                toolCall["extra_content"] = renderGoogleThoughtSignature(event.thoughtSignature);
             }
             delta["tool_calls"] = [
                 toolCall,

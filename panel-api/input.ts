@@ -36,6 +36,7 @@ export interface CompleteOAuthInput {
     readonly redirectUrl: string;
     readonly name?: string;
     readonly modelPrefix?: string;
+    readonly projectId?: string;
 }
 
 export interface SaveModelInput {
@@ -163,18 +164,23 @@ export function parseCompleteOAuthInput(value: unknown): CompleteOAuthInput {
     assertAllowedFields(object, [
         "modelPrefix",
         "name",
+        "projectId",
         "redirectUrl",
     ]);
     const input: {
         redirectUrl: string;
         name?: string;
         modelPrefix?: string;
+        projectId?: string;
     } = {
         redirectUrl: parseNonEmptyString(object["redirectUrl"], "redirectUrl"),
     };
     if (hasOwn(object, "name")) input.name = parseProviderName(object["name"]);
     if (hasOwn(object, "modelPrefix")) {
         input.modelPrefix = parseModelPrefix(object["modelPrefix"]);
+    }
+    if (hasOwn(object, "projectId")) {
+        input.projectId = parseNonEmptyString(object["projectId"], "projectId");
     }
     return input;
 }

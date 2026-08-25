@@ -129,18 +129,16 @@ export async function updateProvider(
 }
 
 export async function deleteProviderByName(database: D1Database, name: string): Promise<void> {
-    try {
-        const result = await database
-            .prepare("DELETE FROM providers WHERE name = ?")
-            .bind(name)
-            .run();
-        if (result.meta.changes !== 1) throw new PanelApiError(404, "Provider not found");
-    } catch (error) {
-        if (isDatabaseConstraintError(error, "FOREIGN KEY")) {
-            throw new PanelApiError(409, "Delete this provider's models first");
-        }
-        throw error;
-    }
+    const results = await database.batch([
+        database
+            .prepare(
+                `DELETE FROM models
+                WHERE provider_id = (SELECT id FROM providers WHERE name = ?)`,
+            )
+            .bind(name),
+        database.prepare("DELETE FROM providers WHERE name = ?").bind(name),
+    ]);
+    if (results[1]?.meta.changes !== 1) throw new PanelApiError(404, "Provider not found");
 }
 
 export async function generateAvailableProviderName(

@@ -1,5 +1,11 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+    ANTIGRAVITY_API_CLIENT,
+    ANTIGRAVITY_HEADER_CLIENT_METADATA,
+    ANTIGRAVITY_USER_AGENT,
+    codeAssistRequestUrl,
+} from "/api/adapters/antigravity";
 import { OPENAI_CODEX_RESPONSES_URL, OPENAI_TOKEN_URL } from "/api/adapters/openai";
 import { CredentialsCipher } from "/common/credentials";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
@@ -40,6 +46,30 @@ async function seedCompatibleProvider(
         ) VALUES ('public-model', ?, 'wire-model', NULL, ?)`,
     )
         .bind(provider.meta.last_row_id, isModelEnabled ? 1 : 0)
+        .run();
+}
+
+async function seedAntigravityProvider(upstreamName = "gemini-wire"): Promise<void> {
+    const cipher = await CredentialsCipher.create(AES_KEY);
+    const encrypted = await cipher.encrypt({
+        accessToken: "google-access",
+        projectId: "google-project",
+        refreshToken: "google-refresh",
+    });
+    const provider = await env.DATABASE.prepare(
+        `INSERT INTO providers (
+            name, model_prefix, type, protocol, base_url, encrypted_credentials,
+            expires_at, refresh_started_at, enabled
+        ) VALUES ('google', '', 'antigravity_oauth', NULL, NULL, ?, 2000000000, NULL, 1)`,
+    )
+        .bind(encrypted)
+        .run();
+    await env.DATABASE.prepare(
+        `INSERT INTO models (
+            name, provider_id, upstream_name, thinking_levels, enabled
+        ) VALUES ('antigravity-model', ?, ?, NULL, 1)`,
+    )
+        .bind(provider.meta.last_row_id, upstreamName)
         .run();
 }
 
@@ -301,6 +331,215 @@ describe("gateway request lifecycle", () => {
         expect(result.usage.total_tokens).toBe(3);
     });
 
+    it("uses the Antigravity generation endpoint, runtime model, and agent envelope", async () => {
+        await seedAntigravityProvider("gemini-3.7-flash");
+        const fetchUpstream = vi.fn<typeof fetch>(async (input, init) => {
+            expect(String(input)).toBe(codeAssistRequestUrl(false));
+            const headers = new Headers(init?.headers);
+            expect(headers.get("Authorization")).toBe("Bearer google-access");
+            expect(headers.get("User-Agent")).toBe(ANTIGRAVITY_USER_AGENT);
+            expect(headers.get("X-Goog-Api-Client")).toBe(ANTIGRAVITY_API_CLIENT);
+            expect(headers.get("Client-Metadata")).toBe(ANTIGRAVITY_HEADER_CLIENT_METADATA);
+            expect(headers.get("Accept")).toBe("application/json");
+            const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+            expect(sent).toMatchObject({
+                model: "gemini-3.7-flash-tiered",
+                project: "google-project",
+                request: {
+                    contents: [
+                        {
+                            parts: [
+                                {
+                                    text: "Hello",
+                                },
+                            ],
+                            role: "user",
+                        },
+                    ],
+                    generationConfig: {
+                        maxOutputTokens: 65536,
+                        thinkingConfig: {
+                            thinkingLevel: "LOW",
+                        },
+                    },
+                    systemInstruction: {
+                        parts: [
+                            {
+                                text: "Follow the application rules.",
+                            },
+                        ],
+                        role: "user",
+                    },
+                },
+                requestType: "agent",
+                userAgent: "antigravity",
+            });
+            expect(sent["requestId"]).toEqual(expect.stringMatching(/^agent-/));
+            return Response.json({
+                response: {
+                    candidates: [
+                        {
+                            content: {
+                                parts: [
+                                    {
+                                        text: "answer",
+                                    },
+                                ],
+                                role: "model",
+                            },
+                            finishReason: "STOP",
+                        },
+                    ],
+                },
+            });
+        });
+
+        const response = await handleGatewayRequest(
+            gatewayRequest("responses", {
+                input: [
+                    {
+                        content: "Follow the application rules.",
+                        role: "developer",
+                        type: "message",
+                    },
+                    {
+                        content: "Hello",
+                        role: "user",
+                        type: "message",
+                    },
+                ],
+                model: "antigravity-model",
+            }),
+            bindings,
+            "openai_response",
+            fetchUpstream,
+        );
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+            model: "antigravity-model",
+            output: [
+                {
+                    content: [
+                        {
+                            text: "answer",
+                            type: "output_text",
+                        },
+                    ],
+                    role: "assistant",
+                    type: "message",
+                },
+            ],
+            status: "completed",
+        });
+        expect(fetchUpstream).toHaveBeenCalledOnce();
+    });
+
+    it("sends the Claude interleaved-thinking header through Antigravity", async () => {
+        await seedAntigravityProvider("claude-sonnet-4-6");
+        const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {
+            expect(new Headers(init?.headers).get("anthropic-beta")).toBe(
+                "interleaved-thinking-2025-05-14",
+            );
+            expect(JSON.parse(String(init?.body))).toMatchObject({
+                model: "claude-sonnet-4-6",
+                request: {
+                    generationConfig: {
+                        maxOutputTokens: 64000,
+                    },
+                },
+            });
+            return Response.json({
+                response: {
+                    candidates: [
+                        {
+                            content: {
+                                parts: [
+                                    {
+                                        text: "answer",
+                                    },
+                                ],
+                            },
+                            finishReason: "STOP",
+                        },
+                    ],
+                },
+            });
+        });
+
+        const response = await handleGatewayRequest(
+            gatewayRequest("responses", {
+                input: "Hello",
+                model: "antigravity-model",
+            }),
+            bindings,
+            "openai_response",
+            fetchUpstream,
+        );
+
+        expect(response.status).toBe(200);
+        expect(fetchUpstream).toHaveBeenCalledOnce();
+    });
+
+    it("reports a sanitized OAuth upstream failure category without exposing its body", async () => {
+        await seedAntigravityProvider();
+        const response = await handleGatewayRequest(
+            gatewayRequest("responses", {
+                input: "Hello",
+                model: "antigravity-model",
+            }),
+            bindings,
+            "openai_response",
+            async () =>
+                new Response('{"error":{"message":"sensitive project detail"}}', {
+                    status: 403,
+                }),
+        );
+
+        expect(response.status).toBe(502);
+        expect(await response.json()).toEqual({
+            error: {
+                code: "upstream_failure",
+                message: "The upstream denied access to this OAuth account",
+                type: "upstream_error",
+            },
+        });
+    });
+
+    it("surfaces only bounded safe fields from OAuth upstream errors", async () => {
+        await seedAntigravityProvider();
+        const response = await handleGatewayRequest(
+            gatewayRequest("responses", {
+                input: "Hello",
+                model: "antigravity-model",
+            }),
+            bindings,
+            "openai_response",
+            async () =>
+                Response.json(
+                    {
+                        error: {
+                            message:
+                                'Invalid JSON payload. Unknown name "badField" at project-secret',
+                            status: "INVALID_ARGUMENT",
+                        },
+                    },
+                    {
+                        status: 400,
+                    },
+                ),
+        );
+
+        expect(await response.json()).toEqual({
+            error: {
+                code: "upstream_failure",
+                message:
+                    "The upstream rejected the translated request (INVALID_ARGUMENT, unsupported field badField)",
+                type: "upstream_error",
+            },
+        });
+    });
+
     it("performs one forced OAuth refresh and exactly one retry after an upstream 401", async () => {
         await seedOpenAiProvider();
         let codexRequestCount = 0;
@@ -343,6 +582,114 @@ describe("gateway request lifecycle", () => {
         expect(await response.text()).toBe('{"id":"success"}');
         expect(codexRequestCount).toBe(2);
         expect(fetchUpstream).toHaveBeenCalledTimes(3);
+    });
+
+    it("translates Chat Completions requests into the Antigravity agent envelope and back", async () => {
+        await seedAntigravityProvider("gemini-3.7-flash");
+        const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {
+            const headers = new Headers(init?.headers);
+            expect(headers.get("Accept")).toBe("application/json");
+            const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+            expect(sent).toMatchObject({
+                model: "gemini-3.7-flash-tiered",
+                project: "google-project",
+                requestType: "agent",
+                request: {
+                    contents: [
+                        {
+                            parts: [
+                                {
+                                    text: "Hello",
+                                },
+                            ],
+                            role: "user",
+                        },
+                    ],
+                    generationConfig: {
+                        thinkingConfig: {
+                            thinkingLevel: "LOW",
+                        },
+                    },
+                },
+            });
+            return Response.json({
+                response: {
+                    candidates: [
+                        {
+                            content: {
+                                parts: [
+                                    {
+                                        text: "cc answer",
+                                    },
+                                ],
+                                role: "model",
+                            },
+                            finishReason: "STOP",
+                        },
+                    ],
+                    usageMetadata: {
+                        promptTokenCount: 3,
+                        candidatesTokenCount: 2,
+                        totalTokenCount: 5,
+                    },
+                },
+            });
+        });
+
+        const response = await handleGatewayRequest(
+            gatewayRequest("chat/completions", {
+                messages: [
+                    {
+                        content: "Hello",
+                        role: "user",
+                    },
+                ],
+                model: "antigravity-model",
+            }),
+            bindings,
+            "openai_chat_completion",
+            fetchUpstream,
+        );
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+            choices: [
+                {
+                    finish_reason: "stop",
+                    message: {
+                        content: "cc answer",
+                        role: "assistant",
+                    },
+                },
+            ],
+            model: "antigravity-model",
+            object: "chat.completion",
+            usage: {
+                total_tokens: 5,
+            },
+        });
+    });
+
+    it("maps an unreachable upstream to a 502 upstream_error instead of an internal error", async () => {
+        await seedAntigravityProvider();
+        const response = await handleGatewayRequest(
+            gatewayRequest("responses", {
+                input: "Hello",
+                model: "antigravity-model",
+            }),
+            bindings,
+            "openai_response",
+            async () => {
+                throw new TypeError("fetch failed: connection reset");
+            },
+        );
+        expect(response.status).toBe(502);
+        expect(await response.json()).toMatchObject({
+            error: {
+                code: "upstream_failure",
+                type: "upstream_error",
+            },
+        });
     });
 
     it("makes disabled models indistinguishable from missing models", async () => {

@@ -83,30 +83,35 @@ function protocolLabel(protocol: CompatibleProtocol | null): string {
     return "Managed OAuth protocol";
 }
 
-function expiryPresentation(expiresAt: number | null): {
+/**
+ * OAuth access tokens are refreshed lazily with a safety margin on each gateway request, so an
+ * expired `expires_at` only means the token has been idle — it does not make the provider
+ * unusable. Only a rejected refresh (revoked grant) requires reauthentication.
+ */
+function expiryPresentation(provider: Provider): {
     label: string;
     tone: string;
 } {
-    if (expiresAt === null)
+    if (provider.expiresAt === null)
         return {
             label: "Static credential",
             tone: "neutral",
         };
-    const secondsRemaining = expiresAt - Math.floor(Date.now() / 1000);
+    const secondsRemaining = provider.expiresAt - Math.floor(Date.now() / 1000);
     if (secondsRemaining <= 0)
         return {
-            label: "Token expired",
-            tone: "danger",
+            label: "Idle — refreshes automatically on use",
+            tone: "neutral",
         };
     if (secondsRemaining <= panelConfig.tokenExpiryWarningSeconds) {
         const hours = Math.max(1, Math.ceil(secondsRemaining / 3600));
         return {
-            label: `Expires in ${hours}h`,
+            label: `Expires in ${hours}h, then auto-refreshes`,
             tone: "warning",
         };
     }
     return {
-        label: new Date(expiresAt * 1000).toLocaleString(),
+        label: new Date(provider.expiresAt * 1000).toLocaleString(),
         tone: "good",
     };
 }
@@ -133,6 +138,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
     const [oauthRedirectUrl, setOAuthRedirectUrl] = createSignal("");
     const [oauthName, setOAuthName] = createSignal("");
     const [oauthPrefix, setOAuthPrefix] = createSignal("");
+    const [oauthProjectId, setOAuthProjectId] = createSignal("");
     const [isOAuthPrefixSpecified, setIsOAuthPrefixSpecified] = createSignal(false);
     const [oauthError, setOAuthError] = createSignal<string | null>(null);
     const [isStartingOAuth, setIsStartingOAuth] = createSignal(false);
@@ -193,7 +199,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         try {
             const result = await props.client.discoverModels(providerName);
             setSuccess(
-                `Discovery for ${providerName}: ${result.created} created, ${result.skipped} skipped (${result.total} total).`,
+                `Discovery for ${providerName}: ${result.created} created, ${result.removed} removed, ${result.skipped} skipped (${result.total} upstream total).`,
             );
         } catch (caughtError) {
             setError(errorMessage(caughtError));
@@ -277,7 +283,12 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
     }
 
     async function deleteProvider(provider: Provider): Promise<void> {
-        if (!window.confirm(`Delete provider “${provider.name}”? This cannot be undone.`)) return;
+        if (
+            !window.confirm(
+                `Delete provider “${provider.name}” and all of its models? This cannot be undone.`,
+            )
+        )
+            return;
         setBusyProviderName(provider.name);
         setError(null);
         setSuccess(null);
@@ -299,6 +310,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         setOAuthRedirectUrl("");
         setOAuthName("");
         setOAuthPrefix("");
+        setOAuthProjectId("");
         setIsOAuthPrefixSpecified(false);
         setOAuthError(null);
         setOAuthFlow({
@@ -341,6 +353,9 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
             if (flow.providerName === null) {
                 if (oauthName().trim().length > 0) input.name = oauthName().trim();
                 if (isOAuthPrefixSpecified()) input.modelPrefix = oauthPrefix();
+            }
+            if (flow.type === "antigravity" && oauthProjectId().trim().length > 0) {
+                input.projectId = oauthProjectId().trim();
             }
             await props.client.completeProviderOAuth(input);
             const refreshedProviders = await loadProviders();
@@ -470,9 +485,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                                             <tbody>
                                                 <For each={groupProviders()}>
                                                     {(provider) => {
-                                                        const expiry = expiryPresentation(
-                                                            provider.expiresAt,
-                                                        );
+                                                        const expiry = expiryPresentation(provider);
                                                         const oauthType = oauthTypeForProvider(
                                                             provider.type,
                                                         );
@@ -843,6 +856,21 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                             <small>
                                 Leave customization off for the provider-name default. Turn it on
                                 and leave this blank to explicitly use no prefix.
+                            </small>
+                        </label>
+                    </Show>
+                    <Show when={oauthFlow()?.type === "antigravity"}>
+                        <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                            Google Cloud project ID (optional)
+                            <input
+                                class={formControlClasses}
+                                placeholder="Required only for Workspace/project-backed accounts"
+                                value={oauthProjectId()}
+                                onInput={(event) => setOAuthProjectId(event.currentTarget.value)}
+                            />
+                            <small>
+                                Leave blank for Antigravity-managed free-tier projects. Workspace
+                                accounts may require their own project ID.
                             </small>
                         </label>
                     </Show>

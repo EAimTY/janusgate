@@ -45,6 +45,7 @@ export interface OAuthCompletionInput {
     redirectUrl: string;
     name?: string;
     modelPrefix?: string;
+    projectId?: string;
 }
 
 export class PanelApiError extends Error {
@@ -235,12 +236,14 @@ function parseSavedModel(value: unknown): {
 function parseDiscovery(value: unknown): {
     total: number;
     created: number;
+    removed: number;
     skipped: number;
 } {
     const record = readRecord(value, "discovery result");
     return {
         total: readInteger(record, "total"),
         created: readInteger(record, "created"),
+        removed: readInteger(record, "removed"),
         skipped: readInteger(record, "skipped"),
     };
 }
@@ -375,6 +378,7 @@ export class PanelApiClient {
     public async discoverModels(providerName: string): Promise<{
         total: number;
         created: number;
+        removed: number;
         skipped: number;
     }> {
         return this.#request(

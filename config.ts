@@ -17,3 +17,4 @@ export const MODEL_PREFIX_PATTERN = new RegExp(`^[a-z0-9._:/-]{0,${MODEL_PREFIX_
 
 /** All persisted and API timestamps are whole Unix seconds. */
 export const MILLISECONDS_PER_SECOND = 1_000;
+export const OAUTH_UPSTREAM_TIMEOUT_SECONDS = 30;

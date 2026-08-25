@@ -25,6 +25,7 @@ export interface StoredModel {
     upstreamName: string;
     thinkingLevelsJson: string | null;
     isEnabled: boolean;
+    isManuallyEdited: boolean;
 }
 
 export interface ProviderRow {
@@ -47,6 +48,7 @@ export interface ModelRow {
     upstream_name: string;
     thinking_levels: string | null;
     enabled: number;
+    is_manually_edited: number;
 }
 
 function parseProviderType(value: string): ProviderType {
@@ -89,6 +91,7 @@ export function mapModelRow(row: ModelRow): StoredModel {
     return {
         id: row.id,
         isEnabled: parseStoredBoolean(row.enabled),
+        isManuallyEdited: parseStoredBoolean(row.is_manually_edited),
         name: row.name,
         providerId: row.provider_id,
         thinkingLevelsJson: row.thinking_levels,
@@ -115,5 +118,6 @@ export const MODEL_COLUMNS = `
     provider_id,
     upstream_name,
     thinking_levels,
-    enabled
+    enabled,
+    is_manually_edited
 `;

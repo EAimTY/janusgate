@@ -1,7 +1,12 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { CredentialsCipher, parseOpenAiOAuthCredentials } from "/common/credentials";
-import type { StoredProvider } from "/common/database";
+import {
+    mapProviderRow,
+    PROVIDER_COLUMNS,
+    type ProviderRow,
+    type StoredProvider,
+} from "/common/database";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
 import { ensureFreshProviderAccess } from "./provider-access";
 
@@ -122,19 +127,109 @@ describe("OAuth credential refresh leasing", () => {
         });
     });
 
+    it("skips a second identity-provider call when a concurrent worker already rotated the credentials", async () => {
+        const now = 1_800_000_000;
+        const cipher = await CredentialsCipher.create(AES_KEY);
+        const encrypted = await cipher.encrypt({
+            accessToken: "rejected-access",
+            accountId: "account",
+            refreshToken: "old-refresh",
+        });
+        const result = await env.DATABASE.prepare(
+            `INSERT INTO providers (
+                name, model_prefix, type, protocol, base_url, encrypted_credentials,
+                expires_at, refresh_started_at, enabled
+            ) VALUES ('openai', '', 'openai_oauth', NULL, NULL, ?, ?, NULL, 1)`,
+        )
+            .bind(encrypted, now + 120)
+            .run();
+        const rowBefore = async (): Promise<StoredProvider> => {
+            const row = await env.DATABASE.prepare(
+                `SELECT ${PROVIDER_COLUMNS} FROM providers WHERE id = ?`,
+            )
+                .bind(result.meta.last_row_id)
+                .first<ProviderRow>();
+            if (row === null) throw new Error("provider missing");
+            return mapProviderRow(row);
+        };
+
+        // Simulate another isolate having refreshed while this request saw a 401: it wrote new
+        // credentials together with a fresh expiry in its single guarded update.
+        await env.DATABASE.prepare(
+            "UPDATE providers SET encrypted_credentials = ?, expires_at = ? WHERE id = ?",
+        )
+            .bind(
+                await cipher.encrypt({
+                    accessToken: "rotated-by-other-worker",
+                    accountId: "account",
+                    refreshToken: "rotated-refresh",
+                }),
+                now + 3600,
+                result.meta.last_row_id,
+            )
+            .run();
+
+        const fetchUpstream = vi.fn<typeof fetch>();
+        const access = await ensureFreshProviderAccess(env.DATABASE, await rowBefore(), cipher, {
+            fetchUpstream,
+            isForced: true,
+            rejectedAccessToken: "rejected-access",
+            now,
+        });
+        expect(access.credentials.accessToken).toBe("rotated-by-other-worker");
+        expect(fetchUpstream).not.toHaveBeenCalled();
+        const stored = await env.DATABASE.prepare(
+            "SELECT refresh_started_at FROM providers WHERE id = ?",
+        )
+            .bind(result.meta.last_row_id)
+            .first<{
+                refresh_started_at: number | null;
+            }>();
+        expect(stored?.refresh_started_at).toBeNull();
+
+        // Same token as the rejected one: the forced refresh must still contact the IdP.
+        await env.DATABASE.prepare(
+            "UPDATE providers SET refresh_started_at = NULL, expires_at = ? WHERE id = ?",
+        )
+            .bind(now + 120, result.meta.last_row_id)
+            .run();
+        const stillFetched = vi.fn<typeof fetch>(async () =>
+            Response.json({
+                access_token: "brand-new-access",
+                expires_in: 3600,
+                refresh_token: "brand-new-refresh",
+            }),
+        );
+        const second = await ensureFreshProviderAccess(env.DATABASE, await rowBefore(), cipher, {
+            fetchUpstream: stillFetched,
+            isForced: true,
+            rejectedAccessToken: "rotated-by-other-worker",
+            now,
+        });
+        expect(second.credentials.accessToken).toBe("brand-new-access");
+        expect(stillFetched).toHaveBeenCalledOnce();
+    });
+
     it("clears its lease after an identity-provider failure", async () => {
         const now = 1_800_000_000;
         const { cipher, provider } = await seedExpiredOpenAiProvider(now);
         await expect(
             ensureFreshProviderAccess(env.DATABASE, provider, cipher, {
                 fetchUpstream: async () =>
-                    new Response("rejected", {
-                        status: 400,
-                    }),
+                    Response.json(
+                        {
+                            error: "invalid_grant",
+                            error_description: "Token has been expired or revoked.",
+                        },
+                        {
+                            status: 400,
+                        },
+                    ),
                 now,
             }),
         ).rejects.toMatchObject({
             code: "upstream_failure",
+            message: "Identity provider rejected the token refresh (invalid_grant)",
             status: 502,
         });
         const lease = await env.DATABASE.prepare(

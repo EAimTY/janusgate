@@ -1,9 +1,10 @@
 import { Hono } from "hono";
+import { ensureFreshProviderAccess } from "/api/provider-access";
 import { verifyBearerAuthorization } from "/common/auth";
 import { CredentialsCipher } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
 import type { ProviderSummary, UpstreamProtocol } from "/common/domain";
-import { ConfigurationError, ValidationError } from "/common/errors";
+import { ConfigurationError, GatewayError, ValidationError } from "/common/errors";
 import { composeModelName, isJsonObject } from "/common/validation";
 import { discoverProviderModels } from "./discovery";
 import { PanelApiError } from "./errors";
@@ -285,6 +286,7 @@ export function createPanelApi(options: PanelApiOptions = {}): PanelApp {
         const input = parseCompleteOAuthInput(await readRequestObject(context.req.raw));
         const cipher = await CredentialsCipher.create(context.env.CREDENTIALS_AES_KEY);
         await completeProviderOAuth(context.env.DATABASE, cipher, input, {
+            signal: context.req.raw.signal,
             ...(options.fetchUpstream === undefined
                 ? {}
                 : {
@@ -318,13 +320,33 @@ export function createPanelApi(options: PanelApiOptions = {}): PanelApp {
 
     panelApi.post("/discover-models", async (context) => {
         const input = parseDiscoverModelsInput(await readRequestObject(context.req.raw));
-        const provider = await requireProviderByName(context.env.DATABASE, input.providerName);
+        let provider = await requireProviderByName(context.env.DATABASE, input.providerName);
         const cipher = await CredentialsCipher.create(context.env.CREDENTIALS_AES_KEY);
+        if (provider.type === "antigravity_oauth") {
+            try {
+                provider = (
+                    await ensureFreshProviderAccess(context.env.DATABASE, provider, cipher, {
+                        signal: context.req.raw.signal,
+                        ...(options.fetchUpstream === undefined
+                            ? {}
+                            : {
+                                  fetchUpstream: options.fetchUpstream,
+                              }),
+                    })
+                ).provider;
+            } catch (error) {
+                if (error instanceof GatewayError) {
+                    throw new PanelApiError(502, "Antigravity credential refresh failed");
+                }
+                throw error;
+            }
+        }
         const result = await discoverProviderModels(
             context.env.DATABASE,
             provider,
             cipher,
             options.fetchUpstream,
+            context.req.raw.signal,
         );
         return context.json(result);
     });

@@ -1,9 +1,11 @@
 import {
+    ANTIGRAVITY_API_BASE_URL,
     ANTIGRAVITY_API_CLIENT,
     ANTIGRAVITY_AUTHORIZE_URL,
     ANTIGRAVITY_CLIENT_ID,
     ANTIGRAVITY_CLIENT_METADATA,
     ANTIGRAVITY_CLIENT_SECRET,
+    ANTIGRAVITY_HEADER_CLIENT_METADATA,
     ANTIGRAVITY_LOAD_CODE_ASSIST_URL,
     ANTIGRAVITY_OAUTH_SCOPE,
     ANTIGRAVITY_ONBOARD_USER_URL,
@@ -20,16 +22,16 @@ import {
 } from "/api/adapters/openai";
 import { REFRESH_LEASE_SECONDS } from "/api/config";
 import type { CredentialsCipher } from "/common/credentials";
-import { parseAntigravityOAuthCredentials } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
-import type {
-    AntigravityOAuthCredentials,
-    OAuthFlowType,
-    OpenAiOAuthCredentials,
-    ProviderCredentials,
-} from "/common/domain";
+import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from "/common/domain";
 import { isJsonObject, unixSeconds } from "/common/validation";
-import { OAUTH_RANDOM_VALUE_BYTES, OAUTH_STATE_TTL_SECONDS } from "./config";
+import { MILLISECONDS_PER_SECOND, OAUTH_UPSTREAM_TIMEOUT_SECONDS } from "/config";
+import {
+    ANTIGRAVITY_ONBOARDING_MAX_POLLS,
+    ANTIGRAVITY_ONBOARDING_POLL_INTERVAL_MS,
+    OAUTH_RANDOM_VALUE_BYTES,
+    OAUTH_STATE_TTL_SECONDS,
+} from "./config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 import type { CompleteOAuthInput, StartOAuthInput } from "./input";
 import {
@@ -55,6 +57,8 @@ interface OAuthTimeOptions {
 
 interface OAuthCompletionOptions extends OAuthTimeOptions {
     readonly fetchUpstream?: typeof fetch;
+    readonly signal?: AbortSignal;
+    readonly sleep?: (milliseconds: number) => Promise<void>;
 }
 
 interface AuthorizationToken {
@@ -76,6 +80,35 @@ function base64UrlEncode(bytes: Uint8Array): string {
 
 function randomBase64Url(): string {
     return base64UrlEncode(crypto.getRandomValues(new Uint8Array(OAUTH_RANDOM_VALUE_BYTES)));
+}
+
+function oauthUpstreamSignal(signal?: AbortSignal): AbortSignal {
+    const timeoutSignal = AbortSignal.timeout(
+        OAUTH_UPSTREAM_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND,
+    );
+    return signal === undefined
+        ? timeoutSignal
+        : AbortSignal.any([
+              signal,
+              timeoutSignal,
+          ]);
+}
+
+function sleepWithSignal(milliseconds: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted === true) return Promise.reject(signal.reason);
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        }, milliseconds);
+        const onAbort = (): void => {
+            clearTimeout(timeout);
+            reject(signal?.reason);
+        };
+        signal?.addEventListener("abort", onAbort, {
+            once: true,
+        });
+    });
 }
 
 async function createPkce(): Promise<{
@@ -217,6 +250,7 @@ async function exchangeAuthorizationCode(
     verifier: string,
     now: number,
     fetchUpstream: typeof fetch,
+    signal?: AbortSignal,
 ): Promise<AuthorizationToken> {
     const isOpenAi = type === "openai";
     const parameters = new URLSearchParams({
@@ -236,6 +270,7 @@ async function exchangeAuthorizationCode(
                 "Content-Type": "application/x-www-form-urlencoded",
             },
             method: "POST",
+            signal: oauthUpstreamSignal(signal),
         });
     } catch {
         throw new PanelApiError(502, "OAuth token exchange failed");
@@ -296,7 +331,7 @@ function antigravityHeaders(accessToken: string): Record<string, string> {
     return {
         Accept: "*/*",
         Authorization: `Bearer ${accessToken}`,
-        "Client-Metadata": ANTIGRAVITY_CLIENT_METADATA,
+        "Client-Metadata": ANTIGRAVITY_HEADER_CLIENT_METADATA,
         "Content-Type": "application/json",
         "User-Agent": ANTIGRAVITY_USER_AGENT,
         "X-Goog-Api-Client": ANTIGRAVITY_API_CLIENT,
@@ -315,13 +350,55 @@ function antigravityMetadata(): Record<string, unknown> {
 }
 
 function extractProjectId(value: Record<string, unknown>): string | undefined {
-    const project = value["cloudaicompanionProject"];
-    if (typeof project === "string") return project;
-    if (isJsonObject(project) && typeof project["id"] === "string") return project["id"];
+    for (const key of [
+        "antigravityProjectId",
+        "projectId",
+        "backendProjectId",
+        "userDefinedCloudaicompanionProject",
+        "cloudaicompanionProject",
+        "project",
+    ]) {
+        const project = value[key];
+        if (typeof project === "string" && project.length > 0) return project;
+        if (!isJsonObject(project)) continue;
+        for (const nestedKey of [
+            "id",
+            "projectId",
+            "project",
+        ]) {
+            const nested = project[nestedKey];
+            if (typeof nested === "string" && nested.length > 0) return nested;
+        }
+    }
     return undefined;
 }
 
-function selectOnboardingTier(loadResponse: Record<string, unknown>): string {
+function selectOnboardingTier(loadResponse: Record<string, unknown>): {
+    id: string;
+    isProjectRequired: boolean;
+} {
+    const ineligibleTiers = loadResponse["ineligibleTiers"];
+    if (Array.isArray(ineligibleTiers) && ineligibleTiers.length > 0) {
+        for (const tier of ineligibleTiers) {
+            if (
+                !isJsonObject(tier) ||
+                tier["reasonCode"] !== "VALIDATION_REQUIRED" ||
+                typeof tier["validationUrl"] !== "string"
+            )
+                continue;
+            let validationUrl: URL;
+            try {
+                validationUrl = new URL(tier["validationUrl"]);
+            } catch {
+                continue;
+            }
+            if (validationUrl.protocol !== "https:") continue;
+            throw new PanelApiError(
+                400,
+                `Google account validation is required before connecting: ${validationUrl.toString()}`,
+            );
+        }
+    }
     const tiers = loadResponse["allowedTiers"];
     if (Array.isArray(tiers)) {
         for (const tier of tiers) {
@@ -330,85 +407,197 @@ function selectOnboardingTier(loadResponse: Record<string, unknown>): string {
                 tier["isDefault"] === true &&
                 typeof tier["id"] === "string"
             ) {
-                return tier["id"];
+                return {
+                    id: tier["id"],
+                    isProjectRequired: tier["id"] !== "free-tier",
+                };
             }
         }
     }
-    const currentTier = loadResponse["currentTier"];
-    if (isJsonObject(currentTier) && typeof currentTier["id"] === "string") {
-        return currentTier["id"];
+    return {
+        id: "legacy-tier",
+        isProjectRequired: true,
+    };
+}
+
+function antigravityOperationUrl(name: string): string {
+    const segments = name.split("/");
+    if (
+        segments.length < 2 ||
+        segments[0] !== "operations" ||
+        segments.some((segment) => !/^[A-Za-z0-9._~-]+$/.test(segment))
+    ) {
+        throw new PanelApiError(502, "Antigravity onboarding returned an invalid operation");
     }
-    throw new PanelApiError(502, "Antigravity onboarding information was invalid");
+    return `${ANTIGRAVITY_API_BASE_URL}/${segments.map(encodeURIComponent).join("/")}`;
+}
+
+async function pollAntigravityOnboarding(
+    initialOperation: Record<string, unknown>,
+    accessToken: string,
+    fetchUpstream: typeof fetch,
+    sleep: (milliseconds: number) => Promise<void>,
+    signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+    let operation = initialOperation;
+    for (let pollCount = 0; operation["done"] !== true; pollCount += 1) {
+        if (pollCount >= ANTIGRAVITY_ONBOARDING_MAX_POLLS) {
+            throw new PanelApiError(502, "Antigravity onboarding timed out");
+        }
+        const name = operation["name"];
+        if (typeof name !== "string") {
+            throw new PanelApiError(502, "Antigravity onboarding returned an invalid operation");
+        }
+        await sleep(ANTIGRAVITY_ONBOARDING_POLL_INTERVAL_MS);
+        let response: Response;
+        try {
+            response = await fetchUpstream(antigravityOperationUrl(name), {
+                headers: antigravityHeaders(accessToken),
+                method: "GET",
+                signal: oauthUpstreamSignal(signal),
+            });
+        } catch {
+            throw new PanelApiError(502, "Antigravity onboarding operation failed");
+        }
+        operation = await readJsonObjectResponse(response, "Antigravity onboarding operation");
+    }
+    if (operation["error"] !== undefined) {
+        throw new PanelApiError(502, "Antigravity onboarding operation failed");
+    }
+    return operation;
+}
+
+async function isVpcServiceControlsRejection(response: Response): Promise<boolean> {
+    if (response.status !== 403) return false;
+    let value: unknown;
+    try {
+        value = await response.clone().json();
+    } catch {
+        return false;
+    }
+    if (!isJsonObject(value) || !isJsonObject(value["error"])) return false;
+    const details = value["error"]["details"];
+    return (
+        Array.isArray(details) &&
+        details.some(
+            (detail) => isJsonObject(detail) && detail["reason"] === "SECURITY_POLICY_VIOLATED",
+        )
+    );
 }
 
 async function resolveAntigravityProject(
     accessToken: string,
     fetchUpstream: typeof fetch,
+    sleep: (milliseconds: number) => Promise<void>,
+    signal?: AbortSignal,
+    explicitProjectId?: string,
 ): Promise<string> {
+    const metadata = antigravityMetadata();
+    if (explicitProjectId !== undefined) metadata["duetProject"] = explicitProjectId;
     let loadResponse: Response;
     try {
         loadResponse = await fetchUpstream(ANTIGRAVITY_LOAD_CODE_ASSIST_URL, {
             body: JSON.stringify({
-                metadata: antigravityMetadata(),
+                ...(explicitProjectId === undefined
+                    ? {}
+                    : {
+                          cloudaicompanionProject: explicitProjectId,
+                      }),
+                metadata,
             }),
             headers: antigravityHeaders(accessToken),
             method: "POST",
+            signal: oauthUpstreamSignal(signal),
         });
     } catch {
         throw new PanelApiError(502, "Antigravity project resolution failed");
     }
+    if (explicitProjectId !== undefined && (await isVpcServiceControlsRejection(loadResponse))) {
+        return explicitProjectId;
+    }
     const load = await readJsonObjectResponse(loadResponse, "Antigravity project resolution");
     const existingProjectId = extractProjectId(load);
     if (existingProjectId !== undefined) return existingProjectId;
+    if (isJsonObject(load["currentTier"])) {
+        if (explicitProjectId !== undefined) return explicitProjectId;
+        throw new PanelApiError(
+            400,
+            "This Google account requires an explicit Google Cloud project ID",
+        );
+    }
 
-    const tierId = selectOnboardingTier(load);
+    const tier = selectOnboardingTier(load);
+    if (tier.isProjectRequired && explicitProjectId === undefined) {
+        throw new PanelApiError(
+            400,
+            "This Google account requires an explicit Google Cloud project ID",
+        );
+    }
+    const onboardingProjectId = tier.isProjectRequired ? explicitProjectId : undefined;
+    const onboardingMetadata = antigravityMetadata();
+    if (onboardingProjectId !== undefined) onboardingMetadata["duetProject"] = onboardingProjectId;
     let onboardResponse: Response;
     try {
         onboardResponse = await fetchUpstream(ANTIGRAVITY_ONBOARD_USER_URL, {
             body: JSON.stringify({
-                metadata: antigravityMetadata(),
-                tierId,
+                ...(onboardingProjectId === undefined
+                    ? {}
+                    : {
+                          cloudaicompanionProject: onboardingProjectId,
+                      }),
+                metadata: onboardingMetadata,
+                tierId: tier.id,
             }),
             headers: antigravityHeaders(accessToken),
             method: "POST",
+            signal: oauthUpstreamSignal(signal),
         });
     } catch {
         throw new PanelApiError(502, "Antigravity onboarding failed");
     }
-    const onboard = await readJsonObjectResponse(onboardResponse, "Antigravity onboarding");
-    if (onboard["done"] !== true || !isJsonObject(onboard["response"])) {
+    const initialOperation = await readJsonObjectResponse(
+        onboardResponse,
+        "Antigravity onboarding",
+    );
+    const onboard = await pollAntigravityOnboarding(
+        initialOperation,
+        accessToken,
+        fetchUpstream,
+        sleep,
+        signal,
+    );
+    if (!isJsonObject(onboard["response"])) {
         throw new PanelApiError(502, "Antigravity onboarding returned an invalid response");
     }
     const projectId = extractProjectId(onboard["response"]);
-    if (projectId === undefined) {
-        throw new PanelApiError(502, "Antigravity onboarding returned an invalid response");
-    }
-    return projectId;
+    if (projectId !== undefined) return projectId;
+    if (onboardingProjectId !== undefined) return onboardingProjectId;
+    throw new PanelApiError(502, "Antigravity onboarding returned an invalid response");
 }
 
 async function completionCredentials(
     flowType: OAuthFlowType,
     token: AuthorizationToken,
-    reauthenticationProvider: StoredProvider | null,
-    cipher: CredentialsCipher,
     fetchUpstream: typeof fetch,
+    sleep: (milliseconds: number) => Promise<void>,
+    signal?: AbortSignal,
+    explicitProjectId?: string,
 ): Promise<ProviderCredentials> {
     if (flowType === "openai") return openAiCredentials(token);
 
-    let projectId: string | undefined;
-    if (reauthenticationProvider !== null) {
-        const previous = parseAntigravityOAuthCredentials(
-            await cipher.decrypt(reauthenticationProvider.encryptedCredentials),
-        );
-        projectId = previous.projectId;
-    }
-    projectId ??= await resolveAntigravityProject(token.accessToken, fetchUpstream);
-    const credentials: AntigravityOAuthCredentials = {
+    // Reauthentication may select a different Google account. Always resolve the project from
+    // the newly issued access token; reusing the previous account's project causes 400/403 calls.
+    return {
         accessToken: token.accessToken,
-        projectId,
+        projectId: await resolveAntigravityProject(
+            token.accessToken,
+            fetchUpstream,
+            sleep,
+            signal,
+            explicitProjectId,
+        ),
         refreshToken: token.refreshToken,
     };
-    return credentials;
 }
 
 async function acquireReauthenticationLease(
@@ -567,6 +756,9 @@ export async function completeProviderOAuth(
             }
         }
 
+        if (flowType === "openai" && input.projectId !== undefined) {
+            throw new PanelApiError(400, "projectId applies only to Antigravity OAuth");
+        }
         const fetchUpstream = options.fetchUpstream ?? fetch;
         const token = await exchangeAuthorizationCode(
             flowType,
@@ -574,13 +766,15 @@ export async function completeProviderOAuth(
             state.verifier,
             now,
             fetchUpstream,
+            options.signal,
         );
         const credentials = await completionCredentials(
             flowType,
             token,
-            leasedProvider,
-            cipher,
             fetchUpstream,
+            options.sleep ?? ((milliseconds) => sleepWithSignal(milliseconds, options.signal)),
+            options.signal,
+            input.projectId,
         );
         const encryptedCredentials = await cipher.encrypt(credentials);
 

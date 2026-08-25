@@ -125,6 +125,7 @@ test("Responses and Chat Completions translate through the event IR", () => {
                 strict: true,
             },
         ],
+        tool_choice: "required",
         temperature: 0.2,
         top_p: 0.9,
         max_output_tokens: 200,
@@ -142,6 +143,73 @@ test("Responses and Chat Completions translate through the event IR", () => {
     );
     assertEqual(responseRequest.reasoningEffort, "high", "Responses effort enters IR verbatim");
     assertEqual(responseRequest.isStreaming, true, "Responses stream is preserved");
+    const developerRequest = parseResponsesRequest({
+        model: "m",
+        input: [
+            {
+                type: "message",
+                role: "developer",
+                content: "Follow the application rules.",
+            },
+            {
+                role: "user",
+                content: "Hello",
+            },
+        ],
+    });
+    assertEqual(
+        developerRequest.messages,
+        [
+            {
+                role: "system",
+                parts: [
+                    {
+                        type: "text",
+                        text: "Follow the application rules.",
+                    },
+                ],
+            },
+            {
+                role: "user",
+                parts: [
+                    {
+                        type: "text",
+                        text: "Hello",
+                    },
+                ],
+            },
+        ],
+        "Responses developer messages become system context for translated upstreams",
+    );
+    const reasoningHistory = parseResponsesRequest({
+        model: "m",
+        input: [
+            {
+                type: "reasoning",
+                thought_signature: "sig-reasoning",
+                summary: [
+                    {
+                        type: "summary_text",
+                        text: "Prior reasoning",
+                    },
+                ],
+            },
+            {
+                role: "user",
+                content: "Continue",
+            },
+        ],
+    });
+    assertEqual(
+        reasoningHistory.messages[0],
+        {
+            role: "assistant",
+            parts: [],
+            reasoning: "Prior reasoning",
+            reasoningThoughtSignature: "sig-reasoning",
+        },
+        "Responses reasoning history enters the translated IR",
+    );
     assertTranslationError(
         () =>
             parseResponsesRequest({
@@ -167,6 +235,7 @@ test("Responses and Chat Completions translate through the event IR", () => {
 
     const chatRequest = renderChatCompletionsRequest(responseRequest, "wire-model", "medium");
     assertEqual(chatRequest.model, "wire-model", "translated model is substituted");
+    assertEqual(chatRequest.tool_choice, "required", "tool choice survives OpenAI translation");
     assertEqual(chatRequest.reasoning_effort, "medium", "effective effort is emitted");
     assertEqual(
         chatRequest.messages[1]?.content,
@@ -191,6 +260,20 @@ test("Responses and Chat Completions translate through the event IR", () => {
         "tool arguments remain JSON text",
     );
     assertEqual(chatRequest.messages[3]?.tool_call_id, "call_7", "tool output call id is retained");
+
+    assertEqual(
+        parseChatCompletionsRequest({
+            model: "m",
+            messages: [
+                {
+                    role: "developer",
+                    content: "Application rules",
+                },
+            ],
+        }).messages[0]?.role,
+        "system",
+        "Chat Completions developer messages become system context",
+    );
 
     const parsedChatRequest = parseChatCompletionsRequest({
         model: "m",
@@ -341,6 +424,59 @@ test("Responses and Chat Completions translate through the event IR", () => {
         "usage maps Responses to CC",
     );
 
+    const signedChatResponse = renderChatCompletionsResponse(
+        [
+            {
+                type: "message_start",
+            },
+            {
+                type: "tool_call_start",
+                index: 0,
+                id: "signed-call",
+                name: "lookup",
+                thoughtSignature: "signed-thought",
+            },
+            {
+                type: "tool_call_done",
+                index: 0,
+            },
+            {
+                type: "finish",
+                reason: "tool_calls",
+            },
+            {
+                type: "done",
+            },
+        ],
+        {
+            id: "chat_signed",
+            model: "public-model",
+            created: 10,
+        },
+    );
+    assertEqual(
+        signedChatResponse.choices[0]?.message.tool_calls?.[0]?.extra_content,
+        {
+            google: {
+                thought_signature: "signed-thought",
+            },
+        },
+        "Chat Completions emits Google's documented thought-signature carrier",
+    );
+    assertEqual(
+        parseChatCompletionsResponse(signedChatResponse).find(
+            (event) => event.type === "tool_call_start",
+        ),
+        {
+            type: "tool_call_start",
+            index: 0,
+            id: "signed-call",
+            name: "lookup",
+            thoughtSignature: "signed-thought",
+        },
+        "Chat Completions parses Google's documented thought-signature carrier",
+    );
+
     const chatEvents = parseChatCompletionsResponse({
         id: "chat_upstream",
         model: "wire-model",
@@ -352,6 +488,7 @@ test("Responses and Chat Completions translate through the event IR", () => {
                     role: "assistant",
                     content: "done",
                     reasoning_content: "work",
+                    reasoning_thought_signature: "sig-work",
                     tool_calls: [],
                 },
                 finish_reason: "length",
@@ -368,6 +505,11 @@ test("Responses and Chat Completions translate through the event IR", () => {
         model: "public-model",
         created: 100,
     });
+    assertEqual(
+        responsesResponse.output[0]?.["thought_signature"],
+        "sig-work",
+        "reasoning signatures survive Chat Completions to Responses translation",
+    );
     assertEqual(
         responsesResponse.status,
         "incomplete",
@@ -410,6 +552,26 @@ test("Responses and Chat Completions translate through the event IR", () => {
             },
         ],
         "SSE framing survives chunk boundaries and multiline data",
+    );
+    const splitCrLfFrames: {
+        event?: string;
+        data: string;
+    }[] = [];
+    const splitCrLfParser = new SseParser((frame) => splitCrLfFrames.push(frame));
+    splitCrLfParser.push("event: split\r");
+    splitCrLfParser.push("\ndata: ok\r");
+    splitCrLfParser.push("\n\r");
+    splitCrLfParser.push("\n");
+    splitCrLfParser.finish();
+    assertEqual(
+        splitCrLfFrames,
+        [
+            {
+                event: "split",
+                data: "ok",
+            },
+        ],
+        "SSE CRLF framing remains correct when CR and LF arrive in different chunks",
     );
     assertEqual(
         encodeSse("response.completed", {
@@ -490,6 +652,7 @@ test("Responses and Chat Completions translate through the event IR", () => {
                     index: 0,
                     delta: {
                         reasoning_content: "think",
+                        thought_signature: "sig-stream-reasoning",
                         content: "answer",
                     },
                     finish_reason: null,
@@ -522,6 +685,10 @@ test("Responses and Chat Completions translate through the event IR", () => {
             frame.startsWith("event: response.reasoning_summary_text.delta"),
         ),
         "Responses stream emits reasoning",
+    );
+    assert(
+        responseSse.some((frame) => frame.includes('"thought_signature":"sig-stream-reasoning"')),
+        "Responses stream preserves reasoning signatures in its final output",
     );
     assert(
         responseSse.at(-1)?.startsWith("event: response.completed") === true,

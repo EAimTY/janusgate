@@ -7,7 +7,13 @@ import {
 } from "/common/database";
 import type { AntigravityOAuthCredentials, OpenAiOAuthCredentials } from "/common/domain";
 import { GatewayError } from "/common/errors";
-import { requireJsonObject, requireStringField, unixSeconds } from "/common/validation";
+import {
+    isJsonObject,
+    requireJsonObject,
+    requireStringField,
+    unixSeconds,
+} from "/common/validation";
+import { MILLISECONDS_PER_SECOND, OAUTH_UPSTREAM_TIMEOUT_SECONDS } from "/config";
 import {
     ANTIGRAVITY_CLIENT_ID,
     ANTIGRAVITY_CLIENT_SECRET,
@@ -21,6 +27,18 @@ export type OAuthCredentials = AntigravityOAuthCredentials | OpenAiOAuthCredenti
 export interface ProviderAccess {
     provider: StoredProvider;
     credentials: OAuthCredentials;
+}
+
+function identityProviderSignal(signal?: AbortSignal): AbortSignal {
+    const timeoutSignal = AbortSignal.timeout(
+        OAUTH_UPSTREAM_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND,
+    );
+    return signal === undefined
+        ? timeoutSignal
+        : AbortSignal.any([
+              signal,
+              timeoutSignal,
+          ]);
 }
 
 interface RefreshedToken {
@@ -74,11 +92,29 @@ function parseRefreshResponse(
     };
 }
 
+/**
+ * RFC 6749 token-endpoint failures carry a bounded `error` code (`invalid_grant`, `invalid_client`,
+ * …). Surfacing that code is the only safe diagnostic: it tells the admin whether reauthentication
+ * is required (`invalid_grant`) or the failure was transient — without exposing token material.
+ */
+async function identityProviderErrorCode(response: Response): Promise<string | undefined> {
+    try {
+        const value: unknown = await response.json();
+        if (!isJsonObject(value)) return undefined;
+        const error = value["error"];
+        if (typeof error === "string" && /^[a-z_]{1,32}$/.test(error)) return error;
+    } catch {
+        // The body is diagnostics only; an unreadable one leaves the generic message.
+    }
+    return undefined;
+}
+
 async function requestRefreshedToken(
     provider: StoredProvider,
     credentials: OAuthCredentials,
     now: number,
     fetchUpstream: typeof fetch,
+    signal?: AbortSignal,
 ): Promise<RefreshedToken> {
     const parameters = new URLSearchParams({
         client_id:
@@ -90,14 +126,27 @@ async function requestRefreshedToken(
     if (provider.type === "antigravity_oauth") {
         parameters.set("client_secret", ANTIGRAVITY_CLIENT_SECRET);
     }
-    const response = await fetchUpstream(tokenUrl, {
-        body: parameters,
-        headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        method: "POST",
-    });
-    if (!response.ok) throw new Error("Identity provider rejected the token refresh");
+    let response: Response;
+    try {
+        response = await fetchUpstream(tokenUrl, {
+            body: parameters,
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            method: "POST",
+            signal: identityProviderSignal(signal),
+        });
+    } catch {
+        throw new Error("Identity provider token refresh request failed");
+    }
+    if (!response.ok) {
+        const errorCode = await identityProviderErrorCode(response);
+        throw new Error(
+            errorCode === undefined
+                ? "Identity provider rejected the token refresh"
+                : `Identity provider rejected the token refresh (${errorCode})`,
+        );
+    }
     return parseRefreshResponse(await response.json(), credentials.refreshToken, now);
 }
 
@@ -141,8 +190,11 @@ export async function ensureFreshProviderAccess(
     cipher: CredentialsCipher,
     options: {
         isForced?: boolean;
+        /** Access token the upstream just rejected with 401; enables skip-if-already-rotated. */
+        rejectedAccessToken?: string;
         now?: number;
         fetchUpstream?: typeof fetch;
+        signal?: AbortSignal;
     } = {},
 ): Promise<ProviderAccess> {
     const now = options.now ?? unixSeconds();
@@ -171,12 +223,21 @@ export async function ensureFreshProviderAccess(
 
     let current = await loadProvider(database, provider.id);
     try {
-        if (!options.isForced && isFresh(current, now)) {
-            await clearLease(database, provider.id, now);
-            return {
-                credentials: await decryptOAuthCredentials(current, cipher),
-                provider: current,
-            };
+        if (isFresh(current, now)) {
+            // A forced refresh still defers to credentials another worker rotated while we
+            // raced for the lease: retrying against them is the correct 401 recovery, and a
+            // second IdP call would needlessly consume rotation grace.
+            const currentCredentials = await decryptOAuthCredentials(current, cipher);
+            const alreadyRotated =
+                options.rejectedAccessToken !== undefined &&
+                currentCredentials.accessToken !== options.rejectedAccessToken;
+            if (!options.isForced || alreadyRotated) {
+                await clearLease(database, provider.id, now);
+                return {
+                    credentials: currentCredentials,
+                    provider: current,
+                };
+            }
         }
         const credentials = await decryptOAuthCredentials(current, cipher);
         const refreshed = await requestRefreshedToken(
@@ -184,6 +245,7 @@ export async function ensureFreshProviderAccess(
             credentials,
             now,
             options.fetchUpstream ?? fetch,
+            options.signal,
         );
         let nextCredentials: OAuthCredentials;
         if (current.type === "openai_oauth" && "accountId" in credentials) {
@@ -222,12 +284,14 @@ export async function ensureFreshProviderAccess(
             credentials: nextCredentials,
             provider: current,
         };
-    } catch {
+    } catch (error: unknown) {
         await clearLease(database, provider.id, now);
         throw new GatewayError(
             502,
             "upstream_error",
-            "The upstream credential refresh failed",
+            error instanceof Error && error.message.length > 0 && error.message.length <= 200
+                ? error.message
+                : "The upstream credential refresh failed",
             "upstream_failure",
         );
     }

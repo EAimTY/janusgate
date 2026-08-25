@@ -30,7 +30,14 @@ export interface GenerateContentRequest {
     tools?: {
         functionDeclarations: GenerateContentFunctionDeclaration[];
     }[];
+    toolConfig?: {
+        functionCallingConfig: {
+            mode: "AUTO" | "NONE" | "ANY" | "VALIDATED";
+            allowedFunctionNames?: string[];
+        };
+    };
     generationConfig?: GenerateContentGenerationConfig;
+    sessionId?: string;
 }
 
 export interface GenerateContentContent {
@@ -41,7 +48,8 @@ export interface GenerateContentContent {
 export interface GenerateContentFunctionDeclaration {
     name: string;
     description?: string;
-    parameters: JsonObject;
+    parameters?: JsonObject;
+    parametersJsonSchema?: JsonObject;
 }
 
 export interface GenerateContentGenerationConfig {
@@ -50,10 +58,10 @@ export interface GenerateContentGenerationConfig {
     maxOutputTokens?: number;
     stopSequences?: string[];
     responseMimeType?: "application/json";
-    responseSchema?: JsonObject;
+    responseJsonSchema?: JsonObject;
     thinkingConfig?: {
-        includeThoughts: true;
-        thinkingLevel: GeminiThinkingLevel;
+        includeThoughts?: true;
+        thinkingLevel: GeminiThinkingLevel | Uppercase<GeminiThinkingLevel>;
     };
 }
 
@@ -82,6 +90,23 @@ export function mapGeminiThinkingLevel(effort: string): GeminiThinkingLevel | un
     return undefined;
 }
 
+function appendContent(
+    contents: GenerateContentContent[],
+    role: GenerateContentContent["role"],
+    parts: JsonObject[],
+): void {
+    if (parts.length === 0) return;
+    const previous = contents.at(-1);
+    if (previous?.role === role) {
+        previous.parts.push(...parts);
+        return;
+    }
+    contents.push({
+        role,
+        parts,
+    });
+}
+
 export function buildGenerateContentRequest(
     request: IrRequest,
     options: {
@@ -107,19 +132,26 @@ export function buildGenerateContentRequest(
             continue;
         }
         const parts: JsonObject[] = [];
-        if (message["reasoning"] !== undefined)
-            parts.push({
+        if (message["reasoning"] !== undefined) {
+            const reasoningPart: JsonObject = {
                 text: message["reasoning"],
                 thought: true,
-            });
+            };
+            if (message.reasoningThoughtSignature !== undefined) {
+                reasoningPart["thoughtSignature"] = message.reasoningThoughtSignature;
+            }
+            parts.push(reasoningPart);
+        }
         for (const part of message["parts"])
             parts.push(renderGenerateContentPart(part, toolNamesByCallId));
-        if (parts.length > 0) {
-            contents.push({
-                role: message["role"] === "assistant" ? "model" : "user",
-                parts,
-            });
-        }
+        appendContent(contents, message["role"] === "assistant" ? "model" : "user", parts);
+    }
+    // GenerateContent requires a user turn first; reject rather than inventing prompt content.
+    if (contents[0]?.role === "model") {
+        throw new TranslationError(
+            "unsupported_parameter",
+            "Gemini upstreams do not support assistant-first conversation histories",
+        );
     }
 
     const generationConfig = buildGenerationConfig(request, options.reasoningEffort);
@@ -151,6 +183,28 @@ export function buildGenerateContentRequest(
             },
         ];
     }
+    if (request.toolChoice?.mode === "required" && request.tools.length === 0) {
+        throw new TranslationError("invalid_json", "required tool_choice needs at least one tool");
+    }
+    if (request.toolChoice !== undefined && request.tools.length > 0) {
+        generateRequest.toolConfig = {
+            functionCallingConfig: {
+                mode:
+                    request.toolChoice.mode === "none"
+                        ? "NONE"
+                        : request.toolChoice.mode === "required"
+                          ? "ANY"
+                          : "AUTO",
+                ...(request.toolChoice.functionName === undefined
+                    ? {}
+                    : {
+                          allowedFunctionNames: [
+                              request.toolChoice.functionName,
+                          ],
+                      }),
+            },
+        };
+    }
     if (generationConfig !== undefined) generateRequest.generationConfig = generationConfig;
     return generateRequest;
 }
@@ -168,7 +222,7 @@ function buildGenerationConfig(
     if (sampling.responseFormat !== undefined) {
         result.responseMimeType = "application/json";
         if (sampling.responseFormat["type"] === "json_schema") {
-            result.responseSchema = sampling.responseFormat["schema"];
+            result.responseJsonSchema = sampling.responseFormat["schema"];
         }
     }
     if (reasoningEffort !== undefined) {
@@ -199,6 +253,7 @@ function renderGenerateContentPart(
     if (part["type"] === "tool_call") {
         const result: JsonObject = {
             functionCall: {
+                id: part["id"],
                 name: part["name"],
                 args: parseJsonObjectText(part["arguments"], `arguments for ${part.name}`),
             },
@@ -216,6 +271,7 @@ function renderGenerateContentPart(
     }
     const result: JsonObject = {
         functionResponse: {
+            id: part["callId"],
             name,
             response: {
                 output: part["output"],
@@ -228,7 +284,7 @@ function renderGenerateContentPart(
 }
 
 function renderInlineData(url: string): JsonObject {
-    if (!url.startsWith("data:")) {
+    if (url.slice(0, 5).toLowerCase() !== "data:") {
         throw new TranslationError(
             "unsupported_parameter",
             "Gemini upstreams accept only data-URL image inputs",
@@ -239,7 +295,7 @@ function renderInlineData(url: string): JsonObject {
         throw new TranslationError("invalid_json", "image data URL is malformed");
     }
     const metadata = url.slice(5, commaIndex).split(";");
-    const mimeType = metadata[0];
+    const mimeType = metadata[0]?.toLowerCase();
     if (mimeType === undefined || !mimeType.startsWith("image/")) {
         throw new TranslationError(
             "unsupported_parameter",
@@ -248,7 +304,7 @@ function renderInlineData(url: string): JsonObject {
     }
     const payload = url.slice(commaIndex + 1);
     if (payload.length === 0) throw new TranslationError("invalid_json", "image data URL is empty");
-    const data = metadata.includes("base64")
+    const data = metadata.some((entry) => entry.toLowerCase() === "base64")
         ? normalizeBase64(payload)
         : encodeBase64(decodeDataUrl(payload));
     return {
@@ -323,7 +379,11 @@ export function parseGenerateContentResponse(value: unknown): IrEvent[] {
     ];
     let nextToolIndex = 0;
     let hasToolCall = false;
-    let finishReason: FinishReason = "stop";
+    const promptFeedback =
+        root["promptFeedback"] === undefined
+            ? undefined
+            : expectRecord(root["promptFeedback"], "promptFeedback");
+    let finishReason = mapGeminiFinishReason(promptFeedback?.["blockReason"], false);
     const candidates =
         root["candidates"] === undefined ? [] : expectArray(root["candidates"], "candidates");
     if (candidates.length > 1) {
@@ -331,8 +391,15 @@ export function parseGenerateContentResponse(value: unknown): IrEvent[] {
     }
     for (const candidateValue of candidates) {
         const candidate = expectRecord(candidateValue, "candidate");
-        const content = expectRecord(candidate["content"], "candidate.content");
-        for (const partValue of expectArray(content["parts"], "candidate.content.parts")) {
+        const content =
+            candidate["content"] === undefined
+                ? undefined
+                : expectRecord(candidate["content"], "candidate.content");
+        const parts =
+            content?.["parts"] === undefined
+                ? []
+                : expectArray(content["parts"], "candidate.content.parts");
+        for (const partValue of parts) {
             const parsed = parseGenerateContentPart(partValue, nextToolIndex);
             events.push(...parsed.events);
             if (parsed.hasToolCall) {
@@ -356,6 +423,13 @@ export function parseGenerateContentResponse(value: unknown): IrEvent[] {
         type: "done",
     });
     return events;
+}
+
+function generateToolCallId(functionCall: Record<string, unknown>): string {
+    const upstreamId = optionalString(functionCall["id"], "functionCall.id");
+    return upstreamId === undefined || upstreamId.length === 0
+        ? `call_${crypto.randomUUID().replaceAll("-", "")}`
+        : upstreamId;
 }
 
 function parseGenerateContentPart(
@@ -398,7 +472,7 @@ function parseGenerateContentPart(
         const start: IrEvent = {
             type: "tool_call_start",
             index: toolIndex,
-            id: `call_${toolIndex + 1}`,
+            id: generateToolCallId(functionCall),
             name: expectNonEmptyString(functionCall["name"], "functionCall.name"),
         };
         if (thoughtSignature !== undefined && start["type"] === "tool_call_start") {
@@ -438,7 +512,11 @@ export function parseGenerateContentStreamEvent(
         });
         state.isStarted = true;
     }
-    let finishReasonValue: unknown;
+    const promptFeedback =
+        root["promptFeedback"] === undefined
+            ? undefined
+            : expectRecord(root["promptFeedback"], "promptFeedback");
+    let finishReasonValue: unknown = promptFeedback?.["blockReason"];
     const candidates =
         root["candidates"] === undefined ? [] : expectArray(root["candidates"], "candidates");
     if (candidates.length > 1) {
@@ -461,7 +539,7 @@ export function parseGenerateContentStreamEvent(
                 const functionCall = expectRecord(part["functionCall"], "functionCall");
                 const index = state.nextToolIndex;
                 state.nextToolIndex += 1;
-                const id = `call_${index + 1}`;
+                const id = generateToolCallId(functionCall);
                 const name = expectNonEmptyString(functionCall["name"], "functionCall.name");
                 const start: IrEvent = {
                     type: "tool_call_start",
@@ -543,6 +621,9 @@ export function parseGenerateContentStreamEvent(
 /** Public API responses are bare objects; Code Assist wraps them in an extra `.response` layer. */
 function unwrapGenerateContentResponse(value: unknown): Record<string, unknown> {
     const envelope = expectRecord(value, "Gemini response");
+    if (envelope["error"] !== undefined) {
+        throw new TranslationError("upstream_failure", "Gemini returned an embedded error");
+    }
     return envelope["response"] === undefined
         ? envelope
         : expectRecord(envelope["response"], "Gemini response.response");
@@ -550,16 +631,17 @@ function unwrapGenerateContentResponse(value: unknown): Record<string, unknown> 
 
 function parseGenerateContentUsage(value: unknown): IrUsage {
     const usage = expectRecord(value, "usageMetadata");
-    const result: IrUsage = {
-        inputTokens: optionalNonNegativeInteger(usage["promptTokenCount"], "promptTokenCount") ?? 0,
-        outputTokens:
-            optionalNonNegativeInteger(usage["candidatesTokenCount"], "candidatesTokenCount") ?? 0,
-        totalTokens: optionalNonNegativeInteger(usage["totalTokenCount"], "totalTokenCount") ?? 0,
-    };
+    const candidateTokens =
+        optionalNonNegativeInteger(usage["candidatesTokenCount"], "candidatesTokenCount") ?? 0;
     const reasoningTokens = optionalNonNegativeInteger(
         usage["thoughtsTokenCount"],
         "thoughtsTokenCount",
     );
+    const result: IrUsage = {
+        inputTokens: optionalNonNegativeInteger(usage["promptTokenCount"], "promptTokenCount") ?? 0,
+        outputTokens: candidateTokens + (reasoningTokens ?? 0),
+        totalTokens: optionalNonNegativeInteger(usage["totalTokenCount"], "totalTokenCount") ?? 0,
+    };
     const cachedInputTokens = optionalNonNegativeInteger(
         usage["cachedContentTokenCount"],
         "cachedContentTokenCount",
@@ -580,5 +662,9 @@ function mapGeminiFinishReason(value: unknown, hasToolCall: boolean): FinishReas
     ) {
         return "content_filter";
     }
-    return hasToolCall ? "tool_calls" : "stop";
+    if (hasToolCall) return "tool_calls";
+    if (value === undefined || value === "STOP" || value === "FINISH_REASON_UNSPECIFIED") {
+        return "stop";
+    }
+    throw new TranslationError("upstream_failure", "Gemini returned an unsuccessful finish reason");
 }

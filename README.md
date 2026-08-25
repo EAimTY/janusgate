@@ -75,7 +75,7 @@ Per-type stored config and credentials payloads:
 | Type | Stored config | Credentials payload (encrypted, §4.3) |
 | --- | --- | --- |
 | `openai_oauth` | `enabled`, credentials, token `expires_at` | `{ "accessToken", "refreshToken", "accountId" }` — `accountId` parsed from the `chatgpt_account_id` claim of the OAuth `id_token` (default workspace; workspace selection unsupported) |
-| `antigravity_oauth` | `enabled`, credentials, token `expires_at` | `{ "accessToken", "refreshToken", "projectId" }` — `projectId` resolved once during onboarding (§8.4), stored with tokens |
+| `antigravity_oauth` | `enabled`, credentials, token `expires_at` | `{ "accessToken", "refreshToken", "projectId" }` — `projectId` resolved from the selected account during login/reauthentication (§8.4), stored with tokens |
 | `openai_compatible` | `enabled`, `baseUrl` (valid http(s) URL, canonicalized to **no** trailing slash), `protocol` ∈ {`openai_response`, `openai_chat_completion`, `gemini_generate_content`}, credentials | `{ "apiKey" }` — mandatory at creation; optional on update (omitted ⇒ preserve existing) |
 
 A stored `baseUrl` never ends with a slash (stripped at save); path segments are joined with an explicit `/`: `{baseUrl}/models`, `{baseUrl}/responses`, `{baseUrl}/chat/completions`, and for `gemini_generate_content` `{baseUrl}/models/{model}:generateContent` / `{baseUrl}/models/{model}:streamGenerateContent?alt=sse`. Authentication is `Authorization: Bearer <apiKey>` for the two OpenAI formats and `x-goog-api-key: <apiKey>` for `gemini_generate_content`. A Gemini `baseUrl` includes its version path (e.g. `https://generativelanguage.googleapis.com/v1beta`).
@@ -132,13 +132,13 @@ Quota/account errors surface as `upstream_error` (§11.2).
 
 ### 5.2 Deletion
 
-Deleting a provider referenced by any model fails via FK `RESTRICT`; the panel surfaces the error.
+Deleting a provider atomically deletes all of its models before deleting the provider in the same D1 batch; FK `RESTRICT` prevents orphaning outside that operation.
 
 ---
 
 ## 6. Models
 
-Fields: public `name` (globally unique), `provider_id` (NOT NULL FK), `upstream_name`, `enabled`, optional `thinkingLevels`.
+Fields: public `name` (globally unique), `provider_id` (NOT NULL FK), `upstream_name`, `enabled`, optional `thinkingLevels`, and internal `is_manually_edited` discovery ownership state.
 
 ### 6.1 Naming (normative)
 
@@ -162,14 +162,15 @@ Populates models from a provider's upstream. Triggered automatically whenever a 
 | `openai_compatible` · `openai_response` / `openai_chat_completion` | `GET {baseUrl}/models` with `Authorization: Bearer <apiKey>` → `data[].id` |
 | `openai_compatible` · `gemini_generate_content` | `GET {baseUrl}/models` with `x-goog-api-key: <apiKey>` → `models[].name` minus the `models/` prefix, keeping only entries whose `supportedGenerationMethods` includes `generateContent` |
 | `openai_oauth` | Pinned Codex catalog in the adapter module |
-| `antigravity_oauth` | Pinned Gemini-family catalog in the adapter module |
+| `antigravity_oauth` | `POST …/v1internal:fetchAvailableModels` with the fresh OAuth token and `{ project }` → requestable Gemini, Claude, and GPT-OSS runtime IDs from non-internal `models` map entries |
 
 Rules (normative):
 
-- Discovered rows start **disabled**, `thinkingLevels` unset, referencing their own provider (`openai_oauth` discoveries bind to that provider like any other).
-- A computed `name` that already exists is **skipped** (counted in the run result); the same ID twice within one run is an **error** aborting the run with no changes.
-- Discovery never overwrites, disables, or deletes existing models.
-- A failed run changes nothing; the error returns to the panel.
+- Discovered rows start **disabled**, `thinkingLevels` unset, and `is_manually_edited = 0`, referencing their own provider (`openai_oauth` discoveries bind to that provider like any other).
+- Any model created or updated through `save-model` has `is_manually_edited = 1`; enabling, disabling, renaming, changing its upstream name/provider, or changing its thinking levels therefore protects it from discovery cleanup.
+- Identity during rediscovery is `(provider_id, upstream_name)`, not the public `name`. An existing row with that identity is skipped even if its public name was edited, so rediscovery never creates a duplicate for a renamed model.
+- A newly computed public `name` that is occupied by another non-stale row is skipped. The same upstream ID twice within one run is an error.
+- After a successful fetch, discovery deletes untouched (`is_manually_edited = 0`) rows for that provider whose upstream IDs disappeared. Manually edited rows and every other provider's rows remain unchanged. Deletions and insertions occur in one atomic D1 batch; a failed run changes nothing.
 
 ---
 
@@ -204,6 +205,7 @@ ensureFresh(provider):
   failure:
       clear refresh_started_at (guarded)
       fail upstream_error          # invalid_grant is permanent: provider stays stored but unusable until reauthentication
+                                   # (the RFC 6749 error code is surfaced as a bounded diagnostic)
 ```
 
 Additional rules:
@@ -211,7 +213,7 @@ Additional rules:
 - Crash safety comes from lease expiry (`REFRESH_LEASE_SECONDS`, default 60).
 - Reauthentication completion (§8.5) takes the same lease — it serializes *all* credential mutations per provider.
 - **No waiter path exists.** A lease-busy reader proceeds with the current-best token instead of polling; staleness is recovered by the forced-refresh cycle below. This keeps `503` out of the public API entirely.
-- **Forced refresh:** upstream `401` ⇒ one forced refresh (margin ignored, same lease, a **single** compare-and-set attempt — lease held ⇒ the `401` surfaces as `upstream_error`) and exactly one retry; a second `401` becomes `upstream_error`.
+- **Forced refresh:** upstream `401` ⇒ one forced refresh (same lease, a **single** compare-and-set attempt — lease held ⇒ the `401` surfaces as `upstream_error`) and exactly one retry; a second `401` becomes `upstream_error`. After acquiring the lease, the re-read row short-circuits the IdP call when it already holds margin-fresh credentials **different from** the rejected access token — another worker's in-flight rotation is the correct recovery, and a second refresh would needlessly consume rotation grace. A rejected token that is still stored (and fresh) still forces the IdP call.
 - Decrypted tokens may be cached in isolate memory per request only.
 - Invariants: no refresh token consumed twice concurrently; no two credential writes overlap; readers observe old-or-new credentials atomically (single-row update).
 
@@ -256,22 +258,23 @@ Requests pass through natively as Responses payloads (`store:false` typical); `i
 
 Constants pinned in the adapter module (the Antigravity editor's installed-app OAuth client):
 
-- Authorize `https://accounts.google.com/o/oauth2/v2/auth`: `response_type=code`, `scope=https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email`, `access_type=offline`, `prompt=consent`, registered loopback `redirect_uri`, PKCE S256, `state`.
+- Authorize `https://accounts.google.com/o/oauth2/v2/auth`: `response_type=code`, scopes `aicode`, `cloud-platform`, `userinfo.email`, `userinfo.profile`, `cclog`, and `experimentsandconfigs`; `access_type=offline`, `prompt=consent`, registered loopback `redirect_uri`, PKCE S256, `state`. Existing providers must be reauthenticated after this scope set changes because refresh cannot add scopes to an issued grant.
 - Token `POST https://oauth2.googleapis.com/token`: `authorization_code` / `refresh_token` grants with client ID **and** client secret + `code_verifier`.
-- API base `https://cloudcode-pa.googleapis.com/v1internal`.
+- API base `https://cloudcode-pa.googleapis.com/v1internal`; model discovery uses `:fetchAvailableModels` so configured rows track requestable runtime IDs rather than display placeholders.
 
-**Onboarding (once, after first login):** call `loadCodeAssist`; if unprovisioned, call `onboardUser`. The resolved project ID is stored as `projectId` and sent as `project` in every API call. Reauthentication reuses the stored `projectId` and skips onboarding unless missing.
+**Project resolution/onboarding:** call `loadCodeAssist`; if the selected account is unprovisioned, call `onboardUser`. A non-terminal long-running operation is polled through `GET …/v1internal/operations/{id}` with a bounded interval/count until `done:true`; terminal errors, malformed operations, and timeout fail onboarding. Workspace/project-backed accounts can provide `projectId` at completion; an exact 403 `SECURITY_POLICY_VIOLATED` RPC detail is treated as the expected VPC Service Controls standard-tier path only when that project was supplied. Eligibility-validation responses surface their HTTPS validation URL to the admin, who validates and restarts OAuth. The resolved project ID is stored as `projectId` and sent as `project` in every API call. Reauthentication always resolves from the newly issued access token because the admin may select a different Google account; it never reuses another account's stored project.
 
-**Upstream calls:** `POST …/{project}/v1internal:streamGenerateContent?alt=sse` (streaming) or `…/{project}/v1internal:generateContent` (non-streaming), `Authorization: Bearer <accessToken>`. Body: `{ model, project, request: { contents[], systemInstruction, tools{functionDeclarations}, generationConfig } }`. Streaming responses are SSE frames, each a `GenerateContentResponse` JSON; non-streaming returns a single such JSON.
+**Upstream calls:** `POST https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse` (streaming) or `…/v1internal:generateContent` (non-streaming), with `Authorization: Bearer <accessToken>`, pinned Antigravity headers (`User-Agent: antigravity/1.15.8 darwin/arm64`, `X-Goog-Api-Client`, and `Client-Metadata`), and a mode-appropriate `Accept` header. `Client-Metadata` uses the legacy `MACOS` fingerprint expected in the header; onboarding request-body metadata separately uses the protobuf value `PLATFORM_UNSPECIFIED`. Project routing belongs in the body, never the URL path. Body: `{ model, project, requestType: "agent", userAgent: "antigravity", requestId: "agent-<uuid>", request: { contents[], systemInstruction, tools{functionDeclarations}, generationConfig } }`. Streaming responses are SSE frames, each a `GenerateContentResponse` JSON; non-streaming returns a single such JSON.
 
 Adapter responsibilities:
 
 - Map outward messages/parts ⇄ `contents[]` roles and parts (`text`, `inlineData` for data-URL images, `functionCall`/`functionResponse`).
 - Map sampling: `temperature`, `topP`, `maxOutputTokens`, `stop`, `responseMimeType` (`json_object`/`json_schema`).
+- Normalize/dereference tool schemas. Gemini runtimes use Code Assist `parametersJsonSchema`; Claude/GPT-OSS use the legacy `parameters` custom-tool bridge with an allowlisted protobuf-schema subset.
 - Map `reasoning.effort` → `generationConfig.thinkingConfig` (§10.2); surface `thought:true` parts as reasoning events.
-- Synthesize tool-call IDs (`call_N`) for `functionCall` parts (Code Assist has none); match echoed `functionResponse` parts back by index/name.
-- **Preserve `thoughtSignature` blobs** wherever present, reattaching them to corresponding parts in follow-up turns within the same request history. Signatures cannot survive across independent client requests (stateless gateway); their absence degrades gracefully — accepted limitation.
-- Upstream model IDs are free-form passthrough strings (e.g. `gemini-3-pro-high`).
+- Preserve `functionCall.id` when Code Assist supplies one; otherwise synthesize a response-unique `call_<uuid>` ID so independent tool rounds cannot collide. Match echoed `functionResponse` parts back by call ID/name.
+- **Preserve `thoughtSignature` blobs** wherever present, reattaching them to corresponding parts in follow-up turns within the same request history. Chat Completions carries tool-call signatures through Google's documented `extra_content.google.thought_signature`; Responses uses the gateway's `thought_signature` extension. Missing signatures required by Gemini 3 surface as explicit upstream failures rather than being treated as harmless.
+- Selectable IDs are not always requestable runtime IDs. Routing includes `gemini-3.7-flash` → `gemini-3.7-flash-tiered`, tiered Gemini 3.6/3.5, Gemini 3.1 High → `gemini-pro-agent`, Claude Opus → its thinking runtime, and GPT-OSS → its medium runtime. Gemini 3.7 receives uppercase `thinkingLevel` (`LOW` by default); other known runtimes encode/fix thinking in their runtime ID. Requests carry per-family safe `maxOutputTokens` defaults/clamps. Claude carries the interleaved-thinking beta header and defaults tool mode to `VALIDATED`. Unknown IDs remain free-form passthrough strings.
 
 ⚠️ These endpoints/constants are reverse-engineered from the Antigravity client and may change without notice. They are pinned in one adapter module — the fragile boundary of the system.
 
@@ -290,6 +293,7 @@ Pairwise converters are avoided; all translated traffic passes through a small i
 ```text
 request:  messages(system/user/assistant/tool), parts(text/image/tool_call/tool_output),
           tools(function), sampling, reasoning-effort
+          (`developer` messages normalize to IR `system`; Responses reasoning input items retain summaries)
 events:   message_start · text_delta · tool_call_start/delta/done ·
           reasoning_delta · finish(reason) · usage · done
 reasons:  stop | length | tool_calls | content_filter
@@ -315,6 +319,8 @@ Usage and finish reasons map across translated representations (`prompt_tokens �
 | Feature | Same-format native passthrough | Translated paths |
 | --- | --- | --- |
 | `tools` of type `function` | passthrough | ✔ |
+| `tool_choice` (`auto`/`none`/`required`/named function) | passthrough | mapped through IR and Gemini `functionCallingConfig` |
+| `parallel_tool_calls:false` | passthrough | `400 unsupported_parameter` |
 | Other tool types (`web_search`, …) | passthrough | `400 unsupported_tool_type` |
 | `previous_response_id`, `store:true` | passthrough — effective only against upstreams that keep server-side conversation state; stateless upstreams reject it and the upstream error surfaces (§11.2) | `400 unsupported_parameter` |
 | Reasoning | native fields/items/events | Responses out: reasoning deltas when upstream provides them; CC out: best-effort `delta.reasoning_content`, dropped if absent |
@@ -322,6 +328,7 @@ Usage and finish reasons map across translated representations (`prompt_tokens �
 | `n` > 1 (Chat Completions inbound) | `400 unsupported_parameter` | `400 unsupported_parameter` |
 | Unknown top-level fields | passthrough | ignored |
 | `instructions` | passthrough | → system message / `systemInstruction` |
+| Assistant-first message history | passthrough | Gemini path: `400 unsupported_parameter` rather than inventing a synthetic user turn |
 
 ### 10.2 Reasoning effort
 
@@ -331,7 +338,7 @@ Reasoning effort is an **opaque non-empty string**, not an enum. The gateway val
 - **Same-format requests** relay the client's value verbatim inside the substituted body; cross-format OpenAI⇄OpenAI translation copies it verbatim into the target field.
 - **Per-model whitelist:** a model's `thinkingLevels` override (panel vocabulary ⊆ `minimal < low < medium < high < xhigh`) acts as a plain whitelist: requested effort ∈ override → forwarded verbatim; otherwise the reasoning parameter is omitted entirely. No nearest-lower clamping exists — arbitrary strings have no order to clamp along.
 - **Gemini upstreams (`gemini_generate_content`) can only express `low|medium|high`:** those strings pass through verbatim; `minimal` omits the config, `xhigh` clamps down to `high`, and any other string means the upstream default applies rather than a guessed mapping (mapping pinned in the Gemini adapter module).
-- An omitted client effort ⇒ no reasoning configuration is ever injected upstream.
+- An omitted client effort ⇒ no reasoning configuration is injected upstream except for Antigravity's `gemini-3.7-flash-tiered`, whose backend contract requires `thinkingLevel: "LOW"` even when the client omits effort.
 - **Stripping is not disabling.** A stripped effort means "upstream default applies" — for Gemini models that reason by default, the effective reasoning can therefore *exceed* what the client asked for. `[]` means "never inject", never "off".
 - Panel semantics: `thinkingLevels` omitted/`null` ⇒ no filtering (pure passthrough); `[]` ⇒ reasoning always stripped (still not "off"; §14 mirrors this).
 - With no override set there are **no format defaults**: every OpenAI-format effort reaches the upstream unchanged, and the upstream owns rejecting values it cannot handle (surfacing as `upstream_error`, §11.2).
@@ -362,6 +369,7 @@ Reasoning effort is an **opaque non-empty string**, not an enum. The gateway val
 - *Before the first byte reaches the client:* any failure (auth, resolution, upstream non-2xx, first-byte idle timeout) yields an HTTP error per the error-transparency policy below. Nothing partial is sent.
 - *After streaming began:* the gateway never synthesizes terminal frames. Upstream disconnect, malformed stream, or idle timeout → abort the upstream fetch and simply end the client stream. A valid stream always ends with `response.completed` (Responses) or `data: [DONE]` (CC); ending any other way **is** the client-visible error signal.
 - Idle timeout: no upstream bytes for `UPSTREAM_IDLE_TIMEOUT_SECONDS` (300) → `504` if nothing was sent yet, otherwise the stream just ends.
+- Unreachable upstream (DNS failure, connection reset, TLS error) before or during a response → `502 upstream_error` if nothing was sent yet; after streaming began the stream just ends.
 - Client disconnect: `request.signal` aborts the upstream fetch via `AbortController` (also during non-streaming reads).
 
 **Non-streaming failures:** per the error-transparency policy below. On translated paths, unparseable 2xx JSON → `502 upstream_failure`. Same-format paths never parse the response body. Idle timeout → `504 upstream_timeout`.
@@ -386,7 +394,7 @@ Reasoning effort is an **opaque non-empty string**, not an enum. The gateway val
 **Error transparency (normative).** The gateway rewrites only what it must:
 
 - **Native passthrough paths** — no protocol change and no streaming-mode change (`openai_response` upstream serving OpenAI Response clients, or `openai_chat_completion` upstream serving Chat Completions clients): the entire upstream response, success *or* error, bypasses parsing and re-serialization. Its status, safe headers (`Content-Type`, `Retry-After`, …), and exact body bytes are relayed unchanged. Transparent pipe; no sanitization.
-- **Translated paths** — the gateway authors the envelope: upstream `429` → `429` with the upstream `Retry-After` forwarded; every other upstream failure → `502 upstream_error`. Bodies: `openai_compatible` upstreams relay their OpenAI-shaped error object **verbatim** (admin-chosen, semi-trusted upstream — its messages are operationally valuable); OAuth kinds get **sanitized** messages — never proxied verbatim, no tokens, URLs, or internal identifiers.
+- **Translated paths** — the gateway authors the envelope: upstream `429` → `429` with the upstream `Retry-After` forwarded; every other upstream failure → `502 upstream_error`. Bodies: `openai_compatible` upstreams relay their OpenAI-shaped error object **verbatim** (admin-chosen, semi-trusted upstream — its messages are operationally valuable); OAuth kinds get **sanitized, status-specific** messages — never proxied verbatim, no tokens, URLs, or internal identifiers.
 
 ### 11.3 `GET /api/openai-v1/models`
 
@@ -430,7 +438,7 @@ Accepts a standard OpenAI **Chat Completions** request; same lifecycle.
 | --- | --- | --- |
 | GET | `/panel-api/list-providers` | All providers (doubles as auth probe) |
 | POST | `/panel-api/save-provider` | Create/update provider |
-| POST | `/panel-api/delete-provider` | Delete provider (FK-guarded) |
+| POST | `/panel-api/delete-provider` | Delete provider and all owned models |
 | POST | `/panel-api/start-provider-oauth` | Begin paste-back OAuth |
 | POST | `/panel-api/complete-provider-oauth` | Finish paste-back OAuth |
 | GET | `/panel-api/list-models` | All model mappings |
@@ -475,7 +483,7 @@ Response: `{ "name": "openrouter" }`
 
 ### 12.5 `POST /panel-api/delete-provider`
 
-Request: `{ "providerName": "…" }` → delete by `name`. Referenced-by-a-model deletions fail via FK `RESTRICT` → `409`-style error.
+Request: `{ "providerName": "…" }` → delete by `name`. All owned models are deleted before the provider in one atomic D1 batch; FK `RESTRICT` prevents orphaning outside that operation.
 Response: `{ "ok": true }`
 
 ### 12.6 `POST /panel-api/start-provider-oauth`
@@ -485,7 +493,7 @@ Response: `{ "authorizeUrl": "https://…" }`
 
 ### 12.7 `POST /panel-api/complete-provider-oauth`
 
-Request: `{ "redirectUrl": "<full pasted URL>", "name"?, "modelPrefix"? }` — `name`/`modelPrefix` apply to creation flows only, ignored on reauthentication. `error=` param instead of `code` → `400`.
+Request: `{ "redirectUrl": "<full pasted URL>", "name"?, "modelPrefix"?, "projectId"? }` — `name`/`modelPrefix` apply to creation flows only, ignored on reauthentication. Optional `projectId` applies only to Antigravity creation/reauthentication and supports Workspace/project-backed accounts; managed free-tier accounts leave it blank. `error=` instead of `code` → `400`.
 
 Workflow: validate state (§8.1) → exchange code (`code_verifier`; Antigravity also sends client secret) → Antigravity onboarding where applicable (§8.4) → encrypt credentials → atomic write + state deletion (§8.2; reauth holds the §7 lease across the write, §8.5).
 Response: `{ "ok": true }`
@@ -511,7 +519,7 @@ Request: `{ "id"?, "providerName", "upstreamName", "name"?, "enabled"?, "thinkin
 
 - `thinkingLevels`: array ⊆ canonical vocabulary (§10.2); omitted/`null` ⇒ no filtering (pure passthrough); `[]` ⇒ reasoning always stripped — suppressing gateway-injected reasoning config, never upstream-default reasoning (§10.2).
 - `name`, when present, is the **base** — stored public name becomes `effectivePrefix(provider) + name` (§6.1); omitted ⇒ base is `upstreamName`. Supplying `name` on an update is a destructive rename (old name stops resolving immediately).
-- Validation: `providerName` references an existing provider of **any** type (`openai_oauth` included); non-empty `upstreamName`; `name` when present non-empty; composed name globally unique — duplicates → `409`-style error, never auto-renamed/suffixed.
+- Validation: `providerName` references an existing provider of **any** type (`openai_oauth` included); non-empty `upstreamName`; `name` when present non-empty; composed name globally unique — duplicates → `409`-style error, never auto-renamed/suffixed. Every successful create/update marks the model manually edited for discovery cleanup purposes (§6.3).
 
 Response: `{ "id": N, "name": "<full stored name>" }`
 
@@ -522,8 +530,8 @@ Request: `{ "id": N }` → Response: `{ "ok": true }`
 ### 12.11 `POST /panel-api/discover-models`
 
 Request: `{ "providerName": "…" }` → runs the discovery strategy (§6.3).
-Response: `{ "total": 12, "created": 9, "skipped": 3 }`
-Upstream failures surface as a panel error with no state change. Invoked automatically right after provider creation/OAuth; re-running is always safe (idempotent skips).
+Response: `{ "total": 12, "created": 2, "removed": 1, "skipped": 10 }`
+`total` is the current upstream-list size; `removed` counts untouched stale rows deleted locally. Upstream failures surface as a panel error with no state change. Invoked automatically right after provider creation/OAuth; re-running reconciles discovery-owned rows while preserving manually edited rows.
 
 ---
 
@@ -571,7 +579,10 @@ CREATE TABLE models (
     -- JSON array ⊆ canonical thinking-level vocabulary; NULL ⇒ no filtering, pure passthrough (§10.2)
     thinking_levels TEXT,
 
-    enabled INTEGER NOT NULL DEFAULT 1
+    enabled INTEGER NOT NULL DEFAULT 1,
+
+    -- defaults to manual ownership; discovery explicitly inserts 0 (§6.3)
+    is_manually_edited INTEGER NOT NULL DEFAULT 1
 ) STRICT;
 
 -- every model binds to exactly one provider (any type, openai_oauth included)
@@ -610,7 +621,7 @@ Validation policy (application-side, beyond the schema):
 SolidJS v2 SPA; client-side routing; native `fetch`; no state library.
 
 - Global **auth overlay** (§4.1): non-dismissable until the probe succeeds.
-- `/providers` — table grouped by type, showing `name` as-is; actions: add API-key provider (form), add/reauthenticate OpenAI & Antigravity accounts (paste-back dialog collects the redirect URL plus, for creations, optional `name` and `modelPrefix`), edit, enable/disable, discover models, delete. Shows token `expiresAt` with expired/expiring-soon indication.
+- `/providers` — table grouped by type, showing `name` as-is; actions: add API-key provider (form), add/reauthenticate OpenAI & Antigravity accounts (paste-back dialog collects the redirect URL, optional Antigravity `projectId`, plus creation-only `name`/`modelPrefix`), edit, enable/disable, discover models, delete. Shows token `expiresAt`; because access tokens refresh lazily with a safety margin on each gateway request, a passed expiry is presented as idle-with-auto-refresh, never as an error state — reauthentication is required only when requests fail with a credential error.
 - `/models` — mapping table + one create/edit form: provider selector (all providers regardless of type), upstream-name field, optional **base name** field with live preview of the final public name (prefix + base, §6.1), enable checkbox, thinking-level multi-select (blank = passthrough — labeled “no filter, not off”, §10.2); delete.
 - `/` redirects to `/providers`; unknown paths render via SPA fallback.
 - All SPA tunables come from `panel/config.ts` (§15). Panel calls address providers exclusively by `name` (§12.2).
@@ -644,9 +655,9 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 
 | Module | Scope | Owns (defaults shown) |
 | --- | --- | --- |
-| `config.ts` | global | Canonical thinking-level vocabulary & order — panel override whitelist only, never a request-time enum (§10.2); provider `name` pattern `[a-z0-9_-]{1,64}`; `modelPrefix` rules (≤ 32 chars, `[a-z0-9._:/-]`); Unix-second convention |
+| `config.ts` | global | Canonical thinking-level vocabulary & order — panel override whitelist only, never a request-time enum (§10.2); provider `name` pattern `[a-z0-9_-]{1,64}`; `modelPrefix` rules (≤ 32 chars, `[a-z0-9._:/-]`); OAuth/IdP upstream timeout; Unix-second convention |
 | `api/config.ts` | public API | Base path `/api/openai-v1`; `MAX_REQUEST_BYTES` 10 MB; `MAX_RESPONSE_BYTES` 25 MB; `UPSTREAM_IDLE_TIMEOUT_SECONDS` 300; `TOKEN_REFRESH_MARGIN_SECONDS` 300; `REFRESH_LEASE_SECONDS` 60; forced-refresh retry count 1; `owned_by` mapping (§11.3) |
-| `panel-api/config.ts` | panel API | Base path `/panel-api`; `OAUTH_STATE_TTL_SECONDS` 900; auto-generated name prefixes `openai-` / `antigravity-` |
+| `panel-api/config.ts` | panel API | Base path `/panel-api`; `OAUTH_STATE_TTL_SECONDS` 900; Antigravity onboarding poll interval/limit; auto-generated name prefixes `openai-` / `antigravity-` |
 | `panel/config.ts` | SPA | Token localStorage key (`panel_token`); auth-probe endpoint (`/panel-api/list-providers`); SPA routes; token expiry-warning horizon |
 
 ---
@@ -659,12 +670,12 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 2. At most one in-flight credential mutation per provider — IdP refresh or reauth completion, serialized by the shared lease; refresh tokens never consumed twice concurrently; observers see old-or-new credentials atomically.
 3. Every upstream call carries the best available access token — margin-fresh, or current-best when a concurrent credential mutation holds the lease; a rejected token triggers exactly one forced refresh + retry (§7), whose exhaustion fails with a defined `upstream_error`.
 4. Every model binds to exactly one provider (any type, `openai_oauth` included); no pool, no default route. A model serves iff `model.enabled ∧ provider.enabled`, else identical `404 model_not_found` — disabling ≡ nonexistent. Names are globally unique; resolution is exact, case-sensitive match among enabled models.
-5. A provider referenced by a model cannot be deleted (`RESTRICT`).
+5. Deleting a provider atomically deletes all of its models before deleting the provider in one D1 batch; FK `RESTRICT` prevents orphaning outside that operation.
 6. Authentication derives exclusively from `Authorization` headers via constant-time digest comparison; the system has no cookies — none set, sent, or read.
 7. The client's `stream` value relays to the upstream as-is; the gateway never converts between streaming and non-streaming modes, never synthesizes error frames or response objects. A same-format response bypasses parsing and serialization and reaches the client in the upstream's exact body bytes; only protocol-changing paths use the IR (§9, §11.2). Before streaming begins the client sees that native or translated response, or an error; a mid-stream failure simply ends the stream — the missing terminal event (`response.completed` / `[DONE]`) is the error signal. No hangs.
 8. Client disconnects deterministically cancel the upstream request.
 9. OAuth states are single-use, expire after `OAUTH_STATE_TTL_SECONDS`, and are deleted on use.
-10. Discovery never overwrites, disables, or deletes existing models; discovered rows are created disabled.
+10. Discovery identifies rows by `(provider_id, upstream_name)`, never duplicates renamed models, and atomically deletes only untouched discovery-owned rows that disappeared upstream; manually edited rows are never changed or removed. New discovered rows are disabled.
 11. Client-requested reasoning effort is validated as a non-empty string and filtered against the model's `thinkingLevels` whitelist (when present) before any upstream call; it is never clamped to a value set by the gateway (§10.2).
 12. Non-streaming upstream bodies are never read beyond `MAX_RESPONSE_BYTES`; overflow aborts the upstream fetch → `502 upstream_response_too_large`.
 13. A provider's `name` is its sole externally visible identifier — unique, immutable, displayed as-is; numeric `providers.id` never leaves storage. Prefixes are not unique. The public model identity is exactly `models.name`; `modelPrefix` affects only models created/discovered afterward; a rename permanently retires the former name (no aliases, no shadow routes).

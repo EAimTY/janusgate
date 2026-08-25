@@ -82,5 +82,6 @@ export interface ModelSummary {
 export interface DiscoveryResult {
     readonly total: number;
     readonly created: number;
+    readonly removed: number;
     readonly skipped: number;
 }

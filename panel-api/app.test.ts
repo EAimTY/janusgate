@@ -179,6 +179,7 @@ describe("panel API", () => {
         });
         expect(await discovery.json()).toEqual({
             created: 2,
+            removed: 0,
             skipped: 0,
             total: 2,
         });
@@ -230,12 +231,18 @@ describe("panel API", () => {
             providerName: "custom",
             upstreamName: "wire-manual",
         });
-        const persistedEnabled = await env.DATABASE.prepare(
-            "SELECT enabled FROM models WHERE id = ?",
+        const persisted = await env.DATABASE.prepare(
+            "SELECT enabled, is_manually_edited FROM models WHERE id = ?",
         )
             .bind(modelId)
-            .first<number>("enabled");
-        expect(persistedEnabled).toBe(0);
+            .first<{
+                enabled: number;
+                is_manually_edited: number;
+            }>();
+        expect(persisted).toEqual({
+            enabled: 0,
+            is_manually_edited: 1,
+        });
 
         expect(
             (
@@ -243,26 +250,10 @@ describe("panel API", () => {
                     providerName: "custom",
                 })
             ).status,
-        ).toBe(409);
-        for (const model of listedModels) {
-            if (!isJsonObject(model) || typeof model["id"] !== "number") {
-                throw new Error("invalid listed model");
-            }
-            await expect(
-                request(app, "/delete-model", "POST", {
-                    id: model["id"],
-                }),
-            ).resolves.toMatchObject({
-                status: 200,
-            });
-        }
-        expect(
-            (
-                await request(app, "/delete-provider", "POST", {
-                    providerName: "custom",
-                })
-            ).status,
         ).toBe(200);
+        await expect(
+            env.DATABASE.prepare("SELECT COUNT(*) AS count FROM models").first("count"),
+        ).resolves.toBe(0);
     });
 
     it("exposes both OAuth routes and completes a paste-back flow", async () => {

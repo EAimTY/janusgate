@@ -5,12 +5,17 @@ import {
     ANTIGRAVITY_API_BASE_URL,
     ANTIGRAVITY_AUTHORIZE_URL,
     ANTIGRAVITY_CLIENT_ID,
+    ANTIGRAVITY_CLIENT_METADATA,
     ANTIGRAVITY_CLIENT_SECRET,
-    ANTIGRAVITY_MODELS,
+    ANTIGRAVITY_HEADER_CLIENT_METADATA,
+    ANTIGRAVITY_OAUTH_SCOPE,
     ANTIGRAVITY_REDIRECT_URI,
     ANTIGRAVITY_TOKEN_URL,
+    ANTIGRAVITY_USER_AGENT,
+    antigravityRuntimeModel,
     buildCodeAssistRequest,
     codeAssistRequestUrl,
+    normalizeCodeAssistJsonSchema,
 } from "./antigravity";
 import {
     buildGenerateContentRequest,
@@ -84,6 +89,16 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         "Antigravity client is pinned",
     );
     assert(ANTIGRAVITY_CLIENT_SECRET.startsWith("GOCSPX-"), "installed-app secret is pinned");
+    for (const scope of [
+        "aicode",
+        "cloud-platform",
+        "userinfo.email",
+        "userinfo.profile",
+        "cclog",
+        "experimentsandconfigs",
+    ]) {
+        assert(ANTIGRAVITY_OAUTH_SCOPE.includes(scope), `Google OAuth requests ${scope}`);
+    }
     assert(
         ANTIGRAVITY_AUTHORIZE_URL.includes("accounts.google.com"),
         "Google authorize URL is pinned",
@@ -100,15 +115,100 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         ANTIGRAVITY_API_BASE_URL === "https://cloudcode-pa.googleapis.com/v1internal",
         "Code Assist API is pinned",
     );
-    assert(ANTIGRAVITY_MODELS.includes("gemini-3.1-pro-high"), "Gemini catalog is pinned");
     assert(
-        codeAssistRequestUrl("project/with spaces", false).endsWith(
-            "/project%2Fwith%20spaces/v1internal:generateContent",
-        ),
-        "project path is escaped",
+        ANTIGRAVITY_USER_AGENT === "antigravity/1.15.8 darwin/arm64",
+        "working Antigravity client identity is pinned",
+    );
+    assertEqual(
+        JSON.parse(ANTIGRAVITY_CLIENT_METADATA),
+        {
+            ideType: "ANTIGRAVITY",
+            platform: "PLATFORM_UNSPECIFIED",
+            pluginType: "GEMINI",
+        },
+        "request-body metadata uses the protobuf platform enum",
+    );
+    assertEqual(
+        JSON.parse(ANTIGRAVITY_HEADER_CLIENT_METADATA),
+        {
+            ideType: "ANTIGRAVITY",
+            platform: "MACOS",
+            pluginType: "GEMINI",
+        },
+        "client fingerprint metadata uses the legacy platform name",
+    );
+    assertEqual(
+        antigravityRuntimeModel("gemini-3.7-flash"),
+        "gemini-3.7-flash-tiered",
+        "Gemini 3.7 uses its requestable tiered runtime",
+    );
+    assertEqual(
+        antigravityRuntimeModel("gemini-3.6-flash", "high"),
+        "gemini-3.6-flash-high",
+        "Gemini 3.6 effort selects its runtime tier",
+    );
+    assertEqual(
+        antigravityRuntimeModel("gemini-3.5-flash", "medium"),
+        "gemini-3.5-flash-low",
+        "Gemini 3.5 effort selects a requestable runtime tier",
+    );
+    assertEqual(
+        antigravityRuntimeModel("gemini-3.1-pro-high"),
+        "gemini-pro-agent",
+        "Gemini 3.1 High avoids the advertised runtime that rejects requests",
+    );
+    assertEqual(
+        antigravityRuntimeModel("gemini-3.1-pro", "high"),
+        "gemini-pro-agent",
+        "Gemini 3.1 logical IDs route by requested effort",
+    );
+    assertEqual(
+        normalizeCodeAssistJsonSchema({
+            type: "object",
+            properties: {
+                mode: {
+                    const: "safe",
+                    default: "safe",
+                    examples: [
+                        "safe",
+                    ],
+                },
+            },
+        }),
+        {
+            type: "object",
+            properties: {
+                mode: {
+                    enum: [
+                        "safe",
+                    ],
+                },
+            },
+        },
+        "Code Assist schema normalization preserves const semantics and strips annotations",
+    );
+    try {
+        normalizeCodeAssistJsonSchema({
+            type: "object",
+            properties: {
+                value: {
+                    $ref: "#/$defs/missing",
+                },
+            },
+        });
+        throw new Error("expected unresolved schema reference rejection");
+    } catch (error: unknown) {
+        assert(error instanceof TranslationError, "unresolved schemas fail with translation error");
+        assert(error.code === "unsupported_parameter", "unresolved schemas fail locally");
+    }
+    assert(
+        codeAssistRequestUrl(false) ===
+            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
+        "Code Assist sends project routing in the body rather than the URL path",
     );
     assert(
-        codeAssistRequestUrl("p", true).endsWith("/p/v1internal:streamGenerateContent?alt=sse"),
+        codeAssistRequestUrl(true) ===
+            "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
         "stream URL selects SSE",
     );
 
@@ -185,7 +285,11 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
                             name: "lookup",
                             arguments: '{"q":1}',
                         },
-                        thought_signature: "sig-call",
+                        extra_content: {
+                            google: {
+                                thought_signature: "sig-call",
+                            },
+                        },
                     },
                 ],
             },
@@ -203,16 +307,31 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
                     name: "lookup",
                     description: "Lookup",
                     parameters: {
-                        type: "object",
-                        properties: {
-                            q: {
+                        $schema: "https://json-schema.org/draft/2020-12/schema",
+                        $defs: {
+                            query: {
                                 type: "number",
                             },
                         },
+                        type: "object",
+                        properties: {
+                            q: {
+                                $ref: "#/$defs/query",
+                            },
+                        },
+                        required: [
+                            "q",
+                        ],
                     },
                 },
             },
         ],
+        tool_choice: {
+            type: "function",
+            function: {
+                name: "lookup",
+            },
+        },
         temperature: 0.4,
         top_p: 0.8,
         max_completion_tokens: 500,
@@ -232,6 +351,31 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
     });
     assertEqual(codeAssist.project, "project-1", "project appears in the envelope");
     assertEqual(codeAssist.model, "gemini-wire", "model appears in the envelope");
+    assertEqual(codeAssist.requestType, "agent", "agent request type appears in the envelope");
+    assertEqual(codeAssist.userAgent, "antigravity", "client identity appears in the envelope");
+    assert(
+        codeAssist.requestId.startsWith("agent-") && codeAssist.requestId.length > "agent-".length,
+        "each envelope carries an agent request ID",
+    );
+    assertEqual(
+        buildCodeAssistRequest(request, {
+            model: "gemini-3.7-flash",
+            projectId: "project-1",
+        }).request.generationConfig?.thinkingConfig,
+        {
+            thinkingLevel: "LOW",
+        },
+        "tiered Gemini 3.7 always receives the required uppercase thinking level",
+    );
+    assertEqual(
+        buildCodeAssistRequest(request, {
+            model: "gemini-3.6-flash-low",
+            projectId: "project-1",
+            reasoningEffort: "high",
+        }).request.generationConfig?.thinkingConfig,
+        undefined,
+        "discovered runtime-tier IDs do not receive a conflicting thinking config",
+    );
     assertEqual(
         codeAssist.request.systemInstruction?.parts,
         [
@@ -283,10 +427,115 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         },
         "percent-encoded data URLs are converted to inlineData base64",
     );
+    const mixedCaseImage = buildCodeAssistRequest(
+        parseChatCompletionsRequest({
+            model: "m",
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "image_url",
+                            image_url: {
+                                url: "DATA:IMAGE/PNG;BASE64,AA==",
+                            },
+                        },
+                    ],
+                },
+            ],
+        }),
+        {
+            model: "m",
+            projectId: "p",
+        },
+    );
+    assertEqual(
+        mixedCaseImage.request.contents[0]?.parts[0],
+        {
+            inlineData: {
+                mimeType: "image/png",
+                data: "AA==",
+            },
+        },
+        "data URL scheme, MIME type, and base64 marker are case-insensitive",
+    );
+    const normalizedTurns = buildCodeAssistRequest(
+        parseChatCompletionsRequest({
+            model: "m",
+            messages: [
+                {
+                    role: "user",
+                    content: "first",
+                },
+                {
+                    role: "user",
+                    content: "second",
+                },
+                {
+                    role: "assistant",
+                    content: "reply",
+                },
+            ],
+        }),
+        {
+            model: "m",
+            projectId: "p",
+        },
+    ).request.contents;
+    assertEqual(
+        normalizedTurns,
+        [
+            {
+                role: "user",
+                parts: [
+                    {
+                        text: "first",
+                    },
+                    {
+                        text: "second",
+                    },
+                ],
+            },
+            {
+                role: "model",
+                parts: [
+                    {
+                        text: "reply",
+                    },
+                ],
+            },
+        ],
+        "consecutive same-role messages merge into valid GenerateContent turns",
+    );
+    try {
+        buildCodeAssistRequest(
+            parseChatCompletionsRequest({
+                model: "m",
+                messages: [
+                    {
+                        role: "assistant",
+                        content: "prefill",
+                    },
+                ],
+            }),
+            {
+                model: "m",
+                projectId: "p",
+            },
+        );
+        throw new Error("expected assistant-first history rejection");
+    } catch (error: unknown) {
+        assert(error instanceof TranslationError, "assistant-first history should fail locally");
+        assert(
+            error.code === "unsupported_parameter",
+            "assistant-first history uses unsupported_parameter",
+        );
+    }
     assertEqual(
         codeAssist.request.contents[1]?.parts[1],
         {
             functionCall: {
+                id: "call_4",
                 name: "lookup",
                 args: {
                     q: 1,
@@ -300,6 +549,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         codeAssist.request.contents[2]?.parts[0],
         {
             functionResponse: {
+                id: "call_4",
                 name: "lookup",
                 response: {
                     output: "result",
@@ -316,19 +566,34 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
                     {
                         name: "lookup",
                         description: "Lookup",
-                        parameters: {
+                        parametersJsonSchema: {
                             type: "object",
                             properties: {
                                 q: {
                                     type: "number",
                                 },
                             },
+                            required: [
+                                "q",
+                            ],
                         },
                     },
                 ],
             },
         ],
         "function declarations map to Code Assist",
+    );
+    assertEqual(
+        codeAssist.request.toolConfig,
+        {
+            functionCallingConfig: {
+                mode: "ANY",
+                allowedFunctionNames: [
+                    "lookup",
+                ],
+            },
+        },
+        "tool choice maps to Code Assist function-calling config",
     );
     assertEqual(
         codeAssist.request.generationConfig,
@@ -346,6 +611,146 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
             },
         },
         "sampling, JSON mode, and thinking map to Code Assist",
+    );
+
+    const structuredCodeAssist = buildCodeAssistRequest(
+        parseChatCompletionsRequest({
+            model: "m",
+            messages: [
+                {
+                    role: "user",
+                    content: "json",
+                },
+            ],
+            response_format: {
+                type: "json_schema",
+                json_schema: {
+                    name: "answer",
+                    schema: {
+                        type: "string",
+                        const: "ok",
+                    },
+                },
+            },
+        }),
+        {
+            model: "m",
+            projectId: "p",
+        },
+    );
+    assertEqual(
+        structuredCodeAssist.request.generationConfig?.responseJsonSchema,
+        {
+            type: "string",
+            enum: [
+                "ok",
+            ],
+        },
+        "Code Assist structured output uses responseJsonSchema",
+    );
+
+    const customToolRequest = parseChatCompletionsRequest({
+        model: "m",
+        messages: [
+            {
+                role: "user",
+                content: "use a tool",
+            },
+        ],
+        tools: [
+            {
+                type: "function",
+                function: {
+                    name: "lookup",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            query: {
+                                type: [
+                                    "string",
+                                    "null",
+                                ],
+                                format: "custom",
+                            },
+                        },
+                    },
+                },
+            },
+        ],
+        reasoning_effort: "high",
+    });
+    const claudeCodeAssist = buildCodeAssistRequest(customToolRequest, {
+        model: "claude-opus-4-6",
+        projectId: "p",
+        reasoningEffort: "high",
+    });
+    assertEqual(claudeCodeAssist.model, "claude-opus-4-6-thinking", "Claude runtime routes");
+    assertEqual(
+        claudeCodeAssist.request.generationConfig,
+        {
+            maxOutputTokens: 64000,
+        },
+        "Claude uses its output limit and no separate thinking config",
+    );
+    assertEqual(
+        claudeCodeAssist.request.tools?.[0]?.functionDeclarations[0]?.parameters,
+        {
+            type: "object",
+            properties: {
+                query: {
+                    type: "string",
+                },
+            },
+        },
+        "Claude uses the allowlisted legacy custom-tool schema",
+    );
+    assertEqual(
+        claudeCodeAssist.request.toolConfig,
+        {
+            functionCallingConfig: {
+                mode: "VALIDATED",
+            },
+        },
+        "Claude defaults tool calling to validated mode",
+    );
+    const gptCodeAssist = buildCodeAssistRequest(
+        parseChatCompletionsRequest({
+            model: "m",
+            messages: [
+                {
+                    role: "user",
+                    content: "do not call tools",
+                },
+            ],
+            tools: [
+                {
+                    type: "function",
+                    function: {
+                        name: "lookup",
+                    },
+                },
+            ],
+            tool_choice: "none",
+        }),
+        {
+            model: "gpt-oss-120b",
+            projectId: "p",
+        },
+    );
+    assertEqual(gptCodeAssist.model, "gpt-oss-120b-medium", "GPT-OSS runtime routes");
+    assertEqual(
+        gptCodeAssist.request.generationConfig?.maxOutputTokens,
+        32768,
+        "GPT-OSS uses its output limit",
+    );
+    assertEqual(
+        gptCodeAssist.request.toolConfig,
+        {
+            functionCallingConfig: {
+                mode: "NONE",
+            },
+        },
+        "GPT-OSS preserves explicit tool choice",
     );
 
     const bareGemini = buildGenerateContentRequest(request, {
@@ -366,6 +771,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
             "contents",
             "generationConfig",
             "systemInstruction",
+            "toolConfig",
             "tools",
         ],
         "API-key requests carry no project envelope",
@@ -425,6 +831,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
                             },
                             {
                                 functionCall: {
+                                    id: "upstream-call",
                                     name: "lookup",
                                     args: {
                                         q: 2,
@@ -440,7 +847,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
             usageMetadata: {
                 promptTokenCount: 4,
                 candidatesTokenCount: 6,
-                totalTokenCount: 10,
+                totalTokenCount: 13,
                 thoughtsTokenCount: 3,
                 cachedContentTokenCount: 1,
             },
@@ -466,11 +873,51 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         {
             type: "tool_call_start",
             index: 0,
-            id: "call_1",
+            id: "upstream-call",
             name: "lookup",
             thoughtSignature: "sig-tool",
         },
         "Gemini synthesizes stable call ids and preserves signatures",
+    );
+    const synthesizedToolIds = [
+        parseGenerateContentResponse({
+            candidates: [
+                {
+                    content: {
+                        parts: [
+                            {
+                                functionCall: {
+                                    name: "first",
+                                    args: {},
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        }).find((event) => event.type === "tool_call_start"),
+        parseGenerateContentResponse({
+            candidates: [
+                {
+                    content: {
+                        parts: [
+                            {
+                                functionCall: {
+                                    name: "second",
+                                    args: {},
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        }).find((event) => event.type === "tool_call_start"),
+    ];
+    assert(
+        synthesizedToolIds[0]?.type === "tool_call_start" &&
+            synthesizedToolIds[1]?.type === "tool_call_start" &&
+            synthesizedToolIds[0].id !== synthesizedToolIds[1].id,
+        "synthesized tool IDs remain unique across independent turns",
     );
     assertEqual(
         responseEvents[6],
@@ -486,14 +933,54 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
             type: "usage",
             usage: {
                 inputTokens: 4,
-                outputTokens: 6,
-                totalTokens: 10,
+                outputTokens: 9,
+                totalTokens: 13,
                 reasoningTokens: 3,
                 cachedInputTokens: 1,
             },
         },
         "Gemini usage maps to IR",
     );
+    assertEqual(
+        parseGenerateContentResponse({
+            promptFeedback: {
+                blockReason: "SAFETY",
+            },
+        }).find((event) => event.type === "finish"),
+        {
+            type: "finish",
+            reason: "content_filter",
+        },
+        "prompt-level blocks without candidate content map to content_filter",
+    );
+    for (const invalidResponse of [
+        {
+            error: {
+                message: "quota",
+            },
+        },
+        {
+            candidates: [
+                {
+                    content: {
+                        parts: [],
+                    },
+                    finishReason: "MALFORMED_FUNCTION_CALL",
+                },
+            ],
+        },
+    ]) {
+        try {
+            parseGenerateContentResponse(invalidResponse);
+            throw new Error("expected invalid Gemini response rejection");
+        } catch (error: unknown) {
+            assert(error instanceof TranslationError, "invalid Gemini responses fail parsing");
+            assert(
+                error.code === "upstream_failure",
+                "invalid Gemini responses are upstream failures",
+            );
+        }
+    }
 
     const streamState = {
         isStarted: false,
@@ -513,6 +1000,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
                                 },
                                 {
                                     functionCall: {
+                                        id: "stream-call",
                                         name: "one",
                                         args: {
                                             a: 1,
@@ -557,10 +1045,10 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         {
             type: "tool_call_start",
             index: 0,
-            id: "call_1",
+            id: "stream-call",
             name: "one",
         },
-        "stream tool id synthesis starts at call_1",
+        "stream tool calls preserve upstream IDs",
     );
     assert(
         secondStreamEvents.some((event) => event.type === "tool_call_done"),

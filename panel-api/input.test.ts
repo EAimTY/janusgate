@@ -99,10 +99,12 @@ describe("panel input validation", () => {
             parseCompleteOAuthInput({
                 redirectUrl: "http://localhost/callback?code=x&state=y",
                 modelPrefix: "oauth/",
+                projectId: "my-cloud-project",
             }),
         ).toEqual({
             redirectUrl: "http://localhost/callback?code=x&state=y",
             modelPrefix: "oauth/",
+            projectId: "my-cloud-project",
         });
         expect(
             parseDeleteModelInput({

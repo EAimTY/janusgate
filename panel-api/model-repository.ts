@@ -42,6 +42,7 @@ export async function listPanelModels(database: D1Database): Promise<PanelModel[
                 models.upstream_name,
                 models.thinking_levels,
                 models.enabled,
+                models.is_manually_edited,
                 providers.name AS provider_name,
                 providers.type AS provider_type
             FROM models
@@ -85,8 +86,9 @@ export async function saveModel(
             const result = await database
                 .prepare(
                     `INSERT INTO models (
-                        name, provider_id, upstream_name, thinking_levels, enabled
-                    ) VALUES (?, ?, ?, ?, ?)`,
+                        name, provider_id, upstream_name, thinking_levels, enabled,
+                        is_manually_edited
+                    ) VALUES (?, ?, ?, ?, ?, 1)`,
                 )
                 .bind(
                     model.name,
@@ -105,7 +107,8 @@ export async function saveModel(
         const result = await database
             .prepare(
                 `UPDATE models SET
-                    name = ?, provider_id = ?, upstream_name = ?, thinking_levels = ?, enabled = ?
+                    name = ?, provider_id = ?, upstream_name = ?, thinking_levels = ?, enabled = ?,
+                    is_manually_edited = 1
                 WHERE id = ?`,
             )
             .bind(

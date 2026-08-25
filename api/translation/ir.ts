@@ -37,6 +37,7 @@ export interface IrMessage {
     role: MessageRole;
     parts: MessagePart[];
     reasoning?: string;
+    reasoningThoughtSignature?: string;
 }
 
 export interface IrFunctionTool {
@@ -68,10 +69,16 @@ export interface IrSampling {
     responseFormat?: IrResponseFormat;
 }
 
+export interface IrToolChoice {
+    mode: "auto" | "none" | "required";
+    functionName?: string;
+}
+
 export interface IrRequest {
     model: string;
     messages: IrMessage[];
     tools: IrFunctionTool[];
+    toolChoice?: IrToolChoice;
     sampling: IrSampling;
     reasoningEffort?: string;
     isStreaming: boolean;

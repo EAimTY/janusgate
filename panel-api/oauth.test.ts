@@ -1,7 +1,9 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    ANTIGRAVITY_API_BASE_URL,
     ANTIGRAVITY_CLIENT_METADATA,
+    ANTIGRAVITY_HEADER_CLIENT_METADATA,
     ANTIGRAVITY_LOAD_CODE_ASSIST_URL,
     ANTIGRAVITY_ONBOARD_USER_URL,
     ANTIGRAVITY_TOKEN_URL,
@@ -232,7 +234,188 @@ describe("OAuth orchestration", () => {
         ).resolves.toBe(0);
     });
 
+    it("resolves the newly selected account project during Antigravity reauthentication", async () => {
+        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        const original = await cipher.encrypt({
+            accessToken: "old-google-access",
+            projectId: "old-project",
+            refreshToken: "old-google-refresh",
+        });
+        await env.DATABASE.prepare(
+            `INSERT INTO providers (
+                name, model_prefix, type, protocol, base_url, encrypted_credentials,
+                expires_at, refresh_started_at, enabled
+            ) VALUES ('google', '', 'antigravity_oauth', NULL, NULL, ?, ?, NULL, 1)`,
+        )
+            .bind(original, NOW + 100)
+            .run();
+        const authorizeUrl = await startProviderOAuth(
+            env.DATABASE,
+            {
+                providerName: "google",
+                type: "antigravity",
+            },
+            {
+                now: NOW,
+            },
+        );
+        const state = new URL(authorizeUrl).searchParams.get("state");
+        if (state === null) throw new Error("state missing");
+
+        await completeProviderOAuth(
+            env.DATABASE,
+            cipher,
+            {
+                projectId: "workspace-project",
+                redirectUrl: `http://localhost:51121/oauth-callback?code=code&state=${state}`,
+            },
+            {
+                fetchUpstream: async (input) => {
+                    const url = String(input);
+                    if (url === ANTIGRAVITY_TOKEN_URL) {
+                        return Response.json({
+                            access_token: "new-google-access",
+                            expires_in: 1800,
+                            refresh_token: "new-google-refresh",
+                        });
+                    }
+                    if (url === ANTIGRAVITY_LOAD_CODE_ASSIST_URL) {
+                        return Response.json(
+                            {
+                                error: {
+                                    details: [
+                                        {
+                                            reason: "SECURITY_POLICY_VIOLATED",
+                                        },
+                                    ],
+                                },
+                            },
+                            {
+                                status: 403,
+                            },
+                        );
+                    }
+                    throw new Error(`Unexpected fetch: ${url}`);
+                },
+                now: NOW,
+            },
+        );
+
+        const provider = await findProviderByName(env.DATABASE, "google");
+        if (provider === null) throw new Error("provider missing");
+        expect(
+            parseAntigravityOAuthCredentials(await cipher.decrypt(provider.encryptedCredentials)),
+        ).toEqual({
+            accessToken: "new-google-access",
+            projectId: "workspace-project",
+            refreshToken: "new-google-refresh",
+        });
+    });
+
     it("onboards an unprovisioned Antigravity account and stores its resolved project", async () => {
+        const authorizeUrl = await startProviderOAuth(
+            env.DATABASE,
+            {
+                type: "antigravity",
+            },
+            {
+                now: NOW,
+            },
+        );
+        const state = new URL(authorizeUrl).searchParams.get("state");
+        if (state === null) throw new Error("state missing");
+        let onboardingPollCount = 0;
+        const fetchUpstream = vi.fn<typeof fetch>(async (input, init) => {
+            const url = String(input);
+            if (url === ANTIGRAVITY_TOKEN_URL) {
+                return Response.json({
+                    access_token: "google-access",
+                    expires_in: 1800,
+                    refresh_token: "google-refresh",
+                });
+            }
+            if (url === ANTIGRAVITY_LOAD_CODE_ASSIST_URL) {
+                const expectedMetadata = {
+                    ideType: "ANTIGRAVITY",
+                    platform: "PLATFORM_UNSPECIFIED",
+                    pluginType: "GEMINI",
+                };
+                expect(JSON.parse(String(init?.body))).toEqual({
+                    metadata: expectedMetadata,
+                });
+                expect(new Headers(init?.headers).get("Client-Metadata")).toBe(
+                    ANTIGRAVITY_HEADER_CLIENT_METADATA,
+                );
+                expect(JSON.parse(ANTIGRAVITY_CLIENT_METADATA)).toEqual(expectedMetadata);
+                return Response.json({
+                    allowedTiers: [
+                        {
+                            id: "free-tier",
+                            isDefault: true,
+                        },
+                    ],
+                });
+            }
+            if (url === ANTIGRAVITY_ONBOARD_USER_URL) {
+                expect(JSON.parse(String(init?.body))).toMatchObject({
+                    tierId: "free-tier",
+                });
+                return Response.json({
+                    done: false,
+                    name: "operations/onboard-1",
+                });
+            }
+            if (url === `${ANTIGRAVITY_API_BASE_URL}/operations/onboard-1`) {
+                onboardingPollCount += 1;
+                return Response.json(
+                    onboardingPollCount === 1
+                        ? {
+                              done: false,
+                              name: "operations/onboard-1",
+                          }
+                        : {
+                              done: true,
+                              response: {
+                                  cloudaicompanionProject: {
+                                      id: "project-1",
+                                  },
+                              },
+                          },
+                );
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        });
+        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        await completeProviderOAuth(
+            env.DATABASE,
+            cipher,
+            {
+                redirectUrl: `http://localhost:51121/oauth-callback?code=code&state=${state}`,
+            },
+            {
+                fetchUpstream,
+                now: NOW,
+                sleep: async () => {},
+            },
+        );
+
+        expect(onboardingPollCount).toBe(2);
+        const provider = await findProviderByName(env.DATABASE, "antigravity-1");
+        expect(provider).toMatchObject({
+            modelPrefix: "antigravity-1",
+            type: "antigravity_oauth",
+        });
+        if (provider === null) throw new Error("provider missing");
+        expect(
+            parseAntigravityOAuthCredentials(await cipher.decrypt(provider.encryptedCredentials)),
+        ).toEqual({
+            accessToken: "google-access",
+            projectId: "project-1",
+            refreshToken: "google-refresh",
+        });
+    });
+
+    it("onboards a standard Antigravity tier with an explicit project", async () => {
         const authorizeUrl = await startProviderOAuth(
             env.DATABASE,
             {
@@ -254,38 +437,27 @@ describe("OAuth orchestration", () => {
                 });
             }
             if (url === ANTIGRAVITY_LOAD_CODE_ASSIST_URL) {
-                const expectedMetadata = {
-                    ideType: "ANTIGRAVITY",
-                    platform: "PLATFORM_UNSPECIFIED",
-                    pluginType: "GEMINI",
-                };
-                expect(JSON.parse(String(init?.body))).toEqual({
-                    metadata: expectedMetadata,
-                });
-                expect(new Headers(init?.headers).get("Client-Metadata")).toBe(
-                    ANTIGRAVITY_CLIENT_METADATA,
-                );
-                expect(JSON.parse(ANTIGRAVITY_CLIENT_METADATA)).toEqual(expectedMetadata);
                 return Response.json({
                     allowedTiers: [
                         {
-                            id: "free-tier",
+                            id: "standard-tier",
                             isDefault: true,
                         },
                     ],
+                    ineligibleTiers: [],
                 });
             }
             if (url === ANTIGRAVITY_ONBOARD_USER_URL) {
                 expect(JSON.parse(String(init?.body))).toMatchObject({
-                    tierId: "free-tier",
+                    cloudaicompanionProject: "workspace-project",
+                    metadata: {
+                        duetProject: "workspace-project",
+                    },
+                    tierId: "standard-tier",
                 });
                 return Response.json({
                     done: true,
-                    response: {
-                        cloudaicompanionProject: {
-                            id: "project-1",
-                        },
-                    },
+                    response: {},
                 });
             }
             throw new Error(`Unexpected fetch: ${url}`);
@@ -295,6 +467,7 @@ describe("OAuth orchestration", () => {
             env.DATABASE,
             cipher,
             {
+                projectId: "workspace-project",
                 redirectUrl: `http://localhost:51121/oauth-callback?code=code&state=${state}`,
             },
             {
@@ -304,17 +477,11 @@ describe("OAuth orchestration", () => {
         );
 
         const provider = await findProviderByName(env.DATABASE, "antigravity-1");
-        expect(provider).toMatchObject({
-            modelPrefix: "antigravity-1",
-            type: "antigravity_oauth",
-        });
         if (provider === null) throw new Error("provider missing");
         expect(
             parseAntigravityOAuthCredentials(await cipher.decrypt(provider.encryptedCredentials)),
-        ).toEqual({
-            accessToken: "google-access",
-            projectId: "project-1",
-            refreshToken: "google-refresh",
+        ).toMatchObject({
+            projectId: "workspace-project",
         });
     });
 

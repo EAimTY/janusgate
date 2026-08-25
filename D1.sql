@@ -17,7 +17,8 @@ CREATE TABLE models (
     provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE RESTRICT,
     upstream_name TEXT NOT NULL,
     thinking_levels TEXT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1
+    enabled INTEGER NOT NULL DEFAULT 1,
+    is_manually_edited INTEGER NOT NULL DEFAULT 1
 ) STRICT;
 
 CREATE INDEX idx_models_provider_id ON models(provider_id);

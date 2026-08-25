@@ -5,7 +5,14 @@ import type {
     OpenAiOAuthCredentials,
     UpstreamProtocol,
 } from "/common/domain";
-import { buildCodeAssistRequest } from "./adapters/antigravity";
+import {
+    ANTIGRAVITY_API_CLIENT,
+    ANTIGRAVITY_HEADER_CLIENT_METADATA,
+    ANTIGRAVITY_USER_AGENT,
+    antigravityRuntimeModel,
+    buildCodeAssistRequest,
+    codeAssistRequestUrl,
+} from "./adapters/antigravity";
 import { buildGenerateContentRequest, generateContentUrl } from "./adapters/gemini";
 import {
     OPENAI_CODEX_ORIGINATOR,
@@ -140,8 +147,18 @@ export async function prepareUpstreamRequest(
             throw new Error("Antigravity credentials are missing a project ID");
         }
         headers.set("Authorization", `Bearer ${oauthCredentials.accessToken}`);
-        const action = request.isStreaming ? ":streamGenerateContent?alt=sse" : ":generateContent";
-        url = `https://cloudcode-pa.googleapis.com/${encodeURIComponent(oauthCredentials.projectId)}/v1internal${action}`;
+        headers.set("User-Agent", ANTIGRAVITY_USER_AGENT);
+        headers.set("X-Goog-Api-Client", ANTIGRAVITY_API_CLIENT);
+        headers.set("Client-Metadata", ANTIGRAVITY_HEADER_CLIENT_METADATA);
+        headers.set("Accept", request.isStreaming ? "text/event-stream" : "application/json");
+        if (
+            antigravityRuntimeModel(route.upstreamName, request.effectiveThinkingLevel).startsWith(
+                "claude-",
+            )
+        ) {
+            headers.set("anthropic-beta", "interleaved-thinking-2025-05-14");
+        }
+        url = codeAssistRequestUrl(request.isStreaming);
     }
 
     let body: unknown;
@@ -159,11 +176,17 @@ export async function prepareUpstreamRequest(
             if (oauthCredentials === undefined || !("projectId" in oauthCredentials)) {
                 throw new Error("Antigravity credentials are missing a project ID");
             }
+            const sessionId = clientRequest.headers.get("Session-Id");
             body = buildCodeAssistRequest(
                 parseTranslatedClientRequest(clientProtocol, request.body),
                 {
                     model: route.upstreamName,
                     projectId: oauthCredentials.projectId,
+                    ...(sessionId === null || sessionId.length === 0
+                        ? {}
+                        : {
+                              sessionId,
+                          }),
                     ...(request.effectiveThinkingLevel === undefined
                         ? {}
                         : {

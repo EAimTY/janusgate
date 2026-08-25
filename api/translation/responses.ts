@@ -8,6 +8,7 @@ import type {
     IrRequest,
     IrResponseFormat,
     IrSampling,
+    IrToolChoice,
     IrUsage,
     MessagePart,
     ToolCallPart,
@@ -36,6 +37,14 @@ export interface ResponsesRequestObject {
     stream: boolean;
     instructions?: string;
     tools?: ResponsesFunctionTool[];
+    tool_choice?:
+        | "auto"
+        | "none"
+        | "required"
+        | {
+              type: "function";
+              name: string;
+          };
     temperature?: number;
     top_p?: number;
     max_output_tokens?: number;
@@ -156,6 +165,25 @@ export function parseResponsesRequest(value: unknown): IrRequest {
             ? []
             : expectArray(root["tools"], "tools").map(parseResponsesTool);
     const sampling = parseResponsesSampling(root);
+    const toolChoice = parseResponsesToolChoice(root["tool_choice"]);
+    if (
+        toolChoice?.functionName !== undefined &&
+        !tools.some((tool) => tool.name === toolChoice.functionName)
+    ) {
+        throw new TranslationError("invalid_json", "tool_choice names an undeclared function");
+    }
+    if (
+        root["parallel_tool_calls"] !== undefined &&
+        typeof root["parallel_tool_calls"] !== "boolean"
+    ) {
+        throw new TranslationError("invalid_json", "parallel_tool_calls must be a boolean");
+    }
+    if (root["parallel_tool_calls"] === false) {
+        throw new TranslationError(
+            "unsupported_parameter",
+            "parallel_tool_calls:false is not supported on translated paths",
+        );
+    }
     let reasoningEffort: string | undefined;
     if (root["reasoning"] !== undefined) {
         const reasoning = expectRecord(root["reasoning"], "reasoning");
@@ -171,6 +199,7 @@ export function parseResponsesRequest(value: unknown): IrRequest {
         isUsageIncluded: false,
     };
     if (reasoningEffort !== undefined) result.reasoningEffort = reasoningEffort;
+    if (toolChoice !== undefined) result.toolChoice = toolChoice;
     return result;
 }
 
@@ -209,6 +238,42 @@ function parseResponsesInput(value: unknown): IrMessage[] {
                 ],
             };
         }
+        if (item["type"] === "reasoning") {
+            const summary =
+                item["summary"] === undefined
+                    ? []
+                    : expectArray(item["summary"], `input[${index}].summary`);
+            const reasoning = summary
+                .map((summaryValue, summaryIndex) => {
+                    const summaryPart = expectRecord(
+                        summaryValue,
+                        `input[${index}].summary[${summaryIndex}]`,
+                    );
+                    return expectString(
+                        summaryPart["text"],
+                        `input[${index}].summary[${summaryIndex}].text`,
+                    );
+                })
+                .join("");
+            const thoughtSignature = optionalString(
+                item["thought_signature"],
+                `input[${index}].thought_signature`,
+            );
+            return {
+                role: "assistant",
+                parts: [],
+                ...(reasoning.length === 0
+                    ? {}
+                    : {
+                          reasoning,
+                      }),
+                ...(thoughtSignature === undefined
+                    ? {}
+                    : {
+                          reasoningThoughtSignature: thoughtSignature,
+                      }),
+            };
+        }
         if (item["type"] === "function_call_output") {
             const output = item["output"];
             if (!isJsonValue(output))
@@ -231,7 +296,7 @@ function parseResponsesInput(value: unknown): IrMessage[] {
             };
         }
         const role = expectString(item["role"], `input[${index}].role`);
-        if (role !== "system" && role !== "user" && role !== "assistant") {
+        if (role !== "developer" && role !== "system" && role !== "user" && role !== "assistant") {
             throw new TranslationError("invalid_json", `input[${index}].role is invalid`);
         }
         const content = item["content"];
@@ -247,7 +312,9 @@ function parseResponsesInput(value: unknown): IrMessage[] {
                       parseResponsesContentPart(part, index, partIndex),
                   );
         return {
-            role,
+            // Gemini has one system-instruction channel, so Responses developer instructions
+            // share the IR's system role and retain their position relative to other input items.
+            role: role === "developer" ? "system" : role,
             parts,
         };
     });
@@ -293,6 +360,27 @@ function parseResponsesContentPart(
         return image;
     }
     throw new TranslationError("unsupported_parameter", "unsupported Responses content part");
+}
+
+function parseResponsesToolChoice(value: unknown): IrToolChoice | undefined {
+    if (value === undefined || value === "auto")
+        return value === undefined
+            ? undefined
+            : {
+                  mode: "auto",
+              };
+    if (value === "none" || value === "required")
+        return {
+            mode: value,
+        };
+    const choice = expectRecord(value, "tool_choice");
+    if (choice["type"] !== "function") {
+        throw new TranslationError("unsupported_parameter", "unsupported tool_choice");
+    }
+    return {
+        mode: "required",
+        functionName: expectNonEmptyString(choice["name"], "tool_choice.name"),
+    };
 }
 
 function parseResponsesTool(value: unknown, index: number): IrFunctionTool {
@@ -415,6 +503,15 @@ export function renderResponsesRequest(
     };
     if (systemText.length > 0) result["instructions"] = systemText.join("\n\n");
     if (request["tools"].length > 0) result["tools"] = request["tools"].map(renderResponsesTool);
+    if (request.toolChoice !== undefined) {
+        result.tool_choice =
+            request.toolChoice.functionName === undefined
+                ? request.toolChoice.mode
+                : {
+                      type: "function",
+                      name: request.toolChoice.functionName,
+                  };
+    }
     const sampling = request.sampling;
     if (sampling["temperature"] !== undefined) result["temperature"] = sampling["temperature"];
     if (sampling.topP !== undefined) result["top_p"] = sampling.topP;
@@ -921,8 +1018,10 @@ export function createResponsesStreamRenderer(
     let nextOutputIndex = 0;
     let textOutputIndex: number | undefined;
     let text = "";
+    let textThoughtSignature: string | undefined;
     let reasoningOutputIndex: number | undefined;
     let reasoning = "";
+    let reasoningThoughtSignature: string | undefined;
     let usage: IrUsage | undefined;
     let finishReason: FinishReason = "stop";
     const responseBase: JsonObject = {
@@ -983,6 +1082,7 @@ export function createResponsesStreamRenderer(
                     );
                 }
                 text += event["delta"];
+                textThoughtSignature ??= event.thoughtSignature;
                 frames.push(
                     encodeSse("response.output_text.delta", {
                         type: "response.output_text.delta",
@@ -990,6 +1090,11 @@ export function createResponsesStreamRenderer(
                         output_index: textOutputIndex,
                         content_index: 0,
                         delta: event["delta"],
+                        ...(event.thoughtSignature === undefined
+                            ? {}
+                            : {
+                                  thought_signature: event.thoughtSignature,
+                              }),
                     }),
                 );
             } else if (event["type"] === "reasoning_delta") {
@@ -1023,6 +1128,7 @@ export function createResponsesStreamRenderer(
                     );
                 }
                 reasoning += event["delta"];
+                reasoningThoughtSignature ??= event.thoughtSignature;
                 frames.push(
                     encodeSse("response.reasoning_summary_text.delta", {
                         type: "response.reasoning_summary_text.delta",
@@ -1030,6 +1136,11 @@ export function createResponsesStreamRenderer(
                         output_index: reasoningOutputIndex,
                         summary_index: 0,
                         delta: event["delta"],
+                        ...(event.thoughtSignature === undefined
+                            ? {}
+                            : {
+                                  thought_signature: event.thoughtSignature,
+                              }),
                     }),
                 );
             } else if (event["type"] === "tool_call_start") {
@@ -1102,11 +1213,16 @@ export function createResponsesStreamRenderer(
                     const item = outputItems.get(reasoningOutputIndex);
                     if (item !== undefined) {
                         item["status"] = "completed";
+                        const summaryPart: JsonObject = {
+                            type: "summary_text",
+                            text: reasoning,
+                        };
+                        if (reasoningThoughtSignature !== undefined) {
+                            item["thought_signature"] = reasoningThoughtSignature;
+                            summaryPart["thought_signature"] = reasoningThoughtSignature;
+                        }
                         item["summary"] = [
-                            {
-                                type: "summary_text",
-                                text: reasoning,
-                            },
+                            summaryPart,
                         ];
                         frames.push(
                             encodeSse("response.reasoning_summary_text.done", {
@@ -1121,10 +1237,7 @@ export function createResponsesStreamRenderer(
                                 response_id: metadata["id"],
                                 output_index: reasoningOutputIndex,
                                 summary_index: 0,
-                                part: {
-                                    type: "summary_text",
-                                    text: reasoning,
-                                },
+                                part: summaryPart,
                             }),
                             encodeSse("response.output_item.done", {
                                 type: "response.output_item.done",
@@ -1139,12 +1252,16 @@ export function createResponsesStreamRenderer(
                     const item = outputItems.get(textOutputIndex);
                     if (item !== undefined) {
                         item["status"] = "completed";
+                        const textPart: JsonObject = {
+                            type: "output_text",
+                            text,
+                            annotations: [],
+                        };
+                        if (textThoughtSignature !== undefined) {
+                            textPart["thought_signature"] = textThoughtSignature;
+                        }
                         item["content"] = [
-                            {
-                                type: "output_text",
-                                text,
-                                annotations: [],
-                            },
+                            textPart,
                         ];
                         frames.push(
                             encodeSse("response.output_text.done", {
@@ -1159,11 +1276,7 @@ export function createResponsesStreamRenderer(
                                 response_id: metadata["id"],
                                 output_index: textOutputIndex,
                                 content_index: 0,
-                                part: {
-                                    type: "output_text",
-                                    text,
-                                    annotations: [],
-                                },
+                                part: textPart,
                             }),
                             encodeSse("response.output_item.done", {
                                 type: "response.output_item.done",

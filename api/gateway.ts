@@ -68,7 +68,11 @@ async function fetchWithHeaderTimeout(
         if (abortController.signal.reason === "upstream idle timeout") {
             throw upstreamTimeoutError();
         }
-        throw error;
+        // A disconnected client aborted the upstream on purpose; there is nobody left to answer.
+        if (abortController.signal.aborted) throw error;
+        // DNS failures, connection resets, TLS errors, …: the upstream is unreachable, which is
+        // an upstream condition — never a gateway internal error.
+        throw upstreamFailureError();
     } finally {
         clearTimeout(timeout);
     }
@@ -92,6 +96,7 @@ async function executeUpstream(
     if (route.provider.type !== "openai_compatible") {
         const access = await ensureFreshProviderAccess(database, route.provider, cipher, {
             fetchUpstream,
+            signal: abortController.signal,
         });
         oauthCredentials = access.credentials;
         currentRoute = {
@@ -119,11 +124,18 @@ async function executeUpstream(
         const refreshed = await ensureFreshProviderAccess(database, currentRoute.provider, cipher, {
             fetchUpstream,
             isForced: true,
+            ...(oauthCredentials === undefined
+                ? {}
+                : {
+                      rejectedAccessToken: oauthCredentials.accessToken,
+                  }),
+            signal: abortController.signal,
         });
         currentRoute = {
             ...route,
             provider: refreshed.provider,
         };
+        oauthCredentials = refreshed.credentials;
         prepared = await prepareUpstreamRequest(
             clientRequest,
             validatedRequest,
@@ -160,6 +172,38 @@ async function relayNativeNonStreaming(
     });
 }
 
+function sanitizedOAuthUpstreamErrorMessage(status: number, body: Uint8Array): string {
+    let baseMessage: string;
+    if (status === 400) baseMessage = "The upstream rejected the translated request";
+    else if (status === 403) baseMessage = "The upstream denied access to this OAuth account";
+    else if (status === 404) baseMessage = "The upstream model or endpoint was not found";
+    else if (status >= 500) baseMessage = "The upstream service failed";
+    else baseMessage = "The upstream request failed";
+
+    // OAuth error bodies are untrusted and may contain account/project identifiers. Expose only
+    // Google RPC status enums and unsupported JSON field names, both bounded safe diagnostics.
+    try {
+        const value: unknown = JSON.parse(new TextDecoder().decode(body));
+        if (!isJsonObject(value) || !isJsonObject(value["error"])) return baseMessage;
+        const upstreamError = value["error"];
+        const upstreamStatus = upstreamError["status"];
+        const suffixes: string[] = [];
+        if (typeof upstreamStatus === "string" && /^[A-Z][A-Z_]{0,63}$/.test(upstreamStatus)) {
+            suffixes.push(upstreamStatus);
+        }
+        const upstreamMessage = upstreamError["message"];
+        if (typeof upstreamMessage === "string") {
+            const unknownField = /Unknown name "([A-Za-z][A-Za-z0-9_]*)"/.exec(
+                upstreamMessage,
+            )?.[1];
+            if (unknownField !== undefined) suffixes.push(`unsupported field ${unknownField}`);
+        }
+        return suffixes.length === 0 ? baseMessage : `${baseMessage} (${suffixes.join(", ")})`;
+    } catch {
+        return baseMessage;
+    }
+}
+
 async function translatedUpstreamError(
     response: Response,
     route: ResolvedModelRoute,
@@ -178,12 +222,14 @@ async function translatedUpstreamError(
             status,
         });
     }
-    await response.body?.cancel();
+    const bytes = await readIdleTimedUpstreamBody(response, abortController);
     return gatewayErrorResponse(
         new GatewayError(
             status,
             status === 429 ? "rate_limit_error" : "upstream_error",
-            status === 429 ? "The upstream rate limit was reached" : "The upstream request failed",
+            status === 429
+                ? "The upstream rate limit was reached"
+                : sanitizedOAuthUpstreamErrorMessage(response.status, bytes),
             status === 429 ? undefined : "upstream_failure",
         ),
         headers,

@@ -14,13 +14,17 @@ export function encodeSse(event: string | undefined, data: unknown): string {
 export class SseParser {
     readonly #handleFrame: SseFrameHandler;
     #buffer = "";
+    #hasTrailingCarriageReturn = false;
 
     constructor(handleFrame: SseFrameHandler) {
         this.#handleFrame = handleFrame;
     }
 
     push(chunk: string): void {
-        this.#buffer += chunk.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+        const input = `${this.#hasTrailingCarriageReturn ? "\r" : ""}${chunk}`;
+        this.#hasTrailingCarriageReturn = input.endsWith("\r");
+        const completeInput = this.#hasTrailingCarriageReturn ? input.slice(0, -1) : input;
+        this.#buffer += completeInput.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
         let boundary = this.#buffer.indexOf("\n\n");
         while (boundary >= 0) {
             const block = this.#buffer.slice(0, boundary);
@@ -31,6 +35,10 @@ export class SseParser {
     }
 
     finish(): void {
+        if (this.#hasTrailingCarriageReturn) {
+            this.#buffer += "\n";
+            this.#hasTrailingCarriageReturn = false;
+        }
         if (this.#buffer.length > 0) {
             this.#emitBlock(this.#buffer);
             this.#buffer = "";
