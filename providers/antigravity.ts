@@ -32,6 +32,21 @@ export const ANTIGRAVITY_CLIENT_METADATA =
 export const ANTIGRAVITY_HEADER_CLIENT_METADATA =
     '{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}';
 
+/** The pinned Antigravity client identity every Code Assist request must carry. */
+export function antigravityRequestHeaders(
+    accessToken: string,
+    accept: string,
+): Record<string, string> {
+    return {
+        Accept: accept,
+        Authorization: `Bearer ${accessToken}`,
+        "Client-Metadata": ANTIGRAVITY_HEADER_CLIENT_METADATA,
+        "Content-Type": "application/json",
+        "User-Agent": ANTIGRAVITY_USER_AGENT,
+        "X-Goog-Api-Client": ANTIGRAVITY_API_CLIENT,
+    };
+}
+
 /**
  * Code Assist speaks the shared Gemini GenerateContent wire format (see ./gemini) but wraps
  * every request in a project-addressed envelope and serves it from an internal endpoint.

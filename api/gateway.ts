@@ -24,7 +24,11 @@ import { renderTranslatedNonStreamingResponse } from "./translated-nonstream";
 import { translateStreamingResponse } from "./translated-stream";
 import { readIdleTimedUpstreamBody } from "./upstream-body";
 import { type PreparedUpstreamRequest, prepareUpstreamRequest } from "./upstream-request";
-import { copySafeUpstreamHeaders, relayNativeStreamingResponse } from "./upstream-response";
+import {
+    copySafeUpstreamHeaders,
+    relayNativeStreamingResponse,
+    UpstreamIdleTimeoutError,
+} from "./upstream-response";
 
 function gatewayErrorResponse(error: GatewayError, headers?: Headers): Response {
     return headers === undefined
@@ -308,7 +312,7 @@ export async function handleGatewayRequest(
         if (error instanceof GatewayError) return gatewayErrorResponse(error);
         if (error instanceof TranslationError)
             return gatewayErrorResponse(mapTranslationError(error));
-        if (error instanceof Error && error.message === "upstream idle timeout") {
+        if (error instanceof UpstreamIdleTimeoutError) {
             return gatewayErrorResponse(upstreamTimeoutError());
         }
         return gatewayErrorResponse(internalGatewayError());

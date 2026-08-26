@@ -183,11 +183,6 @@ export interface ChatStreamMetadata extends ChatResponseMetadata {
 
 export function parseChatCompletionsRequest(value: unknown): IrRequest {
     const root = expectRecord(value, "Chat Completions request");
-    const numberOfChoices = optionalNonNegativeInteger(root["n"], "n");
-    if (numberOfChoices !== undefined && numberOfChoices > 1) {
-        throw new TranslationError("unsupported_parameter", "n > 1 is not supported");
-    }
-
     const messages = expectArray(root["messages"], "messages").map(parseMessage);
     const tools =
         root["tools"] === undefined ? [] : expectArray(root["tools"], "tools").map(parseTool);

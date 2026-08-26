@@ -6,19 +6,12 @@ import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject, unixSeconds } from "/common/validation";
 import { acquireCredentialLease, clearCredentialLease } from "/providers/access";
 import {
-    ANTIGRAVITY_API_BASE_URL,
-    ANTIGRAVITY_API_CLIENT,
     ANTIGRAVITY_AUTHORIZE_URL,
     ANTIGRAVITY_CLIENT_ID,
-    ANTIGRAVITY_CLIENT_METADATA,
     ANTIGRAVITY_CLIENT_SECRET,
-    ANTIGRAVITY_HEADER_CLIENT_METADATA,
-    ANTIGRAVITY_LOAD_CODE_ASSIST_URL,
     ANTIGRAVITY_OAUTH_SCOPE,
-    ANTIGRAVITY_ONBOARD_USER_URL,
     ANTIGRAVITY_REDIRECT_URI,
     ANTIGRAVITY_TOKEN_URL,
-    ANTIGRAVITY_USER_AGENT,
 } from "/providers/antigravity";
 import {
     OPENAI_AUTHORIZE_URL,
@@ -27,19 +20,21 @@ import {
     OPENAI_REDIRECT_URI,
     OPENAI_TOKEN_URL,
 } from "/providers/openai";
-import {
-    ANTIGRAVITY_ONBOARDING_MAX_POLLS,
-    ANTIGRAVITY_ONBOARDING_POLL_INTERVAL_MS,
-    OAUTH_RANDOM_VALUE_BYTES,
-    OAUTH_STATE_TTL_SECONDS,
-} from "./config";
+import { resolveAntigravityProject } from "./antigravity-onboarding";
+import { OAUTH_RANDOM_VALUE_BYTES, OAUTH_STATE_TTL_SECONDS } from "./config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 import type { CompleteOAuthInput, StartOAuthInput } from "./input";
 import {
     findProviderById,
+    findProviderByName,
     generateAvailableProviderName,
     requireProviderByName,
 } from "./provider-repository";
+import {
+    readJsonObjectResponse,
+    requireResponseNumber,
+    requireResponseString,
+} from "./upstream-json";
 
 const PKCE_DIGEST_ALGORITHM = "SHA-256";
 
@@ -186,49 +181,6 @@ async function deleteState(database: D1Database, stateId: number): Promise<void>
     await database.prepare("DELETE FROM oauth_states WHERE id = ?").bind(stateId).run();
 }
 
-async function readJsonObjectResponse(
-    response: Response,
-    context: string,
-): Promise<Record<string, unknown>> {
-    if (!response.ok) {
-        throw new PanelApiError(502, `${context} failed with HTTP ${response.status}`);
-    }
-    let value: unknown;
-    try {
-        value = await response.json();
-    } catch {
-        throw new PanelApiError(502, `${context} returned invalid JSON`);
-    }
-    if (!isJsonObject(value)) {
-        throw new PanelApiError(502, `${context} returned an invalid response`);
-    }
-    return value;
-}
-
-function requireResponseString(
-    object: Record<string, unknown>,
-    fieldName: string,
-    context: string,
-): string {
-    const value = object[fieldName];
-    if (typeof value !== "string") {
-        throw new PanelApiError(502, `${context} returned an invalid response`);
-    }
-    return value;
-}
-
-function requireResponseNumber(
-    object: Record<string, unknown>,
-    fieldName: string,
-    context: string,
-): number {
-    const value = object[fieldName];
-    if (typeof value !== "number") {
-        throw new PanelApiError(502, `${context} returned an invalid response`);
-    }
-    return value;
-}
-
 async function exchangeAuthorizationCode(
     type: OAuthFlowType,
     code: string,
@@ -310,254 +262,6 @@ function openAiCredentials(token: AuthorizationToken): OpenAiOAuthCredentials {
         accountId: requireResponseString(claims, "chatgpt_account_id", "OpenAI id_token"),
         refreshToken: token.refreshToken,
     };
-}
-
-function antigravityHeaders(accessToken: string): Record<string, string> {
-    return {
-        Accept: "*/*",
-        Authorization: `Bearer ${accessToken}`,
-        "Client-Metadata": ANTIGRAVITY_HEADER_CLIENT_METADATA,
-        "Content-Type": "application/json",
-        "User-Agent": ANTIGRAVITY_USER_AGENT,
-        "X-Goog-Api-Client": ANTIGRAVITY_API_CLIENT,
-    };
-}
-
-function antigravityMetadata(): Record<string, unknown> {
-    let value: unknown;
-    try {
-        value = JSON.parse(ANTIGRAVITY_CLIENT_METADATA);
-    } catch {
-        throw new Error("Invalid pinned Antigravity client metadata");
-    }
-    if (!isJsonObject(value)) throw new Error("Invalid pinned Antigravity client metadata");
-    return value;
-}
-
-function extractProjectId(value: Record<string, unknown>): string | undefined {
-    for (const key of [
-        "antigravityProjectId",
-        "projectId",
-        "backendProjectId",
-        "userDefinedCloudaicompanionProject",
-        "cloudaicompanionProject",
-        "project",
-    ]) {
-        const project = value[key];
-        if (typeof project === "string" && project.length > 0) return project;
-        if (!isJsonObject(project)) continue;
-        for (const nestedKey of [
-            "id",
-            "projectId",
-            "project",
-        ]) {
-            const nested = project[nestedKey];
-            if (typeof nested === "string" && nested.length > 0) return nested;
-        }
-    }
-    return undefined;
-}
-
-function selectOnboardingTier(loadResponse: Record<string, unknown>): {
-    id: string;
-    isProjectRequired: boolean;
-} {
-    const ineligibleTiers = loadResponse["ineligibleTiers"];
-    if (Array.isArray(ineligibleTiers) && ineligibleTiers.length > 0) {
-        for (const tier of ineligibleTiers) {
-            if (
-                !isJsonObject(tier) ||
-                tier["reasonCode"] !== "VALIDATION_REQUIRED" ||
-                typeof tier["validationUrl"] !== "string"
-            )
-                continue;
-            let validationUrl: URL;
-            try {
-                validationUrl = new URL(tier["validationUrl"]);
-            } catch {
-                continue;
-            }
-            if (validationUrl.protocol !== "https:") continue;
-            throw new PanelApiError(
-                400,
-                `Google account validation is required before connecting: ${validationUrl.toString()}`,
-            );
-        }
-    }
-    const tiers = loadResponse["allowedTiers"];
-    if (Array.isArray(tiers)) {
-        for (const tier of tiers) {
-            if (
-                isJsonObject(tier) &&
-                tier["isDefault"] === true &&
-                typeof tier["id"] === "string"
-            ) {
-                return {
-                    id: tier["id"],
-                    isProjectRequired: tier["id"] !== "free-tier",
-                };
-            }
-        }
-    }
-    return {
-        id: "legacy-tier",
-        isProjectRequired: true,
-    };
-}
-
-function antigravityOperationUrl(name: string): string {
-    const segments = name.split("/");
-    if (
-        segments.length < 2 ||
-        segments[0] !== "operations" ||
-        segments.some((segment) => !/^[A-Za-z0-9._~-]+$/.test(segment))
-    ) {
-        throw new PanelApiError(502, "Antigravity onboarding returned an invalid operation");
-    }
-    return `${ANTIGRAVITY_API_BASE_URL}/${segments.map(encodeURIComponent).join("/")}`;
-}
-
-async function pollAntigravityOnboarding(
-    initialOperation: Record<string, unknown>,
-    accessToken: string,
-    fetchUpstream: typeof fetch,
-    sleep: (milliseconds: number) => Promise<void>,
-    signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
-    let operation = initialOperation;
-    for (let pollCount = 0; operation["done"] !== true; pollCount += 1) {
-        if (pollCount >= ANTIGRAVITY_ONBOARDING_MAX_POLLS) {
-            throw new PanelApiError(502, "Antigravity onboarding timed out");
-        }
-        const name = operation["name"];
-        if (typeof name !== "string") {
-            throw new PanelApiError(502, "Antigravity onboarding returned an invalid operation");
-        }
-        await sleep(ANTIGRAVITY_ONBOARDING_POLL_INTERVAL_MS);
-        let response: Response;
-        try {
-            response = await fetchUpstream(antigravityOperationUrl(name), {
-                headers: antigravityHeaders(accessToken),
-                method: "GET",
-                signal: oauthUpstreamSignal(signal),
-            });
-        } catch {
-            throw new PanelApiError(502, "Antigravity onboarding operation failed");
-        }
-        operation = await readJsonObjectResponse(response, "Antigravity onboarding operation");
-    }
-    if (operation["error"] !== undefined) {
-        throw new PanelApiError(502, "Antigravity onboarding operation failed");
-    }
-    return operation;
-}
-
-async function isVpcServiceControlsRejection(response: Response): Promise<boolean> {
-    if (response.status !== 403) return false;
-    let value: unknown;
-    try {
-        value = await response.clone().json();
-    } catch {
-        return false;
-    }
-    if (!isJsonObject(value) || !isJsonObject(value["error"])) return false;
-    const details = value["error"]["details"];
-    return (
-        Array.isArray(details) &&
-        details.some(
-            (detail) => isJsonObject(detail) && detail["reason"] === "SECURITY_POLICY_VIOLATED",
-        )
-    );
-}
-
-async function resolveAntigravityProject(
-    accessToken: string,
-    fetchUpstream: typeof fetch,
-    sleep: (milliseconds: number) => Promise<void>,
-    signal?: AbortSignal,
-    explicitProjectId?: string,
-): Promise<string> {
-    const metadata = antigravityMetadata();
-    if (explicitProjectId !== undefined) metadata["duetProject"] = explicitProjectId;
-    let loadResponse: Response;
-    try {
-        loadResponse = await fetchUpstream(ANTIGRAVITY_LOAD_CODE_ASSIST_URL, {
-            body: JSON.stringify({
-                ...(explicitProjectId === undefined
-                    ? {}
-                    : {
-                          cloudaicompanionProject: explicitProjectId,
-                      }),
-                metadata,
-            }),
-            headers: antigravityHeaders(accessToken),
-            method: "POST",
-            signal: oauthUpstreamSignal(signal),
-        });
-    } catch {
-        throw new PanelApiError(502, "Antigravity project resolution failed");
-    }
-    if (explicitProjectId !== undefined && (await isVpcServiceControlsRejection(loadResponse))) {
-        return explicitProjectId;
-    }
-    const load = await readJsonObjectResponse(loadResponse, "Antigravity project resolution");
-    const existingProjectId = extractProjectId(load);
-    if (existingProjectId !== undefined) return existingProjectId;
-    if (isJsonObject(load["currentTier"])) {
-        if (explicitProjectId !== undefined) return explicitProjectId;
-        throw new PanelApiError(
-            400,
-            "This Google account requires an explicit Google Cloud project ID",
-        );
-    }
-
-    const tier = selectOnboardingTier(load);
-    if (tier.isProjectRequired && explicitProjectId === undefined) {
-        throw new PanelApiError(
-            400,
-            "This Google account requires an explicit Google Cloud project ID",
-        );
-    }
-    const onboardingProjectId = tier.isProjectRequired ? explicitProjectId : undefined;
-    const onboardingMetadata = antigravityMetadata();
-    if (onboardingProjectId !== undefined) onboardingMetadata["duetProject"] = onboardingProjectId;
-    let onboardResponse: Response;
-    try {
-        onboardResponse = await fetchUpstream(ANTIGRAVITY_ONBOARD_USER_URL, {
-            body: JSON.stringify({
-                ...(onboardingProjectId === undefined
-                    ? {}
-                    : {
-                          cloudaicompanionProject: onboardingProjectId,
-                      }),
-                metadata: onboardingMetadata,
-                tierId: tier.id,
-            }),
-            headers: antigravityHeaders(accessToken),
-            method: "POST",
-            signal: oauthUpstreamSignal(signal),
-        });
-    } catch {
-        throw new PanelApiError(502, "Antigravity onboarding failed");
-    }
-    const initialOperation = await readJsonObjectResponse(
-        onboardResponse,
-        "Antigravity onboarding",
-    );
-    const onboard = await pollAntigravityOnboarding(
-        initialOperation,
-        accessToken,
-        fetchUpstream,
-        sleep,
-        signal,
-    );
-    if (!isJsonObject(onboard["response"])) {
-        throw new PanelApiError(502, "Antigravity onboarding returned an invalid response");
-    }
-    const projectId = extractProjectId(onboard["response"]);
-    if (projectId !== undefined) return projectId;
-    if (onboardingProjectId !== undefined) return onboardingProjectId;
-    throw new PanelApiError(502, "Antigravity onboarding returned an invalid response");
 }
 
 async function completionCredentials(
@@ -701,6 +405,12 @@ export async function completeProviderOAuth(
         const code = redirectUrl.searchParams.get("code");
         if (code === null || code.length === 0) {
             throw new PanelApiError(400, "OAuth redirect is missing code");
+        }
+
+        if (state.provider_id === null && input.name !== undefined) {
+            if ((await findProviderByName(database, input.name)) !== null) {
+                throw new PanelApiError(409, "Provider name already exists");
+            }
         }
 
         if (state.provider_id !== null) {

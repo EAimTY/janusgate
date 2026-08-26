@@ -6,12 +6,7 @@ import { GatewayError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject } from "/common/validation";
 import { ensureFreshProviderAccess } from "/providers/access";
-import {
-    ANTIGRAVITY_API_CLIENT,
-    ANTIGRAVITY_FETCH_MODELS_URL,
-    ANTIGRAVITY_HEADER_CLIENT_METADATA,
-    ANTIGRAVITY_USER_AGENT,
-} from "/providers/antigravity";
+import { ANTIGRAVITY_FETCH_MODELS_URL, antigravityRequestHeaders } from "/providers/antigravity";
 import { OPENAI_CODEX_MODELS } from "/providers/openai";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 
@@ -95,14 +90,7 @@ async function fetchAntigravityModelNames(
                 body: JSON.stringify({
                     project: credentials.projectId,
                 }),
-                headers: {
-                    Accept: "application/json",
-                    Authorization: `Bearer ${credentials.accessToken}`,
-                    "Client-Metadata": ANTIGRAVITY_HEADER_CLIENT_METADATA,
-                    "Content-Type": "application/json",
-                    "User-Agent": ANTIGRAVITY_USER_AGENT,
-                    "X-Goog-Api-Client": ANTIGRAVITY_API_CLIENT,
-                },
+                headers: antigravityRequestHeaders(credentials.accessToken, "application/json"),
                 method: "POST",
                 signal: oauthUpstreamSignal(signal),
             });

@@ -328,15 +328,6 @@ test("Responses and Chat Completions translate through the event IR", () => {
         "json_schema",
         "response format enters IR",
     );
-    assertTranslationError(
-        () =>
-            parseChatCompletionsRequest({
-                model: "m",
-                messages: [],
-                n: 2,
-            }),
-        "unsupported_parameter",
-    );
 
     const responseEvents = parseResponsesResponse({
         id: "resp_upstream",

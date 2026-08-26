@@ -10,6 +10,14 @@ export function copySafeUpstreamHeaders(source: Headers): Headers {
     return headers;
 }
 
+/** No upstream bytes arrived for `UPSTREAM_IDLE_TIMEOUT_SECONDS` (§11.2 idle timeout). */
+export class UpstreamIdleTimeoutError extends Error {
+    public constructor() {
+        super("upstream idle timeout");
+        this.name = "UpstreamIdleTimeoutError";
+    }
+}
+
 export async function readBeforeIdleTimeout(
     reader: ReadableStreamDefaultReader<Uint8Array>,
     abortController: AbortController,
@@ -21,7 +29,7 @@ export async function readBeforeIdleTimeout(
             new Promise<never>((_resolve, reject) => {
                 timeout = setTimeout(() => {
                     abortController.abort("upstream idle timeout");
-                    reject(new Error("upstream idle timeout"));
+                    reject(new UpstreamIdleTimeoutError());
                 }, UPSTREAM_IDLE_TIMEOUT_SECONDS * 1_000);
             }),
         ]);

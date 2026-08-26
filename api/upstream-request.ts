@@ -6,9 +6,7 @@ import type {
     UpstreamProtocol,
 } from "/common/domain";
 import {
-    ANTIGRAVITY_API_CLIENT,
-    ANTIGRAVITY_HEADER_CLIENT_METADATA,
-    ANTIGRAVITY_USER_AGENT,
+    antigravityRequestHeaders,
     buildCodeAssistRequest,
     codeAssistRequestUrl,
 } from "/providers/antigravity";
@@ -116,6 +114,7 @@ export async function prepareUpstreamRequest(
         "Content-Type": "application/json",
     });
     let url: string;
+    let body: unknown;
 
     if (route.provider.type === "openai_compatible") {
         if (route.provider.baseUrl === null) {
@@ -149,31 +148,22 @@ export async function prepareUpstreamRequest(
         if (oauthCredentials === undefined || !("projectId" in oauthCredentials)) {
             throw new Error("Antigravity credentials are missing a project ID");
         }
-        headers.set("Authorization", `Bearer ${oauthCredentials.accessToken}`);
-        headers.set("User-Agent", ANTIGRAVITY_USER_AGENT);
-        headers.set("X-Goog-Api-Client", ANTIGRAVITY_API_CLIENT);
-        headers.set("Client-Metadata", ANTIGRAVITY_HEADER_CLIENT_METADATA);
-        headers.set("Accept", request.isStreaming ? "text/event-stream" : "application/json");
+        for (const [name, value] of Object.entries(
+            antigravityRequestHeaders(
+                oauthCredentials.accessToken,
+                request.isStreaming ? "text/event-stream" : "application/json",
+            ),
+        )) {
+            headers.set(name, value);
+        }
         // Runtime routing never moves a model into or out of the Claude family, so the beta
         // header decision can read the configured upstream name directly.
         if (route.upstreamName.startsWith("claude-")) {
             headers.set("anthropic-beta", "interleaved-thinking-2025-05-14");
         }
         url = codeAssistRequestUrl(request.isStreaming);
-    }
-
-    let body: unknown;
-    if (isNativeProtocol) {
-        body = substituteNativeModelAndThinking(
-            request,
-            clientProtocol,
-            route.upstreamName,
-            effectiveEffort,
-        );
-    } else if (route.provider.type === "antigravity_oauth") {
-        if (oauthCredentials === undefined || !("projectId" in oauthCredentials)) {
-            throw new Error("Antigravity credentials are missing a project ID");
-        }
+        // Antigravity upstreams speak GenerateContent, which no client speaks, so the request
+        // is always translated and belongs with the rest of the Antigravity specifics.
         const sessionId = clientRequest.headers.get("Session-Id");
         body = buildCodeAssistRequest(parseTranslatedClientRequest(clientProtocol, request.body), {
             model: route.upstreamName,
@@ -189,13 +179,22 @@ export async function prepareUpstreamRequest(
                       reasoningEffort: effectiveEffort,
                   }),
         });
-    } else {
-        body = renderTranslatedBody(
-            parseTranslatedClientRequest(clientProtocol, request.body),
-            route,
-            protocol,
-            effectiveEffort,
-        );
+    }
+
+    if (body === undefined) {
+        body = isNativeProtocol
+            ? substituteNativeModelAndThinking(
+                  request,
+                  clientProtocol,
+                  route.upstreamName,
+                  effectiveEffort,
+              )
+            : renderTranslatedBody(
+                  parseTranslatedClientRequest(clientProtocol, request.body),
+                  route,
+                  protocol,
+                  effectiveEffort,
+              );
     }
     return {
         body: JSON.stringify(body),
