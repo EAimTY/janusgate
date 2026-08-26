@@ -8,8 +8,8 @@ import { ConfigurationError, CredentialDecryptionError, ValidationError } from "
 import { requireJsonObject, requireStringField } from "/common/validation";
 
 const AES_256_KEY_BYTES = 32;
-export const AES_GCM_IV_BYTES = 12;
-export const AES_GCM_TAG_BYTES = 16;
+const AES_GCM_IV_BYTES = 12;
+const AES_GCM_TAG_BYTES = 16;
 
 function decodeBase64Key(encodedKey: string): Uint8Array {
     if (!/^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$/.test(encodedKey)) {

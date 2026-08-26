@@ -396,7 +396,7 @@ export async function completeProviderOAuth(
 
     const flowType = parseStoredFlowType(state.type);
     let leasedProvider: StoredProvider | null = null;
-    let hasLease = false;
+    let leaseTimestamp: number | undefined;
     try {
         assertMatchingRedirect(redirectUrl, flowType);
         if (redirectUrl.searchParams.has("error")) {
@@ -455,21 +455,26 @@ export async function completeProviderOAuth(
             return;
         }
 
-        hasLease = await acquireCredentialLease(database, leasedProvider.id, now);
+        // Stamp the lease when the write actually happens: Antigravity onboarding can run for
+        // minutes, and a lease dated at request start is already stealable under §7 expiry.
+        // `leaseTimestamp` being set marks lease ownership for the failure path.
+        const leaseTime = options.now ?? unixSeconds();
+        const hasLease = await acquireCredentialLease(database, leasedProvider.id, leaseTime);
         if (!hasLease) {
             throw new PanelApiError(409, "Provider credential mutation is already in progress");
         }
+        leaseTimestamp = leaseTime;
         await reauthenticateProviderAtomically(
             database,
             state,
             leasedProvider,
             encryptedCredentials,
             token.expiresAt,
-            now,
+            leaseTimestamp,
         );
     } catch (error: unknown) {
-        if (hasLease && leasedProvider !== null) {
-            await clearCredentialLease(database, leasedProvider.id, now);
+        if (leasedProvider !== null && leaseTimestamp !== undefined) {
+            await clearCredentialLease(database, leasedProvider.id, leaseTimestamp);
         }
         await deleteState(database, state.id);
         if (isDatabaseConstraintError(error, "providers.name")) {

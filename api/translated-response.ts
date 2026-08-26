@@ -97,7 +97,7 @@ export async function translateStreamingResponse(
     publicModel: string,
     isUsageIncluded: boolean,
 ): Promise<Response> {
-    if (upstreamResponse.body === null) throw new Error("Streaming upstream returned no body");
+    if (upstreamResponse.body === null) throw upstreamFailureError();
     const reader = upstreamResponse.body.getReader();
     const firstRead = await readBeforeIdleTimeout(reader, abortController);
     const decoder = new TextDecoder();

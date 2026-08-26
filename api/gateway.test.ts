@@ -252,6 +252,35 @@ describe("gateway request lifecycle", () => {
         expect(output.endsWith("data: [DONE]\n\n")).toBe(true);
     });
 
+    it("maps a bodiless 2xx from a translated streaming upstream to 502 upstream_failure", async () => {
+        await seedCompatibleProvider("openai_response");
+        const response = await handleGatewayRequest(
+            gatewayRequest("chat/completions", {
+                messages: [
+                    {
+                        content: "hello",
+                        role: "user",
+                    },
+                ],
+                model: "public-model",
+                stream: true,
+            }),
+            bindings,
+            "openai_chat_completion",
+            async () =>
+                new Response(null, {
+                    status: 204,
+                }),
+        );
+        expect(response.status).toBe(502);
+        expect(await response.json()).toMatchObject({
+            error: {
+                code: "upstream_failure",
+                type: "upstream_error",
+            },
+        });
+    });
+
     it("speaks Gemini GenerateContent to API-key upstreams and maps effort onto thinkingConfig", async () => {
         await seedCompatibleProvider("gemini_generate_content");
         const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {

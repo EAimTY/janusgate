@@ -1,7 +1,5 @@
 import { expect, test } from "vitest";
 import {
-    AES_GCM_IV_BYTES,
-    AES_GCM_TAG_BYTES,
     CredentialsCipher,
     parseOpenAiCompatibleCredentials,
     parseOpenAiOAuthCredentials,
@@ -21,7 +19,7 @@ test("credentials encrypt as IV followed by ciphertext and the GCM tag", async (
     const first = await cipher.encrypt(credentials);
     const second = await cipher.encrypt(credentials);
 
-    expect(first.byteLength).toBeGreaterThanOrEqual(AES_GCM_IV_BYTES + AES_GCM_TAG_BYTES + 1);
+    expect(first.byteLength).toBeGreaterThanOrEqual(12 + 16 + 1);
     expect(parseOpenAiOAuthCredentials(await cipher.decrypt(first))).toEqual(credentials);
     expect(first).not.toEqual(second);
 });

@@ -2,6 +2,7 @@ import { verifyBearerAuthorization } from "/common/auth";
 import { CredentialsCipher } from "/common/credentials";
 import type { ClientProtocol } from "/common/domain";
 import {
+    ConfigurationError,
     GatewayError,
     gatewayErrorBody,
     internalGatewayError,
@@ -312,6 +313,8 @@ export async function handleGatewayRequest(
     try {
         return await handleGatewayChat(request, env, protocol, fetchUpstream);
     } catch (error) {
+        // Bad deployment secrets are fatal — never masked as a routine internal error.
+        if (error instanceof ConfigurationError) throw error;
         if (error instanceof GatewayError) return gatewayErrorResponse(error);
         if (error instanceof TranslationError)
             return gatewayErrorResponse(mapTranslationError(error));

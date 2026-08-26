@@ -184,7 +184,10 @@ export function buildGenerateContentRequest(
         ];
     }
     if (request.toolChoice?.mode === "required" && request.tools.length === 0) {
-        throw new TranslationError("invalid_json", "required tool_choice needs at least one tool");
+        throw new TranslationError(
+            "unsupported_parameter",
+            "required tool_choice needs at least one tool",
+        );
     }
     if (request.toolChoice !== undefined && request.tools.length > 0) {
         generateRequest.toolConfig = {

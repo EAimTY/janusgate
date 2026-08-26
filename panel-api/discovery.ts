@@ -103,6 +103,7 @@ async function fetchAntigravityModelNames(
                 await ensureFreshProviderAccess(database, effectiveProvider, cipher, {
                     fetchUpstream,
                     isForced: true,
+                    rejectedAccessToken: credentials.accessToken,
                     ...(signal === undefined
                         ? {}
                         : {
