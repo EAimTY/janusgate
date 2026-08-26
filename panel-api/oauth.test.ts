@@ -125,6 +125,69 @@ describe("OAuth orchestration", () => {
         ).resolves.toBe(0);
     });
 
+    it("rejects OAuth creation with an explicit colliding name and consumes the state", async () => {
+        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        const encrypted = await cipher.encrypt({
+            accessToken: "existing-access",
+            accountId: "account-1",
+            refreshToken: "existing-refresh",
+        });
+        await env.DATABASE.prepare(
+            `INSERT INTO providers (
+                name, model_prefix, type, protocol, base_url, encrypted_credentials,
+                expires_at, refresh_started_at, enabled
+            ) VALUES ('work', '', 'openai_oauth', NULL, NULL, ?, 2000000000, NULL, 1)`,
+        )
+            .bind(encrypted)
+            .run();
+
+        const authorizeUrl = await startProviderOAuth(
+            env.DATABASE,
+            {
+                type: "openai",
+            },
+            {
+                now: NOW,
+            },
+        );
+        const state = new URL(authorizeUrl).searchParams.get("state");
+        if (state === null) throw new Error("state missing");
+        const fetchUpstream = vi.fn<typeof fetch>();
+        await expect(
+            completeProviderOAuth(
+                env.DATABASE,
+                cipher,
+                {
+                    name: "work",
+                    redirectUrl: `http://localhost:1455/auth/callback?code=authorization-code&state=${state}`,
+                },
+                {
+                    fetchUpstream,
+                    now: NOW,
+                },
+            ),
+        ).rejects.toMatchObject({
+            message: "Provider name already exists",
+            status: 409,
+        });
+        expect(fetchUpstream).not.toHaveBeenCalled();
+        await expect(
+            env.DATABASE.prepare("SELECT COUNT(*) AS count FROM oauth_states").first("count"),
+        ).resolves.toBe(0);
+        await expect(
+            parseOpenAiOAuthCredentials(
+                await cipher.decrypt(
+                    (await findProviderByName(env.DATABASE, "work"))?.encryptedCredentials ??
+                        new Uint8Array(),
+                ),
+            ),
+        ).toEqual({
+            accessToken: "existing-access",
+            accountId: "account-1",
+            refreshToken: "existing-refresh",
+        });
+    });
+
     it("consumes state but leaves no provider when token exchange fails", async () => {
         const authorizeUrl = await startProviderOAuth(
             env.DATABASE,

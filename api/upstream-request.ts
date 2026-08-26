@@ -54,9 +54,7 @@ export function upstreamProtocol(route: ResolvedModelRoute): UpstreamProtocol {
     return route.provider.protocol;
 }
 
-function compatibleUrl(route: ResolvedModelRoute, protocol: UpstreamProtocol): string {
-    const baseUrl = route.provider.baseUrl;
-    if (baseUrl === null) throw new Error("Compatible provider base URL is missing");
+function compatibleUrl(baseUrl: string, protocol: UpstreamProtocol): string {
     if (protocol === "openai_response") return `${baseUrl}/responses`;
     return `${baseUrl}/chat/completions`;
 }
@@ -117,17 +115,12 @@ export async function prepareUpstreamRequest(
     let body: unknown;
 
     if (route.provider.type === "openai_compatible") {
-        if (route.provider.baseUrl === null) {
-            throw new Error("Compatible provider base URL is missing");
-        }
+        const baseUrl = route.provider.baseUrl;
+        if (baseUrl === null) throw new Error("Compatible provider base URL is missing");
         url =
             protocol === "gemini_generate_content"
-                ? generateContentUrl(
-                      route.provider.baseUrl,
-                      route.upstreamName,
-                      request.isStreaming,
-                  )
-                : compatibleUrl(route, protocol);
+                ? generateContentUrl(baseUrl, route.upstreamName, request.isStreaming)
+                : compatibleUrl(baseUrl, protocol);
         const credentials = assertCredentialsMatchProvider(
             "openai_compatible",
             await cipher.decrypt(route.provider.encryptedCredentials),
