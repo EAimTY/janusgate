@@ -13,15 +13,30 @@ import {
 } from "/common/validation";
 import { PROVIDER_NAME_MAX_LENGTH, type ThinkingLevel } from "/config";
 
-export interface SaveProviderInput {
-    readonly name: string;
-    readonly type?: "openai_compatible";
-    readonly protocol?: UpstreamProtocol;
-    readonly baseUrl?: string;
-    readonly apiKey?: string;
-    readonly enabled?: boolean;
-    readonly modelPrefix?: string;
-}
+/**
+ * `type` present means creation intent (only API-key providers are created directly); absent
+ * means update intent for the named provider. Required creation fields are decided here, not
+ * re-asserted by the route.
+ */
+export type SaveProviderInput =
+    | {
+          readonly kind: "create";
+          readonly name: string;
+          readonly protocol: UpstreamProtocol;
+          readonly baseUrl: string;
+          readonly apiKey: string;
+          readonly enabled?: boolean;
+          readonly modelPrefix?: string;
+      }
+    | {
+          readonly kind: "update";
+          readonly name: string;
+          readonly protocol?: UpstreamProtocol;
+          readonly baseUrl?: string;
+          readonly apiKey?: string;
+          readonly enabled?: boolean;
+          readonly modelPrefix?: string;
+      };
 
 export interface DeleteProviderInput {
     readonly providerName: string;
@@ -97,36 +112,67 @@ export function parseSaveProviderInput(value: unknown): SaveProviderInput {
         "type",
     ]);
 
-    const input: {
+    const name = parseProviderName(object["name"]);
+    const enabled = Object.hasOwn(object, "enabled")
+        ? parseBoolean(object["enabled"], "enabled")
+        : undefined;
+    const modelPrefix = Object.hasOwn(object, "modelPrefix")
+        ? parseModelPrefix(object["modelPrefix"])
+        : undefined;
+    if (!Object.hasOwn(object, "type")) {
+        const update: {
+            kind: "update";
+            name: string;
+            protocol?: UpstreamProtocol;
+            baseUrl?: string;
+            apiKey?: string;
+            enabled?: boolean;
+            modelPrefix?: string;
+        } = {
+            kind: "update",
+            name,
+        };
+        if (Object.hasOwn(object, "protocol"))
+            update.protocol = parseUpstreamProtocol(object["protocol"]);
+        if (Object.hasOwn(object, "baseUrl")) update.baseUrl = parseBaseUrl(object["baseUrl"]);
+        if (Object.hasOwn(object, "apiKey")) {
+            update.apiKey = parseNonEmptyString(object["apiKey"], "apiKey");
+        }
+        if (enabled !== undefined) update.enabled = enabled;
+        if (modelPrefix !== undefined) update.modelPrefix = modelPrefix;
+        return update;
+    }
+
+    if (object["type"] !== "openai_compatible") {
+        throw new ValidationError("type must be openai_compatible");
+    }
+    if (
+        !Object.hasOwn(object, "protocol") ||
+        !Object.hasOwn(object, "baseUrl") ||
+        !Object.hasOwn(object, "apiKey")
+    ) {
+        throw new ValidationError(
+            "Creating an OpenAI-compatible provider requires protocol, baseUrl, and apiKey",
+        );
+    }
+    const create: {
+        kind: "create";
         name: string;
-        type?: "openai_compatible";
-        protocol?: UpstreamProtocol;
-        baseUrl?: string;
-        apiKey?: string;
+        protocol: UpstreamProtocol;
+        baseUrl: string;
+        apiKey: string;
         enabled?: boolean;
         modelPrefix?: string;
     } = {
-        name: parseProviderName(object["name"]),
+        kind: "create",
+        name,
+        protocol: parseUpstreamProtocol(object["protocol"]),
+        baseUrl: parseBaseUrl(object["baseUrl"]),
+        apiKey: parseNonEmptyString(object["apiKey"], "apiKey"),
     };
-
-    if (Object.hasOwn(object, "type")) {
-        if (object["type"] !== "openai_compatible") {
-            throw new ValidationError("type must be openai_compatible");
-        }
-        input.type = "openai_compatible";
-    }
-    if (Object.hasOwn(object, "protocol"))
-        input.protocol = parseUpstreamProtocol(object["protocol"]);
-    if (Object.hasOwn(object, "baseUrl")) input.baseUrl = parseBaseUrl(object["baseUrl"]);
-    if (Object.hasOwn(object, "apiKey")) {
-        input.apiKey = parseNonEmptyString(object["apiKey"], "apiKey");
-    }
-    if (Object.hasOwn(object, "enabled"))
-        input.enabled = parseBoolean(object["enabled"], "enabled");
-    if (Object.hasOwn(object, "modelPrefix")) {
-        input.modelPrefix = parseModelPrefix(object["modelPrefix"]);
-    }
-    return input;
+    if (enabled !== undefined) create.enabled = enabled;
+    if (modelPrefix !== undefined) create.modelPrefix = modelPrefix;
+    return create;
 }
 
 export function parseDeleteProviderInput(value: unknown): DeleteProviderInput {

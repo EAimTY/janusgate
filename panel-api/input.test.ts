@@ -22,9 +22,9 @@ describe("panel input validation", () => {
         ).toMatchObject({
             apiKey: "secret",
             baseUrl: "https://example.test/v1",
+            kind: "create",
             name: "custom",
             protocol: "openai_response",
-            type: "openai_compatible",
         });
         expect(() =>
             parseSaveProviderInput({
@@ -51,6 +51,7 @@ describe("panel input validation", () => {
                 name: "account",
             }),
         ).toEqual({
+            kind: "update",
             name: "account",
         });
         expect(

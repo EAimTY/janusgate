@@ -1,8 +1,6 @@
 import { Hono } from "hono";
 import { verifyBearerAuthorization } from "/common/auth";
 import { CredentialsCipher } from "/common/credentials";
-import type { StoredProvider } from "/common/database";
-import type { ProviderSummary, UpstreamProtocol } from "/common/domain";
 import { ConfigurationError, ValidationError } from "/common/errors";
 import { composeModelName, isJsonObject } from "/common/validation";
 import { discoverProviderModels } from "./discovery";
@@ -22,7 +20,7 @@ import {
     createProvider,
     deleteProviderByName,
     findProviderByName,
-    listProviders,
+    listProviderSummaries,
     requireProviderByName,
     updateProvider,
 } from "./provider-repository";
@@ -48,57 +46,6 @@ async function readRequestObject(request: Request): Promise<Record<string, unkno
     return value;
 }
 
-function panelProvider(provider: StoredProvider): ProviderSummary {
-    const shared = {
-        enabled: provider.isEnabled,
-        modelPrefix: provider.modelPrefix,
-        name: provider.name,
-    };
-    if (provider.type === "openai_compatible") {
-        if (
-            provider.protocol === null ||
-            provider.baseUrl === null ||
-            provider.expiresAt !== null
-        ) {
-            throw new Error("Invalid stored OpenAI-compatible provider");
-        }
-        return {
-            ...shared,
-            baseUrl: provider.baseUrl,
-            expiresAt: null,
-            protocol: provider.protocol,
-            type: provider.type,
-        };
-    }
-    if (provider.protocol !== null || provider.baseUrl !== null || provider.expiresAt === null) {
-        throw new Error("Invalid stored OAuth provider");
-    }
-    return {
-        ...shared,
-        baseUrl: null,
-        expiresAt: provider.expiresAt,
-        protocol: null,
-        type: provider.type,
-    };
-}
-
-function assertCompatibleCreationFields(input: {
-    protocol?: UpstreamProtocol;
-    baseUrl?: string;
-    apiKey?: string;
-}): asserts input is {
-    protocol: UpstreamProtocol;
-    baseUrl: string;
-    apiKey: string;
-} {
-    if (input.protocol === undefined || input.baseUrl === undefined || input.apiKey === undefined) {
-        throw new PanelApiError(
-            400,
-            "Creating an OpenAI-compatible provider requires protocol, baseUrl, and apiKey",
-        );
-    }
-}
-
 async function savePanelProvider(
     environment: Env,
     body: Record<string, unknown>,
@@ -109,11 +56,10 @@ async function savePanelProvider(
     const existing = await findProviderByName(environment.DATABASE, input.name);
     const cipher = await CredentialsCipher.create(environment.CREDENTIALS_AES_KEY);
 
-    if (existing === null) {
-        if (input.type !== "openai_compatible") {
-            throw new PanelApiError(404, "Provider not found");
+    if (input.kind === "create") {
+        if (existing !== null) {
+            throw new PanelApiError(409, "Provider name already exists");
         }
-        assertCompatibleCreationFields(input);
         const encryptedCredentials = await cipher.encrypt({
             apiKey: input.apiKey,
         });
@@ -132,8 +78,8 @@ async function savePanelProvider(
         };
     }
 
-    if (input.type !== undefined) {
-        throw new PanelApiError(409, "Provider name already exists");
+    if (existing === null) {
+        throw new PanelApiError(404, "Provider not found");
     }
 
     if (existing.type === "openai_compatible") {
@@ -246,9 +192,8 @@ export function createPanelApi(options: PanelApiOptions = {}): PanelApp {
     });
 
     panelApi.get("/list-providers", async (context) => {
-        const providers = await listProviders(context.env.DATABASE);
         return context.json({
-            providers: providers.map(panelProvider),
+            providers: await listProviderSummaries(context.env.DATABASE),
         });
     });
 
