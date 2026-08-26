@@ -1,9 +1,9 @@
-export interface SseFrame {
+interface SseFrame {
     event?: string;
     data: string;
 }
 
-export type SseFrameHandler = (frame: SseFrame) => void;
+type SseFrameHandler = (frame: SseFrame) => void;
 
 export function encodeSse(event: string | undefined, data: unknown): string {
     const encodedData = typeof data === "string" ? data : JSON.stringify(data);

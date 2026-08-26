@@ -30,7 +30,7 @@ import {
 } from "./json";
 import { encodeSse } from "./sse";
 
-export interface ChatCompletionsRequestObject {
+interface ChatCompletionsRequestObject {
     model: string;
     messages: ChatRequestMessage[];
     stream: boolean;
@@ -53,7 +53,7 @@ export interface ChatCompletionsRequestObject {
     reasoning_effort?: string;
 }
 
-export interface ChatRequestMessage {
+interface ChatRequestMessage {
     role: "system" | "user" | "assistant" | "tool";
     content: string | null | ChatContentPart[];
     reasoning_content?: string;
@@ -63,7 +63,7 @@ export interface ChatRequestMessage {
     name?: string;
 }
 
-export type ChatContentPart =
+type ChatContentPart =
     | {
           type: "text";
           text: string;
@@ -77,7 +77,7 @@ export type ChatContentPart =
           };
       };
 
-export interface ChatToolCall {
+interface ChatToolCall {
     id: string;
     type: "function";
     extra_content?: {
@@ -91,7 +91,7 @@ export interface ChatToolCall {
     };
 }
 
-export interface ChatFunctionTool {
+interface ChatFunctionTool {
     type: "function";
     function: {
         name: string;
@@ -128,7 +128,7 @@ function renderGoogleThoughtSignature(
     };
 }
 
-export type ChatResponseFormat =
+type ChatResponseFormat =
     | {
           type: "json_object";
       }
@@ -142,7 +142,7 @@ export type ChatResponseFormat =
           };
       };
 
-export interface ChatCompletionsResponseObject {
+interface ChatCompletionsResponseObject {
     id: string;
     object: "chat.completion";
     created: number;
@@ -171,7 +171,7 @@ export interface ChatCompletionsResponseObject {
     };
 }
 
-export interface ChatResponseMetadata {
+interface ChatResponseMetadata {
     id: string;
     model: string;
     created: number;

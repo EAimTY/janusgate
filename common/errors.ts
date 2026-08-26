@@ -1,4 +1,4 @@
-export type GatewayErrorType =
+type GatewayErrorType =
     | "api_error"
     | "authentication_error"
     | "invalid_request_error"
@@ -6,7 +6,7 @@ export type GatewayErrorType =
     | "rate_limit_error"
     | "upstream_error";
 
-export interface GatewayErrorBody {
+interface GatewayErrorBody {
     readonly error: {
         readonly message: string;
         readonly type: GatewayErrorType;

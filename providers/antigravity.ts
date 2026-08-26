@@ -51,7 +51,7 @@ export function antigravityRequestHeaders(
  * Code Assist speaks the shared Gemini GenerateContent wire format (see ./gemini) but wraps
  * every request in a project-addressed envelope and serves it from an internal endpoint.
  */
-export interface CodeAssistEnvelope {
+interface CodeAssistEnvelope {
     project: string;
     model: string;
     request: GenerateContentRequest;
@@ -60,7 +60,7 @@ export interface CodeAssistEnvelope {
     requestId: string;
 }
 
-export interface CodeAssistRequestOptions {
+interface CodeAssistRequestOptions {
     projectId: string;
     model: string;
     reasoningEffort?: string;

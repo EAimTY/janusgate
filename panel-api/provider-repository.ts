@@ -8,7 +8,7 @@ import type { ProviderSummary, ProviderType, UpstreamProtocol } from "/common/do
 import { AUTO_PROVIDER_NAME_PREFIX } from "./config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 
-export interface CreateProviderRecord {
+interface CreateProviderRecord {
     name: string;
     modelPrefix: string;
     type: ProviderType;
@@ -19,7 +19,7 @@ export interface CreateProviderRecord {
     isEnabled: boolean;
 }
 
-export interface UpdateProviderRecord {
+interface UpdateProviderRecord {
     id: number;
     modelPrefix: string;
     protocol: UpstreamProtocol | null;

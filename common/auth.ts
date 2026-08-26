@@ -5,7 +5,7 @@ const SHA_256_HEX_CHARACTERS = SHA_256_BYTES * 2;
 const SHA_256_HEX_PATTERN = /^[0-9a-f]{64}$/i;
 const BEARER_PATTERN = /^Bearer ([^\s]+)$/i;
 
-export interface AuthenticationSubtleCrypto {
+interface AuthenticationSubtleCrypto {
     digest(algorithm: "SHA-256", data: BufferSource): Promise<ArrayBuffer>;
     timingSafeEqual(first: BufferSource, second: BufferSource): boolean;
 }

@@ -17,7 +17,7 @@ export type CompatibleProtocol = UpstreamProtocol;
 export type Provider = ProviderSummary;
 export type Model = ModelSummary;
 
-export interface SaveCompatibleProviderInput {
+interface SaveCompatibleProviderInput {
     name: string;
     protocol: CompatibleProtocol;
     baseUrl: string;
@@ -27,7 +27,7 @@ export interface SaveCompatibleProviderInput {
     type?: "openai_compatible";
 }
 
-export interface SaveOAuthProviderInput {
+interface SaveOAuthProviderInput {
     name: string;
     enabled: boolean;
     modelPrefix: string;
@@ -49,7 +49,7 @@ export interface OAuthCompletionInput {
     projectId?: string;
 }
 
-export class PanelRequestError extends Error {
+class PanelRequestError extends Error {
     public readonly status: number;
 
     public constructor(message: string, status: number) {

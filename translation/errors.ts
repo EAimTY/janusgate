@@ -1,4 +1,4 @@
-export type TranslationErrorCode =
+type TranslationErrorCode =
     | "invalid_json"
     | "unsupported_parameter"
     | "unsupported_tool_type"

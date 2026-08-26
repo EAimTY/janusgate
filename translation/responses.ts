@@ -30,7 +30,7 @@ import {
 } from "./json";
 import { encodeSse } from "./sse";
 
-export interface ResponsesRequestObject {
+interface ResponsesRequestObject {
     model: string;
     input: (ResponsesInputMessage | ResponsesFunctionCall | ResponsesFunctionOutput)[];
     stream: boolean;
@@ -55,13 +55,13 @@ export interface ResponsesRequestObject {
     };
 }
 
-export interface ResponsesInputMessage {
+interface ResponsesInputMessage {
     type: "message";
     role: "user" | "assistant";
     content: ResponsesContentPart[];
 }
 
-export type ResponsesContentPart =
+type ResponsesContentPart =
     | {
           type: "input_text" | "output_text";
           text: string;
@@ -73,7 +73,7 @@ export type ResponsesContentPart =
           detail?: "auto" | "low" | "high";
       };
 
-export interface ResponsesFunctionCall {
+interface ResponsesFunctionCall {
     type: "function_call";
     call_id: string;
     name: string;
@@ -81,14 +81,14 @@ export interface ResponsesFunctionCall {
     thought_signature?: string;
 }
 
-export interface ResponsesFunctionOutput {
+interface ResponsesFunctionOutput {
     type: "function_call_output";
     call_id: string;
     output: JsonValue;
     thought_signature?: string;
 }
 
-export interface ResponsesFunctionTool {
+interface ResponsesFunctionTool {
     type: "function";
     name: string;
     parameters: JsonObject;
@@ -96,7 +96,7 @@ export interface ResponsesFunctionTool {
     strict?: boolean;
 }
 
-export type ResponsesTextFormat =
+type ResponsesTextFormat =
     | {
           type: "json_object";
       }
@@ -108,7 +108,7 @@ export type ResponsesTextFormat =
           strict?: boolean;
       };
 
-export interface ResponsesResponseObject {
+interface ResponsesResponseObject {
     id: string;
     object: "response";
     created_at: number;
@@ -131,7 +131,7 @@ export interface ResponsesResponseObject {
     };
 }
 
-export interface ResponsesMetadata {
+interface ResponsesMetadata {
     id: string;
     model: string;
     created: number;
@@ -987,7 +987,7 @@ function renderResponsesUsage(usage: IrUsage): NonNullable<ResponsesResponseObje
     return result;
 }
 
-export type ResponsesStreamRenderer = (events: readonly IrEvent[]) => string[];
+type ResponsesStreamRenderer = (events: readonly IrEvent[]) => string[];
 
 export function createResponsesStreamRenderer(
     metadata: ResponsesMetadata,

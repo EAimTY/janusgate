@@ -4,7 +4,7 @@ export const thinkingLevels = CANONICAL_THINKING_LEVELS;
 export { isThinkingLevel } from "/common/validation";
 export type { ThinkingLevel };
 
-export interface ModelNamePreviewInput {
+interface ModelNamePreviewInput {
     modelPrefix: string;
     upstreamName: string;
     baseName: string;

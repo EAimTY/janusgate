@@ -9,7 +9,7 @@ interface PanelModelRow extends ModelRow {
     provider_type: ModelSummary["providerType"];
 }
 
-export interface SaveModelRecord {
+interface SaveModelRecord {
     id?: number;
     name: string;
     providerId: number;

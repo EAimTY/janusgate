@@ -24,7 +24,7 @@ import { OPENAI_OAUTH_CLIENT_ID, OPENAI_TOKEN_URL } from "./openai";
 
 export type OAuthCredentials = AntigravityOAuthCredentials | OpenAiOAuthCredentials;
 
-export interface ProviderAccess {
+interface ProviderAccess {
     provider: StoredProvider;
     credentials: OAuthCredentials;
 }

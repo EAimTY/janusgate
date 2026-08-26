@@ -1,9 +1,9 @@
 import type { JsonObject, JsonValue } from "./json";
 
-export type MessageRole = "system" | "user" | "assistant" | "tool";
+type MessageRole = "system" | "user" | "assistant" | "tool";
 export type FinishReason = "stop" | "length" | "tool_calls" | "content_filter";
 
-export interface TextPart {
+interface TextPart {
     type: "text";
     text: string;
     thoughtSignature?: string;
@@ -47,11 +47,11 @@ export interface IrFunctionTool {
     isStrict?: boolean;
 }
 
-export interface IrResponseFormatJsonObject {
+interface IrResponseFormatJsonObject {
     type: "json_object";
 }
 
-export interface IrResponseFormatJsonSchema {
+interface IrResponseFormatJsonSchema {
     type: "json_schema";
     name: string;
     schema: JsonObject;

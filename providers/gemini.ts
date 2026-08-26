@@ -17,7 +17,7 @@ import {
  * (Antigravity OAuth providers, which wraps these bodies in a project envelope).
  */
 
-export type GeminiThinkingLevel = "low" | "medium" | "high";
+type GeminiThinkingLevel = "low" | "medium" | "high";
 
 export interface GenerateContentRequest {
     contents: GenerateContentContent[];
@@ -40,19 +40,19 @@ export interface GenerateContentRequest {
     sessionId?: string;
 }
 
-export interface GenerateContentContent {
+interface GenerateContentContent {
     role: "user" | "model";
     parts: JsonObject[];
 }
 
-export interface GenerateContentFunctionDeclaration {
+interface GenerateContentFunctionDeclaration {
     name: string;
     description?: string;
     parameters?: JsonObject;
     parametersJsonSchema?: JsonObject;
 }
 
-export interface GenerateContentGenerationConfig {
+interface GenerateContentGenerationConfig {
     temperature?: number;
     topP?: number;
     maxOutputTokens?: number;

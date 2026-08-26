@@ -18,7 +18,7 @@ import { PROVIDER_NAME_MAX_LENGTH, type ThinkingLevel } from "/config";
  * means update intent for the named provider. Required creation fields are decided here, not
  * re-asserted by the route.
  */
-export type SaveProviderInput =
+type SaveProviderInput =
     | {
           readonly kind: "create";
           readonly name: string;
@@ -38,7 +38,7 @@ export type SaveProviderInput =
           readonly modelPrefix?: string;
       };
 
-export interface DeleteProviderInput {
+interface DeleteProviderInput {
     readonly providerName: string;
 }
 
@@ -63,11 +63,11 @@ export interface SaveModelInput {
     readonly thinkingLevels?: readonly ThinkingLevel[] | null;
 }
 
-export interface DeleteModelInput {
+interface DeleteModelInput {
     readonly id: number;
 }
 
-export interface DiscoverModelsInput {
+interface DiscoverModelsInput {
     readonly providerName: string;
 }
 
