@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { GatewayError } from "/common/errors";
-import { parseJsonObject, readBoundedRequestBody } from "/common/http";
+import { parseJsonObject, readBoundedRequestBody } from "./http";
 
 test("request limits reject an oversized Content-Length before reading", async () => {
     const request = new Request("https://example.com", {

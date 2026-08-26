@@ -9,7 +9,6 @@ import {
     upstreamFailureError,
     upstreamTimeoutError,
 } from "/common/errors";
-import { readBoundedJsonObject } from "/common/http";
 import { isJsonObject } from "/common/validation";
 import { ensureFreshProviderAccess, type OAuthCredentials } from "/providers/access";
 import { TranslationError } from "/translation/errors";
@@ -18,6 +17,7 @@ import {
     MAX_REQUEST_BYTES,
     UPSTREAM_IDLE_TIMEOUT_SECONDS,
 } from "./config";
+import { readBoundedJsonObject } from "./http";
 import { type ResolvedModelRoute, resolveEnabledModel } from "./model-routing";
 import { type ClientProtocol, validateGatewayRequest } from "./request-validation";
 import {
