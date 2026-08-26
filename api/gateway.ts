@@ -20,12 +20,14 @@ import {
 } from "./config";
 import { type ResolvedModelRoute, resolveEnabledModel } from "./model-routing";
 import { type ClientProtocol, validateGatewayRequest } from "./request-validation";
-import { renderTranslatedNonStreamingResponse } from "./translated-nonstream";
-import { translateStreamingResponse } from "./translated-stream";
-import { readIdleTimedUpstreamBody } from "./upstream-body";
+import {
+    renderTranslatedNonStreamingResponse,
+    translateStreamingResponse,
+} from "./translated-response";
 import { type PreparedUpstreamRequest, prepareUpstreamRequest } from "./upstream-request";
 import {
     copySafeUpstreamHeaders,
+    readIdleTimedUpstreamBody,
     relayNativeStreamingResponse,
     UpstreamIdleTimeoutError,
 } from "./upstream-response";

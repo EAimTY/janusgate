@@ -1,5 +1,10 @@
-import { upstreamTimeoutError } from "/common/errors";
-import { SAFE_UPSTREAM_RESPONSE_HEADERS, UPSTREAM_IDLE_TIMEOUT_SECONDS } from "./config";
+import { upstreamResponseTooLargeError, upstreamTimeoutError } from "/common/errors";
+import { concatenateBytes } from "/common/http";
+import {
+    MAX_RESPONSE_BYTES,
+    SAFE_UPSTREAM_RESPONSE_HEADERS,
+    UPSTREAM_IDLE_TIMEOUT_SECONDS,
+} from "./config";
 
 export function copySafeUpstreamHeaders(source: Headers): Headers {
     const headers = new Headers();
@@ -89,4 +94,30 @@ export async function relayNativeStreamingResponse(
         headers: copySafeUpstreamHeaders(upstreamResponse.headers),
         status: upstreamResponse.status,
     });
+}
+
+export async function readIdleTimedUpstreamBody(
+    response: Response,
+    abortController: AbortController,
+): Promise<Uint8Array> {
+    if (response.body === null) return new Uint8Array();
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+        for (;;) {
+            const result = await readBeforeIdleTimeout(reader, abortController);
+            if (result.done) break;
+            totalBytes += result.value.byteLength;
+            if (totalBytes > MAX_RESPONSE_BYTES) {
+                abortController.abort("upstream response size limit exceeded");
+                await reader.cancel("upstream response size limit exceeded");
+                throw upstreamResponseTooLargeError();
+            }
+            chunks.push(result.value);
+        }
+    } finally {
+        reader.releaseLock();
+    }
+    return concatenateBytes(chunks, totalBytes);
 }

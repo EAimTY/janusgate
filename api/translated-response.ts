@@ -3,18 +3,32 @@ import { upstreamFailureError } from "/common/errors";
 import { unixSeconds } from "/common/validation";
 import {
     type GenerateContentStreamState,
+    parseGenerateContentResponse,
     parseGenerateContentStreamEvent,
 } from "/providers/gemini";
 import {
     type ChatStreamMetadata,
+    parseChatCompletionsResponse,
     parseChatCompletionsStreamEvent,
+    renderChatCompletionsResponse,
     renderChatCompletionsStream,
 } from "/translation/chat-completions";
 import { TranslationError } from "/translation/errors";
 import type { IrEvent, IrUsage } from "/translation/ir";
-import { createResponsesStreamRenderer, parseResponsesStreamEvent } from "/translation/responses";
+import {
+    createResponsesStreamRenderer,
+    parseResponsesResponse,
+    parseResponsesStreamEvent,
+    renderResponsesResponse,
+} from "/translation/responses";
 import { SseParser } from "/translation/sse";
 import { readBeforeIdleTimeout } from "./upstream-response";
+
+function parseUpstreamEvents(protocol: UpstreamProtocol, value: unknown): IrEvent[] {
+    if (protocol === "openai_response") return parseResponsesResponse(value);
+    if (protocol === "openai_chat_completion") return parseChatCompletionsResponse(value);
+    return parseGenerateContentResponse(value);
+}
 
 type EventRenderer = (events: readonly IrEvent[]) => string[];
 
@@ -174,4 +188,49 @@ export async function translateStreamingResponse(
         },
         status: upstreamResponse.status,
     });
+}
+
+export function renderTranslatedNonStreamingResponse(
+    bytes: Uint8Array,
+    upstreamProtocol: UpstreamProtocol,
+    clientProtocol: ClientProtocol,
+    publicModel: string,
+): Response {
+    let value: unknown;
+    try {
+        const text = new TextDecoder("utf-8", {
+            fatal: true,
+            ignoreBOM: false,
+        }).decode(bytes);
+        value = JSON.parse(text);
+    } catch {
+        throw new TranslationError(
+            "upstream_failure",
+            "The upstream returned an invalid JSON response",
+        );
+    }
+    let events: IrEvent[];
+    try {
+        events = parseUpstreamEvents(upstreamProtocol, value);
+    } catch {
+        throw new TranslationError(
+            "upstream_failure",
+            "The upstream returned an invalid response object",
+        );
+    }
+    const identifier = crypto.randomUUID().replaceAll("-", "");
+    const created = unixSeconds();
+    const body =
+        clientProtocol === "openai_response"
+            ? renderResponsesResponse(events, {
+                  created,
+                  id: `resp_${identifier}`,
+                  model: publicModel,
+              })
+            : renderChatCompletionsResponse(events, {
+                  created,
+                  id: `chatcmpl_${identifier}`,
+                  model: publicModel,
+              });
+    return Response.json(body);
 }

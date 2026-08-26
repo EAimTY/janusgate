@@ -49,12 +49,12 @@ export interface OAuthCompletionInput {
     projectId?: string;
 }
 
-export class PanelApiError extends Error {
+export class PanelRequestError extends Error {
     public readonly status: number;
 
     public constructor(message: string, status: number) {
         super(message);
-        this.name = "PanelApiError";
+        this.name = "PanelRequestError";
         this.status = status;
     }
 }
@@ -250,14 +250,14 @@ async function readJson(response: Response): Promise<unknown> {
         const value: unknown = await response.json();
         return value;
     } catch {
-        throw new PanelApiError(
+        throw new PanelRequestError(
             `Panel API returned non-JSON (HTTP ${response.status})`,
             response.status,
         );
     }
 }
 
-async function readError(response: Response): Promise<PanelApiError> {
+async function readError(response: Response): Promise<PanelRequestError> {
     let message = `Panel request failed (HTTP ${response.status})`;
     try {
         const value: unknown = await response.json();
@@ -265,7 +265,7 @@ async function readError(response: Response): Promise<PanelApiError> {
     } catch {
         // The status remains useful when a proxy or deployment returns a non-JSON error page.
     }
-    return new PanelApiError(message, response.status);
+    return new PanelRequestError(message, response.status);
 }
 
 export class PanelApiClient {
@@ -397,7 +397,7 @@ export class PanelApiClient {
         const token = this.#getToken();
         if (token === null) {
             this.#onUnauthorized();
-            throw new PanelApiError("A panel token is required", 401);
+            throw new PanelRequestError("A panel token is required", 401);
         }
         return this.#requestWithToken(path, method, token, parse, true, body);
     }
