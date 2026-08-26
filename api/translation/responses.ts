@@ -194,7 +194,6 @@ export function parseResponsesRequest(value: unknown): IrRequest {
         tools,
         sampling,
         isStreaming,
-        isUsageIncluded: false,
     };
     if (reasoningEffort !== undefined) result.reasoningEffort = reasoningEffort;
     if (toolChoice !== undefined) result.toolChoice = toolChoice;

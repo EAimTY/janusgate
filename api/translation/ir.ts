@@ -81,7 +81,6 @@ export interface IrRequest {
     sampling: IrSampling;
     reasoningEffort?: string;
     isStreaming: boolean;
-    isUsageIncluded: boolean;
 }
 
 export interface IrUsage {

@@ -8,26 +8,12 @@ import { OPENAI_CODEX_MODELS } from "/api/adapters/openai";
 import { ensureFreshProviderAccess } from "/api/provider-access";
 import type { CredentialsCipher } from "/common/credentials";
 import { assertCredentialsMatchProvider } from "/common/credentials";
-import type { StoredProvider } from "/common/database";
+import { MODEL_COLUMNS, type ModelRow, mapModelRow, type StoredProvider } from "/common/database";
 import type { DiscoveryResult } from "/common/domain";
 import { GatewayError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject } from "/common/validation";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
-
-interface ExistingModelRow {
-    id: number;
-    name: string;
-    provider_id: number;
-    upstream_name: string;
-    is_manually_edited: number;
-}
-
-function isManuallyEdited(row: ExistingModelRow): boolean {
-    if (row.is_manually_edited === 0) return false;
-    if (row.is_manually_edited === 1) return true;
-    throw new Error("Invalid stored model edit state");
-}
 
 function upstreamDiscoveryError(message: string): PanelApiError {
     return new PanelApiError(502, message);
@@ -262,27 +248,24 @@ export async function discoverProviderModels(
     );
     assertNoDuplicateNames(upstreamNames);
 
-    const existingRows = await database
-        .prepare(
-            `SELECT id, name, provider_id, upstream_name, is_manually_edited
-            FROM models`,
-        )
-        .all<ExistingModelRow>();
+    const existingModels = (
+        await database.prepare(`SELECT ${MODEL_COLUMNS} FROM models`).all<ModelRow>()
+    ).results.map(mapModelRow);
     const upstreamNameSet = new Set(upstreamNames);
-    const staleModels = existingRows.results.filter(
-        (row) =>
-            row.provider_id === provider.id &&
-            !isManuallyEdited(row) &&
-            !upstreamNameSet.has(row.upstream_name),
+    const staleModels = existingModels.filter(
+        (model) =>
+            model.providerId === provider.id &&
+            !model.isManuallyEdited &&
+            !upstreamNameSet.has(model.upstreamName),
     );
-    const staleModelIds = new Set(staleModels.map((row) => row.id));
+    const staleModelIds = new Set(staleModels.map((model) => model.id));
     const occupiedNames = new Set(
-        existingRows.results.filter((row) => !staleModelIds.has(row.id)).map((row) => row.name),
+        existingModels.filter((model) => !staleModelIds.has(model.id)).map((model) => model.name),
     );
     const existingProviderUpstreamNames = new Set(
-        existingRows.results
-            .filter((row) => row.provider_id === provider.id)
-            .map((row) => row.upstream_name),
+        existingModels
+            .filter((model) => model.providerId === provider.id)
+            .map((model) => model.upstreamName),
     );
     const modelsToCreate = upstreamNames
         .map((upstreamName) => ({
@@ -303,7 +286,7 @@ export async function discoverProviderModels(
                     WHERE id = ? AND provider_id = ? AND upstream_name = ?
                         AND is_manually_edited = 0`,
                 )
-                .bind(model.id, provider.id, model.upstream_name),
+                .bind(model.id, provider.id, model.upstreamName),
         ),
         ...modelsToCreate.map((model) =>
             database

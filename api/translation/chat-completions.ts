@@ -35,9 +35,6 @@ export interface ChatCompletionsRequestObject {
     model: string;
     messages: ChatRequestMessage[];
     stream: boolean;
-    stream_options?: {
-        include_usage: boolean;
-    };
     tools?: ChatFunctionTool[];
     tool_choice?:
         | "auto"
@@ -217,20 +214,12 @@ export function parseChatCompletionsRequest(value: unknown): IrRequest {
     }
     const reasoningEffort = parseReasoningEffort(root["reasoning_effort"], "reasoning_effort");
     const isStreaming = optionalBoolean(root["stream"], "stream") ?? false;
-    let isUsageIncluded = false;
-    if (root["stream_options"] !== undefined) {
-        const streamOptions = expectRecord(root["stream_options"], "stream_options");
-        isUsageIncluded =
-            optionalBoolean(streamOptions["include_usage"], "stream_options.include_usage") ??
-            false;
-    }
 
     const result: IrRequest = {
         messages,
         tools,
         sampling,
         isStreaming,
-        isUsageIncluded,
     };
     if (reasoningEffort !== undefined) {
         result.reasoningEffort = reasoningEffort;
@@ -513,11 +502,6 @@ export function renderChatCompletionsRequest(
         messages,
         stream: request.isStreaming,
     };
-    if (request.isStreaming && request.isUsageIncluded) {
-        result["stream_options"] = {
-            include_usage: true,
-        };
-    }
     if (request.tools.length > 0) {
         result["tools"] = request.tools.map(renderTool);
     }
