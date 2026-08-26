@@ -1,11 +1,3 @@
-import {
-    ANTIGRAVITY_API_CLIENT,
-    ANTIGRAVITY_FETCH_MODELS_URL,
-    ANTIGRAVITY_HEADER_CLIENT_METADATA,
-    ANTIGRAVITY_USER_AGENT,
-} from "/api/adapters/antigravity";
-import { OPENAI_CODEX_MODELS } from "/api/adapters/openai";
-import { ensureFreshProviderAccess } from "/api/provider-access";
 import type { CredentialsCipher } from "/common/credentials";
 import { assertCredentialsMatchProvider } from "/common/credentials";
 import { MODEL_COLUMNS, type ModelRow, mapModelRow, type StoredProvider } from "/common/database";
@@ -13,6 +5,14 @@ import type { DiscoveryResult } from "/common/domain";
 import { GatewayError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject } from "/common/validation";
+import { ensureFreshProviderAccess } from "/providers/access";
+import {
+    ANTIGRAVITY_API_CLIENT,
+    ANTIGRAVITY_FETCH_MODELS_URL,
+    ANTIGRAVITY_HEADER_CLIENT_METADATA,
+    ANTIGRAVITY_USER_AGENT,
+} from "/providers/antigravity";
+import { OPENAI_CODEX_MODELS } from "/providers/openai";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 
 function upstreamDiscoveryError(message: string): PanelApiError {

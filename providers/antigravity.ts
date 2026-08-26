@@ -1,6 +1,6 @@
-import { TranslationError } from "../translation/errors";
-import type { IrRequest } from "../translation/ir";
-import type { JsonObject, JsonValue } from "../translation/json";
+import { TranslationError } from "/translation/errors";
+import type { IrRequest } from "/translation/ir";
+import type { JsonObject, JsonValue } from "/translation/json";
 import type { GenerateContentRequest } from "./gemini";
 import { buildGenerateContentRequest } from "./gemini";
 

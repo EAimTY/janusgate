@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { OPENAI_TOKEN_URL } from "/api/adapters/openai";
 import { isJsonObject } from "/common/validation";
+import { OPENAI_TOKEN_URL } from "/providers/openai";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
 import { createPanelApi } from "./app";
 

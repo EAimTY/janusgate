@@ -1,13 +1,13 @@
 import type { ClientProtocol, UpstreamProtocol } from "/common/domain";
 import { unixSeconds } from "/common/validation";
-import { parseGenerateContentResponse } from "./adapters/gemini";
+import { parseGenerateContentResponse } from "/providers/gemini";
 import {
     parseChatCompletionsResponse,
     renderChatCompletionsResponse,
-} from "./translation/chat-completions";
-import { TranslationError } from "./translation/errors";
-import type { IrEvent } from "./translation/ir";
-import { parseResponsesResponse, renderResponsesResponse } from "./translation/responses";
+} from "/translation/chat-completions";
+import { TranslationError } from "/translation/errors";
+import type { IrEvent } from "/translation/ir";
+import { parseResponsesResponse, renderResponsesResponse } from "/translation/responses";
 
 function parseUpstreamEvents(protocol: UpstreamProtocol, value: unknown): IrEvent[] {
     if (protocol === "openai_response") return parseResponsesResponse(value);

@@ -1,12 +1,12 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { CredentialsCipher } from "/common/credentials";
 import {
     ANTIGRAVITY_FETCH_MODELS_URL,
     ANTIGRAVITY_HEADER_CLIENT_METADATA,
     ANTIGRAVITY_TOKEN_URL,
-} from "/api/adapters/antigravity";
-import { OPENAI_CODEX_MODELS } from "/api/adapters/openai";
-import { CredentialsCipher } from "/common/credentials";
+} from "/providers/antigravity";
+import { OPENAI_CODEX_MODELS } from "/providers/openai";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
 import { discoverProviderModels } from "./discovery";
 import { findProviderByName } from "./provider-repository";

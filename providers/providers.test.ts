@@ -1,6 +1,6 @@
 import { test } from "vitest";
-import { parseChatCompletionsRequest } from "../translation/chat-completions";
-import { TranslationError } from "../translation/errors";
+import { parseChatCompletionsRequest } from "/translation/chat-completions";
+import { TranslationError } from "/translation/errors";
 import {
     ANTIGRAVITY_API_BASE_URL,
     ANTIGRAVITY_AUTHORIZE_URL,

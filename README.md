@@ -655,8 +655,8 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 
 | Module | Scope | Owns (defaults shown) |
 | --- | --- | --- |
-| `config.ts` | global | Canonical thinking-level vocabulary & order — panel override whitelist only, never a request-time enum (§10.2); provider `name` pattern `[a-z0-9_-]{1,64}`; `modelPrefix` rules (≤ 32 chars, `[a-z0-9._:/-]`); OAuth/IdP upstream timeout; Unix-second convention |
-| `api/config.ts` | public API | Base path `/api/openai-v1`; `MAX_REQUEST_BYTES` 10 MB; `MAX_RESPONSE_BYTES` 25 MB; `UPSTREAM_IDLE_TIMEOUT_SECONDS` 300; `TOKEN_REFRESH_MARGIN_SECONDS` 300; `REFRESH_LEASE_SECONDS` 60; forced-refresh retry count 1; `owned_by` mapping (§11.3) |
+| `config.ts` | global | Canonical thinking-level vocabulary & order — panel override whitelist only, never a request-time enum (§10.2); provider `name` pattern `[a-z0-9_-]{1,64}`; `modelPrefix` rules (≤ 32 chars, `[a-z0-9._:/-]`); OAuth/IdP upstream timeout; `TOKEN_REFRESH_MARGIN_SECONDS` 300; `REFRESH_LEASE_SECONDS` 60; Unix-second convention |
+| `api/config.ts` | public API | Base path `/api/openai-v1`; `MAX_REQUEST_BYTES` 10 MB; `MAX_RESPONSE_BYTES` 25 MB; `UPSTREAM_IDLE_TIMEOUT_SECONDS` 300; forced-refresh retry count 1; `owned_by` mapping (§11.3) |
 | `panel-api/config.ts` | panel API | Base path `/panel-api`; `OAUTH_STATE_TTL_SECONDS` 900; Antigravity onboarding poll interval/limit; auto-generated name prefixes `openai-` / `antigravity-` |
 | `panel/config.ts` | SPA | Token localStorage key (`panel_token`); auth-probe endpoint (`/panel-api/list-providers`); SPA routes; token expiry-warning horizon |
 

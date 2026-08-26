@@ -14,13 +14,13 @@ import {
     requireStringField,
     unixSeconds,
 } from "/common/validation";
+import { REFRESH_LEASE_SECONDS, TOKEN_REFRESH_MARGIN_SECONDS } from "/config";
 import {
     ANTIGRAVITY_CLIENT_ID,
     ANTIGRAVITY_CLIENT_SECRET,
     ANTIGRAVITY_TOKEN_URL,
-} from "./adapters/antigravity";
-import { OPENAI_OAUTH_CLIENT_ID, OPENAI_TOKEN_URL } from "./adapters/openai";
-import { REFRESH_LEASE_SECONDS, TOKEN_REFRESH_MARGIN_SECONDS } from "./config";
+} from "./antigravity";
+import { OPENAI_OAUTH_CLIENT_ID, OPENAI_TOKEN_URL } from "./openai";
 
 export type OAuthCredentials = AntigravityOAuthCredentials | OpenAiOAuthCredentials;
 

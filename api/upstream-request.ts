@@ -11,25 +11,25 @@ import {
     ANTIGRAVITY_USER_AGENT,
     buildCodeAssistRequest,
     codeAssistRequestUrl,
-} from "./adapters/antigravity";
-import { buildGenerateContentRequest, generateContentUrl } from "./adapters/gemini";
+} from "/providers/antigravity";
+import { buildGenerateContentRequest, generateContentUrl } from "/providers/gemini";
 import {
     OPENAI_CODEX_ORIGINATOR,
     OPENAI_CODEX_RESPONSES_URL,
     OPENAI_CODEX_USER_AGENT,
-} from "./adapters/openai";
+} from "/providers/openai";
+import {
+    parseChatCompletionsRequest,
+    renderChatCompletionsRequest,
+} from "/translation/chat-completions";
+import type { IrRequest } from "/translation/ir";
+import { parseResponsesRequest, renderResponsesRequest } from "/translation/responses";
 import type { ResolvedModelRoute } from "./model-routing";
 import {
     effectiveThinkingLevel,
     substituteNativeModelAndThinking,
     type ValidatedGatewayRequest,
 } from "./request-validation";
-import {
-    parseChatCompletionsRequest,
-    renderChatCompletionsRequest,
-} from "./translation/chat-completions";
-import type { IrRequest } from "./translation/ir";
-import { parseResponsesRequest, renderResponsesRequest } from "./translation/responses";
 
 export interface PreparedUpstreamRequest {
     body: string;

@@ -1,3 +1,10 @@
+import type { CredentialsCipher } from "/common/credentials";
+import type { StoredProvider } from "/common/database";
+import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from "/common/domain";
+import { providerTypeForOAuthFlow } from "/common/domain";
+import { oauthUpstreamSignal } from "/common/upstream-signal";
+import { isJsonObject, unixSeconds } from "/common/validation";
+import { acquireCredentialLease, clearCredentialLease } from "/providers/access";
 import {
     ANTIGRAVITY_API_BASE_URL,
     ANTIGRAVITY_API_CLIENT,
@@ -12,21 +19,14 @@ import {
     ANTIGRAVITY_REDIRECT_URI,
     ANTIGRAVITY_TOKEN_URL,
     ANTIGRAVITY_USER_AGENT,
-} from "/api/adapters/antigravity";
+} from "/providers/antigravity";
 import {
     OPENAI_AUTHORIZE_URL,
     OPENAI_OAUTH_CLIENT_ID,
     OPENAI_OAUTH_SCOPE,
     OPENAI_REDIRECT_URI,
     OPENAI_TOKEN_URL,
-} from "/api/adapters/openai";
-import { acquireCredentialLease, clearCredentialLease } from "/api/provider-access";
-import type { CredentialsCipher } from "/common/credentials";
-import type { StoredProvider } from "/common/database";
-import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from "/common/domain";
-import { providerTypeForOAuthFlow } from "/common/domain";
-import { oauthUpstreamSignal } from "/common/upstream-signal";
-import { isJsonObject, unixSeconds } from "/common/validation";
+} from "/providers/openai";
 import {
     ANTIGRAVITY_ONBOARDING_MAX_POLLS,
     ANTIGRAVITY_ONBOARDING_POLL_INTERVAL_MS,

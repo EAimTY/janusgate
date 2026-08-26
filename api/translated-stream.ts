@@ -4,16 +4,16 @@ import { unixSeconds } from "/common/validation";
 import {
     type GenerateContentStreamState,
     parseGenerateContentStreamEvent,
-} from "./adapters/gemini";
+} from "/providers/gemini";
 import {
     type ChatStreamMetadata,
     parseChatCompletionsStreamEvent,
     renderChatCompletionsStream,
-} from "./translation/chat-completions";
-import { TranslationError } from "./translation/errors";
-import type { IrEvent, IrUsage } from "./translation/ir";
-import { createResponsesStreamRenderer, parseResponsesStreamEvent } from "./translation/responses";
-import { SseParser } from "./translation/sse";
+} from "/translation/chat-completions";
+import { TranslationError } from "/translation/errors";
+import type { IrEvent, IrUsage } from "/translation/ir";
+import { createResponsesStreamRenderer, parseResponsesStreamEvent } from "/translation/responses";
+import { SseParser } from "/translation/sse";
 import { readBeforeIdleTimeout } from "./upstream-response";
 
 type EventRenderer = (events: readonly IrEvent[]) => string[];

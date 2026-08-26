@@ -1,19 +1,19 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    CredentialsCipher,
+    parseAntigravityOAuthCredentials,
+    parseOpenAiOAuthCredentials,
+} from "/common/credentials";
+import {
     ANTIGRAVITY_API_BASE_URL,
     ANTIGRAVITY_CLIENT_METADATA,
     ANTIGRAVITY_HEADER_CLIENT_METADATA,
     ANTIGRAVITY_LOAD_CODE_ASSIST_URL,
     ANTIGRAVITY_ONBOARD_USER_URL,
     ANTIGRAVITY_TOKEN_URL,
-} from "/api/adapters/antigravity";
-import { OPENAI_AUTHORIZE_URL, OPENAI_TOKEN_URL } from "/api/adapters/openai";
-import {
-    CredentialsCipher,
-    parseAntigravityOAuthCredentials,
-    parseOpenAiOAuthCredentials,
-} from "/common/credentials";
+} from "/providers/antigravity";
+import { OPENAI_AUTHORIZE_URL, OPENAI_TOKEN_URL } from "/providers/openai";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
 import { OAUTH_STATE_TTL_SECONDS } from "./config";
 import { completeProviderOAuth, startProviderOAuth } from "./oauth";

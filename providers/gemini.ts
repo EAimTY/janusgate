@@ -1,5 +1,5 @@
-import { TranslationError } from "../translation/errors";
-import type { FinishReason, IrEvent, IrRequest, IrUsage, MessagePart } from "../translation/ir";
+import { TranslationError } from "/translation/errors";
+import type { FinishReason, IrEvent, IrRequest, IrUsage, MessagePart } from "/translation/ir";
 import {
     expectArray,
     expectNonEmptyString,
@@ -9,7 +9,7 @@ import {
     optionalNonNegativeInteger,
     optionalString,
     parseJsonObjectText,
-} from "../translation/json";
+} from "/translation/json";
 
 /**
  * Shared wire format for every upstream speaking Gemini `generateContent`:

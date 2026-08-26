@@ -1,14 +1,14 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { handleGatewayRequest } from "/api/gateway";
+import { CredentialsCipher, parseAntigravityOAuthCredentials } from "/common/credentials";
+import type { AntigravityOAuthCredentials } from "/common/domain";
 import {
     ANTIGRAVITY_FETCH_MODELS_URL,
     ANTIGRAVITY_LOAD_CODE_ASSIST_URL,
     ANTIGRAVITY_TOKEN_URL,
     codeAssistRequestUrl,
-} from "/api/adapters/antigravity";
-import { handleGatewayRequest } from "/api/gateway";
-import { CredentialsCipher, parseAntigravityOAuthCredentials } from "/common/credentials";
-import type { AntigravityOAuthCredentials } from "/common/domain";
+} from "/providers/antigravity";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
 import { createPanelApi } from "./app";
 

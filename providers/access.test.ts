@@ -8,7 +8,7 @@ import {
     type StoredProvider,
 } from "/common/database";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
-import { ensureFreshProviderAccess } from "./provider-access";
+import { ensureFreshProviderAccess } from "./access";
 
 const AES_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
