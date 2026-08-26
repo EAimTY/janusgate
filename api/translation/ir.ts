@@ -79,7 +79,6 @@ export interface IrRequest {
     tools: IrFunctionTool[];
     toolChoice?: IrToolChoice;
     sampling: IrSampling;
-    reasoningEffort?: string;
     isStreaming: boolean;
 }
 

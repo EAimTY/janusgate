@@ -29,7 +29,6 @@ import {
     optionalString,
 } from "./json";
 import { encodeSse } from "./sse";
-import { parseReasoningEffort } from "./thinking";
 
 export interface ResponsesRequestObject {
     model: string;
@@ -183,11 +182,6 @@ export function parseResponsesRequest(value: unknown): IrRequest {
             "parallel_tool_calls:false is not supported on translated paths",
         );
     }
-    let reasoningEffort: string | undefined;
-    if (root["reasoning"] !== undefined) {
-        const reasoning = expectRecord(root["reasoning"], "reasoning");
-        reasoningEffort = parseReasoningEffort(reasoning["effort"], "reasoning.effort");
-    }
     const isStreaming = optionalBoolean(root["stream"], "stream") ?? false;
     const result: IrRequest = {
         messages,
@@ -195,7 +189,6 @@ export function parseResponsesRequest(value: unknown): IrRequest {
         sampling,
         isStreaming,
     };
-    if (reasoningEffort !== undefined) result.reasoningEffort = reasoningEffort;
     if (toolChoice !== undefined) result.toolChoice = toolChoice;
     return result;
 }

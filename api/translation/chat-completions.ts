@@ -29,7 +29,6 @@ import {
     optionalString,
 } from "./json";
 import { encodeSse } from "./sse";
-import { parseReasoningEffort } from "./thinking";
 
 export interface ChatCompletionsRequestObject {
     model: string;
@@ -212,7 +211,6 @@ export function parseChatCompletionsRequest(value: unknown): IrRequest {
             "parallel_tool_calls:false is not supported on translated paths",
         );
     }
-    const reasoningEffort = parseReasoningEffort(root["reasoning_effort"], "reasoning_effort");
     const isStreaming = optionalBoolean(root["stream"], "stream") ?? false;
 
     const result: IrRequest = {
@@ -221,9 +219,6 @@ export function parseChatCompletionsRequest(value: unknown): IrRequest {
         sampling,
         isStreaming,
     };
-    if (reasoningEffort !== undefined) {
-        result.reasoningEffort = reasoningEffort;
-    }
     if (toolChoice !== undefined) result.toolChoice = toolChoice;
     return result;
 }

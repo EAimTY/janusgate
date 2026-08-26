@@ -17,7 +17,6 @@ import {
     renderResponsesResponse,
 } from "./responses";
 import { encodeSse, SseParser } from "./sse";
-import { parseReasoningEffort } from "./thinking";
 
 function assert(isTrue: boolean, message: string): asserts isTrue {
     if (!isTrue) {
@@ -60,30 +59,6 @@ function assertTranslationError(action: () => unknown, code: string): void {
 }
 
 test("Responses and Chat Completions translate through the event IR", () => {
-    assertEqual(
-        parseReasoningEffort("xhigh", "reasoning.effort"),
-        "xhigh",
-        "effort strings pass through verbatim",
-    );
-    assertEqual(
-        parseReasoningEffort("extreme", "reasoning_effort"),
-        "extreme",
-        "unknown effort values are opaque strings, not errors",
-    );
-    assertEqual(
-        parseReasoningEffort(undefined, "reasoning.effort"),
-        undefined,
-        "omitted reasoning is never injected",
-    );
-    assertTranslationError(
-        () => parseReasoningEffort(3, "reasoning.effort"),
-        "unsupported_parameter",
-    );
-    assertTranslationError(
-        () => parseReasoningEffort("", "reasoning_effort"),
-        "unsupported_parameter",
-    );
-
     const responseRequest = parseResponsesRequest({
         model: "public-model",
         instructions: "Be exact.",
@@ -129,9 +104,6 @@ test("Responses and Chat Completions translate through the event IR", () => {
         temperature: 0.2,
         top_p: 0.9,
         max_output_tokens: 200,
-        reasoning: {
-            effort: "high",
-        },
         stream: true,
     });
     assertEqual(responseRequest.messages[0]?.role, "system", "instructions become system context");
@@ -141,7 +113,6 @@ test("Responses and Chat Completions translate through the event IR", () => {
         "tool_call",
         "Responses tool calls enter IR",
     );
-    assertEqual(responseRequest.reasoningEffort, "high", "Responses effort enters IR verbatim");
     assertEqual(responseRequest.isStreaming, true, "Responses stream is preserved");
     const developerRequest = parseResponsesRequest({
         model: "m",

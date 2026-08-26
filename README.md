@@ -292,7 +292,7 @@ Pairwise converters are avoided; all translated traffic passes through a small i
 
 ```text
 request:  messages(system/user/assistant/tool), parts(text/image/tool_call/tool_output),
-          tools(function), sampling, reasoning-effort
+          tools(function), sampling
           (`developer` messages normalize to IR `system`; Responses reasoning input items retain summaries)
 events:   message_start · text_delta · tool_call_start/delta/done ·
           reasoning_delta · finish(reason) · usage · done

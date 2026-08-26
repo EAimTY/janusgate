@@ -714,4 +714,51 @@ describe("gateway request lifecycle", () => {
         });
         expect(fetchUpstream).not.toHaveBeenCalled();
     });
+
+    it("rejects malformed reasoning effort before any upstream call", async () => {
+        await seedCompatibleProvider("openai_response");
+        const fetchUpstream = vi.fn<typeof fetch>();
+        const responsesReject = await handleGatewayRequest(
+            gatewayRequest("responses", {
+                input: "hello",
+                model: "public-model",
+                reasoning: {
+                    effort: 3,
+                },
+            }),
+            bindings,
+            "openai_response",
+            fetchUpstream,
+        );
+        expect(responsesReject.status).toBe(400);
+        expect(await responsesReject.json()).toMatchObject({
+            error: {
+                code: "unsupported_parameter",
+                type: "invalid_request_error",
+            },
+        });
+        const chatReject = await handleGatewayRequest(
+            gatewayRequest("chat/completions", {
+                messages: [
+                    {
+                        content: "hello",
+                        role: "user",
+                    },
+                ],
+                model: "public-model",
+                reasoning_effort: "",
+            }),
+            bindings,
+            "openai_chat_completion",
+            fetchUpstream,
+        );
+        expect(chatReject.status).toBe(400);
+        expect(await chatReject.json()).toMatchObject({
+            error: {
+                code: "unsupported_parameter",
+                type: "invalid_request_error",
+            },
+        });
+        expect(fetchUpstream).not.toHaveBeenCalled();
+    });
 });
