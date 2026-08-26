@@ -106,7 +106,7 @@ export function validateGatewayRequest(
     };
 }
 
-function requireReasoningObject(value: unknown): Record<string, unknown> {
+export function requireReasoningObject(value: unknown): Record<string, unknown> {
     if (value === undefined) return {};
     if (isJsonObject(value)) return value;
     throw new GatewayError(
@@ -115,35 +115,4 @@ function requireReasoningObject(value: unknown): Record<string, unknown> {
         "reasoning must be an object",
         "invalid_json",
     );
-}
-
-export function substituteNativeModelAndThinking(
-    request: ValidatedGatewayRequest,
-    protocol: ClientProtocol,
-    upstreamModel: string,
-    effectiveThinkingLevel: string | undefined,
-): Record<string, unknown> {
-    const body: Record<string, unknown> = {
-        ...request.body,
-        model: upstreamModel,
-    };
-    if (protocol === "openai_chat_completion") {
-        if (body["reasoning_effort"] !== undefined) {
-            if (effectiveThinkingLevel === undefined) delete body["reasoning_effort"];
-            else body["reasoning_effort"] = effectiveThinkingLevel;
-        }
-        return body;
-    }
-    const reasoningValue = body["reasoning"];
-    if (reasoningValue !== undefined) {
-        const reasoning = {
-            ...requireReasoningObject(reasoningValue),
-        };
-        if (reasoning["effort"] !== undefined) {
-            if (effectiveThinkingLevel === undefined) delete reasoning["effort"];
-            else reasoning["effort"] = effectiveThinkingLevel;
-        }
-        body["reasoning"] = reasoning;
-    }
-    return body;
 }

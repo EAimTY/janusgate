@@ -25,7 +25,7 @@ import { parseResponsesRequest, renderResponsesRequest } from "/translation/resp
 import type { ResolvedModelRoute } from "./model-routing";
 import {
     effectiveThinkingLevel,
-    substituteNativeModelAndThinking,
+    requireReasoningObject,
     type ValidatedGatewayRequest,
 } from "./request-validation";
 
@@ -203,4 +203,35 @@ export async function prepareUpstreamRequest(
         protocol,
         url,
     };
+}
+
+function substituteNativeModelAndThinking(
+    request: ValidatedGatewayRequest,
+    protocol: ClientProtocol,
+    upstreamModel: string,
+    effectiveThinkingLevel: string | undefined,
+): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+        ...request.body,
+        model: upstreamModel,
+    };
+    if (protocol === "openai_chat_completion") {
+        if (body["reasoning_effort"] !== undefined) {
+            if (effectiveThinkingLevel === undefined) delete body["reasoning_effort"];
+            else body["reasoning_effort"] = effectiveThinkingLevel;
+        }
+        return body;
+    }
+    const reasoningValue = body["reasoning"];
+    if (reasoningValue !== undefined) {
+        const reasoning = {
+            ...requireReasoningObject(reasoningValue),
+        };
+        if (reasoning["effort"] !== undefined) {
+            if (effectiveThinkingLevel === undefined) delete reasoning["effort"];
+            else reasoning["effort"] = effectiveThinkingLevel;
+        }
+        body["reasoning"] = reasoning;
+    }
+    return body;
 }

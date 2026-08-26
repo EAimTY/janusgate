@@ -46,12 +46,6 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
     async function launch(): Promise<void> {
         const popup = window.open("about:blank", "_blank");
         if (popup !== null) popup.opener = null;
-        setOAuthRedirectUrl("");
-        setOAuthName("");
-        setOAuthPrefix("");
-        setOAuthProjectId("");
-        setIsOAuthPrefixSpecified(false);
-        setOAuthError(null);
         try {
             const url = await props.client.startProviderOAuth(
                 props.launch.type,

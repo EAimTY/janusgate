@@ -5,19 +5,25 @@ import { API_VERSION_PATH } from "./config";
 import { handleGatewayRequest } from "./gateway";
 import { listEnabledPublicModels } from "./model-routing";
 
+/** Shared gateway 401 envelope: an invalid bearer token always answers with this response. */
+export function gatewayUnauthorizedResponse(): Response {
+    const error = invalidApiKeyError();
+    return Response.json(gatewayErrorBody(error), {
+        status: error.status,
+    });
+}
+
+export async function isGatewayAuthorized(request: Request, apiKeyHash: string): Promise<boolean> {
+    return verifyBearerAuthorization(request.headers.get("Authorization"), apiKeyHash);
+}
+
 const api = new Hono<{
     Bindings: Env;
 }>();
 
 api.get(`${API_VERSION_PATH}/models`, async (context) => {
-    if (
-        !(await verifyBearerAuthorization(
-            context.req.header("Authorization") ?? null,
-            context.env.API_KEY_HASH,
-        ))
-    ) {
-        const error = invalidApiKeyError();
-        return context.json(gatewayErrorBody(error), error.status);
+    if (!(await isGatewayAuthorized(context.req.raw, context.env.API_KEY_HASH))) {
+        return gatewayUnauthorizedResponse();
     }
     return context.json(await listEnabledPublicModels(context.env.DATABASE));
 });
