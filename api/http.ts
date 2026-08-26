@@ -78,7 +78,7 @@ function parseJson(text: string): unknown {
     }
 }
 
-export function parseJsonObject(text: string): Record<string, unknown> {
+function parseJsonObject(text: string): Record<string, unknown> {
     const value = parseJson(text);
     if (!isJsonObject(value)) {
         throw invalidJsonError();

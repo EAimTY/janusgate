@@ -1,5 +1,6 @@
 import { verifyBearerAuthorization } from "/common/auth";
 import { CredentialsCipher } from "/common/credentials";
+import type { ClientProtocol } from "/common/domain";
 import {
     GatewayError,
     gatewayErrorBody,
@@ -19,7 +20,7 @@ import {
 } from "./config";
 import { readBoundedJsonObject } from "./http";
 import { type ResolvedModelRoute, resolveEnabledModel } from "./model-routing";
-import { type ClientProtocol, validateGatewayRequest } from "./request-validation";
+import { validateGatewayRequest } from "./request-validation";
 import {
     renderTranslatedNonStreamingResponse,
     translateStreamingResponse,

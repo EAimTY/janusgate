@@ -1,6 +1,5 @@
 import { expect, test } from "vitest";
-import { GatewayError } from "/common/errors";
-import { parseJsonObject, readBoundedRequestBody } from "./http";
+import { readBoundedJsonObject, readBoundedRequestBody } from "./http";
 
 test("request limits reject an oversized Content-Length before reading", async () => {
     const request = new Request("https://example.com", {
@@ -40,8 +39,12 @@ test("request limits count actual streamed bytes instead of trusting Content-Len
     });
 });
 
-test("JSON parsing returns objects and maps malformed/non-object bodies to invalid_json", () => {
-    expect(parseJsonObject('{"model":"gpt"}')).toEqual({
+test("JSON parsing returns objects and maps malformed/non-object bodies to invalid_json", async () => {
+    const objectRequest = new Request("https://example.com", {
+        body: '{"model":"gpt"}',
+        method: "POST",
+    });
+    await expect(readBoundedJsonObject(objectRequest, 100)).resolves.toEqual({
         model: "gpt",
     });
     for (const input of [
@@ -49,13 +52,12 @@ test("JSON parsing returns objects and maps malformed/non-object bodies to inval
         "[]",
         "null",
     ]) {
-        expect(() => parseJsonObject(input)).toThrow(GatewayError);
-        try {
-            parseJsonObject(input);
-        } catch (error: unknown) {
-            expect(error).toMatchObject({
-                code: "invalid_json",
-            });
-        }
+        const request = new Request("https://example.com", {
+            body: input,
+            method: "POST",
+        });
+        await expect(readBoundedJsonObject(request, 100)).rejects.toMatchObject({
+            code: "invalid_json",
+        });
     }
 });
