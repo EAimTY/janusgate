@@ -1,16 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, onSettled, Show } from "solid-js";
-import { oauthFlowForProviderType, UPSTREAM_PROTOCOLS } from "/common/domain";
+import { oauthFlowForProviderType } from "/common/domain";
 import {
-    MODEL_PREFIX_MAX_LENGTH,
-    MODEL_PREFIX_PATTERN,
-    PROVIDER_NAME_MAX_LENGTH,
-    PROVIDER_NAME_PATTERN,
-} from "/config";
-import {
-    type CompatibleProtocol,
     errorMessage,
-    type OAuthCompletionInput,
     type OAuthType,
     type PanelApiClient,
     type Provider,
@@ -18,14 +10,12 @@ import {
 } from "./api-client";
 import { panelConfig } from "./config";
 import { protocolLabel, providerTypeLabel } from "./labels";
+import { OAuthFlowDialog, type OAuthFlowLaunch } from "./oauth-flow-dialog";
+import { ProviderEditorDialog } from "./provider-editor-dialog";
 import {
-    buttonGhostClasses,
     buttonPrimaryClasses,
     buttonSecondaryClasses,
-    checkboxClasses,
-    Dialog,
     dataTableClasses,
-    formControlClasses,
     LoadingBlock,
     Notice,
     PageHeader,
@@ -38,13 +28,6 @@ import {
 
 interface ProvidersPageProps {
     client: PanelApiClient;
-}
-
-interface OAuthFlow {
-    type: OAuthType;
-    providerName: string | null;
-    existingProviderNames: ReadonlySet<string>;
-    authorizeUrl: string | null;
 }
 
 const providerGroups: ReadonlyArray<{
@@ -118,24 +101,8 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
 
     const [isEditorOpen, setIsEditorOpen] = createSignal(false);
     const [editingProvider, setEditingProvider] = createSignal<Provider | null>(null);
-    const [editorName, setEditorName] = createSignal("");
-    const [editorPrefix, setEditorPrefix] = createSignal("");
-    const [editorBaseUrl, setEditorBaseUrl] = createSignal("");
-    const [editorProtocol, setEditorProtocol] = createSignal<CompatibleProtocol>("openai_response");
-    const [editorApiKey, setEditorApiKey] = createSignal("");
-    const [isEditorEnabled, setIsEditorEnabled] = createSignal(true);
-    const [isSavingEditor, setIsSavingEditor] = createSignal(false);
-    const [editorError, setEditorError] = createSignal<string | null>(null);
 
-    const [oauthFlow, setOAuthFlow] = createSignal<OAuthFlow | null>(null);
-    const [oauthRedirectUrl, setOAuthRedirectUrl] = createSignal("");
-    const [oauthName, setOAuthName] = createSignal("");
-    const [oauthPrefix, setOAuthPrefix] = createSignal("");
-    const [oauthProjectId, setOAuthProjectId] = createSignal("");
-    const [isOAuthPrefixSpecified, setIsOAuthPrefixSpecified] = createSignal(false);
-    const [oauthError, setOAuthError] = createSignal<string | null>(null);
-    const [isStartingOAuth, setIsStartingOAuth] = createSignal(false);
-    const [isCompletingOAuth, setIsCompletingOAuth] = createSignal(false);
+    const [oauthLaunch, setOAuthLaunch] = createSignal<OAuthFlowLaunch | null>(null);
 
     const providerCount = createMemo(() => providers().length);
 
@@ -163,26 +130,20 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
 
     function openCompatibleCreator(): void {
         setEditingProvider(null);
-        setEditorName("");
-        setEditorPrefix("");
-        setEditorBaseUrl("");
-        setEditorProtocol("openai_response");
-        setEditorApiKey("");
-        setIsEditorEnabled(true);
-        setEditorError(null);
         setIsEditorOpen(true);
     }
 
     function openProviderEditor(provider: Provider): void {
         setEditingProvider(provider);
-        setEditorName(provider.name);
-        setEditorPrefix(provider.modelPrefix);
-        setEditorBaseUrl(provider.baseUrl ?? "");
-        setEditorProtocol(provider.protocol ?? "openai_response");
-        setEditorApiKey("");
-        setIsEditorEnabled(provider.enabled);
-        setEditorError(null);
         setIsEditorOpen(true);
+    }
+
+    function launchOAuth(type: OAuthType, providerName: string | null): void {
+        setOAuthLaunch({
+            type,
+            providerName,
+            existingProviderNames: new Set(providers().map((provider) => provider.name)),
+        });
     }
 
     async function discover(providerName: string): Promise<void> {
@@ -201,48 +162,33 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         }
     }
 
-    async function saveEditor(event: SubmitEvent): Promise<void> {
-        event.preventDefault();
-        const currentProvider = editingProvider();
-        const isCreation = currentProvider === null;
-        setIsSavingEditor(true);
-        setEditorError(null);
-        try {
-            let savedName: string;
-            if (currentProvider === null || currentProvider.type === "openai_compatible") {
-                const input = {
-                    name: editorName().trim(),
-                    protocol: editorProtocol(),
-                    baseUrl: editorBaseUrl().trim(),
-                    enabled: isEditorEnabled(),
-                    modelPrefix: editorPrefix(),
-                    ...(isCreation
-                        ? {
-                              type: "openai_compatible" as const,
-                          }
-                        : {}),
-                    ...(editorApiKey().length > 0
-                        ? {
-                              apiKey: editorApiKey(),
-                          }
-                        : {}),
-                };
-                savedName = await props.client.saveCompatibleProvider(input);
-            } else {
-                savedName = await props.client.saveOAuthProvider({
-                    name: currentProvider.name,
-                    enabled: isEditorEnabled(),
-                    modelPrefix: editorPrefix(),
-                });
-            }
-            setIsEditorOpen(false);
-            await loadProviders();
-            setSuccess(`${savedName} saved.`);
-            if (isCreation) await discover(savedName);
-        } catch (caughtError) {
-            setEditorError(errorMessage(caughtError));
-        } finally {
-            setIsSavingEditor(false);
+    async function handleProviderSaved(providerName: string, isCreation: boolean): Promise<void> {
+        setIsEditorOpen(false);
+        await loadProviders();
+        setSuccess(`${providerName} saved.`);
+        if (isCreation) await discover(providerName);
+    }
+
+    async function handleOAuthCompleted(flow: OAuthFlowLaunch): Promise<void> {
+        const refreshedProviders = await loadProviders();
+        const discoveryTarget =
+            flow.providerName ??
+            refreshedProviders.find(
+                (provider) =>
+                    oauthFlowForProviderType(provider.type) === flow.type &&
+                    !flow.existingProviderNames.has(provider.name),
+            )?.name;
+        setOAuthLaunch(null);
+        setSuccess(
+            flow.providerName === null
+                ? "OAuth provider connected."
+                : `${flow.providerName} reauthenticated.`,
+        );
+        if (discoveryTarget !== undefined) await discover(discoveryTarget);
+        else if (flow.providerName === null) {
+            setError(
+                "Provider connected, but its generated name could not be identified for discovery.",
+            );
         }
     }
 
@@ -296,88 +242,6 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         }
     }
 
-    async function launchOAuth(type: OAuthType, providerName: string | null): Promise<void> {
-        const popup = window.open("about:blank", "_blank");
-        if (popup !== null) popup.opener = null;
-        const existingProviderNames = new Set(providers().map((provider) => provider.name));
-        setOAuthRedirectUrl("");
-        setOAuthName("");
-        setOAuthPrefix("");
-        setOAuthProjectId("");
-        setIsOAuthPrefixSpecified(false);
-        setOAuthError(null);
-        setOAuthFlow({
-            type,
-            providerName,
-            existingProviderNames,
-            authorizeUrl: null,
-        });
-        setIsStartingOAuth(true);
-        try {
-            const authorizeUrl = await props.client.startProviderOAuth(
-                type,
-                providerName ?? undefined,
-            );
-            setOAuthFlow({
-                type,
-                providerName,
-                existingProviderNames,
-                authorizeUrl,
-            });
-            if (popup !== null) popup.location.assign(authorizeUrl);
-        } catch (caughtError) {
-            popup?.close();
-            setOAuthError(errorMessage(caughtError));
-        } finally {
-            setIsStartingOAuth(false);
-        }
-    }
-
-    async function completeOAuth(event: SubmitEvent): Promise<void> {
-        event.preventDefault();
-        const flow = oauthFlow();
-        if (flow === null) return;
-        setIsCompletingOAuth(true);
-        setOAuthError(null);
-        try {
-            const input: OAuthCompletionInput = {
-                redirectUrl: oauthRedirectUrl().trim(),
-            };
-            if (flow.providerName === null) {
-                if (oauthName().trim().length > 0) input.name = oauthName().trim();
-                if (isOAuthPrefixSpecified()) input.modelPrefix = oauthPrefix();
-            }
-            if (flow.type === "antigravity" && oauthProjectId().trim().length > 0) {
-                input.projectId = oauthProjectId().trim();
-            }
-            await props.client.completeProviderOAuth(input);
-            const refreshedProviders = await loadProviders();
-            const discoveryTarget =
-                flow.providerName ??
-                refreshedProviders.find(
-                    (provider) =>
-                        oauthFlowForProviderType(provider.type) === flow.type &&
-                        !flow.existingProviderNames.has(provider.name),
-                )?.name;
-            setOAuthFlow(null);
-            setSuccess(
-                flow.providerName === null
-                    ? "OAuth provider connected."
-                    : `${flow.providerName} reauthenticated.`,
-            );
-            if (discoveryTarget !== undefined) await discover(discoveryTarget);
-            else if (flow.providerName === null) {
-                setError(
-                    "Provider connected, but its generated name could not be identified for discovery.",
-                );
-            }
-        } catch (caughtError) {
-            setOAuthError(errorMessage(caughtError));
-        } finally {
-            setIsCompletingOAuth(false);
-        }
-    }
-
     return (
         <section class={pageShellClasses}>
             <PageHeader
@@ -389,14 +253,14 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                         <button
                             class={buttonSecondaryClasses}
                             type="button"
-                            onClick={() => void launchOAuth("openai", null)}
+                            onClick={() => launchOAuth("openai", null)}
                         >
                             + OpenAI
                         </button>
                         <button
                             class={buttonSecondaryClasses}
                             type="button"
-                            onClick={() => void launchOAuth("antigravity", null)}
+                            onClick={() => launchOAuth("antigravity", null)}
                         >
                             + Antigravity
                         </button>
@@ -569,7 +433,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                                                                                         isBusy
                                                                                     }
                                                                                     onClick={() =>
-                                                                                        void launchOAuth(
+                                                                                        launchOAuth(
                                                                                             type(),
                                                                                             provider.name,
                                                                                         )
@@ -609,243 +473,27 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                 </For>
             </Show>
 
-            <Dialog
-                isOpen={isEditorOpen()}
-                isBusy={isSavingEditor()}
-                title={editingProvider() === null ? "Add API-key provider" : "Edit provider"}
-                description="Changing a prefix affects only models created or discovered later."
-                onClose={() => setIsEditorOpen(false)}
+            <Show when={isEditorOpen()}>
+                <ProviderEditorDialog
+                    client={props.client}
+                    editingProvider={editingProvider()}
+                    onClose={() => setIsEditorOpen(false)}
+                    onSaved={handleProviderSaved}
+                />
+            </Show>
+            <Show
+                when={oauthLaunch()}
+                keyed
             >
-                <form
-                    class="grid gap-[17px] px-6 pt-[22px] pb-6 [&>[role]]:mb-0 [&_label>small]:text-[10px] [&_label>small]:leading-[1.4] [&_label>small]:font-[450] [&_label>small]:text-[#7c8880]"
-                    onSubmit={(event) => void saveEditor(event)}
-                >
-                    <Show when={editorError() !== null}>
-                        <Notice kind="error">{editorError()}</Notice>
-                    </Show>
-                    <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
-                        Provider name
-                        <input
-                            class={formControlClasses}
-                            required
-                            pattern={PROVIDER_NAME_PATTERN.source}
-                            maxlength={PROVIDER_NAME_MAX_LENGTH}
-                            disabled={editingProvider() !== null}
-                            value={editorName()}
-                            onInput={(event) => setEditorName(event.currentTarget.value)}
-                        />
-                        <small>
-                            1–{PROVIDER_NAME_MAX_LENGTH} lowercase letters, numbers, underscores, or
-                            hyphens.
-                        </small>
-                    </label>
-                    <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
-                        Model prefix
-                        <input
-                            class={formControlClasses}
-                            maxlength={MODEL_PREFIX_MAX_LENGTH}
-                            pattern={MODEL_PREFIX_PATTERN.source}
-                            value={editorPrefix()}
-                            onInput={(event) => setEditorPrefix(event.currentTarget.value)}
-                        />
-                        <small>
-                            Verbatim prefix; include your own separator. Blank means none.
-                        </small>
-                    </label>
-                    <Show
-                        when={
-                            editingProvider() === null ||
-                            editingProvider()?.type === "openai_compatible"
-                        }
-                    >
-                        <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
-                            Base URL
-                            <input
-                                class={formControlClasses}
-                                required
-                                type="url"
-                                placeholder="https://api.example.com/v1"
-                                value={editorBaseUrl()}
-                                onInput={(event) => setEditorBaseUrl(event.currentTarget.value)}
-                            />
-                        </label>
-                        <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
-                            Protocol
-                            <select
-                                class={formControlClasses}
-                                value={editorProtocol()}
-                                onChange={(event) => {
-                                    const value = event.currentTarget.value;
-                                    for (const protocol of UPSTREAM_PROTOCOLS) {
-                                        if (value === protocol) setEditorProtocol(protocol);
-                                    }
-                                }}
-                            >
-                                <option value="openai_response">Responses</option>
-                                <option value="openai_chat_completion">Chat Completions</option>
-                                <option value="gemini_generate_content">
-                                    Gemini GenerateContent
-                                </option>
-                            </select>
-                            <small>
-                                Gemini endpoints use the x-goog-api-key header; the others use a
-                                bearer token.
-                            </small>
-                        </label>
-                        <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
-                            API key {editingProvider() === null ? "" : "(leave blank to preserve)"}
-                            <input
-                                class={formControlClasses}
-                                required={editingProvider() === null}
-                                type="password"
-                                autocomplete="off"
-                                value={editorApiKey()}
-                                onInput={(event) => setEditorApiKey(event.currentTarget.value)}
-                            />
-                        </label>
-                    </Show>
-                    <label class="flex items-center gap-[7px] text-xs font-[720] text-[#344038]">
-                        <input
-                            class={checkboxClasses}
-                            type="checkbox"
-                            checked={isEditorEnabled()}
-                            onChange={(event) => setIsEditorEnabled(event.currentTarget.checked)}
-                        />
-                        Enabled
-                    </label>
-                    <footer class="flex items-center justify-end gap-[9px] pt-[3px] max-[540px]:flex-col-reverse max-[540px]:items-stretch max-[540px]:[&>button]:w-full">
-                        <button
-                            class={buttonGhostClasses}
-                            type="button"
-                            disabled={isSavingEditor()}
-                            onClick={() => setIsEditorOpen(false)}
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            class={buttonPrimaryClasses}
-                            type="submit"
-                            disabled={isSavingEditor()}
-                        >
-                            {isSavingEditor() ? "Saving…" : "Save provider"}
-                        </button>
-                    </footer>
-                </form>
-            </Dialog>
-
-            <Dialog
-                isOpen={oauthFlow() !== null}
-                isBusy={isCompletingOAuth()}
-                title={
-                    oauthFlow()?.providerName === null ? "Connect OAuth provider" : "Reauthenticate"
-                }
-                description="Authorize in the new tab, then paste the full loopback redirect URL below."
-                onClose={() => setOAuthFlow(null)}
-            >
-                <form
-                    class="grid gap-[17px] px-6 pt-[22px] pb-6 [&>[role]]:mb-0 [&_label>small]:text-[10px] [&_label>small]:leading-[1.4] [&_label>small]:font-[450] [&_label>small]:text-[#7c8880]"
-                    onSubmit={(event) => void completeOAuth(event)}
-                >
-                    <Show when={oauthError() !== null}>
-                        <Notice kind="error">{oauthError()}</Notice>
-                    </Show>
-                    <Show when={oauthFlow()?.authorizeUrl !== null}>
-                        <Notice kind="info">
-                            Authorization opened in a new tab. If it was blocked, use the link
-                            below.
-                        </Notice>
-                        <a
-                            class="w-fit text-[12px] font-bold text-[#19784e] underline-offset-[3px]"
-                            href={oauthFlow()?.authorizeUrl ?? undefined}
-                            target="_blank"
-                            rel="noreferrer"
-                        >
-                            Open authorization page ↗
-                        </a>
-                    </Show>
-                    <Show when={oauthFlow()?.providerName === null}>
-                        <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
-                            Provider name (optional)
-                            <input
-                                class={formControlClasses}
-                                pattern={PROVIDER_NAME_PATTERN.source}
-                                maxlength={PROVIDER_NAME_MAX_LENGTH}
-                                placeholder="Auto-generated when blank"
-                                value={oauthName()}
-                                onInput={(event) => setOAuthName(event.currentTarget.value)}
-                            />
-                        </label>
-                        <label class="flex items-center gap-[7px] text-xs font-[720] text-[#344038]">
-                            <input
-                                class={checkboxClasses}
-                                type="checkbox"
-                                checked={isOAuthPrefixSpecified()}
-                                onChange={(event) =>
-                                    setIsOAuthPrefixSpecified(event.currentTarget.checked)
-                                }
-                            />
-                            Set a custom model prefix
-                        </label>
-                        <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
-                            Model prefix
-                            <input
-                                class={formControlClasses}
-                                maxlength={MODEL_PREFIX_MAX_LENGTH}
-                                pattern={MODEL_PREFIX_PATTERN.source}
-                                disabled={!isOAuthPrefixSpecified()}
-                                placeholder="Blank means no prefix"
-                                value={oauthPrefix()}
-                                onInput={(event) => setOAuthPrefix(event.currentTarget.value)}
-                            />
-                            <small>
-                                Leave customization off for the provider-name default. Turn it on
-                                and leave this blank to explicitly use no prefix.
-                            </small>
-                        </label>
-                    </Show>
-                    <Show when={oauthFlow()?.type === "antigravity"}>
-                        <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
-                            Google Cloud project ID (optional)
-                            <input
-                                class={formControlClasses}
-                                placeholder="Required only for Workspace/project-backed accounts"
-                                value={oauthProjectId()}
-                                onInput={(event) => setOAuthProjectId(event.currentTarget.value)}
-                            />
-                            <small>
-                                Leave blank for Antigravity-managed free-tier projects. Workspace
-                                accounts may require their own project ID.
-                            </small>
-                        </label>
-                    </Show>
-                    <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
-                        Full redirect URL
-                        <textarea
-                            class={`${formControlClasses} resize-y`}
-                            required
-                            rows={4}
-                            spellcheck={false}
-                            placeholder="http://localhost:…/auth/callback?code=…&state=…"
-                            value={oauthRedirectUrl()}
-                            onInput={(event) => setOAuthRedirectUrl(event.currentTarget.value)}
-                        />
-                    </label>
-                    <footer class="flex items-center justify-end gap-[9px] pt-[3px] max-[540px]:flex-col-reverse max-[540px]:items-stretch max-[540px]:[&>button]:w-full">
-                        <span class="mr-auto text-[10px] text-[#818c85] max-[540px]:m-0 max-[540px]:text-center">
-                            {isStartingOAuth()
-                                ? "Preparing authorization…"
-                                : "OAuth state expires in 15 minutes."}
-                        </span>
-                        <button
-                            class={buttonPrimaryClasses}
-                            type="submit"
-                            disabled={isStartingOAuth() || isCompletingOAuth()}
-                        >
-                            {isCompletingOAuth() ? "Completing…" : "Complete connection"}
-                        </button>
-                    </footer>
-                </form>
-            </Dialog>
+                {(flow) => (
+                    <OAuthFlowDialog
+                        client={props.client}
+                        launch={flow}
+                        onClose={() => setOAuthLaunch(null)}
+                        onCompleted={handleOAuthCompleted}
+                    />
+                )}
+            </Show>
         </section>
     );
 }
