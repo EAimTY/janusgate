@@ -364,6 +364,13 @@ test("Responses and Chat Completions translate through the event IR", () => {
             },
         },
     });
+    assertEqual(
+        responseEvents[0],
+        {
+            type: "message_start",
+        },
+        "message_start drops the upstream response id",
+    );
     const chatResponse = renderChatCompletionsResponse(responseEvents, {
         id: "chat_janus",
         model: "public-model",

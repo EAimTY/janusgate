@@ -93,7 +93,6 @@ export interface IrUsage {
 export type IrEvent =
     | {
           type: "message_start";
-          id?: string;
       }
     | {
           type: "text_delta";

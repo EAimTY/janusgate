@@ -586,16 +586,12 @@ function renderResponsesTextFormat(format: IrResponseFormat): ResponsesTextForma
 
 export function parseResponsesResponse(value: unknown): IrEvent[] {
     const root = expectRecord(value, "Responses response");
-    const responseId = optionalString(root["id"], "response.id");
+    // The upstream response id is deliberately dropped: outward ids are always
+    // synthesized from renderer metadata, so the IR carries no message id.
     const events: IrEvent[] = [
-        responseId === undefined
-            ? {
-                  type: "message_start",
-              }
-            : {
-                  type: "message_start",
-                  id: responseId,
-              },
+        {
+            type: "message_start",
+        },
     ];
     let hasToolCall = false;
     for (const [outputIndex, itemValue] of expectArray(root["output"], "output").entries()) {
@@ -695,21 +691,11 @@ export function parseResponsesStreamEvent(value: unknown): IrEvent[] {
     const root = expectRecord(value, "Responses stream event");
     const type = expectString(root["type"], "event.type");
     if (type === "response.created" || type === "response.in_progress") {
-        const response =
-            root["response"] === undefined ? {} : expectRecord(root["response"], "event.response");
-        const id = optionalString(response["id"], "response.id");
-        return id === undefined
-            ? [
-                  {
-                      type: "message_start",
-                  },
-              ]
-            : [
-                  {
-                      type: "message_start",
-                      id,
-                  },
-              ];
+        return [
+            {
+                type: "message_start",
+            },
+        ];
     }
     if (type === "response.output_text.delta") {
         const event: IrEvent = {
