@@ -1021,3 +1021,37 @@ function chatChunk(
     if (usage !== undefined) chunk["usage"] = usage;
     return chunk;
 }
+
+type ChatCompletionsStreamRenderer = (events: readonly IrEvent[]) => string[];
+
+export function createChatCompletionsStreamRenderer(
+    metadata: ChatStreamMetadata,
+): ChatCompletionsStreamRenderer {
+    // A Chat Completions stream carries usage at most once, in the chunk adjacent to the
+    // terminal frame, yet upstreams deliver the usage chunk at any earlier position
+    // (typically the final empty-choices chunk). Usage is therefore buffered across calls
+    // and injected before `done`, and repeated `message_start` events (upstreams may
+    // re-send the assistant role on continuation chunks) collapse to the first one.
+    let hasStarted = false;
+    let usage: IrUsage | undefined;
+    return (events): string[] => {
+        const immediate: IrEvent[] = [];
+        for (const event of events) {
+            if (event.type === "message_start") {
+                if (!hasStarted) {
+                    hasStarted = true;
+                    immediate.push(event);
+                }
+            } else if (event.type === "usage") usage = event.usage;
+            else if (event.type === "done") {
+                if (usage !== undefined)
+                    immediate.push({
+                        type: "usage",
+                        usage,
+                    });
+                immediate.push(event);
+            } else immediate.push(event);
+        }
+        return renderChatCompletionsStream(immediate, metadata);
+    };
+}

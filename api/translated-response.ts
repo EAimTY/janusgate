@@ -7,14 +7,13 @@ import {
     parseGenerateContentStreamEvent,
 } from "/providers/gemini";
 import {
-    type ChatStreamMetadata,
+    createChatCompletionsStreamRenderer,
     parseChatCompletionsResponse,
     parseChatCompletionsStreamEvent,
     renderChatCompletionsResponse,
-    renderChatCompletionsStream,
 } from "/translation/chat-completions";
 import { TranslationError } from "/translation/errors";
-import type { IrEvent, IrUsage } from "/translation/ir";
+import type { IrEvent } from "/translation/ir";
 import {
     createResponsesStreamRenderer,
     parseResponsesResponse,
@@ -28,33 +27,6 @@ function parseUpstreamEvents(protocol: UpstreamProtocol, value: unknown): IrEven
     if (protocol === "openai_response") return parseResponsesResponse(value);
     if (protocol === "openai_chat_completion") return parseChatCompletionsResponse(value);
     return parseGenerateContentResponse(value);
-}
-
-type EventRenderer = (events: readonly IrEvent[]) => string[];
-
-function createChatCompletionsStreamRenderer(metadata: ChatStreamMetadata): EventRenderer {
-    let hasStarted = false;
-    let usage: IrUsage | undefined;
-    return (events): string[] => {
-        const immediate: IrEvent[] = [];
-        for (const event of events) {
-            if (event.type === "message_start") {
-                if (!hasStarted) {
-                    hasStarted = true;
-                    immediate.push(event);
-                }
-            } else if (event.type === "usage") usage = event.usage;
-            else if (event.type === "done") {
-                if (usage !== undefined)
-                    immediate.push({
-                        type: "usage",
-                        usage,
-                    });
-                immediate.push(event);
-            } else immediate.push(event);
-        }
-        return renderChatCompletionsStream(immediate, metadata);
-    };
 }
 
 function parseFrameEvents(
@@ -102,7 +74,7 @@ export async function translateStreamingResponse(
     const firstRead = await readBeforeIdleTimeout(reader, abortController);
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
-    const renderer: EventRenderer =
+    const renderer =
         clientProtocol === "openai_response"
             ? createResponsesStreamRenderer({
                   created: unixSeconds(),

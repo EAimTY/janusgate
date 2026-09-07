@@ -1,5 +1,6 @@
 import { test } from "vitest";
 import {
+    createChatCompletionsStreamRenderer,
     parseChatCompletionsRequest,
     parseChatCompletionsResponse,
     parseChatCompletionsStreamEvent,
@@ -962,5 +963,47 @@ test("Coalesced thought signatures keep the last signature issued in a turn", ()
                 frame.includes('"thought_signature":"sig-text-late"'),
         ),
         "Responses stream coalesces text signatures last-wins",
+    );
+});
+
+test("Chat Completions stream renderer buffers usage into the terminal frame", () => {
+    // Usage chunks may arrive on any earlier stream position; the outward renderer must
+    // hold them and emit the usage chunk only with the terminal frame, in order.
+    const renderer = createChatCompletionsStreamRenderer({
+        id: "chat_buffer",
+        model: "public-model",
+        created: 90,
+        isUsageIncluded: true,
+    });
+    const firstFrames = renderer([
+        {
+            type: "message_start",
+        },
+        {
+            type: "usage",
+            usage: {
+                inputTokens: 4,
+                outputTokens: 6,
+                totalTokens: 10,
+            },
+        },
+    ]);
+    assert(
+        firstFrames.length === 1 && firstFrames[0]?.includes('"role":"assistant"') === true,
+        "message_start renders one role chunk and usage is withheld before the terminal",
+    );
+    const terminalFrames = renderer([
+        {
+            type: "message_start",
+        },
+        {
+            type: "done",
+        },
+    ]);
+    assert(
+        terminalFrames.length === 2 &&
+            terminalFrames[0]?.includes('"usage":{"prompt_tokens":4') === true &&
+            terminalFrames.at(-1) === "data: [DONE]\n\n",
+        "buffered usage precedes the terminal DONE frame and repeated message_start is dropped",
     );
 });
