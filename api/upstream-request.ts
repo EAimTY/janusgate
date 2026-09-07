@@ -15,6 +15,7 @@ import {
     OPENAI_CODEX_ORIGINATOR,
     OPENAI_CODEX_RESPONSES_URL,
     OPENAI_CODEX_USER_AGENT,
+    openAiUpstreamUrl,
 } from "/providers/openai";
 import {
     parseChatCompletionsRequest,
@@ -136,7 +137,7 @@ export async function prepareUpstreamRequest(
         headers.set("User-Agent", OPENAI_CODEX_USER_AGENT);
         headers.set("Session-Id", clientRequest.headers.get("Session-Id") ?? crypto.randomUUID());
         headers.set("Accept", request.isStreaming ? "text/event-stream" : "application/json");
-        url = OPENAI_CODEX_RESPONSES_URL;
+        url = openAiUpstreamUrl(OPENAI_CODEX_RESPONSES_URL);
     } else {
         if (oauthCredentials === undefined || !("projectId" in oauthCredentials)) {
             throw new Error("Antigravity credentials are missing a project ID");

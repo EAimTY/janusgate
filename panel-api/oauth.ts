@@ -20,6 +20,7 @@ import {
     OPENAI_OAUTH_SCOPE,
     OPENAI_REDIRECT_URI,
     OPENAI_TOKEN_URL,
+    openAiUpstreamUrl,
 } from "/providers/openai";
 import { resolveAntigravityProject } from "./antigravity-onboarding";
 import { OAUTH_RANDOM_VALUE_BYTES, OAUTH_STATE_TTL_SECONDS } from "./config";
@@ -206,14 +207,17 @@ async function exchangeAuthorizationCode(
 
     let response: Response;
     try {
-        response = await fetchUpstream(isOpenAi ? OPENAI_TOKEN_URL : ANTIGRAVITY_TOKEN_URL, {
-            body: parameters,
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
+        response = await fetchUpstream(
+            isOpenAi ? openAiUpstreamUrl(OPENAI_TOKEN_URL) : ANTIGRAVITY_TOKEN_URL,
+            {
+                body: parameters,
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                method: "POST",
+                signal: oauthUpstreamSignal(signal),
             },
-            method: "POST",
-            signal: oauthUpstreamSignal(signal),
-        });
+        );
     } catch {
         throw new PanelApiError(502, "OAuth token exchange failed");
     }

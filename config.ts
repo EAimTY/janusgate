@@ -21,3 +21,13 @@ export const OAUTH_UPSTREAM_TIMEOUT_SECONDS = 30;
 /** §7 token freshness margin and credential-mutation lease, shared by gateway and panel API. */
 export const TOKEN_REFRESH_MARGIN_SECONDS = 300;
 export const REFRESH_LEASE_SECONDS = 60;
+
+/**
+ * OpenAI egress relay base URL (§8.3), or `null` to call OpenAI directly. OpenAI geo-blocks by
+ * the egress IP's region and Worker egress follows the executing colo, so a deployment whose
+ * requests enter Cloudflare in an unsupported region must relay every Worker-side OpenAI call
+ * through an HTTPS host in a supported region. The relay receives the original host as the
+ * first path segment (e.g. `…/auth.openai.com/oauth/token`); the browser-side authorize URL is
+ * never relayed.
+ */
+export const OPENAI_EGRESS_RELAY_BASE_URL: string | null = null;

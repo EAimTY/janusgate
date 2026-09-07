@@ -34,6 +34,8 @@ import {
     OPENAI_OAUTH_SCOPE,
     OPENAI_REDIRECT_URI,
     OPENAI_TOKEN_URL,
+    openAiRelayUrl,
+    openAiUpstreamUrl,
 } from "./openai";
 
 function assert(isTrue: boolean, message: string): asserts isTrue {
@@ -1068,4 +1070,32 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         "open streamed tool calls are closed",
     );
     assert(secondStreamEvents.at(-1)?.type === "done", "finished Gemini stream terminates");
+});
+
+test("OpenAI egress relay URL rewriting", () => {
+    assert(
+        openAiUpstreamUrl("https://auth.openai.com/oauth/token") ===
+            "https://auth.openai.com/oauth/token",
+        "no relay configured keeps Worker-side OpenAI URLs direct",
+    );
+    assert(
+        openAiRelayUrl("https://relay.example.com", "https://auth.openai.com/oauth/token") ===
+            "https://relay.example.com/auth.openai.com/oauth/token",
+        "relay receives the original host as the first path segment",
+    );
+    assert(
+        openAiRelayUrl(
+            "https://relay.example.com/",
+            "https://chatgpt.com/backend-api/codex/responses",
+        ) === "https://relay.example.com/chatgpt.com/backend-api/codex/responses",
+        "a trailing slash on the relay base does not double the separator",
+    );
+    assert(
+        openAiRelayUrl(
+            "https://relay.example.com",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?alt=sse",
+        ) ===
+            "https://relay.example.com/generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?alt=sse",
+        "path and query survive the rewrite",
+    );
 });
