@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { CredentialsCipher } from "/common/credentials";
+import type { UpstreamProtocol } from "/common/domain";
 import {
     ANTIGRAVITY_API_CLIENT,
     ANTIGRAVITY_HEADER_CLIENT_METADATA,
@@ -8,96 +8,80 @@ import {
     codeAssistRequestUrl,
 } from "/providers/antigravity";
 import { OPENAI_CODEX_RESPONSES_URL, OPENAI_TOKEN_URL } from "/providers/openai";
-import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
+import {
+    clearTestDatabase,
+    createTestBindings,
+    initializeTestDatabase,
+    seedProvider,
+    TEST_API_TOKEN,
+} from "/tests/database";
 import api from "./app";
 import { handleGatewayRequest } from "./gateway";
 
-const API_TOKEN = "api-secret";
-const API_TOKEN_HASH = "014c243ff960e87afc8482648f41e2084dce765aa062dcdcbf4e0e43c4db8a41";
-const AES_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-const bindings: Env = {
-    API_KEY_HASH: API_TOKEN_HASH,
-    CREDENTIALS_AES_KEY: AES_KEY,
-    DATABASE: env.DATABASE,
-    PANEL_TOKEN_HASH: "",
-};
+const bindings = createTestBindings(env.DATABASE);
 
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
 beforeEach(async () => clearTestDatabase(env.DATABASE));
 
 async function seedCompatibleProvider(
-    protocol: "openai_chat_completion" | "openai_response" | "gemini_generate_content",
+    protocol: UpstreamProtocol,
     isModelEnabled = true,
 ): Promise<void> {
-    const cipher = await CredentialsCipher.create(AES_KEY);
-    const encrypted = await cipher.encrypt({
-        apiKey: "upstream-key",
+    const provider = await seedProvider(env.DATABASE, {
+        credentials: {
+            apiKey: "upstream-key",
+        },
+        name: "custom",
+        protocol,
+        type: "openai_compatible",
     });
-    const provider = await env.DATABASE.prepare(
-        `INSERT INTO providers (
-            name, model_prefix, type, protocol, base_url, encrypted_credentials,
-            expires_at, refresh_started_at, enabled
-        ) VALUES ('custom', '', 'openai_compatible', ?, 'https://upstream.test/v1', ?, NULL, NULL, 1)`,
-    )
-        .bind(protocol, encrypted)
-        .run();
     await env.DATABASE.prepare(
         `INSERT INTO models (
             provider_id, upstream_name, name, name_override, enabled_override,
             thinking_levels_override
         ) VALUES (?, 'wire-model', 'public-model', NULL, ?, NULL)`,
     )
-        .bind(provider.meta.last_row_id, isModelEnabled ? null : 0)
+        .bind(provider.id, isModelEnabled ? null : 0)
         .run();
 }
 
 async function seedAntigravityProvider(upstreamName = "gemini-wire"): Promise<void> {
-    const cipher = await CredentialsCipher.create(AES_KEY);
-    const encrypted = await cipher.encrypt({
-        accessToken: "google-access",
-        projectId: "google-project",
-        refreshToken: "google-refresh",
+    const provider = await seedProvider(env.DATABASE, {
+        credentials: {
+            accessToken: "google-access",
+            projectId: "google-project",
+            refreshToken: "google-refresh",
+        },
+        name: "google",
+        type: "antigravity_oauth",
     });
-    const provider = await env.DATABASE.prepare(
-        `INSERT INTO providers (
-            name, model_prefix, type, protocol, base_url, encrypted_credentials,
-            expires_at, refresh_started_at, enabled
-        ) VALUES ('google', '', 'antigravity_oauth', NULL, NULL, ?, 2000000000, NULL, 1)`,
-    )
-        .bind(encrypted)
-        .run();
     await env.DATABASE.prepare(
         `INSERT INTO models (
             provider_id, upstream_name, name, name_override, enabled_override,
             thinking_levels_override
         ) VALUES (?, ?, 'antigravity-model', NULL, NULL, NULL)`,
     )
-        .bind(provider.meta.last_row_id, upstreamName)
+        .bind(provider.id, upstreamName)
         .run();
 }
 
 async function seedOpenAiProvider(): Promise<void> {
-    const cipher = await CredentialsCipher.create(AES_KEY);
-    const encrypted = await cipher.encrypt({
-        accessToken: "old-access",
-        accountId: "account",
-        refreshToken: "old-refresh",
+    const provider = await seedProvider(env.DATABASE, {
+        credentials: {
+            accessToken: "old-access",
+            accountId: "account",
+            refreshToken: "old-refresh",
+        },
+        name: "openai",
+        type: "openai_oauth",
     });
-    const provider = await env.DATABASE.prepare(
-        `INSERT INTO providers (
-            name, model_prefix, type, protocol, base_url, encrypted_credentials,
-            expires_at, refresh_started_at, enabled
-        ) VALUES ('openai', '', 'openai_oauth', NULL, NULL, ?, 2000000000, NULL, 1)`,
-    )
-        .bind(encrypted)
-        .run();
     await env.DATABASE.prepare(
         `INSERT INTO models (
             provider_id, upstream_name, name, name_override, enabled_override,
             thinking_levels_override
         ) VALUES (?, 'gpt-wire', 'codex', NULL, NULL, NULL)`,
     )
-        .bind(provider.meta.last_row_id)
+        .bind(provider.id)
         .run();
 }
 
@@ -105,7 +89,7 @@ function gatewayRequest(path: string, body: unknown): Request {
     return new Request(`https://gateway.test/api/openai-v1/${path}`, {
         body: JSON.stringify(body),
         headers: {
-            Authorization: `Bearer ${API_TOKEN}`,
+            Authorization: `Bearer ${TEST_API_TOKEN}`,
             "Content-Type": "application/json",
         },
         method: "POST",
@@ -869,7 +853,7 @@ describe("gateway app wiring", () => {
                 "https://gateway.test/openai-v1/models",
                 {
                     headers: {
-                        Authorization: `Bearer ${API_TOKEN}`,
+                        Authorization: `Bearer ${TEST_API_TOKEN}`,
                     },
                 },
                 bindings,

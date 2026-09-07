@@ -1,50 +1,46 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
+import {
+    clearTestDatabase,
+    createTestBindings,
+    initializeTestDatabase,
+    seedProvider,
+    TEST_API_TOKEN,
+    TEST_PANEL_TOKEN,
+    TEST_PANEL_TOKEN_HASH,
+} from "/tests/database";
 import app from "./index";
 
-const API_TOKEN = "api-secret";
-const API_TOKEN_HASH = "014c243ff960e87afc8482648f41e2084dce765aa062dcdcbf4e0e43c4db8a41";
-const PANEL_TOKEN = "panel-secret";
-const PANEL_TOKEN_HASH = "14c660b289912fe36e4caca8eb372106f19a9ed9d37adfd03c504648faa4b5e4";
-const bindings: Env = {
-    API_KEY_HASH: API_TOKEN_HASH,
-    CREDENTIALS_AES_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-    DATABASE: env.DATABASE,
-    PANEL_TOKEN_HASH: PANEL_TOKEN_HASH,
-};
+const bindings = createTestBindings(env.DATABASE, {
+    panelTokenHash: TEST_PANEL_TOKEN_HASH,
+});
 
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
 beforeEach(async () => clearTestDatabase(env.DATABASE));
 
 describe("Worker route aggregation", () => {
     it("mounts the authenticated OpenAI-compatible model list at its normative path", async () => {
-        const provider = await env.DATABASE.prepare(
-            `INSERT INTO providers (
-                name, model_prefix, type, protocol, base_url, encrypted_credentials,
-                expires_at, refresh_started_at, enabled
-            ) VALUES ('google', '', 'antigravity_oauth', NULL, NULL, ?, 2000000000, NULL, 1)`,
-        )
-            .bind(
-                new Uint8Array([
-                    1,
-                ]),
-            )
-            .run();
+        const provider = await seedProvider(env.DATABASE, {
+            credentials: new Uint8Array([
+                1,
+            ]),
+            name: "google",
+            type: "antigravity_oauth",
+        });
         await env.DATABASE.prepare(
             `INSERT INTO models (
                 provider_id, upstream_name, name, name_override, enabled_override,
                 thinking_levels_override
             ) VALUES (?, 'gemini-wire', 'gemini', NULL, NULL, NULL)`,
         )
-            .bind(provider.meta.last_row_id)
+            .bind(provider.id)
             .run();
 
         const response = await app.request(
             "https://gateway.test/api/openai-v1/models",
             {
                 headers: {
-                    Authorization: `Bearer ${API_TOKEN}`,
+                    Authorization: `Bearer ${TEST_API_TOKEN}`,
                 },
             },
             bindings,
@@ -71,7 +67,7 @@ describe("Worker route aggregation", () => {
             "https://gateway.test/api/unknown",
             {
                 headers: {
-                    Authorization: `Bearer ${API_TOKEN}`,
+                    Authorization: `Bearer ${TEST_API_TOKEN}`,
                 },
             },
             bindings,
@@ -98,7 +94,7 @@ describe("Worker route aggregation", () => {
             "https://gateway.test/panel-api/unknown",
             {
                 headers: {
-                    Authorization: `Bearer ${PANEL_TOKEN}`,
+                    Authorization: `Bearer ${TEST_PANEL_TOKEN}`,
                     Origin: "https://gateway.test",
                 },
             },

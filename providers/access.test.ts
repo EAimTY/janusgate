@@ -8,10 +8,13 @@ import {
     type StoredProvider,
 } from "/common/database";
 import { ProviderAccessError } from "/common/errors";
-import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
+import {
+    clearTestDatabase,
+    initializeTestDatabase,
+    seedProvider,
+    TEST_CREDENTIALS_AES_KEY,
+} from "/tests/database";
 import { ensureFreshProviderAccess } from "./access";
-
-const AES_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
 beforeEach(async () => clearTestDatabase(env.DATABASE));
@@ -20,36 +23,20 @@ async function seedExpiredOpenAiProvider(now: number): Promise<{
     cipher: CredentialsCipher;
     provider: StoredProvider;
 }> {
-    const cipher = await CredentialsCipher.create(AES_KEY);
-    const encrypted = await cipher.encrypt({
-        accessToken: "old-access",
-        accountId: "account",
-        refreshToken: "old-refresh",
+    const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+    const provider = await seedProvider(env.DATABASE, {
+        credentials: {
+            accessToken: "old-access",
+            accountId: "account",
+            refreshToken: "old-refresh",
+        },
+        expiresAt: now - 1,
+        name: "openai",
+        type: "openai_oauth",
     });
-    const result = await env.DATABASE.prepare(
-        `INSERT INTO providers (
-            name, model_prefix, type, protocol, base_url, encrypted_credentials,
-            expires_at, refresh_started_at, enabled
-        ) VALUES ('openai', '', 'openai_oauth', NULL, NULL, ?, ?, NULL, 1)`,
-    )
-        .bind(encrypted, now - 1)
-        .run();
-    const encryptedBuffer = new ArrayBuffer(encrypted.byteLength);
-    new Uint8Array(encryptedBuffer).set(encrypted);
     return {
         cipher,
-        provider: {
-            baseUrl: null,
-            encryptedCredentials: encryptedBuffer,
-            expiresAt: now - 1,
-            id: result.meta.last_row_id,
-            isEnabled: true,
-            modelPrefix: "",
-            name: "openai",
-            protocol: null,
-            refreshStartedAt: null,
-            type: "openai_oauth",
-        },
+        provider,
     };
 }
 
@@ -130,25 +117,22 @@ describe("OAuth credential refresh leasing", () => {
 
     it("skips a second identity-provider call when a concurrent worker already rotated the credentials", async () => {
         const now = 1_800_000_000;
-        const cipher = await CredentialsCipher.create(AES_KEY);
-        const encrypted = await cipher.encrypt({
-            accessToken: "rejected-access",
-            accountId: "account",
-            refreshToken: "old-refresh",
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        const provider = await seedProvider(env.DATABASE, {
+            credentials: {
+                accessToken: "rejected-access",
+                accountId: "account",
+                refreshToken: "old-refresh",
+            },
+            expiresAt: now + 120,
+            name: "openai",
+            type: "openai_oauth",
         });
-        const result = await env.DATABASE.prepare(
-            `INSERT INTO providers (
-                name, model_prefix, type, protocol, base_url, encrypted_credentials,
-                expires_at, refresh_started_at, enabled
-            ) VALUES ('openai', '', 'openai_oauth', NULL, NULL, ?, ?, NULL, 1)`,
-        )
-            .bind(encrypted, now + 120)
-            .run();
         const rowBefore = async (): Promise<StoredProvider> => {
             const row = await env.DATABASE.prepare(
                 `SELECT ${PROVIDER_COLUMNS} FROM providers WHERE id = ?`,
             )
-                .bind(result.meta.last_row_id)
+                .bind(provider.id)
                 .first<ProviderRow>();
             if (row === null) throw new Error("provider missing");
             return mapProviderRow(row);
@@ -166,7 +150,7 @@ describe("OAuth credential refresh leasing", () => {
                     refreshToken: "rotated-refresh",
                 }),
                 now + 3600,
-                result.meta.last_row_id,
+                provider.id,
             )
             .run();
 
@@ -182,7 +166,7 @@ describe("OAuth credential refresh leasing", () => {
         const stored = await env.DATABASE.prepare(
             "SELECT refresh_started_at FROM providers WHERE id = ?",
         )
-            .bind(result.meta.last_row_id)
+            .bind(provider.id)
             .first<{
                 refresh_started_at: number | null;
             }>();
@@ -192,7 +176,7 @@ describe("OAuth credential refresh leasing", () => {
         await env.DATABASE.prepare(
             "UPDATE providers SET refresh_started_at = NULL, expires_at = ? WHERE id = ?",
         )
-            .bind(now + 120, result.meta.last_row_id)
+            .bind(now + 120, provider.id)
             .run();
         const stillFetched = vi.fn<typeof fetch>(async () =>
             Response.json({

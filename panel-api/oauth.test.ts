@@ -14,12 +14,16 @@ import {
     ANTIGRAVITY_TOKEN_URL,
 } from "/providers/antigravity";
 import { OPENAI_AUTHORIZE_URL, OPENAI_TOKEN_URL } from "/providers/openai";
-import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
+import {
+    clearTestDatabase,
+    initializeTestDatabase,
+    seedProvider,
+    TEST_CREDENTIALS_AES_KEY,
+} from "/tests/database";
 import { OAUTH_STATE_TTL_SECONDS } from "./config";
 import { completeProviderOAuth, startProviderOAuth } from "./oauth";
 import { findProviderByName } from "./provider-repository";
 
-const CREDENTIAL_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const NOW = 1_700_000_000;
 
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
@@ -94,7 +98,7 @@ describe("OAuth orchestration", () => {
                 refresh_token: "refresh",
             });
         });
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
         await expect(
             completeProviderOAuth(
                 env.DATABASE,
@@ -131,20 +135,16 @@ describe("OAuth orchestration", () => {
     });
 
     it("rejects OAuth creation with an explicit colliding name and consumes the state", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        const encrypted = await cipher.encrypt({
-            accessToken: "existing-access",
-            accountId: "account-1",
-            refreshToken: "existing-refresh",
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await seedProvider(env.DATABASE, {
+            credentials: {
+                accessToken: "existing-access",
+                accountId: "account-1",
+                refreshToken: "existing-refresh",
+            },
+            name: "work",
+            type: "openai_oauth",
         });
-        await env.DATABASE.prepare(
-            `INSERT INTO providers (
-                name, model_prefix, type, protocol, base_url, encrypted_credentials,
-                expires_at, refresh_started_at, enabled
-            ) VALUES ('work', '', 'openai_oauth', NULL, NULL, ?, 2000000000, NULL, 1)`,
-        )
-            .bind(encrypted)
-            .run();
 
         const authorizeUrl = await startProviderOAuth(
             env.DATABASE,
@@ -205,7 +205,7 @@ describe("OAuth orchestration", () => {
         );
         const state = new URL(authorizeUrl).searchParams.get("state");
         if (state === null) throw new Error("state missing");
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
 
         await expect(
             completeProviderOAuth(
@@ -235,20 +235,17 @@ describe("OAuth orchestration", () => {
     });
 
     it("shares the credential lease with reauthentication and preserves old credentials when busy", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        const original = await cipher.encrypt({
-            accessToken: "old-access",
-            accountId: "old-account",
-            refreshToken: "old-refresh",
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await seedProvider(env.DATABASE, {
+            credentials: {
+                accessToken: "old-access",
+                accountId: "old-account",
+                refreshToken: "old-refresh",
+            },
+            expiresAt: NOW + 100,
+            name: "work",
+            type: "openai_oauth",
         });
-        await env.DATABASE.prepare(
-            `INSERT INTO providers (
-                name, model_prefix, type, protocol, base_url, encrypted_credentials,
-                expires_at, refresh_started_at, enabled
-            ) VALUES ('work', '', 'openai_oauth', NULL, NULL, ?, ?, NULL, 1)`,
-        )
-            .bind(original, NOW + 100)
-            .run();
         const authorizeUrl = await startProviderOAuth(
             env.DATABASE,
             {
@@ -303,20 +300,17 @@ describe("OAuth orchestration", () => {
     });
 
     it("resolves the newly selected account project during Antigravity reauthentication", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        const original = await cipher.encrypt({
-            accessToken: "old-google-access",
-            projectId: "old-project",
-            refreshToken: "old-google-refresh",
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await seedProvider(env.DATABASE, {
+            credentials: {
+                accessToken: "old-google-access",
+                projectId: "old-project",
+                refreshToken: "old-google-refresh",
+            },
+            expiresAt: NOW + 100,
+            name: "google",
+            type: "antigravity_oauth",
         });
-        await env.DATABASE.prepare(
-            `INSERT INTO providers (
-                name, model_prefix, type, protocol, base_url, encrypted_credentials,
-                expires_at, refresh_started_at, enabled
-            ) VALUES ('google', '', 'antigravity_oauth', NULL, NULL, ?, ?, NULL, 1)`,
-        )
-            .bind(original, NOW + 100)
-            .run();
         const authorizeUrl = await startProviderOAuth(
             env.DATABASE,
             {
@@ -453,7 +447,7 @@ describe("OAuth orchestration", () => {
             }
             throw new Error(`Unexpected fetch: ${url}`);
         });
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
         await completeProviderOAuth(
             env.DATABASE,
             cipher,
@@ -530,7 +524,7 @@ describe("OAuth orchestration", () => {
             }
             throw new Error(`Unexpected fetch: ${url}`);
         });
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
         await completeProviderOAuth(
             env.DATABASE,
             cipher,
@@ -565,7 +559,7 @@ describe("OAuth orchestration", () => {
         );
         const state = new URL(authorizeUrl).searchParams.get("state");
         if (state === null) throw new Error("state missing");
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
         let exchangeCount = 0;
         let releaseExchanges: (() => void) | undefined;
         const exchangesReady = new Promise<void>((resolve) => {

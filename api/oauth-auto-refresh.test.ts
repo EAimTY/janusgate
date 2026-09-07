@@ -8,53 +8,48 @@ import {
     codeAssistRequestUrl,
 } from "/providers/antigravity";
 import { OPENAI_TOKEN_URL } from "/providers/openai";
-import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
+import {
+    clearTestDatabase,
+    createTestBindings,
+    initializeTestDatabase,
+    seedProvider,
+    TEST_API_TOKEN,
+    TEST_CREDENTIALS_AES_KEY,
+} from "/tests/database";
 import { handleGatewayRequest } from "./gateway";
 
-const API_TOKEN = "api-secret";
-const API_TOKEN_HASH = "014c243ff960e87afc8482648f41e2084dce765aa062dcdcbf4e0e43c4db8a41";
-const AES_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-const bindings: Env = {
-    API_KEY_HASH: API_TOKEN_HASH,
-    CREDENTIALS_AES_KEY: AES_KEY,
-    DATABASE: env.DATABASE,
-    PANEL_TOKEN_HASH: "",
-};
+const bindings = createTestBindings(env.DATABASE);
 
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
 beforeEach(async () => clearTestDatabase(env.DATABASE));
 
 async function seedAntigravityProvider(expiresAt: number): Promise<number> {
-    const cipher = await CredentialsCipher.create(AES_KEY);
-    const encrypted = await cipher.encrypt({
-        accessToken: "stale-access",
-        projectId: "google-project",
-        refreshToken: "google-refresh",
+    const provider = await seedProvider(env.DATABASE, {
+        credentials: {
+            accessToken: "stale-access",
+            projectId: "google-project",
+            refreshToken: "google-refresh",
+        },
+        expiresAt,
+        name: "google",
+        type: "antigravity_oauth",
     });
-    const provider = await env.DATABASE.prepare(
-        `INSERT INTO providers (
-            name, model_prefix, type, protocol, base_url, encrypted_credentials,
-            expires_at, refresh_started_at, enabled
-        ) VALUES ('google', '', 'antigravity_oauth', NULL, NULL, ?, ?, NULL, 1)`,
-    )
-        .bind(encrypted, expiresAt)
-        .run();
     await env.DATABASE.prepare(
         `INSERT INTO models (
             provider_id, upstream_name, name, name_override, enabled_override,
             thinking_levels_override
         ) VALUES (?, 'gemini-3.7-flash', 'antigravity-model', NULL, NULL, NULL)`,
     )
-        .bind(provider.meta.last_row_id)
+        .bind(provider.id)
         .run();
-    return provider.meta.last_row_id;
+    return provider.id;
 }
 
 function gatewayRequest(body: unknown): Request {
     return new Request("https://gateway.test/api/openai-v1/responses", {
         body: JSON.stringify(body),
         headers: {
-            Authorization: `Bearer ${API_TOKEN}`,
+            Authorization: `Bearer ${TEST_API_TOKEN}`,
             "Content-Type": "application/json",
         },
         method: "POST",
@@ -94,7 +89,7 @@ describe("lazy OAuth token auto-refresh through the gateway", () => {
     it("refreshes an Antigravity access token inside the margin and serves a Responses request without reauthentication", async () => {
         const now = Math.floor(Date.now() / 1000);
         const providerId = await seedAntigravityProvider(now + 60);
-        const cipher = await CredentialsCipher.create(AES_KEY);
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
         let codeAssistCalls = 0;
         const fetchUpstream = vi.fn<typeof fetch>(async (input, init) => {
             const url = String(input);
@@ -280,27 +275,24 @@ describe("lazy OAuth token auto-refresh through the gateway", () => {
 
     it("lazily refreshes an OpenAI account inside the margin preserving rotation", async () => {
         const now = Math.floor(Date.now() / 1000);
-        const cipher = await CredentialsCipher.create(AES_KEY);
-        const encrypted = await cipher.encrypt({
-            accessToken: "old-openai-access",
-            accountId: "account-1",
-            refreshToken: "old-openai-refresh",
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        const provider = await seedProvider(env.DATABASE, {
+            credentials: {
+                accessToken: "old-openai-access",
+                accountId: "account-1",
+                refreshToken: "old-openai-refresh",
+            },
+            expiresAt: now + 120,
+            name: "openai",
+            type: "openai_oauth",
         });
-        const provider = await env.DATABASE.prepare(
-            `INSERT INTO providers (
-                name, model_prefix, type, protocol, base_url, encrypted_credentials,
-                expires_at, refresh_started_at, enabled
-            ) VALUES ('openai', '', 'openai_oauth', NULL, NULL, ?, ?, NULL, 1)`,
-        )
-            .bind(encrypted, now + 120)
-            .run();
         await env.DATABASE.prepare(
             `INSERT INTO models (
                 provider_id, upstream_name, name, name_override, enabled_override,
                 thinking_levels_override
             ) VALUES (?, 'gpt-5.2', 'codex-model', NULL, NULL, NULL)`,
         )
-            .bind(provider.meta.last_row_id)
+            .bind(provider.id)
             .run();
 
         const fetchUpstream = vi.fn<typeof fetch>(async (input, init) => {
@@ -340,7 +332,7 @@ describe("lazy OAuth token auto-refresh through the gateway", () => {
         const row = await env.DATABASE.prepare(
             "SELECT encrypted_credentials, expires_at FROM providers WHERE id = ?",
         )
-            .bind(provider.meta.last_row_id)
+            .bind(provider.id)
             .first<{
                 encrypted_credentials: ArrayBuffer;
                 expires_at: number | null;

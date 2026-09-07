@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { CredentialsCipher } from "/common/credentials";
+import type { ProviderCredentials, ProviderType } from "/common/domain";
 import { ProviderAccessError } from "/common/errors";
 import {
     ANTIGRAVITY_FETCH_MODELS_URL,
@@ -8,37 +9,29 @@ import {
     ANTIGRAVITY_TOKEN_URL,
 } from "/providers/antigravity";
 import { OPENAI_CODEX_MODELS } from "/providers/openai";
-import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
+import {
+    clearTestDatabase,
+    initializeTestDatabase,
+    seedProvider,
+    TEST_CREDENTIALS_AES_KEY,
+} from "/tests/database";
 import { discoverProviderModels } from "./discovery";
 import { findProviderByName } from "./provider-repository";
-
-const CREDENTIAL_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
 beforeEach(async () => clearTestDatabase(env.DATABASE));
 
 async function insertProvider(
     name: string,
-    type: "antigravity_oauth" | "openai_oauth" | "openai_compatible",
-    credentials: Uint8Array,
+    type: ProviderType,
+    credentials: ProviderCredentials | Uint8Array,
 ): Promise<void> {
-    await env.DATABASE.prepare(
-        `INSERT INTO providers (
-            name, model_prefix, type, protocol, base_url, encrypted_credentials,
-            expires_at, refresh_started_at, enabled
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-    )
-        .bind(
-            name,
-            `${name}/`,
-            type,
-            type === "openai_compatible" ? "openai_response" : null,
-            type === "openai_compatible" ? "https://upstream.test/v1" : null,
-            credentials,
-            // OAuth providers always store a token expiry; API-key providers never do.
-            type === "openai_compatible" ? null : 2_000_000_000,
-        )
-        .run();
+    await seedProvider(env.DATABASE, {
+        credentials,
+        modelPrefix: `${name}/`,
+        name,
+        type,
+    });
 }
 
 async function insertModel(
@@ -79,14 +72,10 @@ function compatibleFetchUpstream(modelIds: readonly string[]): typeof fetch {
 
 describe("model discovery", () => {
     it("authenticates compatible discovery and atomically creates enabled unoverridden mappings", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "custom",
-            "openai_compatible",
-            await cipher.encrypt({
-                apiKey: "key",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("custom", "openai_compatible", {
+            apiKey: "key",
+        });
         const provider = await findProviderByName(env.DATABASE, "custom");
         expect(provider).not.toBeNull();
         if (provider === null) throw new Error("provider missing");
@@ -167,14 +156,10 @@ describe("model discovery", () => {
     });
 
     it("reconciles by identity: prunes unoverridden stale rows and keeps overridden rows", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "custom",
-            "openai_compatible",
-            await cipher.encrypt({
-                apiKey: "key",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("custom", "openai_compatible", {
+            apiKey: "key",
+        });
         const provider = await findProviderByName(env.DATABASE, "custom");
         if (provider === null) throw new Error("provider missing");
 
@@ -272,14 +257,10 @@ describe("model discovery", () => {
     });
 
     it("re-derives unoverridden names from the current prefix and skips occupied names", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "custom",
-            "openai_compatible",
-            await cipher.encrypt({
-                apiKey: "key",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("custom", "openai_compatible", {
+            apiKey: "key",
+        });
         const provider = await findProviderByName(env.DATABASE, "custom");
         if (provider === null) throw new Error("provider missing");
 
@@ -293,13 +274,9 @@ describe("model discovery", () => {
             ]),
         );
         // Another provider's mapping occupies the name the new prefix would derive for alpha.
-        await insertProvider(
-            "blocker",
-            "openai_compatible",
-            await cipher.encrypt({
-                apiKey: "key",
-            }),
-        );
+        await insertProvider("blocker", "openai_compatible", {
+            apiKey: "key",
+        });
         await insertModel("blocker", "unrelated", "x/alpha");
         await env.DATABASE.prepare(
             "UPDATE providers SET model_prefix = 'x/' WHERE name = 'custom'",
@@ -345,23 +322,15 @@ describe("model discovery", () => {
     });
 
     it("skips creating a model whose derived name is already occupied", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "custom",
-            "openai_compatible",
-            await cipher.encrypt({
-                apiKey: "key",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("custom", "openai_compatible", {
+            apiKey: "key",
+        });
         const provider = await findProviderByName(env.DATABASE, "custom");
         if (provider === null) throw new Error("provider missing");
-        await insertProvider(
-            "blocker",
-            "openai_compatible",
-            await cipher.encrypt({
-                apiKey: "key",
-            }),
-        );
+        await insertProvider("blocker", "openai_compatible", {
+            apiKey: "key",
+        });
         await insertModel("blocker", "unrelated", "custom/alpha");
 
         await expect(
@@ -394,14 +363,10 @@ describe("model discovery", () => {
     });
 
     it("rejects duplicate upstream IDs before changing the database", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "custom",
-            "openai_compatible",
-            await cipher.encrypt({
-                apiKey: "key",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("custom", "openai_compatible", {
+            apiKey: "key",
+        });
         const provider = await findProviderByName(env.DATABASE, "custom");
         if (provider === null) throw new Error("provider missing");
 
@@ -427,14 +392,10 @@ describe("model discovery", () => {
     });
 
     it("rejects an empty upstream model ID before changing the database", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "custom",
-            "openai_compatible",
-            await cipher.encrypt({
-                apiKey: "key",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("custom", "openai_compatible", {
+            apiKey: "key",
+        });
         const provider = await findProviderByName(env.DATABASE, "custom");
         if (provider === null) throw new Error("provider missing");
 
@@ -460,16 +421,12 @@ describe("model discovery", () => {
     });
 
     it("discovers the authenticated Antigravity runtime catalog", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "google",
-            "antigravity_oauth",
-            await cipher.encrypt({
-                accessToken: "google-access",
-                projectId: "google-project",
-                refreshToken: "google-refresh",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("google", "antigravity_oauth", {
+            accessToken: "google-access",
+            projectId: "google-project",
+            refreshToken: "google-refresh",
+        });
         const provider = await findProviderByName(env.DATABASE, "google");
         if (provider === null) throw new Error("provider missing");
         const fetchUpstream = vi.fn<typeof fetch>(async (input, init) => {
@@ -510,16 +467,12 @@ describe("model discovery", () => {
     });
 
     it("forces one token refresh and retries Antigravity discovery after a 401", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "google",
-            "antigravity_oauth",
-            await cipher.encrypt({
-                accessToken: "stale-access",
-                projectId: "google-project",
-                refreshToken: "google-refresh",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("google", "antigravity_oauth", {
+            accessToken: "stale-access",
+            projectId: "google-project",
+            refreshToken: "google-refresh",
+        });
         const provider = await findProviderByName(env.DATABASE, "google");
         if (provider === null) throw new Error("provider missing");
         let discoveryAttempts = 0;
@@ -557,16 +510,12 @@ describe("model discovery", () => {
     });
 
     it("forwards the bounded identity-provider diagnostic when the token refresh is rejected", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "google",
-            "antigravity_oauth",
-            await cipher.encrypt({
-                accessToken: "google-access",
-                projectId: "google-project",
-                refreshToken: "google-refresh",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("google", "antigravity_oauth", {
+            accessToken: "google-access",
+            projectId: "google-project",
+            refreshToken: "google-refresh",
+        });
         // Expire the stored token so discovery must refresh before listing models.
         await env.DATABASE.prepare("UPDATE providers SET expires_at = ? WHERE name = 'google'")
             .bind(1_000_000_000)
@@ -594,7 +543,7 @@ describe("model discovery", () => {
     });
 
     it("reports undecryptable credentials distinctly from a refresh failure", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
         await insertProvider(
             "google",
             "antigravity_oauth",
@@ -619,16 +568,12 @@ describe("model discovery", () => {
     });
 
     it("does not mask a client-disconnect abort as a discovery failure", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
-        await insertProvider(
-            "google",
-            "antigravity_oauth",
-            await cipher.encrypt({
-                accessToken: "google-access",
-                projectId: "google-project",
-                refreshToken: "google-refresh",
-            }),
-        );
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("google", "antigravity_oauth", {
+            accessToken: "google-access",
+            projectId: "google-project",
+            refreshToken: "google-refresh",
+        });
         await env.DATABASE.prepare("UPDATE providers SET expires_at = ? WHERE name = 'google'")
             .bind(1_000_000_000)
             .run();
@@ -654,7 +599,7 @@ describe("model discovery", () => {
     });
 
     it("uses the pinned OpenAI OAuth catalog without an upstream model-list request", async () => {
-        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
         await insertProvider(
             "openai",
             "openai_oauth",
