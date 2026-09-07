@@ -617,6 +617,42 @@ describe("gateway request lifecycle", () => {
         expect(fetchUpstream).toHaveBeenCalledTimes(3);
     });
 
+    it("surfaces an exhausted forced refresh as the 502 upstream_auth_rejected envelope", async () => {
+        await seedOpenAiProvider();
+        const fetchUpstream = vi.fn<typeof fetch>(async (input) => {
+            const url = String(input);
+            if (url === OPENAI_TOKEN_URL) {
+                return Response.json({
+                    access_token: "new-access",
+                    expires_in: 3600,
+                    refresh_token: "new-refresh",
+                });
+            }
+            // Both attempts with current-best credentials are rejected upstream.
+            return new Response("rejected", {
+                status: 401,
+            });
+        });
+        const response = await handleGatewayRequest(
+            gatewayRequest("responses", {
+                input: "hello",
+                model: "codex",
+            }),
+            bindings,
+            "openai_response",
+            fetchUpstream,
+        );
+
+        expect(response.status).toBe(502);
+        expect(await response.json()).toEqual({
+            error: {
+                code: "upstream_auth_rejected",
+                message: "The upstream rejected authentication",
+                type: "upstream_error",
+            },
+        });
+    });
+
     it("translates Chat Completions requests into the Antigravity agent envelope and back", async () => {
         await seedAntigravityProvider("gemini-3.7-flash");
         const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {

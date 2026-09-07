@@ -6,7 +6,7 @@ import {
     type StoredProvider,
 } from "/common/database";
 import type { AntigravityOAuthCredentials, OpenAiOAuthCredentials } from "/common/domain";
-import { GatewayError } from "/common/errors";
+import { CredentialDecryptionError, ProviderAccessError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import {
     isJsonObject,
@@ -125,14 +125,19 @@ async function requestRefreshedToken(
             signal: oauthUpstreamSignal(signal),
         });
     } catch {
-        throw new Error("Identity provider token refresh request failed");
+        throw new ProviderAccessError("Identity provider token refresh request failed");
     }
     if (!response.ok) {
         const errorCode = await identityProviderErrorCode(response);
-        throw new Error(
+        throw new ProviderAccessError(
             errorCode === undefined
                 ? "Identity provider rejected the token refresh"
                 : `Identity provider rejected the token refresh (${errorCode})`,
+            errorCode === undefined
+                ? {}
+                : {
+                      idpErrorCode: errorCode,
+                  },
         );
     }
     return parseRefreshResponse(await response.json(), credentials.refreshToken, now);
@@ -201,12 +206,10 @@ export async function ensureFreshProviderAccess(
     const hasLease = await acquireCredentialLease(database, provider.id, now);
     if (!hasLease) {
         if (options.isForced) {
-            throw new GatewayError(
-                502,
-                "upstream_error",
-                "The upstream rejected authentication",
-                "upstream_auth_rejected",
-            );
+            // The lease holder's rotation is the only recovery; the rejected token stands (§7).
+            throw new ProviderAccessError("The upstream rejected authentication", {
+                isAuthenticationRejected: true,
+            });
         }
         return {
             credentials: await decryptOAuthCredentials(provider, cipher),
@@ -278,13 +281,14 @@ export async function ensureFreshProviderAccess(
         };
     } catch (error: unknown) {
         await clearCredentialLease(database, provider.id, now);
-        throw new GatewayError(
-            502,
-            "upstream_error",
+        if (error instanceof ProviderAccessError) throw error;
+        // A decryption failure is a stored-secret problem, not an access failure: it keeps its
+        // own identity so each entry point can give it a distinct surface.
+        if (error instanceof CredentialDecryptionError) throw error;
+        throw new ProviderAccessError(
             error instanceof Error && error.message.length > 0 && error.message.length <= 200
                 ? error.message
                 : "The upstream credential refresh failed",
-            "upstream_failure",
         );
     }
 }

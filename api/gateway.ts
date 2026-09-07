@@ -3,11 +3,13 @@ import { CredentialsCipher } from "/common/credentials";
 import type { ClientProtocol } from "/common/domain";
 import {
     ConfigurationError,
+    CredentialDecryptionError,
     GatewayError,
     gatewayErrorBody,
     internalGatewayError,
     invalidApiKeyError,
     modelNotFoundError,
+    ProviderAccessError,
     upstreamFailureError,
     upstreamTimeoutError,
 } from "/common/errors";
@@ -52,6 +54,22 @@ function mapTranslationError(error: TranslationError): GatewayError {
 }
 
 /**
+ * The single construction site for the §7 credential-failure envelope: a forced refresh that
+ * could not run (lease held) or a 401 that survives the forced-refresh retry is a definitive
+ * authentication rejection; every other credential-refresh failure is an upstream failure. Both
+ * surface as `502 upstream_error`, carrying the access layer's bounded diagnostic (README §7,
+ * §11.2).
+ */
+function mapProviderAccessError(error: ProviderAccessError): GatewayError {
+    return new GatewayError(
+        502,
+        "upstream_error",
+        error.message,
+        error.isAuthenticationRejected ? "upstream_auth_rejected" : "upstream_failure",
+    );
+}
+
+/**
  * Map any error escaping gateway handling onto the OpenAI error envelope (README §11.2) so every
  * gateway response stays machine-parseable. Configuration errors are rethrown on purpose: a bad
  * deployment secret is fatal and must never be masked as a routine internal error.
@@ -59,6 +77,16 @@ function mapTranslationError(error: TranslationError): GatewayError {
 export function respondGatewayError(error: unknown): Response {
     if (error instanceof ConfigurationError) throw error;
     if (error instanceof GatewayError) return gatewayErrorResponse(error);
+    if (error instanceof ProviderAccessError) {
+        return gatewayErrorResponse(mapProviderAccessError(error));
+    }
+    if (error instanceof CredentialDecryptionError) {
+        // Undecryptable stored credentials are not refresh-recoverable; they keep the 502
+        // upstream envelope this path has always surfaced.
+        return gatewayErrorResponse(
+            new GatewayError(502, "upstream_error", error.message, "upstream_failure"),
+        );
+    }
     if (error instanceof TranslationError) return gatewayErrorResponse(mapTranslationError(error));
     if (error instanceof UpstreamIdleTimeoutError) {
         return gatewayErrorResponse(upstreamTimeoutError());
@@ -171,12 +199,11 @@ async function executeUpstream(
     }
     if (response.status === 401 && currentRoute.provider.type !== "openai_compatible") {
         await response.body?.cancel();
-        throw new GatewayError(
-            502,
-            "upstream_error",
-            "The upstream rejected authentication",
-            "upstream_auth_rejected",
-        );
+        // The forced-refresh retry is exhausted: the credentials remain rejected upstream. The
+        // 502 envelope is authored in one place — respondGatewayError's mapping.
+        throw new ProviderAccessError("The upstream rejected authentication", {
+            isAuthenticationRejected: true,
+        });
     }
     return {
         prepared,

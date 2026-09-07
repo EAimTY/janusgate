@@ -8,7 +8,7 @@ import {
     type StoredProvider,
 } from "/common/database";
 import type { DiscoveryResult } from "/common/domain";
-import { GatewayError } from "/common/errors";
+import { CredentialDecryptionError, ProviderAccessError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { composeModelName, isJsonObject } from "/common/validation";
 import { ensureFreshProviderAccess } from "/providers/access";
@@ -18,6 +18,48 @@ import { isDatabaseConstraintError, PanelApiError } from "./errors";
 
 function upstreamDiscoveryError(message: string): PanelApiError {
     return new PanelApiError(502, message);
+}
+
+/**
+ * Refresh credentials ahead of Antigravity discovery, mapping credential-access failures onto
+ * the panel 502. The access layer's message is the sanitized, bounded §7 diagnostic — including
+ * the RFC 6749 error code — and is forwarded verbatim instead of a fixed string. Client-disconnect
+ * aborts and contract violations are rethrown: nobody is left to answer a fabricated 502, and an
+ * internal error must stay internal instead of masquerading as an upstream failure.
+ */
+async function ensureDiscoveryProviderAccess(
+    database: D1Database,
+    provider: StoredProvider,
+    cipher: CredentialsCipher,
+    fetchUpstream: typeof fetch,
+    signal: AbortSignal | undefined,
+    options: {
+        isForced?: boolean;
+        rejectedAccessToken?: string;
+    } = {},
+): Promise<StoredProvider> {
+    try {
+        return (
+            await ensureFreshProviderAccess(database, provider, cipher, {
+                fetchUpstream,
+                ...options,
+                ...(signal === undefined
+                    ? {}
+                    : {
+                          signal,
+                      }),
+            })
+        ).provider;
+    } catch (error) {
+        if (signal?.aborted) throw error;
+        if (error instanceof CredentialDecryptionError) {
+            throw upstreamDiscoveryError("Antigravity credentials could not be decrypted");
+        }
+        if (error instanceof ProviderAccessError) {
+            throw upstreamDiscoveryError(error.message);
+        }
+        throw error;
+    }
 }
 
 function parseCompatibleModelList(value: unknown): string[] {
@@ -67,24 +109,13 @@ async function fetchAntigravityModelNames(
 ): Promise<string[]> {
     // Margin-refresh before the first call so an idle-but-expired token does not waste an
     // upstream roundtrip; a mid-flight rejection still recovers through the forced loop below.
-    let effectiveProvider: StoredProvider;
-    try {
-        effectiveProvider = (
-            await ensureFreshProviderAccess(database, provider, cipher, {
-                fetchUpstream,
-                ...(signal === undefined
-                    ? {}
-                    : {
-                          signal,
-                      }),
-            })
-        ).provider;
-    } catch (error) {
-        if (error instanceof GatewayError) {
-            throw upstreamDiscoveryError("Antigravity credential refresh failed");
-        }
-        throw error;
-    }
+    let effectiveProvider = await ensureDiscoveryProviderAccess(
+        database,
+        provider,
+        cipher,
+        fetchUpstream,
+        signal,
+    );
     let response: Response | undefined;
     for (let attempt = 0; attempt < 2; attempt += 1) {
         const credentials = assertCredentialsMatchProvider(
@@ -104,22 +135,17 @@ async function fetchAntigravityModelNames(
             throw upstreamDiscoveryError("The Antigravity model discovery request failed");
         }
         if (response.status !== 401 || attempt === 1) break;
-        try {
-            effectiveProvider = (
-                await ensureFreshProviderAccess(database, effectiveProvider, cipher, {
-                    fetchUpstream,
-                    isForced: true,
-                    rejectedAccessToken: credentials.accessToken,
-                    ...(signal === undefined
-                        ? {}
-                        : {
-                              signal,
-                          }),
-                })
-            ).provider;
-        } catch {
-            throw upstreamDiscoveryError("Antigravity credential refresh failed");
-        }
+        effectiveProvider = await ensureDiscoveryProviderAccess(
+            database,
+            effectiveProvider,
+            cipher,
+            fetchUpstream,
+            signal,
+            {
+                isForced: true,
+                rejectedAccessToken: credentials.accessToken,
+            },
+        );
     }
     if (response === undefined) throw new Error("Antigravity discovery made no request");
     if (!response.ok) {

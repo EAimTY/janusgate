@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { CredentialsCipher } from "/common/credentials";
+import { ProviderAccessError } from "/common/errors";
 import {
     ANTIGRAVITY_FETCH_MODELS_URL,
     ANTIGRAVITY_HEADER_CLIENT_METADATA,
@@ -520,6 +521,103 @@ describe("model discovery", () => {
             skipped: 0,
         });
         expect(discoveryAttempts).toBe(2);
+    });
+
+    it("forwards the bounded identity-provider diagnostic when the token refresh is rejected", async () => {
+        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        await insertProvider(
+            "google",
+            "antigravity_oauth",
+            await cipher.encrypt({
+                accessToken: "google-access",
+                projectId: "google-project",
+                refreshToken: "google-refresh",
+            }),
+        );
+        // Expire the stored token so discovery must refresh before listing models.
+        await env.DATABASE.prepare("UPDATE providers SET expires_at = ? WHERE name = 'google'")
+            .bind(1_000_000_000)
+            .run();
+        const provider = await findProviderByName(env.DATABASE, "google");
+        if (provider === null) throw new Error("provider missing");
+        const fetchUpstream = vi.fn<typeof fetch>(async () =>
+            Response.json(
+                {
+                    error: "invalid_grant",
+                },
+                {
+                    status: 400,
+                },
+            ),
+        );
+
+        // The RFC 6749 code (README §7) must survive into the panel message.
+        await expect(
+            discoverProviderModels(env.DATABASE, provider, cipher, fetchUpstream),
+        ).rejects.toMatchObject({
+            message: "Identity provider rejected the token refresh (invalid_grant)",
+            status: 502,
+        });
+    });
+
+    it("reports undecryptable credentials distinctly from a refresh failure", async () => {
+        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        await insertProvider(
+            "google",
+            "antigravity_oauth",
+            new Uint8Array([
+                1,
+            ]),
+        );
+        await env.DATABASE.prepare("UPDATE providers SET expires_at = ? WHERE name = 'google'")
+            .bind(1_000_000_000)
+            .run();
+        const provider = await findProviderByName(env.DATABASE, "google");
+        if (provider === null) throw new Error("provider missing");
+        const fetchUpstream = vi.fn<typeof fetch>();
+
+        await expect(
+            discoverProviderModels(env.DATABASE, provider, cipher, fetchUpstream),
+        ).rejects.toMatchObject({
+            message: "Antigravity credentials could not be decrypted",
+            status: 502,
+        });
+        expect(fetchUpstream).not.toHaveBeenCalled();
+    });
+
+    it("does not mask a client-disconnect abort as a discovery failure", async () => {
+        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        await insertProvider(
+            "google",
+            "antigravity_oauth",
+            await cipher.encrypt({
+                accessToken: "google-access",
+                projectId: "google-project",
+                refreshToken: "google-refresh",
+            }),
+        );
+        await env.DATABASE.prepare("UPDATE providers SET expires_at = ? WHERE name = 'google'")
+            .bind(1_000_000_000)
+            .run();
+        const provider = await findProviderByName(env.DATABASE, "google");
+        if (provider === null) throw new Error("provider missing");
+        const abortController = new AbortController();
+        abortController.abort("client disconnected");
+        const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {
+            // A compliant fetch rejects immediately with the abort reason.
+            throw init?.signal?.reason;
+        });
+
+        // The abort propagates as-is instead of becoming a fabricated 502.
+        await expect(
+            discoverProviderModels(
+                env.DATABASE,
+                provider,
+                cipher,
+                fetchUpstream,
+                abortController.signal,
+            ),
+        ).rejects.toBeInstanceOf(ProviderAccessError);
     });
 
     it("uses the pinned OpenAI OAuth catalog without an upstream model-list request", async () => {

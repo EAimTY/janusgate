@@ -7,6 +7,7 @@ import {
     type ProviderRow,
     type StoredProvider,
 } from "/common/database";
+import { ProviderAccessError } from "/common/errors";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
 import { ensureFreshProviderAccess } from "./access";
 
@@ -116,14 +117,14 @@ describe("OAuth credential refresh leasing", () => {
         await env.DATABASE.prepare("UPDATE providers SET refresh_started_at = ? WHERE id = ?")
             .bind(now, provider.id)
             .run();
-        await expect(
-            ensureFreshProviderAccess(env.DATABASE, provider, cipher, {
-                isForced: true,
-                now,
-            }),
-        ).rejects.toMatchObject({
-            code: "upstream_auth_rejected",
-            status: 502,
+        const forced = ensureFreshProviderAccess(env.DATABASE, provider, cipher, {
+            isForced: true,
+            now,
+        });
+        await expect(forced).rejects.toBeInstanceOf(ProviderAccessError);
+        await expect(forced).rejects.toMatchObject({
+            isAuthenticationRejected: true,
+            message: "The upstream rejected authentication",
         });
     });
 
@@ -228,9 +229,9 @@ describe("OAuth credential refresh leasing", () => {
                 now,
             }),
         ).rejects.toMatchObject({
-            code: "upstream_failure",
+            idpErrorCode: "invalid_grant",
+            isAuthenticationRejected: false,
             message: "Identity provider rejected the token refresh (invalid_grant)",
-            status: 502,
         });
         const lease = await env.DATABASE.prepare(
             "SELECT refresh_started_at FROM providers WHERE id = ?",
