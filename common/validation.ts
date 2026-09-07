@@ -100,6 +100,11 @@ export function parseBaseUrl(value: unknown): string {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
         throw new ValidationError("baseUrl must be an HTTP(S) URL");
     }
+    // Base URLs are joined to upstream paths by literal concatenation (README §3.1), so a
+    // query string or fragment would swallow every appended path and corrupt the request URL.
+    if (parsed.search !== "" || parsed.hash !== "") {
+        throw new ValidationError("baseUrl must not contain a query string or fragment");
+    }
 
     return parsed.href.replace(/\/+$/, "");
 }

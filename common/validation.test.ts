@@ -37,8 +37,21 @@ test("model prefixes preserve caller separators and permit an empty prefix", () 
 test("base URLs are HTTP(S), canonicalized, and have no trailing slash", () => {
     expect(parseBaseUrl("HTTPS://Example.COM/api/v1///")).toBe("https://example.com/api/v1");
     expect(parseBaseUrl("http://localhost:8787/")).toBe("http://localhost:8787");
+    expect(parseBaseUrl("https://x.com")).toBe("https://x.com");
+    expect(parseBaseUrl("https://x.com/")).toBe("https://x.com");
+    expect(parseBaseUrl("https://x.com/v1")).toBe("https://x.com/v1");
     expect(() => parseBaseUrl("ftp://example.com/api")).toThrow(ValidationError);
     expect(() => parseBaseUrl("not a URL")).toThrow(ValidationError);
+});
+
+test("base URLs reject query strings and fragments because upstream paths are concatenated literally", () => {
+    for (const invalid of [
+        "https://x.com?a=1",
+        "https://x.com/v1?api=1#frag",
+        "https://x.com#frag",
+    ]) {
+        expect(() => parseBaseUrl(invalid)).toThrow(ValidationError);
+    }
 });
 
 test("thinking levels are canonical, unique, and returned in scale order", () => {
