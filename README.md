@@ -2,6 +2,11 @@
 
 > Single source of truth for this project. Contracts, invariants, and assumptions stated here are **normative**.
 
+> **⚠️ Deployment requirement — clients must enter from a region the provider serves.**
+> OpenAI, the `openai_oauth` upstream, rejects traffic by egress region with `403 unsupported_country_region_territory`; both `auth.openai.com` and `chatgpt.com` enforce this (verified 2026-09). A Worker's egress follows the colo where each request enters Cloudflare, and Workers cannot be pinned to a region — Smart Placement is optimizer-driven and cannot be forced. A deployment therefore reached from a region OpenAI does not serve (mainland China, Hong Kong, …) fails **every** OpenAI call: OAuth login, token refresh, and serving alike. Antigravity (Google) has no such restriction.
+>
+> Remedy: every panel browser and gateway client must reach the deployment through a proxy in a provider-supported region (US, Singapore, Japan, …); execution follows the entry colo, so OpenAI calls pass directly. A client connecting directly from an unsupported region fails for that client.
+
 ---
 
 ## 1. Overview & Scope
@@ -243,22 +248,6 @@ Constants pinned in the adapter module (public Codex CLI OAuth client):
 - Client ID `app_EMoamEEZ73f0CkXaXp7hrann` (public PKCE client, no secret).
 - Authorize `https://auth.openai.com/oauth/authorize`: `response_type=code`, `scope=openid profile email offline_access api.connectors.read api.connectors.invoke`, `redirect_uri=http://localhost:1455/auth/callback`, `code_challenge_method=S256`, `state`, plus the Codex login-flow selectors `codex_cli_simplified_flow=true`, `id_token_add_organizations=true`, `originator=codex_cli_rs` — without them auth.openai.com dead-ends on its "session has ended" interstitial instead of the CLI login page.
 - Token `POST https://auth.openai.com/oauth/token` (form-encoded): grants `authorization_code` / `refresh_token` with `code_verifier` / `refresh_token`, `client_id`, `redirect_uri`. Refresh tokens are reusable; `expires_in` feeds `providers.expires_at`.
-- **Egress relay:** OpenAI rejects requests by egress region with `403 unsupported_country_region_territory`, and Worker egress follows the executing colo — a deployment whose traffic enters Cloudflare in an unsupported region cannot reach any OpenAI endpoint directly. `OPENAI_EGRESS_RELAY_BASE_URL` (§15.2) routes every Worker-side OpenAI call — token exchange, refresh, and codex responses — through an HTTPS relay in a supported region; the relay receives the original host as the first path segment (`…/auth.openai.com/oauth/token`, `…/chatgpt.com/backend-api/codex/responses`). `null` calls OpenAI directly. The authorize URL opens in the admin's browser and is never relayed. Any transparent HTTPS reverse proxy works, e.g. Caddy:
-
-  ```caddy
-  relay.example.com {
-      handle_path /auth.openai.com/* {
-          reverse_proxy https://auth.openai.com {
-              header_up Host {upstream_hostport}
-          }
-      }
-      handle_path /chatgpt.com/* {
-          reverse_proxy https://chatgpt.com {
-              header_up Host {upstream_hostport}
-          }
-      }
-  }
-  ```
 
 Upstream API: `POST https://chatgpt.com/backend-api/codex/responses` — SSE when `stream:true`, JSON object when `stream:false` — with headers:
 
@@ -678,7 +667,7 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 
 | Module | Scope | Owns (defaults shown) |
 | --- | --- | --- |
-| `config.ts` | global | Canonical thinking-level vocabulary & order — panel override whitelist only, never a request-time enum (§10.2); provider `name` pattern `[a-z0-9_-]{1,64}`; `modelPrefix` rules (≤ 32 chars, `[a-z0-9._:/-]`); OAuth/IdP upstream timeout; `TOKEN_REFRESH_MARGIN_SECONDS` 300; `REFRESH_LEASE_SECONDS` 60; `OPENAI_EGRESS_RELAY_BASE_URL` (`null` = direct, §8.3); Unix-second convention |
+| `config.ts` | global | Canonical thinking-level vocabulary & order — panel override whitelist only, never a request-time enum (§10.2); provider `name` pattern `[a-z0-9_-]{1,64}`; `modelPrefix` rules (≤ 32 chars, `[a-z0-9._:/-]`); OAuth/IdP upstream timeout; `TOKEN_REFRESH_MARGIN_SECONDS` 300; `REFRESH_LEASE_SECONDS` 60; Unix-second convention |
 | `api/config.ts` | public API | Base path `/api/openai-v1`; `MAX_REQUEST_BYTES` 10 MB; `MAX_RESPONSE_BYTES` 25 MB; `UPSTREAM_IDLE_TIMEOUT_SECONDS` 300; forced-refresh retry count 1; `owned_by` mapping (§11.3) |
 | `panel-api/config.ts` | panel API | Base path `/panel-api`; `OAUTH_STATE_TTL_SECONDS` 900; Antigravity onboarding poll interval/limit; auto-generated name prefixes `openai-` / `antigravity-` |
 | `panel/config.ts` | SPA | Token localStorage key (`panel_token`); auth-probe endpoint (`/panel-api/list-providers`); SPA routes; token expiry-warning horizon |
@@ -717,6 +706,6 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 ### Assumptions
 
 - Single-admin deployment; panel and gateway keys distributed out-of-band.
-- **OpenAI geo-blocks Worker egress regions (verified 2026-09).** `auth.openai.com` and `chatgpt.com` answer `403 unsupported_country_region_territory` whenever the executing colo sits in an unsupported region; the same calls from a supported-region colo succeed. Deployments whose traffic enters Cloudflare in an unsupported region must set `OPENAI_EGRESS_RELAY_BASE_URL` (§8.3). Smart Placement is not a remedy: OpenAI's endpoints are themselves anycast, so the optimizer never sees a closer origin.
+- **OpenAI geo-blocks Worker egress regions (verified 2026-09).** `auth.openai.com` and `chatgpt.com` answer `403 unsupported_country_region_territory` whenever the executing colo sits in an unsupported region; the same calls from a supported-region colo succeed. Deployments must therefore be reached only through a supported-region proxy (top-of-file requirement). Smart Placement is not a remedy: OpenAI's endpoints are themselves anycast, so the optimizer never sees a closer origin.
 - Google Code Assist has no known datacenter-IP restrictions (hosting on Workers is not a risk factor for Antigravity); its real risks are undocumented endpoints drifting (§8.4) and potential account-level abuse flags under heavy automated use.
 - Host clocks are sane; all timing uses `Date.now()` at the Worker.

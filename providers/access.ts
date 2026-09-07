@@ -20,7 +20,7 @@ import {
     ANTIGRAVITY_CLIENT_SECRET,
     ANTIGRAVITY_TOKEN_URL,
 } from "./antigravity";
-import { OPENAI_OAUTH_CLIENT_ID, OPENAI_TOKEN_URL, openAiUpstreamUrl } from "./openai";
+import { OPENAI_OAUTH_CLIENT_ID, OPENAI_TOKEN_URL } from "./openai";
 
 export type OAuthCredentials = AntigravityOAuthCredentials | OpenAiOAuthCredentials;
 
@@ -110,10 +110,7 @@ async function requestRefreshedToken(
         grant_type: "refresh_token",
         refresh_token: credentials.refreshToken,
     });
-    const tokenUrl =
-        provider.type === "openai_oauth"
-            ? openAiUpstreamUrl(OPENAI_TOKEN_URL)
-            : ANTIGRAVITY_TOKEN_URL;
+    const tokenUrl = provider.type === "openai_oauth" ? OPENAI_TOKEN_URL : ANTIGRAVITY_TOKEN_URL;
     if (provider.type === "antigravity_oauth") {
         parameters.set("client_secret", ANTIGRAVITY_CLIENT_SECRET);
     }
