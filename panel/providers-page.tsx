@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, For, onSettled, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import {
     type OAuthFlowType,
     oauthFlowForProviderType,
@@ -10,6 +10,7 @@ import { errorMessage, type PanelApiClient } from "./api-client";
 import { panelConfig } from "./config";
 import { protocolLabel, providerTypeLabel } from "./labels";
 import { OAuthFlowDialog, type OAuthFlowLaunch } from "./oauth-flow-dialog";
+import { createPageState } from "./page-state";
 import { ProviderEditorDialog } from "./provider-editor-dialog";
 import {
     buttonPrimaryClasses,
@@ -93,8 +94,6 @@ const expiryToneClasses: Record<"good" | "neutral" | "warning", string> = {
 
 export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
     const [providers, setProviders] = createSignal<ProviderSummary[]>([]);
-    const [isLoading, setIsLoading] = createSignal(true);
-    const [error, setError] = createSignal<string | null>(null);
     const [success, setSuccess] = createSignal<string | null>(null);
     const [busyProviderName, setBusyProviderName] = createSignal<string | null>(null);
 
@@ -103,29 +102,15 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
 
     const [oauthLaunch, setOAuthLaunch] = createSignal<OAuthFlowLaunch | null>(null);
 
-    const providerCount = createMemo(() => providers().length);
-
     async function loadProviders(): Promise<ProviderSummary[]> {
         const loadedProviders = await props.client.listProviders();
         setProviders(loadedProviders);
         return loadedProviders;
     }
 
-    async function initialLoad(): Promise<void> {
-        setIsLoading(true);
-        setError(null);
-        try {
-            await loadProviders();
-        } catch (caughtError) {
-            setError(errorMessage(caughtError));
-        } finally {
-            setIsLoading(false);
-        }
-    }
+    const { isLoading, error, setError } = createPageState(loadProviders);
 
-    onSettled(() => {
-        void initialLoad();
-    });
+    const providerCount = createMemo(() => providers().length);
 
     function openCompatibleCreator(): void {
         setEditingProvider(null);

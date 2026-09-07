@@ -1,8 +1,9 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, For, onSettled, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import type { ModelSummary, ProviderSummary } from "/common/domain";
 import { errorMessage, type PanelApiClient } from "./api-client";
 import { ModelEditorForm } from "./model-editor-form";
+import { createPageState } from "./page-state";
 import {
     buttonPrimaryClasses,
     dataTableClasses,
@@ -34,8 +35,6 @@ function modelKey(model: ModelSummary): string {
 export function ModelsPage(props: ModelsPageProps): JSX.Element {
     const [models, setModels] = createSignal<ModelSummary[]>([]);
     const [providers, setProviders] = createSignal<ProviderSummary[]>([]);
-    const [isLoading, setIsLoading] = createSignal(true);
-    const [error, setError] = createSignal<string | null>(null);
     const [success, setSuccess] = createSignal<string | null>(null);
     const [busyModelKey, setBusyModelKey] = createSignal<string | null>(null);
 
@@ -60,26 +59,14 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
         });
     }
 
-    async function initialLoad(): Promise<void> {
-        setIsLoading(true);
-        setError(null);
-        try {
-            const [loadedProviders, loadedModels] = await Promise.all([
-                props.client.listProviders(),
-                props.client.listModels(),
-            ]);
-            setProviders(loadedProviders);
-            setModels(loadedModels);
-            resetEditor();
-        } catch (caughtError) {
-            setError(errorMessage(caughtError));
-        } finally {
-            setIsLoading(false);
-        }
-    }
-
-    onSettled(() => {
-        void initialLoad();
+    const { isLoading, error, setError } = createPageState(async () => {
+        const [loadedProviders, loadedModels] = await Promise.all([
+            props.client.listProviders(),
+            props.client.listModels(),
+        ]);
+        setProviders(loadedProviders);
+        setModels(loadedModels);
+        resetEditor();
     });
 
     async function handleModelSaved(savedModel: { name: string }): Promise<void> {
