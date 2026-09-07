@@ -1,4 +1,5 @@
 import { upstreamResponseTooLargeError, upstreamTimeoutError } from "/common/errors";
+import { MILLISECONDS_PER_SECOND } from "/config";
 import {
     MAX_RESPONSE_BYTES,
     SAFE_UPSTREAM_RESPONSE_HEADERS,
@@ -18,7 +19,7 @@ export function copySafeUpstreamHeaders(source: Headers): Headers {
 /** No upstream bytes arrived for `UPSTREAM_IDLE_TIMEOUT_SECONDS` (§11.2 idle timeout). */
 export class UpstreamIdleTimeoutError extends Error {
     public constructor() {
-        super("upstream idle timeout");
+        super("No upstream bytes arrived within the idle timeout");
         this.name = "UpstreamIdleTimeoutError";
     }
 }
@@ -33,9 +34,13 @@ export async function readBeforeIdleTimeout(
             reader.read(),
             new Promise<never>((_resolve, reject) => {
                 timeout = setTimeout(() => {
-                    abortController.abort("upstream idle timeout");
-                    reject(new UpstreamIdleTimeoutError());
-                }, UPSTREAM_IDLE_TIMEOUT_SECONDS * 1_000);
+                    // A single typed instance is both the abort reason seen by the upstream fetch
+                    // and the rejection seen by the caller: the one signaling mechanism for the
+                    // idle timeout (§11.2). There is deliberately no string sentinel.
+                    const error = new UpstreamIdleTimeoutError();
+                    abortController.abort(error);
+                    reject(error);
+                }, UPSTREAM_IDLE_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND);
             }),
         ]);
     } finally {
@@ -58,7 +63,7 @@ export async function relayNativeStreamingResponse(
     try {
         firstRead = await readBeforeIdleTimeout(reader, abortController);
     } catch {
-        await reader.cancel("upstream idle timeout");
+        await reader.cancel(new UpstreamIdleTimeoutError());
         throw upstreamTimeoutError();
     }
 

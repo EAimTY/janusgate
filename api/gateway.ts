@@ -14,6 +14,7 @@ import {
     upstreamTimeoutError,
 } from "/common/errors";
 import { isJsonObject } from "/common/validation";
+import { MILLISECONDS_PER_SECOND } from "/config";
 import { ensureFreshProviderAccess, type OAuthCredentials } from "/providers/access";
 import { TranslationError } from "/translation/errors";
 import {
@@ -105,8 +106,8 @@ async function fetchUpstreamWithIdleTimeout(
     fetchUpstream: typeof fetch,
 ): Promise<Response> {
     const timeout = setTimeout(
-        () => abortController.abort("upstream idle timeout"),
-        UPSTREAM_IDLE_TIMEOUT_SECONDS * 1_000,
+        () => abortController.abort(new UpstreamIdleTimeoutError()),
+        UPSTREAM_IDLE_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND,
     );
     try {
         return await fetchUpstream(request.url, {
@@ -116,7 +117,9 @@ async function fetchUpstreamWithIdleTimeout(
             signal: abortController.signal,
         });
     } catch (error) {
-        if (abortController.signal.reason === "upstream idle timeout") {
+        // The only abort carrying the typed error as its reason is the idle timeout above; the
+        // fetch rejects with that same reason (§11.2: idle timeout → 504 upstream_timeout).
+        if (abortController.signal.reason instanceof UpstreamIdleTimeoutError) {
             throw upstreamTimeoutError();
         }
         // A disconnected client aborted the upstream on purpose; there is nobody left to answer.
