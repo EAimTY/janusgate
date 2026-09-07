@@ -27,7 +27,12 @@ interface ProviderEditorDialogProps {
     /** `null` opens the API-key creation form; a provider opens its edit form. */
     editingProvider: Provider | null;
     onClose: () => void;
-    /** Reloads the list, records the outcome, and closes the dialog. */
+    /**
+     * Page-owned post-save continuation: closes the dialog, reloads the list, records the
+     * outcome, and reports any reload failure at page level. Must not reject — the dialog
+     * intentionally neither awaits it inside its try/catch nor catches after it, because the
+     * page unmounts this dialog before that work runs.
+     */
     onSaved: (providerName: string, isCreation: boolean) => Promise<void>;
 }
 
@@ -50,8 +55,8 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
         const isCreation = editingProvider === null;
         setIsSavingEditor(true);
         setEditorError(null);
+        let savedName: string;
         try {
-            let savedName: string;
             if (editingProvider === null || editingProvider.type === "openai_compatible") {
                 const input = {
                     name: editorName().trim(),
@@ -78,12 +83,16 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
                     modelPrefix: editorPrefix(),
                 });
             }
-            await props.onSaved(savedName, isCreation);
         } catch (caughtError) {
             setEditorError(errorMessage(caughtError));
-        } finally {
             setIsSavingEditor(false);
+            return;
         }
+        // The catch above covers the save call only. The page closes this dialog before its
+        // continuation runs, so any error from that continuation must surface on the page,
+        // never here on an unmounted component (`onSaved` must not reject; see its contract).
+        setIsSavingEditor(false);
+        void props.onSaved(savedName, isCreation);
     }
 
     return (

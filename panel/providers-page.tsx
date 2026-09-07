@@ -163,10 +163,16 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
     }
 
     async function handleProviderSaved(providerName: string, isCreation: boolean): Promise<void> {
+        // Closing the dialog unmounts it, so every failure from here on must be reported at
+        // page level; the dialog's error state is unreachable past this point.
         setIsEditorOpen(false);
-        await loadProviders();
-        setSuccess(`${providerName} saved.`);
-        if (isCreation) await discover(providerName);
+        try {
+            await loadProviders();
+            setSuccess(`${providerName} saved.`);
+            if (isCreation) await discover(providerName);
+        } catch (caughtError) {
+            setError(errorMessage(caughtError));
+        }
     }
 
     async function handleOAuthCompleted(flow: OAuthFlowLaunch): Promise<void> {
