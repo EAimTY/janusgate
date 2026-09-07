@@ -6,6 +6,12 @@ import { PanelApiError } from "./errors";
  * the implied JSON schema; field content is never validated).
  */
 
+/**
+ * Reads an upstream response body without a size bound. This is a deliberate asymmetry with the
+ * gateway's `readBoundedJsonObject` in api/http.ts: gateway request bodies arrive from untrusted
+ * clients and are bounded for abuse resistance, while panel upstreams are admin-configured,
+ * trusted configuration endpoints whose responses need no bound.
+ */
 export async function readJsonObjectResponse(
     response: Response,
     context: string,

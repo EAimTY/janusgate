@@ -14,6 +14,7 @@ import { ANTIGRAVITY_FETCH_MODELS_URL, antigravityRequestHeaders } from "/provid
 import { OPENAI_CODEX_MODELS } from "/providers/openai";
 import type { DiscoveryResult } from "./domain";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
+import { readJsonObjectResponse } from "./upstream-json";
 
 /** Columns for whole-model reads; kept beside the discovery reconcile, their only consumer. */
 const MODEL_COLUMNS = `
@@ -71,8 +72,8 @@ async function ensureDiscoveryProviderAccess(
     }
 }
 
-function parseCompatibleModelList(value: unknown): string[] {
-    if (!isJsonObject(value) || !Array.isArray(value["data"])) {
+function parseCompatibleModelList(value: Record<string, unknown>): string[] {
+    if (!Array.isArray(value["data"])) {
         throw upstreamDiscoveryError("The upstream returned an invalid model list");
     }
     const modelNames: string[] = [];
@@ -88,8 +89,8 @@ function parseCompatibleModelList(value: unknown): string[] {
 }
 
 /** Gemini ListModels entries carry a `models/`-prefixed name; only chat-capable models apply. */
-function parseGeminiModelList(value: unknown): string[] {
-    if (!isJsonObject(value) || !Array.isArray(value["models"])) {
+function parseGeminiModelList(value: Record<string, unknown>): string[] {
+    if (!Array.isArray(value["models"])) {
         throw upstreamDiscoveryError("The upstream returned an invalid model list");
     }
     const modelNames: string[] = [];
@@ -159,18 +160,8 @@ async function fetchAntigravityModelNames(
         );
     }
     if (response === undefined) throw new Error("Antigravity discovery made no request");
-    if (!response.ok) {
-        throw upstreamDiscoveryError(
-            `The Antigravity model discovery request failed with HTTP ${response.status}`,
-        );
-    }
-    let value: unknown;
-    try {
-        value = await response.json();
-    } catch {
-        throw upstreamDiscoveryError("Antigravity returned an invalid model list");
-    }
-    if (!isJsonObject(value) || !isJsonObject(value["models"])) {
+    const value = await readJsonObjectResponse(response, "The Antigravity model discovery request");
+    if (!isJsonObject(value["models"])) {
         throw upstreamDiscoveryError("Antigravity returned an invalid model list");
     }
     const modelNames = Object.entries(value["models"])
@@ -225,17 +216,7 @@ async function fetchCompatibleModelNames(
     } catch {
         throw upstreamDiscoveryError("The upstream model discovery request failed");
     }
-    if (!response.ok) {
-        throw upstreamDiscoveryError(
-            `The upstream model discovery request failed with HTTP ${response.status}`,
-        );
-    }
-    let value: unknown;
-    try {
-        value = await response.json();
-    } catch {
-        throw upstreamDiscoveryError("The upstream returned an invalid model list");
-    }
+    const value = await readJsonObjectResponse(response, "The upstream model discovery request");
     return isGemini ? parseGeminiModelList(value) : parseCompatibleModelList(value);
 }
 
