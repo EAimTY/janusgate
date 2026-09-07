@@ -1,48 +1,81 @@
 import type { JSX } from "@solidjs/web";
 import { Portal } from "@solidjs/web";
-import type { ParentComponent } from "solid-js";
+import { onSettled, type ParentComponent } from "solid-js";
 
 interface DialogProps {
     title: string;
     description?: string;
+    /**
+     * While busy, dismissal is suppressed: the close button is disabled and Escape is inert, so
+     * an in-flight save cannot be abandoned half-applied.
+     */
     isBusy?: boolean;
     onClose: () => void;
 }
 
 /** Modal dialog shell. Callers govern mounting (e.g. via `<Show>`); there is no open/closed prop. */
-export const Dialog: ParentComponent<DialogProps> = (props): JSX.Element => (
-    <Portal>
-        <div class="fixed inset-0 z-100 grid place-items-center overflow-y-auto bg-[#080e0ba6] p-5 font-sans text-[#18211d] backdrop-blur-[5px] [&_button]:focus-visible:outline-3 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-[#29a66f]/25 [&_a]:focus-visible:outline-3 [&_a]:focus-visible:outline-offset-2 [&_a]:focus-visible:outline-[#29a66f]/25 [&_button:disabled]:cursor-not-allowed [&_button:disabled]:opacity-[.58] max-[540px]:place-items-end max-[540px]:p-0">
-            <section
-                class="max-h-[calc(100vh-40px)] w-full max-w-[590px] overflow-y-auto rounded-[18px] border border-white/40 bg-white shadow-[0_30px_90px_rgb(0_0_0/30%)] max-[540px]:max-h-[95vh] max-[540px]:max-w-none max-[540px]:rounded-b-none"
-                role="dialog"
-                aria-modal="true"
-                aria-label={props.title}
-            >
-                <header class="flex items-start justify-between gap-5 border-b border-[#dbe2dc] px-6 pt-[22px] pb-[18px]">
-                    <div>
-                        <h2 class="mb-[3px] text-xl font-[760] tracking-[-0.02em] text-[#18211d]">
-                            {props.title}
-                        </h2>
-                        {props.description === undefined ? null : (
-                            <p class="mt-1.5 text-xs text-[#66726b]">{props.description}</p>
-                        )}
-                    </div>
-                    <button
-                        class="grid size-[31px] shrink-0 place-items-center rounded-lg border-0 bg-[#f0f3f1] p-0 text-xl text-[#637068] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[#29a66f]/25 disabled:cursor-not-allowed disabled:opacity-60"
-                        type="button"
-                        aria-label="Close dialog"
-                        disabled={props.isBusy}
-                        onClick={props.onClose}
-                    >
-                        ×
-                    </button>
-                </header>
-                {props.children}
-            </section>
-        </div>
-    </Portal>
-);
+export const Dialog: ParentComponent<DialogProps> = (props): JSX.Element => {
+    let dialogSection: HTMLElement | undefined;
+    let previouslyFocusedElement: Element | null = null;
+
+    // Keyboard focus lives with the dialog from open to close: after the first stable render the
+    // section (tabindex="-1") takes focus, and disposal restores focus to the element focused at
+    // mount. `onSettled`'s returned cleanup runs on owner disposal, which `<Show>` unmounting
+    // triggers exactly on close.
+    onSettled(() => {
+        previouslyFocusedElement = document.activeElement;
+        dialogSection?.focus();
+        return () => {
+            const previouslyFocused = previouslyFocusedElement;
+            // The trigger element may have been removed from the DOM while the dialog was open.
+            if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
+                previouslyFocused.focus();
+            }
+        };
+    });
+
+    return (
+        <Portal>
+            <div class="fixed inset-0 z-100 grid place-items-center overflow-y-auto bg-[#080e0ba6] p-5 font-sans text-[#18211d] backdrop-blur-[5px] [&_button]:focus-visible:outline-3 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-[#29a66f]/25 [&_a]:focus-visible:outline-3 [&_a]:focus-visible:outline-offset-2 [&_a]:focus-visible:outline-[#29a66f]/25 [&_button:disabled]:cursor-not-allowed [&_button:disabled]:opacity-[.58] max-[540px]:place-items-end max-[540px]:p-0">
+                <section
+                    class="max-h-[calc(100vh-40px)] w-full max-w-[590px] overflow-y-auto rounded-[18px] border border-white/40 bg-white shadow-[0_30px_90px_rgb(0_0_0/30%)] max-[540px]:max-h-[95vh] max-[540px]:max-w-none max-[540px]:rounded-b-none"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label={props.title}
+                    tabindex={-1}
+                    ref={dialogSection}
+                    onKeyDown={(event) => {
+                        // Escape mirrors the close button: both are inert while busy.
+                        if (event.key !== "Escape" || props.isBusy === true) return;
+                        event.preventDefault();
+                        props.onClose();
+                    }}
+                >
+                    <header class="flex items-start justify-between gap-5 border-b border-[#dbe2dc] px-6 pt-[22px] pb-[18px]">
+                        <div>
+                            <h2 class="mb-[3px] text-xl font-[760] tracking-[-0.02em] text-[#18211d]">
+                                {props.title}
+                            </h2>
+                            {props.description === undefined ? null : (
+                                <p class="mt-1.5 text-xs text-[#66726b]">{props.description}</p>
+                            )}
+                        </div>
+                        <button
+                            class="grid size-[31px] shrink-0 place-items-center rounded-lg border-0 bg-[#f0f3f1] p-0 text-xl text-[#637068] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[#29a66f]/25 disabled:cursor-not-allowed disabled:opacity-60"
+                            type="button"
+                            aria-label="Close dialog"
+                            disabled={props.isBusy}
+                            onClick={props.onClose}
+                        >
+                            ×
+                        </button>
+                    </header>
+                    {props.children}
+                </section>
+            </div>
+        </Portal>
+    );
+};
 
 interface NoticeProps {
     kind: "error" | "success" | "info";
