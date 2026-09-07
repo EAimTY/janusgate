@@ -669,3 +669,181 @@ test("Responses and Chat Completions translate through the event IR", () => {
         "Responses renderer applies effective effort",
     );
 });
+
+test("Chat Completions streams with null string fields translate without truncation", () => {
+    // OpenAI-shaped upstreams serialize optional string fields as JSON `null` instead of
+    // omitting them: `content` is nullable on every delta (official OpenAPI
+    // ChatCompletionStreamResponseDelta), `reasoning_content` is nullable on thinking
+    // upstreams, and tool-call continuation chunks repeat `"id": null` after the first
+    // chunk of a call. None of these may abort the translated stream.
+    const chunks: unknown[] = [
+        {
+            id: "chat_null",
+            choices: [
+                {
+                    index: 0,
+                    delta: {
+                        role: "assistant",
+                        content: null,
+                    },
+                    finish_reason: null,
+                },
+            ],
+        },
+        {
+            id: "chat_null",
+            choices: [
+                {
+                    index: 0,
+                    delta: {
+                        content: null,
+                        reasoning_content: "checking tools",
+                    },
+                    finish_reason: null,
+                },
+            ],
+        },
+        {
+            id: "chat_null",
+            choices: [
+                {
+                    index: 0,
+                    delta: {
+                        reasoning_content: null,
+                        tool_calls: [
+                            {
+                                index: 0,
+                                id: "call_9",
+                                type: "function",
+                                function: {
+                                    name: "lookup",
+                                    arguments: "",
+                                },
+                            },
+                        ],
+                    },
+                    finish_reason: null,
+                },
+            ],
+        },
+        {
+            id: "chat_null",
+            choices: [
+                {
+                    index: 0,
+                    delta: {
+                        tool_calls: [
+                            {
+                                index: 0,
+                                id: null,
+                                function: {
+                                    name: null,
+                                    arguments: '{"q":1}',
+                                },
+                            },
+                        ],
+                    },
+                    finish_reason: null,
+                },
+            ],
+        },
+        {
+            id: "chat_null",
+            choices: [
+                {
+                    index: 0,
+                    delta: {},
+                    finish_reason: "tool_calls",
+                },
+            ],
+            usage: {
+                prompt_tokens: 2,
+                completion_tokens: 3,
+                total_tokens: 5,
+            },
+        },
+    ];
+    const events = chunks.flatMap((chunk) => parseChatCompletionsStreamEvent(chunk));
+    assertEqual(
+        events,
+        [
+            {
+                type: "message_start",
+            },
+            {
+                type: "reasoning_delta",
+                delta: "checking tools",
+            },
+            {
+                type: "tool_call_start",
+                index: 0,
+                id: "call_9",
+                name: "lookup",
+            },
+            {
+                type: "tool_call_delta",
+                index: 0,
+                delta: '{"q":1}',
+            },
+            {
+                type: "usage",
+                usage: {
+                    inputTokens: 2,
+                    outputTokens: 3,
+                    totalTokens: 5,
+                },
+            },
+            {
+                type: "finish",
+                reason: "tool_calls",
+            },
+        ],
+        "null-valued string fields read as absent and keep the tool call intact",
+    );
+
+    // The stream reader leaves the terminal rule to the SSE framing layer, so the
+    // gateway appends `done` before rendering outward.
+    const renderedEvents = [
+        ...events,
+        {
+            type: "done",
+        } as const,
+    ];
+    const chatFrames = renderChatCompletionsStream(renderedEvents, {
+        id: "chat_out",
+        model: "public-model",
+        created: 40,
+        isUsageIncluded: true,
+    });
+    assert(chatFrames.at(-1) === "data: [DONE]\n\n", "CC stream ends with DONE despite nulls");
+    assert(
+        chatFrames.some((frame) => frame.includes('"id":"call_9"')),
+        "CC stream keeps the tool call id",
+    );
+    assert(
+        chatFrames.some((frame) => frame.includes(JSON.stringify('{"q":1}'))),
+        "CC stream carries complete tool arguments",
+    );
+    assert(
+        chatFrames.some((frame) => frame.includes('"reasoning_content":"checking tools"')),
+        "CC stream keeps reasoning content",
+    );
+    assert(
+        chatFrames.some((frame) => frame.includes('"usage":{"prompt_tokens":2')),
+        "CC stream emits the usage chunk",
+    );
+
+    const responsesFrames = createResponsesStreamRenderer({
+        id: "resp_null",
+        model: "public-model",
+        created: 50,
+    })(renderedEvents);
+    assert(
+        responsesFrames.at(-1)?.startsWith("event: response.completed") === true,
+        "Responses stream completes despite nulls",
+    );
+    assert(
+        responsesFrames.some((frame) => frame.includes(JSON.stringify('{"q":1}'))),
+        "Responses stream carries complete tool arguments",
+    );
+});

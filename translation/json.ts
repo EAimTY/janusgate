@@ -59,8 +59,13 @@ export function expectNonEmptyString(value: unknown, context: string): string {
     return result;
 }
 
+// OpenAI-shaped upstreams legitimately serialize optional string fields as JSON `null`
+// instead of omitting them — e.g. Chat Completions streams `delta.content: null` on
+// tool-call deltas, `reasoning_content: null` on text deltas, and `"id": null` on
+// tool-call argument chunks. For an optional field, `null` and absence carry the same
+// meaning, so both read as `undefined`; required fields stay strict via `expectString`.
 export function optionalString(value: unknown, context: string): string | undefined {
-    return value === undefined ? undefined : expectString(value, context);
+    return value === undefined || value === null ? undefined : expectString(value, context);
 }
 
 export function optionalFiniteNumber(value: unknown, context: string): number | undefined {
