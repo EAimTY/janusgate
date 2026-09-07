@@ -13,7 +13,11 @@ import {
     buttonPrimaryClasses,
     checkboxClasses,
     Dialog,
+    dialogFooterClasses,
+    dialogFormClasses,
+    formCheckboxFieldClasses,
     formControlClasses,
+    formFieldClasses,
     Notice,
 } from "./ui";
 
@@ -92,20 +96,19 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
 
     return (
         <Dialog
-            isOpen
             isBusy={isSavingEditor()}
             title={editingProvider === null ? "Add API-key provider" : "Edit provider"}
             description="Changing a prefix affects only models created or discovered later."
             onClose={props.onClose}
         >
             <form
-                class="grid gap-[17px] px-6 pt-[22px] pb-6 [&>[role]]:mb-0 [&_label>small]:text-[10px] [&_label>small]:leading-[1.4] [&_label>small]:font-[450] [&_label>small]:text-[#7c8880]"
+                class={dialogFormClasses}
                 onSubmit={(event) => void saveEditor(event)}
             >
                 <Show when={editorError() !== null}>
                     <Notice kind="error">{editorError()}</Notice>
                 </Show>
-                <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                <label class={formFieldClasses}>
                     Provider name
                     <input
                         class={formControlClasses}
@@ -121,7 +124,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
                         hyphens.
                     </small>
                 </label>
-                <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                <label class={formFieldClasses}>
                     Model prefix
                     <input
                         class={formControlClasses}
@@ -133,7 +136,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
                     <small>Verbatim prefix; include your own separator. Blank means none.</small>
                 </label>
                 <Show when={isCompatible}>
-                    <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                    <label class={formFieldClasses}>
                         Base URL
                         <input
                             class={formControlClasses}
@@ -144,7 +147,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
                             onInput={(event) => setEditorBaseUrl(event.currentTarget.value)}
                         />
                     </label>
-                    <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                    <label class={formFieldClasses}>
                         Protocol
                         <select
                             class={formControlClasses}
@@ -165,7 +168,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
                             token.
                         </small>
                     </label>
-                    <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                    <label class={formFieldClasses}>
                         API key {editingProvider === null ? "" : "(leave blank to preserve)"}
                         <input
                             class={formControlClasses}
@@ -177,7 +180,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
                         />
                     </label>
                 </Show>
-                <label class="flex items-center gap-[7px] text-xs font-[720] text-[#344038]">
+                <label class={formCheckboxFieldClasses}>
                     <input
                         class={checkboxClasses}
                         type="checkbox"
@@ -186,7 +189,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
                     />
                     Enabled
                 </label>
-                <footer class="flex items-center justify-end gap-[9px] pt-[3px] max-[540px]:flex-col-reverse max-[540px]:items-stretch max-[540px]:[&>button]:w-full">
+                <footer class={dialogFooterClasses}>
                     <button
                         class={buttonGhostClasses}
                         type="button"

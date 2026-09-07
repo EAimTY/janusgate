@@ -5,21 +5,14 @@ import type { ParentComponent } from "solid-js";
 interface DialogProps {
     title: string;
     description?: string;
-    isOpen: boolean;
     isBusy?: boolean;
     onClose: () => void;
 }
 
+/** Modal dialog shell. Callers govern mounting (e.g. via `<Show>`); there is no open/closed prop. */
 export const Dialog: ParentComponent<DialogProps> = (props): JSX.Element => (
     <Portal>
-        <div
-            class={[
-                "fixed inset-0 z-100 grid place-items-center overflow-y-auto bg-[#080e0ba6] p-5 font-sans text-[#18211d] backdrop-blur-[5px] [&_button]:focus-visible:outline-3 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-[#29a66f]/25 [&_a]:focus-visible:outline-3 [&_a]:focus-visible:outline-offset-2 [&_a]:focus-visible:outline-[#29a66f]/25 [&_button:disabled]:cursor-not-allowed [&_button:disabled]:opacity-[.58] max-[540px]:place-items-end max-[540px]:p-0",
-                {
-                    hidden: !props.isOpen,
-                },
-            ]}
-        >
+        <div class="fixed inset-0 z-100 grid place-items-center overflow-y-auto bg-[#080e0ba6] p-5 font-sans text-[#18211d] backdrop-blur-[5px] [&_button]:focus-visible:outline-3 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-[#29a66f]/25 [&_a]:focus-visible:outline-3 [&_a]:focus-visible:outline-offset-2 [&_a]:focus-visible:outline-[#29a66f]/25 [&_button:disabled]:cursor-not-allowed [&_button:disabled]:opacity-[.58] max-[540px]:place-items-end max-[540px]:p-0">
             <section
                 class="max-h-[calc(100vh-40px)] w-full max-w-[590px] overflow-y-auto rounded-[18px] border border-white/40 bg-white shadow-[0_30px_90px_rgb(0_0_0/30%)] max-[540px]:max-h-[95vh] max-[540px]:max-w-none max-[540px]:rounded-b-none"
                 role="dialog"
@@ -106,6 +99,20 @@ export const formControlClasses =
 
 export const checkboxClasses =
     "size-[15px] shrink-0 p-0 accent-[#19784e] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[#29a66f]/25 disabled:cursor-not-allowed disabled:opacity-[.58]";
+
+// Form scaffolding: a field stacks its label text, control, and hint; a checkbox field lays the
+// control out inline with its text. Footers right-align the actions, and the dialog variants add
+// the narrow-viewport stacking.
+export const formFieldClasses = "grid gap-[7px] text-xs font-[720] text-[#344038]";
+export const formCheckboxFieldClasses =
+    "flex items-center gap-[7px] text-xs font-[720] text-[#344038]";
+export const formHintClasses = "text-[10px] leading-[1.4] font-[450] text-[#7c8880]";
+export const formFooterClasses = "flex items-center justify-end gap-[9px] pt-[3px]";
+export const dialogFooterClasses = `${formFooterClasses} max-[540px]:flex-col-reverse max-[540px]:items-stretch max-[540px]:[&>button]:w-full`;
+
+// The `<form>` element inside a `Dialog`: zeroes the Notice margin and styles bare `<small>` hints.
+export const dialogFormClasses =
+    "grid gap-[17px] px-6 pt-[22px] pb-6 [&>[role]]:mb-0 [&_label>small]:text-[10px] [&_label>small]:leading-[1.4] [&_label>small]:font-[450] [&_label>small]:text-[#7c8880]";
 
 export const dataTableClasses =
     "w-full border-collapse text-[13px] [&_th]:border-b [&_th]:border-[#e9edea] [&_th]:bg-[#fbfcfb] [&_th]:px-4 [&_th]:py-[11px] [&_th]:text-[10px] [&_th]:font-extrabold [&_th]:tracking-[0.1em] [&_th]:whitespace-nowrap [&_th]:text-[#78847c] [&_th]:uppercase [&_th:not(:last-child)]:text-left [&_th:last-child]:text-right [&_td]:max-w-[310px] [&_td]:border-b [&_td]:border-[#edf0ee] [&_td]:px-4 [&_td]:py-[15px] [&_td]:align-middle [&_td]:text-[#3c4841] [&_tbody_tr:last-child_td]:border-b-0 [&_tbody_tr:hover_td]:bg-[#fcfdfc]";

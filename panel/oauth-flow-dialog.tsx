@@ -7,9 +7,23 @@ import {
     PROVIDER_NAME_MAX_LENGTH,
     PROVIDER_NAME_PATTERN,
 } from "/config";
+import { OAUTH_STATE_TTL_SECONDS } from "/panel-api/config";
 import type { CompleteOAuthInput } from "/panel-api/input";
 import { errorMessage, type PanelApiClient } from "./api-client";
-import { buttonPrimaryClasses, checkboxClasses, Dialog, formControlClasses, Notice } from "./ui";
+import {
+    buttonPrimaryClasses,
+    checkboxClasses,
+    Dialog,
+    dialogFooterClasses,
+    dialogFormClasses,
+    formCheckboxFieldClasses,
+    formControlClasses,
+    formFieldClasses,
+    Notice,
+} from "./ui";
+
+// Derive the prose figure from the configured TTL (§8.1) so the label cannot drift from config.
+const oauthStateTtlMinutes = OAUTH_STATE_TTL_SECONDS / 60;
 
 export interface OAuthFlowLaunch {
     type: OAuthFlowType;
@@ -97,14 +111,13 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
 
     return (
         <Dialog
-            isOpen
             isBusy={isCompletingOAuth()}
             title={props.launch.providerName === null ? "Connect OAuth provider" : "Reauthenticate"}
             description="Authorize in the new tab, then paste the full loopback redirect URL below."
             onClose={props.onClose}
         >
             <form
-                class="grid gap-[17px] px-6 pt-[22px] pb-6 [&>[role]]:mb-0 [&_label>small]:text-[10px] [&_label>small]:leading-[1.4] [&_label>small]:font-[450] [&_label>small]:text-[#7c8880]"
+                class={dialogFormClasses}
                 onSubmit={(event) => void completeOAuth(event)}
             >
                 <Show when={oauthError() !== null}>
@@ -124,7 +137,7 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
                     </a>
                 </Show>
                 <Show when={props.launch.providerName === null}>
-                    <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                    <label class={formFieldClasses}>
                         Provider name (optional)
                         <input
                             class={formControlClasses}
@@ -135,7 +148,7 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
                             onInput={(event) => setOAuthName(event.currentTarget.value)}
                         />
                     </label>
-                    <label class="flex items-center gap-[7px] text-xs font-[720] text-[#344038]">
+                    <label class={formCheckboxFieldClasses}>
                         <input
                             class={checkboxClasses}
                             type="checkbox"
@@ -146,7 +159,7 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
                         />
                         Set a custom model prefix
                     </label>
-                    <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                    <label class={formFieldClasses}>
                         Model prefix
                         <input
                             class={formControlClasses}
@@ -164,7 +177,7 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
                     </label>
                 </Show>
                 <Show when={props.launch.type === "antigravity"}>
-                    <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                    <label class={formFieldClasses}>
                         Google Cloud project ID (optional)
                         <input
                             class={formControlClasses}
@@ -178,7 +191,7 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
                         </small>
                     </label>
                 </Show>
-                <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                <label class={formFieldClasses}>
                     Full redirect URL
                     <textarea
                         class={`${formControlClasses} resize-y`}
@@ -190,11 +203,11 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
                         onInput={(event) => setOAuthRedirectUrl(event.currentTarget.value)}
                     />
                 </label>
-                <footer class="flex items-center justify-end gap-[9px] pt-[3px] max-[540px]:flex-col-reverse max-[540px]:items-stretch max-[540px]:[&>button]:w-full">
+                <footer class={dialogFooterClasses}>
                     <span class="mr-auto text-[10px] text-[#818c85] max-[540px]:m-0 max-[540px]:text-center">
                         {isStartingOAuth()
                             ? "Preparing authorization…"
-                            : "OAuth state expires in 15 minutes."}
+                            : `OAuth state expires in ${oauthStateTtlMinutes} minutes.`}
                     </span>
                     <button
                         class={buttonPrimaryClasses}

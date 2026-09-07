@@ -17,11 +17,6 @@ import type { DiscoveryResult } from "/panel-api/domain";
 import type { CompleteOAuthInput, SaveModelInput, StartOAuthInput } from "/panel-api/input";
 import { panelConfig } from "./config";
 
-// The two remaining aliases serve the SPA's shared vocabulary; every wire type itself is
-// imported from its single server-side home (/common/domain, /panel-api/input, /panel-api/domain).
-export type Provider = ProviderSummary;
-export type Model = ModelSummary;
-
 interface SaveCompatibleProviderInput {
     name: string;
     protocol: UpstreamProtocol;
@@ -127,7 +122,7 @@ function readThinkingLevels(value: unknown): readonly ThinkingLevel[] | null {
     }
 }
 
-function parseProvider(value: unknown): Provider {
+function parseProvider(value: unknown): ProviderSummary {
     const record = readRecord(value, "provider");
     try {
         // The discriminated-union invariant is assembled by the one shared enforcement point,
@@ -147,7 +142,7 @@ function parseProvider(value: unknown): Provider {
     }
 }
 
-function parseProviders(value: unknown): Provider[] {
+function parseProviders(value: unknown): ProviderSummary[] {
     const record = readRecord(value, "providers response");
     const providers = record["providers"];
     if (!Array.isArray(providers)) {
@@ -156,7 +151,7 @@ function parseProviders(value: unknown): Provider[] {
     return providers.map(parseProvider);
 }
 
-function parseModel(value: unknown): Model {
+function parseModel(value: unknown): ModelSummary {
     const record = readRecord(value, "model");
     return {
         enabled: readBoolean(record, "enabled"),
@@ -169,7 +164,7 @@ function parseModel(value: unknown): Model {
     };
 }
 
-function parseModels(value: unknown): Model[] {
+function parseModels(value: unknown): ModelSummary[] {
     const record = readRecord(value, "models response");
     const models = record["models"];
     if (!Array.isArray(models)) throw new PanelContractError("models must be an array");
@@ -239,7 +234,7 @@ export class PanelApiClient {
         this.#onUnauthorized = onUnauthorized;
     }
 
-    public async probe(token: string): Promise<Provider[]> {
+    public async probe(token: string): Promise<ProviderSummary[]> {
         return this.#requestWithToken(
             panelConfig.panelEndpoints.listProviders,
             "GET",
@@ -249,7 +244,7 @@ export class PanelApiClient {
         );
     }
 
-    public async listProviders(): Promise<Provider[]> {
+    public async listProviders(): Promise<ProviderSummary[]> {
         return this.#request(
             panelConfig.panelEndpoints.listProviders,
             "GET",
@@ -314,7 +309,7 @@ export class PanelApiClient {
         );
     }
 
-    public async listModels(): Promise<Model[]> {
+    public async listModels(): Promise<ModelSummary[]> {
         return this.#request(panelConfig.panelEndpoints.listModels, "GET", undefined, parseModels);
     }
 

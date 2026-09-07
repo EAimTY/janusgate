@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { errorMessage, type Model, type PanelApiClient, type Provider } from "./api-client";
+import type { ModelSummary, ProviderSummary } from "/common/domain";
+import { errorMessage, type PanelApiClient } from "./api-client";
 import { providerTypeLabel } from "./labels";
 import {
     previewModelName,
@@ -12,15 +13,19 @@ import {
     buttonGhostClasses,
     buttonPrimaryClasses,
     checkboxClasses,
+    formCheckboxFieldClasses,
     formControlClasses,
+    formFieldClasses,
+    formFooterClasses,
+    formHintClasses,
     Notice,
 } from "./ui";
 
 interface ModelEditorFormProps {
     client: PanelApiClient;
-    providers: readonly Provider[];
+    providers: readonly ProviderSummary[];
     /** `null` opens the create form; a model prefills its fields for editing. */
-    editingModel: Model | null;
+    editingModel: ModelSummary | null;
     /** Reloads the list, records the outcome, and resets to the create form. */
     onSaved: (savedModel: { name: string }) => Promise<void>;
     onCancelEdit: () => void;
@@ -43,9 +48,7 @@ function ThinkingModeOption(props: {
             />
             <span class="grid gap-0.5">
                 <strong class="text-[11px]">{props.title}</strong>
-                <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
-                    {props.description}
-                </small>
+                <small class={formHintClasses}>{props.description}</small>
             </span>
         </label>
     );
@@ -126,7 +129,7 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                 <Show when={formError() !== null}>
                     <Notice kind="error">{formError()}</Notice>
                 </Show>
-                <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                <label class={formFieldClasses}>
                     Provider
                     <select
                         class={formControlClasses}
@@ -149,14 +152,14 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                             )}
                         </For>
                     </select>
-                    <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
+                    <small class={formHintClasses}>
                         Every provider type is eligible, including OpenAI OAuth.
                         {editingModel === null
                             ? ""
                             : " The provider and upstream name are this model's identity and cannot change."}
                     </small>
                 </label>
-                <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                <label class={formFieldClasses}>
                     Upstream model name
                     <input
                         class={formControlClasses}
@@ -166,11 +169,11 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                         onInput={(event) => setUpstreamName(event.currentTarget.value)}
                         placeholder="gpt-5.4"
                     />
-                    <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
+                    <small class={formHintClasses}>
                         Passed to the selected provider exactly as entered.
                     </small>
                 </label>
-                <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
+                <label class={formFieldClasses}>
                     Public base name (optional)
                     <input
                         class={formControlClasses}
@@ -178,7 +181,7 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                         onInput={(event) => setNameOverride(event.currentTarget.value)}
                         placeholder="Defaults to upstream name"
                     />
-                    <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
+                    <small class={formHintClasses}>
                         Overrides the derived name. Clearing it follows discovery again; a changed
                         name retires the previous one immediately.
                     </small>
@@ -192,11 +195,11 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                             ? publicNamePreview()
                             : "Waiting for an upstream name…"}
                     </code>
-                    <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
+                    <small class={formHintClasses}>
                         Current provider prefix: “{selectedProvider()?.modelPrefix ?? ""}”
                     </small>
                 </div>
-                <label class="flex items-center gap-[7px] text-xs font-[720] text-[#344038]">
+                <label class={formCheckboxFieldClasses}>
                     <input
                         class={checkboxClasses}
                         type="checkbox"
@@ -251,7 +254,7 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                         </For>
                     </div>
                 </fieldset>
-                <footer class="flex items-center justify-end gap-[9px] pt-[3px]">
+                <footer class={formFooterClasses}>
                     <Show when={editingModel !== null}>
                         <button
                             class={buttonGhostClasses}
