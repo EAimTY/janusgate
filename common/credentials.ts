@@ -1,3 +1,4 @@
+import { decodeBase64 } from "/common/base64";
 import type {
     AntigravityOAuthCredentials,
     OpenAiCompatibleCredentials,
@@ -11,24 +12,24 @@ const AES_256_KEY_BYTES = 32;
 const AES_GCM_IV_BYTES = 12;
 const AES_GCM_TAG_BYTES = 16;
 
+/**
+ * Decodes the `CREDENTIALS_AES_KEY` secret: strict standard base64 (canonical
+ * padding, no whitespace, URL-safe alphabet rejected) that must yield exactly the
+ * AES-256 key length.
+ */
 function decodeBase64Key(encodedKey: string): Uint8Array {
-    if (!/^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$/.test(encodedKey)) {
-        throw new ConfigurationError("CREDENTIALS_AES_KEY must be standard base64");
-    }
-
-    let decoded: string;
+    let keyBytes: Uint8Array;
     try {
-        decoded = atob(encodedKey);
+        keyBytes = decodeBase64(encodedKey);
     } catch {
         throw new ConfigurationError("CREDENTIALS_AES_KEY must be standard base64");
     }
-    if (decoded.length !== AES_256_KEY_BYTES) {
+    if (keyBytes.length !== AES_256_KEY_BYTES) {
         throw new ConfigurationError(
             `CREDENTIALS_AES_KEY must decode to exactly ${AES_256_KEY_BYTES} bytes`,
         );
     }
-
-    return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+    return keyBytes;
 }
 
 export class CredentialsCipher {

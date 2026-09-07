@@ -1,3 +1,4 @@
+import { encodeBase64 } from "/common/base64";
 import { TranslationError } from "/translation/errors";
 import type { FinishReason, IrEvent, IrRequest, IrUsage, MessagePart } from "/translation/ir";
 import {
@@ -358,22 +359,6 @@ function decodeDataUrl(payload: string): Uint8Array {
         index += literal.length - 1;
     }
     return new Uint8Array(bytes);
-}
-
-function encodeBase64(bytes: Uint8Array): string {
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let result = "";
-    for (let index = 0; index < bytes.length; index += 3) {
-        const first = bytes[index] ?? 0;
-        const second = bytes[index + 1] ?? 0;
-        const third = bytes[index + 2] ?? 0;
-        result += alphabet[(first >> 2) & 63] ?? "";
-        result += alphabet[((first & 3) << 4) | (second >> 4)] ?? "";
-        result +=
-            index + 1 < bytes.length ? (alphabet[((second & 15) << 2) | (third >> 6)] ?? "") : "=";
-        result += index + 2 < bytes.length ? (alphabet[third & 63] ?? "") : "=";
-    }
-    return result;
 }
 
 interface ParsedGenerateContentPart {

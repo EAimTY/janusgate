@@ -1,3 +1,4 @@
+import { decodeBase64Url, encodeBase64Url } from "/common/base64";
 import type { CredentialsCipher } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
 import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from "/common/domain";
@@ -65,14 +66,8 @@ interface AuthorizationToken {
     readonly idToken?: string;
 }
 
-function base64UrlEncode(bytes: Uint8Array): string {
-    let binary = "";
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-
 function randomBase64Url(): string {
-    return base64UrlEncode(crypto.getRandomValues(new Uint8Array(OAUTH_RANDOM_VALUE_BYTES)));
+    return encodeBase64Url(crypto.getRandomValues(new Uint8Array(OAUTH_RANDOM_VALUE_BYTES)));
 }
 
 function sleepWithSignal(milliseconds: number, signal?: AbortSignal): Promise<void> {
@@ -101,7 +96,7 @@ async function createPkce(): Promise<{
         await crypto.subtle.digest(PKCE_DIGEST_ALGORITHM, new TextEncoder().encode(verifier)),
     );
     return {
-        challenge: base64UrlEncode(digest),
+        challenge: encodeBase64Url(digest),
         verifier,
     };
 }
@@ -237,14 +232,13 @@ async function exchangeAuthorizationCode(
 function decodeJwtPayload(token: string): Record<string, unknown> {
     const parts = token.split(".");
     const payload = parts[1];
-    if (parts.length !== 3 || payload === undefined || !/^[A-Za-z0-9_-]+$/.test(payload)) {
+    if (parts.length !== 3 || payload === undefined) {
         throw new PanelApiError(502, "OpenAI token exchange returned an invalid id_token");
     }
-    const standardBase64 = payload.replaceAll("-", "+").replaceAll("_", "/");
-    const padded = standardBase64.padEnd(Math.ceil(standardBase64.length / 4) * 4, "=");
     try {
-        const binary = atob(padded);
-        const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+        // JWS grammar: `decodeBase64Url` rejects `=` padding and standard-base64
+        // characters, so a non-URL-safe payload fails here instead of decoding.
+        const bytes = decodeBase64Url(payload);
         const decoded = new TextDecoder("utf-8", {
             fatal: true,
             ignoreBOM: false,

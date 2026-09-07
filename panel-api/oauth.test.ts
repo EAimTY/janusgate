@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { encodeBase64Url } from "/common/base64";
 import {
     CredentialsCipher,
     parseAntigravityOAuthCredentials,
@@ -29,22 +30,16 @@ const NOW = 1_700_000_000;
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
 beforeEach(async () => clearTestDatabase(env.DATABASE));
 
-function encodeBase64Url(value: string): string {
-    return btoa(value).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-
 function openAiIdToken(accountId: string): string {
-    return `${encodeBase64Url(
-        JSON.stringify({
-            alg: "none",
-        }),
-    )}.${encodeBase64Url(
-        JSON.stringify({
-            "https://api.openai.com/auth": {
-                chatgpt_account_id: accountId,
-            },
-        }),
-    )}.signature`;
+    const segment = (value: object): string =>
+        encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
+    return `${segment({
+        alg: "none",
+    })}.${segment({
+        "https://api.openai.com/auth": {
+            chatgpt_account_id: accountId,
+        },
+    })}.signature`;
 }
 
 describe("OAuth orchestration", () => {
@@ -79,11 +74,7 @@ describe("OAuth orchestration", () => {
         const verifierDigest = new Uint8Array(
             await crypto.subtle.digest("SHA-256", new TextEncoder().encode(storedState?.verifier)),
         );
-        const challenge = btoa(String.fromCharCode(...verifierDigest))
-            .replaceAll("+", "-")
-            .replaceAll("/", "_")
-            .replace(/=+$/, "");
-        expect(authorize.searchParams.get("code_challenge")).toBe(challenge);
+        expect(authorize.searchParams.get("code_challenge")).toBe(encodeBase64Url(verifierDigest));
 
         const fetchUpstream = vi.fn<typeof fetch>(async (input, init) => {
             expect(String(input)).toBe(OPENAI_TOKEN_URL);
