@@ -162,17 +162,16 @@ export async function updateProvider(
     if (result.meta.changes !== 1) throw new Error("Updated provider is missing");
 }
 
+// The models FK cascades, so one statement removes the provider together with all its models.
+// Existence is checked via RETURNING because meta.changes also counts cascade-deleted models.
 export async function deleteProviderByName(database: D1Database, name: string): Promise<void> {
-    const results = await database.batch([
-        database
-            .prepare(
-                `DELETE FROM models
-                WHERE provider_id = (SELECT id FROM providers WHERE name = ?)`,
-            )
-            .bind(name),
-        database.prepare("DELETE FROM providers WHERE name = ?").bind(name),
-    ]);
-    if (results[1]?.meta.changes !== 1) throw new PanelApiError(404, "Provider not found");
+    const deleted = await database
+        .prepare("DELETE FROM providers WHERE name = ? RETURNING name")
+        .bind(name)
+        .first<{
+            name: string;
+        }>();
+    if (deleted === null) throw new PanelApiError(404, "Provider not found");
 }
 
 export async function generateAvailableProviderName(

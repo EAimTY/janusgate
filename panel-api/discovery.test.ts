@@ -40,8 +40,44 @@ async function insertProvider(
         .run();
 }
 
+async function insertModel(
+    providerName: string,
+    upstreamName: string,
+    name: string,
+    overrides: {
+        nameOverride?: string;
+        enabledOverride?: number;
+    } = {},
+): Promise<void> {
+    await env.DATABASE.prepare(
+        `INSERT INTO models (
+            provider_id, upstream_name, name, name_override, enabled_override,
+            thinking_levels_override
+        ) VALUES (
+            (SELECT id FROM providers WHERE name = ?), ?, ?, ?, ?, NULL
+        )`,
+    )
+        .bind(
+            providerName,
+            upstreamName,
+            name,
+            overrides.nameOverride ?? null,
+            overrides.enabledOverride ?? null,
+        )
+        .run();
+}
+
+function compatibleFetchUpstream(modelIds: readonly string[]): typeof fetch {
+    return async () =>
+        Response.json({
+            data: modelIds.map((id) => ({
+                id,
+            })),
+        });
+}
+
 describe("model discovery", () => {
-    it("authenticates compatible discovery and atomically creates disabled mappings", async () => {
+    it("authenticates compatible discovery and atomically creates enabled unoverridden mappings", async () => {
         const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
         await insertProvider(
             "custom",
@@ -86,28 +122,32 @@ describe("model discovery", () => {
         );
 
         const rows = await env.DATABASE.prepare(
-            `SELECT name, upstream_name, thinking_levels, enabled, is_manually_edited
-            FROM models ORDER BY id`,
+            `SELECT provider_id, upstream_name, name, name_override, enabled_override,
+                thinking_levels_override
+            FROM models ORDER BY upstream_name`,
         ).all<{
-            name: string;
+            provider_id: number;
             upstream_name: string;
-            thinking_levels: string | null;
-            enabled: number;
-            is_manually_edited: number;
+            name: string;
+            name_override: string | null;
+            enabled_override: number | null;
+            thinking_levels_override: string | null;
         }>();
         expect(rows.results).toEqual([
             {
-                enabled: 0,
-                is_manually_edited: 0,
+                enabled_override: null,
                 name: "custom/alpha",
-                thinking_levels: null,
+                name_override: null,
+                provider_id: provider.id,
+                thinking_levels_override: null,
                 upstream_name: "alpha",
             },
             {
-                enabled: 0,
-                is_manually_edited: 0,
+                enabled_override: null,
                 name: "custom/beta",
-                thinking_levels: null,
+                name_override: null,
+                provider_id: provider.id,
+                thinking_levels_override: null,
                 upstream_name: "beta",
             },
         ]);
@@ -120,9 +160,12 @@ describe("model discovery", () => {
             removed: 0,
             skipped: 2,
         });
+        await expect(
+            env.DATABASE.prepare("SELECT COUNT(*) AS count FROM models").first("count"),
+        ).resolves.toBe(2);
     });
 
-    it("matches by provider and upstream name while pruning only untouched stale models", async () => {
+    it("reconciles by identity: prunes unoverridden stale rows and keeps overridden rows", async () => {
         const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
         await insertProvider(
             "custom",
@@ -134,38 +177,40 @@ describe("model discovery", () => {
         const provider = await findProviderByName(env.DATABASE, "custom");
         if (provider === null) throw new Error("provider missing");
 
-        let discoveredNames = [
-            "alpha",
-            "beta",
-            "gamma",
-        ];
-        const fetchUpstream: typeof fetch = async () =>
-            Response.json({
-                data: discoveredNames.map((id) => ({
-                    id,
-                })),
-            });
-        await discoverProviderModels(env.DATABASE, provider, cipher, fetchUpstream);
+        await discoverProviderModels(
+            env.DATABASE,
+            provider,
+            cipher,
+            compatibleFetchUpstream([
+                "alpha",
+                "beta",
+                "gamma",
+            ]),
+        );
+        // alpha is renamed and beta is disabled; both overrides shield the rows from pruning.
         await env.DATABASE.prepare(
-            `UPDATE models SET name = 'custom/renamed-alpha', is_manually_edited = 1
+            `UPDATE models SET name = 'custom/renamed-alpha', name_override = 'renamed-alpha'
             WHERE provider_id = ? AND upstream_name = 'alpha'`,
         )
             .bind(provider.id)
             .run();
         await env.DATABASE.prepare(
-            `UPDATE models SET enabled = 1, is_manually_edited = 1
-            WHERE provider_id = ? AND upstream_name = 'beta'`,
+            "UPDATE models SET enabled_override = 0 WHERE provider_id = ? AND upstream_name = 'beta'",
         )
             .bind(provider.id)
             .run();
 
-        discoveredNames = [
-            "alpha",
-            "beta",
-            "delta",
-        ];
         await expect(
-            discoverProviderModels(env.DATABASE, provider, cipher, fetchUpstream),
+            discoverProviderModels(
+                env.DATABASE,
+                provider,
+                cipher,
+                compatibleFetchUpstream([
+                    "alpha",
+                    "beta",
+                    "delta",
+                ]),
+            ),
         ).resolves.toEqual({
             total: 3,
             created: 1,
@@ -173,37 +218,47 @@ describe("model discovery", () => {
             skipped: 2,
         });
         const rows = await env.DATABASE.prepare(
-            `SELECT name, upstream_name, enabled, is_manually_edited
+            `SELECT upstream_name, name, name_override, enabled_override
             FROM models WHERE provider_id = ? ORDER BY upstream_name`,
         )
             .bind(provider.id)
-            .all();
+            .all<{
+                upstream_name: string;
+                name: string;
+                name_override: string | null;
+                enabled_override: number | null;
+            }>();
         expect(rows.results).toEqual([
             {
-                enabled: 0,
-                is_manually_edited: 1,
+                enabled_override: null,
                 name: "custom/renamed-alpha",
+                name_override: "renamed-alpha",
                 upstream_name: "alpha",
             },
             {
-                enabled: 1,
-                is_manually_edited: 1,
+                enabled_override: 0,
                 name: "custom/beta",
+                name_override: null,
                 upstream_name: "beta",
             },
             {
-                enabled: 0,
-                is_manually_edited: 0,
+                enabled_override: null,
                 name: "custom/delta",
+                name_override: null,
                 upstream_name: "delta",
             },
         ]);
 
-        discoveredNames = [
-            "delta",
-        ];
+        // Only overridden rows survive the disappearance of their upstream models.
         await expect(
-            discoverProviderModels(env.DATABASE, provider, cipher, fetchUpstream),
+            discoverProviderModels(
+                env.DATABASE,
+                provider,
+                cipher,
+                compatibleFetchUpstream([
+                    "delta",
+                ]),
+            ),
         ).resolves.toEqual({
             total: 1,
             created: 0,
@@ -213,6 +268,128 @@ describe("model discovery", () => {
         await expect(
             env.DATABASE.prepare("SELECT COUNT(*) AS count FROM models").first("count"),
         ).resolves.toBe(3);
+    });
+
+    it("re-derives unoverridden names from the current prefix and skips occupied names", async () => {
+        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        await insertProvider(
+            "custom",
+            "openai_compatible",
+            await cipher.encrypt({
+                apiKey: "key",
+            }),
+        );
+        const provider = await findProviderByName(env.DATABASE, "custom");
+        if (provider === null) throw new Error("provider missing");
+
+        await discoverProviderModels(
+            env.DATABASE,
+            provider,
+            cipher,
+            compatibleFetchUpstream([
+                "alpha",
+                "beta",
+            ]),
+        );
+        // Another provider's mapping occupies the name the new prefix would derive for alpha.
+        await insertProvider(
+            "blocker",
+            "openai_compatible",
+            await cipher.encrypt({
+                apiKey: "key",
+            }),
+        );
+        await insertModel("blocker", "unrelated", "x/alpha");
+        await env.DATABASE.prepare(
+            "UPDATE providers SET model_prefix = 'x/' WHERE name = 'custom'",
+        ).run();
+        const rederivedProvider = await findProviderByName(env.DATABASE, "custom");
+        if (rederivedProvider === null) throw new Error("provider missing");
+
+        await expect(
+            discoverProviderModels(
+                env.DATABASE,
+                rederivedProvider,
+                cipher,
+                compatibleFetchUpstream([
+                    "alpha",
+                    "beta",
+                ]),
+            ),
+        ).resolves.toEqual({
+            total: 2,
+            created: 0,
+            removed: 0,
+            skipped: 2,
+        });
+        const rows = await env.DATABASE.prepare(
+            "SELECT upstream_name, name FROM models WHERE provider_id = ? ORDER BY upstream_name",
+        )
+            .bind(provider.id)
+            .all<{
+                upstream_name: string;
+                name: string;
+            }>();
+        // The occupied rename is skipped; the free one propagates.
+        expect(rows.results).toEqual([
+            {
+                name: "custom/alpha",
+                upstream_name: "alpha",
+            },
+            {
+                name: "x/beta",
+                upstream_name: "beta",
+            },
+        ]);
+    });
+
+    it("skips creating a model whose derived name is already occupied", async () => {
+        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        await insertProvider(
+            "custom",
+            "openai_compatible",
+            await cipher.encrypt({
+                apiKey: "key",
+            }),
+        );
+        const provider = await findProviderByName(env.DATABASE, "custom");
+        if (provider === null) throw new Error("provider missing");
+        await insertProvider(
+            "blocker",
+            "openai_compatible",
+            await cipher.encrypt({
+                apiKey: "key",
+            }),
+        );
+        await insertModel("blocker", "unrelated", "custom/alpha");
+
+        await expect(
+            discoverProviderModels(
+                env.DATABASE,
+                provider,
+                cipher,
+                compatibleFetchUpstream([
+                    "alpha",
+                    "beta",
+                ]),
+            ),
+        ).resolves.toEqual({
+            total: 2,
+            created: 1,
+            removed: 0,
+            skipped: 1,
+        });
+        const names = await env.DATABASE.prepare("SELECT name FROM models ORDER BY name").all<{
+            name: string;
+        }>();
+        expect(names.results).toEqual([
+            {
+                name: "custom/alpha",
+            },
+            {
+                name: "custom/beta",
+            },
+        ]);
     });
 
     it("rejects duplicate upstream IDs before changing the database", async () => {

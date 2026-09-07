@@ -4,7 +4,6 @@ import type { ThinkingLevel } from "/config";
 import { MODEL_OWNER_BY_PROVIDER_TYPE } from "./config";
 
 export interface ResolvedModelRoute {
-    id: number;
     name: string;
     upstreamName: string;
     thinkingLevels: readonly ThinkingLevel[] | null;
@@ -12,14 +11,12 @@ export interface ResolvedModelRoute {
 }
 
 interface ModelRouteRow extends ProviderRow {
-    model_id: number;
     model_name: string;
     upstream_name: string;
-    thinking_levels: string | null;
+    thinking_levels_override: string | null;
 }
 
 interface PublicModelRow {
-    id: number;
     name: string;
     provider_type: StoredProvider["type"];
 }
@@ -31,10 +28,9 @@ export async function resolveEnabledModel(
     const row = await database
         .prepare(
             `SELECT
-                models.id AS model_id,
                 models.name AS model_name,
                 models.upstream_name,
-                models.thinking_levels,
+                models.thinking_levels_override,
                 providers.id,
                 providers.name,
                 providers.model_prefix,
@@ -47,16 +43,16 @@ export async function resolveEnabledModel(
                 providers.enabled
             FROM models
             INNER JOIN providers ON providers.id = models.provider_id
-            WHERE models.name = ? AND models.enabled = 1 AND providers.enabled = 1`,
+            WHERE models.name = ?
+                AND COALESCE(models.enabled_override, 1) = 1 AND providers.enabled = 1`,
         )
         .bind(modelName)
         .first<ModelRouteRow>();
     if (row === null) return null;
     return {
-        id: row.model_id,
         name: row.model_name,
         provider: mapProviderRow(row),
-        thinkingLevels: parseStoredThinkingLevels(row.thinking_levels),
+        thinkingLevels: parseStoredThinkingLevels(row.thinking_levels_override),
         upstreamName: row.upstream_name,
     };
 }
@@ -72,11 +68,11 @@ export async function listEnabledPublicModels(database: D1Database): Promise<{
 }> {
     const result = await database
         .prepare(
-            `SELECT models.id, models.name, providers.type AS provider_type
+            `SELECT models.name, providers.type AS provider_type
             FROM models
             INNER JOIN providers ON providers.id = models.provider_id
-            WHERE models.enabled = 1 AND providers.enabled = 1
-            ORDER BY models.id`,
+            WHERE COALESCE(models.enabled_override, 1) = 1 AND providers.enabled = 1
+            ORDER BY models.name`,
         )
         .all<PublicModelRow>();
     return {

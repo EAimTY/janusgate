@@ -1,6 +1,6 @@
-import { MODEL_COLUMNS, type ModelRow, mapModelRow, type StoredModel } from "/common/database";
+import { isModelEnabled, type ModelRow, mapModelRow } from "/common/database";
 import type { ModelSummary } from "/common/domain";
-import { parseStoredThinkingLevels } from "/common/validation";
+import { composeModelName, parseStoredThinkingLevels } from "/common/validation";
 import type { ThinkingLevel } from "/config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 
@@ -9,117 +9,105 @@ interface PanelModelRow extends ModelRow {
     provider_type: ModelSummary["providerType"];
 }
 
-interface SaveModelRecord {
-    id?: number;
-    name: string;
+/** Admin-controlled deviations from the discovery result; `null` keeps following discovery. */
+interface ModelOverrideRecord {
+    nameOverride: string | null;
+    enabledOverride: boolean | null;
+    thinkingLevelsOverride: readonly ThinkingLevel[] | null;
+}
+
+export interface UpsertModelRecord extends ModelOverrideRecord {
     providerId: number;
+    modelPrefix: string;
     upstreamName: string;
-    thinkingLevels: readonly ThinkingLevel[] | null;
-    isEnabled: boolean;
+}
+
+function composeStoredModelName(
+    modelPrefix: string,
+    upstreamName: string,
+    nameOverride: string | null,
+): string {
+    return composeModelName(modelPrefix, nameOverride ?? upstreamName);
 }
 
 export async function listPanelModels(database: D1Database): Promise<ModelSummary[]> {
     const result = await database
         .prepare(
             `SELECT
-                models.id,
-                models.name,
                 models.provider_id,
                 models.upstream_name,
-                models.thinking_levels,
-                models.enabled,
-                models.is_manually_edited,
+                models.name,
+                models.name_override,
+                models.enabled_override,
+                models.thinking_levels_override,
                 providers.name AS provider_name,
                 providers.type AS provider_type
             FROM models
             INNER JOIN providers ON providers.id = models.provider_id
-            ORDER BY models.id`,
+            ORDER BY models.name`,
         )
         .all<PanelModelRow>();
     return result.results.map((row) => {
         const model = mapModelRow(row);
         return {
-            id: model.id,
-            enabled: model.isEnabled,
+            enabled: isModelEnabled(model),
             name: model.name,
+            nameOverride: model.nameOverride,
             providerName: row.provider_name,
             providerType: row.provider_type,
-            thinkingLevels: parseStoredThinkingLevels(model.thinkingLevelsJson),
+            thinkingLevels: parseStoredThinkingLevels(model.thinkingLevelsOverrideJson),
             upstreamName: model.upstreamName,
         };
     });
 }
 
-export async function findModelById(database: D1Database, id: number): Promise<StoredModel | null> {
-    const row = await database
-        .prepare(`SELECT ${MODEL_COLUMNS} FROM models WHERE id = ?`)
-        .bind(id)
-        .first<ModelRow>();
-    return row === null ? null : mapModelRow(row);
-}
-
-export async function saveModel(
-    database: D1Database,
-    model: SaveModelRecord,
-): Promise<{
-    id: number;
-    name: string;
-}> {
-    const thinkingLevelsJson =
-        model.thinkingLevels === null ? null : JSON.stringify(model.thinkingLevels);
+/**
+ * Writes the complete override set for the model identity `(providerId, upstreamName)`, creating
+ * the row when absent. Returns the stored public name.
+ */
+export async function upsertModel(database: D1Database, model: UpsertModelRecord): Promise<string> {
+    const name = composeStoredModelName(model.modelPrefix, model.upstreamName, model.nameOverride);
+    const thinkingLevelsOverrideJson =
+        model.thinkingLevelsOverride === null ? null : JSON.stringify(model.thinkingLevelsOverride);
     try {
-        if (model.id === undefined) {
-            const result = await database
-                .prepare(
-                    `INSERT INTO models (
-                        name, provider_id, upstream_name, thinking_levels, enabled,
-                        is_manually_edited
-                    ) VALUES (?, ?, ?, ?, ?, 1)`,
-                )
-                .bind(
-                    model.name,
-                    model.providerId,
-                    model.upstreamName,
-                    thinkingLevelsJson,
-                    model.isEnabled ? 1 : 0,
-                )
-                .run();
-            return {
-                id: result.meta.last_row_id,
-                name: model.name,
-            };
-        }
-
-        const result = await database
+        await database
             .prepare(
-                `UPDATE models SET
-                    name = ?, provider_id = ?, upstream_name = ?, thinking_levels = ?, enabled = ?,
-                    is_manually_edited = 1
-                WHERE id = ?`,
+                `INSERT INTO models (
+                    provider_id, upstream_name, name, name_override, enabled_override,
+                    thinking_levels_override
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (provider_id, upstream_name) DO UPDATE SET
+                    name = excluded.name,
+                    name_override = excluded.name_override,
+                    enabled_override = excluded.enabled_override,
+                    thinking_levels_override = excluded.thinking_levels_override`,
             )
             .bind(
-                model.name,
                 model.providerId,
                 model.upstreamName,
-                thinkingLevelsJson,
-                model.isEnabled ? 1 : 0,
-                model.id,
+                name,
+                model.nameOverride,
+                model.enabledOverride === null ? null : model.enabledOverride ? 1 : 0,
+                thinkingLevelsOverrideJson,
             )
             .run();
-        if (result.meta.changes !== 1) throw new PanelApiError(404, "Model not found");
-        return {
-            id: model.id,
-            name: model.name,
-        };
     } catch (error) {
         if (isDatabaseConstraintError(error, "models.name")) {
             throw new PanelApiError(409, "Model name already exists");
         }
         throw error;
     }
+    return name;
 }
 
-export async function deleteModel(database: D1Database, id: number): Promise<void> {
-    const result = await database.prepare("DELETE FROM models WHERE id = ?").bind(id).run();
+export async function deleteModel(
+    database: D1Database,
+    providerId: number,
+    upstreamName: string,
+): Promise<void> {
+    const result = await database
+        .prepare("DELETE FROM models WHERE provider_id = ? AND upstream_name = ?")
+        .bind(providerId, upstreamName)
+        .run();
     if (result.meta.changes !== 1) throw new PanelApiError(404, "Model not found");
 }

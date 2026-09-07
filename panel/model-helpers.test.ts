@@ -16,31 +16,28 @@ describe("model helpers", () => {
         expect(
             previewModelName({
                 baseName: "",
-                existingName: null,
                 modelPrefix: "provider/",
                 upstreamName: "upstream",
             }),
         ).toBe("provider/upstream");
     });
 
-    it("keeps an existing name until an explicit destructive rename", () => {
-        expect(
-            previewModelName({
-                baseName: "",
-                existingName: "old/model",
-                modelPrefix: "new/",
-                upstreamName: "upstream",
-            }),
-        ).toBe("old/model");
-
+    it("prefers the override base over the upstream name", () => {
         expect(
             previewModelName({
                 baseName: "public",
-                existingName: "old/model",
                 modelPrefix: "provider/",
                 upstreamName: "upstream",
             }),
         ).toBe("provider/public");
+
+        expect(
+            previewModelName({
+                baseName: "public",
+                modelPrefix: "",
+                upstreamName: "upstream",
+            }),
+        ).toBe("public");
     });
 
     it("recognizes only canonical thinking levels", () => {

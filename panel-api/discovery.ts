@@ -1,10 +1,16 @@
 import type { CredentialsCipher } from "/common/credentials";
 import { assertCredentialsMatchProvider } from "/common/credentials";
-import { MODEL_COLUMNS, type ModelRow, mapModelRow, type StoredProvider } from "/common/database";
+import {
+    hasModelOverrides,
+    MODEL_COLUMNS,
+    type ModelRow,
+    mapModelRow,
+    type StoredProvider,
+} from "/common/database";
 import type { DiscoveryResult } from "/common/domain";
 import { GatewayError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
-import { isJsonObject } from "/common/validation";
+import { composeModelName, isJsonObject } from "/common/validation";
 import { ensureFreshProviderAccess } from "/providers/access";
 import { ANTIGRAVITY_FETCH_MODELS_URL, antigravityRequestHeaders } from "/providers/antigravity";
 import { OPENAI_CODEX_MODELS } from "/providers/openai";
@@ -240,53 +246,71 @@ export async function discoverProviderModels(
     const existingModels = (
         await database.prepare(`SELECT ${MODEL_COLUMNS} FROM models`).all<ModelRow>()
     ).results.map(mapModelRow);
+    const providerModels = existingModels.filter((model) => model.providerId === provider.id);
     const upstreamNameSet = new Set(upstreamNames);
-    const staleModels = existingModels.filter(
-        (model) =>
-            model.providerId === provider.id &&
-            !model.isManuallyEdited &&
-            !upstreamNameSet.has(model.upstreamName),
+
+    // Rows without any override mirror discovery, so the ones whose upstream model disappeared
+    // are pruned; overridden rows belong to the admin and are never touched.
+    const staleModels = providerModels.filter(
+        (model) => !upstreamNameSet.has(model.upstreamName) && !hasModelOverrides(model),
     );
-    const staleModelIds = new Set(staleModels.map((model) => model.id));
+    const deletedNames = new Set(staleModels.map((model) => model.name));
     const occupiedNames = new Set(
-        existingModels.filter((model) => !staleModelIds.has(model.id)).map((model) => model.name),
+        existingModels.filter((model) => !deletedNames.has(model.name)).map((model) => model.name),
     );
-    const existingProviderUpstreamNames = new Set(
-        existingModels
-            .filter((model) => model.providerId === provider.id)
-            .map((model) => model.upstreamName),
-    );
-    const modelsToCreate = upstreamNames
-        .map((upstreamName) => ({
-            name: `${provider.modelPrefix}${upstreamName}`,
-            upstreamName,
-        }))
-        .filter(
-            (model) =>
-                !existingProviderUpstreamNames.has(model.upstreamName) &&
-                !occupiedNames.has(model.name),
+    const existingUpstreamNames = new Set(providerModels.map((model) => model.upstreamName));
+
+    // Unoverridden public names re-derive from the current prefix on every run, so a prefix
+    // change propagates at the next discovery. A derived name that is still occupied keeps the
+    // previous name resolvable instead.
+    const renameStatements: D1PreparedStatement[] = [];
+    for (const model of providerModels) {
+        if (model.nameOverride !== null) continue;
+        const derivedName = composeModelName(provider.modelPrefix, model.upstreamName);
+        if (model.name === derivedName || occupiedNames.has(derivedName)) continue;
+        occupiedNames.delete(model.name);
+        occupiedNames.add(derivedName);
+        renameStatements.push(
+            database
+                .prepare(
+                    `UPDATE models SET name = ?
+                    WHERE provider_id = ? AND upstream_name = ? AND name_override IS NULL`,
+                )
+                .bind(derivedName, provider.id, model.upstreamName),
         );
+    }
+
+    const insertStatements: D1PreparedStatement[] = [];
+    for (const upstreamName of upstreamNames) {
+        if (existingUpstreamNames.has(upstreamName)) continue;
+        const name = composeModelName(provider.modelPrefix, upstreamName);
+        if (occupiedNames.has(name)) continue;
+        occupiedNames.add(name);
+        insertStatements.push(
+            database
+                .prepare(
+                    `INSERT INTO models (
+                        provider_id, upstream_name, name, name_override, enabled_override,
+                        thinking_levels_override
+                    ) VALUES (?, ?, ?, NULL, NULL, NULL)`,
+                )
+                .bind(provider.id, upstreamName, name),
+        );
+    }
 
     const statements = [
         ...staleModels.map((model) =>
             database
                 .prepare(
                     `DELETE FROM models
-                    WHERE id = ? AND provider_id = ? AND upstream_name = ?
-                        AND is_manually_edited = 0`,
+                    WHERE provider_id = ? AND upstream_name = ?
+                        AND name_override IS NULL AND enabled_override IS NULL
+                        AND thinking_levels_override IS NULL`,
                 )
-                .bind(model.id, provider.id, model.upstreamName),
+                .bind(model.providerId, model.upstreamName),
         ),
-        ...modelsToCreate.map((model) =>
-            database
-                .prepare(
-                    `INSERT INTO models (
-                        name, provider_id, upstream_name, thinking_levels, enabled,
-                        is_manually_edited
-                    ) VALUES (?, ?, ?, NULL, 0, 0)`,
-                )
-                .bind(model.name, provider.id, model.upstreamName),
-        ),
+        ...renameStatements,
+        ...insertStatements,
     ];
     let removedCount = 0;
     if (statements.length > 0) {
@@ -304,9 +328,9 @@ export async function discoverProviderModels(
     }
 
     return {
-        created: modelsToCreate.length,
+        created: insertStatements.length,
         removed: removedCount,
-        skipped: upstreamNames.length - modelsToCreate.length,
+        skipped: upstreamNames.length - insertStatements.length,
         total: upstreamNames.length,
     };
 }

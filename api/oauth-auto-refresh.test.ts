@@ -41,8 +41,9 @@ async function seedAntigravityProvider(expiresAt: number): Promise<number> {
         .run();
     await env.DATABASE.prepare(
         `INSERT INTO models (
-            name, provider_id, upstream_name, thinking_levels, enabled
-        ) VALUES ('antigravity-model', ?, 'gemini-3.7-flash', NULL, 1)`,
+            provider_id, upstream_name, name, name_override, enabled_override,
+            thinking_levels_override
+        ) VALUES (?, 'gemini-3.7-flash', 'antigravity-model', NULL, NULL, NULL)`,
     )
         .bind(provider.meta.last_row_id)
         .run();
@@ -295,8 +296,9 @@ describe("lazy OAuth token auto-refresh through the gateway", () => {
             .run();
         await env.DATABASE.prepare(
             `INSERT INTO models (
-                name, provider_id, upstream_name, thinking_levels, enabled
-            ) VALUES ('codex-model', ?, 'gpt-5.2', NULL, 1)`,
+                provider_id, upstream_name, name, name_override, enabled_override,
+                thinking_levels_override
+            ) VALUES (?, 'gpt-5.2', 'codex-model', NULL, NULL, NULL)`,
         )
             .bind(provider.meta.last_row_id)
             .run();

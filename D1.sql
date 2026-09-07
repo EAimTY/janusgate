@@ -11,17 +11,26 @@ CREATE TABLE providers (
     enabled INTEGER NOT NULL DEFAULT 1
 ) STRICT;
 
+-- A model is identified by its owning provider plus the upstream model name. Discovery-derived
+-- fields carry a nullable *_override twin: NULL keeps following discovery, non-NULL pins the value.
 CREATE TABLE models (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE RESTRICT,
+    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     upstream_name TEXT NOT NULL,
-    thinking_levels TEXT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    is_manually_edited INTEGER NOT NULL DEFAULT 1
-) STRICT;
 
-CREATE INDEX idx_models_provider_id ON models(provider_id);
+    -- public routing name: model_prefix + (name_override ?? upstream_name), maintained at write time
+    name TEXT NOT NULL UNIQUE,
+
+    -- non-NULL replaces the upstream name as the base of the public name
+    name_override TEXT NULL,
+
+    -- non-NULL pins the serving state instead of the discovery default (enabled)
+    enabled_override INTEGER NULL,
+
+    -- JSON array of canonical thinking levels; NULL means no filtering, pure passthrough
+    thinking_levels_override TEXT NULL,
+
+    PRIMARY KEY (provider_id, upstream_name)
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE oauth_states (
     id INTEGER PRIMARY KEY,

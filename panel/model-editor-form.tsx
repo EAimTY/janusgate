@@ -22,7 +22,7 @@ interface ModelEditorFormProps {
     /** `null` opens the create form; a model prefills its fields for editing. */
     editingModel: Model | null;
     /** Reloads the list, records the outcome, and resets to the create form. */
-    onSaved: (savedModel: { id: number; name: string }) => Promise<void>;
+    onSaved: (savedModel: { name: string }) => Promise<void>;
     onCancelEdit: () => void;
 }
 
@@ -58,7 +58,7 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
         editingModel?.providerName ?? props.providers[0]?.name ?? "",
     );
     const [upstreamName, setUpstreamName] = createSignal(editingModel?.upstreamName ?? "");
-    const [baseName, setBaseName] = createSignal("");
+    const [nameOverride, setNameOverride] = createSignal(editingModel?.nameOverride ?? "");
     const [isEnabled, setIsEnabled] = createSignal(editingModel?.enabled ?? true);
     const [isThinkingOverride, setIsThinkingOverride] = createSignal(
         editingModel?.thinkingLevels !== null && editingModel?.thinkingLevels !== undefined,
@@ -76,8 +76,7 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
         previewModelName({
             modelPrefix: selectedProvider()?.modelPrefix ?? "",
             upstreamName: upstreamName(),
-            baseName: baseName(),
-            existingName: editingModel?.name ?? null,
+            baseName: nameOverride(),
         }),
     );
 
@@ -86,23 +85,14 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
         setIsSaving(true);
         setFormError(null);
         try {
-            const input = {
-                ...(editingModel === null
-                    ? {}
-                    : {
-                          id: editingModel.id,
-                      }),
+            const savedModel = await props.client.saveModel({
                 providerName: providerName(),
                 upstreamName: upstreamName(),
-                ...(baseName().length === 0
-                    ? {}
-                    : {
-                          name: baseName(),
-                      }),
-                enabled: isEnabled(),
-                thinkingLevels: isThinkingOverride() ? selectedThinkingLevels() : null,
-            };
-            const savedModel = await props.client.saveModel(input);
+                // Blank means "follow discovery": the public name derives from the upstream name.
+                nameOverride: nameOverride().length === 0 ? null : nameOverride(),
+                enabledOverride: isEnabled(),
+                thinkingLevelsOverride: isThinkingOverride() ? selectedThinkingLevels() : null,
+            });
             await props.onSaved(savedModel);
         } catch (caughtError) {
             setFormError(errorMessage(caughtError));
@@ -141,6 +131,7 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                     <select
                         class={formControlClasses}
                         required
+                        disabled={editingModel !== null}
                         value={providerName()}
                         onChange={(event) => setProviderName(event.currentTarget.value)}
                     >
@@ -160,6 +151,9 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                     </select>
                     <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
                         Every provider type is eligible, including OpenAI OAuth.
+                        {editingModel === null
+                            ? ""
+                            : " The provider and upstream name are this model's identity and cannot change."}
                     </small>
                 </label>
                 <label class="grid gap-[7px] text-xs font-[720] text-[#344038]">
@@ -167,6 +161,7 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                     <input
                         class={formControlClasses}
                         required
+                        disabled={editingModel !== null}
                         value={upstreamName()}
                         onInput={(event) => setUpstreamName(event.currentTarget.value)}
                         placeholder="gpt-5.4"
@@ -179,16 +174,13 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                     Public base name (optional)
                     <input
                         class={formControlClasses}
-                        value={baseName()}
-                        onInput={(event) => setBaseName(event.currentTarget.value)}
-                        placeholder={
-                            editingModel === null
-                                ? "Defaults to upstream name"
-                                : "Blank preserves current name"
-                        }
+                        value={nameOverride()}
+                        onInput={(event) => setNameOverride(event.currentTarget.value)}
+                        placeholder="Defaults to upstream name"
                     />
                     <small class="text-[10px] leading-[1.4] font-[450] text-[#7c8880]">
-                        A supplied value destructively renames the route. No alias remains.
+                        Overrides the derived name. Clearing it follows discovery again; a changed
+                        name retires the previous one immediately.
                     </small>
                 </label>
                 <div class="grid gap-[5px] rounded-[9px] border border-[#dbe8e0] bg-[#f1f6f3] p-[13px]">

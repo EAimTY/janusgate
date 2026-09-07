@@ -25,13 +25,18 @@ function thinkingSummary(model: Model): string {
     return model.thinkingLevels.join(", ");
 }
 
+/** Provider names cannot contain "/", so the pair is a safe identity key. */
+function modelKey(model: Model): string {
+    return `${model.providerName}/${model.upstreamName}`;
+}
+
 export function ModelsPage(props: ModelsPageProps): JSX.Element {
     const [models, setModels] = createSignal<Model[]>([]);
     const [providers, setProviders] = createSignal<Provider[]>([]);
     const [isLoading, setIsLoading] = createSignal(true);
     const [error, setError] = createSignal<string | null>(null);
     const [success, setSuccess] = createSignal<string | null>(null);
-    const [busyModelId, setBusyModelId] = createSignal<number | null>(null);
+    const [busyModelKey, setBusyModelKey] = createSignal<string | null>(null);
 
     const [editingModel, setEditingModel] = createSignal<Model | null>(null);
     // A fresh ModelEditorForm mounts per editing session; the key forces that remount.
@@ -76,30 +81,30 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
         void initialLoad();
     });
 
-    async function handleModelSaved(savedModel: { id: number; name: string }): Promise<void> {
+    async function handleModelSaved(savedModel: { name: string }): Promise<void> {
         await reloadModels();
         resetEditor();
         setSuccess(`${savedModel.name} saved.`);
     }
 
     async function toggleModel(model: Model): Promise<void> {
-        setBusyModelId(model.id);
+        setBusyModelKey(modelKey(model));
         setError(null);
         setSuccess(null);
         try {
             await props.client.saveModel({
-                id: model.id,
                 providerName: model.providerName,
                 upstreamName: model.upstreamName,
-                enabled: !model.enabled,
-                thinkingLevels: model.thinkingLevels,
+                nameOverride: model.nameOverride,
+                enabledOverride: !model.enabled,
+                thinkingLevelsOverride: model.thinkingLevels,
             });
             await reloadModels();
             setSuccess(`${model.name} ${model.enabled ? "disabled" : "enabled"}.`);
         } catch (caughtError) {
             setError(errorMessage(caughtError));
         } finally {
-            setBusyModelId(null);
+            setBusyModelKey(null);
         }
     }
 
@@ -111,18 +116,25 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
         ) {
             return;
         }
-        setBusyModelId(model.id);
+        setBusyModelKey(modelKey(model));
         setError(null);
         setSuccess(null);
         try {
-            await props.client.deleteModel(model.id);
+            await props.client.deleteModel(model.providerName, model.upstreamName);
             await reloadModels();
-            if (editingModel()?.id === model.id) resetEditor();
+            const current = editingModel();
+            if (
+                current !== null &&
+                current.providerName === model.providerName &&
+                current.upstreamName === model.upstreamName
+            ) {
+                resetEditor();
+            }
             setSuccess(`${model.name} deleted.`);
         } catch (caughtError) {
             setError(errorMessage(caughtError));
         } finally {
-            setBusyModelId(null);
+            setBusyModelKey(null);
         }
     }
 
@@ -191,9 +203,6 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
                                                         <strong class="font-[730] text-[#202b25]">
                                                             {model.name}
                                                         </strong>
-                                                        <small class="mt-1 block max-w-[270px] overflow-hidden text-[10px] text-ellipsis whitespace-nowrap text-[#89938d]">
-                                                            ID {model.id}
-                                                        </small>
                                                     </td>
                                                     <td>
                                                         <span>{model.providerName}</span>
@@ -216,7 +225,8 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
                                                                 class={tableActionClasses}
                                                                 type="button"
                                                                 disabled={
-                                                                    busyModelId() === model.id
+                                                                    busyModelKey() ===
+                                                                    modelKey(model)
                                                                 }
                                                                 onClick={() => editModel(model)}
                                                             >
@@ -226,7 +236,8 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
                                                                 class={tableActionClasses}
                                                                 type="button"
                                                                 disabled={
-                                                                    busyModelId() === model.id
+                                                                    busyModelKey() ===
+                                                                    modelKey(model)
                                                                 }
                                                                 onClick={() =>
                                                                     void toggleModel(model)
@@ -240,7 +251,8 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
                                                                 class={tableActionDangerClasses}
                                                                 type="button"
                                                                 disabled={
-                                                                    busyModelId() === model.id
+                                                                    busyModelKey() ===
+                                                                    modelKey(model)
                                                                 }
                                                                 onClick={() =>
                                                                     void deleteModel(model)

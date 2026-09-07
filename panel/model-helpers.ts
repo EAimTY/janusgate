@@ -8,17 +8,18 @@ interface ModelNamePreviewInput {
     modelPrefix: string;
     upstreamName: string;
     baseName: string;
-    existingName: string | null;
 }
 
 export function composeModelName(modelPrefix: string, baseName: string): string {
     return `${modelPrefix}${baseName}`;
 }
 
+/** The public name a mapping resolves to: the prefix plus the override base, else the upstream name. */
 export function previewModelName(input: ModelNamePreviewInput): string {
-    if (input.baseName.length > 0) return composeModelName(input.modelPrefix, input.baseName);
-    if (input.existingName !== null) return input.existingName;
-    return composeModelName(input.modelPrefix, input.upstreamName);
+    return composeModelName(
+        input.modelPrefix,
+        input.baseName.length > 0 ? input.baseName : input.upstreamName,
+    );
 }
 
 export function toggleThinkingLevel(

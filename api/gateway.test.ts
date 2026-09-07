@@ -42,10 +42,11 @@ async function seedCompatibleProvider(
         .run();
     await env.DATABASE.prepare(
         `INSERT INTO models (
-            name, provider_id, upstream_name, thinking_levels, enabled
-        ) VALUES ('public-model', ?, 'wire-model', NULL, ?)`,
+            provider_id, upstream_name, name, name_override, enabled_override,
+            thinking_levels_override
+        ) VALUES (?, 'wire-model', 'public-model', NULL, ?, NULL)`,
     )
-        .bind(provider.meta.last_row_id, isModelEnabled ? 1 : 0)
+        .bind(provider.meta.last_row_id, isModelEnabled ? null : 0)
         .run();
 }
 
@@ -66,8 +67,9 @@ async function seedAntigravityProvider(upstreamName = "gemini-wire"): Promise<vo
         .run();
     await env.DATABASE.prepare(
         `INSERT INTO models (
-            name, provider_id, upstream_name, thinking_levels, enabled
-        ) VALUES ('antigravity-model', ?, ?, NULL, 1)`,
+            provider_id, upstream_name, name, name_override, enabled_override,
+            thinking_levels_override
+        ) VALUES (?, ?, 'antigravity-model', NULL, NULL, NULL)`,
     )
         .bind(provider.meta.last_row_id, upstreamName)
         .run();
@@ -90,8 +92,9 @@ async function seedOpenAiProvider(): Promise<void> {
         .run();
     await env.DATABASE.prepare(
         `INSERT INTO models (
-            name, provider_id, upstream_name, thinking_levels, enabled
-        ) VALUES ('codex', ?, 'gpt-wire', NULL, 1)`,
+            provider_id, upstream_name, name, name_override, enabled_override,
+            thinking_levels_override
+        ) VALUES (?, 'gpt-wire', 'codex', NULL, NULL, NULL)`,
     )
         .bind(provider.meta.last_row_id)
         .run();

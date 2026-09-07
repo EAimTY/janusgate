@@ -5,7 +5,6 @@ import {
     parseModelPrefix,
     parseNonEmptyString,
     parseOAuthFlowType,
-    parsePositiveInteger,
     parseProviderName,
     parseThinkingLevels,
     parseUpstreamProtocol,
@@ -54,17 +53,21 @@ export interface CompleteOAuthInput {
     readonly projectId?: string;
 }
 
+/**
+ * The three override fields are full-replace: an absent or `null` field clears the override so
+ * the value keeps following discovery (§6.3).
+ */
 interface SaveModelInput {
-    readonly id?: number;
     readonly providerName: string;
     readonly upstreamName: string;
-    readonly name?: string;
-    readonly enabled?: boolean;
-    readonly thinkingLevels?: readonly ThinkingLevel[] | null;
+    readonly nameOverride: string | null;
+    readonly enabledOverride: boolean | null;
+    readonly thinkingLevelsOverride: readonly ThinkingLevel[] | null;
 }
 
 interface DeleteModelInput {
-    readonly id: number;
+    readonly providerName: string;
+    readonly upstreamName: string;
 }
 
 interface DiscoverModelsInput {
@@ -232,32 +235,36 @@ export function parseCompleteOAuthInput(value: unknown): CompleteOAuthInput {
 export function parseSaveModelInput(value: unknown): SaveModelInput {
     const object = requireJsonObject(value, "request body");
     assertAllowedFields(object, [
-        "enabled",
-        "id",
-        "name",
+        "enabledOverride",
+        "nameOverride",
         "providerName",
-        "thinkingLevels",
+        "thinkingLevelsOverride",
         "upstreamName",
     ]);
     const input: {
-        id?: number;
         providerName: string;
         upstreamName: string;
-        name?: string;
-        enabled?: boolean;
-        thinkingLevels?: readonly ThinkingLevel[] | null;
+        nameOverride: string | null;
+        enabledOverride: boolean | null;
+        thinkingLevelsOverride: readonly ThinkingLevel[] | null;
     } = {
+        enabledOverride: null,
+        nameOverride: null,
         providerName: parseProviderNameField(object, "providerName"),
+        thinkingLevelsOverride: null,
         upstreamName: parseNonEmptyString(object["upstreamName"], "upstreamName"),
     };
-    if (Object.hasOwn(object, "id")) input.id = parsePositiveInteger(object["id"], "id");
-    if (Object.hasOwn(object, "name")) {
-        input.name = parseNonEmptyString(object["name"], "name");
+    const nameOverride = object["nameOverride"];
+    if (nameOverride !== undefined && nameOverride !== null) {
+        input.nameOverride = parseNonEmptyString(nameOverride, "nameOverride");
     }
-    if (Object.hasOwn(object, "enabled"))
-        input.enabled = parseBoolean(object["enabled"], "enabled");
-    if (Object.hasOwn(object, "thinkingLevels")) {
-        input.thinkingLevels = parseThinkingLevels(object["thinkingLevels"]);
+    const enabledOverride = object["enabledOverride"];
+    if (enabledOverride !== undefined && enabledOverride !== null) {
+        input.enabledOverride = parseBoolean(enabledOverride, "enabledOverride");
+    }
+    const thinkingLevelsOverride = object["thinkingLevelsOverride"];
+    if (thinkingLevelsOverride !== undefined && thinkingLevelsOverride !== null) {
+        input.thinkingLevelsOverride = parseThinkingLevels(thinkingLevelsOverride);
     }
     return input;
 }
@@ -265,10 +272,12 @@ export function parseSaveModelInput(value: unknown): SaveModelInput {
 export function parseDeleteModelInput(value: unknown): DeleteModelInput {
     const object = requireJsonObject(value, "request body");
     assertAllowedFields(object, [
-        "id",
+        "providerName",
+        "upstreamName",
     ]);
     return {
-        id: parsePositiveInteger(object["id"], "id"),
+        providerName: parseProviderNameField(object, "providerName"),
+        upstreamName: parseNonEmptyString(object["upstreamName"], "upstreamName"),
     };
 }
 

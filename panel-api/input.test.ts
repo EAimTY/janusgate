@@ -45,7 +45,7 @@ describe("panel input validation", () => {
         ).toThrow(ValidationError);
     });
 
-    it("preserves omitted fields and distinguishes them from explicit null", () => {
+    it("treats absent model overrides as cleared and validates their shapes", () => {
         expect(
             parseSaveProviderInput({
                 name: "account",
@@ -56,18 +56,20 @@ describe("panel input validation", () => {
         });
         expect(
             parseSaveModelInput({
-                enabled: false,
+                enabledOverride: false,
+                nameOverride: "public",
                 providerName: "account",
-                thinkingLevels: [
+                thinkingLevelsOverride: [
                     "high",
                     "low",
                 ],
                 upstreamName: "wire-model",
             }),
         ).toEqual({
-            enabled: false,
+            enabledOverride: false,
+            nameOverride: "public",
             providerName: "account",
-            thinkingLevels: [
+            thinkingLevelsOverride: [
                 "low",
                 "high",
             ],
@@ -76,14 +78,29 @@ describe("panel input validation", () => {
         expect(
             parseSaveModelInput({
                 providerName: "account",
-                thinkingLevels: null,
                 upstreamName: "wire-model",
             }),
         ).toEqual({
+            enabledOverride: null,
+            nameOverride: null,
             providerName: "account",
-            thinkingLevels: null,
+            thinkingLevelsOverride: null,
             upstreamName: "wire-model",
         });
+        expect(() =>
+            parseSaveModelInput({
+                nameOverride: "",
+                providerName: "account",
+                upstreamName: "wire-model",
+            }),
+        ).toThrow(ValidationError);
+        expect(() =>
+            parseSaveModelInput({
+                enabledOverride: "yes",
+                providerName: "account",
+                upstreamName: "wire-model",
+            }),
+        ).toThrow(ValidationError);
     });
 
     it("requires exact OAuth and identifier body contracts", () => {
@@ -109,10 +126,12 @@ describe("panel input validation", () => {
         });
         expect(
             parseDeleteModelInput({
-                id: 4,
+                providerName: "work",
+                upstreamName: "wire-model",
             }),
         ).toEqual({
-            id: 4,
+            providerName: "work",
+            upstreamName: "wire-model",
         });
         expect(
             parseDiscoverModelsInput({
@@ -123,7 +142,7 @@ describe("panel input validation", () => {
         });
         expect(() =>
             parseDeleteModelInput({
-                id: 0,
+                providerName: "work",
             }),
         ).toThrow(ValidationError);
         expect(() =>

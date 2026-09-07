@@ -19,13 +19,12 @@ export interface StoredProvider {
 }
 
 export interface StoredModel {
-    id: number;
-    name: string;
     providerId: number;
     upstreamName: string;
-    thinkingLevelsJson: string | null;
-    isEnabled: boolean;
-    isManuallyEdited: boolean;
+    name: string;
+    nameOverride: string | null;
+    enabledOverride: boolean | null;
+    thinkingLevelsOverrideJson: string | null;
 }
 
 export interface ProviderRow {
@@ -42,13 +41,12 @@ export interface ProviderRow {
 }
 
 export interface ModelRow {
-    id: number;
-    name: string;
     provider_id: number;
     upstream_name: string;
-    thinking_levels: string | null;
-    enabled: number;
-    is_manually_edited: number;
+    name: string;
+    name_override: string | null;
+    enabled_override: number | null;
+    thinking_levels_override: string | null;
 }
 
 function parseProviderType(value: string): ProviderType {
@@ -89,14 +87,28 @@ export function mapProviderRow(row: ProviderRow): StoredProvider {
 
 export function mapModelRow(row: ModelRow): StoredModel {
     return {
-        id: row.id,
-        isEnabled: parseStoredBoolean(row.enabled),
-        isManuallyEdited: parseStoredBoolean(row.is_manually_edited),
+        enabledOverride:
+            row.enabled_override === null ? null : parseStoredBoolean(row.enabled_override),
         name: row.name,
+        nameOverride: row.name_override,
         providerId: row.provider_id,
-        thinkingLevelsJson: row.thinking_levels,
+        thinkingLevelsOverrideJson: row.thinking_levels_override,
         upstreamName: row.upstream_name,
     };
+}
+
+/** Effective serving state: the override wins when present, else the discovery default (enabled). */
+export function isModelEnabled(model: StoredModel): boolean {
+    return model.enabledOverride !== false;
+}
+
+/** True iff any discovery-derived field is overridden, which shields the row from discovery pruning. */
+export function hasModelOverrides(model: StoredModel): boolean {
+    return (
+        model.nameOverride !== null ||
+        model.enabledOverride !== null ||
+        model.thinkingLevelsOverrideJson !== null
+    );
 }
 
 export const PROVIDER_COLUMNS = `
@@ -113,11 +125,10 @@ export const PROVIDER_COLUMNS = `
 `;
 
 export const MODEL_COLUMNS = `
-    id,
-    name,
     provider_id,
     upstream_name,
-    thinking_levels,
-    enabled,
-    is_manually_edited
+    name,
+    name_override,
+    enabled_override,
+    thinking_levels_override
 `;

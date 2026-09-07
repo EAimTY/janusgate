@@ -33,8 +33,9 @@ describe("Worker route aggregation", () => {
             .run();
         await env.DATABASE.prepare(
             `INSERT INTO models (
-                name, provider_id, upstream_name, thinking_levels, enabled
-            ) VALUES ('gemini', ?, 'gemini-wire', NULL, 1)`,
+                provider_id, upstream_name, name, name_override, enabled_override,
+                thinking_levels_override
+            ) VALUES (?, 'gemini-wire', 'gemini', NULL, NULL, NULL)`,
         )
             .bind(provider.meta.last_row_id)
             .run();

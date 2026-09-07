@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { verifyBearerAuthorization } from "/common/auth";
 import { CredentialsCipher } from "/common/credentials";
 import { ConfigurationError, ValidationError } from "/common/errors";
-import { composeModelName, isJsonObject } from "/common/validation";
+import { isJsonObject } from "/common/validation";
 import { discoverProviderModels } from "./discovery";
 import { PanelApiError } from "./errors";
 import {
@@ -14,7 +14,7 @@ import {
     parseSaveProviderInput,
     parseStartOAuthInput,
 } from "./input";
-import { deleteModel, findModelById, listPanelModels, saveModel } from "./model-repository";
+import { deleteModel, listPanelModels, upsertModel } from "./model-repository";
 import { completeProviderOAuth, startProviderOAuth } from "./oauth";
 import {
     createProvider,
@@ -130,32 +130,21 @@ async function savePanelModel(
     database: D1Database,
     body: Record<string, unknown>,
 ): Promise<{
-    id: number;
     name: string;
 }> {
     const input = parseSaveModelInput(body);
     const provider = await requireProviderByName(database, input.providerName);
-    const existing = input.id === undefined ? null : await findModelById(database, input.id);
-    if (input.id !== undefined && existing === null) {
-        throw new PanelApiError(404, "Model not found");
-    }
-
-    const publicName =
-        existing !== null && input.name === undefined
-            ? existing.name
-            : composeModelName(provider.modelPrefix, input.name ?? input.upstreamName);
-    return saveModel(database, {
-        ...(input.id === undefined
-            ? {}
-            : {
-                  id: input.id,
-              }),
-        isEnabled: input.enabled ?? existing?.isEnabled ?? true,
-        name: publicName,
+    const name = await upsertModel(database, {
+        enabledOverride: input.enabledOverride,
+        modelPrefix: provider.modelPrefix,
+        nameOverride: input.nameOverride,
         providerId: provider.id,
-        thinkingLevels: input.thinkingLevels ?? null,
+        thinkingLevelsOverride: input.thinkingLevelsOverride,
         upstreamName: input.upstreamName,
     });
+    return {
+        name,
+    };
 }
 
 export function createPanelApi(options: PanelApiOptions = {}): PanelApp {
@@ -245,7 +234,8 @@ export function createPanelApi(options: PanelApiOptions = {}): PanelApp {
 
     panelApi.post("/delete-model", async (context) => {
         const input = parseDeleteModelInput(await readRequestObject(context.req.raw));
-        await deleteModel(context.env.DATABASE, input.id);
+        const provider = await requireProviderByName(context.env.DATABASE, input.providerName);
+        await deleteModel(context.env.DATABASE, provider.id, input.upstreamName);
         return context.json({
             ok: true,
         });

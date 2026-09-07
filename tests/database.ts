@@ -11,6 +11,6 @@ export async function initializeTestDatabase(database: D1Database): Promise<void
 
 export async function clearTestDatabase(database: D1Database): Promise<void> {
     await database.prepare("DELETE FROM oauth_states").run();
-    await database.prepare("DELETE FROM models").run();
+    // The models FK cascades; leftover model rows would therefore fail the next test loudly.
     await database.prepare("DELETE FROM providers").run();
 }

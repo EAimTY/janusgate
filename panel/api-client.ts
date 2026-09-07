@@ -34,12 +34,11 @@ interface SaveOAuthProviderInput {
 }
 
 export interface SaveModelInput {
-    id?: number;
     providerName: string;
     upstreamName: string;
-    name?: string;
-    enabled: boolean;
-    thinkingLevels: readonly ThinkingLevel[] | null;
+    nameOverride: string | null;
+    enabledOverride: boolean | null;
+    thinkingLevelsOverride: readonly ThinkingLevel[] | null;
 }
 
 export interface OAuthCompletionInput {
@@ -189,13 +188,13 @@ function parseThinkingLevels(value: unknown): ThinkingLevel[] | null {
 function parseModel(value: unknown): Model {
     const record = readRecord(value, "model");
     return {
-        id: readInteger(record, "id"),
+        enabled: readBoolean(record, "enabled"),
         name: readString(record, "name"),
+        nameOverride: readNullableString(record, "nameOverride"),
         providerName: readString(record, "providerName"),
         providerType: readProviderType(record, "providerType"),
-        upstreamName: readString(record, "upstreamName"),
-        enabled: readBoolean(record, "enabled"),
         thinkingLevels: parseThinkingLevels(record["thinkingLevels"]),
+        upstreamName: readString(record, "upstreamName"),
     };
 }
 
@@ -220,13 +219,10 @@ function parseAuthorizeUrl(value: unknown): string {
 }
 
 function parseSavedModel(value: unknown): {
-    id: number;
     name: string;
 } {
-    const record = readRecord(value, "saved model");
     return {
-        id: readInteger(record, "id"),
-        name: readString(record, "name"),
+        name: readString(readRecord(value, "saved model"), "name"),
     };
 }
 
@@ -355,18 +351,18 @@ export class PanelApiClient {
     }
 
     public async saveModel(input: SaveModelInput): Promise<{
-        id: number;
         name: string;
     }> {
         return this.#request(panelConfig.panelEndpoints.saveModel, "POST", input, parseSavedModel);
     }
 
-    public async deleteModel(id: number): Promise<void> {
+    public async deleteModel(providerName: string, upstreamName: string): Promise<void> {
         return this.#request(
             panelConfig.panelEndpoints.deleteModel,
             "POST",
             {
-                id,
+                providerName,
+                upstreamName,
             },
             parseOk,
         );

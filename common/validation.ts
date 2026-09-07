@@ -59,13 +59,6 @@ export function parseNonEmptyString(value: unknown, fieldName: string): string {
     return value;
 }
 
-export function parsePositiveInteger(value: unknown, fieldName: string): number {
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
-        throw new ValidationError(`${fieldName} must be a positive integer`);
-    }
-    return value;
-}
-
 export function parseProviderType(value: unknown): ProviderType {
     for (const providerType of PROVIDER_TYPES) {
         if (value === providerType) {

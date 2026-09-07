@@ -68,7 +68,7 @@ One configured upstream account or service (types in §1). Fields shared by all 
 - `name` — the external string identifier: 1–64 chars `[a-z0-9_-]`, unique, **immutable** after creation. Chosen at creation; OAuth flows accept it as a parameter or auto-generate `openai-<n>` / `antigravity-<n>` with the smallest free `n`. Addresses the provider everywhere (panel routes, prefix seeding); not exposed by the gateway API.
 - `modelPrefix` — seeds model-name composition (§6.1):
   - omitted at creation ⇒ defaults to `name`; `""` ⇒ no prefix; non-empty ⇒ used verbatim (≤ 32 chars, charset `[a-z0-9._:/-]`; include separators like `/` or `:` yourself — concatenation inserts none).
-  - Omitted on update ⇒ unchanged. Evaluated only at model creation/discovery/save time; changing it never renames existing models. Prefixes are **not unique** across providers; resulting name collisions surface as ordinary uniqueness errors at write time (§6.1).
+  - Omitted on update ⇒ unchanged. Evaluated whenever a model row is written (discovery or `save-model`): unoverridden model names re-derive from the current prefix at their next write (§6.1). Prefixes are **not unique** across providers; resulting name collisions surface as ordinary uniqueness errors at write time (§6.1).
 
 Per-type stored config and credentials payloads:
 
@@ -82,7 +82,7 @@ A stored `baseUrl` never ends with a slash (stripped at save); path segments are
 
 ### 3.2 Model
 
-A public model ID mapping to **exactly one provider — any of the three types, `openai_oauth` included** — plus an upstream model ID. No pool, no default routing: a model without a concrete provider cannot exist. Optional `thinkingLevels` override (§10.2). See §6 for naming/serving rules.
+A public model ID mapping to **exactly one provider — any of the three types, `openai_oauth` included** — plus an upstream model ID. No pool, no default routing: a model without a concrete provider cannot exist. A model's identity is the pair `(provider_id, upstream_name)`; it is the table's primary key and no surrogate key exists. Every discovery-derived field (public name, enabled state, thinking levels) has a nullable `*_override` twin: `NULL` keeps following discovery, non-`NULL` pins the value (§6, §6.3).
 
 ---
 
@@ -116,7 +116,7 @@ Authentication travels exclusively in a caller-supplied `Authorization` header (
 There is no pooling/failover/switching; every model binds to exactly one provider.
 
 1. Model lookup yields its provider (existence FK-guaranteed).
-2. `model.enabled ∧ provider.enabled`, else `404 model_not_found` — disabling is externally indistinguishable from nonexistence.
+2. Serving requires `enabled_override ≠ 0 ∧ provider.enabled` — a model is disabled iff its `enabled_override` is `0` (§6); otherwise `404 model_not_found` — disabling is externally indistinguishable from nonexistence.
 3. OAuth kinds: ensure fresh access token (§7).
 4. Dispatch:
 
@@ -132,26 +132,27 @@ Quota/account errors surface as `upstream_error` (§11.2).
 
 ### 5.2 Deletion
 
-Deleting a provider atomically deletes all of its models before deleting the provider in the same D1 batch; FK `RESTRICT` prevents orphaning outside that operation.
+Deleting a provider deletes all of its models through the `models.provider_id` foreign key (`ON DELETE CASCADE`) in one atomic statement; the schema leaves no path to orphaned models.
 
 ---
 
 ## 6. Models
 
-Fields: public `name` (globally unique), `provider_id` (NOT NULL FK), `upstream_name`, `enabled`, optional `thinkingLevels`, and internal `is_manually_edited` discovery ownership state.
+Identity: `(provider_id, upstream_name)` — the table's composite primary key; no surrogate key exists. Stored fields: the materialized public `name` (globally unique), and one nullable override per discovery-derived field — `name_override` (alternative base of the public name, §6.1), `enabled_override` (serving state, `NULL` ⇒ enabled), `thinking_levels_override` (§10.2 whitelist).
 
 ### 6.1 Naming (normative)
 
 `effectivePrefix(provider)` = the stored `model_prefix` verbatim (`""` ⇒ nothing), seeded with the provider's `name` at creation.
 
-- **Creation/discovery:** `name = effectivePrefix + upstream_name` (the discovered ID on discovery runs), computed once and stored. Clients do not choose it.
-- **Rename:** a supplied new *base* recomposes the name as `effectivePrefix + base`; the prefix always survives a rename. A rename is **destructive**: the previous name stops resolving immediately and is freed for reuse — no alias, shadow route, or history remains. Upstream routing (`provider_id`, `upstream_name`) is untouched.
-- **Duplicates:** any write producing an existing `name` fails with a `409`-style error. The gateway never auto-renames or suffixes to resolve collisions.
+- **Composition:** `name = effectivePrefix + (name_override ?? upstream_name)`, computed at every model write (discovery run or `save-model`) and stored. Clients do not choose the composition rule.
+- **Discovery refresh:** every discovery run re-derives `name` for rows whose `name_override` is `NULL`; a `modelPrefix` change therefore propagates to unoverridden models at the next discovery (or `save-model`). A derived name that is already occupied skips the re-derivation, keeping the previous name resolvable (§6.3).
+- **`name_override`:** supplied on `save-model` as a *base* — the prefix always survives. Clearing it re-derives the name from the upstream name at the next write. A changed name is **destructive**: the previous name stops resolving immediately and is freed for reuse — no alias, shadow route, or history remains. Upstream routing (`provider_id`, `upstream_name`) is the identity and never rewritten.
+- **Duplicates:** any write producing an existing `name` fails with a `409`-style error (discovery skips the offending insert or re-derivation instead, §6.3). The gateway never auto-renames or suffixes to resolve collisions.
 - Nothing recomposes names at request time; the public identity is exactly `models.name`.
 
 ### 6.2 Serving
 
-Resolution is exact, case-sensitive match among enabled models only; miss → `404 model_not_found`. All gating failures (model disabled, provider disabled) produce the identical `404`.
+Resolution is exact, case-sensitive match among serving models only; miss → `404 model_not_found`. A model serves iff `enabled_override ≠ 0` — `NULL` follows the discovery default (enabled), `1` pins enabled, `0` disables — and its provider is enabled. All gating failures produce the identical `404`.
 
 ### 6.3 Model discovery
 
@@ -164,13 +165,15 @@ Populates models from a provider's upstream. Triggered automatically whenever a 
 | `openai_oauth` | Pinned Codex catalog in the adapter module |
 | `antigravity_oauth` | `POST …/v1internal:fetchAvailableModels` with the fresh OAuth token and `{ project }` → requestable Gemini, Claude, and GPT-OSS runtime IDs from non-internal `models` map entries |
 
+Discovery is a pure reconcile: **the model table mirrors exactly what the upstream list returns**, adjusted only by explicit per-model overrides. No provider-specific additions, aliases, or substitutions exist at the model-table layer.
+
 Rules (normative):
 
-- Discovered rows start **disabled**, `thinkingLevels` unset, and `is_manually_edited = 0`, referencing their own provider (`openai_oauth` discoveries bind to that provider like any other).
-- Any model created or updated through `save-model` has `is_manually_edited = 1`; enabling, disabling, renaming, changing its upstream name/provider, or changing its thinking levels therefore protects it from discovery cleanup.
-- Identity during rediscovery is `(provider_id, upstream_name)`, not the public `name`. An existing row with that identity is skipped even if its public name was edited, so rediscovery never creates a duplicate for a renamed model.
-- A newly computed public `name` that is occupied by another non-stale row is skipped. The same upstream ID twice within one run is an error.
-- After a successful fetch, discovery deletes untouched (`is_manually_edited = 0`) rows for that provider whose upstream IDs disappeared. Manually edited rows and every other provider's rows remain unchanged. Deletions and insertions occur in one atomic D1 batch; a failed run changes nothing.
+- Identity is `(provider_id, upstream_name)`; re-running never creates a second row for the same identity.
+- Newly inserted rows are fully unoverridden: `enabled_override` `NULL` (**enabled**), `name_override` `NULL`, `thinking_levels_override` `NULL`, public name = `effectivePrefix + upstream_name`.
+- A newly computed public `name` that is already occupied is skipped (not created). The same upstream ID twice within one run is an error.
+- Rows whose `name_override` is `NULL` re-derive their public name from the current prefix; an occupied derived name skips the re-derivation.
+- After a successful fetch, discovery deletes this provider's rows whose upstream name disappeared **only if they carry no override** (`name_override`, `enabled_override`, and `thinking_levels_override` all `NULL`). Overridden rows and every other provider's rows remain unchanged. Deletions, re-derivations, and insertions occur in one atomic D1 batch; a failed run changes nothing.
 
 ---
 
@@ -398,7 +401,7 @@ Reasoning effort is an **opaque non-empty string**, not an enum. The gateway val
 
 ### 11.3 `GET /api/openai-v1/models`
 
-Returns enabled models sorted by internal `id`. `owned_by`: `openai_oauth` → `"openai"`, `antigravity_oauth` → `"antigravity"`, `openai_compatible` → `"custom"`.
+Returns enabled models sorted by public name. `owned_by`: `openai_oauth` → `"openai"`, `antigravity_oauth` → `"antigravity"`, `openai_compatible` → `"custom"`.
 
 ```json
 {
@@ -450,7 +453,7 @@ Accepts a standard OpenAI **Chat Completions** request; same lifecycle.
 
 - Auth + CSRF per §4.1–4.2 (every `POST` requires matching `Origin`).
 - Responses are JSON: successes `{"ok": true}` or a resource payload; errors `{"error": "…"}` with 4xx/5xx. `POST` bodies are JSON objects.
-- Providers are addressed exclusively by their `name` in panel requests (numeric `providers.id` never appears); models are addressed by numeric `id`.
+- Providers are addressed exclusively by their `name` in panel requests (numeric `providers.id` never appears); models are addressed by their identity pair `(providerName, upstreamName)` — the numeric `providers.id` and any model surrogate key never appear.
 - Validation (application-side, before write): provider `name` pattern/uniqueness/immutability, `modelPrefix` rules (§3.1), composed model-`name` uniqueness (§6.1 — duplicates fail outright), `thinkingLevels` ⊆ canonical vocabulary (§10.2), `baseUrl` http(s) stripped of any trailing slash, `protocol` enum, booleans as 0/1.
 
 ### 12.3 `GET /panel-api/list-providers`
@@ -483,7 +486,7 @@ Response: `{ "name": "openrouter" }`
 
 ### 12.5 `POST /panel-api/delete-provider`
 
-Request: `{ "providerName": "…" }` → delete by `name`. All owned models are deleted before the provider in one atomic D1 batch; FK `RESTRICT` prevents orphaning outside that operation.
+Request: `{ "providerName": "…" }` → delete by `name`. All owned models are deleted through the `models.provider_id` cascade (`ON DELETE CASCADE`) in the same statement.
 Response: `{ "ok": true }`
 
 ### 12.6 `POST /panel-api/start-provider-oauth`
@@ -500,38 +503,41 @@ Response: `{ "ok": true }`
 
 ### 12.8 `GET /panel-api/list-models`
 
-Model→provider links exposed as `providerName`/`providerType`; storage keeps the integer FK.
+Model→provider links exposed as `providerName`/`providerType`; storage keeps the integer FK. `name` is the stored public name, `nameOverride` the raw override (`null` ⇒ name derived from the upstream name), `enabled` the effective serving state.
 
 ```json
 {
   "models": [
-    { "id": 1, "name": "gpt-codex", "providerName": "work", "providerType": "openai_oauth",
-      "upstreamName": "gpt-codex", "enabled": true, "thinkingLevels": null },
-    { "id": 2, "name": "gemini/pro", "providerName": "antigravity-1", "providerType": "antigravity_oauth",
-      "upstreamName": "gemini-3-pro-high", "enabled": true, "thinkingLevels": ["low", "high"] }
+    { "name": "gpt-codex", "providerName": "work", "providerType": "openai_oauth",
+      "upstreamName": "gpt-codex", "nameOverride": null, "enabled": true, "thinkingLevels": null },
+    { "name": "gemini/pro", "providerName": "antigravity-1", "providerType": "antigravity_oauth",
+      "upstreamName": "gemini-3-pro-high", "nameOverride": "pro", "enabled": true,
+      "thinkingLevels": ["low", "high"] }
   ]
 }
 ```
 
 ### 12.9 `POST /panel-api/save-model`
 
-Request: `{ "id"?, "providerName", "upstreamName", "name"?, "enabled"?, "thinkingLevels"? }`
+Request: `{ "providerName", "upstreamName", "nameOverride"?, "enabledOverride"?, "thinkingLevelsOverride"? }`
 
-- `thinkingLevels`: array ⊆ canonical vocabulary (§10.2); omitted/`null` ⇒ no filtering (pure passthrough); `[]` ⇒ reasoning always stripped — suppressing gateway-injected reasoning config, never upstream-default reasoning (§10.2).
-- `name`, when present, is the **base** — stored public name becomes `effectivePrefix(provider) + name` (§6.1); omitted ⇒ base is `upstreamName`. Supplying `name` on an update is a destructive rename (old name stops resolving immediately).
-- Validation: `providerName` references an existing provider of **any** type (`openai_oauth` included); non-empty `upstreamName`; `name` when present non-empty; composed name globally unique — duplicates → `409`-style error, never auto-renamed/suffixed. Every successful create/update marks the model manually edited for discovery cleanup purposes (§6.3).
+- **Upsert on the model identity `(providerName, upstreamName)`:** an absent row is created, an existing row is rewritten. The three override fields are **full-replace** — omitted or `null` clears the override so the field keeps following discovery (§6.3); a value pins it.
+- `nameOverride`: non-empty *base*; the stored public name becomes `effectivePrefix(provider) + nameOverride` (§6.1). Changing or clearing it is a destructive rename (old name stops resolving immediately).
+- `enabledOverride`: boolean pinning the serving state (`false` = disabled).
+- `thinkingLevelsOverride`: array ⊆ canonical vocabulary (§10.2); `null` ⇒ no filtering (pure passthrough); `[]` ⇒ reasoning always stripped — suppressing gateway-injected reasoning config, never upstream-default reasoning (§10.2).
+- Validation: `providerName` references an existing provider of **any** type (`openai_oauth` included); non-empty `upstreamName`; `nameOverride` when present non-empty; composed name globally unique — duplicates → `409`-style error, never auto-renamed/suffixed.
 
-Response: `{ "id": N, "name": "<full stored name>" }`
+Response: `{ "name": "<full stored name>" }`
 
 ### 12.10 `POST /panel-api/delete-model`
 
-Request: `{ "id": N }` → Response: `{ "ok": true }`
+Request: `{ "providerName": "…", "upstreamName": "…" }` → Response: `{ "ok": true }`
 
 ### 12.11 `POST /panel-api/discover-models`
 
 Request: `{ "providerName": "…" }` → runs the discovery strategy (§6.3).
 Response: `{ "total": 12, "created": 2, "removed": 1, "skipped": 10 }`
-`total` is the current upstream-list size; `removed` counts untouched stale rows deleted locally. Upstream failures surface as a panel error with no state change. Invoked automatically right after provider creation/OAuth; re-running reconciles discovery-owned rows while preserving manually edited rows.
+`total` is the current upstream-list size; `removed` counts override-free stale rows deleted locally. Upstream failures surface as a panel error with no state change. Invoked automatically right after provider creation/OAuth; re-running reconciles discovery-owned rows while preserving overridden rows.
 
 ---
 
@@ -568,25 +574,26 @@ CREATE TABLE providers (
 
 
 CREATE TABLE models (
-    id INTEGER PRIMARY KEY,
-
-    name TEXT NOT NULL UNIQUE,
-
-    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE RESTRICT,
+    -- model identity: the owning provider plus the upstream model name; no surrogate key
+    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
 
     upstream_name TEXT NOT NULL,
 
+    -- materialized public name: model_prefix + (name_override ?? upstream_name), maintained at
+    -- every model write (§6.1)
+    name TEXT NOT NULL UNIQUE,
+
+    -- non-NULL replaces the upstream name as the base of the public name (§6.1)
+    name_override TEXT NULL,
+
+    -- non-NULL pins the serving state instead of the discovery default, which is enabled (§6.3)
+    enabled_override INTEGER NULL,
+
     -- JSON array ⊆ canonical thinking-level vocabulary; NULL ⇒ no filtering, pure passthrough (§10.2)
-    thinking_levels TEXT,
+    thinking_levels_override TEXT NULL,
 
-    enabled INTEGER NOT NULL DEFAULT 1,
-
-    -- defaults to manual ownership; discovery explicitly inserts 0 (§6.3)
-    is_manually_edited INTEGER NOT NULL DEFAULT 1
-) STRICT;
-
--- every model binds to exactly one provider (any type, openai_oauth included)
-CREATE INDEX idx_models_provider_id ON models(provider_id);
+    PRIMARY KEY (provider_id, upstream_name)
+) STRICT, WITHOUT ROWID;
 
 
 CREATE TABLE oauth_states (
@@ -611,7 +618,7 @@ Validation policy (application-side, beyond the schema):
 
 - **Human input only gets validated.** Panel API bodies are validated before write (§12.2 list). Validation constants live in the config modules (§15).
 - **OAuth/IdP responses are validated structurally; contents stored as-is.** Every token-exchange/refresh/onboarding response must be HTTP 2xx and match the JSON schema implied by §3.1 (fields present with correct JSON types). Field **content** is never validated — no token-format, expiry-plausibility, or issuer checks; shape-valid values are stored as-is. Semantic misbehavior surfaces later as `upstream_error` (§11.2), never as a local rejection. Non-OAuth upstream returns (discovered model IDs, `upstream_name`) remain pure passthrough.
-- **Structural guarantees stay in the schema:** `UNIQUE` identities, FKs with `RESTRICT`/`CASCADE`, `NOT NULL`/`DEFAULT`, `STRICT` typing.
+- **Structural guarantees stay in the schema:** `UNIQUE` identities, FKs with `CASCADE`, `NOT NULL`/`DEFAULT`, `STRICT` typing.
 - **Lifecycle:** OAuth state rows are single-use, TTL-bounded, deleted on use, swept when expired; `providers.expires_at` is the sole token-expiry authority.
 
 ---
@@ -622,7 +629,7 @@ SolidJS v2 SPA; client-side routing; native `fetch`; no state library.
 
 - Global **auth overlay** (§4.1): non-dismissable until the probe succeeds.
 - `/providers` — table grouped by type, showing `name` as-is; actions: add API-key provider (form), add/reauthenticate OpenAI & Antigravity accounts (paste-back dialog collects the redirect URL, optional Antigravity `projectId`, plus creation-only `name`/`modelPrefix`), edit, enable/disable, discover models, delete. Shows token `expiresAt`; because access tokens refresh lazily with a safety margin on each gateway request, a passed expiry is presented as idle-with-auto-refresh, never as an error state — reauthentication is required only when requests fail with a credential error.
-- `/models` — mapping table + one create/edit form: provider selector (all providers regardless of type), upstream-name field, optional **base name** field with live preview of the final public name (prefix + base, §6.1), enable checkbox, thinking-level multi-select (blank = passthrough — labeled “no filter, not off”, §10.2); delete.
+- `/models` — mapping table + one create/edit form addressed by identity: provider selector and upstream-name field (fixed while editing — retargeting means delete + recreate), optional **base name** field with live preview of the final public name (prefix + base or upstream name, §6.1), enable checkbox, thinking-level multi-select (blank = passthrough — labeled “no filter, not off”, §10.2); delete.
 - `/` redirects to `/providers`; unknown paths render via SPA fallback.
 - All SPA tunables come from `panel/config.ts` (§15). Panel calls address providers exclusively by `name` (§12.2).
 
@@ -669,16 +676,16 @@ Every non-secret tunable lives in one of four modules — its single home. **No 
 1. Credentials and API keys exist **only** as AES-GCM ciphertext in D1; plaintext never appears in storage, logs, or API responses.
 2. At most one in-flight credential mutation per provider — IdP refresh or reauth completion, serialized by the shared lease; refresh tokens never consumed twice concurrently; observers see old-or-new credentials atomically.
 3. Every upstream call carries the best available access token — margin-fresh, or current-best when a concurrent credential mutation holds the lease; a rejected token triggers exactly one forced refresh + retry (§7), whose exhaustion fails with a defined `upstream_error`.
-4. Every model binds to exactly one provider (any type, `openai_oauth` included); no pool, no default route. A model serves iff `model.enabled ∧ provider.enabled`, else identical `404 model_not_found` — disabling ≡ nonexistent. Names are globally unique; resolution is exact, case-sensitive match among enabled models.
-5. Deleting a provider atomically deletes all of its models before deleting the provider in one D1 batch; FK `RESTRICT` prevents orphaning outside that operation.
+4. Every model binds to exactly one provider (any type, `openai_oauth` included); no pool, no default route. A model serves iff `enabled_override ≠ 0` and its provider is enabled, else identical `404 model_not_found` — disabling ≡ nonexistent. Names are globally unique; resolution is exact, case-sensitive match among serving models.
+5. Every model carries an `ON DELETE CASCADE` foreign key to its provider; deleting a provider deletes all of its models in the same single statement, and no orphaned model can exist.
 6. Authentication derives exclusively from `Authorization` headers via constant-time digest comparison; the system has no cookies — none set, sent, or read.
 7. The client's `stream` value relays to the upstream as-is; the gateway never converts between streaming and non-streaming modes, never synthesizes error frames or response objects. A same-format response bypasses parsing and serialization and reaches the client in the upstream's exact body bytes; only protocol-changing paths use the IR (§9, §11.2). Before streaming begins the client sees that native or translated response, or an error; a mid-stream failure simply ends the stream — the missing terminal event (`response.completed` / `[DONE]`) is the error signal. No hangs.
 8. Client disconnects deterministically cancel the upstream request.
 9. OAuth states are single-use, expire after `OAUTH_STATE_TTL_SECONDS`, and are deleted on use.
-10. Discovery identifies rows by `(provider_id, upstream_name)`, never duplicates renamed models, and atomically deletes only untouched discovery-owned rows that disappeared upstream; manually edited rows are never changed or removed. New discovered rows are disabled.
+10. Discovery identifies rows by the `(provider_id, upstream_name)` primary key, never duplicates a row, re-derives unoverridden public names from the current prefix, and atomically deletes only override-free rows that disappeared upstream; overridden rows are never changed or removed. Newly discovered rows are enabled and fully unoverridden.
 11. Client-requested reasoning effort is validated as a non-empty string and filtered against the model's `thinkingLevels` whitelist (when present) before any upstream call; it is never clamped to a value set by the gateway (§10.2).
 12. Non-streaming upstream bodies are never read beyond `MAX_RESPONSE_BYTES`; overflow aborts the upstream fetch → `502 upstream_response_too_large`.
-13. A provider's `name` is its sole externally visible identifier — unique, immutable, displayed as-is; numeric `providers.id` never leaves storage. Prefixes are not unique. The public model identity is exactly `models.name`; `modelPrefix` affects only models created/discovered afterward; a rename permanently retires the former name (no aliases, no shadow routes).
+13. A provider's `name` is its sole externally visible identifier — unique, immutable, displayed as-is; numeric `providers.id` never leaves storage. Prefixes are not unique. The public model identity is exactly `models.name`; a model's storage identity is `(provider_id, upstream_name)`. `modelPrefix` changes propagate to unoverridden models at their next write (§6.1); a rename permanently retires the former name (no aliases, no shadow routes).
 14. No request, response, error, or usage data is ever persisted.
 15. Whenever the client and upstream protocols match — Responses→Responses or Chat Completions→Chat Completions — the response parser and serializer are not invoked. Upstream successes and errors reach the client with exact body bytes and status preserved (§11.2). Only protocol-changing paths carry IR-rendered responses or gateway-authored upstream-error envelopes.
 

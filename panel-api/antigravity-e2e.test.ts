@@ -199,7 +199,7 @@ describe("Antigravity OAuth end-to-end: paste-back to Responses API", () => {
         });
         expect(completeResponse.status).toBe(200);
 
-        // Step 3 — discovery runs automatically from the SPA; then publish one model.
+        // Step 3 — discovery runs automatically from the SPA; discovered models start enabled.
         const discoverResponse = await panel(panelApi, "discover-models", {
             providerName: "my-google",
         });
@@ -213,7 +213,6 @@ describe("Antigravity OAuth end-to-end: paste-back to Responses API", () => {
         const listModels = await panel(panelApi, "list-models");
         const { models } = (await listModels.json()) as {
             models: Array<{
-                id: number;
                 name: string;
                 enabled: boolean;
                 providerName: string;
@@ -222,19 +221,8 @@ describe("Antigravity OAuth end-to-end: paste-back to Responses API", () => {
         };
         const geminiModel = models.find((model) => model.upstreamName === "gemini-3.7-flash");
         if (geminiModel === undefined) throw new Error("discovered gemini model missing");
-        expect(geminiModel.enabled).toBe(false);
+        expect(geminiModel.enabled).toBe(true);
         expect(geminiModel.name).toBe("g/gemini-3.7-flash");
-        const saveResponse = await panel(panelApi, "save-model", {
-            id: geminiModel.id,
-            enabled: true,
-            providerName: "my-google",
-            upstreamName: geminiModel.upstreamName,
-        });
-        expect(saveResponse.status).toBe(200);
-        expect(await saveResponse.json()).toEqual({
-            id: geminiModel.id,
-            name: "g/gemini-3.7-flash",
-        });
 
         // Step 4 — serve a Responses request with the initial access token.
         const firstCall = await handleGatewayRequest(

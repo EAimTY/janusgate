@@ -82,11 +82,11 @@ interface OpenAiCompatibleProviderSummary extends ProviderSummaryBase {
 export type ProviderSummary = OAuthProviderSummary | OpenAiCompatibleProviderSummary;
 
 export interface ModelSummary {
-    readonly id: number;
-    readonly name: string;
     readonly providerName: string;
     readonly providerType: ProviderType;
     readonly upstreamName: string;
+    readonly name: string;
+    readonly nameOverride: string | null;
     readonly enabled: boolean;
     readonly thinkingLevels: readonly ThinkingLevel[] | null;
 }

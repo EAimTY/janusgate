@@ -185,19 +185,19 @@ describe("panel API", () => {
         });
 
         const savedModel = await request(app, "/save-model", "POST", {
-            enabled: true,
-            name: "manual",
+            enabledOverride: true,
+            nameOverride: "manual",
             providerName: "custom",
-            thinkingLevels: [
+            thinkingLevelsOverride: [
                 "high",
                 "low",
             ],
             upstreamName: "wire-manual",
         });
         expect(savedModel.status).toBe(200);
-        const savedModelBody: unknown = await savedModel.json();
-        if (!isJsonObject(savedModelBody)) throw new Error("invalid saved model response");
-        expect(savedModelBody["name"]).toBe("custom/manual");
+        expect(await savedModel.json()).toEqual({
+            name: "custom/manual",
+        });
 
         const models = await request(app, "/list-models", "GET");
         const modelBody: unknown = await models.json();
@@ -206,9 +206,10 @@ describe("panel API", () => {
         }
         const listedModels = modelBody["models"];
         expect(listedModels).toHaveLength(3);
-        expect(listedModels[2]).toMatchObject({
+        expect(listedModels[0]).toEqual({
             enabled: true,
             name: "custom/manual",
+            nameOverride: "manual",
             providerName: "custom",
             providerType: "openai_compatible",
             thinkingLevels: [
@@ -218,31 +219,58 @@ describe("panel API", () => {
             upstreamName: "wire-manual",
         });
 
-        const modelId = savedModelBody["id"];
-        if (typeof modelId !== "number") throw new Error("invalid saved model id");
+        expect(
+            (
+                await request(app, "/save-model", "POST", {
+                    nameOverride: "wire-a",
+                    providerName: "custom",
+                    upstreamName: "wire-manual",
+                })
+            ).status,
+        ).toBe(409);
+
+        // save-model is a full-replace upsert on (providerName, upstreamName): a save that omits
+        // an override clears it, and a disabled model clears to enabled once more.
         await request(app, "/save-model", "POST", {
-            enabled: false,
-            id: modelId,
+            enabledOverride: false,
             providerName: "custom",
             upstreamName: "wire-manual",
         });
         await request(app, "/save-model", "POST", {
-            id: modelId,
             providerName: "custom",
             upstreamName: "wire-manual",
         });
         const persisted = await env.DATABASE.prepare(
-            "SELECT enabled, is_manually_edited FROM models WHERE id = ?",
-        )
-            .bind(modelId)
-            .first<{
-                enabled: number;
-                is_manually_edited: number;
-            }>();
+            `SELECT name, name_override, enabled_override FROM models
+            WHERE provider_id = (SELECT id FROM providers WHERE name = 'custom')
+                AND upstream_name = 'wire-manual'`,
+        ).first<{
+            name: string;
+            name_override: string | null;
+            enabled_override: number | null;
+        }>();
         expect(persisted).toEqual({
-            enabled: 0,
-            is_manually_edited: 1,
+            enabled_override: null,
+            name: "custom/wire-manual",
+            name_override: null,
         });
+
+        expect(
+            (
+                await request(app, "/delete-model", "POST", {
+                    providerName: "custom",
+                    upstreamName: "wire-manual",
+                })
+            ).status,
+        ).toBe(200);
+        expect(
+            (
+                await request(app, "/delete-model", "POST", {
+                    providerName: "custom",
+                    upstreamName: "wire-manual",
+                })
+            ).status,
+        ).toBe(404);
 
         expect(
             (
