@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { encodeBase64Url } from "/common/base64";
 import { isJsonObject } from "/common/validation";
 import { OPENAI_TOKEN_URL } from "/providers/openai";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
@@ -30,8 +31,9 @@ function authorizedHeaders(isPost = false): Headers {
 }
 
 function oauthIdToken(): string {
-    const encode = (value: string): string =>
-        btoa(value).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    // The fixture payloads are pure ASCII, so UTF-8 encoding reproduces the exact bytes the
+    // JWT segments carry.
+    const encode = (value: string): string => encodeBase64Url(new TextEncoder().encode(value));
     return `${encode("{}")}.${encode(
         JSON.stringify({
             "https://api.openai.com/auth": {

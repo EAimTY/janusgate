@@ -70,6 +70,54 @@ function compatibleFetchUpstream(modelIds: readonly string[]): typeof fetch {
         });
 }
 
+interface RecordedStatement {
+    readonly parameters: readonly unknown[];
+    readonly sql: string;
+}
+
+/**
+ * Delegating database that records every bound statement in call order, so a test can assert on
+ * the exact statement mix of the atomic discovery batch instead of inferring it from the
+ * resulting rows alone.
+ */
+function recordingDatabase(database: D1Database): {
+    readonly batchedStatements: readonly RecordedStatement[];
+    readonly database: D1Database;
+} {
+    const batchedStatements: RecordedStatement[] = [];
+    return {
+        batchedStatements,
+        database: new Proxy(database, {
+            get(target, property) {
+                if (property === "prepare") {
+                    return (query: string): D1PreparedStatement => {
+                        const statement = target.prepare(query);
+                        return new Proxy(statement, {
+                            get(statementTarget, statementProperty) {
+                                if (statementProperty === "bind") {
+                                    return (...values: unknown[]) => {
+                                        batchedStatements.push({
+                                            parameters: values,
+                                            sql: query,
+                                        });
+                                        return statementTarget.bind(...values);
+                                    };
+                                }
+                                const value = Reflect.get(statementTarget, statementProperty);
+                                return typeof value === "function"
+                                    ? value.bind(statementTarget)
+                                    : value;
+                            },
+                        });
+                    };
+                }
+                const value = Reflect.get(target, property);
+                return typeof value === "function" ? value.bind(target) : value;
+            },
+        }),
+    };
+}
+
 describe("model discovery", () => {
     it("authenticates compatible discovery and atomically creates enabled unoverridden mappings", async () => {
         const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
@@ -321,6 +369,93 @@ describe("model discovery", () => {
         ]);
     });
 
+    it("deletes stale rows unrenamed and lets a new model claim the freed name in the same run", async () => {
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider("custom", "openai_compatible", {
+            apiKey: "key",
+        });
+        const provider = await findProviderByName(env.DATABASE, "custom");
+        if (provider === null) throw new Error("provider missing");
+
+        await discoverProviderModels(
+            env.DATABASE,
+            provider,
+            cipher,
+            compatibleFetchUpstream([
+                "alpha",
+                "beta",
+            ]),
+        );
+        // Under the changed prefix, the stale "alpha" row would re-derive to "custom/alalpha",
+        // while the newly discovered "pha" derives to exactly the name the deleted row frees:
+        // "custom/alpha". Discovery must insert "pha" in this run and never rename the deleted row.
+        await env.DATABASE.prepare(
+            "UPDATE providers SET model_prefix = 'custom/al' WHERE name = 'custom'",
+        ).run();
+        const prefixedProvider = await findProviderByName(env.DATABASE, "custom");
+        if (prefixedProvider === null) throw new Error("provider missing");
+
+        const { batchedStatements, database: recording } = recordingDatabase(env.DATABASE);
+        await expect(
+            discoverProviderModels(
+                recording,
+                prefixedProvider,
+                cipher,
+                compatibleFetchUpstream([
+                    "pha",
+                    "beta",
+                ]),
+            ),
+        ).resolves.toEqual({
+            total: 2,
+            created: 1,
+            removed: 1,
+            skipped: 1,
+        });
+
+        // Exactly one rename — the surviving beta row; the deleted alpha row is no target.
+        expect(batchedStatements.filter(({ sql }) => sql.startsWith("UPDATE"))).toEqual([
+            {
+                parameters: [
+                    "custom/albeta",
+                    prefixedProvider.id,
+                    "beta",
+                ],
+                sql: expect.stringContaining("UPDATE models"),
+            },
+        ]);
+        // The new model is inserted in this same run, not deferred to a second discovery.
+        expect(batchedStatements.filter(({ sql }) => sql.startsWith("INSERT"))).toEqual([
+            {
+                parameters: [
+                    prefixedProvider.id,
+                    "pha",
+                    "custom/alpha",
+                ],
+                sql: expect.stringContaining("INSERT INTO models"),
+            },
+        ]);
+
+        const rows = await env.DATABASE.prepare(
+            "SELECT upstream_name, name FROM models WHERE provider_id = ? ORDER BY upstream_name",
+        )
+            .bind(prefixedProvider.id)
+            .all<{
+                name: string;
+                upstream_name: string;
+            }>();
+        expect(rows.results).toEqual([
+            {
+                name: "custom/albeta",
+                upstream_name: "beta",
+            },
+            {
+                name: "custom/alpha",
+                upstream_name: "pha",
+            },
+        ]);
+    });
+
     it("skips creating a model whose derived name is already occupied", async () => {
         const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
         await insertProvider("custom", "openai_compatible", {
@@ -562,6 +697,53 @@ describe("model discovery", () => {
             discoverProviderModels(env.DATABASE, provider, cipher, fetchUpstream),
         ).rejects.toMatchObject({
             message: "Antigravity credentials could not be decrypted",
+            status: 502,
+        });
+        expect(fetchUpstream).not.toHaveBeenCalled();
+    });
+
+    it("maps undecryptable compatible-provider credentials onto the 502 credential diagnostic", async () => {
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        await insertProvider(
+            "custom",
+            "openai_compatible",
+            new Uint8Array([
+                1,
+            ]),
+        );
+        const provider = await findProviderByName(env.DATABASE, "custom");
+        if (provider === null) throw new Error("provider missing");
+        const fetchUpstream = vi.fn<typeof fetch>();
+
+        // A stored-secret problem keeps the designed credential diagnostic instead of surfacing
+        // as an internal 500.
+        await expect(
+            discoverProviderModels(env.DATABASE, provider, cipher, fetchUpstream),
+        ).rejects.toMatchObject({
+            message: "OpenAI-compatible credentials could not be decrypted",
+            status: 502,
+        });
+        expect(fetchUpstream).not.toHaveBeenCalled();
+    });
+
+    it("maps stored credentials of the wrong shape onto the 502 credential diagnostic", async () => {
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
+        // A validly encrypted Antigravity-shaped secret stored for an OpenAI-compatible
+        // provider: the ciphertext decrypts, the shape does not match — a stored-credential
+        // problem, not the request-validation 400 a raw ValidationError would produce.
+        await insertProvider("custom", "openai_compatible", {
+            accessToken: "token",
+            projectId: "project",
+            refreshToken: "refresh",
+        });
+        const provider = await findProviderByName(env.DATABASE, "custom");
+        if (provider === null) throw new Error("provider missing");
+        const fetchUpstream = vi.fn<typeof fetch>();
+
+        await expect(
+            discoverProviderModels(env.DATABASE, provider, cipher, fetchUpstream),
+        ).rejects.toMatchObject({
+            message: "Stored credentials do not match the provider type",
             status: 502,
         });
         expect(fetchUpstream).not.toHaveBeenCalled();

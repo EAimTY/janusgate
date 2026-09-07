@@ -7,7 +7,8 @@ import {
     mapModelRow,
     type StoredProvider,
 } from "/common/database";
-import { CredentialDecryptionError, ProviderAccessError } from "/common/errors";
+import type { AntigravityOAuthCredentials, OpenAiCompatibleCredentials } from "/common/domain";
+import { CredentialDecryptionError, ProviderAccessError, ValidationError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { composeModelName, isJsonObject } from "/common/validation";
 import { ensureFreshProviderAccess } from "/providers/access";
@@ -27,12 +28,20 @@ function upstreamDiscoveryError(message: string): PanelApiError {
     return new PanelApiError(502, message);
 }
 
+/** Antigravity credentials plus the possibly-refreshed provider row backing them. */
+interface AntigravityProviderAccess {
+    readonly credentials: AntigravityOAuthCredentials;
+    readonly provider: StoredProvider;
+}
+
 /**
- * Refresh credentials ahead of Antigravity discovery, mapping credential-access failures onto
- * the panel 502. The access layer's message is the sanitized, bounded §7 diagnostic — including
- * the RFC 6749 error code — and is forwarded verbatim instead of a fixed string. Client-disconnect
- * aborts and contract violations are rethrown: nobody is left to answer a fabricated 502, and an
- * internal error must stay internal instead of masquerading as an upstream failure.
+ * Refreshes credentials ahead of Antigravity discovery and returns them decrypted, mapping
+ * credential failures onto the panel 502. The access layer's message is the sanitized, bounded
+ * §7 diagnostic — including the RFC 6749 error code — and is forwarded verbatim instead of a
+ * fixed string. Client-disconnect aborts and contract violations are rethrown: nobody is left
+ * to answer a fabricated 502, and an internal error must stay internal instead of masquerading
+ * as an upstream failure. Returning the decrypted credentials keeps every later use on this
+ * mapped path, so no call site decrypts stored secrets bare.
  */
 async function ensureDiscoveryProviderAccess(
     database: D1Database,
@@ -44,19 +53,28 @@ async function ensureDiscoveryProviderAccess(
         isForced?: boolean;
         rejectedAccessToken?: string;
     } = {},
-): Promise<StoredProvider> {
+): Promise<AntigravityProviderAccess> {
     try {
-        return (
-            await ensureFreshProviderAccess(database, provider, cipher, {
-                fetchUpstream,
-                ...options,
-                ...(signal === undefined
-                    ? {}
-                    : {
-                          signal,
-                      }),
-            })
-        ).provider;
+        const access = await ensureFreshProviderAccess(database, provider, cipher, {
+            fetchUpstream,
+            ...options,
+            // `signal?: AbortSignal` in the access layer rejects an explicit `undefined` under
+            // exactOptionalPropertyTypes, so the key is only present for a real signal.
+            ...(signal === undefined
+                ? {}
+                : {
+                      signal,
+                  }),
+        });
+        if (!("projectId" in access.credentials)) {
+            // Contract violation: discovery only invokes this for Antigravity providers, and the
+            // access layer always returns credentials matching the stored provider type.
+            throw new Error("Antigravity discovery received non-Antigravity credentials");
+        }
+        return {
+            credentials: access.credentials,
+            provider: access.provider,
+        };
     } catch (error) {
         if (signal?.aborted) throw error;
         if (error instanceof CredentialDecryptionError) {
@@ -118,7 +136,7 @@ async function fetchAntigravityModelNames(
 ): Promise<string[]> {
     // Margin-refresh before the first call so an idle-but-expired token does not waste an
     // upstream roundtrip; a mid-flight rejection still recovers through the forced loop below.
-    let effectiveProvider = await ensureDiscoveryProviderAccess(
+    let access = await ensureDiscoveryProviderAccess(
         database,
         provider,
         cipher,
@@ -127,16 +145,15 @@ async function fetchAntigravityModelNames(
     );
     let response: Response | undefined;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-        const credentials = assertCredentialsMatchProvider(
-            "antigravity_oauth",
-            await cipher.decrypt(effectiveProvider.encryptedCredentials),
-        );
         try {
             response = await fetchUpstream(ANTIGRAVITY_FETCH_MODELS_URL, {
                 body: JSON.stringify({
-                    project: credentials.projectId,
+                    project: access.credentials.projectId,
                 }),
-                headers: antigravityRequestHeaders(credentials.accessToken, "application/json"),
+                headers: antigravityRequestHeaders(
+                    access.credentials.accessToken,
+                    "application/json",
+                ),
                 method: "POST",
                 signal: oauthUpstreamSignal(signal),
             });
@@ -144,15 +161,15 @@ async function fetchAntigravityModelNames(
             throw upstreamDiscoveryError("The Antigravity model discovery request failed");
         }
         if (response.status !== 401 || attempt === 1) break;
-        effectiveProvider = await ensureDiscoveryProviderAccess(
+        access = await ensureDiscoveryProviderAccess(
             database,
-            effectiveProvider,
+            access.provider,
             cipher,
             fetchUpstream,
             signal,
             {
                 isForced: true,
-                rejectedAccessToken: credentials.accessToken,
+                rejectedAccessToken: access.credentials.accessToken,
             },
         );
     }
@@ -175,6 +192,31 @@ async function fetchAntigravityModelNames(
     return modelNames;
 }
 
+/**
+ * Decrypts static-key credentials, mapping stored-credential problems onto the same panel 502
+ * credential diagnostic as OAuth credential-access failures: an undecryptable ciphertext and a
+ * shape that no longer matches the provider type are both stored-secret problems the admin must
+ * see as such — not a request-validation 400 or an internal 500.
+ */
+async function decryptCompatibleCredentials(
+    provider: StoredProvider,
+    cipher: CredentialsCipher,
+): Promise<OpenAiCompatibleCredentials> {
+    let credentials: unknown;
+    try {
+        credentials = await cipher.decrypt(provider.encryptedCredentials);
+        return assertCredentialsMatchProvider("openai_compatible", credentials);
+    } catch (error) {
+        if (error instanceof CredentialDecryptionError) {
+            throw upstreamDiscoveryError("OpenAI-compatible credentials could not be decrypted");
+        }
+        if (error instanceof ValidationError) {
+            throw upstreamDiscoveryError("Stored credentials do not match the provider type");
+        }
+        throw error;
+    }
+}
+
 async function fetchCompatibleModelNames(
     provider: StoredProvider,
     cipher: CredentialsCipher,
@@ -187,10 +229,7 @@ async function fetchCompatibleModelNames(
     if (provider.protocol === null) {
         throw new Error("OpenAI-compatible provider is missing its protocol");
     }
-    const credentials = assertCredentialsMatchProvider(
-        "openai_compatible",
-        await cipher.decrypt(provider.encryptedCredentials),
-    );
+    const credentials = await decryptCompatibleCredentials(provider, cipher);
 
     // Both protocol families list models at `{baseUrl}/models`; they differ in auth header,
     // response shape, and (for Gemini) the `models/` name prefix.
@@ -270,17 +309,22 @@ export async function discoverProviderModels(
         (model) => !upstreamNameSet.has(model.upstreamName) && !hasModelOverrides(model),
     );
     const deletedNames = new Set(staleModels.map((model) => model.name));
+    const staleUpstreamNames = new Set(staleModels.map((model) => model.upstreamName));
     const occupiedNames = new Set(
         existingModels.filter((model) => !deletedNames.has(model.name)).map((model) => model.name),
     );
     const existingUpstreamNames = new Set(providerModels.map((model) => model.upstreamName));
 
     // Unoverridden public names re-derive from the current prefix on every run, so a prefix
-    // change propagates at the next discovery. A derived name that is still occupied keeps the
-    // previous name resolvable instead.
+    // change propagates at the next discovery. Stale rows are exempt: this same batch deletes
+    // them ahead of the renames, so re-deriving one would target a deleted row and reserve its
+    // derived name against a brand-new upstream model in this very run. Overridden rows are
+    // never stale and keep re-deriving. An occupied derived name keeps the previous name
+    // resolvable instead.
     const renameStatements: D1PreparedStatement[] = [];
     for (const model of providerModels) {
         if (model.nameOverride !== null) continue;
+        if (staleUpstreamNames.has(model.upstreamName)) continue;
         const derivedName = composeModelName(provider.modelPrefix, model.upstreamName);
         if (model.name === derivedName || occupiedNames.has(derivedName)) continue;
         occupiedNames.delete(model.name);
