@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { type ProviderSummary, UPSTREAM_PROTOCOLS, type UpstreamProtocol } from "/common/domain";
+import { parseUpstreamProtocol } from "/common/validation";
 import {
     MODEL_PREFIX_MAX_LENGTH,
     MODEL_PREFIX_PATTERN,
@@ -8,6 +9,7 @@ import {
     PROVIDER_NAME_PATTERN,
 } from "/config";
 import { errorMessage, type PanelApiClient } from "./api-client";
+import { protocolLabel } from "./labels";
 import {
     buttonGhostClasses,
     buttonPrimaryClasses,
@@ -152,16 +154,15 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
                         <select
                             class={formControlClasses}
                             value={editorProtocol()}
-                            onChange={(event) => {
-                                const value = event.currentTarget.value;
-                                for (const protocol of UPSTREAM_PROTOCOLS) {
-                                    if (value === protocol) setEditorProtocol(protocol);
-                                }
-                            }}
+                            onChange={(event) =>
+                                setEditorProtocol(parseUpstreamProtocol(event.currentTarget.value))
+                            }
                         >
-                            <option value="openai_response">Responses</option>
-                            <option value="openai_chat_completion">Chat Completions</option>
-                            <option value="gemini_generate_content">Gemini GenerateContent</option>
+                            <For each={UPSTREAM_PROTOCOLS}>
+                                {(protocol) => (
+                                    <option value={protocol}>{protocolLabel(protocol)}</option>
+                                )}
+                            </For>
                         </select>
                         <small>
                             Gemini endpoints use the x-goog-api-key header; the others use a bearer
