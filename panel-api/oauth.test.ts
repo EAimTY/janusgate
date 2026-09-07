@@ -36,7 +36,9 @@ function openAiIdToken(accountId: string): string {
         }),
     )}.${encodeBase64Url(
         JSON.stringify({
-            chatgpt_account_id: accountId,
+            "https://api.openai.com/auth": {
+                chatgpt_account_id: accountId,
+            },
         }),
     )}.signature`;
 }

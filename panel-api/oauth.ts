@@ -262,9 +262,15 @@ function openAiCredentials(token: AuthorizationToken): OpenAiOAuthCredentials {
         throw new Error("OpenAI token is missing its id_token");
     }
     const claims = decodeJwtPayload(token.idToken);
+    // OpenAI nests the ChatGPT claims under the "https://api.openai.com/auth" namespace;
+    // chatgpt_account_id there is the default workspace the Codex CLI binds to.
+    const authClaim = claims["https://api.openai.com/auth"];
+    if (!isJsonObject(authClaim)) {
+        throw new PanelApiError(502, "OpenAI id_token is missing the auth claim");
+    }
     return {
         accessToken: token.accessToken,
-        accountId: requireResponseString(claims, "chatgpt_account_id", "OpenAI id_token"),
+        accountId: requireResponseString(authClaim, "chatgpt_account_id", "OpenAI id_token"),
         refreshToken: token.refreshToken,
     };
 }

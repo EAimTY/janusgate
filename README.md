@@ -79,7 +79,7 @@ Per-type stored config and credentials payloads:
 
 | Type | Stored config | Credentials payload (encrypted, §4.3) |
 | --- | --- | --- |
-| `openai_oauth` | `enabled`, credentials, token `expires_at` | `{ "accessToken", "refreshToken", "accountId" }` — `accountId` parsed from the `chatgpt_account_id` claim of the OAuth `id_token` (default workspace; workspace selection unsupported) |
+| `openai_oauth` | `enabled`, credentials, token `expires_at` | `{ "accessToken", "refreshToken", "accountId" }` — `accountId` parsed from the `chatgpt_account_id` field inside the `https://api.openai.com/auth` claim of the OAuth `id_token` (default workspace; workspace selection unsupported) |
 | `antigravity_oauth` | `enabled`, credentials, token `expires_at` | `{ "accessToken", "refreshToken", "projectId" }` — `projectId` resolved from the selected account during login/reauthentication (§8.4), stored with tokens |
 | `openai_compatible` | `enabled`, `baseUrl` (valid http(s) URL, canonicalized to **no** trailing slash), `protocol` ∈ {`openai_response`, `openai_chat_completion`, `gemini_generate_content`}, credentials | `{ "apiKey" }` — mandatory at creation; optional on update (omitted ⇒ preserve existing) |
 

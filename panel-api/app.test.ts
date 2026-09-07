@@ -34,7 +34,9 @@ function oauthIdToken(): string {
         btoa(value).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
     return `${encode("{}")}.${encode(
         JSON.stringify({
-            chatgpt_account_id: "account",
+            "https://api.openai.com/auth": {
+                chatgpt_account_id: "account",
+            },
         }),
     )}.x`;
 }
