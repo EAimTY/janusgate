@@ -863,7 +863,11 @@ export function renderChatCompletionsResponse(
         if (event.type === "text_delta") content += event.delta;
         else if (event.type === "reasoning_delta") {
             reasoning += event.delta;
-            reasoningThoughtSignature ??= event.thoughtSignature;
+            // Last-wins: a thought signature covers only the content issued up to it, so the
+            // latest signature is the one that matches the fully coalesced reasoning text.
+            if (event.thoughtSignature !== undefined) {
+                reasoningThoughtSignature = event.thoughtSignature;
+            }
         } else if (event.type === "tool_call_start") {
             const toolCall: ChatToolCall = {
                 id: event.id,

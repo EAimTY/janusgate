@@ -879,10 +879,16 @@ export function renderResponsesResponse(
     for (const event of events) {
         if (event.type === "text_delta") {
             text += event.delta;
-            textThoughtSignature ??= event.thoughtSignature;
+            // Last-wins: a thought signature covers only the content issued up to it, so the
+            // latest signature is the one that matches the fully coalesced text or reasoning.
+            if (event.thoughtSignature !== undefined) {
+                textThoughtSignature = event.thoughtSignature;
+            }
         } else if (event.type === "reasoning_delta") {
             reasoning += event.delta;
-            reasoningThoughtSignature ??= event.thoughtSignature;
+            if (event.thoughtSignature !== undefined) {
+                reasoningThoughtSignature = event.thoughtSignature;
+            }
         } else if (event.type === "tool_call_start") {
             const tool: {
                 id: string;
@@ -1072,7 +1078,9 @@ export function createResponsesStreamRenderer(
                     );
                 }
                 text += event.delta;
-                textThoughtSignature ??= event.thoughtSignature;
+                if (event.thoughtSignature !== undefined) {
+                    textThoughtSignature = event.thoughtSignature;
+                }
                 frames.push(
                     encodeSse("response.output_text.delta", {
                         type: "response.output_text.delta",
@@ -1118,7 +1126,9 @@ export function createResponsesStreamRenderer(
                     );
                 }
                 reasoning += event.delta;
-                reasoningThoughtSignature ??= event.thoughtSignature;
+                if (event.thoughtSignature !== undefined) {
+                    reasoningThoughtSignature = event.thoughtSignature;
+                }
                 frames.push(
                     encodeSse("response.reasoning_summary_text.delta", {
                         type: "response.reasoning_summary_text.delta",

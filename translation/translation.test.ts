@@ -8,6 +8,7 @@ import {
     renderChatCompletionsStream,
 } from "./chat-completions";
 import { TranslationError } from "./errors";
+import type { IrEvent } from "./ir";
 import {
     createResponsesStreamRenderer,
     parseResponsesRequest,
@@ -845,5 +846,121 @@ test("Chat Completions streams with null string fields translate without truncat
     assert(
         responsesFrames.some((frame) => frame.includes(JSON.stringify('{"q":1}'))),
         "Responses stream carries complete tool arguments",
+    );
+});
+
+test("Coalesced thought signatures keep the last signature issued in a turn", () => {
+    // Gemini 3 validates a thought signature against the content it covers, and the
+    // signature covering the freshest content arrives last in the turn (official docs:
+    // the signature sits in the last part of a non-function-call response). When a turn
+    // coalesces into one outward signature, the latest one must win, never the first.
+    const turnEvents: IrEvent[] = [
+        {
+            type: "message_start",
+        },
+        {
+            type: "reasoning_delta",
+            delta: "early thought",
+            thoughtSignature: "sig-reasoning-early",
+        },
+        {
+            type: "reasoning_delta",
+            delta: " late thought",
+            thoughtSignature: "sig-reasoning-late",
+        },
+        {
+            type: "text_delta",
+            delta: "early text",
+            thoughtSignature: "sig-text-early",
+        },
+        {
+            type: "text_delta",
+            delta: " late text",
+            thoughtSignature: "sig-text-late",
+        },
+        {
+            type: "finish",
+            reason: "stop",
+        },
+        {
+            type: "done",
+        },
+    ];
+
+    const chatResponse = renderChatCompletionsResponse(turnEvents, {
+        id: "chat_multi",
+        model: "public-model",
+        created: 60,
+    });
+    assertEqual(
+        chatResponse.choices[0]?.message.reasoning_content,
+        "early thought late thought",
+        "reasoning deltas accumulate into one message",
+    );
+    assertEqual(
+        chatResponse.choices[0]?.message.reasoning_thought_signature,
+        "sig-reasoning-late",
+        "Chat Completions coalesces reasoning signatures last-wins",
+    );
+
+    const responsesObject = renderResponsesResponse(turnEvents, {
+        id: "resp_multi",
+        model: "public-model",
+        created: 70,
+    });
+    assertEqual(
+        responsesObject.output[0],
+        {
+            id: "resp_multi_reasoning",
+            type: "reasoning",
+            summary: [
+                {
+                    type: "summary_text",
+                    text: "early thought late thought",
+                },
+            ],
+            thought_signature: "sig-reasoning-late",
+        },
+        "Responses coalesces reasoning signatures last-wins",
+    );
+    assertEqual(
+        responsesObject.output[1],
+        {
+            id: "resp_multi_message",
+            type: "message",
+            role: "assistant",
+            status: "completed",
+            content: [
+                {
+                    type: "output_text",
+                    text: "early text late text",
+                    annotations: [],
+                    thought_signature: "sig-text-late",
+                },
+            ],
+        },
+        "Responses coalesces text signatures last-wins",
+    );
+
+    const streamFrames = createResponsesStreamRenderer({
+        id: "resp_multi_stream",
+        model: "public-model",
+        created: 80,
+    })(turnEvents);
+    assert(
+        streamFrames.some(
+            (frame) =>
+                frame.startsWith("event: response.output_item.done") &&
+                frame.includes('"thought_signature":"sig-reasoning-late"'),
+        ),
+        "Responses stream coalesces reasoning signatures last-wins",
+    );
+    assert(
+        streamFrames.some(
+            (frame) =>
+                frame.startsWith("event: response.content_part.done") &&
+                frame.includes('"thought_signature":"sig-text-late"'),
+        ),
+        "Responses stream coalesces text signatures last-wins",
     );
 });
