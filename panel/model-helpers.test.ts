@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isThinkingLevel } from "/common/validation";
-import { composeModelName, previewModelName, toggleThinkingLevel } from "./model-helpers";
+import { composeModelName, isThinkingLevel } from "/common/validation";
+import { previewModelName, toggleThinkingLevel } from "./model-helpers";
 
 describe("model helpers", () => {
     it("composes model names with or without a prefix", () => {

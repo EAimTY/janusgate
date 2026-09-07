@@ -6,6 +6,8 @@ import {
     type ProviderSummary,
     type ProviderType,
 } from "/common/domain";
+import { unixSeconds } from "/common/validation";
+import { MILLISECONDS_PER_SECOND } from "/config";
 import { errorMessage, type PanelApiClient } from "./api-client";
 import { panelConfig } from "./config";
 import { protocolLabel, providerTypeLabel } from "./labels";
@@ -67,7 +69,7 @@ function expiryPresentation(provider: ProviderSummary): {
             label: "Static credential",
             tone: "neutral",
         };
-    const secondsRemaining = provider.expiresAt - Math.floor(Date.now() / 1000);
+    const secondsRemaining = provider.expiresAt - unixSeconds();
     if (secondsRemaining <= 0)
         return {
             label: "Idle — refreshes automatically on use",
@@ -81,7 +83,7 @@ function expiryPresentation(provider: ProviderSummary): {
         };
     }
     return {
-        label: new Date(provider.expiresAt * 1000).toLocaleString(),
+        label: new Date(provider.expiresAt * MILLISECONDS_PER_SECOND).toLocaleString(),
         tone: "good",
     };
 }

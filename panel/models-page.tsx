@@ -2,6 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
 import type { ModelSummary, ProviderSummary } from "/common/domain";
 import { errorMessage, type PanelApiClient } from "./api-client";
+import { providerTypeLabel } from "./labels";
 import { ModelEditorForm } from "./model-editor-form";
 import { createPageState } from "./page-state";
 import {
@@ -195,7 +196,7 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
                                                     <td>
                                                         <span>{model.providerName}</span>
                                                         <small class="mt-1 block max-w-[270px] overflow-hidden text-[10px] text-ellipsis whitespace-nowrap text-[#89938d]">
-                                                            {model.providerType}
+                                                            {providerTypeLabel(model.providerType)}
                                                         </small>
                                                     </td>
                                                     <td>

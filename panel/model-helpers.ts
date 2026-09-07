@@ -3,7 +3,6 @@ import { CANONICAL_THINKING_LEVELS, type ThinkingLevel } from "/config";
 
 export const thinkingLevels = CANONICAL_THINKING_LEVELS;
 export type { ThinkingLevel };
-export { composeModelName };
 
 interface ModelNamePreviewInput {
     modelPrefix: string;

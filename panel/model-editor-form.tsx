@@ -118,7 +118,8 @@ export function ModelEditorForm(props: ModelEditorFormProps): JSX.Element {
                 </h2>
                 <Show when={editingModel !== null}>
                     <p class="m-0 text-xs text-[#66726b]">
-                        Leave base name blank to preserve the current public name.
+                        Clearing the base name follows discovery again; the current override stays
+                        prefilled below until you save.
                     </p>
                 </Show>
             </header>
