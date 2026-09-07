@@ -54,7 +54,7 @@ export interface CompleteOAuthInput {
     readonly projectId?: string;
 }
 
-export interface SaveModelInput {
+interface SaveModelInput {
     readonly id?: number;
     readonly providerName: string;
     readonly upstreamName: string;

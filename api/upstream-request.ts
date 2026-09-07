@@ -46,7 +46,7 @@ function parseTranslatedClientRequest(
         : parseChatCompletionsRequest(body);
 }
 
-export function upstreamProtocol(route: ResolvedModelRoute): UpstreamProtocol {
+function upstreamProtocol(route: ResolvedModelRoute): UpstreamProtocol {
     if (route.provider.type === "antigravity_oauth") return "gemini_generate_content";
     if (route.provider.type === "openai_oauth") return "openai_response";
     if (route.provider.protocol === null)

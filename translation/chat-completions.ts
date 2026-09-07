@@ -192,7 +192,10 @@ export function parseChatCompletionsRequest(value: unknown): IrRequest {
         toolChoice?.functionName !== undefined &&
         !tools.some((tool) => tool.name === toolChoice.functionName)
     ) {
-        throw new TranslationError("invalid_json", "tool_choice names an undeclared function");
+        throw new TranslationError(
+            "unsupported_parameter",
+            "tool_choice names an undeclared function",
+        );
     }
     if (
         root["parallel_tool_calls"] !== undefined &&

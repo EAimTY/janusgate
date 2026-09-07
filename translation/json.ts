@@ -1,3 +1,4 @@
+import { isJsonObject } from "/common/validation";
 import { TranslationError } from "./errors";
 
 type JsonPrimitive = boolean | number | string | null;
@@ -11,10 +12,6 @@ export type JsonObject = {
     [key: string]: JsonValue;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 export function isJsonValue(value: unknown): value is JsonValue {
     if (
         value === null ||
@@ -27,14 +24,14 @@ export function isJsonValue(value: unknown): value is JsonValue {
     if (Array.isArray(value)) {
         return value.every(isJsonValue);
     }
-    if (!isRecord(value)) {
+    if (!isJsonObject(value)) {
         return false;
     }
     return Object.values(value).every(isJsonValue);
 }
 
 export function expectRecord(value: unknown, context: string): Record<string, unknown> {
-    if (!isRecord(value)) {
+    if (!isJsonObject(value)) {
         throw new TranslationError("invalid_json", `${context} must be an object`);
     }
     return value;
@@ -95,7 +92,7 @@ export function optionalBoolean(value: unknown, context: string): boolean | unde
 }
 
 export function expectJsonObject(value: unknown, context: string): JsonObject {
-    if (!isRecord(value) || !isJsonValue(value)) {
+    if (!isJsonObject(value) || !isJsonValue(value)) {
         throw new TranslationError("invalid_json", `${context} must be a JSON object`);
     }
     return value;
