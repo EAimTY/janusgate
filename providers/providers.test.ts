@@ -798,6 +798,101 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         "unmappable efforts omit thinkingConfig entirely",
     );
 
+    const publicToolGemini = buildGenerateContentRequest(
+        parseChatCompletionsRequest({
+            model: "m",
+            messages: [
+                {
+                    role: "user",
+                    content: "run",
+                },
+                {
+                    role: "assistant",
+                    content: "calling",
+                    tool_calls: [
+                        {
+                            id: "call_empty",
+                            type: "function",
+                            function: {
+                                name: "ping",
+                                arguments: "",
+                            },
+                        },
+                    ],
+                },
+            ],
+            tools: [
+                {
+                    type: "function",
+                    function: {
+                        name: "ping",
+                        description: "Ping",
+                        parameters: {
+                            $schema: "https://json-schema.org/draft/2020-12/schema",
+                            $defs: {
+                                detail: {
+                                    type: "string",
+                                    const: "full",
+                                },
+                            },
+                            type: "object",
+                            properties: {
+                                verbose: {
+                                    $ref: "#/$defs/detail",
+                                },
+                            },
+                            additionalProperties: false,
+                        },
+                    },
+                },
+            ],
+        }),
+        {
+            model: "m",
+        },
+    );
+    assertEqual(
+        publicToolGemini.tools,
+        [
+            {
+                functionDeclarations: [
+                    {
+                        name: "ping",
+                        description: "Ping",
+                        parametersJsonSchema: {
+                            $schema: "https://json-schema.org/draft/2020-12/schema",
+                            $defs: {
+                                detail: {
+                                    type: "string",
+                                    const: "full",
+                                },
+                            },
+                            type: "object",
+                            properties: {
+                                verbose: {
+                                    $ref: "#/$defs/detail",
+                                },
+                            },
+                            additionalProperties: false,
+                        },
+                    },
+                ],
+            },
+        ],
+        "public Gemini declarations carry standard JSON Schema via parametersJsonSchema",
+    );
+    assertEqual(
+        publicToolGemini.contents[1]?.parts[1],
+        {
+            functionCall: {
+                id: "call_empty",
+                name: "ping",
+                args: {},
+            },
+        },
+        "empty tool-call arguments render as empty args instead of failing",
+    );
+
     try {
         buildCodeAssistRequest(
             parseChatCompletionsRequest({

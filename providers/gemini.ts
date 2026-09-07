@@ -174,9 +174,14 @@ export function buildGenerateContentRequest(
         generateRequest.tools = [
             {
                 functionDeclarations: request.tools.map((tool) => {
+                    // `parameters` only accepts the OpenAPI 3.0 Schema subset and rejects standard
+                    // JSON Schema keywords (`additionalProperties`, `$defs`/`$ref`, `const`) with
+                    // 400 "Unknown name". `parametersJsonSchema` takes standard JSON Schema and is
+                    // mutually exclusive with `parameters`, so the client schema passes through
+                    // verbatim; the Code Assist overlay re-derives both fields per runtime.
                     const declaration: GenerateContentFunctionDeclaration = {
                         name: tool.name,
-                        parameters: tool.parameters,
+                        parametersJsonSchema: tool.parameters,
                     };
                     if (tool.description !== undefined) declaration.description = tool.description;
                     return declaration;
@@ -260,7 +265,11 @@ function renderGenerateContentPart(
             functionCall: {
                 id: part.id,
                 name: part.name,
-                args: parseJsonObjectText(part.arguments, `arguments for ${part.name}`),
+                // Zero-argument tool calls legitimately carry empty arguments text.
+                args:
+                    part.arguments.trim() === ""
+                        ? {}
+                        : parseJsonObjectText(part.arguments, `arguments for ${part.name}`),
             },
         };
         if (part.thoughtSignature !== undefined) {

@@ -300,13 +300,16 @@ export function buildCodeAssistRequest(
         runtimeModel.startsWith("claude-") || runtimeModel.startsWith("gpt-oss-");
     for (const toolGroup of generateRequest.tools ?? []) {
         for (const declaration of toolGroup.functionDeclarations) {
-            const normalizedSchema = normalizeCodeAssistJsonSchema(declaration.parameters ?? {});
+            const normalizedSchema = normalizeCodeAssistJsonSchema(
+                declaration.parametersJsonSchema ?? declaration.parameters ?? {},
+            );
             if (isCustomToolRuntime) {
                 const customToolSchema = normalizeCodeAssistCustomToolSchema(normalizedSchema);
                 if (!isJsonObject(customToolSchema)) {
                     throw new Error("Code Assist custom tool schema root must be an object");
                 }
                 declaration.parameters = customToolSchema;
+                delete declaration.parametersJsonSchema;
             } else {
                 declaration.parametersJsonSchema = normalizedSchema;
                 delete declaration.parameters;
