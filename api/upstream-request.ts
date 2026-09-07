@@ -3,6 +3,7 @@ import type {
     AntigravityOAuthCredentials,
     ClientProtocol,
     OpenAiOAuthCredentials,
+    ProviderSummary,
     UpstreamProtocol,
 } from "/common/domain";
 import {
@@ -46,12 +47,17 @@ function parseTranslatedClientRequest(
         : parseChatCompletionsRequest(body);
 }
 
-function upstreamProtocol(route: ResolvedModelRoute): UpstreamProtocol {
-    if (route.provider.type === "antigravity_oauth") return "gemini_generate_content";
-    if (route.provider.type === "openai_oauth") return "openai_response";
-    if (route.provider.protocol === null)
-        throw new Error("Compatible provider protocol is missing");
-    return route.provider.protocol;
+/** OAuth kinds imply their wire format; only a compatible provider chooses one explicitly. */
+function upstreamProtocol(summary: ProviderSummary): UpstreamProtocol {
+    switch (summary.type) {
+        case "antigravity_oauth":
+            return "gemini_generate_content";
+        case "openai_oauth":
+            return "openai_response";
+        case "openai_compatible":
+            // The summary invariant guarantees a compatible provider carries its protocol.
+            return summary.protocol;
+    }
 }
 
 function compatibleUrl(baseUrl: string, protocol: UpstreamProtocol): string {
@@ -63,20 +69,20 @@ function renderTranslatedBody(
     request: IrRequest,
     route: ResolvedModelRoute,
     protocol: UpstreamProtocol,
-    effectiveThinkingLevel: string | undefined,
+    reasoningEffort: string | undefined,
 ): unknown {
     if (protocol === "openai_response") {
-        return renderResponsesRequest(request, route.upstreamName, effectiveThinkingLevel);
+        return renderResponsesRequest(request, route.upstreamName, reasoningEffort);
     }
     if (protocol === "openai_chat_completion") {
-        return renderChatCompletionsRequest(request, route.upstreamName, effectiveThinkingLevel);
+        return renderChatCompletionsRequest(request, route.upstreamName, reasoningEffort);
     }
     return buildGenerateContentRequest(request, {
         model: route.upstreamName,
-        ...(effectiveThinkingLevel === undefined
+        ...(reasoningEffort === undefined
             ? {}
             : {
-                  reasoningEffort: effectiveThinkingLevel,
+                  reasoningEffort,
               }),
     });
 }
@@ -102,31 +108,37 @@ export async function prepareUpstreamRequest(
     cipher: CredentialsCipher,
     oauthCredentials?: AntigravityOAuthCredentials | OpenAiOAuthCredentials,
 ): Promise<PreparedUpstreamRequest> {
-    const protocol = upstreamProtocol(route);
+    const summary = route.providerSummary;
+    const protocol = upstreamProtocol(summary);
     const isNativeProtocol = protocol === clientProtocol;
-    const effectiveEffort = effectiveThinkingLevel(
+    const reasoningEffort = effectiveThinkingLevel(
         request.requestedThinkingLevel,
         route.thinkingLevels,
     );
+    // A missing or empty Session-Id means "generate one" (§8.3); both consuming branches below
+    // work from this single normalized value.
+    const clientSessionId = clientRequest.headers.get("Session-Id");
+    const sessionId =
+        clientSessionId === null || clientSessionId.length === 0
+            ? crypto.randomUUID()
+            : clientSessionId;
     const headers = new Headers({
         "Content-Type": "application/json",
     });
     let url: string;
     let body: unknown;
 
-    if (route.provider.type === "openai_compatible") {
-        const baseUrl = route.provider.baseUrl;
-        if (baseUrl === null) throw new Error("Compatible provider base URL is missing");
+    if (summary.type === "openai_compatible") {
         url =
             protocol === "gemini_generate_content"
-                ? generateContentUrl(baseUrl, route.upstreamName, request.isStreaming)
-                : compatibleUrl(baseUrl, protocol);
+                ? generateContentUrl(summary.baseUrl, route.upstreamName, request.isStreaming)
+                : compatibleUrl(summary.baseUrl, protocol);
         const credentials = assertCredentialsMatchProvider(
             "openai_compatible",
             await cipher.decrypt(route.provider.encryptedCredentials),
         );
         setCompatibleAuthHeaders(headers, credentials.apiKey, protocol);
-    } else if (route.provider.type === "openai_oauth") {
+    } else if (summary.type === "openai_oauth") {
         if (oauthCredentials === undefined || !("accountId" in oauthCredentials)) {
             throw new Error("OpenAI OAuth credentials are missing an account ID");
         }
@@ -134,7 +146,7 @@ export async function prepareUpstreamRequest(
         headers.set("chatgpt-account-id", oauthCredentials.accountId);
         headers.set("Originator", OPENAI_CODEX_ORIGINATOR);
         headers.set("User-Agent", OPENAI_CODEX_USER_AGENT);
-        headers.set("Session-Id", clientRequest.headers.get("Session-Id") ?? crypto.randomUUID());
+        headers.set("Session-Id", sessionId);
         headers.set("Accept", request.isStreaming ? "text/event-stream" : "application/json");
         url = OPENAI_CODEX_RESPONSES_URL;
     } else {
@@ -157,19 +169,14 @@ export async function prepareUpstreamRequest(
         url = codeAssistRequestUrl(request.isStreaming);
         // Antigravity upstreams speak GenerateContent, which no client speaks, so the request
         // is always translated and belongs with the rest of the Antigravity specifics.
-        const sessionId = clientRequest.headers.get("Session-Id");
         body = buildCodeAssistRequest(parseTranslatedClientRequest(clientProtocol, request.body), {
             model: route.upstreamName,
             projectId: oauthCredentials.projectId,
-            ...(sessionId === null || sessionId.length === 0
+            sessionId,
+            ...(reasoningEffort === undefined
                 ? {}
                 : {
-                      sessionId,
-                  }),
-            ...(effectiveEffort === undefined
-                ? {}
-                : {
-                      reasoningEffort: effectiveEffort,
+                      reasoningEffort,
                   }),
         });
     }
@@ -180,13 +187,13 @@ export async function prepareUpstreamRequest(
                   request,
                   clientProtocol,
                   route.upstreamName,
-                  effectiveEffort,
+                  reasoningEffort,
               )
             : renderTranslatedBody(
                   parseTranslatedClientRequest(clientProtocol, request.body),
                   route,
                   protocol,
-                  effectiveEffort,
+                  reasoningEffort,
               );
     }
     return {
@@ -202,7 +209,7 @@ function substituteNativeModelAndThinking(
     request: ValidatedGatewayRequest,
     protocol: ClientProtocol,
     upstreamModel: string,
-    effectiveThinkingLevel: string | undefined,
+    reasoningEffort: string | undefined,
 ): Record<string, unknown> {
     const body: Record<string, unknown> = {
         ...request.body,
@@ -210,8 +217,8 @@ function substituteNativeModelAndThinking(
     };
     if (protocol === "openai_chat_completion") {
         if (body["reasoning_effort"] !== undefined) {
-            if (effectiveThinkingLevel === undefined) delete body["reasoning_effort"];
-            else body["reasoning_effort"] = effectiveThinkingLevel;
+            if (reasoningEffort === undefined) delete body["reasoning_effort"];
+            else body["reasoning_effort"] = reasoningEffort;
         }
         return body;
     }
@@ -221,8 +228,8 @@ function substituteNativeModelAndThinking(
             ...requireReasoningObject(reasoningValue),
         };
         if (reasoning["effort"] !== undefined) {
-            if (effectiveThinkingLevel === undefined) delete reasoning["effort"];
-            else reasoning["effort"] = effectiveThinkingLevel;
+            if (reasoningEffort === undefined) delete reasoning["effort"];
+            else reasoning["effort"] = reasoningEffort;
         }
         body["reasoning"] = reasoning;
     }

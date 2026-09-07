@@ -49,7 +49,11 @@ export interface ModelRow {
     thinking_levels_override: string | null;
 }
 
-function parseProviderType(value: string): ProviderType {
+/**
+ * The single gate between a raw `providers.type` column and the `ProviderType` union: D1 has no
+ * CHECK constraint, so a corrupted row fails loudly here instead of leaking an invalid type.
+ */
+export function parseProviderType(value: string): ProviderType {
     for (const providerType of PROVIDER_TYPES) {
         if (value === providerType) return providerType;
     }
@@ -130,3 +134,17 @@ export const PROVIDER_COLUMN_NAMES = [
 ] as const;
 
 export const PROVIDER_COLUMNS = PROVIDER_COLUMN_NAMES.join(",\n    ");
+
+/**
+ * Canonical model column names in schema order. Every models-table column list must derive from
+ * this, mirroring PROVIDER_COLUMN_NAMES, so a schema change updates all queries together instead
+ * of leaving hand-written lists behind.
+ */
+export const MODEL_COLUMN_NAMES = [
+    "provider_id",
+    "upstream_name",
+    "name",
+    "name_override",
+    "enabled_override",
+    "thinking_levels_override",
+] as const;

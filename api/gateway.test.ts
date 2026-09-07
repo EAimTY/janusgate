@@ -85,12 +85,17 @@ async function seedOpenAiProvider(): Promise<void> {
         .run();
 }
 
-function gatewayRequest(path: string, body: unknown): Request {
+function gatewayRequest(
+    path: string,
+    body: unknown,
+    headers: Record<string, string> = {},
+): Request {
     return new Request(`https://gateway.test/api/openai-v1/${path}`, {
         body: JSON.stringify(body),
         headers: {
             Authorization: `Bearer ${TEST_API_TOKEN}`,
             "Content-Type": "application/json",
+            ...headers,
         },
         method: "POST",
     });
@@ -392,6 +397,14 @@ describe("gateway request lifecycle", () => {
                 userAgent: "antigravity",
             });
             expect(sent["requestId"]).toEqual(expect.stringMatching(/^agent-/));
+            // No Session-Id header was sent, so the envelope carries a freshly generated one.
+            expect(sent).toMatchObject({
+                request: {
+                    sessionId: expect.stringMatching(
+                        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+                    ),
+                },
+            });
             return Response.json({
                 response: {
                     candidates: [
@@ -637,6 +650,59 @@ describe("gateway request lifecycle", () => {
         });
     });
 
+    it("normalizes the Session-Id header: empty regenerates a UUID, present forwards verbatim", async () => {
+        await seedOpenAiProvider();
+        const sessionIds: Array<string | null> = [];
+        const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {
+            sessionIds.push(new Headers(init?.headers).get("Session-Id"));
+            return new Response('{"id":"ok"}', {
+                headers: {
+                    "Content-Type": "application/json",
+                },
+            });
+        });
+        // The empty string counts as absent (§8.3): the upstream must see a fresh UUID.
+        const emptyResponse = await handleGatewayRequest(
+            gatewayRequest(
+                "responses",
+                {
+                    input: "hello",
+                    model: "codex",
+                },
+                {
+                    "Session-Id": "",
+                },
+            ),
+            bindings,
+            "openai_response",
+            fetchUpstream,
+        );
+        expect(emptyResponse.status).toBe(200);
+        // A non-empty header is forwarded verbatim.
+        const forwardedResponse = await handleGatewayRequest(
+            gatewayRequest(
+                "responses",
+                {
+                    input: "hello",
+                    model: "codex",
+                },
+                {
+                    "Session-Id": "client-supplied-id",
+                },
+            ),
+            bindings,
+            "openai_response",
+            fetchUpstream,
+        );
+        expect(forwardedResponse.status).toBe(200);
+        expect(sessionIds).toHaveLength(2);
+        const [regenerated, forwarded] = sessionIds;
+        expect(regenerated).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+        );
+        expect(forwarded).toBe("client-supplied-id");
+    });
+
     it("translates Chat Completions requests into the Antigravity agent envelope and back", async () => {
         await seedAntigravityProvider("gemini-3.7-flash");
         const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {
@@ -872,6 +938,32 @@ describe("gateway app wiring", () => {
             );
             await initializeTestDatabase(env.DATABASE);
         }
+    });
+
+    it("answers a corrupted provider type in the model list with the 500 envelope, not owned_by: undefined", async () => {
+        // D1 has no CHECK on providers.type, so a corrupted row must fail loudly at the
+        // parse boundary (README §13) instead of emitting a model entry without an owner.
+        await seedCompatibleProvider("openai_response");
+        await env.DATABASE.prepare(
+            "UPDATE providers SET type = 'corrupted' WHERE name = 'custom'",
+        ).run();
+        const response = await api.request(
+            "https://gateway.test/openai-v1/models",
+            {
+                headers: {
+                    Authorization: `Bearer ${TEST_API_TOKEN}`,
+                },
+            },
+            bindings,
+        );
+        expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({
+            error: {
+                code: "internal_error",
+                message: "An internal error occurred",
+                type: "api_error",
+            },
+        });
     });
 
     it("rejects unauthenticated requests on every gateway route", async () => {

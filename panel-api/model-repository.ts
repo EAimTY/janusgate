@@ -1,4 +1,4 @@
-import { isModelEnabled, type ModelRow, mapModelRow } from "/common/database";
+import { isModelEnabled, MODEL_COLUMN_NAMES, type ModelRow, mapModelRow } from "/common/database";
 import type { ModelSummary } from "/common/domain";
 import { composeModelName, parseStoredThinkingLevels } from "/common/validation";
 import type { ThinkingLevel } from "/config";
@@ -8,6 +8,11 @@ interface PanelModelRow extends ModelRow {
     provider_name: string;
     provider_type: ModelSummary["providerType"];
 }
+
+/** Model columns qualified for the join alias, so the panel read cannot drift from the schema. */
+const QUALIFIED_MODEL_COLUMNS = MODEL_COLUMN_NAMES.map((column) => `models.${column}`).join(
+    ",\n                ",
+);
 
 /** Admin-controlled deviations from the discovery result; `null` keeps following discovery. */
 interface ModelOverrideRecord {
@@ -34,12 +39,7 @@ export async function listPanelModels(database: D1Database): Promise<ModelSummar
     const result = await database
         .prepare(
             `SELECT
-                models.provider_id,
-                models.upstream_name,
-                models.name,
-                models.name_override,
-                models.enabled_override,
-                models.thinking_levels_override,
+                ${QUALIFIED_MODEL_COLUMNS},
                 providers.name AS provider_name,
                 providers.type AS provider_type
             FROM models
@@ -72,10 +72,7 @@ export async function upsertModel(database: D1Database, model: UpsertModelRecord
     try {
         await database
             .prepare(
-                `INSERT INTO models (
-                    provider_id, upstream_name, name, name_override, enabled_override,
-                    thinking_levels_override
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                `INSERT INTO models (${MODEL_COLUMN_NAMES.join(", ")}) VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT (provider_id, upstream_name) DO UPDATE SET
                     name = excluded.name,
                     name_override = excluded.name_override,

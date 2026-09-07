@@ -2,6 +2,7 @@ import type { CredentialsCipher } from "/common/credentials";
 import { assertCredentialsMatchProvider } from "/common/credentials";
 import {
     hasModelOverrides,
+    MODEL_COLUMN_NAMES,
     type ModelRow,
     mapModelRow,
     type StoredProvider,
@@ -16,15 +17,11 @@ import type { DiscoveryResult } from "./domain";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 import { readJsonObjectResponse } from "./upstream-json";
 
-/** Columns for whole-model reads; kept beside the discovery reconcile, their only consumer. */
-const MODEL_COLUMNS = `
-    provider_id,
-    upstream_name,
-    name,
-    name_override,
-    enabled_override,
-    thinking_levels_override
-`;
+/**
+ * Columns for whole-model reads, derived from the canonical tuple so the read cannot drift from
+ * the models schema; kept beside the discovery reconcile, its only consumer.
+ */
+const MODEL_COLUMNS = MODEL_COLUMN_NAMES.join(",\n    ");
 
 function upstreamDiscoveryError(message: string): PanelApiError {
     return new PanelApiError(502, message);
@@ -307,10 +304,9 @@ export async function discoverProviderModels(
         insertStatements.push(
             database
                 .prepare(
-                    `INSERT INTO models (
-                        provider_id, upstream_name, name, name_override, enabled_override,
-                        thinking_levels_override
-                    ) VALUES (?, ?, ?, NULL, NULL, NULL)`,
+                    // The VALUES list keeps the NULL tail in lockstep with MODEL_COLUMN_NAMES:
+                    // every discovery-derived field starts fully unoverridden (§6.3).
+                    `INSERT INTO models (${MODEL_COLUMNS}) VALUES (?, ?, ?, NULL, NULL, NULL)`,
                 )
                 .bind(provider.id, upstreamName, name),
         );

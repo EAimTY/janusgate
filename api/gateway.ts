@@ -1,6 +1,7 @@
 import { verifyBearerAuthorization } from "/common/auth";
 import { CredentialsCipher } from "/common/credentials";
-import type { ClientProtocol } from "/common/domain";
+import type { StoredProvider } from "/common/database";
+import { assembleProviderSummary, type ClientProtocol } from "/common/domain";
 import {
     ConfigurationError,
     CredentialDecryptionError,
@@ -132,6 +133,21 @@ async function fetchUpstreamWithIdleTimeout(
     }
 }
 
+/**
+ * Replace a route's provider after a §7 refresh, re-deriving the invariant-checked summary so
+ * the pair always describes the same stored row.
+ */
+function routeWithProvider(
+    route: ResolvedModelRoute,
+    provider: StoredProvider,
+): ResolvedModelRoute {
+    return {
+        ...route,
+        provider,
+        providerSummary: assembleProviderSummary(provider),
+    };
+}
+
 async function executeUpstream(
     clientRequest: Request,
     validatedRequest: ReturnType<typeof validateGatewayRequest>,
@@ -153,10 +169,7 @@ async function executeUpstream(
             signal: abortController.signal,
         });
         oauthCredentials = access.credentials;
-        currentRoute = {
-            ...route,
-            provider: access.provider,
-        };
+        currentRoute = routeWithProvider(route, access.provider);
     }
     let prepared = await prepareUpstreamRequest(
         clientRequest,
@@ -185,10 +198,7 @@ async function executeUpstream(
                   }),
             signal: abortController.signal,
         });
-        currentRoute = {
-            ...currentRoute,
-            provider: refreshed.provider,
-        };
+        currentRoute = routeWithProvider(currentRoute, refreshed.provider);
         oauthCredentials = refreshed.credentials;
         prepared = await prepareUpstreamRequest(
             clientRequest,
