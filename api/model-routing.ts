@@ -1,4 +1,9 @@
-import { mapProviderRow, type ProviderRow, type StoredProvider } from "/common/database";
+import {
+    mapProviderRow,
+    PROVIDER_COLUMN_NAMES,
+    type ProviderRow,
+    type StoredProvider,
+} from "/common/database";
 import { parseStoredThinkingLevels } from "/common/validation";
 import type { ThinkingLevel } from "/config";
 import { MODEL_OWNER_BY_PROVIDER_TYPE } from "./config";
@@ -21,6 +26,11 @@ interface PublicModelRow {
     provider_type: StoredProvider["type"];
 }
 
+/** Canonical provider columns qualified for the join alias, so routing cannot drift from the schema. */
+const QUALIFIED_PROVIDER_COLUMNS = PROVIDER_COLUMN_NAMES.map(
+    (column) => `providers.${column}`,
+).join(", ");
+
 export async function resolveEnabledModel(
     database: D1Database,
     modelName: string,
@@ -31,16 +41,7 @@ export async function resolveEnabledModel(
                 models.name AS model_name,
                 models.upstream_name,
                 models.thinking_levels_override,
-                providers.id,
-                providers.name,
-                providers.model_prefix,
-                providers.type,
-                providers.protocol,
-                providers.base_url,
-                providers.encrypted_credentials,
-                providers.expires_at,
-                providers.refresh_started_at,
-                providers.enabled
+                ${QUALIFIED_PROVIDER_COLUMNS}
             FROM models
             INNER JOIN providers ON providers.id = models.provider_id
             WHERE models.name = ?

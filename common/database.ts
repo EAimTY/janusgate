@@ -111,15 +111,22 @@ export function hasModelOverrides(model: StoredModel): boolean {
     );
 }
 
-export const PROVIDER_COLUMNS = `
-    id,
-    name,
-    model_prefix,
-    type,
-    protocol,
-    base_url,
-    encrypted_credentials,
-    expires_at,
-    refresh_started_at,
-    enabled
-`;
+/**
+ * Canonical provider column names in schema order. Every provider SELECT must derive its
+ * column list from this, so a schema change updates all queries together instead of
+ * leaving hand-written lists behind.
+ */
+export const PROVIDER_COLUMN_NAMES = [
+    "id",
+    "name",
+    "model_prefix",
+    "type",
+    "protocol",
+    "base_url",
+    "encrypted_credentials",
+    "expires_at",
+    "refresh_started_at",
+    "enabled",
+] as const;
+
+export const PROVIDER_COLUMNS = PROVIDER_COLUMN_NAMES.join(",\n    ");
