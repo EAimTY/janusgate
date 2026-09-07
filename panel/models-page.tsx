@@ -272,18 +272,23 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
                         </Show>
                     </PanelCard>
 
-                    {/* The session key remounts a fresh editor per create/edit switch. */}
+                    {/* Function children scope the form subtree to one editorSession() value:
+                        only a session value change re-invokes the callback and remounts the
+                        form; providers() and editingModel() keep updating it reactively
+                        through props without remounting. */}
                     <Show
                         when={editorSession()}
                         keyed
                     >
-                        <ModelEditorForm
-                            client={props.client}
-                            providers={providers()}
-                            editingModel={editingModel()}
-                            onSaved={handleModelSaved}
-                            onCancelEdit={resetEditor}
-                        />
+                        {(_session) => (
+                            <ModelEditorForm
+                                client={props.client}
+                                providers={providers()}
+                                editingModel={editingModel()}
+                                onSaved={handleModelSaved}
+                                onCancelEdit={resetEditor}
+                            />
+                        )}
                     </Show>
                 </div>
             </Show>
