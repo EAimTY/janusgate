@@ -1,3 +1,4 @@
+import type { CredentialsCipher } from "/common/credentials";
 import {
     mapProviderRow,
     PROVIDER_COLUMNS,
@@ -12,6 +13,11 @@ import {
 } from "/common/domain";
 import { AUTO_PROVIDER_NAME_PREFIX } from "./config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
+import type { parseSaveProviderInput } from "./input";
+
+// The validated save-provider request (create or update intent); derived from the parser so the
+// wire contract stays single-sourced in ./input.
+type SaveProviderInput = ReturnType<typeof parseSaveProviderInput>;
 
 interface CreateProviderRecord {
     name: string;
@@ -133,6 +139,90 @@ export async function updateProvider(
         .bind(...values)
         .run();
     if (result.meta.changes !== 1) throw new Error("Updated provider is missing");
+}
+
+/**
+ * Create/update orchestration for `POST /panel-api/save-provider` (§12.4). Creation only accepts
+ * API-key providers; updates preserve the stored type, encrypting a replacement API key for
+ * `openai_compatible` providers and rejecting credential/endpoint fields for OAuth providers.
+ */
+export async function saveProvider(
+    database: D1Database,
+    cipher: CredentialsCipher,
+    input: SaveProviderInput,
+): Promise<{
+    name: string;
+}> {
+    const existing = await findProviderByName(database, input.name);
+
+    if (input.kind === "create") {
+        if (existing !== null) {
+            throw new PanelApiError(409, "Provider name already exists");
+        }
+        const encryptedCredentials = await cipher.encrypt({
+            apiKey: input.apiKey,
+        });
+        const created = await createProvider(database, {
+            baseUrl: input.baseUrl,
+            encryptedCredentials,
+            expiresAt: null,
+            isEnabled: input.enabled ?? true,
+            modelPrefix: input.modelPrefix ?? input.name,
+            name: input.name,
+            protocol: input.protocol,
+            type: "openai_compatible",
+        });
+        return {
+            name: created.name,
+        };
+    }
+
+    if (existing === null) {
+        throw new PanelApiError(404, "Provider not found");
+    }
+
+    if (existing.type === "openai_compatible") {
+        if (existing.baseUrl === null || existing.protocol === null) {
+            throw new Error("Invalid stored OpenAI-compatible provider");
+        }
+        const encryptedCredentials =
+            input.apiKey === undefined
+                ? undefined
+                : await cipher.encrypt({
+                      apiKey: input.apiKey,
+                  });
+        await updateProvider(database, {
+            baseUrl: input.baseUrl ?? existing.baseUrl,
+            ...(encryptedCredentials === undefined
+                ? {}
+                : {
+                      encryptedCredentials,
+                  }),
+            expiresAt: null,
+            id: existing.id,
+            isEnabled: input.enabled ?? existing.isEnabled,
+            modelPrefix: input.modelPrefix ?? existing.modelPrefix,
+            protocol: input.protocol ?? existing.protocol,
+        });
+        return {
+            name: existing.name,
+        };
+    }
+
+    if (input.protocol !== undefined || input.baseUrl !== undefined || input.apiKey !== undefined) {
+        throw new PanelApiError(400, "OAuth providers only accept enabled and modelPrefix updates");
+    }
+    await updateProvider(database, {
+        baseUrl: null,
+        expiresAt: existing.expiresAt,
+        id: existing.id,
+        isEnabled: input.enabled ?? existing.isEnabled,
+        modelPrefix: input.modelPrefix ?? existing.modelPrefix,
+        protocol: null,
+    });
+    return {
+        name: existing.name,
+    };
 }
 
 // The models FK cascades, so one statement removes the provider together with all its models.

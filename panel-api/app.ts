@@ -17,12 +17,10 @@ import {
 import { deleteModel, listPanelModels, upsertModel } from "./model-repository";
 import { completeProviderOAuth, startProviderOAuth } from "./oauth";
 import {
-    createProvider,
     deleteProviderByName,
-    findProviderByName,
     listProviderSummaries,
     requireProviderByName,
-    updateProvider,
+    saveProvider,
 } from "./provider-repository";
 
 interface PanelApiOptions {
@@ -44,86 +42,6 @@ async function readRequestObject(request: Request): Promise<Record<string, unkno
         throw new PanelApiError(400, "Request body must be a JSON object");
     }
     return value;
-}
-
-async function savePanelProvider(
-    environment: Env,
-    body: Record<string, unknown>,
-): Promise<{
-    name: string;
-}> {
-    const input = parseSaveProviderInput(body);
-    const existing = await findProviderByName(environment.DATABASE, input.name);
-    const cipher = await CredentialsCipher.create(environment.CREDENTIALS_AES_KEY);
-
-    if (input.kind === "create") {
-        if (existing !== null) {
-            throw new PanelApiError(409, "Provider name already exists");
-        }
-        const encryptedCredentials = await cipher.encrypt({
-            apiKey: input.apiKey,
-        });
-        const created = await createProvider(environment.DATABASE, {
-            baseUrl: input.baseUrl,
-            encryptedCredentials,
-            expiresAt: null,
-            isEnabled: input.enabled ?? true,
-            modelPrefix: input.modelPrefix ?? input.name,
-            name: input.name,
-            protocol: input.protocol,
-            type: "openai_compatible",
-        });
-        return {
-            name: created.name,
-        };
-    }
-
-    if (existing === null) {
-        throw new PanelApiError(404, "Provider not found");
-    }
-
-    if (existing.type === "openai_compatible") {
-        if (existing.baseUrl === null || existing.protocol === null) {
-            throw new Error("Invalid stored OpenAI-compatible provider");
-        }
-        const encryptedCredentials =
-            input.apiKey === undefined
-                ? undefined
-                : await cipher.encrypt({
-                      apiKey: input.apiKey,
-                  });
-        await updateProvider(environment.DATABASE, {
-            baseUrl: input.baseUrl ?? existing.baseUrl,
-            ...(encryptedCredentials === undefined
-                ? {}
-                : {
-                      encryptedCredentials,
-                  }),
-            expiresAt: null,
-            id: existing.id,
-            isEnabled: input.enabled ?? existing.isEnabled,
-            modelPrefix: input.modelPrefix ?? existing.modelPrefix,
-            protocol: input.protocol ?? existing.protocol,
-        });
-        return {
-            name: existing.name,
-        };
-    }
-
-    if (input.protocol !== undefined || input.baseUrl !== undefined || input.apiKey !== undefined) {
-        throw new PanelApiError(400, "OAuth providers only accept enabled and modelPrefix updates");
-    }
-    await updateProvider(environment.DATABASE, {
-        baseUrl: null,
-        expiresAt: existing.expiresAt,
-        id: existing.id,
-        isEnabled: input.enabled ?? existing.isEnabled,
-        modelPrefix: input.modelPrefix ?? existing.modelPrefix,
-        protocol: null,
-    });
-    return {
-        name: existing.name,
-    };
 }
 
 async function savePanelModel(
@@ -187,9 +105,9 @@ export function createPanelApi(options: PanelApiOptions = {}): PanelApp {
     });
 
     panelApi.post("/save-provider", async (context) => {
-        return context.json(
-            await savePanelProvider(context.env, await readRequestObject(context.req.raw)),
-        );
+        const input = parseSaveProviderInput(await readRequestObject(context.req.raw));
+        const cipher = await CredentialsCipher.create(context.env.CREDENTIALS_AES_KEY);
+        return context.json(await saveProvider(context.env.DATABASE, cipher, input));
     });
 
     panelApi.post("/delete-provider", async (context) => {
