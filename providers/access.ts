@@ -18,9 +18,10 @@ import { REFRESH_LEASE_SECONDS, TOKEN_REFRESH_MARGIN_SECONDS } from "/config";
 import {
     ANTIGRAVITY_CLIENT_ID,
     ANTIGRAVITY_CLIENT_SECRET,
+    ANTIGRAVITY_REDIRECT_URI,
     ANTIGRAVITY_TOKEN_URL,
 } from "./antigravity";
-import { OPENAI_OAUTH_CLIENT_ID, OPENAI_TOKEN_URL } from "./openai";
+import { OPENAI_OAUTH_CLIENT_ID, OPENAI_REDIRECT_URI, OPENAI_TOKEN_URL } from "./openai";
 
 export type OAuthCredentials = AntigravityOAuthCredentials | OpenAiOAuthCredentials;
 
@@ -81,11 +82,77 @@ function parseRefreshResponse(
 }
 
 /**
- * RFC 6749 token-endpoint failures carry a bounded `error` code (`invalid_grant`, `invalid_client`,
- * …). Surfacing that code is the only safe diagnostic: it tells the admin whether reauthentication
- * is required (`invalid_grant`) or the failure was transient — without exposing token material.
+ * The stored provider kinds that hold an identity-provider token grant (README §3.1); a static
+ * API-key provider never touches a token endpoint.
  */
-async function identityProviderErrorCode(response: Response): Promise<string | undefined> {
+export type OAuthGrantProviderType = "openai_oauth" | "antigravity_oauth";
+
+/** The RFC 6749 grant a token-endpoint POST requests (README §8.3–8.4). */
+export type IdentityProviderGrant =
+    | {
+          readonly code: string;
+          readonly codeVerifier: string;
+          readonly grantType: "authorization_code";
+      }
+    | {
+          readonly grantType: "refresh_token";
+          readonly refreshToken: string;
+      };
+
+/**
+ * One token-endpoint request shared by both IdP flows: the OAuth code exchange (§8) and the
+ * credential refresh (§7). The endpoint, client identity, and secret handling are pinned per
+ * provider type by the adapter modules — OpenAI's Codex CLI client is a public PKCE client with
+ * no secret, while Antigravity's installed-app client adds its public-by-design `client_secret`.
+ */
+export interface IdentityProviderTokenRequest {
+    readonly body: URLSearchParams;
+    readonly headers: Readonly<Record<string, string>>;
+    readonly method: "POST";
+    readonly tokenUrl: string;
+}
+
+/**
+ * Builds the per-provider-type token POST. Field order is fixed (base fields in the literal
+ * below, the Antigravity secret appended last) so every consumer emits byte-identical bodies.
+ */
+export function identityProviderTokenRequest(
+    providerType: OAuthGrantProviderType,
+    grant: IdentityProviderGrant,
+): IdentityProviderTokenRequest {
+    const isOpenAi = providerType === "openai_oauth";
+    const parameters =
+        grant.grantType === "authorization_code"
+            ? new URLSearchParams({
+                  client_id: isOpenAi ? OPENAI_OAUTH_CLIENT_ID : ANTIGRAVITY_CLIENT_ID,
+                  code: grant.code,
+                  code_verifier: grant.codeVerifier,
+                  grant_type: "authorization_code",
+                  redirect_uri: isOpenAi ? OPENAI_REDIRECT_URI : ANTIGRAVITY_REDIRECT_URI,
+              })
+            : new URLSearchParams({
+                  client_id: isOpenAi ? OPENAI_OAUTH_CLIENT_ID : ANTIGRAVITY_CLIENT_ID,
+                  grant_type: "refresh_token",
+                  refresh_token: grant.refreshToken,
+              });
+    if (!isOpenAi) parameters.set("client_secret", ANTIGRAVITY_CLIENT_SECRET);
+    return {
+        body: parameters,
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method: "POST",
+        tokenUrl: isOpenAi ? OPENAI_TOKEN_URL : ANTIGRAVITY_TOKEN_URL,
+    };
+}
+
+/**
+ * RFC 6749 §5.2 token-endpoint failures carry a bounded `error` code (`invalid_grant`,
+ * `invalid_client`, …). Surfacing that code is the only safe diagnostic: it tells the admin
+ * whether reauthentication is required (`invalid_grant`) or the failure was transient — without
+ * exposing token material.
+ */
+export async function identityProviderErrorCode(response: Response): Promise<string | undefined> {
     try {
         const value: unknown = await response.json();
         if (!isJsonObject(value)) return undefined;
@@ -104,24 +171,21 @@ async function requestRefreshedToken(
     fetchUpstream: typeof fetch,
     signal?: AbortSignal,
 ): Promise<RefreshedToken> {
-    const parameters = new URLSearchParams({
-        client_id:
-            provider.type === "openai_oauth" ? OPENAI_OAUTH_CLIENT_ID : ANTIGRAVITY_CLIENT_ID,
-        grant_type: "refresh_token",
-        refresh_token: credentials.refreshToken,
-    });
-    const tokenUrl = provider.type === "openai_oauth" ? OPENAI_TOKEN_URL : ANTIGRAVITY_TOKEN_URL;
-    if (provider.type === "antigravity_oauth") {
-        parameters.set("client_secret", ANTIGRAVITY_CLIENT_SECRET);
+    // Contract violation: decryptOAuthCredentials already rejects static-key providers before a
+    // refresh is attempted.
+    if (provider.type === "openai_compatible") {
+        throw new Error("Static-key providers do not have OAuth access tokens");
     }
+    const request = identityProviderTokenRequest(provider.type, {
+        grantType: "refresh_token",
+        refreshToken: credentials.refreshToken,
+    });
     let response: Response;
     try {
-        response = await fetchUpstream(tokenUrl, {
-            body: parameters,
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            method: "POST",
+        response = await fetchUpstream(request.tokenUrl, {
+            body: request.body,
+            headers: request.headers,
+            method: request.method,
             signal: oauthUpstreamSignal(signal),
         });
     } catch {
@@ -192,7 +256,7 @@ export async function ensureFreshProviderAccess(
         rejectedAccessToken?: string;
         now?: number;
         fetchUpstream?: typeof fetch;
-        signal?: AbortSignal;
+        signal?: AbortSignal | undefined;
     } = {},
 ): Promise<ProviderAccess> {
     const now = options.now ?? unixSeconds();

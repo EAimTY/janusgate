@@ -58,13 +58,7 @@ async function ensureDiscoveryProviderAccess(
         const access = await ensureFreshProviderAccess(database, provider, cipher, {
             fetchUpstream,
             ...options,
-            // `signal?: AbortSignal` in the access layer rejects an explicit `undefined` under
-            // exactOptionalPropertyTypes, so the key is only present for a real signal.
-            ...(signal === undefined
-                ? {}
-                : {
-                      signal,
-                  }),
+            signal,
         });
         if (!("projectId" in access.credentials)) {
             // Contract violation: discovery only invokes this for Antigravity providers, and the

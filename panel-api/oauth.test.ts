@@ -14,7 +14,12 @@ import {
     ANTIGRAVITY_ONBOARD_USER_URL,
     ANTIGRAVITY_TOKEN_URL,
 } from "/providers/antigravity";
-import { OPENAI_AUTHORIZE_URL, OPENAI_TOKEN_URL } from "/providers/openai";
+import {
+    OPENAI_AUTHORIZE_URL,
+    OPENAI_OAUTH_CLIENT_ID,
+    OPENAI_REDIRECT_URI,
+    OPENAI_TOKEN_URL,
+} from "/providers/openai";
 import {
     clearTestDatabase,
     initializeTestDatabase,
@@ -80,8 +85,12 @@ describe("OAuth orchestration", () => {
             expect(String(input)).toBe(OPENAI_TOKEN_URL);
             expect(init?.method).toBe("POST");
             const body = new URLSearchParams(String(init?.body));
+            expect(body.get("client_id")).toBe(OPENAI_OAUTH_CLIENT_ID);
             expect(body.get("code")).toBe("authorization-code");
             expect(body.get("code_verifier")).toBe(storedState?.verifier);
+            expect(body.get("grant_type")).toBe("authorization_code");
+            expect(body.get("redirect_uri")).toBe(OPENAI_REDIRECT_URI);
+            expect(body.get("client_secret")).toBeNull();
             return Response.json({
                 access_token: "access",
                 expires_in: 3600,
@@ -208,13 +217,22 @@ describe("OAuth orchestration", () => {
                 },
                 {
                     fetchUpstream: async () =>
-                        new Response("denied", {
-                            status: 400,
-                        }),
+                        Response.json(
+                            {
+                                error: "invalid_grant",
+                                error_description: "Authorization code has expired.",
+                            },
+                            {
+                                status: 400,
+                            },
+                        ),
                     now: NOW,
                 },
             ),
         ).rejects.toMatchObject({
+            // The RFC 6749 error code is forwarded into the panel diagnostic, like the refresh
+            // path does, instead of a bare HTTP status.
+            message: "OAuth token exchange failed (invalid_grant)",
             status: 502,
         });
         await expect(

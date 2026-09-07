@@ -5,14 +5,17 @@ import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from 
 import { providerTypeForOAuthFlow } from "/common/domain";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject, unixSeconds } from "/common/validation";
-import { acquireCredentialLease, clearCredentialLease } from "/providers/access";
+import {
+    acquireCredentialLease,
+    clearCredentialLease,
+    identityProviderErrorCode,
+    identityProviderTokenRequest,
+} from "/providers/access";
 import {
     ANTIGRAVITY_AUTHORIZE_URL,
     ANTIGRAVITY_CLIENT_ID,
-    ANTIGRAVITY_CLIENT_SECRET,
     ANTIGRAVITY_OAUTH_SCOPE,
     ANTIGRAVITY_REDIRECT_URI,
-    ANTIGRAVITY_TOKEN_URL,
 } from "/providers/antigravity";
 import {
     OPENAI_AUTHORIZE_URL,
@@ -20,7 +23,6 @@ import {
     OPENAI_OAUTH_CLIENT_ID,
     OPENAI_OAUTH_SCOPE,
     OPENAI_REDIRECT_URI,
-    OPENAI_TOKEN_URL,
 } from "/providers/openai";
 import { resolveAntigravityProject } from "./antigravity-onboarding";
 import { OAUTH_RANDOM_VALUE_BYTES, OAUTH_STATE_TTL_SECONDS } from "./config";
@@ -190,27 +192,33 @@ async function exchangeAuthorizationCode(
     signal?: AbortSignal,
 ): Promise<AuthorizationToken> {
     const isOpenAi = type === "openai";
-    const parameters = new URLSearchParams({
-        client_id: isOpenAi ? OPENAI_OAUTH_CLIENT_ID : ANTIGRAVITY_CLIENT_ID,
+    const request = identityProviderTokenRequest(providerTypeForOAuthFlow(type), {
         code,
-        code_verifier: verifier,
-        grant_type: "authorization_code",
-        redirect_uri: isOpenAi ? OPENAI_REDIRECT_URI : ANTIGRAVITY_REDIRECT_URI,
+        codeVerifier: verifier,
+        grantType: "authorization_code",
     });
-    if (!isOpenAi) parameters.set("client_secret", ANTIGRAVITY_CLIENT_SECRET);
-
     let response: Response;
     try {
-        response = await fetchUpstream(isOpenAi ? OPENAI_TOKEN_URL : ANTIGRAVITY_TOKEN_URL, {
-            body: parameters,
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            method: "POST",
+        response = await fetchUpstream(request.tokenUrl, {
+            body: request.body,
+            headers: request.headers,
+            method: request.method,
             signal: oauthUpstreamSignal(signal),
         });
     } catch {
         throw new PanelApiError(502, "OAuth token exchange failed");
+    }
+    if (!response.ok) {
+        // Token-endpoint failures are RFC 6749 §5.2 error responses; forward the bounded `error`
+        // code exactly like the refresh path so the admin sees e.g. `invalid_grant` instead of a
+        // bare HTTP status.
+        const errorCode = await identityProviderErrorCode(response);
+        throw new PanelApiError(
+            502,
+            errorCode === undefined
+                ? "OAuth token exchange failed"
+                : `OAuth token exchange failed (${errorCode})`,
+        );
     }
     const value = await readJsonObjectResponse(response, "OAuth token exchange");
     const token: {
