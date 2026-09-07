@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import api, { gatewayUnauthorizedResponse, isGatewayAuthorized } from "./api/app";
+import { verifyBearerAuthorization } from "/common/auth";
+import api, { gatewayUnauthorizedResponse } from "./api/app";
 import { API_ROOT_PATH } from "./api/config";
 import panelApi from "./panel-api/app";
 import { PANEL_API_BASE_PATH } from "./panel-api/config";
@@ -13,7 +14,13 @@ app.route(PANEL_API_BASE_PATH, panelApi);
 app.notFound(async (context) => {
     const requestUrl = new URL(context.req.url);
     if (requestUrl.pathname.startsWith(`${API_ROOT_PATH}/`)) {
-        if (!(await isGatewayAuthorized(context.req.raw, context.env.API_KEY_HASH))) {
+        // Unmatched gateway paths never reach the API middleware, so this fallback enforces the
+        // same bearer check itself.
+        const isAuthorized = await verifyBearerAuthorization(
+            context.req.raw.headers.get("Authorization"),
+            context.env.API_KEY_HASH,
+        );
+        if (!isAuthorized) {
             return gatewayUnauthorizedResponse();
         }
         return context.json(

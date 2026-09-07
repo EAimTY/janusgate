@@ -9,6 +9,7 @@ import {
 } from "/providers/antigravity";
 import { OPENAI_CODEX_RESPONSES_URL, OPENAI_TOKEN_URL } from "/providers/openai";
 import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
+import api from "./app";
 import { handleGatewayRequest } from "./gateway";
 
 const API_TOKEN = "api-secret";
@@ -820,5 +821,83 @@ describe("gateway request lifecycle", () => {
             },
         });
         expect(fetchUpstream).not.toHaveBeenCalled();
+    });
+});
+
+describe("gateway app wiring", () => {
+    it("answers a failing model list with the OpenAI error envelope, not plain text", async () => {
+        // Simulate a D1 outage: the models table is gone, so the query fails at the database.
+        await env.DATABASE.exec("DROP TABLE models");
+        try {
+            const response = await api.request(
+                "https://gateway.test/openai-v1/models",
+                {
+                    headers: {
+                        Authorization: `Bearer ${API_TOKEN}`,
+                    },
+                },
+                bindings,
+            );
+            expect(response.status).toBe(500);
+            expect(await response.json()).toEqual({
+                error: {
+                    code: "internal_error",
+                    message: "An internal error occurred",
+                    type: "api_error",
+                },
+            });
+        } finally {
+            await env.DATABASE.exec(
+                "DROP TABLE IF EXISTS models; DROP TABLE IF EXISTS oauth_states; DROP TABLE IF EXISTS providers;",
+            );
+            await initializeTestDatabase(env.DATABASE);
+        }
+    });
+
+    it("rejects unauthenticated requests on every gateway route", async () => {
+        const routes = [
+            {
+                isModelList: true,
+                path: "models",
+            },
+            {
+                isModelList: false,
+                path: "responses",
+            },
+            {
+                isModelList: false,
+                path: "chat/completions",
+            },
+        ];
+        // A missing header and a wrong token are indistinguishable: both answer the 401 envelope.
+        for (const authorization of [
+            undefined,
+            "Bearer wrong-token",
+        ]) {
+            for (const route of routes) {
+                const headers: Record<string, string> =
+                    authorization === undefined
+                        ? {}
+                        : {
+                              Authorization: authorization,
+                          };
+                const response = await api.request(
+                    `https://gateway.test/openai-v1/${route.path}`,
+                    {
+                        headers,
+                        method: route.isModelList ? "GET" : "POST",
+                    },
+                    bindings,
+                );
+                expect(response.status).toBe(401);
+                expect(await response.json()).toEqual({
+                    error: {
+                        code: "invalid_api_key",
+                        message: "The provided API key is invalid",
+                        type: "authentication_error",
+                    },
+                });
+            }
+        }
     });
 });

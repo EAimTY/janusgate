@@ -1,8 +1,8 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { verifyBearerAuthorization } from "/common/auth";
 import { gatewayErrorBody, invalidApiKeyError } from "/common/errors";
 import { API_VERSION_PATH } from "./config";
-import { handleGatewayRequest } from "./gateway";
+import { handleGatewayRequest, respondGatewayError } from "./gateway";
 import { listEnabledPublicModels } from "./model-routing";
 
 /** Shared gateway 401 envelope: an invalid bearer token always answers with this response. */
@@ -13,19 +13,35 @@ export function gatewayUnauthorizedResponse(): Response {
     });
 }
 
-export async function isGatewayAuthorized(request: Request, apiKeyHash: string): Promise<boolean> {
-    return verifyBearerAuthorization(request.headers.get("Authorization"), apiKeyHash);
-}
+/**
+ * The single app-level enforcement point for gateway bearer auth (README §4.1). It runs before
+ * every route handler on this app, so no route can ship unauthenticated by omission. Unknown
+ * gateway paths never reach a route handler; the root not-found fallback enforces the same
+ * check there.
+ */
+const requireGatewayAuthorization: MiddlewareHandler<{
+    Bindings: Env;
+}> = async (context, next) => {
+    const isAuthorized = await verifyBearerAuthorization(
+        context.req.header("Authorization") ?? null,
+        context.env.API_KEY_HASH,
+    );
+    if (!isAuthorized) return gatewayUnauthorizedResponse();
+    return next();
+};
 
 const api = new Hono<{
     Bindings: Env;
 }>();
 
+api.use(`${API_VERSION_PATH}/*`, requireGatewayAuthorization);
+
 api.get(`${API_VERSION_PATH}/models`, async (context) => {
-    if (!(await isGatewayAuthorized(context.req.raw, context.env.API_KEY_HASH))) {
-        return gatewayUnauthorizedResponse();
+    try {
+        return context.json(await listEnabledPublicModels(context.env.DATABASE));
+    } catch (error) {
+        return respondGatewayError(error);
     }
-    return context.json(await listEnabledPublicModels(context.env.DATABASE));
 });
 
 api.post(`${API_VERSION_PATH}/responses`, (context) =>

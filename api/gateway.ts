@@ -51,6 +51,21 @@ function mapTranslationError(error: TranslationError): GatewayError {
         : new GatewayError(400, "invalid_request_error", error.message, error.code);
 }
 
+/**
+ * Map any error escaping gateway handling onto the OpenAI error envelope (README §11.2) so every
+ * gateway response stays machine-parseable. Configuration errors are rethrown on purpose: a bad
+ * deployment secret is fatal and must never be masked as a routine internal error.
+ */
+export function respondGatewayError(error: unknown): Response {
+    if (error instanceof ConfigurationError) throw error;
+    if (error instanceof GatewayError) return gatewayErrorResponse(error);
+    if (error instanceof TranslationError) return gatewayErrorResponse(mapTranslationError(error));
+    if (error instanceof UpstreamIdleTimeoutError) {
+        return gatewayErrorResponse(upstreamTimeoutError());
+    }
+    return gatewayErrorResponse(internalGatewayError());
+}
+
 function isUsageIncluded(body: Record<string, unknown>): boolean {
     const streamOptions = body["stream_options"];
     return isJsonObject(streamOptions) && streamOptions["include_usage"] === true;
@@ -250,6 +265,9 @@ async function handleGatewayChat(
     protocol: ClientProtocol,
     fetchUpstream: typeof fetch,
 ): Promise<Response> {
+    // Auth guard for standalone invocation (direct callers and tests). The Hono app layer does
+    // not rely on this: it enforces bearer auth once, in its API-path middleware, before any
+    // route handler runs.
     if (
         !(await verifyBearerAuthorization(request.headers.get("Authorization"), env.API_KEY_HASH))
     ) {
@@ -313,14 +331,6 @@ export async function handleGatewayRequest(
     try {
         return await handleGatewayChat(request, env, protocol, fetchUpstream);
     } catch (error) {
-        // Bad deployment secrets are fatal — never masked as a routine internal error.
-        if (error instanceof ConfigurationError) throw error;
-        if (error instanceof GatewayError) return gatewayErrorResponse(error);
-        if (error instanceof TranslationError)
-            return gatewayErrorResponse(mapTranslationError(error));
-        if (error instanceof UpstreamIdleTimeoutError) {
-            return gatewayErrorResponse(upstreamTimeoutError());
-        }
-        return gatewayErrorResponse(internalGatewayError());
+        return respondGatewayError(error);
     }
 }
