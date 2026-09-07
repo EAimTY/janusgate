@@ -9,7 +9,6 @@
 
 # Node.js
 /node_modules/
-/package-lock.json
 
 # Build and test results
 /dist/
