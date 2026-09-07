@@ -4,7 +4,12 @@ import {
     type ProviderRow,
     type StoredProvider,
 } from "/common/database";
-import type { ProviderSummary, ProviderType, UpstreamProtocol } from "/common/domain";
+import {
+    assembleProviderSummary,
+    type ProviderSummary,
+    type ProviderType,
+    type UpstreamProtocol,
+} from "/common/domain";
 import { AUTO_PROVIDER_NAME_PREFIX } from "./config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 
@@ -29,45 +34,13 @@ interface UpdateProviderRecord {
     isEnabled: boolean;
 }
 
-function providerSummary(provider: StoredProvider): ProviderSummary {
-    const shared = {
-        enabled: provider.isEnabled,
-        modelPrefix: provider.modelPrefix,
-        name: provider.name,
-    };
-    if (provider.type === "openai_compatible") {
-        if (
-            provider.protocol === null ||
-            provider.baseUrl === null ||
-            provider.expiresAt !== null
-        ) {
-            throw new Error("Invalid stored OpenAI-compatible provider");
-        }
-        return {
-            ...shared,
-            baseUrl: provider.baseUrl,
-            expiresAt: null,
-            protocol: provider.protocol,
-            type: provider.type,
-        };
-    }
-    if (provider.protocol !== null || provider.baseUrl !== null || provider.expiresAt === null) {
-        throw new Error("Invalid stored OAuth provider");
-    }
-    return {
-        ...shared,
-        baseUrl: null,
-        expiresAt: provider.expiresAt,
-        protocol: null,
-        type: provider.type,
-    };
-}
-
 export async function listProviderSummaries(database: D1Database): Promise<ProviderSummary[]> {
     const result = await database
         .prepare(`SELECT ${PROVIDER_COLUMNS} FROM providers ORDER BY id`)
         .all<ProviderRow>();
-    return result.results.map((row) => providerSummary(mapProviderRow(row)));
+    // StoredProvider structurally satisfies ProviderSummaryFields, so stored rows pass through
+    // the same single invariant check that validates the panel wire shape.
+    return result.results.map((row) => assembleProviderSummary(mapProviderRow(row)));
 }
 
 export async function findProviderByName(

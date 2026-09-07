@@ -57,7 +57,7 @@ export interface CompleteOAuthInput {
  * The three override fields are full-replace: an absent or `null` field clears the override so
  * the value keeps following discovery (§6.3).
  */
-interface SaveModelInput {
+export interface SaveModelInput {
     readonly providerName: string;
     readonly upstreamName: string;
     readonly nameOverride: string | null;

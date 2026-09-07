@@ -1,25 +1,30 @@
 import {
+    assembleProviderSummary,
     type ModelSummary,
     type OAuthFlowType,
-    PROVIDER_TYPES,
     type ProviderSummary,
-    type ProviderType as SharedProviderType,
-    UPSTREAM_PROTOCOLS,
+    type ProviderType,
     type UpstreamProtocol,
 } from "/common/domain";
-import { isJsonObject } from "/common/validation";
+import {
+    isJsonObject,
+    parseProviderType,
+    parseThinkingLevels,
+    parseUpstreamProtocol,
+} from "/common/validation";
+import type { ThinkingLevel } from "/config";
+import type { DiscoveryResult } from "/panel-api/domain";
+import type { CompleteOAuthInput, SaveModelInput, StartOAuthInput } from "/panel-api/input";
 import { panelConfig } from "./config";
-import { isThinkingLevel, type ThinkingLevel } from "./model-helpers";
 
-export type ProviderType = SharedProviderType;
-export type OAuthType = OAuthFlowType;
-export type CompatibleProtocol = UpstreamProtocol;
+// The two remaining aliases serve the SPA's shared vocabulary; every wire type itself is
+// imported from its single server-side home (/common/domain, /panel-api/input, /panel-api/domain).
 export type Provider = ProviderSummary;
 export type Model = ModelSummary;
 
 interface SaveCompatibleProviderInput {
     name: string;
-    protocol: CompatibleProtocol;
+    protocol: UpstreamProtocol;
     baseUrl: string;
     enabled: boolean;
     modelPrefix: string;
@@ -31,21 +36,6 @@ interface SaveOAuthProviderInput {
     name: string;
     enabled: boolean;
     modelPrefix: string;
-}
-
-export interface SaveModelInput {
-    providerName: string;
-    upstreamName: string;
-    nameOverride: string | null;
-    enabledOverride: boolean | null;
-    thinkingLevelsOverride: readonly ThinkingLevel[] | null;
-}
-
-export interface OAuthCompletionInput {
-    redirectUrl: string;
-    name?: string;
-    modelPrefix?: string;
-    projectId?: string;
 }
 
 class PanelRequestError extends Error {
@@ -112,55 +102,49 @@ function readProviderType(
     record: Record<string, unknown>,
     key: "type" | "providerType" = "type",
 ): ProviderType {
-    const value = record[key];
-    for (const providerType of PROVIDER_TYPES) {
-        if (value === providerType) return providerType;
+    try {
+        return parseProviderType(record[key]);
+    } catch {
+        throw new PanelContractError(`${key} is not a supported provider type`);
     }
-    throw new PanelContractError("type is not a supported provider type");
 }
 
-function readProtocol(record: Record<string, unknown>): CompatibleProtocol | null {
-    const value = record["protocol"];
-    if (value === null) return null;
-    for (const protocol of UPSTREAM_PROTOCOLS) {
-        if (value === protocol) return protocol;
+function readProtocol(record: Record<string, unknown>): UpstreamProtocol | null {
+    if (record["protocol"] === null) return null;
+    try {
+        return parseUpstreamProtocol(record["protocol"]);
+    } catch {
+        throw new PanelContractError("protocol is not supported");
     }
-    throw new PanelContractError("protocol is not supported");
+}
+
+function readThinkingLevels(value: unknown): readonly ThinkingLevel[] | null {
+    try {
+        // The shared parser is normative: it rejects duplicates and returns the canonical order.
+        return parseThinkingLevels(value);
+    } catch {
+        throw new PanelContractError("thinkingLevels must contain only canonical levels");
+    }
 }
 
 function parseProvider(value: unknown): Provider {
     const record = readRecord(value, "provider");
-    const type = readProviderType(record);
-    const protocol = readProtocol(record);
-    const baseUrl = readNullableString(record, "baseUrl");
-    const expiresAt = readNullableInteger(record, "expiresAt");
-    const shared = {
-        enabled: readBoolean(record, "enabled"),
-        modelPrefix: readString(record, "modelPrefix"),
-        name: readString(record, "name"),
-    };
-    if (type === "openai_compatible") {
-        if (protocol === null || baseUrl === null || expiresAt !== null) {
-            throw new PanelContractError("an OpenAI-compatible provider has invalid fields");
-        }
-        return {
-            ...shared,
-            baseUrl,
-            expiresAt: null,
-            protocol,
-            type,
-        };
+    try {
+        // The discriminated-union invariant is assembled by the one shared enforcement point,
+        // so the SPA and the repository cannot disagree about what a valid provider is.
+        return assembleProviderSummary({
+            baseUrl: readNullableString(record, "baseUrl"),
+            expiresAt: readNullableInteger(record, "expiresAt"),
+            isEnabled: readBoolean(record, "enabled"),
+            modelPrefix: readString(record, "modelPrefix"),
+            name: readString(record, "name"),
+            protocol: readProtocol(record),
+            type: readProviderType(record),
+        });
+    } catch (error) {
+        if (error instanceof PanelContractError) throw error;
+        throw new PanelContractError("provider fields contradict the provider type");
     }
-    if (protocol !== null || baseUrl !== null || expiresAt === null) {
-        throw new PanelContractError("an OAuth provider has invalid fields");
-    }
-    return {
-        ...shared,
-        baseUrl: null,
-        expiresAt,
-        protocol: null,
-        type,
-    };
 }
 
 function parseProviders(value: unknown): Provider[] {
@@ -172,19 +156,6 @@ function parseProviders(value: unknown): Provider[] {
     return providers.map(parseProvider);
 }
 
-function parseThinkingLevels(value: unknown): ThinkingLevel[] | null {
-    if (value === null) return null;
-    if (!Array.isArray(value) || !value.every(isThinkingLevel)) {
-        throw new PanelContractError("thinkingLevels must contain only canonical levels");
-    }
-    if (new Set(value).size !== value.length) {
-        throw new PanelContractError("thinkingLevels cannot contain duplicates");
-    }
-    return [
-        ...value,
-    ];
-}
-
 function parseModel(value: unknown): Model {
     const record = readRecord(value, "model");
     return {
@@ -193,7 +164,7 @@ function parseModel(value: unknown): Model {
         nameOverride: readNullableString(record, "nameOverride"),
         providerName: readString(record, "providerName"),
         providerType: readProviderType(record, "providerType"),
-        thinkingLevels: parseThinkingLevels(record["thinkingLevels"]),
+        thinkingLevels: readThinkingLevels(record["thinkingLevels"]),
         upstreamName: readString(record, "upstreamName"),
     };
 }
@@ -226,18 +197,13 @@ function parseSavedModel(value: unknown): {
     };
 }
 
-function parseDiscovery(value: unknown): {
-    total: number;
-    created: number;
-    removed: number;
-    skipped: number;
-} {
+function parseDiscovery(value: unknown): DiscoveryResult {
     const record = readRecord(value, "discovery result");
     return {
-        total: readInteger(record, "total"),
         created: readInteger(record, "created"),
         removed: readInteger(record, "removed"),
         skipped: readInteger(record, "skipped"),
+        total: readInteger(record, "total"),
     };
 }
 
@@ -321,14 +287,16 @@ export class PanelApiClient {
         );
     }
 
-    public async startProviderOAuth(type: OAuthType, providerName?: string): Promise<string> {
-        const body: {
-            type: OAuthType;
-            providerName?: string;
-        } = {
-            type,
-        };
-        if (providerName !== undefined) body.providerName = providerName;
+    public async startProviderOAuth(type: OAuthFlowType, providerName?: string): Promise<string> {
+        const body: StartOAuthInput =
+            providerName === undefined
+                ? {
+                      type,
+                  }
+                : {
+                      type,
+                      providerName,
+                  };
         return this.#request(
             panelConfig.panelEndpoints.startProviderOAuth,
             "POST",
@@ -337,7 +305,7 @@ export class PanelApiClient {
         );
     }
 
-    public async completeProviderOAuth(input: OAuthCompletionInput): Promise<void> {
+    public async completeProviderOAuth(input: CompleteOAuthInput): Promise<void> {
         return this.#request(
             panelConfig.panelEndpoints.completeProviderOAuth,
             "POST",
@@ -368,12 +336,7 @@ export class PanelApiClient {
         );
     }
 
-    public async discoverModels(providerName: string): Promise<{
-        total: number;
-        created: number;
-        removed: number;
-        skipped: number;
-    }> {
+    public async discoverModels(providerName: string): Promise<DiscoveryResult> {
         return this.#request(
             panelConfig.panelEndpoints.discoverModels,
             "POST",

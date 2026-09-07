@@ -81,6 +81,53 @@ interface OpenAiCompatibleProviderSummary extends ProviderSummaryBase {
 
 export type ProviderSummary = OAuthProviderSummary | OpenAiCompatibleProviderSummary;
 
+/** Raw provider fields as stored in D1 or received on the panel wire; never trusted as a summary. */
+export interface ProviderSummaryFields {
+    readonly name: string;
+    readonly isEnabled: boolean;
+    readonly modelPrefix: string;
+    readonly type: ProviderType;
+    readonly protocol: UpstreamProtocol | null;
+    readonly baseUrl: string | null;
+    readonly expiresAt: number | null;
+}
+
+/**
+ * The single enforcement point of the `ProviderSummary` discriminated union (§12.3): an
+ * OpenAI-compatible provider carries `protocol` and `baseUrl` and never a token expiry, and an
+ * OAuth provider carries exactly the converse. Stored rows and panel responses both derive
+ * through this one check, so the two sides cannot drift; a violation is a fatal contract error.
+ */
+export function assembleProviderSummary(fields: ProviderSummaryFields): ProviderSummary {
+    const shared = {
+        enabled: fields.isEnabled,
+        modelPrefix: fields.modelPrefix,
+        name: fields.name,
+    };
+    if (fields.type === "openai_compatible") {
+        if (fields.protocol === null || fields.baseUrl === null || fields.expiresAt !== null) {
+            throw new Error("Invalid OpenAI-compatible provider fields");
+        }
+        return {
+            ...shared,
+            baseUrl: fields.baseUrl,
+            expiresAt: null,
+            protocol: fields.protocol,
+            type: fields.type,
+        };
+    }
+    if (fields.protocol !== null || fields.baseUrl !== null || fields.expiresAt === null) {
+        throw new Error("Invalid OAuth provider fields");
+    }
+    return {
+        ...shared,
+        baseUrl: null,
+        expiresAt: fields.expiresAt,
+        protocol: null,
+        type: fields.type,
+    };
+}
+
 export interface ModelSummary {
     readonly providerName: string;
     readonly providerType: ProviderType;
@@ -89,11 +136,4 @@ export interface ModelSummary {
     readonly nameOverride: string | null;
     readonly enabled: boolean;
     readonly thinkingLevels: readonly ThinkingLevel[] | null;
-}
-
-export interface DiscoveryResult {
-    readonly total: number;
-    readonly created: number;
-    readonly removed: number;
-    readonly skipped: number;
 }

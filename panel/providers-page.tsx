@@ -1,13 +1,12 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, onSettled, Show } from "solid-js";
-import { oauthFlowForProviderType } from "/common/domain";
 import {
-    errorMessage,
-    type OAuthType,
-    type PanelApiClient,
-    type Provider,
+    type OAuthFlowType,
+    oauthFlowForProviderType,
+    type ProviderSummary,
     type ProviderType,
-} from "./api-client";
+} from "/common/domain";
+import { errorMessage, type PanelApiClient } from "./api-client";
 import { panelConfig } from "./config";
 import { protocolLabel, providerTypeLabel } from "./labels";
 import { OAuthFlowDialog, type OAuthFlowLaunch } from "./oauth-flow-dialog";
@@ -58,7 +57,7 @@ const providerGroups: ReadonlyArray<{
  * expired `expires_at` only means the token has been idle — it does not make the provider
  * unusable. Only a rejected refresh (revoked grant) requires reauthentication.
  */
-function expiryPresentation(provider: Provider): {
+function expiryPresentation(provider: ProviderSummary): {
     label: string;
     tone: "good" | "neutral" | "warning";
 } {
@@ -93,20 +92,20 @@ const expiryToneClasses: Record<"good" | "neutral" | "warning", string> = {
 };
 
 export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
-    const [providers, setProviders] = createSignal<Provider[]>([]);
+    const [providers, setProviders] = createSignal<ProviderSummary[]>([]);
     const [isLoading, setIsLoading] = createSignal(true);
     const [error, setError] = createSignal<string | null>(null);
     const [success, setSuccess] = createSignal<string | null>(null);
     const [busyProviderName, setBusyProviderName] = createSignal<string | null>(null);
 
     const [isEditorOpen, setIsEditorOpen] = createSignal(false);
-    const [editingProvider, setEditingProvider] = createSignal<Provider | null>(null);
+    const [editingProvider, setEditingProvider] = createSignal<ProviderSummary | null>(null);
 
     const [oauthLaunch, setOAuthLaunch] = createSignal<OAuthFlowLaunch | null>(null);
 
     const providerCount = createMemo(() => providers().length);
 
-    async function loadProviders(): Promise<Provider[]> {
+    async function loadProviders(): Promise<ProviderSummary[]> {
         const loadedProviders = await props.client.listProviders();
         setProviders(loadedProviders);
         return loadedProviders;
@@ -133,12 +132,12 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         setIsEditorOpen(true);
     }
 
-    function openProviderEditor(provider: Provider): void {
+    function openProviderEditor(provider: ProviderSummary): void {
         setEditingProvider(provider);
         setIsEditorOpen(true);
     }
 
-    function launchOAuth(type: OAuthType, providerName: string | null): void {
+    function launchOAuth(type: OAuthFlowType, providerName: string | null): void {
         setOAuthLaunch({
             type,
             providerName,
@@ -198,7 +197,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         }
     }
 
-    async function toggleProvider(provider: Provider): Promise<void> {
+    async function toggleProvider(provider: ProviderSummary): Promise<void> {
         setBusyProviderName(provider.name);
         setError(null);
         setSuccess(null);
@@ -227,7 +226,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         }
     }
 
-    async function deleteProvider(provider: Provider): Promise<void> {
+    async function deleteProvider(provider: ProviderSummary): Promise<void> {
         if (
             !window.confirm(
                 `Delete provider “${provider.name}” and all of its models? This cannot be undone.`,

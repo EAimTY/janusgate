@@ -154,10 +154,12 @@ export function parseStoredThinkingLevels(json: string | null): readonly Thinkin
     return value;
 }
 
+/**
+ * Pure §6.1 composition, `prefix + base`, with no validation: the non-empty base rule lives in
+ * the parse layers (panel input, discovery model lists), so the SPA can call this for live
+ * previews while the user types without a mid-keystroke throw.
+ */
 export function composeModelName(prefix: string, base: string): string {
-    if (base.length === 0) {
-        throw new ValidationError("model base name must be non-empty");
-    }
     return `${prefix}${base}`;
 }
 

@@ -1,21 +1,18 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
+import type { OAuthFlowType } from "/common/domain";
 import {
     MODEL_PREFIX_MAX_LENGTH,
     MODEL_PREFIX_PATTERN,
     PROVIDER_NAME_MAX_LENGTH,
     PROVIDER_NAME_PATTERN,
 } from "/config";
-import {
-    errorMessage,
-    type OAuthCompletionInput,
-    type OAuthType,
-    type PanelApiClient,
-} from "./api-client";
+import type { CompleteOAuthInput } from "/panel-api/input";
+import { errorMessage, type PanelApiClient } from "./api-client";
 import { buttonPrimaryClasses, checkboxClasses, Dialog, formControlClasses, Notice } from "./ui";
 
 export interface OAuthFlowLaunch {
-    type: OAuthType;
+    type: OAuthFlowType;
     providerName: string | null;
     existingProviderNames: ReadonlySet<string>;
 }
@@ -66,16 +63,29 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
         setIsCompletingOAuth(true);
         setOAuthError(null);
         try {
-            const input: OAuthCompletionInput = {
+            // The server-side input type is immutable, so the optional fields are composed
+            // instead of assigned. `name`/`modelPrefix` apply to creation flows only; the
+            // Antigravity `projectId` applies to creation and reauthentication alike (§12.7).
+            const isCreationFlow = props.launch.providerName === null;
+            const trimmedName = oauthName().trim();
+            const input: CompleteOAuthInput = {
                 redirectUrl: oauthRedirectUrl().trim(),
+                ...(isCreationFlow && trimmedName.length > 0
+                    ? {
+                          name: trimmedName,
+                      }
+                    : {}),
+                ...(isCreationFlow && isOAuthPrefixSpecified()
+                    ? {
+                          modelPrefix: oauthPrefix(),
+                      }
+                    : {}),
+                ...(props.launch.type === "antigravity" && oauthProjectId().trim().length > 0
+                    ? {
+                          projectId: oauthProjectId().trim(),
+                      }
+                    : {}),
             };
-            if (props.launch.providerName === null) {
-                if (oauthName().trim().length > 0) input.name = oauthName().trim();
-                if (isOAuthPrefixSpecified()) input.modelPrefix = oauthPrefix();
-            }
-            if (props.launch.type === "antigravity" && oauthProjectId().trim().length > 0) {
-                input.projectId = oauthProjectId().trim();
-            }
             await props.client.completeProviderOAuth(input);
             await props.onCompleted(props.launch);
         } catch (caughtError) {

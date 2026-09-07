@@ -123,12 +123,3 @@ export const PROVIDER_COLUMNS = `
     refresh_started_at,
     enabled
 `;
-
-export const MODEL_COLUMNS = `
-    provider_id,
-    upstream_name,
-    name,
-    name_override,
-    enabled_override,
-    thinking_levels_override
-`;

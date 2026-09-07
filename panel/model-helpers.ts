@@ -1,17 +1,14 @@
+import { composeModelName } from "/common/validation";
 import { CANONICAL_THINKING_LEVELS, type ThinkingLevel } from "/config";
 
 export const thinkingLevels = CANONICAL_THINKING_LEVELS;
-export { isThinkingLevel } from "/common/validation";
 export type { ThinkingLevel };
+export { composeModelName };
 
 interface ModelNamePreviewInput {
     modelPrefix: string;
     upstreamName: string;
     baseName: string;
-}
-
-export function composeModelName(modelPrefix: string, baseName: string): string {
-    return `${modelPrefix}${baseName}`;
 }
 
 /** The public name a mapping resolves to: the prefix plus the override base, else the upstream name. */

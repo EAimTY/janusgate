@@ -426,6 +426,39 @@ describe("model discovery", () => {
         ).resolves.toBe(0);
     });
 
+    it("rejects an empty upstream model ID before changing the database", async () => {
+        const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
+        await insertProvider(
+            "custom",
+            "openai_compatible",
+            await cipher.encrypt({
+                apiKey: "key",
+            }),
+        );
+        const provider = await findProviderByName(env.DATABASE, "custom");
+        if (provider === null) throw new Error("provider missing");
+
+        const fetchUpstream: typeof fetch = async () =>
+            Response.json({
+                data: [
+                    {
+                        id: "",
+                        object: "model",
+                        owned_by: "upstream",
+                    },
+                ],
+            });
+        await expect(
+            discoverProviderModels(env.DATABASE, provider, cipher, fetchUpstream),
+        ).rejects.toMatchObject({
+            message: "The upstream returned an invalid model list",
+            status: 502,
+        });
+        await expect(
+            env.DATABASE.prepare("SELECT COUNT(*) AS count FROM models").first("count"),
+        ).resolves.toBe(0);
+    });
+
     it("discovers the authenticated Antigravity runtime catalog", async () => {
         const cipher = await CredentialsCipher.create(CREDENTIAL_KEY);
         await insertProvider(

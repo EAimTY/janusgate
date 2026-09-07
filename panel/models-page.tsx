@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, onSettled, Show } from "solid-js";
-import { errorMessage, type Model, type PanelApiClient, type Provider } from "./api-client";
+import type { ModelSummary, ProviderSummary } from "/common/domain";
+import { errorMessage, type PanelApiClient } from "./api-client";
 import { ModelEditorForm } from "./model-editor-form";
 import {
     buttonPrimaryClasses,
@@ -19,26 +20,26 @@ interface ModelsPageProps {
     client: PanelApiClient;
 }
 
-function thinkingSummary(model: Model): string {
+function thinkingSummary(model: ModelSummary): string {
     if (model.thinkingLevels === null) return "Provider defaults";
     if (model.thinkingLevels.length === 0) return "Never inject";
     return model.thinkingLevels.join(", ");
 }
 
 /** Provider names cannot contain "/", so the pair is a safe identity key. */
-function modelKey(model: Model): string {
+function modelKey(model: ModelSummary): string {
     return `${model.providerName}/${model.upstreamName}`;
 }
 
 export function ModelsPage(props: ModelsPageProps): JSX.Element {
-    const [models, setModels] = createSignal<Model[]>([]);
-    const [providers, setProviders] = createSignal<Provider[]>([]);
+    const [models, setModels] = createSignal<ModelSummary[]>([]);
+    const [providers, setProviders] = createSignal<ProviderSummary[]>([]);
     const [isLoading, setIsLoading] = createSignal(true);
     const [error, setError] = createSignal<string | null>(null);
     const [success, setSuccess] = createSignal<string | null>(null);
     const [busyModelKey, setBusyModelKey] = createSignal<string | null>(null);
 
-    const [editingModel, setEditingModel] = createSignal<Model | null>(null);
+    const [editingModel, setEditingModel] = createSignal<ModelSummary | null>(null);
     // A fresh ModelEditorForm mounts per editing session; the key forces that remount.
     const [editorSession, setEditorSession] = createSignal(0);
 
@@ -51,7 +52,7 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
         setEditorSession((session) => session + 1);
     }
 
-    function editModel(model: Model): void {
+    function editModel(model: ModelSummary): void {
         setEditingModel(model);
         setEditorSession((session) => session + 1);
         document.getElementById("model-editor")?.scrollIntoView({
@@ -87,7 +88,7 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
         setSuccess(`${savedModel.name} saved.`);
     }
 
-    async function toggleModel(model: Model): Promise<void> {
+    async function toggleModel(model: ModelSummary): Promise<void> {
         setBusyModelKey(modelKey(model));
         setError(null);
         setSuccess(null);
@@ -108,7 +109,7 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
         }
     }
 
-    async function deleteModel(model: Model): Promise<void> {
+    async function deleteModel(model: ModelSummary): Promise<void> {
         if (
             !window.confirm(
                 `Delete model “${model.name}”? Its public route stops resolving immediately.`,

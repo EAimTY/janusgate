@@ -1,18 +1,13 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
-import { UPSTREAM_PROTOCOLS } from "/common/domain";
+import { type ProviderSummary, UPSTREAM_PROTOCOLS, type UpstreamProtocol } from "/common/domain";
 import {
     MODEL_PREFIX_MAX_LENGTH,
     MODEL_PREFIX_PATTERN,
     PROVIDER_NAME_MAX_LENGTH,
     PROVIDER_NAME_PATTERN,
 } from "/config";
-import {
-    type CompatibleProtocol,
-    errorMessage,
-    type PanelApiClient,
-    type Provider,
-} from "./api-client";
+import { errorMessage, type PanelApiClient } from "./api-client";
 import {
     buttonGhostClasses,
     buttonPrimaryClasses,
@@ -25,7 +20,7 @@ import {
 interface ProviderEditorDialogProps {
     client: PanelApiClient;
     /** `null` opens the API-key creation form; a provider opens its edit form. */
-    editingProvider: Provider | null;
+    editingProvider: ProviderSummary | null;
     onClose: () => void;
     /**
      * Page-owned post-save continuation: closes the dialog, reloads the list, records the
@@ -42,7 +37,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps): JSX.Elem
     const [editorName, setEditorName] = createSignal(editingProvider?.name ?? "");
     const [editorPrefix, setEditorPrefix] = createSignal(editingProvider?.modelPrefix ?? "");
     const [editorBaseUrl, setEditorBaseUrl] = createSignal(editingProvider?.baseUrl ?? "");
-    const [editorProtocol, setEditorProtocol] = createSignal<CompatibleProtocol>(
+    const [editorProtocol, setEditorProtocol] = createSignal<UpstreamProtocol>(
         editingProvider?.protocol ?? "openai_response",
     );
     const [editorApiKey, setEditorApiKey] = createSignal("");

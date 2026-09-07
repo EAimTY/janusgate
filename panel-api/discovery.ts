@@ -2,19 +2,28 @@ import type { CredentialsCipher } from "/common/credentials";
 import { assertCredentialsMatchProvider } from "/common/credentials";
 import {
     hasModelOverrides,
-    MODEL_COLUMNS,
     type ModelRow,
     mapModelRow,
     type StoredProvider,
 } from "/common/database";
-import type { DiscoveryResult } from "/common/domain";
 import { CredentialDecryptionError, ProviderAccessError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { composeModelName, isJsonObject } from "/common/validation";
 import { ensureFreshProviderAccess } from "/providers/access";
 import { ANTIGRAVITY_FETCH_MODELS_URL, antigravityRequestHeaders } from "/providers/antigravity";
 import { OPENAI_CODEX_MODELS } from "/providers/openai";
+import type { DiscoveryResult } from "./domain";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
+
+/** Columns for whole-model reads; kept beside the discovery reconcile, their only consumer. */
+const MODEL_COLUMNS = `
+    provider_id,
+    upstream_name,
+    name,
+    name_override,
+    enabled_override,
+    thinking_levels_override
+`;
 
 function upstreamDiscoveryError(message: string): PanelApiError {
     return new PanelApiError(502, message);
@@ -68,7 +77,9 @@ function parseCompatibleModelList(value: unknown): string[] {
     }
     const modelNames: string[] = [];
     for (const entry of value["data"]) {
-        if (!isJsonObject(entry) || typeof entry["id"] !== "string") {
+        // An empty ID would compose a public name equal to the bare prefix (§6.1), so it is
+        // rejected like any other malformed entry; discovery owns the non-empty upstream name.
+        if (!isJsonObject(entry) || typeof entry["id"] !== "string" || entry["id"].length === 0) {
             throw upstreamDiscoveryError("The upstream returned an invalid model list");
         }
         modelNames.push(entry["id"]);
