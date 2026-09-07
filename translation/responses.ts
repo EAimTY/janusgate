@@ -57,7 +57,10 @@ interface ResponsesRequestObject {
 
 interface ResponsesInputMessage {
     type: "message";
-    role: "user" | "assistant";
+    // The upstream `input` array accepts `system` (and `developer`) message items at any
+    // position, so non-leading system messages render in position instead of being
+    // hoisted into `instructions`.
+    role: "system" | "user" | "assistant";
     content: ResponsesContentPart[];
 }
 
@@ -305,8 +308,12 @@ function parseResponsesInput(value: unknown): IrMessage[] {
                       parseResponsesContentPart(part, index, partIndex),
                   );
         return {
-            // Gemini has one system-instruction channel, so Responses developer instructions
-            // share the IR's system role and retain their position relative to other input items.
+            // `developer` and `system` both normalize to the IR's system role, and their
+            // position is preserved end to end: the Responses request renderer emits
+            // non-leading system messages as in-position `role:"system"` input items and
+            // lifts only the leading all-text system message into `instructions`. (Gemini
+            // is the lossy one: its single `systemInstruction` channel forces every system
+            // message to the front.)
             role: role === "developer" ? "system" : role,
             parts,
         };
@@ -439,17 +446,30 @@ export function renderResponsesRequest(
     model: string,
     reasoningEffort?: string,
 ): ResponsesRequestObject {
-    const systemText: string[] = [];
+    // `instructions` on the Responses upstream is documented as "a system (or developer)
+    // message inserted into the model's context", i.e. it always lands at the front. The
+    // leading all-text system message therefore renders into `instructions` — the exact
+    // inverse of the parser, which turns `instructions` into a leading system message.
+    // Every other system message renders in position as a `role:"system"` input message
+    // item, which the upstream `input` array accepts at any offset; hoisting a
+    // mid-conversation developer correction to the front would silently reorder it. A
+    // system message with non-text parts also stays in position because a string cannot
+    // carry them. (Gemini is the exception: its single `systemInstruction` channel forces
+    // every system message to the front.)
+    let instructions: string | undefined;
     const input: ResponsesRequestObject["input"] = [];
-    for (const message of request.messages) {
-        if (message.role === "system") {
-            systemText.push(
-                message.parts
-                    .filter((part) => part.type === "text")
-                    .map((part) => part.text)
-                    .join(""),
-            );
-            continue;
+    for (const [messageIndex, message] of request.messages.entries()) {
+        const isLeadingSystem = messageIndex === 0 && message.role === "system";
+        if (isLeadingSystem) {
+            const textParts = message.parts.filter((part) => part.type === "text");
+            // A string cannot carry non-text parts, so a leading system message that has
+            // any renders in position like any other system message.
+            const isAllText = textParts.length === message.parts.length;
+            if (isAllText) {
+                const text = textParts.map((part) => part.text).join("");
+                if (text.length > 0) instructions = text;
+                continue;
+            }
         }
         for (const part of message.parts) {
             if (part.type === "tool_call") {
@@ -478,7 +498,10 @@ export function renderResponsesRequest(
         const contentParts = message.parts
             .filter((part) => part.type === "text" || part.type === "image")
             .map((part) => renderResponsesContentPart(part, message.role));
-        if (contentParts.length > 0 && (message.role === "user" || message.role === "assistant")) {
+        if (
+            contentParts.length > 0 &&
+            (message.role === "system" || message.role === "user" || message.role === "assistant")
+        ) {
             input.push({
                 type: "message",
                 role: message.role,
@@ -491,7 +514,7 @@ export function renderResponsesRequest(
         input,
         stream: request.isStreaming,
     };
-    if (systemText.length > 0) result["instructions"] = systemText.join("\n\n");
+    if (instructions !== undefined) result["instructions"] = instructions;
     if (request.tools.length > 0) result["tools"] = request.tools.map(renderResponsesTool);
     if (request.toolChoice !== undefined) {
         result.tool_choice =

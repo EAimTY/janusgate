@@ -679,6 +679,149 @@ test("Responses and Chat Completions translate through the event IR", () => {
     );
 });
 
+test("Responses request renderer keeps mid-history system items in position", () => {
+    // The Responses upstream accepts `role:"system"` (and `developer`) message items at
+    // any offset of the `input` array, while `instructions` is documented as a system
+    // (or developer) message inserted at the FRONT of the model's context. Hoisting a
+    // mid-conversation developer correction into `instructions` would silently reorder
+    // it, so the renderer lifts only the leading all-text system message into
+    // `instructions` and renders every later system item in position. The IR normalizes
+    // `developer` to `system`, so both inbound roles reappear as `system`.
+    const rendered = renderResponsesRequest(
+        parseResponsesRequest({
+            model: "public-model",
+            instructions: "Be terse.",
+            input: [
+                {
+                    role: "user",
+                    content: "Explain the plan.",
+                },
+                {
+                    type: "message",
+                    role: "developer",
+                    content: "Use the new schema.",
+                },
+                {
+                    role: "assistant",
+                    content: "Plan explained.",
+                },
+                {
+                    type: "message",
+                    role: "system",
+                    content: [
+                        {
+                            type: "input_text",
+                            text: "Final reminder.",
+                        },
+                    ],
+                },
+                {
+                    role: "user",
+                    content: "Summarize.",
+                },
+            ],
+        }),
+        "wire-model",
+    );
+    assertEqual(rendered.instructions, "Be terse.", "leading system text renders as instructions");
+    assertEqual(
+        rendered.input,
+        [
+            {
+                type: "message",
+                role: "user",
+                content: [
+                    {
+                        type: "input_text",
+                        text: "Explain the plan.",
+                    },
+                ],
+            },
+            {
+                type: "message",
+                role: "system",
+                content: [
+                    {
+                        type: "input_text",
+                        text: "Use the new schema.",
+                    },
+                ],
+            },
+            {
+                type: "message",
+                role: "assistant",
+                content: [
+                    {
+                        type: "output_text",
+                        text: "Plan explained.",
+                    },
+                ],
+            },
+            {
+                type: "message",
+                role: "system",
+                content: [
+                    {
+                        type: "input_text",
+                        text: "Final reminder.",
+                    },
+                ],
+            },
+            {
+                type: "message",
+                role: "user",
+                content: [
+                    {
+                        type: "input_text",
+                        text: "Summarize.",
+                    },
+                ],
+            },
+        ],
+        "mid-history and trailing system items render in position instead of instructions",
+    );
+
+    // Round-trip identity: a leading in-input system message is wire-equivalent to
+    // `instructions` (both are "a system message at the front of the context").
+    const leadingInInput = renderResponsesRequest(
+        parseResponsesRequest({
+            model: "m",
+            input: [
+                {
+                    role: "system",
+                    content: "Lead rules.",
+                },
+                {
+                    role: "user",
+                    content: "Go",
+                },
+            ],
+        }),
+        "wire-model",
+    );
+    assertEqual(
+        leadingInInput.instructions,
+        "Lead rules.",
+        "a leading in-input system message renders as instructions",
+    );
+    assertEqual(
+        leadingInInput.input,
+        [
+            {
+                type: "message",
+                role: "user",
+                content: [
+                    {
+                        type: "input_text",
+                        text: "Go",
+                    },
+                ],
+            },
+        ],
+        "the leading system message is not duplicated into input",
+    );
+});
+
 test("Chat Completions streams with null string fields translate without truncation", () => {
     // OpenAI-shaped upstreams serialize optional string fields as JSON `null` instead of
     // omitting them: `content` is nullable on every delta (official OpenAPI
