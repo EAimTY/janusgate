@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { verifyBearerAuthorization } from "/common/auth";
 import api, { gatewayUnauthorizedResponse } from "./api/app";
 import { API_ROOT_PATH } from "./api/config";
+import { GatewayError, gatewayErrorBody } from "./api/errors";
 import panelApi from "./panel-api/app";
 import { PANEL_API_BASE_PATH } from "./panel-api/config";
 
@@ -24,13 +25,14 @@ app.notFound(async (context) => {
             return gatewayUnauthorizedResponse();
         }
         return context.json(
-            {
-                error: {
-                    code: "not_found",
-                    message: "The requested API route was not found",
-                    type: "not_found_error",
-                },
-            },
+            gatewayErrorBody(
+                new GatewayError(
+                    404,
+                    "not_found_error",
+                    "The requested API route was not found",
+                    "not_found",
+                ),
+            ),
             404,
         );
     }

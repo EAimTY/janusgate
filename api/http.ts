@@ -1,5 +1,5 @@
-import { type GatewayError, invalidJsonError, payloadTooLargeError } from "/common/errors";
 import { isJsonObject } from "/common/validation";
+import { type GatewayError, invalidJsonError, payloadTooLargeError } from "./errors";
 
 /** Joins counted chunks into one exact-size buffer; `byteLength` must equal their sum. */
 export function concatenateBytes(chunks: readonly Uint8Array[], byteLength: number): Uint8Array {

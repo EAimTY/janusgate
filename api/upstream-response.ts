@@ -1,10 +1,10 @@
-import { upstreamResponseTooLargeError, upstreamTimeoutError } from "/common/errors";
 import { MILLISECONDS_PER_SECOND } from "/config";
 import {
     MAX_RESPONSE_BYTES,
     SAFE_UPSTREAM_RESPONSE_HEADERS,
     UPSTREAM_IDLE_TIMEOUT_SECONDS,
 } from "./config";
+import { upstreamResponseTooLargeError, upstreamTimeoutError } from "./errors";
 import { concatenateBytes } from "./http";
 
 export function copySafeUpstreamHeaders(source: Headers): Headers {

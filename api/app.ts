@@ -1,7 +1,7 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { verifyBearerAuthorization } from "/common/auth";
-import { gatewayErrorBody, invalidApiKeyError } from "/common/errors";
 import { API_VERSION_PATH } from "./config";
+import { gatewayErrorBody, invalidApiKeyError } from "./errors";
 import { handleGatewayRequest, respondGatewayError } from "./gateway";
 import { listEnabledPublicModels } from "./model-routing";
 

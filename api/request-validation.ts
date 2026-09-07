@@ -1,6 +1,6 @@
 import type { ClientProtocol } from "/common/domain";
-import { GatewayError } from "/common/errors";
 import { isJsonObject, requireJsonObject } from "/common/validation";
+import { GatewayError } from "./errors";
 
 export interface ValidatedGatewayRequest {
     body: Record<string, unknown>;

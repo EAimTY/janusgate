@@ -2,18 +2,7 @@ import { verifyBearerAuthorization } from "/common/auth";
 import { CredentialsCipher } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
 import { assembleProviderSummary, type ClientProtocol } from "/common/domain";
-import {
-    ConfigurationError,
-    CredentialDecryptionError,
-    GatewayError,
-    gatewayErrorBody,
-    internalGatewayError,
-    invalidApiKeyError,
-    modelNotFoundError,
-    ProviderAccessError,
-    upstreamFailureError,
-    upstreamTimeoutError,
-} from "/common/errors";
+import { ConfigurationError, CredentialDecryptionError, ProviderAccessError } from "/common/errors";
 import { isJsonObject } from "/common/validation";
 import { MILLISECONDS_PER_SECOND } from "/config";
 import { ensureFreshProviderAccess, type OAuthCredentials } from "/providers/access";
@@ -23,6 +12,15 @@ import {
     MAX_REQUEST_BYTES,
     UPSTREAM_IDLE_TIMEOUT_SECONDS,
 } from "./config";
+import {
+    GatewayError,
+    gatewayErrorBody,
+    internalGatewayError,
+    invalidApiKeyError,
+    modelNotFoundError,
+    upstreamFailureError,
+    upstreamTimeoutError,
+} from "./errors";
 import { readBoundedJsonObject } from "./http";
 import { type ResolvedModelRoute, resolveEnabledModel } from "./model-routing";
 import { validateGatewayRequest } from "./request-validation";

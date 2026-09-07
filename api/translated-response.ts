@@ -1,5 +1,4 @@
 import type { ClientProtocol, UpstreamProtocol } from "/common/domain";
-import { upstreamFailureError } from "/common/errors";
 import { unixSeconds } from "/common/validation";
 import {
     type GenerateContentStreamState,
@@ -21,6 +20,7 @@ import {
     renderResponsesResponse,
 } from "/translation/responses";
 import { SseParser } from "/translation/sse";
+import { upstreamFailureError } from "./errors";
 import { readBeforeIdleTimeout } from "./upstream-response";
 
 function parseUpstreamEvents(protocol: UpstreamProtocol, value: unknown): IrEvent[] {
