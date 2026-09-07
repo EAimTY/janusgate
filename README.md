@@ -40,7 +40,7 @@
 | Assets | Worker Static Assets |
 | AuthN | Shared-token headers (panel + gateway); no sessions |
 
-Deployed as a single Worker + Static Assets. Custom domain **not** required (`*.workers.dev` acceptable).
+Deployed as a single Worker + Static Assets. Custom domain **not** required (`*.workers.dev` acceptable). The `routes` and `d1_databases.database_id` pinned in wrangler.jsonc are instance-specific — adjust them (or enable `workers_dev`) before the first deploy.
 
 ```jsonc
 // wrangler.jsonc
@@ -550,74 +550,7 @@ Response: `{ "total": 12, "created": 2, "removed": 1, "skipped": 10 }`
 
 Single migration. All tables `STRICT`; timestamps Unix seconds. Deliberately **no `CHECK` constraints** — the database is infallible storage, not a validator (policy below).
 
-```sql
-CREATE TABLE providers (
-    -- auto-increasing surrogate; internal only, never exposed by any API
-    id INTEGER PRIMARY KEY,
-
-    -- string identifier; displayed as-is; doubles as default model-name prefix (§3.1, §6.1)
-    name TEXT NOT NULL UNIQUE,
-
-    -- seeded with the provider name at creation; '' ⇒ no prefix; else used verbatim (§3.1)
-    model_prefix TEXT NOT NULL DEFAULT '',
-
-    type TEXT NOT NULL,
-
-    protocol TEXT,
-
-    base_url TEXT,
-
-    -- AES-256-GCM blob: IV ‖ ciphertext ‖ tag (§4.3)
-    encrypted_credentials BLOB NOT NULL,
-
-    expires_at INTEGER,
-
-    refresh_started_at INTEGER,
-
-    enabled INTEGER NOT NULL DEFAULT 1
-) STRICT;
-
-
-CREATE TABLE models (
-    -- model identity: the owning provider plus the upstream model name; no surrogate key
-    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-
-    upstream_name TEXT NOT NULL,
-
-    -- materialized public name: model_prefix + (name_override ?? upstream_name), maintained at
-    -- every model write (§6.1)
-    name TEXT NOT NULL UNIQUE,
-
-    -- non-NULL replaces the upstream name as the base of the public name (§6.1)
-    name_override TEXT NULL,
-
-    -- non-NULL pins the serving state instead of the discovery default, which is enabled (§6.3)
-    enabled_override INTEGER NULL,
-
-    -- JSON array ⊆ canonical thinking-level vocabulary; NULL ⇒ no filtering, pure passthrough (§10.2)
-    thinking_levels_override TEXT NULL,
-
-    PRIMARY KEY (provider_id, upstream_name)
-) STRICT, WITHOUT ROWID;
-
-
-CREATE TABLE oauth_states (
-    id INTEGER PRIMARY KEY,
-
-    type TEXT NOT NULL,
-
-    state TEXT NOT NULL UNIQUE,
-
-    verifier TEXT NOT NULL,
-
-    -- reauthentication target (NULL for new-provider flows)
-    provider_id INTEGER REFERENCES providers(id) ON DELETE CASCADE,
-
-    expires_at INTEGER NOT NULL
-) STRICT;
-
-CREATE INDEX idx_oauth_states_expires_at ON oauth_states(expires_at);
-```
+The normative DDL lives in `D1.sql` — the schema's single home, not reproduced here — and the test suite executes that file verbatim (imported as `/D1.sql?raw`), so the executed schema can never drift from the source of truth. Shape in brief: `providers` holds one row per provider, keyed by an internal auto-increment `id`; `models` is keyed by the composite identity `(provider_id, upstream_name)` (`STRICT, WITHOUT ROWID`) and pairs every discovery-derived field with a nullable `*_override` twin (§6.3); `oauth_states` holds single-use OAuth state rows indexed by `expires_at`.
 
 Validation policy (application-side, beyond the schema):
 

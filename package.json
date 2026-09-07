@@ -24,7 +24,7 @@
         "worker-typegen": "wrangler types worker-bindings.d.ts",
         "typecheck": "npm run worker-typegen && tsc --noEmit --project . && tsc --noEmit --project panel",
         "check": "biome check && npm run typecheck",
-        "fix": "npm run typecheck && biome check --write --unsafe",
+        "fix": "biome check --write --unsafe && npm run typecheck",
         "test": "vitest run"
     }
 }

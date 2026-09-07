@@ -2,10 +2,12 @@ import { CredentialsCipher } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
 import type { ProviderCredentials, ProviderType, UpstreamProtocol } from "/common/domain";
 import databaseSchema from "/D1.sql?raw";
+import { TEST_CREDENTIALS_AES_KEY } from "./test-secrets";
 
 export const TEST_API_TOKEN = "api-secret";
 export const TEST_PANEL_TOKEN = "panel-secret";
-export const TEST_CREDENTIALS_AES_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+// Single-homed in ./test-secrets (shared with the vitest miniflare binding stub); re-exported for suites.
+export { TEST_CREDENTIALS_AES_KEY };
 
 const TEST_API_TOKEN_HASH = "014c243ff960e87afc8482648f41e2084dce765aa062dcdcbf4e0e43c4db8a41";
 export const TEST_PANEL_TOKEN_HASH =
