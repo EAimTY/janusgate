@@ -240,8 +240,8 @@ Both OAuth providers register loopback redirect URIs that cannot point at the ga
 
 Constants pinned in the adapter module (public Codex CLI OAuth client):
 
-- Client ID `app_EmoamVZd6MmPgQohKd7qKLFF` (public PKCE client, no secret).
-- Authorize `https://auth.openai.com/authorize`: `response_type=code`, `scope=openid profile email offline_access`, `redirect_uri=http://localhost:1455/auth/callback`, `code_challenge_method=S256`, `state`.
+- Client ID `app_EMoamEEZ73f0CkXaXp7hrann` (public PKCE client, no secret).
+- Authorize `https://auth.openai.com/oauth/authorize`: `response_type=code`, `scope=openid profile email offline_access api.connectors.read api.connectors.invoke`, `redirect_uri=http://localhost:1455/auth/callback`, `code_challenge_method=S256`, `state`, plus the Codex login-flow selectors `codex_cli_simplified_flow=true`, `id_token_add_organizations=true`, `originator=codex_cli_rs` — without them auth.openai.com dead-ends on its "session has ended" interstitial instead of the CLI login page.
 - Token `POST https://auth.openai.com/oauth/token` (form-encoded): grants `authorization_code` / `refresh_token` with `code_verifier` / `refresh_token`, `client_id`, `redirect_uri`. Refresh tokens are reusable; `expires_in` feeds `providers.expires_at`.
 
 Upstream API: `POST https://chatgpt.com/backend-api/codex/responses` — SSE when `stream:true`, JSON object when `stream:false` — with headers:

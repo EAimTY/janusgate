@@ -15,6 +15,7 @@ import {
 } from "/providers/antigravity";
 import {
     OPENAI_AUTHORIZE_URL,
+    OPENAI_CODEX_LOGIN_PARAMETERS,
     OPENAI_OAUTH_CLIENT_ID,
     OPENAI_OAUTH_SCOPE,
     OPENAI_REDIRECT_URI,
@@ -115,7 +116,11 @@ function buildAuthorizeUrl(type: OAuthFlowType, state: string, challenge: string
     url.searchParams.set("code_challenge", challenge);
     url.searchParams.set("code_challenge_method", "S256");
     url.searchParams.set("state", state);
-    if (!isOpenAi) {
+    if (isOpenAi) {
+        for (const [name, value] of Object.entries(OPENAI_CODEX_LOGIN_PARAMETERS)) {
+            url.searchParams.set(name, value);
+        }
+    } else {
         url.searchParams.set("access_type", "offline");
         url.searchParams.set("prompt", "consent");
     }

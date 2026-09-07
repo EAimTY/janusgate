@@ -26,10 +26,12 @@ import {
 } from "./gemini";
 import {
     OPENAI_AUTHORIZE_URL,
+    OPENAI_CODEX_LOGIN_PARAMETERS,
     OPENAI_CODEX_MODELS,
     OPENAI_CODEX_RESPONSES_URL,
     OPENAI_CODEX_USER_AGENT,
     OPENAI_OAUTH_CLIENT_ID,
+    OPENAI_OAUTH_SCOPE,
     OPENAI_REDIRECT_URI,
     OPENAI_TOKEN_URL,
 } from "./openai";
@@ -64,10 +66,21 @@ function assertEqual(actual: unknown, expected: unknown, message: string): void 
 }
 
 test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
-    assert(OPENAI_OAUTH_CLIENT_ID === "app_EmoamVZd6MmPgQohKd7qKLFF", "OpenAI client is pinned");
+    assert(OPENAI_OAUTH_CLIENT_ID === "app_EMoamEEZ73f0CkXaXp7hrann", "OpenAI client is pinned");
     assert(
-        OPENAI_AUTHORIZE_URL === "https://auth.openai.com/authorize",
+        OPENAI_AUTHORIZE_URL === "https://auth.openai.com/oauth/authorize",
         "OpenAI authorize URL is pinned",
+    );
+    assert(
+        OPENAI_OAUTH_SCOPE ===
+            "openid profile email offline_access api.connectors.read api.connectors.invoke",
+        "OpenAI scope is pinned",
+    );
+    assert(
+        OPENAI_CODEX_LOGIN_PARAMETERS["originator"] === "codex_cli_rs" &&
+            OPENAI_CODEX_LOGIN_PARAMETERS["codex_cli_simplified_flow"] === "true" &&
+            OPENAI_CODEX_LOGIN_PARAMETERS["id_token_add_organizations"] === "true",
+        "Codex login-flow parameters are pinned",
     );
     assert(
         OPENAI_TOKEN_URL === "https://auth.openai.com/oauth/token",

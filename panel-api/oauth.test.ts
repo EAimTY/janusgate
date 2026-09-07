@@ -55,6 +55,9 @@ describe("OAuth orchestration", () => {
         const authorize = new URL(authorizeUrl);
         expect(authorize.origin + authorize.pathname).toBe(OPENAI_AUTHORIZE_URL);
         expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
+        expect(authorize.searchParams.get("codex_cli_simplified_flow")).toBe("true");
+        expect(authorize.searchParams.get("id_token_add_organizations")).toBe("true");
+        expect(authorize.searchParams.get("originator")).toBe("codex_cli_rs");
         const state = authorize.searchParams.get("state");
         expect(state).not.toBeNull();
         if (state === null) throw new Error("state missing");
