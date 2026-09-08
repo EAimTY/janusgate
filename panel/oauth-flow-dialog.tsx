@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, Show } from "solid-js";
+import { createSignal, onSettled, Show } from "solid-js";
 import type { OAuthFlowType } from "/common/domain";
 import {
     MODEL_PREFIX_MAX_LENGTH,
@@ -56,18 +56,38 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
     const [isStartingOAuth, setIsStartingOAuth] = createSignal(true);
     const [isCompletingOAuth, setIsCompletingOAuth] = createSignal(false);
 
+    // Launch state lives in the component closure so disposal can reach it: the popup handle and
+    // a plain (non-reactive) dismissed flag. The flag is written only by the disposal cleanup and
+    // read only inside `launch()`'s async continuation, so no signal is needed.
+    let popup: Window | null = null;
+    let isDismissed = false;
+
+    // Dismissal (×/Escape → providers page unmounts this dialog) must cancel the launch: the
+    // popup is closed here, and `launch()` re-checks `isDismissed` after its await so the
+    // authorize page is never navigated to for a flow whose dialog is already gone.
+    onSettled(() => {
+        return () => {
+            isDismissed = true;
+            popup?.close();
+        };
+    });
+
     // Runs synchronously inside the click's user-activation window: the popup must open before
     // the async authorize-URL fetch, or popup blockers reject it.
     void launch();
 
     async function launch(): Promise<void> {
-        const popup = window.open("about:blank", "_blank");
+        popup = window.open("about:blank", "_blank");
         if (popup !== null) popup.opener = null;
         try {
             const url = await props.client.startProviderOAuth(
                 props.launch.type,
                 props.launch.providerName ?? undefined,
             );
+            if (isDismissed) {
+                popup?.close();
+                return;
+            }
             setAuthorizeUrl(url);
             if (popup !== null) popup.location.assign(url);
         } catch (caughtError) {
