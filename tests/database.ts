@@ -18,7 +18,11 @@ const DEFAULT_OAUTH_EXPIRES_AT = 2_000_000_000;
 
 export interface TestBindingsOverrides {
     readonly panelTokenHash?: string;
-    /** Gateway key hash; `""` disables gateway API auth, omitted means the shared test key applies. */
+    /**
+     * Gateway key hash; omitted means the shared test key applies. `""` is only valid for suites
+     * whose app under test never consults `API_KEY_HASH` — the gateway treats it as a fatal
+     * configuration error (`decodeSha256Hex` rejects anything but 64-char hex).
+     */
     readonly apiTokenHash?: string;
 }
 

@@ -388,6 +388,8 @@ Reasoning effort is an **opaque non-empty string**, not an enum. The gateway val
 { "error": { "message": "Human-readable explanation", "type": "invalid_request_error", "code": "optional_machine_code" } }
 ```
 
+One deliberate exception: a misconfigured deployment secret (e.g. an invalid `CREDENTIALS_AES_KEY` or token hash) is rethrown past this envelope mapping on purpose so fatal configuration stays loud — a misconfigured deployment answers with the platform's plain-text `500`, not this envelope.
+
 | Status | `type` | Typical `code` |
 | --- | --- | --- |
 | 400 | `invalid_request_error` | `invalid_json`, `unsupported_parameter`, `unsupported_tool_type`, `payload_too_large` |
@@ -470,7 +472,7 @@ Returns all providers, never credentials. Doubles as the SPA auth-probe endpoint
   "providers": [
     { "name": "work", "type": "openai_oauth", "protocol": null,
       "baseUrl": null, "expiresAt": 1785000000, "enabled": true,
-      "modelPrefix": "" },
+      "modelPrefix": "work" },
     { "name": "antigravity-1", "type": "antigravity_oauth", "protocol": null,
       "baseUrl": null, "expiresAt": 1785000000, "enabled": true,
       "modelPrefix": "gemini/" },
@@ -513,7 +515,7 @@ Model→provider links exposed as `providerName`/`providerType`; storage keeps t
 ```json
 {
   "models": [
-    { "name": "gpt-codex", "providerName": "work", "providerType": "openai_oauth",
+    { "name": "work/gpt-codex", "providerName": "work", "providerType": "openai_oauth",
       "upstreamName": "gpt-codex", "nameOverride": null, "enabled": true, "thinkingLevels": null },
     { "name": "gemini/pro", "providerName": "antigravity-1", "providerType": "antigravity_oauth",
       "upstreamName": "gemini-3-pro-high", "nameOverride": "pro", "enabled": true,
@@ -592,7 +594,7 @@ wrangler secret put PANEL_TOKEN_HASH && wrangler secret put API_KEY_HASH && wran
 | `API_KEY_HASH` | hex SHA-256 of gateway key (`gw_…`) |
 | `CREDENTIALS_AES_KEY` | base64 of 32 random bytes |
 
-Secrets never appear in code, config modules, or the repo. Changing `CREDENTIALS_AES_KEY` destroys all stored credentials (§4.3).
+Secrets never appear in code, config modules, or the repo. The three names above are also declared in wrangler.jsonc's `secrets.required`, which feeds local-dev secret validation and `wrangler types` `Env` generation — renaming or adding a secret without updating that list silently drops the key from `Env`. Changing `CREDENTIALS_AES_KEY` destroys all stored credentials (§4.3).
 
 ### 15.2 Config modules (everything else)
 
