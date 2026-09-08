@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { CredentialsCipher, parseOpenAiOAuthCredentials } from "/common/credentials";
+import { assertCredentialsMatchProvider, CredentialsCipher } from "/common/credentials";
 import {
     mapProviderRow,
     PROVIDER_COLUMNS,
@@ -89,7 +89,8 @@ describe("OAuth credential refresh leasing", () => {
         expect(row?.expires_at).toBe(now + 3600);
         expect(row?.refresh_started_at).toBeNull();
         expect(
-            parseOpenAiOAuthCredentials(
+            assertCredentialsMatchProvider(
+                "openai_oauth",
                 await cipher.decrypt(row?.encrypted_credentials ?? new ArrayBuffer(0)),
             ),
         ).toMatchObject({

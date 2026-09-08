@@ -1,5 +1,6 @@
 import type { CredentialsCipher } from "/common/credentials";
 import {
+    findProviderRow,
     mapProviderRow,
     PROVIDER_COLUMNS,
     type ProviderRow,
@@ -49,26 +50,15 @@ export async function listProviderSummaries(database: D1Database): Promise<Provi
     return result.results.map((row) => assembleProviderSummary(mapProviderRow(row)));
 }
 
-export async function findProviderByName(
+export function findProviderByName(
     database: D1Database,
     name: string,
 ): Promise<StoredProvider | null> {
-    const row = await database
-        .prepare(`SELECT ${PROVIDER_COLUMNS} FROM providers WHERE name = ?`)
-        .bind(name)
-        .first<ProviderRow>();
-    return row === null ? null : mapProviderRow(row);
+    return findProviderRow(database, "name", name);
 }
 
-export async function findProviderById(
-    database: D1Database,
-    id: number,
-): Promise<StoredProvider | null> {
-    const row = await database
-        .prepare(`SELECT ${PROVIDER_COLUMNS} FROM providers WHERE id = ?`)
-        .bind(id)
-        .first<ProviderRow>();
-    return row === null ? null : mapProviderRow(row);
+export function findProviderById(database: D1Database, id: number): Promise<StoredProvider | null> {
+    return findProviderRow(database, "id", id);
 }
 
 export async function requireProviderByName(

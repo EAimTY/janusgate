@@ -114,7 +114,7 @@ export class CredentialsCipher {
     }
 }
 
-export function parseOpenAiOAuthCredentials(value: unknown): OpenAiOAuthCredentials {
+function parseOpenAiOAuthCredentials(value: unknown): OpenAiOAuthCredentials {
     const object = requireJsonObject(value, "OpenAI credentials");
     return {
         accessToken: requireStringField(object, "accessToken"),

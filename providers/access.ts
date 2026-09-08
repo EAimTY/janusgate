@@ -1,10 +1,5 @@
 import { assertCredentialsMatchProvider, type CredentialsCipher } from "/common/credentials";
-import {
-    mapProviderRow,
-    PROVIDER_COLUMNS,
-    type ProviderRow,
-    type StoredProvider,
-} from "/common/database";
+import { findProviderRow, type StoredProvider } from "/common/database";
 import type { AntigravityOAuthCredentials, OpenAiOAuthCredentials } from "/common/domain";
 import { CredentialDecryptionError, ProviderAccessError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
@@ -37,12 +32,9 @@ interface RefreshedToken {
 }
 
 async function loadProvider(database: D1Database, id: number): Promise<StoredProvider> {
-    const row = await database
-        .prepare(`SELECT ${PROVIDER_COLUMNS} FROM providers WHERE id = ?`)
-        .bind(id)
-        .first<ProviderRow>();
-    if (row === null) throw new Error("Provider disappeared during credential refresh");
-    return mapProviderRow(row);
+    const provider = await findProviderRow(database, "id", id);
+    if (provider === null) throw new Error("Provider disappeared during credential refresh");
+    return provider;
 }
 
 async function decryptOAuthCredentials(

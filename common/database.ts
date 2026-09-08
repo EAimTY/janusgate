@@ -148,3 +148,31 @@ export const MODEL_COLUMN_NAMES = [
     "enabled_override",
     "thinking_levels_override",
 ] as const;
+
+/**
+ * The single provider lookup shared by every read-by-one call site: selects exactly the canonical
+ * PROVIDER_COLUMNS and maps through mapProviderRow, so a row is validated in exactly one place.
+ * The overloads pin each value type to its lookup column, and the column interpolates only from
+ * that compile-time union — never from arbitrary input.
+ */
+export function findProviderRow(
+    database: D1Database,
+    column: "id",
+    value: number,
+): Promise<StoredProvider | null>;
+export function findProviderRow(
+    database: D1Database,
+    column: "name",
+    value: string,
+): Promise<StoredProvider | null>;
+export async function findProviderRow(
+    database: D1Database,
+    column: "id" | "name",
+    value: number | string,
+): Promise<StoredProvider | null> {
+    const row = await database
+        .prepare(`SELECT ${PROVIDER_COLUMNS} FROM providers WHERE providers.${column} = ?`)
+        .bind(value)
+        .first<ProviderRow>();
+    return row === null ? null : mapProviderRow(row);
+}
