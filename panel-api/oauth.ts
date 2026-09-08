@@ -223,19 +223,18 @@ async function exchangeAuthorizationCode(
         );
     }
     const value = await readJsonObjectResponse(response, "OAuth token exchange");
-    const token: {
-        accessToken: string;
-        refreshToken: string;
-        expiresAt: number;
-        idToken?: string;
-    } = {
+    // Only OpenAI issues an `id_token`; the conditional spread avoids assigning `undefined`,
+    // which `exactOptionalPropertyTypes` rejects for the optional `idToken` property.
+    const token: AuthorizationToken = {
         accessToken: requireResponseString(value, "access_token", "OAuth token exchange"),
         expiresAt: now + requireResponseNumber(value, "expires_in", "OAuth token exchange"),
         refreshToken: requireResponseString(value, "refresh_token", "OAuth token exchange"),
+        ...(isOpenAi
+            ? {
+                  idToken: requireResponseString(value, "id_token", "OAuth token exchange"),
+              }
+            : {}),
     };
-    if (isOpenAi) {
-        token.idToken = requireResponseString(value, "id_token", "OAuth token exchange");
-    }
     return token;
 }
 
