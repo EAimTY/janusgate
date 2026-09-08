@@ -6,6 +6,7 @@ import type {
     ProviderCredentials,
 } from "/common/domain";
 import { ConfigurationError, CredentialDecryptionError, ValidationError } from "/common/errors";
+import { decodeUtf8Strict } from "/common/utf8";
 import { requireJsonObject, requireStringField } from "/common/validation";
 
 const AES_256_KEY_BYTES = 32;
@@ -102,10 +103,7 @@ export class CredentialsCipher {
                 this.#key,
                 ciphertextAndTag,
             );
-            const json = new TextDecoder("utf-8", {
-                fatal: true,
-                ignoreBOM: false,
-            }).decode(plaintext);
+            const json = decodeUtf8Strict(plaintext);
             const value: unknown = JSON.parse(json);
             return value;
         } catch {

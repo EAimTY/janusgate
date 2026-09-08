@@ -4,6 +4,7 @@ import type { StoredProvider } from "/common/database";
 import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from "/common/domain";
 import { providerTypeForOAuthFlow } from "/common/domain";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
+import { decodeUtf8Strict } from "/common/utf8";
 import { isJsonObject, unixSeconds } from "/common/validation";
 import { OAUTH_STATE_TTL_SECONDS } from "/config";
 import {
@@ -248,10 +249,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
         // JWS grammar: `decodeBase64Url` rejects `=` padding and standard-base64
         // characters, so a non-URL-safe payload fails here instead of decoding.
         const bytes = decodeBase64Url(payload);
-        const decoded = new TextDecoder("utf-8", {
-            fatal: true,
-            ignoreBOM: false,
-        }).decode(bytes);
+        const decoded = decodeUtf8Strict(bytes);
         const value: unknown = JSON.parse(decoded);
         if (!isJsonObject(value)) throw new Error("JWT payload is not an object");
         return value;

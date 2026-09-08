@@ -1,3 +1,4 @@
+import { decodeUtf8Strict } from "/common/utf8";
 import { isJsonObject } from "/common/validation";
 import { type GatewayError, invalidJsonError, payloadTooLargeError } from "./errors";
 
@@ -93,10 +94,7 @@ export async function readBoundedJsonObject(
     const bytes = await readBoundedRequestBody(request, maximumBytes);
     let text: string;
     try {
-        text = new TextDecoder("utf-8", {
-            fatal: true,
-            ignoreBOM: false,
-        }).decode(bytes);
+        text = decodeUtf8Strict(bytes);
     } catch {
         throw invalidJsonError();
     }

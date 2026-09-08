@@ -1,4 +1,5 @@
 import type { ClientProtocol, UpstreamProtocol } from "/common/domain";
+import { decodeUtf8Strict } from "/common/utf8";
 import { unixSeconds } from "/common/validation";
 import {
     type GenerateContentStreamState,
@@ -183,10 +184,7 @@ export function renderTranslatedNonStreamingResponse(
 ): Response {
     let value: unknown;
     try {
-        const text = new TextDecoder("utf-8", {
-            fatal: true,
-            ignoreBOM: false,
-        }).decode(bytes);
+        const text = decodeUtf8Strict(bytes);
         value = JSON.parse(text);
     } catch {
         throw new TranslationError(
