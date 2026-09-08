@@ -4,7 +4,7 @@ import {
     mapProviderRow,
     PROVIDER_COLUMN_NAMES,
     type ProviderRow,
-    parseProviderType,
+    parseStoredProviderType,
     type StoredProvider,
 } from "/common/database";
 import { assembleProviderSummary, type ProviderSummary } from "/common/domain";
@@ -99,7 +99,7 @@ export async function listEnabledPublicModels(database: D1Database): Promise<{
             id: model.name,
             object: "model",
             // A corrupted type must fail loudly (→ 500 envelope), never emit `owned_by: undefined`.
-            owned_by: MODEL_OWNER_BY_PROVIDER_TYPE[parseProviderType(model.provider_type)],
+            owned_by: MODEL_OWNER_BY_PROVIDER_TYPE[parseStoredProviderType(model.provider_type)],
         })),
         object: "list",
     };

@@ -53,7 +53,7 @@ export interface ModelRow {
  * The single gate between a raw `providers.type` column and the `ProviderType` union: D1 has no
  * CHECK constraint, so a corrupted row fails loudly here instead of leaking an invalid type.
  */
-export function parseProviderType(value: string): ProviderType {
+export function parseStoredProviderType(value: string): ProviderType {
     for (const providerType of PROVIDER_TYPES) {
         if (value === providerType) return providerType;
     }
@@ -85,7 +85,7 @@ export function mapProviderRow(row: ProviderRow): StoredProvider {
         name: row.name,
         protocol: parseProtocol(row.protocol),
         refreshStartedAt: row.refresh_started_at,
-        type: parseProviderType(row.type),
+        type: parseStoredProviderType(row.type),
     };
 }
 
