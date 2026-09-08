@@ -75,12 +75,15 @@ export async function createProvider(
     provider: CreateProviderRecord,
 ): Promise<StoredProvider> {
     try {
-        const result = await database
+        // RETURNING keeps creation to a single roundtrip and routes the stored row through
+        // mapProviderRow, so it is validated in exactly one place like every other read.
+        const row = await database
             .prepare(
                 `INSERT INTO providers (
                     name, model_prefix, type, protocol, base_url,
                     encrypted_credentials, expires_at, enabled
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING ${PROVIDER_COLUMNS}`,
             )
             .bind(
                 provider.name,
@@ -92,10 +95,9 @@ export async function createProvider(
                 provider.expiresAt,
                 provider.isEnabled ? 1 : 0,
             )
-            .run();
-        const created = await findProviderById(database, result.meta.last_row_id);
-        if (created === null) throw new Error("Created provider is missing");
-        return created;
+            .first<ProviderRow>();
+        if (row === null) throw new Error("Created provider is missing");
+        return mapProviderRow(row);
     } catch (error) {
         if (isDatabaseConstraintError(error, "providers.name")) {
             throw new PanelApiError(409, "Provider name already exists");
@@ -127,6 +129,33 @@ export async function updateProvider(
             WHERE id = ?`,
         )
         .bind(...values)
+        .run();
+    if (result.meta.changes !== 1) throw new Error("Updated provider is missing");
+}
+
+interface UpdateOAuthProviderRecord {
+    id: number;
+    modelPrefix: string;
+    isEnabled: boolean;
+}
+
+/**
+ * OAuth providers only ever change `enabled` and `modelPrefix` (§12.4), so this update writes
+ * exactly those columns. Rewriting the routing columns or the token expiry here would silently
+ * overwrite a corrupted row's state instead of letting the invariant violation surface as the
+ * internal error it is.
+ */
+async function updateOAuthProvider(
+    database: D1Database,
+    provider: UpdateOAuthProviderRecord,
+): Promise<void> {
+    const result = await database
+        .prepare(
+            `UPDATE providers SET
+                model_prefix = ?, enabled = ?
+            WHERE id = ?`,
+        )
+        .bind(provider.modelPrefix, provider.isEnabled ? 1 : 0, provider.id)
         .run();
     if (result.meta.changes !== 1) throw new Error("Updated provider is missing");
 }
@@ -202,13 +231,10 @@ export async function saveProvider(
     if (input.protocol !== undefined || input.baseUrl !== undefined || input.apiKey !== undefined) {
         throw new PanelApiError(400, "OAuth providers only accept enabled and modelPrefix updates");
     }
-    await updateProvider(database, {
-        baseUrl: null,
-        expiresAt: existing.expiresAt,
+    await updateOAuthProvider(database, {
         id: existing.id,
         isEnabled: input.enabled ?? existing.isEnabled,
         modelPrefix: input.modelPrefix ?? existing.modelPrefix,
-        protocol: null,
     });
     return {
         name: existing.name,

@@ -313,8 +313,9 @@ export async function discoverProviderModels(
     // change propagates at the next discovery. Stale rows are exempt: this same batch deletes
     // them ahead of the renames, so re-deriving one would target a deleted row and reserve its
     // derived name against a brand-new upstream model in this very run. Overridden rows are
-    // never stale and keep re-deriving. An occupied derived name keeps the previous name
-    // resolvable instead.
+    // never stale and are skipped here: their stored name re-composes only at the next
+    // save-model write (§6.1). An occupied derived name keeps the previous name resolvable
+    // instead.
     const renameStatements: D1PreparedStatement[] = [];
     for (const model of providerModels) {
         if (model.nameOverride !== null) continue;
