@@ -110,7 +110,7 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
         return loadedProviders;
     }
 
-    const { isLoading, error, setError } = createPageState(loadProviders);
+    const { isLoading, error, setError, retry } = createPageState(loadProviders);
 
     const providerCount = createMemo(() => providers().length);
 
@@ -162,7 +162,23 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
     }
 
     async function handleOAuthCompleted(flow: OAuthFlowLaunch): Promise<void> {
-        const refreshedProviders = await loadProviders();
+        // The provider row is already written and the single-use redirect URL is consumed,
+        // so the dialog closes before any further work and every post-connection failure is
+        // reported here at page level; `onCompleted` must never reject back into the
+        // consumed flow (see the OAuthFlowDialogProps contract).
+        setOAuthLaunch(null);
+        setSuccess(
+            flow.providerName === null
+                ? "OAuth provider connected."
+                : `${flow.providerName} reauthenticated.`,
+        );
+        let refreshedProviders: ProviderSummary[];
+        try {
+            refreshedProviders = await loadProviders();
+        } catch (caughtError) {
+            setError(errorMessage(caughtError));
+            return;
+        }
         const discoveryTarget =
             flow.providerName ??
             refreshedProviders.find(
@@ -170,12 +186,6 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                     oauthFlowForProviderType(provider.type) === flow.type &&
                     !flow.existingProviderNames.has(provider.name),
             )?.name;
-        setOAuthLaunch(null);
-        setSuccess(
-            flow.providerName === null
-                ? "OAuth provider connected."
-                : `${flow.providerName} reauthenticated.`,
-        );
         if (discoveryTarget !== undefined) await discover(discoveryTarget);
         else if (flow.providerName === null) {
             setError(
@@ -275,7 +285,18 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
             </div>
 
             <Show when={error() !== null}>
-                <Notice kind="error">{error()}</Notice>
+                <Notice kind="error">
+                    <span class="flex flex-wrap items-center justify-between gap-x-2.5 gap-y-1">
+                        {error()}
+                        <button
+                            class={tableActionDangerClasses}
+                            type="button"
+                            onClick={retry}
+                        >
+                            Retry
+                        </button>
+                    </span>
+                </Notice>
             </Show>
             <Show when={success() !== null}>
                 <Notice kind="success">{success()}</Notice>
@@ -323,8 +344,6 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                                                         const oauthType = oauthFlowForProviderType(
                                                             provider.type,
                                                         );
-                                                        const isBusy =
-                                                            busyProviderName() === provider.name;
                                                         return (
                                                             <tr>
                                                                 <td>
@@ -375,7 +394,10 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                                                                             class={
                                                                                 tableActionClasses
                                                                             }
-                                                                            disabled={isBusy}
+                                                                            disabled={
+                                                                                busyProviderName() ===
+                                                                                provider.name
+                                                                            }
                                                                             onClick={() =>
                                                                                 openProviderEditor(
                                                                                     provider,
@@ -389,7 +411,10 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                                                                             class={
                                                                                 tableActionClasses
                                                                             }
-                                                                            disabled={isBusy}
+                                                                            disabled={
+                                                                                busyProviderName() ===
+                                                                                provider.name
+                                                                            }
                                                                             onClick={() =>
                                                                                 void toggleProvider(
                                                                                     provider,
@@ -405,7 +430,10 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                                                                             class={
                                                                                 tableActionClasses
                                                                             }
-                                                                            disabled={isBusy}
+                                                                            disabled={
+                                                                                busyProviderName() ===
+                                                                                provider.name
+                                                                            }
                                                                             onClick={() =>
                                                                                 void discover(
                                                                                     provider.name,
@@ -422,7 +450,8 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                                                                                         tableActionClasses
                                                                                     }
                                                                                     disabled={
-                                                                                        isBusy
+                                                                                        busyProviderName() ===
+                                                                                        provider.name
                                                                                     }
                                                                                     onClick={() =>
                                                                                         launchOAuth(
@@ -440,7 +469,10 @@ export function ProvidersPage(props: ProvidersPageProps): JSX.Element {
                                                                             class={
                                                                                 tableActionDangerClasses
                                                                             }
-                                                                            disabled={isBusy}
+                                                                            disabled={
+                                                                                busyProviderName() ===
+                                                                                provider.name
+                                                                            }
                                                                             onClick={() =>
                                                                                 void deleteProvider(
                                                                                     provider,

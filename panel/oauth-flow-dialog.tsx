@@ -35,7 +35,12 @@ interface OAuthFlowDialogProps {
     client: PanelApiClient;
     launch: OAuthFlowLaunch;
     onClose: () => void;
-    /** Reloads the list, records the outcome, triggers discovery, and closes the dialog. */
+    /**
+     * Page-owned post-connection continuation: closes the dialog, reloads the list, records
+     * the outcome, triggers discovery, and reports any failure at page level. Must not
+     * reject — the dialog intentionally neither awaits it inside its try/catch nor catches
+     * after it, because it unmounts this dialog before that work runs.
+     */
     onCompleted: (flow: OAuthFlowLaunch) => Promise<void>;
 }
 
@@ -101,12 +106,17 @@ export function OAuthFlowDialog(props: OAuthFlowDialogProps): JSX.Element {
                     : {}),
             };
             await props.client.completeProviderOAuth(input);
-            await props.onCompleted(props.launch);
         } catch (caughtError) {
             setOAuthError(errorMessage(caughtError));
-        } finally {
             setIsCompletingOAuth(false);
+            return;
         }
+        // The catch above covers the completion call only: past it, the provider row is
+        // written and the single-use redirect URL is consumed, so a post-connection failure
+        // must never resurface here as a retryable dialog error (`onCompleted` must not
+        // reject; see its contract).
+        setIsCompletingOAuth(false);
+        void props.onCompleted(props.launch);
     }
 
     return (

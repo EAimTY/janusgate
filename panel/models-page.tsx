@@ -60,7 +60,7 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
         });
     }
 
-    const { isLoading, error, setError } = createPageState(async () => {
+    const { isLoading, error, setError, retry } = createPageState(async () => {
         const [loadedProviders, loadedModels] = await Promise.all([
             props.client.listProviders(),
             props.client.listModels(),
@@ -89,6 +89,16 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
                 thinkingLevelsOverride: model.thinkingLevels,
             });
             await reloadModels();
+            // The mounted form captured mount-time field values, so when the toggled model is
+            // the one being edited, remount the form from the reloaded snapshot; otherwise its
+            // next Save would silently revert this toggle through `enabledOverride`.
+            const current = editingModel();
+            if (current !== null && modelKey(current) === modelKey(model)) {
+                setEditingModel(
+                    models().find((freshModel) => modelKey(freshModel) === modelKey(model)) ?? null,
+                );
+                setEditorSession((session) => session + 1);
+            }
             setSuccess(`${model.name} ${model.enabled ? "disabled" : "enabled"}.`);
         } catch (caughtError) {
             setError(errorMessage(caughtError));
@@ -112,11 +122,7 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
             await props.client.deleteModel(model.providerName, model.upstreamName);
             await reloadModels();
             const current = editingModel();
-            if (
-                current !== null &&
-                current.providerName === model.providerName &&
-                current.upstreamName === model.upstreamName
-            ) {
+            if (current !== null && modelKey(current) === modelKey(model)) {
                 resetEditor();
             }
             setSuccess(`${model.name} deleted.`);
@@ -145,7 +151,18 @@ export function ModelsPage(props: ModelsPageProps): JSX.Element {
             />
 
             <Show when={error() !== null}>
-                <Notice kind="error">{error()}</Notice>
+                <Notice kind="error">
+                    <span class="flex flex-wrap items-center justify-between gap-x-2.5 gap-y-1">
+                        {error()}
+                        <button
+                            class={tableActionDangerClasses}
+                            type="button"
+                            onClick={retry}
+                        >
+                            Retry
+                        </button>
+                    </span>
+                </Notice>
             </Show>
             <Show when={success() !== null}>
                 <Notice kind="success">{success()}</Notice>
