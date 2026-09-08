@@ -24,23 +24,78 @@
 ### Design Principles & Non-Goals
 - **Stateless execution**: Zero persistence of prompts, completions, tokens, or usage metrics.
 - **Headless admin**: No frontend SPA. Administration is conducted exclusively through `/panel-api/*` JSON endpoints.
-- **Outbound proxy control**: Native outbound HTTP/SOCKS5 proxy support to ensure upstream calls bypass IP/datacenter restrictions (e.g. OpenAI Cloudflare WAF).
-- **Excluded**: Multi-tenancy, dynamic pooling/load balancing, automatic provider fallback, prompt caching, request logging, billing/rate-limiting.
+- **Strict model passthrough**: Zero automatic or hardcoded model mapping. Upstream calls pass the exact model identifiers yielded by upstream model discovery (`upstream_name`), even for OAuth providers.
+- **Excluded**: Multi-tenancy, dynamic pooling/load balancing, automatic provider fallback, automatic model mapping/aliasing, prompt caching, request logging, billing/rate-limiting, outbound proxying.
 
 ---
 
-## 2. Technology Stack
+## 2. Technology Stack & Request Pipeline
+
+### 2.1 Technology Stack
 
 | Layer | Component | Notes |
 | :--- | :--- | :--- |
 | **Language** | Rust (2024 edition) | Strict types, memory safety, zero-cost abstractions |
-| **HTTP Server** | `hserver` | Hyper-based HTTP server with explicit accept-loop control |
-| **Routing** | `const-router` | Compile-time string-key router with binary search dispatch |
+| **HTTP Server** | `hserver` | Low-level Hyper-based HTTP server driving accept loop and connection lifecycle (plaintext HTTP, no TLS for now) |
+| **Routing & Handlers** | `axum` (Router & utils) | Hierarchical routing (implements `tower::Service`), request extractors, and response helpers; `axum::serve` is strictly unused |
+| **Middleware** | `tower` | Service abstraction, middleware composition, and layer stacking |
 | **Database** | `turso` | In-process SQLite-compatible SQL database (`tursodatabase/turso`) |
-| **HTTP Client** | `reqwest` | Connection pooling, streaming, and native HTTP/SOCKS5 proxying |
-| **Cryptography** | `aes-gcm` + `sha2` | AES-256-GCM for credentials at rest; constant-time SHA-256 bearer auth |
+| **HTTP Client** | `reqwest` | Connection pooling and streaming |
 | **Serialization** | `serde` + `serde_json` | Strongly typed parsing and serialization |
 | **Async Runtime** | `tokio` | Multi-threaded async I/O |
+
+### 2.2 Server Pipeline Architecture & Router Hierarchy
+
+```text
+[Incoming TCP / Plaintext HTTP]
+               │
+               ▼
+      ┌─────────────────┐
+      │     hserver     │  (Accept loop & HTTP connection lifecycle; no TLS; axum::serve unused)
+      └────────┬────────┘
+               │ (invokes Router as tower::Service)
+               ▼
+      ┌─────────────────┐
+      │   Root Router   │  (Fallback: generic 404 handler)
+      └───┬─────────┬───┘
+          │         │
+          │         └──────────────────────────────────┐
+          ▼                                            ▼
+┌───────────────────┐                        ┌───────────────────┐
+│ Panel API Router  │ (/panel-api/*)         │    API Router     │ (/api/*)
+│ (Panel Auth Layer)│                        │ (Fallback: 404)   │
+│ (Fallback: 404)   │                        └─────────┬─────────┘
+└───────────────────┘                                  │
+                                                       ▼
+                                             ┌───────────────────┐
+                                             │ Format Sub-router │ (/openai-v1/*)
+                                             │ (Format Auth)     │
+                                             │ (Fallback: 404)   │
+                                             └───────────────────┘
+```
+
+The server architecture separates low-level connection driving from hierarchical routing:
+1. **Server Lifecycle (`hserver`)**:
+   - `hserver` directly manages the TCP listener, socket accept loop, and low-level Hyper connection lifecycle over plaintext HTTP (TLS is omitted for now).
+   - `axum::serve` is **strictly unused**. Instead, `hserver` delegates incoming HTTP requests directly to Axum's root `Router` as an implementation of `tower::Service`.
+2. **Hierarchical Routers (`axum::Router`)**:
+   - **Root Router**:
+     - Nests `/panel-api` and `/api` sub-routers.
+     - Maintains its own top-level fallback route returning an HTTP 404 response for any unmapped root paths.
+   - **Panel API Sub-router (`/panel-api`)**:
+     - Scoped to administrative endpoints (`/list-providers`, `/save-provider`, etc.).
+     - Wrapped with panel authentication middleware (`Authorization: <panel_token>`).
+     - Maintains its own fallback route returning a panel-specific 404 JSON error response.
+   - **API Sub-router (`/api`)**:
+     - Parent router for all external gateway protocols.
+     - Nests isolated format sub-routers (e.g. `/openai-v1`).
+     - Maintains its own fallback route returning an API-scoped 404 response for unmapped paths under `/api`.
+   - **Format-Specific Sub-routers (e.g. `/openai-v1`)**:
+     - Scoped to that protocol's endpoints (`/chat/completions`, `/responses`, `/models`).
+     - Wrapped with format-specific authentication middleware (e.g. `Authorization: Bearer <key>`).
+     - Maintains its own fallback route returning format-compliant 404 error payloads (e.g. OpenAI JSON error structure: `{"error": {"message": "Invalid URL", "type": "invalid_request_error", "code": null}}`).
+3. **Independent 404 Fallback Routes**:
+   - Every router at every level (root router, panel API sub-router, API sub-router, and each format sub-router) defines its own dedicated fallback route returning an appropriately structured 404 response matching its respective domain.
 
 ---
 
@@ -53,11 +108,12 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   - `name`: 1–64 characters `[a-z0-9_-]`, unique, immutable identifier.
   - `model_prefix`: String prefixed to model names (e.g. `codex/` or `agy-`).
   - `type`: `openai_oauth`, `antigravity_oauth`, or `openai_compatible`.
-  - `encrypted_credentials`: AES-256-GCM ciphertext of JSON payload (`{accessToken, refreshToken, accountId/projectId}` or `{apiKey}`).
+  - `credentials`: Plaintext JSON payload (`{accessToken, refreshToken, accountId/projectId}` or `{apiKey}`) stored directly in the database without encryption.
   - `expires_at`: Unix timestamp when OAuth access token expires.
   - `refresh_started_at`: Lease timestamp to prevent concurrent token refresh races.
 - **Model**:
   - Identified by `(provider_id, upstream_name)`.
+  - `upstream_name`: Exact model identifier discovered from upstream; used verbatim for upstream requests without automatic mapping.
   - `name`: Public routing ID (`model_prefix + (name_override ?? upstream_name)`).
   - `enabled`: Effective status is `enabled_override ?? provider.enabled`.
 
@@ -65,16 +121,17 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 
 ## 4. Security & Authentication
 
-1. **Bearer Token Authentication**:
-   - `/panel-api/*`: Requires `Authorization: Bearer <panel_token>` matching `PANEL_TOKEN_HASH`.
-   - `/api/*`: Requires `Authorization: Bearer <gateway_key>` matching `API_KEY_HASH`.
-   - Token digests are compared using constant-time comparison. Mismatch yields HTTP 401.
-2. **Credential Encryption**:
-   - Stored secrets are encrypted at rest using AES-256-GCM with a 32-byte key (`CREDENTIALS_AES_KEY`).
-   - Format: `IV (12B) || Ciphertext || Tag (16B)`.
-3. **Network Isolation**:
-   - Outbound requests support routing through an egress proxy (`ALL_PROXY`, `HTTP_PROXY`, or configuration).
+1. **Inbound Authentication**:
+   - Authentication is format-specific and enforced at the router layer via Tower middleware before requests reach endpoint handlers:
+     - **Administrative Sub-router (`/panel-api/*`)**: Uses panel authentication middleware applied to the `/panel-api` sub-router. Requires `Authorization: <panel_token>` without any `Bearer` prefix, matching `JANUSGATE_PANEL_TOKEN`.
+     - **OpenAI v1 Sub-router (`/api/openai-v1/*`)**: Uses format-specific authentication middleware applied to the `/openai-v1` sub-router. Adheres to the OpenAI specification and requires `Authorization: Bearer <key>`, matching `JANUSGATE_OPENAI_V1_API_KEY`.
+     - Future outward API format sub-routers will apply their own authentication middleware and configuration keys independently rather than using a single global API key.
+   - All token comparisons use constant-time byte comparison. Mismatch yields HTTP 401.
+2. **Plaintext Credential Storage**:
+   - Upstream credentials and tokens are stored directly in plaintext JSON within the database. No encryption or decryption is performed.
+3. **Network Invariants**:
    - Inbound endpoints do not use sessions, cookies, or CORS headers.
+   - Outbound requests to upstream providers connect directly without proxying.
 
 ---
 
@@ -95,7 +152,6 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
      Session-Id: <uuid>
      Accept: text/event-stream
      ```
-- **Egress Proxy**: Outbound calls must route through an IP not blocked by Cloudflare WAF / Bot Management.
 
 ### 5.2 Google Antigravity OAuth (`antigravity_oauth`)
 - **OAuth Constants**: Installed-app client ID & secret, loopback redirect `http://localhost:51121/oauth-callback`.
@@ -108,14 +164,16 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   ```json
   {
     "project": "<projectId>",
-    "model": "<runtimeModel>",
+    "model": "<upstream_name>",
     "request": <GenerateContentRequest>,
     "requestType": "agent",
     "userAgent": "antigravity",
     "requestId": "agent-<uuid>"
   }
   ```
-- **Model Mapping**: `gemini-3.7-flash` maps to `gemini-3.7-flash-tiered` with `thinkingLevel` (`LOW`, `MEDIUM`, `HIGH`). `thoughtSignature` blobs are preserved and reattached across turns.
+- **Upstream Invariants**:
+  - `thoughtSignature` blobs returned by upstream must be preserved and reattached across turns.
+  - No automatic model mapping or tiered rewriting is performed; upstream calls pass the exact discovered `upstream_name`.
 
 ### 5.3 OpenAI Compatible (`openai_compatible`)
 - User-specified `baseUrl`, `apiKey`, and `protocol` (`openai_response`, `openai_chat_completion`, or `gemini_generate_content`).
@@ -142,7 +200,7 @@ All incoming and outgoing payloads map through an internal Intermediate Represen
 
 ## 7. Panel API (`/panel-api/*`)
 
-All panel routes require Bearer token authorization.
+All panel routes are registered under the `/panel-api` sub-router with its own 404 fallback handler and require authorization via `Authorization: <panel_token>` (without any `Bearer` prefix).
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
@@ -166,10 +224,8 @@ All panel routes require Bearer token authorization.
 | `JANUSGATE_HOST` | `0.0.0.0` | Listen host |
 | `JANUSGATE_PORT` | `8080` | Listen port |
 | `JANUSGATE_DB_PATH` | `janusgate.db` | Path to in-process Turso SQLite database file |
-| `JANUSGATE_API_KEY_HASH` | *(required)* | Hex-encoded SHA-256 digest of gateway Bearer token |
-| `JANUSGATE_PANEL_TOKEN_HASH` | *(required)* | Hex-encoded SHA-256 digest of panel Bearer token |
-| `JANUSGATE_CREDENTIALS_AES_KEY` | *(required)* | Base64-encoded 32-byte AES-GCM key |
-| `ALL_PROXY` / `HTTP_PROXY` | `None` | Optional upstream HTTP/SOCKS5 proxy URL |
+| `JANUSGATE_PANEL_TOKEN` | *(required)* | Administrative token for `/panel-api/*` (`Authorization: <panel_token>`) |
+| `JANUSGATE_OPENAI_V1_API_KEY` | *(required)* | Bearer token for `/api/openai-v1/*` (`Authorization: Bearer <key>`) |
 
 ### Running the Server
 ```bash

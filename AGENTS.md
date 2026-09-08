@@ -7,7 +7,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 ### Language-agnostic
 
 - Think and respond in English.
-- Read `README.md` before starting non-trivial work. Treat `README.md` as the source of truth for the whole system's design and architecture.
+- Read `README.md` before starting non-trivial work. Treat `README.md` as the source of truth for the whole system's design and architecture. Always follow a documentation-first approach when making any modifications, ensuring all documentation is updated alongside every change.
 - Be strict. Avoid fuzzy, ambiguous, or weakly specified behavior; make semantics explicit.
 - Do not preserve backward compatibility in code. This project is new; implement the design in the most elegant and idiomatic form available. Avoid historical debt.
 - The crates' `version` fields stay pinned at `0.0.0`: the unreleased project carries no release numbering, so never bump them.
@@ -18,7 +18,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 - Add comments for non-trivial or hard-to-understand logic.
 - Keep folder-local `AGENTS.md` files focused on stable guidance. Do not include implementation details that must be updated after code changes.
 - Every `AGENTS.md` must have a sibling `CLAUDE.md` containing exactly `@AGENTS.md`.
-- Do not add tests yet.
+- Follow test-driven development (TDD): write tests before implementing functionality.
 
 ### Rust
 
