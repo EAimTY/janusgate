@@ -10,8 +10,10 @@ import { ValidationError } from "/common/errors";
 import {
     CANONICAL_THINKING_LEVELS,
     MILLISECONDS_PER_SECOND,
+    MODEL_PREFIX_CHARSET,
     MODEL_PREFIX_MAX_LENGTH,
     MODEL_PREFIX_PATTERN,
+    PROVIDER_NAME_CHARSET,
     PROVIDER_NAME_MAX_LENGTH,
     PROVIDER_NAME_PATTERN,
     type ThinkingLevel,
@@ -38,7 +40,9 @@ export function requireStringField(value: Record<string, unknown>, fieldName: st
 
 export function parseProviderName(value: unknown): string {
     if (typeof value !== "string" || !PROVIDER_NAME_PATTERN.test(value)) {
-        throw new ValidationError(`name must match [a-z0-9_-]{1,${PROVIDER_NAME_MAX_LENGTH}}`);
+        throw new ValidationError(
+            `name must match ${PROVIDER_NAME_CHARSET}{1,${PROVIDER_NAME_MAX_LENGTH}}`,
+        );
     }
     return value;
 }
@@ -46,7 +50,7 @@ export function parseProviderName(value: unknown): string {
 export function parseModelPrefix(value: unknown): string {
     if (typeof value !== "string" || !MODEL_PREFIX_PATTERN.test(value)) {
         throw new ValidationError(
-            `modelPrefix must contain at most ${MODEL_PREFIX_MAX_LENGTH} characters from [a-z0-9._:/-]`,
+            `modelPrefix must contain at most ${MODEL_PREFIX_MAX_LENGTH} characters from ${MODEL_PREFIX_CHARSET}`,
         );
     }
     return value;

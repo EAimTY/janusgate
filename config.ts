@@ -10,10 +10,18 @@ export const CANONICAL_THINKING_LEVELS = [
 export type ThinkingLevel = (typeof CANONICAL_THINKING_LEVELS)[number];
 
 export const PROVIDER_NAME_MAX_LENGTH = 64;
-export const PROVIDER_NAME_PATTERN = new RegExp(`^[a-z0-9_-]{1,${PROVIDER_NAME_MAX_LENGTH}}$`);
+/** Charset fragment shared by PROVIDER_NAME_PATTERN and the user-facing validation message. */
+export const PROVIDER_NAME_CHARSET = "[a-z0-9_-]";
+export const PROVIDER_NAME_PATTERN = new RegExp(
+    `^${PROVIDER_NAME_CHARSET}{1,${PROVIDER_NAME_MAX_LENGTH}}$`,
+);
 
 export const MODEL_PREFIX_MAX_LENGTH = 32;
-export const MODEL_PREFIX_PATTERN = new RegExp(`^[a-z0-9._:/-]{0,${MODEL_PREFIX_MAX_LENGTH}}$`);
+/** Charset fragment shared by MODEL_PREFIX_PATTERN and the user-facing validation message. */
+export const MODEL_PREFIX_CHARSET = "[a-z0-9._:/-]";
+export const MODEL_PREFIX_PATTERN = new RegExp(
+    `^${MODEL_PREFIX_CHARSET}{0,${MODEL_PREFIX_MAX_LENGTH}}$`,
+);
 
 /** All persisted and API timestamps are whole Unix seconds. */
 export const MILLISECONDS_PER_SECOND = 1_000;
