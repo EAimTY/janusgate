@@ -9,13 +9,14 @@ import {
     PROVIDER_NAME_PATTERN,
 } from "/config";
 import type { CompleteOAuthInput } from "/panel-api/input";
-import { errorMessage, type PanelApiClient } from "./api-client";
+import type { PanelApiClient } from "./api-client";
 import {
     buttonPrimaryClasses,
     checkboxClasses,
     Dialog,
     dialogFooterClasses,
     dialogFormClasses,
+    errorMessage,
     formCheckboxFieldClasses,
     formControlClasses,
     formFieldClasses,

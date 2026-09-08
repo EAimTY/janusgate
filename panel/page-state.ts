@@ -1,5 +1,5 @@
 import { type Accessor, createSignal, onSettled, type Setter } from "solid-js";
-import { errorMessage } from "./api-client";
+import { errorMessage } from "./ui";
 
 /** Loading gate and page-level error state shared by the SPA pages around their data fetches. */
 interface PageState {

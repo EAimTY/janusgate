@@ -8,7 +8,7 @@ import {
     PROVIDER_NAME_MAX_LENGTH,
     PROVIDER_NAME_PATTERN,
 } from "/config";
-import { errorMessage, type PanelApiClient } from "./api-client";
+import type { PanelApiClient } from "./api-client";
 import { protocolLabel } from "./labels";
 import {
     buttonGhostClasses,
@@ -17,6 +17,7 @@ import {
     Dialog,
     dialogFooterClasses,
     dialogFormClasses,
+    errorMessage,
     formCheckboxFieldClasses,
     formControlClasses,
     formFieldClasses,

@@ -1,7 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import type { ModelSummary, ProviderSummary } from "/common/domain";
-import { errorMessage, type PanelApiClient } from "./api-client";
+import type { PanelApiClient } from "./api-client";
 import { providerTypeLabel } from "./labels";
 import {
     previewModelName,
@@ -13,6 +13,7 @@ import {
     buttonGhostClasses,
     buttonPrimaryClasses,
     checkboxClasses,
+    errorMessage,
     formCheckboxFieldClasses,
     formControlClasses,
     formFieldClasses,

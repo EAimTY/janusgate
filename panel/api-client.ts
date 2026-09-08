@@ -385,7 +385,3 @@ export class PanelApiClient {
         return parse(await readJson(response));
     }
 }
-
-export function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : "An unexpected error occurred";
-}

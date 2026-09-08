@@ -1,11 +1,11 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Match, onSettled, Show, Switch } from "solid-js";
-import { errorMessage, PanelApiClient } from "./api-client";
+import { PanelApiClient } from "./api-client";
 import { AuthOverlay } from "./auth-overlay";
 import { type AppRoute, panelConfig } from "./config";
 import { ModelsPage } from "./models-page";
 import { ProvidersPage } from "./providers-page";
-import { buttonPrimaryClasses } from "./ui";
+import { buttonPrimaryClasses, errorMessage } from "./ui";
 
 function routeFromLocation(): AppRoute {
     if (window.location.pathname === panelConfig.routes.root) {

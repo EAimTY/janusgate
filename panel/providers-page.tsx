@@ -8,7 +8,7 @@ import {
 } from "/common/domain";
 import { unixSeconds } from "/common/validation";
 import { MILLISECONDS_PER_SECOND } from "/config";
-import { errorMessage, type PanelApiClient } from "./api-client";
+import type { PanelApiClient } from "./api-client";
 import { panelConfig } from "./config";
 import { protocolLabel, providerTypeLabel } from "./labels";
 import { OAuthFlowDialog, type OAuthFlowLaunch } from "./oauth-flow-dialog";
@@ -18,6 +18,7 @@ import {
     buttonPrimaryClasses,
     buttonSecondaryClasses,
     dataTableClasses,
+    errorMessage,
     LoadingBlock,
     Notice,
     PageHeader,

@@ -1,13 +1,14 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
 import type { ModelSummary, ProviderSummary } from "/common/domain";
-import { errorMessage, type PanelApiClient } from "./api-client";
+import type { PanelApiClient } from "./api-client";
 import { providerTypeLabel } from "./labels";
 import { ModelEditorForm } from "./model-editor-form";
 import { createPageState } from "./page-state";
 import {
     buttonPrimaryClasses,
     dataTableClasses,
+    errorMessage,
     LoadingBlock,
     Notice,
     PageHeader,

@@ -111,6 +111,11 @@ export function LoadingBlock(): JSX.Element {
     );
 }
 
+/** Formats any caught error into the message shown by a `Notice` or a page-level error slot. */
+export function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : "An unexpected error occurred";
+}
+
 // --- Shared class vocabulary ---------------------------------------------------
 // Every panel surface reuses these strings verbatim so controls stay visually
 // aligned across pages; Tailwind picks the utilities up from this module.
