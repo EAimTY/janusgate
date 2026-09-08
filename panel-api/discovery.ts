@@ -1,6 +1,7 @@
 import type { CredentialsCipher } from "/common/credentials";
 import { assertCredentialsMatchProvider } from "/common/credentials";
 import {
+    columnList,
     hasModelOverrides,
     MODEL_COLUMN_NAMES,
     type ModelRow,
@@ -22,7 +23,7 @@ import { readJsonObjectResponse } from "./upstream-json";
  * Columns for whole-model reads, derived from the canonical tuple so the read cannot drift from
  * the models schema; kept beside the discovery reconcile, its only consumer.
  */
-const MODEL_COLUMNS = MODEL_COLUMN_NAMES.join(",\n    ");
+const MODEL_COLUMNS = columnList(MODEL_COLUMN_NAMES);
 
 function upstreamDiscoveryError(message: string): PanelApiError {
     return new PanelApiError(502, message);

@@ -116,6 +116,30 @@ export function hasModelOverrides(model: StoredModel): boolean {
 }
 
 /**
+ * The single owner of the column-list splice rule: names are comma-joined in order, optionally
+ * qualified by a table name, and optionally aliased where a joined row reuses a column name.
+ * Every SELECT projection and INSERT target list derives from this so lists cannot drift apart
+ * or from the canonical schema-order tuples below.
+ */
+export function columnList(
+    names: readonly string[],
+    options: {
+        /** Appends `AS alias` to the matching column, e.g. `{ name: "model_name" }`. */
+        aliases?: Readonly<Record<string, string>>;
+        /** Renders each name as `table.name` when present. */
+        table?: string;
+    } = {},
+): string {
+    return names
+        .map((name) => {
+            const reference = options.table === undefined ? name : `${options.table}.${name}`;
+            const alias = options.aliases?.[name];
+            return alias === undefined ? reference : `${reference} AS ${alias}`;
+        })
+        .join(", ");
+}
+
+/**
  * Canonical provider column names in schema order. Every provider SELECT must derive its
  * column list from this, so a schema change updates all queries together instead of
  * leaving hand-written lists behind.
@@ -133,7 +157,7 @@ export const PROVIDER_COLUMN_NAMES = [
     "enabled",
 ] as const;
 
-export const PROVIDER_COLUMNS = PROVIDER_COLUMN_NAMES.join(",\n    ");
+export const PROVIDER_COLUMNS = columnList(PROVIDER_COLUMN_NAMES);
 
 /**
  * Canonical model column names in schema order. Every models-table column list must derive from

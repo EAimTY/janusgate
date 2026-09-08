@@ -1,4 +1,5 @@
 import {
+    columnList,
     MODEL_COLUMN_NAMES,
     type ModelRow,
     mapProviderRow,
@@ -36,17 +37,20 @@ interface PublicModelRow {
 }
 
 /** Canonical provider columns qualified for the join alias, so routing cannot drift from the schema. */
-const QUALIFIED_PROVIDER_COLUMNS = PROVIDER_COLUMN_NAMES.map(
-    (column) => `providers.${column}`,
-).join(", ");
+const QUALIFIED_PROVIDER_COLUMNS = columnList(PROVIDER_COLUMN_NAMES, {
+    table: "providers",
+});
 
 /**
  * Canonical model columns qualified for the join, with the public name aliased because the joined
  * provider row also carries a `name`; deriving keeps routing tracking the models schema too.
  */
-const QUALIFIED_MODEL_COLUMNS = MODEL_COLUMN_NAMES.map((column) =>
-    column === "name" ? "models.name AS model_name" : `models.${column}`,
-).join(", ");
+const QUALIFIED_MODEL_COLUMNS = columnList(MODEL_COLUMN_NAMES, {
+    aliases: {
+        name: "model_name",
+    },
+    table: "models",
+});
 
 export async function resolveEnabledModel(
     database: D1Database,

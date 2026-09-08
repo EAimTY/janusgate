@@ -1,4 +1,10 @@
-import { isModelEnabled, MODEL_COLUMN_NAMES, type ModelRow, mapModelRow } from "/common/database";
+import {
+    columnList,
+    isModelEnabled,
+    MODEL_COLUMN_NAMES,
+    type ModelRow,
+    mapModelRow,
+} from "/common/database";
 import type { ModelSummary } from "/common/domain";
 import { composeModelName, parseStoredThinkingLevels } from "/common/validation";
 import type { ThinkingLevel } from "/config";
@@ -10,9 +16,9 @@ interface PanelModelRow extends ModelRow {
 }
 
 /** Model columns qualified for the join alias, so the panel read cannot drift from the schema. */
-const QUALIFIED_MODEL_COLUMNS = MODEL_COLUMN_NAMES.map((column) => `models.${column}`).join(
-    ",\n                ",
-);
+const QUALIFIED_MODEL_COLUMNS = columnList(MODEL_COLUMN_NAMES, {
+    table: "models",
+});
 
 /** Admin-controlled deviations from the discovery result; `null` keeps following discovery. */
 interface ModelOverrideRecord {
@@ -72,7 +78,7 @@ export async function upsertModel(database: D1Database, model: UpsertModelRecord
     try {
         await database
             .prepare(
-                `INSERT INTO models (${MODEL_COLUMN_NAMES.join(", ")}) VALUES (?, ?, ?, ?, ?, ?)
+                `INSERT INTO models (${columnList(MODEL_COLUMN_NAMES)}) VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT (provider_id, upstream_name) DO UPDATE SET
                     name = excluded.name,
                     name_override = excluded.name_override,
