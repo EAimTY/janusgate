@@ -189,11 +189,6 @@ async function requestRefreshedToken(
             errorCode === undefined
                 ? "Identity provider rejected the token refresh"
                 : `Identity provider rejected the token refresh (${errorCode})`,
-            errorCode === undefined
-                ? {}
-                : {
-                      idpErrorCode: errorCode,
-                  },
         );
     }
     return parseRefreshResponse(await response.json(), credentials.refreshToken, now);

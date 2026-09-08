@@ -214,7 +214,6 @@ describe("OAuth credential refresh leasing", () => {
                 now,
             }),
         ).rejects.toMatchObject({
-            idpErrorCode: "invalid_grant",
             isAuthenticationRejected: false,
             message: "Identity provider rejected the token refresh (invalid_grant)",
         });
