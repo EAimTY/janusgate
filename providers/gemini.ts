@@ -1,4 +1,4 @@
-import { encodeBase64 } from "/common/base64";
+import { encodeBase64, isCanonicalBase64 } from "/common/base64";
 import { TranslationError } from "/translation/errors";
 import type { FinishReason, IrEvent, IrRequest, IrUsage, MessagePart } from "/translation/ir";
 import {
@@ -338,7 +338,7 @@ function normalizeBase64(payload: string): string {
     } catch {
         throw new TranslationError("invalid_json", "image data URL contains invalid escaping");
     }
-    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(decoded)) {
+    if (!isCanonicalBase64(decoded)) {
         throw new TranslationError("invalid_json", "image data URL contains invalid base64");
     }
     return decoded;

@@ -71,7 +71,7 @@ export async function requireProviderByName(
     return provider;
 }
 
-export async function createProvider(
+async function createProvider(
     database: D1Database,
     provider: CreateProviderRecord,
 ): Promise<StoredProvider> {
@@ -107,10 +107,7 @@ export async function createProvider(
     }
 }
 
-export async function updateProvider(
-    database: D1Database,
-    provider: UpdateProviderRecord,
-): Promise<void> {
+async function updateProvider(database: D1Database, provider: UpdateProviderRecord): Promise<void> {
     const credentialsAssignment =
         provider.encryptedCredentials === undefined ? "" : ", encrypted_credentials = ?";
     const values: unknown[] = [

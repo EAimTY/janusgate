@@ -8,17 +8,25 @@
  */
 
 /**
+ * Reports whether `text` matches the canonical standard-base64 (RFC 4648) grammar:
+ * only the standard alphabet (`A-Z`, `a-z`, `0-9`, `+`, `/`) with the padding shape
+ * `==` after two data characters and `=` after three (none when the length is a
+ * multiple of four). Non-zero trailing bits in the final data character are
+ * tolerated, mirroring `atob` semantics.
+ */
+export function isCanonicalBase64(text: string): boolean {
+    return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text);
+}
+
+/**
  * Decodes standard base64 (RFC 4648) into bytes.
  *
  * Accepts only the standard alphabet (`A-Z`, `a-z`, `0-9`, `+`, `/`) in canonical
- * form: `==` after two data characters, `=` after three, and no padding when the
- * length is a multiple of four. Whitespace is rejected everywhere, including the
- * whitespace `atob` alone would forgive. Non-zero trailing bits in the final data
- * character are tolerated (`atob` semantics inherited from the call sites this
- * module replaces). Throws on any other input.
+ * form per {@link isCanonicalBase64}. Whitespace is rejected everywhere, including
+ * the whitespace `atob` alone would forgive. Throws on any other input.
  */
 export function decodeBase64(text: string): Uint8Array {
-    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) {
+    if (!isCanonicalBase64(text)) {
         throw new Error("Text is not canonical standard base64");
     }
     return bytesFromBinary(atob(text));
