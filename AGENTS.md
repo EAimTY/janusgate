@@ -28,5 +28,5 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 ### SQL (SQLite)
 
 - Treat `DATABASE.sqlite` as the only source of truth for the SQLite schema.
-- Explicitly declare columns as nullable or non-null and define uniqueness and foreign keys. Add `CHECK` constraints only when permitted by `README.md`; JanusGate intentionally keeps human-input validation in the application.
+- Explicitly declare columns as nullable or non-null and define uniqueness and foreign keys. Do not use `CHECK` constraints for text format or non-empty validation (which belongs in the application), but enforce hard domain invariants such as enum-like value sets with `CHECK`.
 - Use `STRICT` in table definitions.
