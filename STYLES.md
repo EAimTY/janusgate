@@ -33,8 +33,4 @@ This file contains the coding style guide applies to the whole project. Periodic
 
 ## SQL (SQLite)
 
-- Write SQL as strictly and explicitly as possible.
-- Indent SQL with four spaces per nesting level.
 - Use UPPERCASE for SQL keywords, PascalCase for type names, and snake_case for column names.
-- Explicitly declare columns as nullable or non-null (`NULL` / `NOT NULL`), and define uniqueness, primary keys, and foreign keys explicitly.
-- Use `STRICT` in table definitions.
