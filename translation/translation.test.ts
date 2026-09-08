@@ -49,12 +49,18 @@ function assertEqual(actual: unknown, expected: unknown, message: string): void 
     assert(actualJson === expectedJson, `${message}: ${actualJson} !== ${expectedJson}`);
 }
 
-function assertTranslationError(action: () => unknown, code: string): void {
+function assertTranslationError(action: () => unknown, code: string, message?: string): void {
     try {
         action();
     } catch (error: unknown) {
         assert(error instanceof TranslationError, "expected TranslationError");
         assert(error.code === code, `expected ${code}, got ${error.code}`);
+        if (message !== undefined) {
+            assert(
+                error.message === message,
+                `expected message "${message}", got "${error.message}"`,
+            );
+        }
         return;
     }
     throw new Error(`expected ${code}`);
@@ -1155,5 +1161,305 @@ test("Chat Completions stream renderer buffers usage into the terminal frame", (
             terminalFrames[0]?.includes('"usage":{"prompt_tokens":4') === true &&
             terminalFrames.at(-1) === "data: [DONE]\n\n",
         "buffered usage precedes the terminal DONE frame and repeated message_start is dropped",
+    );
+});
+
+test("Shared outward wire helpers keep dialect-specific field names and errors", () => {
+    // Responses spells a named tool_choice function as a flat `name`; both dialects
+    // reject a name that `tools` does not declare, and non-function tool_choice types.
+    assertEqual(
+        parseResponsesRequest({
+            model: "m",
+            input: "Go",
+            tools: [
+                {
+                    type: "function",
+                    name: "lookup",
+                    parameters: {},
+                },
+            ],
+            tool_choice: {
+                type: "function",
+                name: "lookup",
+            },
+        }).toolChoice,
+        {
+            mode: "required",
+            functionName: "lookup",
+        },
+        "Responses named tool_choice enters the IR",
+    );
+    assertTranslationError(
+        () =>
+            parseResponsesRequest({
+                model: "m",
+                input: "Go",
+                tools: [
+                    {
+                        type: "function",
+                        name: "other",
+                        parameters: {},
+                    },
+                ],
+                tool_choice: {
+                    type: "function",
+                    name: "lookup",
+                },
+            }),
+        "unsupported_parameter",
+    );
+    assertTranslationError(
+        () =>
+            parseResponsesRequest({
+                model: "m",
+                input: "Go",
+                tool_choice: {
+                    type: "web_search",
+                },
+            }),
+        "unsupported_parameter",
+    );
+    assertTranslationError(
+        () =>
+            parseChatCompletionsRequest({
+                model: "m",
+                messages: [
+                    {
+                        role: "user",
+                        content: "Go",
+                    },
+                ],
+                tool_choice: {
+                    type: "web_search",
+                },
+            }),
+        "unsupported_parameter",
+    );
+    assertTranslationError(
+        () =>
+            parseResponsesRequest({
+                model: "m",
+                input: "Go",
+                parallel_tool_calls: "yes",
+            }),
+        "invalid_json",
+    );
+    assertTranslationError(
+        () =>
+            parseResponsesRequest({
+                model: "m",
+                input: "Go",
+                parallel_tool_calls: false,
+            }),
+        "unsupported_parameter",
+    );
+    assertTranslationError(
+        () =>
+            parseChatCompletionsRequest({
+                model: "m",
+                messages: [
+                    {
+                        role: "user",
+                        content: "Go",
+                    },
+                ],
+                parallel_tool_calls: false,
+            }),
+        "unsupported_parameter",
+    );
+    assertEqual(
+        parseResponsesRequest({
+            model: "m",
+            input: "Go",
+            parallel_tool_calls: true,
+        }).toolChoice,
+        undefined,
+        "parallel_tool_calls:true is accepted and implies no tool choice",
+    );
+
+    // Responses reads response format fields from `text.format` itself; both dialects
+    // accept `json_object` and reject unknown format types.
+    assertEqual(
+        parseResponsesRequest({
+            model: "m",
+            input: "Go",
+            text: {
+                format: {
+                    type: "json_schema",
+                    name: "answer",
+                    schema: {},
+                    description: "Structured answer",
+                    strict: true,
+                },
+            },
+        }).sampling.responseFormat,
+        {
+            type: "json_schema",
+            name: "answer",
+            schema: {},
+            description: "Structured answer",
+            isStrict: true,
+        },
+        "Responses text.format json_schema enters the IR",
+    );
+    assertEqual(
+        parseResponsesRequest({
+            model: "m",
+            input: "Go",
+            text: {
+                format: {
+                    type: "json_object",
+                },
+            },
+        }).sampling.responseFormat,
+        {
+            type: "json_object",
+        },
+        "Responses text.format json_object enters the IR",
+    );
+    assertTranslationError(
+        () =>
+            parseResponsesRequest({
+                model: "m",
+                input: "Go",
+                text: {
+                    format: {
+                        type: "sql",
+                    },
+                },
+            }),
+        "unsupported_parameter",
+    );
+
+    // Cached-token details map across both dialects in both directions.
+    const cachedChatEvents = parseChatCompletionsResponse({
+        id: "chat_cached",
+        model: "m",
+        created: 1,
+        choices: [
+            {
+                index: 0,
+                message: {
+                    role: "assistant",
+                    content: "ok",
+                },
+                finish_reason: "stop",
+            },
+        ],
+        usage: {
+            prompt_tokens: 5,
+            completion_tokens: 1,
+            total_tokens: 6,
+            prompt_tokens_details: {
+                cached_tokens: 2,
+            },
+        },
+    });
+    assertEqual(
+        cachedChatEvents.find((event) => event.type === "usage"),
+        {
+            type: "usage",
+            usage: {
+                inputTokens: 5,
+                outputTokens: 1,
+                totalTokens: 6,
+                cachedInputTokens: 2,
+            },
+        },
+        "CC cached usage enters the IR",
+    );
+    assertEqual(
+        renderResponsesResponse(cachedChatEvents, {
+            id: "resp_cached",
+            model: "m",
+            created: 2,
+        }).usage,
+        {
+            input_tokens: 5,
+            output_tokens: 1,
+            total_tokens: 6,
+            input_tokens_details: {
+                cached_tokens: 2,
+            },
+        },
+        "IR cached usage renders to Responses",
+    );
+    assertEqual(
+        renderChatCompletionsResponse(
+            parseResponsesResponse({
+                id: "resp_cached_upstream",
+                model: "m",
+                status: "completed",
+                output: [],
+                usage: {
+                    input_tokens: 7,
+                    output_tokens: 2,
+                    total_tokens: 9,
+                    input_tokens_details: {
+                        cached_tokens: 3,
+                    },
+                },
+            }),
+            {
+                id: "chat_cached_out",
+                model: "m",
+                created: 3,
+            },
+        ).usage,
+        {
+            prompt_tokens: 7,
+            completion_tokens: 2,
+            total_tokens: 9,
+            prompt_tokens_details: {
+                cached_tokens: 3,
+            },
+        },
+        "Responses cached usage renders to CC",
+    );
+
+    // A non-object details record fails under a dialect-specific context: Chat scopes the
+    // details fields under the usage object, Responses names them bare.
+    assertTranslationError(
+        () =>
+            parseChatCompletionsResponse({
+                id: "chat_bad_details",
+                model: "m",
+                created: 1,
+                choices: [
+                    {
+                        index: 0,
+                        message: {
+                            role: "assistant",
+                            content: "ok",
+                        },
+                        finish_reason: "stop",
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 5,
+                    completion_tokens: 1,
+                    total_tokens: 6,
+                    prompt_tokens_details: "x",
+                },
+            }),
+        "invalid_json",
+        "usage.prompt_tokens_details must be an object",
+    );
+    assertTranslationError(
+        () =>
+            parseResponsesResponse({
+                id: "resp_bad_details",
+                model: "m",
+                status: "completed",
+                output: [],
+                usage: {
+                    input_tokens: 5,
+                    output_tokens: 1,
+                    total_tokens: 6,
+                    input_tokens_details: "x",
+                },
+            }),
+        "invalid_json",
+        "input_tokens_details must be an object",
     );
 });

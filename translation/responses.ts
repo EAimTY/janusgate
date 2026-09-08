@@ -8,7 +8,6 @@ import type {
     IrRequest,
     IrResponseFormat,
     IrSampling,
-    IrToolChoice,
     IrUsage,
     MessagePart,
     ToolCallPart,
@@ -28,6 +27,15 @@ import {
     optionalNonNegativeInteger,
     optionalString,
 } from "./json";
+import {
+    parseResponseFormat,
+    parseToolChoice,
+    parseUsage,
+    renderUsage,
+    type UsageFieldNames,
+    validateToolCalling,
+    type WireUsage,
+} from "./openai-shared";
 import { encodeSse } from "./sse";
 
 interface ResponsesRequestObject {
@@ -111,6 +119,12 @@ type ResponsesTextFormat =
           strict?: boolean;
       };
 
+const usageFieldNames = {
+    inputTokens: "input_tokens",
+    outputTokens: "output_tokens",
+    detailsContextPrefix: "",
+} as const satisfies UsageFieldNames;
+
 interface ResponsesResponseObject {
     id: string;
     object: "response";
@@ -118,17 +132,7 @@ interface ResponsesResponseObject {
     model: string;
     status: "completed" | "incomplete";
     output: JsonObject[];
-    usage?: {
-        input_tokens: number;
-        output_tokens: number;
-        total_tokens: number;
-        input_tokens_details?: {
-            cached_tokens: number;
-        };
-        output_tokens_details?: {
-            reasoning_tokens: number;
-        };
-    };
+    usage?: WireUsage<typeof usageFieldNames>;
     incomplete_details?: {
         reason: "max_output_tokens" | "content_filter";
     };
@@ -166,28 +170,10 @@ export function parseResponsesRequest(value: unknown): IrRequest {
             ? []
             : expectArray(root["tools"], "tools").map(parseResponsesTool);
     const sampling = parseResponsesSampling(root);
-    const toolChoice = parseResponsesToolChoice(root["tool_choice"]);
-    if (
-        toolChoice?.functionName !== undefined &&
-        !tools.some((tool) => tool.name === toolChoice.functionName)
-    ) {
-        throw new TranslationError(
-            "unsupported_parameter",
-            "tool_choice names an undeclared function",
-        );
-    }
-    if (
-        root["parallel_tool_calls"] !== undefined &&
-        typeof root["parallel_tool_calls"] !== "boolean"
-    ) {
-        throw new TranslationError("invalid_json", "parallel_tool_calls must be a boolean");
-    }
-    if (root["parallel_tool_calls"] === false) {
-        throw new TranslationError(
-            "unsupported_parameter",
-            "parallel_tool_calls:false is not supported on translated paths",
-        );
-    }
+    const toolChoice = parseToolChoice(root["tool_choice"], (choice) =>
+        expectNonEmptyString(choice["name"], "tool_choice.name"),
+    );
+    validateToolCalling(tools, toolChoice, root["parallel_tool_calls"]);
     const isStreaming = optionalBoolean(root["stream"], "stream") ?? false;
     const result: IrRequest = {
         messages,
@@ -362,27 +348,6 @@ function parseResponsesContentPart(
     throw new TranslationError("unsupported_parameter", "unsupported Responses content part");
 }
 
-function parseResponsesToolChoice(value: unknown): IrToolChoice | undefined {
-    if (value === undefined || value === "auto")
-        return value === undefined
-            ? undefined
-            : {
-                  mode: "auto",
-              };
-    if (value === "none" || value === "required")
-        return {
-            mode: value,
-        };
-    const choice = expectRecord(value, "tool_choice");
-    if (choice["type"] !== "function") {
-        throw new TranslationError("unsupported_parameter", "unsupported tool_choice");
-    }
-    return {
-        mode: "required",
-        functionName: expectNonEmptyString(choice["name"], "tool_choice.name"),
-    };
-}
-
 function parseResponsesTool(value: unknown, index: number): IrFunctionTool {
     const tool = expectRecord(value, `tools[${index}]`);
     if (tool["type"] !== "function") {
@@ -415,30 +380,18 @@ function parseResponsesSampling(root: Record<string, unknown>): IrSampling {
     if (maxOutputTokens !== undefined) sampling.maxOutputTokens = maxOutputTokens;
     if (root["text"] !== undefined) {
         const text = expectRecord(root["text"], "text");
-        if (text["format"] !== undefined)
-            sampling.responseFormat = parseResponsesTextFormat(text["format"]);
+        if (text["format"] !== undefined) {
+            sampling.responseFormat = parseResponseFormat(
+                text["format"],
+                "text.format",
+                (format) => ({
+                    record: format,
+                    context: "text.format",
+                }),
+            );
+        }
     }
     return sampling;
-}
-
-function parseResponsesTextFormat(value: unknown): IrResponseFormat {
-    const format = expectRecord(value, "text.format");
-    if (format["type"] === "json_object")
-        return {
-            type: "json_object",
-        };
-    if (format["type"] !== "json_schema")
-        throw new TranslationError("unsupported_parameter", "unsupported text.format.type");
-    const result: IrResponseFormat = {
-        type: "json_schema",
-        name: expectNonEmptyString(format["name"], "text.format.name"),
-        schema: expectJsonObject(format["schema"], "text.format.schema"),
-    };
-    const description = optionalString(format["description"], "text.format.description");
-    const isStrict = optionalBoolean(format["strict"], "text.format.strict");
-    if (description !== undefined) result["description"] = description;
-    if (isStrict !== undefined) result.isStrict = isStrict;
-    return result;
 }
 
 export function renderResponsesRequest(
@@ -702,7 +655,7 @@ export function parseResponsesResponse(value: unknown): IrEvent[] {
     if (root["usage"] !== undefined)
         events.push({
             type: "usage",
-            usage: parseResponsesUsage(root["usage"]),
+            usage: parseUsage(root["usage"], usageFieldNames),
         });
     events.push({
         type: "done",
@@ -806,7 +759,7 @@ export function parseResponsesStreamEvent(value: unknown): IrEvent[] {
         if (response["usage"] !== undefined)
             events.push({
                 type: "usage",
-                usage: parseResponsesUsage(response["usage"]),
+                usage: parseUsage(response["usage"], usageFieldNames),
             });
         events.push({
             type: "done",
@@ -840,30 +793,6 @@ function mapResponsesFinishReason(
         return details["reason"] === "content_filter" ? "content_filter" : "length";
     }
     return hasToolCall ? "tool_calls" : "stop";
-}
-
-function parseResponsesUsage(value: unknown): IrUsage {
-    const usage = expectRecord(value, "usage");
-    const result: IrUsage = {
-        inputTokens: optionalNonNegativeInteger(usage["input_tokens"], "usage.input_tokens") ?? 0,
-        outputTokens:
-            optionalNonNegativeInteger(usage["output_tokens"], "usage.output_tokens") ?? 0,
-        totalTokens: optionalNonNegativeInteger(usage["total_tokens"], "usage.total_tokens") ?? 0,
-    };
-    if (usage["input_tokens_details"] !== undefined) {
-        const details = expectRecord(usage["input_tokens_details"], "input_tokens_details");
-        const cached = optionalNonNegativeInteger(details["cached_tokens"], "cached_tokens");
-        if (cached !== undefined) result.cachedInputTokens = cached;
-    }
-    if (usage["output_tokens_details"] !== undefined) {
-        const details = expectRecord(usage["output_tokens_details"], "output_tokens_details");
-        const reasoning = optionalNonNegativeInteger(
-            details["reasoning_tokens"],
-            "reasoning_tokens",
-        );
-        if (reasoning !== undefined) result.reasoningTokens = reasoning;
-    }
-    return result;
 }
 
 export function renderResponsesResponse(
@@ -984,24 +913,7 @@ export function renderResponsesResponse(
         result["incomplete_details"] = {
             reason: finishReason === "content_filter" ? "content_filter" : "max_output_tokens",
         };
-    if (usage !== undefined) result["usage"] = renderResponsesUsage(usage);
-    return result;
-}
-
-function renderResponsesUsage(usage: IrUsage): NonNullable<ResponsesResponseObject["usage"]> {
-    const result: NonNullable<ResponsesResponseObject["usage"]> = {
-        input_tokens: usage.inputTokens,
-        output_tokens: usage.outputTokens,
-        total_tokens: usage.totalTokens,
-    };
-    if (usage.cachedInputTokens !== undefined)
-        result["input_tokens_details"] = {
-            cached_tokens: usage.cachedInputTokens,
-        };
-    if (usage.reasoningTokens !== undefined)
-        result["output_tokens_details"] = {
-            reasoning_tokens: usage.reasoningTokens,
-        };
+    if (usage !== undefined) result["usage"] = renderUsage(usage, usageFieldNames);
     return result;
 }
 
@@ -1333,7 +1245,7 @@ export function createResponsesStreamRenderer(
                                 ? "content_filter"
                                 : "max_output_tokens",
                     };
-                if (usage !== undefined) response["usage"] = renderResponsesUsage(usage);
+                if (usage !== undefined) response["usage"] = renderUsage(usage, usageFieldNames);
                 const type = isIncomplete ? "response.incomplete" : "response.completed";
                 frames.push(
                     encodeSse(type, {
