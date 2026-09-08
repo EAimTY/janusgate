@@ -135,7 +135,7 @@ export function parseThinkingLevels(value: unknown): readonly ThinkingLevel[] | 
     return CANONICAL_THINKING_LEVELS.filter((level) => levels.includes(level));
 }
 
-export function isThinkingLevel(value: unknown): value is ThinkingLevel {
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
     return CANONICAL_THINKING_LEVELS.some((level) => value === level);
 }
 

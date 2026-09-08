@@ -1,11 +1,8 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeBase64Url } from "/common/base64";
-import {
-    CredentialsCipher,
-    parseAntigravityOAuthCredentials,
-    parseOpenAiOAuthCredentials,
-} from "/common/credentials";
+import { assertCredentialsMatchProvider, CredentialsCipher } from "/common/credentials";
+import { OAUTH_STATE_TTL_SECONDS } from "/config";
 import {
     ANTIGRAVITY_API_BASE_URL,
     ANTIGRAVITY_CLIENT_METADATA,
@@ -26,7 +23,6 @@ import {
     seedProvider,
     TEST_CREDENTIALS_AES_KEY,
 } from "/tests/database";
-import { OAUTH_STATE_TTL_SECONDS } from "./config";
 import { completeProviderOAuth, startProviderOAuth } from "./oauth";
 import { findProviderByName } from "./provider-repository";
 
@@ -123,7 +119,10 @@ describe("OAuth orchestration", () => {
         });
         if (provider === null) throw new Error("provider missing");
         expect(
-            parseOpenAiOAuthCredentials(await cipher.decrypt(provider.encryptedCredentials)),
+            assertCredentialsMatchProvider(
+                "openai_oauth",
+                await cipher.decrypt(provider.encryptedCredentials),
+            ),
         ).toEqual({
             accessToken: "access",
             accountId: "account-1",
@@ -180,7 +179,8 @@ describe("OAuth orchestration", () => {
             env.DATABASE.prepare("SELECT COUNT(*) AS count FROM oauth_states").first("count"),
         ).resolves.toBe(0);
         await expect(
-            parseOpenAiOAuthCredentials(
+            assertCredentialsMatchProvider(
+                "openai_oauth",
                 await cipher.decrypt(
                     (await findProviderByName(env.DATABASE, "work"))?.encryptedCredentials ??
                         new Uint8Array(),
@@ -297,7 +297,10 @@ describe("OAuth orchestration", () => {
         const provider = await findProviderByName(env.DATABASE, "work");
         if (provider === null) throw new Error("provider missing");
         expect(
-            parseOpenAiOAuthCredentials(await cipher.decrypt(provider.encryptedCredentials)),
+            assertCredentialsMatchProvider(
+                "openai_oauth",
+                await cipher.decrypt(provider.encryptedCredentials),
+            ),
         ).toEqual({
             accessToken: "old-access",
             accountId: "old-account",
@@ -375,7 +378,10 @@ describe("OAuth orchestration", () => {
         const provider = await findProviderByName(env.DATABASE, "google");
         if (provider === null) throw new Error("provider missing");
         expect(
-            parseAntigravityOAuthCredentials(await cipher.decrypt(provider.encryptedCredentials)),
+            assertCredentialsMatchProvider(
+                "antigravity_oauth",
+                await cipher.decrypt(provider.encryptedCredentials),
+            ),
         ).toEqual({
             accessToken: "new-google-access",
             projectId: "workspace-project",
@@ -478,7 +484,10 @@ describe("OAuth orchestration", () => {
         });
         if (provider === null) throw new Error("provider missing");
         expect(
-            parseAntigravityOAuthCredentials(await cipher.decrypt(provider.encryptedCredentials)),
+            assertCredentialsMatchProvider(
+                "antigravity_oauth",
+                await cipher.decrypt(provider.encryptedCredentials),
+            ),
         ).toEqual({
             accessToken: "google-access",
             projectId: "project-1",
@@ -550,7 +559,10 @@ describe("OAuth orchestration", () => {
         const provider = await findProviderByName(env.DATABASE, "antigravity-1");
         if (provider === null) throw new Error("provider missing");
         expect(
-            parseAntigravityOAuthCredentials(await cipher.decrypt(provider.encryptedCredentials)),
+            assertCredentialsMatchProvider(
+                "antigravity_oauth",
+                await cipher.decrypt(provider.encryptedCredentials),
+            ),
         ).toMatchObject({
             projectId: "workspace-project",
         });

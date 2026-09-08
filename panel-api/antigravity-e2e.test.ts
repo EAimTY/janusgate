@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { handleGatewayRequest } from "/api/gateway";
-import { CredentialsCipher, parseAntigravityOAuthCredentials } from "/common/credentials";
+import { assertCredentialsMatchProvider, CredentialsCipher } from "/common/credentials";
 import type { AntigravityOAuthCredentials } from "/common/domain";
 import {
     ANTIGRAVITY_FETCH_MODELS_URL,
@@ -257,7 +257,8 @@ describe("Antigravity OAuth end-to-end: paste-back to Responses API", () => {
                 encrypted_credentials: ArrayBuffer;
             }>();
             if (row === null) throw new Error("provider missing");
-            return parseAntigravityOAuthCredentials(
+            return assertCredentialsMatchProvider(
+                "antigravity_oauth",
                 await cipher.decrypt(row.encrypted_credentials),
             );
         };

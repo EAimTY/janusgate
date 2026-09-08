@@ -82,7 +82,7 @@ interface OpenAiCompatibleProviderSummary extends ProviderSummaryBase {
 export type ProviderSummary = OAuthProviderSummary | OpenAiCompatibleProviderSummary;
 
 /** Raw provider fields as stored in D1 or received on the panel wire; never trusted as a summary. */
-export interface ProviderSummaryFields {
+interface ProviderSummaryFields {
     readonly name: string;
     readonly isEnabled: boolean;
     readonly modelPrefix: string;

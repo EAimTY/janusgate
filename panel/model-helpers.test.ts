@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { composeModelName, isThinkingLevel } from "/common/validation";
+import { ValidationError } from "/common/errors";
+import { composeModelName, parseThinkingLevels } from "/common/validation";
 import { previewModelName, toggleThinkingLevel } from "./model-helpers";
 
 describe("model helpers", () => {
@@ -39,9 +40,27 @@ describe("model helpers", () => {
         ).toBe("public");
     });
 
-    it("recognizes only canonical thinking levels", () => {
-        expect(isThinkingLevel("xhigh")).toBe(true);
-        expect(isThinkingLevel("off")).toBe(false);
+    it("parses only canonical thinking levels", () => {
+        expect(
+            parseThinkingLevels([
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+            ]),
+        ).toEqual([
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        ]);
+        expect(() =>
+            parseThinkingLevels([
+                "off",
+            ]),
+        ).toThrow(ValidationError);
     });
 
     it("toggles levels in canonical order", () => {

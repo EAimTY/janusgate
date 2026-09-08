@@ -123,7 +123,7 @@ export function parseOpenAiOAuthCredentials(value: unknown): OpenAiOAuthCredenti
     };
 }
 
-export function parseAntigravityOAuthCredentials(value: unknown): AntigravityOAuthCredentials {
+function parseAntigravityOAuthCredentials(value: unknown): AntigravityOAuthCredentials {
     const object = requireJsonObject(value, "Antigravity credentials");
     return {
         accessToken: requireStringField(object, "accessToken"),
@@ -132,7 +132,7 @@ export function parseAntigravityOAuthCredentials(value: unknown): AntigravityOAu
     };
 }
 
-export function parseOpenAiCompatibleCredentials(value: unknown): OpenAiCompatibleCredentials {
+function parseOpenAiCompatibleCredentials(value: unknown): OpenAiCompatibleCredentials {
     const object = requireJsonObject(value, "OpenAI-compatible credentials");
     return {
         apiKey: requireStringField(object, "apiKey"),

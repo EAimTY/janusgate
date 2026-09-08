@@ -18,7 +18,7 @@ export interface StoredProvider {
     isEnabled: boolean;
 }
 
-export interface StoredModel {
+interface StoredModel {
     providerId: number;
     upstreamName: string;
     name: string;

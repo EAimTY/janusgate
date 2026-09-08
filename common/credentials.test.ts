@@ -1,9 +1,5 @@
 import { expect, test } from "vitest";
-import {
-    CredentialsCipher,
-    parseOpenAiCompatibleCredentials,
-    parseOpenAiOAuthCredentials,
-} from "/common/credentials";
+import { assertCredentialsMatchProvider, CredentialsCipher } from "/common/credentials";
 import { ConfigurationError, CredentialDecryptionError, ValidationError } from "/common/errors";
 
 const KEY_BASE64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
@@ -20,7 +16,9 @@ test("credentials encrypt as IV followed by ciphertext and the GCM tag", async (
     const second = await cipher.encrypt(credentials);
 
     expect(first.byteLength).toBeGreaterThanOrEqual(12 + 16 + 1);
-    expect(parseOpenAiOAuthCredentials(await cipher.decrypt(first))).toEqual(credentials);
+    expect(assertCredentialsMatchProvider("openai_oauth", await cipher.decrypt(first))).toEqual(
+        credentials,
+    );
     expect(first).not.toEqual(second);
 });
 
@@ -40,15 +38,50 @@ test("the AES secret must decode to exactly 32 bytes", async () => {
 });
 
 test("credential payload parsing validates shape but not field contents", () => {
+    // Acceptance: each parser demands its own field set and never inspects contents.
     expect(
-        parseOpenAiCompatibleCredentials({
+        assertCredentialsMatchProvider("openai_compatible", {
             apiKey: "",
         }),
     ).toEqual({
         apiKey: "",
     });
+    expect(
+        assertCredentialsMatchProvider("openai_oauth", {
+            accessToken: "",
+            accountId: "",
+            refreshToken: "",
+        }),
+    ).toEqual({
+        accessToken: "",
+        accountId: "",
+        refreshToken: "",
+    });
+    expect(
+        assertCredentialsMatchProvider("antigravity_oauth", {
+            accessToken: "",
+            projectId: "",
+            refreshToken: "",
+        }),
+    ).toEqual({
+        accessToken: "",
+        projectId: "",
+        refreshToken: "",
+    });
+    // Rejection: payloads whose shape mismatches the provider type fail loudly.
     expect(() =>
-        parseOpenAiOAuthCredentials({
+        assertCredentialsMatchProvider("openai_oauth", {
+            accessToken: "a",
+            refreshToken: "r",
+        }),
+    ).toThrow(ValidationError);
+    expect(() =>
+        assertCredentialsMatchProvider("openai_compatible", {
+            apiKey: 1,
+        }),
+    ).toThrow(ValidationError);
+    expect(() =>
+        assertCredentialsMatchProvider("antigravity_oauth", {
             accessToken: "a",
             refreshToken: "r",
         }),
