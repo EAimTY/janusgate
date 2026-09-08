@@ -10,7 +10,6 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 - Read `README.md` before starting non-trivial work. Treat `README.md` as the source of truth for the whole system's design and architecture. Always follow a documentation-first approach when making any modifications, ensuring all documentation is updated alongside every change.
 - Be strict. Avoid fuzzy, ambiguous, or weakly specified behavior; make semantics explicit.
 - Do not preserve backward compatibility in code. This project is new; implement the design in the most elegant and idiomatic form available. Avoid historical debt.
-- The crates' `version` fields stay pinned at `0.0.0`: the unreleased project carries no release numbering, so never bump them.
 - Name booleans with predicate-style name prefixes such as `is`, `can`, `has`, or `should`.
 - Prefer unabbreviated names. For example, use `permanent_id` instead of `perm_id`. Exceptions: "ctx", "txn", "err", "repr", "src", "dst", "std".
 - Give every item the most restrictive visibility that permits its intended use.
@@ -24,7 +23,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 
 - Declare every external dependency in `[dependencies]` with `default-features = false` and declare required features there.
 - Do not contort idiomatic code into verbose workarounds merely to dodge panic-related Clippy lints (such as `unwrap_used`, `expect_used`, `panic`, or `indexing_slicing`). When panicking is safe and acceptable—such as a proven invariant or an intentional fail-fast fatal condition—retain the direct construct and document the justification using `#[expect(..., reason = "...")]` on the narrowest applicable scope (such as a single statement or match arm, rather than a whole function or block).
-- After every code modification, run `cargo fmt`, `cargo check`, and `cargo clippy` to ensure no formatting issues, compilation errors, or lint regressions were introduced.
+- After every code modification, run `cargo fmt`, `cargo check`, `cargo clippy`, and `cargo test` to ensure no formatting issues, compilation errors, lint regressions, or test failures were introduced.
 
 ### SQL (SQLite)
 
