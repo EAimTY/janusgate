@@ -32,12 +32,18 @@ export const ANTIGRAVITY_CLIENT_METADATA =
 export const ANTIGRAVITY_HEADER_CLIENT_METADATA =
     '{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}';
 
-/** The pinned Antigravity client identity every Code Assist request must carry. */
+/**
+ * The pinned Antigravity client identity every Code Assist request must carry. Model-serving
+ * callers additionally pass the upstream model so Claude runtimes receive their required
+ * interleaved-thinking beta opt-in; model-less administrative calls (onboarding, discovery)
+ * carry no family and omit it.
+ */
 export function antigravityRequestHeaders(
     accessToken: string,
     accept: string,
+    model?: string,
 ): Record<string, string> {
-    return {
+    const headers: Record<string, string> = {
         Accept: accept,
         Authorization: `Bearer ${accessToken}`,
         "Client-Metadata": ANTIGRAVITY_HEADER_CLIENT_METADATA,
@@ -45,6 +51,12 @@ export function antigravityRequestHeaders(
         "User-Agent": ANTIGRAVITY_USER_AGENT,
         "X-Goog-Api-Client": ANTIGRAVITY_API_CLIENT,
     };
+    // Runtime mapping never moves a model into or out of the Claude family, so the configured
+    // name decides.
+    if (model?.startsWith("claude-")) {
+        headers["anthropic-beta"] = "interleaved-thinking-2025-05-14";
+    }
+    return headers;
 }
 
 /**

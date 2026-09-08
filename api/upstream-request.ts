@@ -157,14 +157,10 @@ export async function prepareUpstreamRequest(
             antigravityRequestHeaders(
                 oauthCredentials.accessToken,
                 request.isStreaming ? "text/event-stream" : "application/json",
+                route.upstreamName,
             ),
         )) {
             headers.set(name, value);
-        }
-        // Runtime routing never moves a model into or out of the Claude family, so the beta
-        // header decision can read the configured upstream name directly.
-        if (route.upstreamName.startsWith("claude-")) {
-            headers.set("anthropic-beta", "interleaved-thinking-2025-05-14");
         }
         url = codeAssistRequestUrl(request.isStreaming);
         // Antigravity upstreams speak GenerateContent, which no client speaks, so the request

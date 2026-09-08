@@ -12,6 +12,7 @@ import {
     ANTIGRAVITY_REDIRECT_URI,
     ANTIGRAVITY_TOKEN_URL,
     ANTIGRAVITY_USER_AGENT,
+    antigravityRequestHeaders,
     antigravityRuntimeModel,
     buildCodeAssistRequest,
     codeAssistRequestUrl,
@@ -725,6 +726,22 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
             },
         },
         "Claude defaults tool calling to validated mode",
+    );
+    assertEqual(
+        antigravityRequestHeaders("token", "application/json", "claude-opus-4-6")["anthropic-beta"],
+        "interleaved-thinking-2025-05-14",
+        "Claude model requests carry the interleaved-thinking beta header",
+    );
+    assert(
+        !(
+            "anthropic-beta" in
+            antigravityRequestHeaders("token", "application/json", "gpt-oss-120b")
+        ),
+        "non-Claude model requests omit the interleaved-thinking beta header",
+    );
+    assert(
+        !("anthropic-beta" in antigravityRequestHeaders("token", "*/*")),
+        "model-less administrative requests omit the interleaved-thinking beta header",
     );
     const gptCodeAssist = buildCodeAssistRequest(
         parseChatCompletionsRequest({
