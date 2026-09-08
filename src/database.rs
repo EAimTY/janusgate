@@ -1,21 +1,23 @@
 //! In-process SQLite database engine and connection-pooled abstraction backed
 //! by Turso.
 
-use deadpool::managed::{
-    BuildError, Manager as PoolManager, Metrics, Object, Pool, PoolError, RecycleError,
-    RecycleResult,
+use deadpool::{
+    Runtime,
+    managed::{
+        BuildError, Manager as PoolManager, Metrics, Object, Pool, PoolError, RecycleError,
+        RecycleResult,
+    },
 };
-use std::{fs, io::Error as IoError, path::Path, ptr::NonNull, sync::Arc, time::Duration};
-use turso::{
-    Builder as TursoBuilder, Connection, Database as TursoDatabase, Error as TursoError,
-    transaction::Transaction as TursoTransaction,
-};
+use std::{fs, io::Error as IoError, num::NonZero, path::Path, sync::Arc, time::Duration};
+use turso::{Builder as TursoBuilder, Connection, Database as TursoDatabase, Error as TursoError};
+
+#[cfg(test)]
+mod tests;
 
 // The re-exported items double as the module's own imports: `Row` and
 // `IntoParams` appear in this module's signatures.
-#[rustfmt::skip]
 #[allow(unused_imports)]
-pub use turso::{named_params, params, IntoParams, Params, Row, Value};
+pub use turso::{IntoParams, Params, Row, Value, named_params, params};
 
 /// Non-zero 32-bit big-endian schema fingerprint computed at compile time.
 const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(concat!(
@@ -25,21 +27,6 @@ const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(conc
 
 /// Canonical SQLite DDL schema embedded at compile time.
 const DATABASE_SCHEMA: &str = include_str!("../DATABASE.sqlite");
-
-// `Transaction` handles are held across `.await` points in spawned gateway
-// tasks, so `Send + Sync` is an API contract. This pins the auto traits: the
-// manual `unsafe impl`s on `TransactionInner` are load-bearing because
-// `NonNull` is unconditionally `!Send` and `!Sync`, and any refactor that
-// breaks thread-safety must fail here, not at distant call sites.
-const _: () = {
-    const fn assert_send_sync<T>()
-    where
-        T: Send + Sync,
-    {
-    }
-
-    assert_send_sync::<Transaction<'static>>();
-};
 
 /// Database operation, connection pool, and storage engine errors.
 #[derive(Debug, thiserror::Error)]
@@ -74,10 +61,22 @@ pub struct Database {
 
 /// Database transaction handle holding exclusive ownership of a pooled
 /// connection.
+///
+/// [`Transaction::commit`] or [`Transaction::rollback`] finishes the
+/// transaction and returns the connection to the pool. Dropping an unfinished
+/// handle discards its connection instead: the engine-level transaction on it
+/// is still open, and returning it to the pool would park the database write
+/// lock until the connection's next checkout.
 #[derive(Debug)]
-pub struct Transaction<'db> {
-    /// Internal transaction state and connection ownership adapter.
-    inner: TransactionInner<'db>,
+pub struct Transaction {
+    /// Pooled connection hosting the open transaction.
+    ///
+    /// This is an `Option` only so `Drop` can dismantle the checkout with
+    /// [`Object::take`] without running the pool-return path.
+    connection: Option<Object<Manager>>,
+
+    /// Whether the transaction has been finished by commit or rollback.
+    is_completed: bool,
 }
 
 /// Internal database state containing the connection pool.
@@ -94,20 +93,11 @@ struct Manager {
     database: TursoDatabase,
 }
 
-/// Internal representation of an active database transaction.
-#[derive(Debug)]
-struct TransactionInner<'db> {
-    /// Active Turso transaction handle.
-    transaction: Option<TursoTransaction<'db>>,
-
-    /// Pointer to the heap-allocated connection checkout.
-    connection: NonNull<Object<Manager>>,
-}
-
 impl Database {
     /// Opens the in-process SQLite database at the specified path and
-    /// initializes a connection pool with at most `max_connections`
-    /// concurrent connections.
+    /// initializes a connection pool with at most `max_connections` concurrent
+    /// connections, waiting at most `pool_timeout` for a free connection when
+    /// every connection is checked out.
     ///
     /// Verifies the schema fingerprint stored in `PRAGMA user_version`. If the
     /// database is fresh (`user_version == 0`), applies the canonical schema
@@ -125,7 +115,11 @@ impl Database {
     /// Panics if database verification connection fails, schema application
     /// fails, or the schema fingerprint does not match
     /// [`DATABASE_SCHEMA_FINGERPRINT`].
-    pub async fn open(path: impl AsRef<Path>, max_connections: usize) -> Result<Self, Error> {
+    pub async fn open(
+        path: impl AsRef<Path>,
+        max_connections: NonZero<usize>,
+        pool_timeout: Duration,
+    ) -> Result<Self, Error> {
         let path = path.as_ref();
 
         if let Some(parent) = path.parent()
@@ -144,12 +138,18 @@ impl Database {
 
         let manager = Manager { database };
 
-        let pool = match Pool::builder(manager).max_size(max_connections).build() {
+        let pool = match Pool::builder(manager)
+            .max_size(max_connections.get())
+            .wait_timeout(Some(pool_timeout))
+            .runtime(Runtime::Tokio1)
+            .build()
+        {
             Ok(pool) => pool,
             Err(BuildError::NoRuntimeSpecified) => {
-                // SAFETY: Deadpool runtime is not configured or required for
-                // local connection pooling.
-                unreachable!("deadpool runtime is not configured or required");
+                // SAFETY: Deadpool requires a runtime only when timeouts are
+                // configured, and the wait timeout is always paired with the
+                // explicit Tokio runtime above.
+                unreachable!("deadpool wait timeout is always paired with a runtime");
             }
         };
 
@@ -160,6 +160,9 @@ impl Database {
 
     /// Executes a SQL statement with parameters using a pooled connection and
     /// cached prepared statement.
+    ///
+    /// The statement must not produce rows; use [`Database::query`] for
+    /// row-returning statements.
     ///
     /// # Errors
     ///
@@ -199,42 +202,35 @@ impl Database {
     /// Begins a new transaction, checking out a connection from the pool and
     /// retaining exclusive ownership of it for the lifetime of the transaction.
     ///
+    /// Dropping the returned handle without finishing it discards the checked
+    /// out connection; see [`Transaction`].
+    ///
     /// # Errors
     ///
     /// Returns [`Error`] if acquiring a connection or starting the transaction
     /// fails.
-    pub async fn transaction<'db>(&'db self) -> Result<Transaction<'db>, Error> {
+    pub async fn transaction(&self) -> Result<Transaction, Error> {
         let connection = self.inner.pool.get().await?;
 
-        let connection_box = Box::new(connection);
-        let connection_mut: &'db mut Object<Manager> = Box::leak(connection_box);
-        let non_null_connection = NonNull::from(&mut *connection_mut);
-
-        let transaction = match connection_mut.transaction().await {
-            Ok(txn) => txn,
-            Err(err) => {
-                // SAFETY:
-                // Transaction creation failed, so the Turso transaction was not
-                // created. We reclaim the leaked Box and return the connection
-                // to the pool immediately.
-                let _reclaimed = unsafe { Box::from_raw(non_null_connection.as_ptr()) };
-
-                return Err(err.into());
-            }
-        };
+        execute(&connection, "BEGIN DEFERRED", ()).await?;
 
         Ok(Transaction {
-            inner: TransactionInner {
-                transaction: Some(transaction),
-                connection: non_null_connection,
-            },
+            connection: Some(connection),
+            is_completed: false,
         })
     }
 }
 
-impl Transaction<'_> {
+impl Transaction {
     /// Executes a SQL statement within this transaction using a cached prepared
     /// statement.
+    ///
+    /// The statement must not produce rows; use [`Transaction::query`] for
+    /// row-returning statements.
+    ///
+    /// Exclusive access to the handle is required (`&mut self`), so statements
+    /// within one transaction can never run concurrently or interleave on the
+    /// checked out connection.
     ///
     /// # Errors
     ///
@@ -242,24 +238,23 @@ impl Transaction<'_> {
     ///
     /// # Panics
     ///
-    /// Panics if the underlying transaction is no longer active, which violates
-    /// an internal invariant.
+    /// Panics if the transaction connection has already been dismantled, which
+    /// violates an internal invariant.
     pub async fn execute(
-        &self,
+        &mut self,
         sql: impl AsRef<str>,
         params: impl IntoParams,
     ) -> Result<u64, Error> {
         #[expect(
             clippy::expect_used,
-            reason = "transaction is active while Transaction handle is held"
+            reason = "connection is held until Drop dismantles the checkout"
         )]
-        let transaction = self
-            .inner
-            .transaction
+        let connection = self
+            .connection
             .as_ref()
-            .expect("transaction is active while Transaction handle is held");
+            .expect("connection is held until Drop dismantles the checkout");
 
-        execute(transaction, sql, params).await
+        execute(connection, sql, params).await
     }
 
     /// Queries the database within this transaction using a cached prepared
@@ -267,30 +262,33 @@ impl Transaction<'_> {
     /// always executes to completion, leaving no unfinished statement state on
     /// the connection when the transaction commits or rolls back.
     ///
+    /// Exclusive access to the handle is required (`&mut self`), so statements
+    /// within one transaction can never run concurrently or interleave on the
+    /// checked out connection.
+    ///
     /// # Errors
     ///
     /// Returns [`Error`] if preparing or executing the query fails.
     ///
     /// # Panics
     ///
-    /// Panics if the underlying transaction is no longer active, which violates
-    /// an internal invariant.
+    /// Panics if the transaction connection has already been dismantled, which
+    /// violates an internal invariant.
     pub async fn query(
-        &self,
+        &mut self,
         sql: impl AsRef<str>,
         params: impl IntoParams,
     ) -> Result<Vec<Row>, Error> {
         #[expect(
             clippy::expect_used,
-            reason = "transaction is active while Transaction handle is held"
+            reason = "connection is held until Drop dismantles the checkout"
         )]
-        let transaction = self
-            .inner
-            .transaction
+        let connection = self
+            .connection
             .as_ref()
-            .expect("transaction is active while Transaction handle is held");
+            .expect("connection is held until Drop dismantles the checkout");
 
-        query(transaction, sql, params).await
+        query(connection, sql, params).await
     }
 
     /// Commits the transaction, applying all changes and returning the pooled
@@ -298,24 +296,18 @@ impl Transaction<'_> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if committing the transaction fails.
+    /// Returns [`Error`] if committing the transaction fails. A failed commit
+    /// discards the pooled connection instead of returning it, because the
+    /// transaction state on it is unresolved.
     ///
     /// # Panics
     ///
-    /// Panics if the underlying transaction is no longer active, which violates
-    /// an internal invariant.
+    /// Panics if the transaction connection has already been dismantled, which
+    /// violates an internal invariant.
     pub async fn commit(mut self) -> Result<(), Error> {
-        #[expect(
-            clippy::expect_used,
-            reason = "transaction is active until commit consumes the handle"
-        )]
-        let transaction = self
-            .inner
-            .transaction
-            .take()
-            .expect("transaction is active until commit consumes the handle");
+        self.execute("COMMIT", ()).await?;
 
-        transaction.commit().await?;
+        self.is_completed = true;
 
         Ok(())
     }
@@ -325,24 +317,18 @@ impl Transaction<'_> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if rolling back the transaction fails.
+    /// Returns [`Error`] if rolling back the transaction fails. A failed
+    /// rollback discards the pooled connection instead of returning it, because
+    /// the transaction state on it is unresolved.
     ///
     /// # Panics
     ///
-    /// Panics if the underlying transaction is no longer active, which violates
-    /// an internal invariant.
+    /// Panics if the transaction connection has already been dismantled, which
+    /// violates an internal invariant.
     pub async fn rollback(mut self) -> Result<(), Error> {
-        #[expect(
-            clippy::expect_used,
-            reason = "transaction is active until rollback consumes the handle"
-        )]
-        let transaction = self
-            .inner
-            .transaction
-            .take()
-            .expect("transaction is active until rollback consumes the handle");
+        self.execute("ROLLBACK", ()).await?;
 
-        transaction.rollback().await?;
+        self.is_completed = true;
 
         Ok(())
     }
@@ -365,16 +351,11 @@ impl PoolManager for Manager {
         connection: &mut Self::Type,
         _: &Metrics,
     ) -> RecycleResult<Self::Error> {
-        // Drain a trivial query so turso resolves any dangling transaction
-        // marker through its own cleanup path (`Connection::query` first rolls
-        // back an abandoned transaction and then clears the marker). A bare
-        // statement-level ROLLBACK leaves the marker set and would permanently
-        // poison the connection for future transactions.
-        let mut rows = connection.query("SELECT 1", ()).await?;
-        while rows.next().await?.is_some() {}
-
-        // A connection that still reports an open transaction is in an unknown
-        // state; failing here makes deadpool discard and replace it.
+        // An unfinished transaction never reaches the pool: dropping its
+        // `Transaction` handle discards the connection outright. A connection
+        // that still reports an open transaction here therefore stems from
+        // misuse such as a raw `BEGIN` issued through the query API. Its state
+        // is unknown; failing here makes deadpool discard and replace it.
         if !connection.is_autocommit()? {
             return Err(RecycleError::Backend(TursoError::Misuse(
                 "recycled connection still has an open transaction".to_string(),
@@ -385,22 +366,20 @@ impl PoolManager for Manager {
     }
 }
 
-impl Drop for TransactionInner<'_> {
+impl Drop for Transaction {
     fn drop(&mut self) {
-        // Drop the underlying Turso transaction first to ensure any uncommitted
-        // state executes its rollback drop semantics before the connection is
-        // reclaimed.
-        drop(self.transaction.take());
+        if self.is_completed {
+            return;
+        }
 
-        // SAFETY:
-        // 1. `self.connection` was created with `Box::leak` during transaction
-        //    creation.
-        // 2. The memory address remained stable throughout the transaction
-        //    lifecycle.
-        // 3. The underlying Turso transaction has been dropped prior to this
-        //    operation.
-        // 4. `self.connection` is reclaimed exactly once here in `Drop`.
-        let _reclaimed = unsafe { Box::from_raw(self.connection.as_ptr()) };
+        // The engine-level transaction on this connection is still open, and
+        // its rollback would only run at the connection's next pool checkout.
+        // Returning it to the pool would park the database write lock until
+        // then, so dismantle the checkout and drop the connection outright,
+        // releasing the lock immediately.
+        if let Some(connection) = self.connection.take() {
+            drop(Object::take(connection));
+        }
     }
 }
 
@@ -579,19 +558,6 @@ async fn apply_canonical_schema(connection: &Connection) {
         .expect("failed to apply database schema");
 }
 
-// SAFETY:
-// `TransactionInner` exclusively owns the pooled connection object via
-// `self.connection`. Both `TursoTransaction` and `Object<Manager>` are `Send`,
-// allowing the transaction handle to be safely transferred across threads.
-unsafe impl Send for TransactionInner<'_> {}
-
-// SAFETY:
-// Shared references to `TransactionInner` only expose read-only access to
-// `TursoTransaction`, which implements `Sync`. The raw connection pointer is
-// never dereferenced concurrently and is only reclaimed during `Drop` with
-// `&mut self`.
-unsafe impl Sync for TransactionInner<'_> {}
-
 impl From<PoolError<TursoError>> for Error {
     fn from(error: PoolError<TursoError>) -> Self {
         match error {
@@ -599,394 +565,10 @@ impl From<PoolError<TursoError>> for Error {
             PoolError::Closed => Self::PoolClosed,
             PoolError::Timeout(_) => Self::PoolTimeout,
             PoolError::NoRuntimeSpecified | PoolError::PostCreateHook(_) => {
-                // SAFETY: Deadpool runtime and hooks are not configured on this
-                // pool instance, making these error variants unreachable.
-                unreachable!("deadpool runtime and hooks are not configured");
+                // SAFETY: The pool attaches a Tokio runtime and installs no
+                // hooks, making these error variants unreachable.
+                unreachable!("deadpool runtime is attached and no hooks are installed");
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DATABASE_SCHEMA_FINGERPRINT, Database, Error, params};
-    use std::{
-        env,
-        error::Error as StdError,
-        fs, process,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    /// Creates a unique isolated database instance for test execution.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn create_isolated_test_database() -> Database {
-        let unique_id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = env::temp_dir().join(format!(
-            "janusgate_isolated_test_{}_{unique_id}.db",
-            process::id()
-        ));
-
-        #[expect(
-            clippy::expect_used,
-            reason = "test database creation is fatal on failure"
-        )]
-        Database::open(&path, 4)
-            .await
-            .expect("failed to open isolated test database")
-    }
-
-    /// Verifies that initializing the database creates the complete schema and
-    /// stores the fingerprint.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database initialization or querying fails.
-    #[tokio::test]
-    async fn database_initialization() -> Result<(), Box<dyn StdError>> {
-        let unique_id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = env::temp_dir().join(format!(
-            "janusgate_isolated_test_{}_{unique_id}.db",
-            process::id()
-        ));
-        let database = Database::open(&path, 4).await?;
-
-        let rows = database.query("PRAGMA user_version", ()).await?;
-        let row = rows.first().ok_or("missing user_version row")?;
-        let version: i64 = row.get(0)?;
-
-        assert_eq!(version, DATABASE_SCHEMA_FINGERPRINT as i64);
-
-        // Verify the schema batch applied every schema object.
-        let rows = database
-            .query("SELECT name FROM sqlite_master ORDER BY name", ())
-            .await?;
-
-        let names: Vec<String> = rows
-            .iter()
-            .map(|row| row.get::<String>(0))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        for expected in [
-            "models",
-            "oauth_states",
-            "providers",
-            "idx_oauth_states_expires_at",
-        ] {
-            assert!(
-                names.iter().any(|name| name == expected),
-                "missing schema object {expected}"
-            );
-        }
-
-        // Verify reopening the database succeeds and reports the same
-        // fingerprint.
-        let reopened_database = Database::open(&path, 4).await?;
-        let rows = reopened_database.query("PRAGMA user_version", ()).await?;
-        let row = rows.first().ok_or("missing user_version row")?;
-        let version: i64 = row.get(0)?;
-
-        assert_eq!(version, DATABASE_SCHEMA_FINGERPRINT as i64);
-
-        let _ = fs::remove_file(path);
-
-        Ok(())
-    }
-
-    /// Verifies that transactions successfully commit mutations.
-    ///
-    /// # Panics
-    ///
-    /// Panics if transaction execution or query assertions fail.
-    #[tokio::test]
-    async fn transaction_commit() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        let transaction = database.transaction().await?;
-
-        transaction
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "test_tx_commit",
-                    "tx/",
-                    "openai_compatible",
-                    "{\"apiKey\":\"tx\"}"
-                ],
-            )
-            .await?;
-
-        transaction.commit().await?;
-
-        let rows = database
-            .query(
-                "SELECT name FROM providers WHERE name = ?1",
-                params!["test_tx_commit"],
-            )
-            .await?;
-
-        assert_eq!(rows.len(), 1);
-
-        Ok(())
-    }
-
-    /// Verifies that transactions automatically roll back if dropped without
-    /// committing.
-    ///
-    /// # Panics
-    ///
-    /// Panics if transaction execution or query assertions fail.
-    #[tokio::test]
-    async fn transaction_drop_rolls_back() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        {
-            let transaction = database.transaction().await?;
-
-            transaction
-                .execute(
-                    "INSERT INTO providers (name, model_prefix, type, credentials) \
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        "test_tx_drop",
-                        "tx/",
-                        "openai_compatible",
-                        "{\"apiKey\":\"tx\"}"
-                    ],
-                )
-                .await?;
-            // Transaction dropped here without calling commit()
-        }
-
-        let rows = database
-            .query(
-                "SELECT name FROM providers WHERE name = ?1",
-                params!["test_tx_drop"],
-            )
-            .await?;
-
-        assert!(rows.is_empty());
-
-        Ok(())
-    }
-
-    /// Verifies that a connection which hosted a dropped transaction can still
-    /// host new transactions after being recycled by the pool.
-    ///
-    /// # Panics
-    ///
-    /// Panics if transaction execution or query assertions fail.
-    #[tokio::test]
-    async fn transaction_drop_then_new_transaction() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        {
-            let transaction = database.transaction().await?;
-
-            transaction
-                .execute(
-                    "INSERT INTO providers (name, model_prefix, type, credentials) \
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        "test_tx_poison",
-                        "tx/",
-                        "openai_compatible",
-                        "{\"apiKey\":\"tx\"}"
-                    ],
-                )
-                .await?;
-            // Transaction dropped here, leaving the connection flagged for
-            // rollback by turso's dangling-transaction cleanup.
-        }
-
-        let transaction = database.transaction().await?;
-
-        transaction
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "test_tx_after_drop",
-                    "tx/",
-                    "openai_compatible",
-                    "{\"apiKey\":\"tx\"}"
-                ],
-            )
-            .await?;
-
-        transaction.commit().await?;
-
-        let rows = database
-            .query(
-                "SELECT name FROM providers WHERE name = ?1",
-                params!["test_tx_after_drop"],
-            )
-            .await?;
-
-        assert_eq!(rows.len(), 1);
-
-        Ok(())
-    }
-
-    /// Verifies concurrent executions and queries across pooled connections.
-    ///
-    /// # Panics
-    ///
-    /// Panics if task joins fail or query results do not match.
-    #[tokio::test]
-    async fn concurrent_pooled_access() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        let mut join_handles = Vec::new();
-
-        for i in 0..10 {
-            let db = database.clone();
-
-            join_handles.push(tokio::spawn(async move {
-                let rows = db.query("SELECT 1 + ?1", params![i]).await?;
-                let row = rows.first().ok_or("missing result row")?;
-                let val: i64 = row.get(0)?;
-
-                assert_eq!(val, 1 + i);
-
-                Ok::<(), Box<dyn StdError + Send + Sync>>(())
-            }));
-        }
-
-        for handle in join_handles {
-            handle.await?.map_err(|err| err as Box<dyn StdError>)?;
-        }
-
-        Ok(())
-    }
-
-    /// Verifies that identical queries issued concurrently through a
-    /// single-connection pool each observe complete, uncorrupted results,
-    /// proving statements never interleave on a checked-out connection.
-    ///
-    /// # Panics
-    ///
-    /// Panics if task joins fail or query results do not match.
-    #[tokio::test]
-    async fn concurrent_identical_queries_single_connection() -> Result<(), Box<dyn StdError>> {
-        let unique_id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = env::temp_dir().join(format!(
-            "janusgate_isolated_test_{}_{unique_id}.db",
-            process::id()
-        ));
-
-        let database = Database::open(&path, 1).await?;
-
-        for suffix in ["a", "b"] {
-            database
-                .execute(
-                    "INSERT INTO providers (name, model_prefix, type, credentials) \
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        format!("single_conn_{suffix}"),
-                        "single/",
-                        "openai_compatible",
-                        "{\"apiKey\":\"s\"}"
-                    ],
-                )
-                .await?;
-        }
-
-        let mut join_handles = Vec::new();
-
-        for _ in 0..8 {
-            let db = database.clone();
-
-            join_handles.push(tokio::spawn(async move {
-                let rows = db
-                    .query(
-                        "SELECT name FROM providers WHERE model_prefix = ?1 ORDER BY name",
-                        params!["single/"],
-                    )
-                    .await?;
-
-                let names: Vec<String> = rows
-                    .iter()
-                    .map(|row| row.get::<String>(0))
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                assert_eq!(names.len(), 2);
-                assert_eq!(names, ["single_conn_a", "single_conn_b"]);
-
-                Ok::<(), Box<dyn StdError + Send + Sync>>(())
-            }));
-        }
-
-        for handle in join_handles {
-            handle.await?.map_err(|err| err as Box<dyn StdError>)?;
-        }
-
-        let _ = fs::remove_file(path);
-
-        Ok(())
-    }
-
-    /// Verifies that executing against a closed connection pool returns
-    /// `Error::PoolClosed`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    #[tokio::test]
-    async fn error_pool_closed() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        database.inner.pool.close();
-
-        let result = database.execute("SELECT 1", ()).await;
-
-        assert!(matches!(result, Err(Error::PoolClosed)));
-
-        Ok(())
-    }
-
-    /// Verifies that SQLite constraint violations produce `Error::Turso`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn error_turso() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        database
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "unique_provider",
-                    "u/",
-                    "openai_compatible",
-                    "{\"apiKey\":\"u\"}"
-                ],
-            )
-            .await?;
-
-        let duplicate_result = database
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "unique_provider",
-                    "u/",
-                    "openai_compatible",
-                    "{\"apiKey\":\"u\"}"
-                ],
-            )
-            .await;
-
-        assert!(matches!(duplicate_result, Err(Error::Turso(_))));
-
-        Ok(())
     }
 }

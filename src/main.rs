@@ -8,7 +8,10 @@ use host_port_pair::HostPortPair;
 use json_strip_comments::StripComments;
 use lexopt::{Arg as Argument, Parser as ArgumentsParser};
 use serde::Deserialize;
-use std::{env, ffi::OsString, fs::File, panic, path::PathBuf, process};
+use serde_with::{As, DurationMilliSeconds};
+use std::{
+    env, ffi::OsString, fs::File, num::NonZero, panic, path::PathBuf, process, time::Duration,
+};
 use tokio::main;
 
 mod api;
@@ -50,7 +53,12 @@ struct DatabaseConfig {
 
     /// Maximum number of concurrent database connections in the connection
     /// pool.
-    max_connections: usize,
+    max_connections: NonZero<usize>,
+
+    /// Maximum time in milliseconds to wait for a free connection from the
+    /// connection pool when every connection is checked out.
+    #[serde(with = "As::<DurationMilliSeconds>")]
+    pool_timeout: Duration,
 }
 
 /// Administrative management API configuration.
@@ -98,6 +106,7 @@ async fn main() -> ! {
     let database = Database::open(
         &crate::CONFIG.database.path,
         crate::CONFIG.database.max_connections,
+        crate::CONFIG.database.pool_timeout,
     )
     .await
     .expect("failed to open database");

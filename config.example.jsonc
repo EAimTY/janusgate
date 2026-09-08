@@ -6,7 +6,9 @@
         // Path to the in-process Turso SQLite database file.
         "path": "janusgate.db",
         // Maximum number of concurrent database connections in the pool.
-        "max_connections": 16
+        "max_connections": 4,
+        // Maximum time in milliseconds to wait for a free pool connection.
+        "pool_timeout": 5000
     },
 
     "management_api": {
