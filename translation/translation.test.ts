@@ -1637,3 +1637,135 @@ test("Chat Completions accepts the bare stream signature key at message level", 
         "the bare key is accepted when reading a Chat Completions response",
     );
 });
+
+test("Chat Completions round-trips signed text through content-part arrays", () => {
+    // A bare joined string has nowhere to carry a text thought signature, so the request
+    // renderer must switch to the content-part array form, and the response parser must
+    // accept that same shape back instead of silently dropping the content.
+    const request = renderChatCompletionsRequest(
+        {
+            messages: [
+                {
+                    role: "assistant",
+                    parts: [
+                        {
+                            type: "text",
+                            text: "signed",
+                        },
+                        {
+                            type: "text",
+                            text: " plain",
+                            thoughtSignature: "sig-text-part",
+                        },
+                    ],
+                },
+                {
+                    role: "user",
+                    parts: [
+                        {
+                            type: "text",
+                            text: "unsigned",
+                        },
+                    ],
+                },
+            ],
+            tools: [],
+            sampling: {},
+            isStreaming: false,
+        },
+        "public-model",
+    );
+    assertEqual(
+        request.messages[0]?.content,
+        [
+            {
+                type: "text",
+                text: "signed",
+            },
+            {
+                type: "text",
+                text: " plain",
+                thought_signature: "sig-text-part",
+            },
+        ],
+        "signed text parts render as the content-part array form",
+    );
+    assertEqual(
+        request.messages[1]?.content,
+        "unsigned",
+        "pure text without signatures keeps the plain string form",
+    );
+
+    const events = parseChatCompletionsResponse({
+        id: "chat_parts",
+        model: "m",
+        created: 170,
+        choices: [
+            {
+                index: 0,
+                message: {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "text",
+                            text: "early",
+                            thought_signature: "sig-early",
+                        },
+                        {
+                            type: "text",
+                            text: " late",
+                        },
+                    ],
+                },
+                finish_reason: "stop",
+            },
+        ],
+    });
+    assertEqual(
+        events.filter((event) => event.type === "text_delta"),
+        [
+            {
+                type: "text_delta",
+                delta: "early",
+                thoughtSignature: "sig-early",
+            },
+            {
+                type: "text_delta",
+                delta: " late",
+            },
+        ],
+        "array content parses into per-part text deltas that keep signatures",
+    );
+
+    assertTranslationError(
+        () =>
+            parseChatCompletionsResponse({
+                id: "chat_bad_parts",
+                model: "m",
+                created: 180,
+                choices: [
+                    {
+                        index: 0,
+                        message: {
+                            role: "assistant",
+                            content: [
+                                {
+                                    type: "text",
+                                    text: "ok",
+                                },
+                                {
+                                    type: "image_url",
+                                    image_url: {
+                                        url: "https://example.test/img.png",
+                                    },
+                                },
+                            ],
+                        },
+                        finish_reason: "stop",
+                    },
+                ],
+            }),
+        "unsupported_parameter",
+        "unsupported Chat Completions content part",
+    );
+});

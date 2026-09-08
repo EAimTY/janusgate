@@ -554,7 +554,15 @@ function renderContent(
 ): string | null | ChatContentPart[] {
     if (parts.length === 0) return null;
     if (parts.every((part) => part.type === "text")) {
-        return parts.map((part) => (part.type === "text" ? part.text : "")).join("");
+        // A bare joined string has nowhere to carry a thought signature, so any signed text
+        // part must keep the content-part array form — the same shape the request parser
+        // accepts and the response renderer emits.
+        const shouldJoin = parts.every(
+            (part) => part.type === "text" && part.thoughtSignature === undefined,
+        );
+        if (shouldJoin) {
+            return parts.map((part) => (part.type === "text" ? part.text : "")).join("");
+        }
     }
     return parts.map((part) => {
         if (part.type === "text") {
@@ -648,11 +656,37 @@ export function parseChatCompletionsResponse(value: unknown): IrEvent[] {
                   }),
         });
     const content = message["content"];
-    if (typeof content === "string" && content.length > 0)
-        events.push({
-            type: "text_delta",
-            delta: content,
-        });
+    if (typeof content === "string") {
+        if (content.length > 0)
+            events.push({
+                type: "text_delta",
+                delta: content,
+            });
+    } else if (content !== undefined && content !== null) {
+        // The response renderer emits signed text as a content-part array; parse that shape
+        // back into per-part deltas so every `thought_signature` survives the round trip.
+        for (const [partIndex, partValue] of expectArray(content, "message.content").entries()) {
+            const part = expectRecord(partValue, `message.content[${partIndex}]`);
+            if (part["type"] !== "text") {
+                throw new TranslationError(
+                    "unsupported_parameter",
+                    "unsupported Chat Completions content part",
+                );
+            }
+            const event: IrEvent = {
+                type: "text_delta",
+                delta: expectString(part["text"], `message.content[${partIndex}].text`),
+            };
+            const thoughtSignature = optionalString(
+                part["thought_signature"],
+                `message.content[${partIndex}].thought_signature`,
+            );
+            if (thoughtSignature !== undefined) {
+                event.thoughtSignature = thoughtSignature;
+            }
+            events.push(event);
+        }
+    }
     appendChatResponseToolCalls(events, message["tool_calls"]);
     events.push({
         type: "finish",
