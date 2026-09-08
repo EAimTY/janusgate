@@ -26,7 +26,7 @@ export const OAUTH_FLOW_TYPES = [
 ] as const;
 export type OAuthFlowType = (typeof OAUTH_FLOW_TYPES)[number];
 
-type OAuthProviderType = "openai_oauth" | "antigravity_oauth";
+export type OAuthProviderType = "openai_oauth" | "antigravity_oauth";
 
 export function providerTypeForOAuthFlow(flowType: OAuthFlowType): OAuthProviderType {
     return flowType === "openai" ? "openai_oauth" : "antigravity_oauth";

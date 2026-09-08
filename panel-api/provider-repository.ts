@@ -8,6 +8,7 @@ import {
 } from "/common/database";
 import {
     assembleProviderSummary,
+    type OAuthProviderType,
     type ProviderSummary,
     type ProviderType,
     type UpstreamProtocol,
@@ -255,7 +256,7 @@ export async function deleteProviderByName(database: D1Database, name: string): 
 
 export async function generateAvailableProviderName(
     database: D1Database,
-    type: "antigravity_oauth" | "openai_oauth",
+    type: OAuthProviderType,
 ): Promise<string> {
     const prefix = AUTO_PROVIDER_NAME_PREFIX[type];
     const result = await database

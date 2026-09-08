@@ -1,6 +1,10 @@
 import { assertCredentialsMatchProvider, type CredentialsCipher } from "/common/credentials";
 import { findProviderRow, type StoredProvider } from "/common/database";
-import type { AntigravityOAuthCredentials, OpenAiOAuthCredentials } from "/common/domain";
+import type {
+    AntigravityOAuthCredentials,
+    OAuthProviderType,
+    OpenAiOAuthCredentials,
+} from "/common/domain";
 import { CredentialDecryptionError, ProviderAccessError } from "/common/errors";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import {
@@ -73,12 +77,6 @@ function parseRefreshResponse(
     };
 }
 
-/**
- * The stored provider kinds that hold an identity-provider token grant (README §3.1); a static
- * API-key provider never touches a token endpoint.
- */
-export type OAuthGrantProviderType = "openai_oauth" | "antigravity_oauth";
-
 /** The RFC 6749 grant a token-endpoint POST requests (README §8.3–8.4). */
 export type IdentityProviderGrant =
     | {
@@ -105,11 +103,13 @@ export interface IdentityProviderTokenRequest {
 }
 
 /**
- * Builds the per-provider-type token POST. Field order is fixed (base fields in the literal
- * below, the Antigravity secret appended last) so every consumer emits byte-identical bodies.
+ * Builds the per-provider-type token POST for the stored provider kinds that hold an
+ * identity-provider token grant (`OAuthProviderType`; README §3.1) — a static API-key provider
+ * never touches a token endpoint. Field order is fixed (base fields in the literal below, the
+ * Antigravity secret appended last) so every consumer emits byte-identical bodies.
  */
 export function identityProviderTokenRequest(
-    providerType: OAuthGrantProviderType,
+    providerType: OAuthProviderType,
     grant: IdentityProviderGrant,
 ): IdentityProviderTokenRequest {
     const isOpenAi = providerType === "openai_oauth";
