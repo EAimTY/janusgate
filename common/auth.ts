@@ -1,7 +1,6 @@
 import { ConfigurationError } from "/common/errors";
 
 const SHA_256_BYTES = 32;
-const SHA_256_HEX_CHARACTERS = SHA_256_BYTES * 2;
 const SHA_256_HEX_PATTERN = /^[0-9a-f]{64}$/i;
 const BEARER_PATTERN = /^Bearer ([^\s]+)$/i;
 
@@ -11,7 +10,8 @@ interface AuthenticationSubtleCrypto {
 }
 
 function decodeSha256Hex(digestHex: string): Uint8Array {
-    if (digestHex.length !== SHA_256_HEX_CHARACTERS || !SHA_256_HEX_PATTERN.test(digestHex)) {
+    // The anchored {64} quantifier already enforces exactly 64 characters.
+    if (!SHA_256_HEX_PATTERN.test(digestHex)) {
         throw new ConfigurationError(
             "The configured token hash must be a 64-character SHA-256 hex digest",
         );
