@@ -20,8 +20,8 @@ import {
     renderResponsesResponse,
 } from "/translation/responses";
 import { SseParser } from "/translation/sse";
-import { upstreamFailureError } from "./errors";
-import { readBeforeIdleTimeout } from "./upstream-response";
+import { upstreamFailureError, upstreamTimeoutError } from "./errors";
+import { readBeforeIdleTimeout, UpstreamIdleTimeoutError } from "./upstream-response";
 
 function parseUpstreamEvents(protocol: UpstreamProtocol, value: unknown): IrEvent[] {
     if (protocol === "openai_response") return parseResponsesResponse(value);
@@ -71,7 +71,20 @@ export async function translateStreamingResponse(
 ): Promise<Response> {
     if (upstreamResponse.body === null) throw upstreamFailureError();
     const reader = upstreamResponse.body.getReader();
-    const firstRead = await readBeforeIdleTimeout(reader, abortController);
+    let firstRead: ReadableStreamReadResult<Uint8Array>;
+    try {
+        firstRead = await readBeforeIdleTimeout(reader, abortController);
+    } catch (error) {
+        // No reader.cancel here: the upstream stream is already dead (errored by the failure,
+        // or aborted by the idle timeout or the client disconnect), and cancel() on an errored
+        // stream rejects with the stored error, which would displace the classified envelope.
+        // §11.2 first-byte classification, matching relayNativeStreamingResponse: the typed idle
+        // timeout keeps the 504 envelope; every other first-read failure (upstream died after
+        // sending headers) is an upstream condition answered with the 502 envelope.
+        throw error instanceof UpstreamIdleTimeoutError
+            ? upstreamTimeoutError()
+            : upstreamFailureError();
+    }
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
     const renderer =

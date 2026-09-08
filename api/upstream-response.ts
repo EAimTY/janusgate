@@ -4,7 +4,12 @@ import {
     SAFE_UPSTREAM_RESPONSE_HEADERS,
     UPSTREAM_IDLE_TIMEOUT_SECONDS,
 } from "./config";
-import { upstreamResponseTooLargeError, upstreamTimeoutError } from "./errors";
+import {
+    GatewayError,
+    upstreamFailureError,
+    upstreamResponseTooLargeError,
+    upstreamTimeoutError,
+} from "./errors";
 import { concatenateBytes } from "./http";
 
 export function copySafeUpstreamHeaders(source: Headers): Headers {
@@ -62,9 +67,17 @@ export async function relayNativeStreamingResponse(
     let firstRead: ReadableStreamReadResult<Uint8Array>;
     try {
         firstRead = await readBeforeIdleTimeout(reader, abortController);
-    } catch {
-        await reader.cancel(new UpstreamIdleTimeoutError());
-        throw upstreamTimeoutError();
+    } catch (error) {
+        // No reader.cancel here: the upstream stream is already dead (errored by the failure,
+        // or aborted by the idle timeout or the client disconnect), and cancel() on an errored
+        // stream rejects with the stored error, which would displace the classified envelope.
+        // §11.2 first-byte classification: the typed idle timeout keeps the 504 envelope; every
+        // other first-read failure (upstream died after sending headers) is an upstream condition
+        // answered with the 502 envelope. A client-disconnect abort lands here too, but its
+        // response has no receiver, so the uniform classification is unobservable.
+        throw error instanceof UpstreamIdleTimeoutError
+            ? upstreamTimeoutError()
+            : upstreamFailureError();
     }
 
     let isCanceled = false;
@@ -121,6 +134,14 @@ export async function readIdleTimedUpstreamBody(
             }
             chunks.push(result.value);
         }
+    } catch (error) {
+        // §11.2 classification for body reads: the typed idle timeout keeps the 504 envelope and
+        // the size-limit GatewayError passes through untouched; any other read failure (upstream
+        // disconnect, stream error) is an upstream condition — 502 upstream_error, never the
+        // unclassified 500 the raw stream rejection used to produce.
+        if (error instanceof UpstreamIdleTimeoutError) throw upstreamTimeoutError();
+        if (error instanceof GatewayError) throw error;
+        throw upstreamFailureError();
     } finally {
         reader.releaseLock();
     }

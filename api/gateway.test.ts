@@ -274,6 +274,44 @@ describe("gateway request lifecycle", () => {
         });
     });
 
+    it("maps a translated stream that dies before its first byte to 502 upstream_failure, not 500", async () => {
+        await seedCompatibleProvider("openai_response");
+        const response = await handleGatewayRequest(
+            gatewayRequest("chat/completions", {
+                messages: [
+                    {
+                        content: "hello",
+                        role: "user",
+                    },
+                ],
+                model: "public-model",
+                stream: true,
+            }),
+            bindings,
+            "openai_chat_completion",
+            async () =>
+                new Response(
+                    new ReadableStream<Uint8Array>({
+                        start(controller): void {
+                            controller.error(new Error("upstream connection reset"));
+                        },
+                    }),
+                    {
+                        headers: {
+                            "Content-Type": "text/event-stream",
+                        },
+                    },
+                ),
+        );
+        expect(response.status).toBe(502);
+        expect(await response.json()).toMatchObject({
+            error: {
+                code: "upstream_failure",
+                type: "upstream_error",
+            },
+        });
+    });
+
     it("speaks Gemini GenerateContent to API-key upstreams and maps effort onto thinkingConfig", async () => {
         await seedCompatibleProvider("gemini_generate_content");
         const fetchUpstream = vi.fn<typeof fetch>(async (_input, init) => {

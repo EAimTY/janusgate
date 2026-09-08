@@ -56,6 +56,22 @@ describe("relayNativeStreamingResponse", () => {
             vi.useRealTimers();
         }
     });
+
+    it("rejects with the 502 upstream_failure envelope when the first read fails without a timeout", async () => {
+        const upstream = new Response(
+            new ReadableStream<Uint8Array>({
+                start(controller): void {
+                    controller.error(new Error("upstream connection reset"));
+                },
+            }),
+        );
+        await expect(
+            relayNativeStreamingResponse(upstream, new AbortController()),
+        ).rejects.toMatchObject({
+            code: "upstream_failure",
+            status: 502,
+        });
+    });
 });
 
 describe("readBeforeIdleTimeout", () => {
@@ -101,5 +117,21 @@ describe("non-streaming upstream response limits", () => {
             status: 502,
         });
         expect(abortController.signal.aborted).toBe(true);
+    });
+
+    it("maps a non-timeout read failure to the 502 upstream_failure envelope", async () => {
+        const response = new Response(
+            new ReadableStream<Uint8Array>({
+                start(controller): void {
+                    controller.error(new Error("upstream connection reset"));
+                },
+            }),
+        );
+        await expect(
+            readIdleTimedUpstreamBody(response, new AbortController()),
+        ).rejects.toMatchObject({
+            code: "upstream_failure",
+            status: 502,
+        });
     });
 });
