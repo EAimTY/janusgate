@@ -25,7 +25,7 @@ This file contains the coding style guide applies to the whole project. Periodic
     3. Public re-exports. If no child module separates imports from re-exports, annotate the re-exports with `#[rustfmt::skip]` so rustfmt cannot merge the two groups.
     4. Statics and constants, public first.
     5. Types, including structs, enums, type aliases, and traits, public first.
-    6. A public standalone function that serves as the module's main entry point, when one exists.
+    6. A standalone function that serves as the module's main entry point (such as `main` or a public entry function), when one exists.
     7. Inherent `impl Type` blocks, significant before trivial blocks containing only simple constructors, setters, or getters. Put public items first within each block.
     8. Non-trivial trait implementations that contain actual logic rather than simple wrappers.
     9. Standalone functions, public first and trivial last.
