@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![recursion_limit = "256"]
 #![allow(dead_code)]
 
 use deref_once_lock::OnceLock;
@@ -10,6 +11,7 @@ use std::{env, ffi::OsString, fs::File, panic, path::PathBuf, process};
 use tokio::main;
 
 mod api;
+mod database;
 mod management_api;
 mod server;
 
@@ -44,6 +46,10 @@ struct Config {
 struct DatabaseConfig {
     /// File path to the in-process SQLite database file.
     path: PathBuf,
+
+    /// Maximum number of concurrent database connections in the connection
+    /// pool.
+    max_connections: usize,
 }
 
 /// Administrative management API configuration.
@@ -84,7 +90,18 @@ async fn main() -> ! {
     )]
     CONFIG.set(config).unwrap();
 
-    server::run().await
+    #[expect(
+        clippy::expect_used,
+        reason = "opening database at startup is fatal on failure"
+    )]
+    let database = database::Database::open(
+        &crate::CONFIG.database.path,
+        crate::CONFIG.database.max_connections,
+    )
+    .await
+    .expect("failed to open database");
+
+    server::run(database).await
 }
 
 /// Parses command-line arguments, opens the designated configuration file,
@@ -154,6 +171,63 @@ fn set_panic_hook() {
         // Terminate the process immediately with a failure status code.
         process::exit(1);
     }));
+}
+
+/// Initializes `CONFIG` for test execution if not already initialized.
+///
+/// # Panics
+///
+/// Panics if parsing the static test listen address fails.
+#[cfg(test)]
+pub(crate) fn init_test_config() {
+    let mut temp_path = env::temp_dir();
+    temp_path.push(format!("janusgate_test_{}.db", process::id()));
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test host port pair parsing is infallible for valid literal"
+    )]
+    let listen = "127.0.0.1:8080".parse().unwrap();
+
+    let _ = CONFIG.set(Config {
+        listen,
+        database: DatabaseConfig {
+            path: temp_path,
+            max_connections: 4,
+        },
+        management_api: ManagementApiConfig {
+            token: "test_token".to_owned(),
+        },
+        api: ApiConfig {
+            key: "test_key".to_owned(),
+        },
+    });
+}
+
+/// Returns a shared database instance for test execution.
+///
+/// # Panics
+///
+/// Panics if configuration or database initialization fails.
+#[cfg(test)]
+pub(crate) async fn test_database() -> database::Database {
+    init_test_config();
+    static DATABASE: tokio::sync::OnceCell<database::Database> = tokio::sync::OnceCell::const_new();
+    DATABASE
+        .get_or_init(|| async {
+            #[expect(
+                clippy::expect_used,
+                reason = "test database initialization is fatal on failure"
+            )]
+            database::Database::open(
+                &crate::CONFIG.database.path,
+                crate::CONFIG.database.max_connections,
+            )
+            .await
+            .expect("failed to open test database")
+        })
+        .await
+        .clone()
 }
 
 #[cfg(test)]

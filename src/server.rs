@@ -1,5 +1,6 @@
 //! Plaintext HTTP server lifecycle and connection driving.
 
+use crate::database::Database;
 use axum::Router;
 use host_port_pair::Host;
 use hserver::{ConnectionBuilder, Server};
@@ -15,10 +16,10 @@ use tokio::net::TcpListener;
 /// # Panics
 ///
 /// Panics if the TCP listener fails to initialize.
-pub(crate) async fn run() -> ! {
+pub(crate) async fn run(database: Database) -> ! {
     let tcp_listener = init_tcp_listener();
     let connection_builder = ConnectionBuilder::new();
-    let mut server = Server::new(connection_builder, router());
+    let mut server = Server::new(connection_builder, router(database));
 
     loop {
         let (stream, peer_address) = match tcp_listener.accept().await {
@@ -36,11 +37,12 @@ pub(crate) async fn run() -> ! {
     }
 }
 
-/// Constructs the Axum root router.
-fn router() -> Router {
+/// Constructs the Axum root router configured with database state.
+fn router(database: Database) -> Router {
     Router::new()
         .nest("/api", crate::api::router())
         .nest("/management-api", crate::management_api::router())
+        .with_state(database)
 }
 
 /// Initializes the Tokio TCP listener using the global application
@@ -115,4 +117,23 @@ fn init_tcp_listener() -> TcpListener {
         reason = "converting TCP listener to tokio is fatal"
     )]
     TcpListener::from_std(StdTcpListener::from(socket)).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::router;
+    use std::error::Error as StdError;
+
+    /// Verifies that the root Axum router constructs successfully with database
+    /// state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database initialization fails.
+    #[tokio::test]
+    async fn router_constructs_with_database_state() -> Result<(), Box<dyn StdError>> {
+        let database = crate::test_database().await;
+        let _router = router(database);
+        Ok(())
+    }
 }

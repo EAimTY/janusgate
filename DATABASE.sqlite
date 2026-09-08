@@ -30,7 +30,7 @@ CREATE TABLE models (
     thinking_levels_override TEXT NULL,
 
     PRIMARY KEY (provider_id, upstream_name)
-) STRICT, WITHOUT ROWID;
+) STRICT;
 
 CREATE TABLE oauth_states (
     id INTEGER PRIMARY KEY,

@@ -77,9 +77,11 @@
 The server architecture separates low-level connection driving from hierarchical routing:
 1. **Server Lifecycle (`hserver`)**:
    - `hserver` directly manages the TCP listener, socket accept loop, and low-level Hyper connection lifecycle over plaintext HTTP (TLS is omitted for now).
+   - Receives the `Database` instance initialized at startup and supplies it to the root router as router state.
    - `axum::serve` is **strictly unused**. Instead, `hserver` delegates incoming HTTP requests directly to Axum's root `Router` as an implementation of `tower::Service`.
 2. **Hierarchical Routers (`axum::Router`)**:
    - **Root Router**:
+     - Holds the application state (`AppState` containing `Database`) and propagates it to sub-routers.
      - Nests `/management-api` and `/api` sub-routers.
      - Maintains its own top-level fallback route returning an HTTP 404 response for any unmapped root paths.
    - **Management API Sub-router (`/management-api`)**:
@@ -102,6 +104,19 @@ The server architecture separates low-level connection driving from hierarchical
 ## 3. Storage & Schema (Turso)
 
 The database runs in-process via `turso` with SQLite-compatible syntax and strict column typing. `DATABASE.sqlite` is the canonical source of truth for the complete schema.
+
+### Database Abstraction & Connection Pooling
+- **Connection Pool**: Database access is managed through an in-process connection pool (`deadpool`), maintaining up to `database.max_connections` concurrent `turso::Connection` instances.
+- **Implicit Prepared Statement Cache**: All queries and executions on both `Database` and `Transaction` pass through `prepare_cached()`, eliminating statement preparation overhead across pooled connections.
+- **Transaction Semantics**: A `Transaction<'db>` checks out and exclusively holds a pooled connection for its entire lifetime. Explicit `commit()` or `rollback()` consumes the transaction and returns the connection to the pool; dropping an uncommitted transaction automatically invokes Turso rollback before returning the connection.
+- **Explicit Error Domain**: The database module defines a strongly typed `Error` enum using `thiserror` with explicit variants for domain errors (`ConstraintViolation`, `Busy`, `Corrupt`, `PoolClosed`, `PoolTimeout`, `InvalidPath`, `Io`, `ExecutionFailed`, etc.) instead of exposing raw underlying driver error types.
+- **No Global Database Static**: The database is opened via `Database::open(path, max_connections)` during startup, yielding an owned `Database` instance that is passed to `server::run()` and injected into the Axum router hierarchy as shared state.
+- **Schema Fingerprint Verification**:
+  - During build time (`build.rs`), `DATABASE.sqlite` is canonicalized via `syntaqlite`, hashed with BLAKE3, and truncated to a non-zero 32-bit big-endian signed integer stored in `$OUT_DIR/database_schema_fingerprint`.
+  - On startup, `Database::open()` opens the Turso database and inspects `PRAGMA user_version`:
+    - **Fresh Database (`user_version == 0`)**: JanusGate executes the canonical DDL schema from `DATABASE.sqlite` in batch and writes the compiled schema fingerprint into `PRAGMA user_version`.
+    - **Compatible Database (`user_version == DATABASE_SCHEMA_FINGERPRINT`)**: The database schema is verified and startup proceeds.
+    - **Incompatible Database (any other value)**: JanusGate panics immediately, failing fast to prevent execution against an invalid schema.
 
 ### Core Entities
 - **Provider**:

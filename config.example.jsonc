@@ -4,7 +4,9 @@
 
     "database": {
         // Path to the in-process Turso SQLite database file.
-        "path": "janusgate.db"
+        "path": "janusgate.db",
+        // Maximum number of concurrent database connections in the pool.
+        "max_connections": 16
     },
 
     "management_api": {
