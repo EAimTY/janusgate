@@ -4,10 +4,10 @@ import type { OAuthFlowType } from "/common/domain";
 import {
     MODEL_PREFIX_MAX_LENGTH,
     MODEL_PREFIX_PATTERN,
+    OAUTH_STATE_TTL_SECONDS,
     PROVIDER_NAME_MAX_LENGTH,
     PROVIDER_NAME_PATTERN,
 } from "/config";
-import { OAUTH_STATE_TTL_SECONDS } from "/panel-api/config";
 import type { CompleteOAuthInput } from "/panel-api/input";
 import { errorMessage, type PanelApiClient } from "./api-client";
 import {

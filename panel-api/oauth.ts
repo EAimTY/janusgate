@@ -5,6 +5,7 @@ import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from 
 import { providerTypeForOAuthFlow } from "/common/domain";
 import { oauthUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject, unixSeconds } from "/common/validation";
+import { OAUTH_STATE_TTL_SECONDS } from "/config";
 import {
     acquireCredentialLease,
     clearCredentialLease,
@@ -25,7 +26,7 @@ import {
     OPENAI_REDIRECT_URI,
 } from "/providers/openai";
 import { resolveAntigravityProject } from "./antigravity-onboarding";
-import { OAUTH_RANDOM_VALUE_BYTES, OAUTH_STATE_TTL_SECONDS } from "./config";
+import { OAUTH_RANDOM_VALUE_BYTES } from "./config";
 import { isDatabaseConstraintError, PanelApiError } from "./errors";
 import type { CompleteOAuthInput, StartOAuthInput } from "./input";
 import {
