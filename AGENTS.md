@@ -27,7 +27,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 
 ### SQL (SQLite)
 
-- Treat `README.md` as the only source of truth for the database schema.
+- Treat `DATABASE.sqlite` as the only source of truth for the SQLite schema.
 - Write SQL as strictly and explicitly as possible.
 - Indent SQL with four spaces per nesting level.
 - Use UPPERCASE for SQL keywords, PascalCase for type names, and snake_case for column names.
