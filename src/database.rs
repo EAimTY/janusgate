@@ -2,17 +2,20 @@
 //! by Turso.
 
 use deadpool::managed::{
-    BuildError, Manager as PoolManager, Metrics, Object, Pool, PoolError, RecycleResult,
+    BuildError, Manager as PoolManager, Metrics, Object, Pool, PoolError, RecycleError,
+    RecycleResult,
 };
 use std::{fs, io::Error as IoError, path::Path, ptr::NonNull, sync::Arc, time::Duration};
 use turso::{
     Builder as TursoBuilder, Connection, Database as TursoDatabase, Error as TursoError,
-    IntoParams, Rows, transaction::Transaction as TursoTransaction,
+    transaction::Transaction as TursoTransaction,
 };
 
+// The re-exported items double as the module's own imports: `Row` and
+// `IntoParams` appear in this module's signatures.
 #[rustfmt::skip]
 #[allow(unused_imports)]
-pub use turso::{named_params, params, Params, Row, Value};
+pub use turso::{named_params, params, IntoParams, Params, Row, Value};
 
 /// Non-zero 32-bit big-endian schema fingerprint computed at compile time.
 const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(concat!(
@@ -22,6 +25,21 @@ const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(conc
 
 /// Canonical SQLite DDL schema embedded at compile time.
 const DATABASE_SCHEMA: &str = include_str!("../DATABASE.sqlite");
+
+// `Transaction` handles are held across `.await` points in spawned gateway
+// tasks, so `Send + Sync` is an API contract. This pins the auto traits: the
+// manual `unsafe impl`s on `TransactionInner` are load-bearing because
+// `NonNull` is unconditionally `!Send` and `!Sync`, and any refactor that
+// breaks thread-safety must fail here, not at distant call sites.
+const _: () = {
+    const fn assert_send_sync<T>()
+    where
+        T: Send + Sync,
+    {
+    }
+
+    assert_send_sync::<Transaction<'static>>();
+};
 
 /// Database operation, connection pool, and storage engine errors.
 #[derive(Debug, thiserror::Error)]
@@ -157,8 +175,12 @@ impl Database {
         execute(&connection, sql, params).await
     }
 
-    /// Queries the database with parameters using a pooled connection and
-    /// cached prepared statement.
+    /// Queries the database with parameters using a pooled connection and a
+    /// cached prepared statement, returning all rows eagerly materialized.
+    ///
+    /// The statement always executes to completion before the pooled
+    /// connection is released, so a result set can never outlive its
+    /// connection checkout or interleave with another borrower's statements.
     ///
     /// # Errors
     ///
@@ -168,7 +190,7 @@ impl Database {
         &self,
         sql: impl AsRef<str>,
         params: impl IntoParams,
-    ) -> Result<Rows, Error> {
+    ) -> Result<Vec<Row>, Error> {
         let connection = self.inner.pool.get().await?;
 
         query(&connection, sql, params).await
@@ -241,7 +263,9 @@ impl Transaction<'_> {
     }
 
     /// Queries the database within this transaction using a cached prepared
-    /// statement.
+    /// statement, returning all rows eagerly materialized. The statement
+    /// always executes to completion, leaving no unfinished statement state on
+    /// the connection when the transaction commits or rolls back.
     ///
     /// # Errors
     ///
@@ -255,7 +279,7 @@ impl Transaction<'_> {
         &self,
         sql: impl AsRef<str>,
         params: impl IntoParams,
-    ) -> Result<Rows, Error> {
+    ) -> Result<Vec<Row>, Error> {
         #[expect(
             clippy::expect_used,
             reason = "transaction is active while Transaction handle is held"
@@ -275,10 +299,23 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns [`Error`] if committing the transaction fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the underlying transaction is no longer active, which violates
+    /// an internal invariant.
     pub async fn commit(mut self) -> Result<(), Error> {
-        if let Some(transaction) = self.inner.transaction.take() {
-            transaction.commit().await?;
-        }
+        #[expect(
+            clippy::expect_used,
+            reason = "transaction is active until commit consumes the handle"
+        )]
+        let transaction = self
+            .inner
+            .transaction
+            .take()
+            .expect("transaction is active until commit consumes the handle");
+
+        transaction.commit().await?;
 
         Ok(())
     }
@@ -289,10 +326,23 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns [`Error`] if rolling back the transaction fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the underlying transaction is no longer active, which violates
+    /// an internal invariant.
     pub async fn rollback(mut self) -> Result<(), Error> {
-        if let Some(transaction) = self.inner.transaction.take() {
-            transaction.rollback().await?;
-        }
+        #[expect(
+            clippy::expect_used,
+            reason = "transaction is active until rollback consumes the handle"
+        )]
+        let transaction = self
+            .inner
+            .transaction
+            .take()
+            .expect("transaction is active until rollback consumes the handle");
+
+        transaction.rollback().await?;
 
         Ok(())
     }
@@ -305,9 +355,7 @@ impl PoolManager for Manager {
     async fn create(&self) -> Result<Self::Type, Self::Error> {
         let connection = self.database.connect()?;
 
-        connection.busy_timeout(Duration::from_secs(5))?;
-
-        connection.pragma_update("foreign_keys", "ON").await?;
+        configure_connection(&connection).await?;
 
         Ok(connection)
     }
@@ -317,10 +365,20 @@ impl PoolManager for Manager {
         connection: &mut Self::Type,
         _: &Metrics,
     ) -> RecycleResult<Self::Error> {
-        if !connection.is_autocommit()? {
-            let mut statement = connection.prepare_cached("ROLLBACK").await?;
+        // Drain a trivial query so turso resolves any dangling transaction
+        // marker through its own cleanup path (`Connection::query` first rolls
+        // back an abandoned transaction and then clears the marker). A bare
+        // statement-level ROLLBACK leaves the marker set and would permanently
+        // poison the connection for future transactions.
+        let mut rows = connection.query("SELECT 1", ()).await?;
+        while rows.next().await?.is_some() {}
 
-            statement.execute(()).await?;
+        // A connection that still reports an open transaction is in an unknown
+        // state; failing here makes deadpool discard and replace it.
+        if !connection.is_autocommit()? {
+            return Err(RecycleError::Backend(TursoError::Misuse(
+                "recycled connection still has an open transaction".to_string(),
+            )));
         }
 
         Ok(())
@@ -362,7 +420,12 @@ async fn execute(
     Ok(changes)
 }
 
-/// Prepares and queries a cached SQL statement against the given connection.
+/// Prepares a cached SQL statement against the given connection and drains the
+/// result set to completion into an owned vector of rows.
+///
+/// Draining matters: an unfinished statement left on the connection would
+/// corrupt or roll back whatever the next borrower of the pooled connection
+/// executes.
 ///
 /// # Errors
 ///
@@ -371,11 +434,32 @@ async fn query(
     connection: &Connection,
     sql: impl AsRef<str>,
     params: impl IntoParams,
-) -> Result<Rows, Error> {
+) -> Result<Vec<Row>, Error> {
     let mut statement = connection.prepare_cached(sql).await?;
-    let rows = statement.query(params).await?;
+    let mut rows = statement.query(params).await?;
 
-    Ok(rows)
+    let mut result = Vec::new();
+
+    while let Some(row) = rows.next().await? {
+        result.push(row);
+    }
+
+    Ok(result)
+}
+
+/// Applies the pragmas and timeouts required by every JanusGate database
+/// connection, whether pooled or used for schema bootstrap.
+///
+/// # Errors
+///
+/// Returns [`TursoError`] if configuring the busy timeout or the foreign key
+/// pragma fails.
+async fn configure_connection(connection: &Connection) -> Result<(), TursoError> {
+    connection.busy_timeout(Duration::from_secs(5))?;
+
+    connection.pragma_update("foreign_keys", "ON").await?;
+
+    Ok(())
 }
 
 /// Verifies that the database schema matches [`DATABASE_SCHEMA_FINGERPRINT`],
@@ -397,20 +481,11 @@ async fn bootstrap_schema(database: &TursoDatabase) {
 
     #[expect(
         clippy::expect_used,
-        reason = "configuring busy timeout on database connection is fatal on failure"
+        reason = "configuring the schema verification connection is fatal on failure"
     )]
-    connection
-        .busy_timeout(Duration::from_secs(5))
-        .expect("failed to set busy timeout");
-
-    #[expect(
-        clippy::expect_used,
-        reason = "enabling foreign key constraints is fatal on failure"
-    )]
-    connection
-        .pragma_update("foreign_keys", "ON")
+    configure_connection(&connection)
         .await
-        .expect("failed to enable foreign keys");
+        .expect("failed to configure database connection");
 
     match query_schema_fingerprint(&connection).await {
         DATABASE_SCHEMA_FINGERPRINT => {}
@@ -475,32 +550,33 @@ async fn query_schema_fingerprint(connection: &Connection) -> i32 {
 }
 
 /// Applies the canonical SQLite DDL schema in batch and records the
-/// compile-time fingerprint in `PRAGMA user_version`.
+/// compile-time fingerprint in `PRAGMA user_version` inside a single
+/// transaction.
+///
+/// The DDL and the fingerprint write must commit atomically: a crash that
+/// persisted only part of the schema would leave `user_version` at zero, and
+/// the next startup would reapply the DDL and fail on the existing tables.
 ///
 /// # Panics
 ///
-/// Panics if executing the schema DDL batch or updating `PRAGMA user_version`
-/// fails.
+/// Panics if executing the schema batch fails.
 async fn apply_canonical_schema(connection: &Connection) {
+    // Header writes such as `PRAGMA user_version` participate in the
+    // transaction, so wrapping the DDL in BEGIN/COMMIT makes the whole batch
+    // all-or-nothing.
+    let batch_sql = format!(
+        "BEGIN IMMEDIATE;\n{}PRAGMA user_version = {DATABASE_SCHEMA_FINGERPRINT};\nCOMMIT;",
+        DATABASE_SCHEMA
+    );
+
     #[expect(
         clippy::expect_used,
-        reason = "applying canonical schema DDL is fatal on failure"
+        reason = "applying the canonical schema batch is fatal on failure"
     )]
     connection
-        .execute_batch(DATABASE_SCHEMA)
+        .execute_batch(batch_sql)
         .await
         .expect("failed to apply database schema");
-
-    let set_user_version_sql = format!("PRAGMA user_version = {DATABASE_SCHEMA_FINGERPRINT}");
-
-    #[expect(
-        clippy::expect_used,
-        reason = "recording schema fingerprint is fatal on failure"
-    )]
-    connection
-        .execute_batch(&set_user_version_sql)
-        .await
-        .expect("failed to store database schema fingerprint");
 }
 
 // SAFETY:
@@ -564,8 +640,8 @@ mod tests {
             .expect("failed to open isolated test database")
     }
 
-    /// Verifies that initializing the database creates the schema and stores
-    /// the fingerprint.
+    /// Verifies that initializing the database creates the complete schema and
+    /// stores the fingerprint.
     ///
     /// # Panics
     ///
@@ -579,17 +655,39 @@ mod tests {
         ));
         let database = Database::open(&path, 4).await?;
 
-        let mut rows = database.query("PRAGMA user_version", ()).await?;
-        let row = rows.next().await?.ok_or("missing user_version row")?;
+        let rows = database.query("PRAGMA user_version", ()).await?;
+        let row = rows.first().ok_or("missing user_version row")?;
         let version: i64 = row.get(0)?;
 
         assert_eq!(version, DATABASE_SCHEMA_FINGERPRINT as i64);
 
+        // Verify the schema batch applied every schema object.
+        let rows = database
+            .query("SELECT name FROM sqlite_master ORDER BY name", ())
+            .await?;
+
+        let names: Vec<String> = rows
+            .iter()
+            .map(|row| row.get::<String>(0))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for expected in [
+            "models",
+            "oauth_states",
+            "providers",
+            "idx_oauth_states_expires_at",
+        ] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "missing schema object {expected}"
+            );
+        }
+
         // Verify reopening the database succeeds and reports the same
         // fingerprint.
         let reopened_database = Database::open(&path, 4).await?;
-        let mut rows = reopened_database.query("PRAGMA user_version", ()).await?;
-        let row = rows.next().await?.ok_or("missing user_version row")?;
+        let rows = reopened_database.query("PRAGMA user_version", ()).await?;
+        let row = rows.first().ok_or("missing user_version row")?;
         let version: i64 = row.get(0)?;
 
         assert_eq!(version, DATABASE_SCHEMA_FINGERPRINT as i64);
@@ -625,14 +723,14 @@ mod tests {
 
         transaction.commit().await?;
 
-        let mut rows = database
+        let rows = database
             .query(
                 "SELECT name FROM providers WHERE name = ?1",
                 params!["test_tx_commit"],
             )
             .await?;
 
-        assert!(rows.next().await?.is_some());
+        assert_eq!(rows.len(), 1);
 
         Ok(())
     }
@@ -665,14 +763,72 @@ mod tests {
             // Transaction dropped here without calling commit()
         }
 
-        let mut rows = database
+        let rows = database
             .query(
                 "SELECT name FROM providers WHERE name = ?1",
                 params!["test_tx_drop"],
             )
             .await?;
 
-        assert!(rows.next().await?.is_none());
+        assert!(rows.is_empty());
+
+        Ok(())
+    }
+
+    /// Verifies that a connection which hosted a dropped transaction can still
+    /// host new transactions after being recycled by the pool.
+    ///
+    /// # Panics
+    ///
+    /// Panics if transaction execution or query assertions fail.
+    #[tokio::test]
+    async fn transaction_drop_then_new_transaction() -> Result<(), Box<dyn StdError>> {
+        let database = create_isolated_test_database().await;
+
+        {
+            let transaction = database.transaction().await?;
+
+            transaction
+                .execute(
+                    "INSERT INTO providers (name, model_prefix, type, credentials) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        "test_tx_poison",
+                        "tx/",
+                        "openai_compatible",
+                        "{\"apiKey\":\"tx\"}"
+                    ],
+                )
+                .await?;
+            // Transaction dropped here, leaving the connection flagged for
+            // rollback by turso's dangling-transaction cleanup.
+        }
+
+        let transaction = database.transaction().await?;
+
+        transaction
+            .execute(
+                "INSERT INTO providers (name, model_prefix, type, credentials) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "test_tx_after_drop",
+                    "tx/",
+                    "openai_compatible",
+                    "{\"apiKey\":\"tx\"}"
+                ],
+            )
+            .await?;
+
+        transaction.commit().await?;
+
+        let rows = database
+            .query(
+                "SELECT name FROM providers WHERE name = ?1",
+                params!["test_tx_after_drop"],
+            )
+            .await?;
+
+        assert_eq!(rows.len(), 1);
 
         Ok(())
     }
@@ -692,8 +848,8 @@ mod tests {
             let db = database.clone();
 
             join_handles.push(tokio::spawn(async move {
-                let mut rows = db.query("SELECT 1 + ?1", params![i]).await?;
-                let row = rows.next().await?.ok_or("missing result row")?;
+                let rows = db.query("SELECT 1 + ?1", params![i]).await?;
+                let row = rows.first().ok_or("missing result row")?;
                 let val: i64 = row.get(0)?;
 
                 assert_eq!(val, 1 + i);
@@ -705,6 +861,72 @@ mod tests {
         for handle in join_handles {
             handle.await?.map_err(|err| err as Box<dyn StdError>)?;
         }
+
+        Ok(())
+    }
+
+    /// Verifies that identical queries issued concurrently through a
+    /// single-connection pool each observe complete, uncorrupted results,
+    /// proving statements never interleave on a checked-out connection.
+    ///
+    /// # Panics
+    ///
+    /// Panics if task joins fail or query results do not match.
+    #[tokio::test]
+    async fn concurrent_identical_queries_single_connection() -> Result<(), Box<dyn StdError>> {
+        let unique_id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = env::temp_dir().join(format!(
+            "janusgate_isolated_test_{}_{unique_id}.db",
+            process::id()
+        ));
+
+        let database = Database::open(&path, 1).await?;
+
+        for suffix in ["a", "b"] {
+            database
+                .execute(
+                    "INSERT INTO providers (name, model_prefix, type, credentials) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        format!("single_conn_{suffix}"),
+                        "single/",
+                        "openai_compatible",
+                        "{\"apiKey\":\"s\"}"
+                    ],
+                )
+                .await?;
+        }
+
+        let mut join_handles = Vec::new();
+
+        for _ in 0..8 {
+            let db = database.clone();
+
+            join_handles.push(tokio::spawn(async move {
+                let rows = db
+                    .query(
+                        "SELECT name FROM providers WHERE model_prefix = ?1 ORDER BY name",
+                        params!["single/"],
+                    )
+                    .await?;
+
+                let names: Vec<String> = rows
+                    .iter()
+                    .map(|row| row.get::<String>(0))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                assert_eq!(names.len(), 2);
+                assert_eq!(names, ["single_conn_a", "single_conn_b"]);
+
+                Ok::<(), Box<dyn StdError + Send + Sync>>(())
+            }));
+        }
+
+        for handle in join_handles {
+            handle.await?.map_err(|err| err as Box<dyn StdError>)?;
+        }
+
+        let _ = fs::remove_file(path);
 
         Ok(())
     }
