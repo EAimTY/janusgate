@@ -6,7 +6,7 @@ import type {
     OpenAiOAuthCredentials,
 } from "/common/domain";
 import { CredentialDecryptionError, ProviderAccessError } from "/common/errors";
-import { oauthUpstreamSignal } from "/common/upstream-signal";
+import { boundedUpstreamSignal } from "/common/upstream-signal";
 import {
     isJsonObject,
     requireJsonObject,
@@ -178,7 +178,7 @@ async function requestRefreshedToken(
             body: request.body,
             headers: request.headers,
             method: request.method,
-            signal: oauthUpstreamSignal(signal),
+            signal: boundedUpstreamSignal(signal),
         });
     } catch {
         throw new ProviderAccessError("Identity provider token refresh request failed");

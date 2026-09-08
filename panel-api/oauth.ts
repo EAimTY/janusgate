@@ -3,7 +3,7 @@ import type { CredentialsCipher } from "/common/credentials";
 import type { StoredProvider } from "/common/database";
 import type { OAuthFlowType, OpenAiOAuthCredentials, ProviderCredentials } from "/common/domain";
 import { providerTypeForOAuthFlow } from "/common/domain";
-import { oauthUpstreamSignal } from "/common/upstream-signal";
+import { boundedUpstreamSignal } from "/common/upstream-signal";
 import { decodeUtf8Strict } from "/common/utf8";
 import { isJsonObject, unixSeconds } from "/common/validation";
 import { OAUTH_STATE_TTL_SECONDS } from "/config";
@@ -205,7 +205,7 @@ async function exchangeAuthorizationCode(
             body: request.body,
             headers: request.headers,
             method: request.method,
-            signal: oauthUpstreamSignal(signal),
+            signal: boundedUpstreamSignal(signal),
         });
     } catch {
         throw new PanelApiError(502, "OAuth token exchange failed");

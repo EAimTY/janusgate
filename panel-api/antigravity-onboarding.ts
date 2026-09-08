@@ -1,4 +1,4 @@
-import { oauthUpstreamSignal } from "/common/upstream-signal";
+import { boundedUpstreamSignal } from "/common/upstream-signal";
 import { isJsonObject } from "/common/validation";
 import {
     ANTIGRAVITY_API_BASE_URL,
@@ -137,7 +137,7 @@ async function pollAntigravityOnboarding(
             response = await fetchUpstream(antigravityOperationUrl(name), {
                 headers: antigravityRequestHeaders(accessToken, "*/*"),
                 method: "GET",
-                signal: oauthUpstreamSignal(signal),
+                signal: boundedUpstreamSignal(signal),
             });
         } catch {
             throw new PanelApiError(502, "Antigravity onboarding operation failed");
@@ -190,7 +190,7 @@ export async function resolveAntigravityProject(
             }),
             headers: antigravityRequestHeaders(accessToken, "*/*"),
             method: "POST",
-            signal: oauthUpstreamSignal(signal),
+            signal: boundedUpstreamSignal(signal),
         });
     } catch {
         throw new PanelApiError(502, "Antigravity project resolution failed");
@@ -233,7 +233,7 @@ export async function resolveAntigravityProject(
             }),
             headers: antigravityRequestHeaders(accessToken, "*/*"),
             method: "POST",
-            signal: oauthUpstreamSignal(signal),
+            signal: boundedUpstreamSignal(signal),
         });
     } catch {
         throw new PanelApiError(502, "Antigravity onboarding failed");

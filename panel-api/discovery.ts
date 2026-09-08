@@ -9,7 +9,7 @@ import {
 } from "/common/database";
 import type { AntigravityOAuthCredentials, OpenAiCompatibleCredentials } from "/common/domain";
 import { CredentialDecryptionError, ProviderAccessError, ValidationError } from "/common/errors";
-import { oauthUpstreamSignal } from "/common/upstream-signal";
+import { boundedUpstreamSignal } from "/common/upstream-signal";
 import { composeModelName, isJsonObject } from "/common/validation";
 import { ensureFreshProviderAccess } from "/providers/access";
 import { ANTIGRAVITY_FETCH_MODELS_URL, antigravityRequestHeaders } from "/providers/antigravity";
@@ -149,7 +149,7 @@ async function fetchAntigravityModelNames(
                     "application/json",
                 ),
                 method: "POST",
-                signal: oauthUpstreamSignal(signal),
+                signal: boundedUpstreamSignal(signal),
             });
         } catch {
             throw upstreamDiscoveryError("The Antigravity model discovery request failed");
@@ -241,7 +241,7 @@ async function fetchCompatibleModelNames(
         response = await fetchUpstream(`${provider.baseUrl}/models`, {
             headers,
             method: "GET",
-            signal: oauthUpstreamSignal(signal),
+            signal: boundedUpstreamSignal(signal),
         });
     } catch {
         throw upstreamDiscoveryError("The upstream model discovery request failed");
