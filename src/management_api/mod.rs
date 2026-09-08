@@ -1,6 +1,6 @@
 //! Administrative management API routing and handling.
 
-use crate::database::Database;
+use super::database::Database;
 use axum::Router;
 
 /// Constructs the administrative management API router.

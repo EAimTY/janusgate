@@ -1,11 +1,11 @@
 //! Plaintext HTTP server lifecycle and connection driving.
 
-use crate::database::Database;
+use super::{api, database::Database, management_api};
 use axum::Router;
 use host_port_pair::Host;
 use hserver::{ConnectionBuilder, Server};
 use socket2::{Domain, Protocol, SockAddr, Socket as Socket2, Type};
-use std::net::{SocketAddr, TcpListener as StdTcpListener, ToSocketAddrs};
+use std::net::{SocketAddr, TcpListener as StdTcpListener, ToSocketAddrs as _};
 use tokio::net::TcpListener;
 
 /// Runs the HTTP server, accepting incoming TCP connections and serving HTTP
@@ -40,8 +40,8 @@ pub(crate) async fn run(database: Database) -> ! {
 /// Constructs the Axum root router configured with database state.
 fn router(database: Database) -> Router {
     Router::new()
-        .nest("/api", crate::api::router())
-        .nest("/management-api", crate::management_api::router())
+        .nest("/api", api::router())
+        .nest("/management-api", management_api::router())
         .with_state(database)
 }
 
@@ -94,7 +94,7 @@ fn init_tcp_listener() -> TcpListener {
     )]
     socket.set_nonblocking(true).unwrap();
 
-    // make socket reusable right after restart in debug builds
+    // Make socket reusable right after restart in debug builds.
     #[cfg(debug_assertions)]
     {
         #[expect(
@@ -107,8 +107,7 @@ fn init_tcp_listener() -> TcpListener {
     #[expect(clippy::unwrap_used, reason = "binding TCP listener is fatal")]
     socket.bind(&SockAddr::from(socket_address)).unwrap();
 
-    // initialize listening
-    // backlog is set to 32
+    // Initialize listening with a backlog of 32 connections.
     #[expect(clippy::unwrap_used, reason = "listening on TCP socket is fatal")]
     socket.listen(32).unwrap();
 
@@ -121,7 +120,6 @@ fn init_tcp_listener() -> TcpListener {
 
 #[cfg(test)]
 mod tests {
-    use super::router;
     use std::error::Error as StdError;
 
     /// Verifies that the root Axum router constructs successfully with database
@@ -133,7 +131,8 @@ mod tests {
     #[tokio::test]
     async fn router_constructs_with_database_state() -> Result<(), Box<dyn StdError>> {
         let database = crate::test_database().await;
-        let _router = router(database);
+        let _router = super::router(database);
+
         Ok(())
     }
 }
