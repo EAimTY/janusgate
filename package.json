@@ -20,7 +20,7 @@
     },
     "scripts": {
         "build": "npm run worker-typegen && vite build --config panel/vite.config.ts",
-        "deploy": "npm run worker-typegen && npm run build && wrangler deploy",
+        "deploy": "npm run build && wrangler deploy",
         "worker-typegen": "wrangler types worker-bindings.d.ts",
         "typecheck": "npm run worker-typegen && tsc --noEmit --project . && tsc --noEmit --project panel",
         "check": "biome check && npm run typecheck",
