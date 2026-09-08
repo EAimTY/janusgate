@@ -3,25 +3,28 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeBase64Url } from "/common/base64";
 import { isJsonObject } from "/common/validation";
 import { OPENAI_TOKEN_URL } from "/providers/openai";
-import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
+import {
+    clearTestDatabase,
+    createTestBindings,
+    initializeTestDatabase,
+    TEST_PANEL_TOKEN,
+    TEST_PANEL_TOKEN_HASH,
+} from "/tests/database";
 import { createPanelApi } from "./app";
 
-const PANEL_TOKEN = "panel-secret";
-const PANEL_TOKEN_HASH = "14c660b289912fe36e4caca8eb372106f19a9ed9d37adfd03c504648faa4b5e4";
 const ORIGIN = "https://panel.test";
-const bindings: Env = {
-    API_KEY_HASH: "",
-    CREDENTIALS_AES_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-    DATABASE: env.DATABASE,
-    PANEL_TOKEN_HASH,
-};
+// API auth is disabled: this suite never exercises the gateway key.
+const bindings = createTestBindings(env.DATABASE, {
+    apiTokenHash: "",
+    panelTokenHash: TEST_PANEL_TOKEN_HASH,
+});
 
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
 beforeEach(async () => clearTestDatabase(env.DATABASE));
 
 function authorizedHeaders(isPost = false): Headers {
     const headers = new Headers({
-        Authorization: `Bearer ${PANEL_TOKEN}`,
+        Authorization: `Bearer ${TEST_PANEL_TOKEN}`,
     });
     if (isPost) {
         headers.set("Content-Type", "application/json");
@@ -82,7 +85,7 @@ describe("panel API", () => {
                 name: "x",
             },
             new Headers({
-                Authorization: `Bearer ${PANEL_TOKEN}`,
+                Authorization: `Bearer ${TEST_PANEL_TOKEN}`,
                 "Content-Type": "application/json",
             }),
         );

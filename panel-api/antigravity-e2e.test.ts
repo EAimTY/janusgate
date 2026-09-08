@@ -9,22 +9,21 @@ import {
     ANTIGRAVITY_TOKEN_URL,
     codeAssistRequestUrl,
 } from "/providers/antigravity";
-import { clearTestDatabase, initializeTestDatabase } from "/tests/database";
+import {
+    clearTestDatabase,
+    createTestBindings,
+    initializeTestDatabase,
+    TEST_API_TOKEN,
+    TEST_CREDENTIALS_AES_KEY,
+    TEST_PANEL_TOKEN,
+    TEST_PANEL_TOKEN_HASH,
+} from "/tests/database";
 import { createPanelApi } from "./app";
 
-const API_TOKEN = "api-secret";
-const API_TOKEN_HASH = "014c243ff960e87afc8482648f41e2084dce765aa062dcdcbf4e0e43c4db8a41";
-const PANEL_TOKEN = "panel-secret";
-const PANEL_TOKEN_HASH = "14c660b289912fe36e4caca8eb372106f19a9ed9d37adfd03c504648faa4b5e4";
-const AES_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const ORIGIN = "https://gate.test";
-
-const bindings: Env = {
-    API_KEY_HASH: API_TOKEN_HASH,
-    CREDENTIALS_AES_KEY: AES_KEY,
-    DATABASE: env.DATABASE,
-    PANEL_TOKEN_HASH: PANEL_TOKEN_HASH,
-};
+const bindings = createTestBindings(env.DATABASE, {
+    panelTokenHash: TEST_PANEL_TOKEN_HASH,
+});
 
 interface Route {
     match: (url: string) => boolean;
@@ -61,7 +60,7 @@ async function panel(
                     : {
                           "Content-Type": "application/json",
                       }),
-                Authorization: `Bearer ${PANEL_TOKEN}`,
+                Authorization: `Bearer ${TEST_PANEL_TOKEN}`,
                 Origin: ORIGIN,
             },
             ...(body === undefined
@@ -78,7 +77,7 @@ function gatewayRequest(body: unknown): Request {
     return new Request(`${ORIGIN}/api/openai-v1/responses`, {
         body: JSON.stringify(body),
         headers: {
-            Authorization: `Bearer ${API_TOKEN}`,
+            Authorization: `Bearer ${TEST_API_TOKEN}`,
             "Content-Type": "application/json",
         },
         method: "POST",
@@ -249,7 +248,7 @@ describe("Antigravity OAuth end-to-end: paste-back to Responses API", () => {
         await env.DATABASE.prepare(
             "UPDATE providers SET expires_at = strftime('%s','now') - 10 WHERE name = 'my-google'",
         ).run();
-        const cipher = await CredentialsCipher.create(AES_KEY);
+        const cipher = await CredentialsCipher.create(TEST_CREDENTIALS_AES_KEY);
         const readCredentials = async (): Promise<AntigravityOAuthCredentials> => {
             const row = await env.DATABASE.prepare(
                 "SELECT encrypted_credentials FROM providers WHERE name = 'my-google'",

@@ -18,15 +18,17 @@ const DEFAULT_OAUTH_EXPIRES_AT = 2_000_000_000;
 
 export interface TestBindingsOverrides {
     readonly panelTokenHash?: string;
+    /** Gateway key hash; `""` disables gateway API auth, omitted means the shared test key applies. */
+    readonly apiTokenHash?: string;
 }
 
-/** The standard Env shared by suites; only the panel token hash ever differs between suites. */
+/** The standard Env shared by suites; only the two token hashes ever differ between suites. */
 export function createTestBindings(
     database: D1Database,
     overrides: TestBindingsOverrides = {},
 ): Env {
     return {
-        API_KEY_HASH: TEST_API_TOKEN_HASH,
+        API_KEY_HASH: overrides.apiTokenHash ?? TEST_API_TOKEN_HASH,
         CREDENTIALS_AES_KEY: TEST_CREDENTIALS_AES_KEY,
         DATABASE: database,
         PANEL_TOKEN_HASH: overrides.panelTokenHash ?? "",
