@@ -28,5 +28,6 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 ### SQL (SQLite)
 
 - Treat `DATABASE.sqlite` as the only source of truth for the SQLite schema.
+- Use UPPERCASE for SQL keywords, PascalCase for type names, and snake_case for column names.
 - Explicitly declare columns as nullable or non-null and define uniqueness and foreign keys. Add `CHECK` constraints only when permitted by `README.md`; JanusGate intentionally keeps human-input validation in the application.
 - Use `STRICT` in table definitions.
