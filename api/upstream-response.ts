@@ -53,6 +53,25 @@ export async function readBeforeIdleTimeout(
     }
 }
 
+/**
+ * §11.2 upstream read-failure classification, shared by every catch around
+ * `readBeforeIdleTimeout`: the typed idle timeout keeps the 504 envelope; a GatewayError
+ * already raised inside the read (the size-limit envelope) passes through untouched —
+ * behavior-neutral at first-byte sites where no GatewayError can occur; every other read
+ * failure (upstream died after sending headers, disconnect, stream error) is an upstream
+ * condition answered with the 502 envelope. Callers must not reader.cancel first: the
+ * upstream stream is already dead (errored by the failure, or aborted by the idle timeout
+ * or the client disconnect), and cancel() on an errored stream rejects with the stored
+ * error, which would displace the classified envelope. A client-disconnect abort lands
+ * here too, but its response has no receiver, so the uniform classification is
+ * unobservable.
+ */
+export function classifyUpstreamReadError(error: unknown): GatewayError {
+    if (error instanceof UpstreamIdleTimeoutError) return upstreamTimeoutError();
+    if (error instanceof GatewayError) return error;
+    return upstreamFailureError();
+}
+
 export async function relayNativeStreamingResponse(
     upstreamResponse: Response,
     abortController: AbortController,
@@ -68,16 +87,7 @@ export async function relayNativeStreamingResponse(
     try {
         firstRead = await readBeforeIdleTimeout(reader, abortController);
     } catch (error) {
-        // No reader.cancel here: the upstream stream is already dead (errored by the failure,
-        // or aborted by the idle timeout or the client disconnect), and cancel() on an errored
-        // stream rejects with the stored error, which would displace the classified envelope.
-        // §11.2 first-byte classification: the typed idle timeout keeps the 504 envelope; every
-        // other first-read failure (upstream died after sending headers) is an upstream condition
-        // answered with the 502 envelope. A client-disconnect abort lands here too, but its
-        // response has no receiver, so the uniform classification is unobservable.
-        throw error instanceof UpstreamIdleTimeoutError
-            ? upstreamTimeoutError()
-            : upstreamFailureError();
+        throw classifyUpstreamReadError(error);
     }
 
     let isCanceled = false;
@@ -135,13 +145,7 @@ export async function readIdleTimedUpstreamBody(
             chunks.push(result.value);
         }
     } catch (error) {
-        // §11.2 classification for body reads: the typed idle timeout keeps the 504 envelope and
-        // the size-limit GatewayError passes through untouched; any other read failure (upstream
-        // disconnect, stream error) is an upstream condition — 502 upstream_error, never the
-        // unclassified 500 the raw stream rejection used to produce.
-        if (error instanceof UpstreamIdleTimeoutError) throw upstreamTimeoutError();
-        if (error instanceof GatewayError) throw error;
-        throw upstreamFailureError();
+        throw classifyUpstreamReadError(error);
     } finally {
         reader.releaseLock();
     }
