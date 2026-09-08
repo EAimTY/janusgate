@@ -1,0 +1,20 @@
+[package]
+name = "janusgate"
+version = "0.0.0"
+edition = "2024"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
+opt-level = 3
+
+[dependencies]
+deref-once-lock = { version = "0.1.0", default-features = false }
+host-port-pair = { version = "0.2.3", default-features = false, features = ["serde"] }
+json-strip-comments = { version = "3.1.2", default-features = false }
+lexopt = { version = "0.3.2", default-features = false }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
+tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt-multi-thread"] }

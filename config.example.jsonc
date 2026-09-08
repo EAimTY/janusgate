@@ -1,0 +1,19 @@
+{
+    // Listen address and port (host:port).
+    "listen": "0.0.0.0:8080",
+
+    "database": {
+        // Path to the in-process Turso SQLite database file.
+        "path": "janusgate.db"
+    },
+
+    "management_api": {
+        // Management token for /management-api/* (Authorization: <token>).
+        "token": "CHANGE_ME_MANAGEMENT_TOKEN"
+    },
+
+    "api": {
+        // Shared API key for outward protocol endpoints (under /api/*).
+        "key": "CHANGE_ME_API_KEY"
+    }
+}

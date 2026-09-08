@@ -22,7 +22,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 
 ### Rust
 
-- Declare every external dependency and local workspace crate in `[workspace.dependencies]` with `default-features = false` and no `features`. In each package dependency table, inherit it with `workspace = true` and declare that package's required features there.
+- Declare every external dependency in `[dependencies]` with `default-features = false` and declare required features there.
 - Every place could trigger a panic explicitly should be explained with a comment `// SAFETY: reason`.
 
 ### SQL (SQLite)

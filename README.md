@@ -6,7 +6,7 @@
 
 ## 1. Overview & Scope
 
-**JanusGate** is a self-hosted, lightweight AI gateway written in Rust. It exposes an OpenAI-compatible API (`/api/openai-v1`) backed by heterogeneous upstream accounts, managed via an administrative JSON API (`/panel-api/*`).
+**JanusGate** is a self-hosted, lightweight AI gateway written in Rust. It exposes an OpenAI-compatible API (`/api/openai-v1`) backed by heterogeneous upstream accounts, managed via a management JSON API (`/management-api/*`).
 
 ### Provider Types
 
@@ -23,7 +23,7 @@
 
 ### Design Principles & Non-Goals
 - **Stateless execution**: Zero persistence of prompts, completions, tokens, or usage metrics.
-- **Headless admin**: No frontend SPA. Administration is conducted exclusively through `/panel-api/*` JSON endpoints.
+- **Headless admin**: No frontend SPA. Administration is conducted exclusively through `/management-api/*` JSON endpoints.
 - **Strict model passthrough**: Zero automatic or hardcoded model mapping. Upstream calls pass the exact model identifiers yielded by upstream model discovery (`upstream_name`), even for OAuth providers.
 - **Excluded**: Multi-tenancy, dynamic pooling/load balancing, automatic provider fallback, automatic model mapping/aliasing, prompt caching, request logging, billing/rate-limiting, outbound proxying.
 
@@ -62,8 +62,8 @@
           │         └──────────────────────────────────┐
           ▼                                            ▼
 ┌───────────────────┐                        ┌───────────────────┐
-│ Panel API Router  │ (/panel-api/*)         │    API Router     │ (/api/*)
-│ (Panel Auth Layer)│                        │ (Fallback: 404)   │
+│ Management API Rtr│ (/management-api/*)    │    API Router     │ (/api/*)
+│ (Management Auth) │                        │ (Fallback: 404)   │
 │ (Fallback: 404)   │                        └─────────┬─────────┘
 └───────────────────┘                                  │
                                                        ▼
@@ -80,12 +80,12 @@ The server architecture separates low-level connection driving from hierarchical
    - `axum::serve` is **strictly unused**. Instead, `hserver` delegates incoming HTTP requests directly to Axum's root `Router` as an implementation of `tower::Service`.
 2. **Hierarchical Routers (`axum::Router`)**:
    - **Root Router**:
-     - Nests `/panel-api` and `/api` sub-routers.
+     - Nests `/management-api` and `/api` sub-routers.
      - Maintains its own top-level fallback route returning an HTTP 404 response for any unmapped root paths.
-   - **Panel API Sub-router (`/panel-api`)**:
-     - Scoped to administrative endpoints (`/list-providers`, `/save-provider`, etc.).
-     - Wrapped with panel authentication middleware (`Authorization: <panel_token>`).
-     - Maintains its own fallback route returning a panel-specific 404 JSON error response.
+   - **Management API Sub-router (`/management-api`)**:
+     - Scoped to management endpoints (`/list-providers`, `/save-provider`, etc.).
+     - Wrapped with management authentication middleware (`Authorization: <token>`).
+     - Maintains its own fallback route returning a management-specific 404 JSON error response.
    - **API Sub-router (`/api`)**:
      - Parent router for all external gateway protocols.
      - Nests isolated format sub-routers (e.g. `/openai-v1`).
@@ -95,7 +95,7 @@ The server architecture separates low-level connection driving from hierarchical
      - Wrapped with format-specific authentication middleware (e.g. `Authorization: Bearer <key>`).
      - Maintains its own fallback route returning format-compliant 404 error payloads (e.g. OpenAI JSON error structure: `{"error": {"message": "Invalid URL", "type": "invalid_request_error", "code": null}}`).
 3. **Independent 404 Fallback Routes**:
-   - Every router at every level (root router, panel API sub-router, API sub-router, and each format sub-router) defines its own dedicated fallback route returning an appropriately structured 404 response matching its respective domain.
+   - Every router at every level (root router, management API sub-router, API sub-router, and each format sub-router) defines its own dedicated fallback route returning an appropriately structured 404 response matching its respective domain.
 
 ---
 
@@ -123,9 +123,8 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 
 1. **Inbound Authentication**:
    - Authentication is format-specific and enforced at the router layer via Tower middleware before requests reach endpoint handlers:
-     - **Administrative Sub-router (`/panel-api/*`)**: Uses panel authentication middleware applied to the `/panel-api` sub-router. Requires `Authorization: <panel_token>` without any `Bearer` prefix, matching `JANUSGATE_PANEL_TOKEN`.
-     - **OpenAI v1 Sub-router (`/api/openai-v1/*`)**: Uses format-specific authentication middleware applied to the `/openai-v1` sub-router. Adheres to the OpenAI specification and requires `Authorization: Bearer <key>`, matching `JANUSGATE_OPENAI_V1_API_KEY`.
-     - Future outward API format sub-routers will apply their own authentication middleware and configuration keys independently rather than using a single global API key.
+     - **Management Sub-router (`/management-api/*`)**: Uses management authentication middleware applied to the `/management-api` sub-router. Requires `Authorization: <token>` without any `Bearer` prefix, matching `management_api.token` in configuration.
+     - **Outward API Sub-router (`/api/*`)**: Validates client requests against a shared gateway API key, matching `api.key` in configuration. Format-specific sub-routers enforce protocol-compliant header parsing independently (for example, the `/openai-v1` sub-router requires `Authorization: Bearer <key>` conforming to the OpenAI specification).
    - All token comparisons use constant-time byte comparison. Mismatch yields HTTP 401.
 2. **Plaintext Credential Storage**:
    - Upstream credentials and tokens are stored directly in plaintext JSON within the database. No encryption or decryption is performed.
@@ -198,37 +197,31 @@ All incoming and outgoing payloads map through an internal Intermediate Represen
 
 ---
 
-## 7. Panel API (`/panel-api/*`)
+## 7. Management API (`/management-api/*`)
 
-All panel routes are registered under the `/panel-api` sub-router with its own 404 fallback handler and require authorization via `Authorization: <panel_token>` (without any `Bearer` prefix).
+All management routes are registered under the `/management-api` sub-router with its own 404 fallback handler and require authorization via `Authorization: <token>` (without any `Bearer` prefix).
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
-| `GET` | `/panel-api/list-providers` | List all configured providers and their status |
-| `POST` | `/panel-api/save-provider` | Create or update a provider |
-| `POST` | `/panel-api/delete-provider` | Delete a provider and its models |
-| `POST` | `/panel-api/start-provider-oauth` | Generate OAuth authorize URL and PKCE state |
-| `POST` | `/panel-api/complete-provider-oauth` | Exchange auth code for tokens and save provider |
-| `POST` | `/panel-api/discover-models` | Refresh available models from upstream |
-| `GET` | `/panel-api/list-models` | List all routed models and their overrides |
-| `POST` | `/panel-api/save-model` | Update model overrides (name, enabled, thinking levels) |
+| `GET` | `/management-api/list-providers` | List all configured providers and their status |
+| `POST` | `/management-api/save-provider` | Create or update a provider |
+| `POST` | `/management-api/delete-provider` | Delete a provider and its models |
+| `POST` | `/management-api/start-provider-oauth` | Generate OAuth authorize URL and PKCE state |
+| `POST` | `/management-api/complete-provider-oauth` | Exchange auth code for tokens and save provider |
+| `POST` | `/management-api/discover-models` | Refresh available models from upstream |
+| `GET` | `/management-api/list-models` | List all routed models and their overrides |
+| `POST` | `/management-api/save-model` | Update model overrides (name, enabled, thinking levels) |
 
 ---
 
 ## 8. Configuration & Deployment
 
-### Environment Variables
+### Configuration File (`config.jsonc`)
 
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `JANUSGATE_HOST` | `0.0.0.0` | Listen host |
-| `JANUSGATE_PORT` | `8080` | Listen port |
-| `JANUSGATE_DB_PATH` | `janusgate.db` | Path to in-process Turso SQLite database file |
-| `JANUSGATE_PANEL_TOKEN` | *(required)* | Administrative token for `/panel-api/*` (`Authorization: <panel_token>`) |
-| `JANUSGATE_OPENAI_V1_API_KEY` | *(required)* | Bearer token for `/api/openai-v1/*` (`Authorization: Bearer <key>`) |
+JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
 
 ### Running the Server
 ```bash
 cargo build --release
-./target/release/janusgate
+./target/release/janusgate -c config.jsonc
 ```
