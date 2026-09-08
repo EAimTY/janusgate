@@ -20,6 +20,10 @@ import { handleGatewayRequest } from "./gateway";
 
 const bindings = createTestBindings(env.DATABASE);
 
+/** §8.3: a gateway-generated Session-Id is always a UUID. */
+const GENERATED_SESSION_ID_PATTERN =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 beforeAll(async () => initializeTestDatabase(env.DATABASE));
 beforeEach(async () => clearTestDatabase(env.DATABASE));
 
@@ -438,9 +442,7 @@ describe("gateway request lifecycle", () => {
             // No Session-Id header was sent, so the envelope carries a freshly generated one.
             expect(sent).toMatchObject({
                 request: {
-                    sessionId: expect.stringMatching(
-                        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-                    ),
+                    sessionId: expect.stringMatching(GENERATED_SESSION_ID_PATTERN),
                 },
             });
             return Response.json({
@@ -611,6 +613,7 @@ describe("gateway request lifecycle", () => {
     it("performs one forced OAuth refresh and exactly one retry after an upstream 401", async () => {
         await seedOpenAiProvider();
         let codexRequestCount = 0;
+        const codexSessionIds: Array<string | null> = [];
         const fetchUpstream = vi.fn<typeof fetch>(async (input, init) => {
             const url = String(input);
             if (url === OPENAI_TOKEN_URL) {
@@ -623,7 +626,9 @@ describe("gateway request lifecycle", () => {
             }
             expect(url).toBe(OPENAI_CODEX_RESPONSES_URL);
             codexRequestCount += 1;
-            const authorization = new Headers(init?.headers).get("Authorization");
+            const headers = new Headers(init?.headers);
+            codexSessionIds.push(headers.get("Session-Id"));
+            const authorization = headers.get("Authorization");
             if (codexRequestCount === 1) {
                 expect(authorization).toBe("Bearer old-access");
                 return new Response("rejected", {
@@ -650,6 +655,12 @@ describe("gateway request lifecycle", () => {
         expect(await response.text()).toBe('{"id":"success"}');
         expect(codexRequestCount).toBe(2);
         expect(fetchUpstream).toHaveBeenCalledTimes(3);
+        // §8.3: one logical client request owns one Session-Id. No client header was sent, so
+        // the gateway generates a single UUID and the forced-refresh retry must reuse it;
+        // minting a second id would split the request across upstream sessions.
+        expect(codexSessionIds).toHaveLength(2);
+        expect(codexSessionIds[0]).toMatch(GENERATED_SESSION_ID_PATTERN);
+        expect(codexSessionIds[1]).toBe(codexSessionIds[0]);
     });
 
     it("surfaces an exhausted forced refresh as the 502 upstream_auth_rejected envelope", async () => {
@@ -735,9 +746,7 @@ describe("gateway request lifecycle", () => {
         expect(forwardedResponse.status).toBe(200);
         expect(sessionIds).toHaveLength(2);
         const [regenerated, forwarded] = sessionIds;
-        expect(regenerated).toMatch(
-            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-        );
+        expect(regenerated).toMatch(GENERATED_SESSION_ID_PATTERN);
         expect(forwarded).toBe("client-supplied-id");
     });
 

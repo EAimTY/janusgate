@@ -60,7 +60,11 @@ function upstreamProtocol(summary: ProviderSummary): UpstreamProtocol {
     }
 }
 
-function compatibleUrl(baseUrl: string, protocol: UpstreamProtocol): string {
+/** Only reachable for non-Gemini compatible upstreams; Gemini URL building lives in the adapter. */
+function compatibleUrl(
+    baseUrl: string,
+    protocol: Exclude<UpstreamProtocol, "gemini_generate_content">,
+): string {
     if (protocol === "openai_response") return `${baseUrl}/responses`;
     return `${baseUrl}/chat/completions`;
 }
@@ -100,8 +104,13 @@ function setCompatibleAuthHeaders(
     headers.set("Authorization", `Bearer ${apiKey}`);
 }
 
+/**
+ * `sessionId` arrives already normalized (§8.3: generated once per client request or forwarded
+ * from the client) and is used verbatim, so every attempt for one logical request — including a
+ * forced-refresh retry — carries the same upstream session identity.
+ */
 export async function prepareUpstreamRequest(
-    clientRequest: Request,
+    sessionId: string,
     request: ValidatedGatewayRequest,
     clientProtocol: ClientProtocol,
     route: ResolvedModelRoute,
@@ -115,13 +124,6 @@ export async function prepareUpstreamRequest(
         request.requestedThinkingLevel,
         route.thinkingLevels,
     );
-    // A missing or empty Session-Id means "generate one" (§8.3); both consuming branches below
-    // work from this single normalized value.
-    const clientSessionId = clientRequest.headers.get("Session-Id");
-    const sessionId =
-        clientSessionId === null || clientSessionId.length === 0
-            ? crypto.randomUUID()
-            : clientSessionId;
     const headers = new Headers({
         "Content-Type": "application/json",
     });

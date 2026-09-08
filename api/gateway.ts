@@ -147,7 +147,7 @@ function routeWithProvider(
 }
 
 async function executeUpstream(
-    clientRequest: Request,
+    sessionId: string,
     validatedRequest: ReturnType<typeof validateGatewayRequest>,
     protocol: ClientProtocol,
     route: ResolvedModelRoute,
@@ -170,7 +170,7 @@ async function executeUpstream(
         currentRoute = routeWithProvider(route, access.provider);
     }
     let prepared = await prepareUpstreamRequest(
-        clientRequest,
+        sessionId,
         validatedRequest,
         protocol,
         currentRoute,
@@ -199,7 +199,7 @@ async function executeUpstream(
         currentRoute = routeWithProvider(currentRoute, refreshed.provider);
         oauthCredentials = refreshed.credentials;
         prepared = await prepareUpstreamRequest(
-            clientRequest,
+            sessionId,
             validatedRequest,
             protocol,
             currentRoute,
@@ -327,8 +327,16 @@ async function handleGatewayChat(
             },
         );
     }
+    // §8.3: the Session-Id is normalized once per client request (missing or empty means
+    // "generate one", otherwise forward verbatim) so a forced-refresh retry reuses the same
+    // upstream session identity instead of minting a second one for the same logical request.
+    const clientSessionId = request.headers.get("Session-Id");
+    const sessionId =
+        clientSessionId === null || clientSessionId.length === 0
+            ? crypto.randomUUID()
+            : clientSessionId;
     const { prepared, response } = await executeUpstream(
-        request,
+        sessionId,
         validated,
         protocol,
         route,
