@@ -828,6 +828,226 @@ test("Responses request renderer keeps mid-history system items in position", ()
     );
 });
 
+test("Responses request renderer re-renders retained reasoning as reasoning input items", () => {
+    // The official Responses schema accepts `type:"reasoning"` items in `input` (the
+    // `Item` union includes `ReasoningItem`, whose description says to "be sure to
+    // include these items in your `input` ... for subsequent turns"); `summary` is the
+    // required carrier and `encrypted_content` is optional. The parser retains only the
+    // joined summary text plus an optional thought signature — item ids and encrypted
+    // content are not IR fields — so exactly that renders back, in position, matching
+    // the Chat Completions (`reasoning_content`) and Gemini (`thought` part) renderers.
+    const rendered = renderResponsesRequest(
+        parseResponsesRequest({
+            model: "public-model",
+            input: [
+                {
+                    type: "reasoning",
+                    id: "rs_1",
+                    encrypted_content: "opaque-blob",
+                    summary: [
+                        {
+                            type: "summary_text",
+                            text: "prior ",
+                        },
+                        {
+                            type: "summary_text",
+                            text: "turn",
+                        },
+                    ],
+                },
+                {
+                    type: "function_call",
+                    call_id: "call_1",
+                    name: "lookup",
+                    arguments: "{}",
+                },
+                {
+                    type: "function_call_output",
+                    call_id: "call_1",
+                    output: "answer",
+                },
+                {
+                    role: "user",
+                    content: "Continue",
+                },
+            ],
+        }),
+        "wire-model",
+    );
+    assertEqual(
+        rendered.input,
+        [
+            {
+                type: "reasoning",
+                summary: [
+                    {
+                        type: "summary_text",
+                        text: "prior turn",
+                    },
+                ],
+            },
+            {
+                type: "function_call",
+                call_id: "call_1",
+                name: "lookup",
+                arguments: "{}",
+            },
+            {
+                type: "function_call_output",
+                call_id: "call_1",
+                output: "answer",
+            },
+            {
+                type: "message",
+                role: "user",
+                content: [
+                    {
+                        type: "input_text",
+                        text: "Continue",
+                    },
+                ],
+            },
+        ],
+        "reasoning renders as an in-position reasoning item carrying the joined summary",
+    );
+
+    const signed = renderResponsesRequest(
+        parseResponsesRequest({
+            model: "m",
+            input: [
+                {
+                    type: "reasoning",
+                    thought_signature: "sig-reasoning",
+                    summary: [
+                        {
+                            type: "summary_text",
+                            text: "think",
+                        },
+                    ],
+                },
+            ],
+        }),
+        "wire-model",
+    );
+    assertEqual(
+        signed.input,
+        [
+            {
+                type: "reasoning",
+                summary: [
+                    {
+                        type: "summary_text",
+                        text: "think",
+                    },
+                ],
+                thought_signature: "sig-reasoning",
+            },
+        ],
+        "reasoning thought signatures render onto the reasoning item",
+    );
+});
+
+test("Responses stream renderer coalesces repeated tool_call starts into one item", () => {
+    // Starts can legally repeat for one call: the Chat Completions parser emits a start
+    // whenever a delta chunk carries an id or a name, and Groq-style Responses upstreams
+    // re-send both for a call that is already in flight. The renderer must treat a
+    // repeat as an in-place id/name update on the existing output item — a second
+    // `response.output_item.added` would orphan the first item as an empty `in_progress`
+    // entry that still shows up in `response.completed` — and arguments must keep
+    // accumulating across the repeat.
+    const frames = createResponsesStreamRenderer({
+        id: "resp_repeat",
+        model: "public-model",
+        created: 40,
+    })([
+        {
+            type: "tool_call_start",
+            index: 2,
+            id: "call_first",
+            name: "lookup",
+        },
+        {
+            type: "tool_call_delta",
+            index: 2,
+            delta: '{"q":',
+        },
+        {
+            type: "tool_call_start",
+            index: 2,
+            id: "call_second",
+            name: "lookup_v2",
+            thoughtSignature: "sig-repeat",
+        },
+        {
+            type: "tool_call_delta",
+            index: 2,
+            delta: "1}",
+        },
+        {
+            type: "tool_call_done",
+            index: 2,
+        },
+        {
+            type: "finish",
+            reason: "tool_calls",
+        },
+        {
+            type: "done",
+        },
+    ]);
+    const addedFrames = frames.filter((frame) =>
+        frame.startsWith("event: response.output_item.added"),
+    );
+    assertEqual(addedFrames.length, 1, "the repeated start emits exactly one output item");
+    const deltaFrames = frames.filter((frame) =>
+        frame.startsWith("event: response.function_call_arguments.delta"),
+    );
+    assertEqual(deltaFrames.length, 2, "argument deltas from both segments render");
+    assert(
+        deltaFrames.every((frame) => frame.includes('"output_index":0')),
+        "argument deltas keep targeting the single tool output index",
+    );
+    const completedFrameSse = frames.at(-1);
+    assert(
+        completedFrameSse?.startsWith("event: response.completed") === true,
+        "the stream ends with response.completed",
+    );
+    const completedFrame: unknown = JSON.parse(
+        completedFrameSse.slice("event: response.completed\ndata: ".length),
+    );
+    if (
+        typeof completedFrame !== "object" ||
+        completedFrame === null ||
+        !("response" in completedFrame)
+    ) {
+        throw new Error("the completed frame does not carry a response object");
+    }
+    const completedResponse: unknown = completedFrame["response"];
+    if (
+        typeof completedResponse !== "object" ||
+        completedResponse === null ||
+        !("output" in completedResponse) ||
+        !Array.isArray(completedResponse["output"])
+    ) {
+        throw new Error("the completed response does not carry an output array");
+    }
+    assertEqual(
+        completedResponse["output"],
+        [
+            {
+                id: "resp_repeat_tool_0",
+                type: "function_call",
+                status: "completed",
+                call_id: "call_second",
+                name: "lookup_v2",
+                arguments: '{"q":1}',
+                thought_signature: "sig-repeat",
+            },
+        ],
+        "the repeated start updates identity in place and arguments accumulate across it",
+    );
+});
+
 test("Chat Completions streams with null string fields translate without truncation", () => {
     // OpenAI-shaped upstreams serialize optional string fields as JSON `null` instead of
     // omitting them: `content` is nullable on every delta (official OpenAPI

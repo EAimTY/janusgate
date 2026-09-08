@@ -40,7 +40,12 @@ import { encodeSse } from "./sse";
 
 interface ResponsesRequestObject {
     model: string;
-    input: (ResponsesInputMessage | ResponsesFunctionCall | ResponsesFunctionOutput)[];
+    input: (
+        | ResponsesInputMessage
+        | ResponsesFunctionCall
+        | ResponsesFunctionOutput
+        | ResponsesReasoningItem
+    )[];
     stream: boolean;
     instructions?: string;
     tools?: ResponsesFunctionTool[];
@@ -96,6 +101,19 @@ interface ResponsesFunctionOutput {
     type: "function_call_output";
     call_id: string;
     output: JsonValue;
+    thought_signature?: string;
+}
+
+// Input-side reasoning item. The official Responses schema accepts `type:"reasoning"`
+// items in `input` (the `Item` union includes `ReasoningItem`); only the summary carrier
+// is rendered here because the IR retains no more than the joined summary text and a
+// thought signature.
+interface ResponsesReasoningItem {
+    type: "reasoning";
+    summary: {
+        type: "summary_text";
+        text: string;
+    }[];
     thought_signature?: string;
 }
 
@@ -423,6 +441,31 @@ export function renderResponsesRequest(
                 if (text.length > 0) instructions = text;
                 continue;
             }
+        }
+        // Reasoning retained by the parsers (Responses `reasoning` summaries, Chat
+        // Completions `reasoning_content`) renders back as an in-position
+        // `type:"reasoning"` input item. The official Responses schema accepts reasoning
+        // items in `input` — the `ReasoningItem` description says to "be sure to include
+        // these items in your `input` ... for subsequent turns" — with `summary` as the
+        // required carrier and `encrypted_content` optional. The IR retains only the
+        // joined summary text plus an optional thought signature (never item ids or
+        // encrypted content), so exactly that re-renders here instead of vanishing.
+        // Reasoning precedes the rest of the assistant turn, so it is emitted ahead of
+        // the message's parts.
+        if (message.reasoning !== undefined) {
+            const reasoningItem: ResponsesReasoningItem = {
+                type: "reasoning",
+                summary: [
+                    {
+                        type: "summary_text",
+                        text: message.reasoning,
+                    },
+                ],
+            };
+            if (message.reasoningThoughtSignature !== undefined) {
+                reasoningItem.thought_signature = message.reasoningThoughtSignature;
+            }
+            input.push(reasoningItem);
         }
         for (const part of message.parts) {
             if (part.type === "tool_call") {
@@ -1065,6 +1108,24 @@ export function createResponsesStreamRenderer(
                     }),
                 );
             } else if (event.type === "tool_call_start") {
+                // Starts can legally repeat for one call: the Chat Completions parser
+                // emits a start whenever a delta chunk carries an id or a name, and
+                // Groq-style Responses upstreams re-send both for a call that is already
+                // in flight. A repeat must update the existing item in place —
+                // allocating a second output item would orphan the first one as an empty
+                // `in_progress` entry that still lands in the final `response.completed`
+                // output. Arguments accumulate on the map entry and keep flowing through
+                // `tool_call_delta`.
+                const knownTool = tools.get(event.index);
+                if (knownTool !== undefined) {
+                    knownTool.item["call_id"] = event.id;
+                    knownTool.item["name"] = event.name;
+                    // Last-wins, matching the text and reasoning signature semantics.
+                    if (event.thoughtSignature !== undefined) {
+                        knownTool.item["thought_signature"] = event.thoughtSignature;
+                    }
+                    continue;
+                }
                 const index = nextOutputIndex;
                 nextOutputIndex += 1;
                 const item: JsonObject = {
