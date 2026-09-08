@@ -19,7 +19,7 @@ export const ANTIGRAVITY_OAUTH_SCOPE = [
     "https://www.googleapis.com/auth/cclog",
     "https://www.googleapis.com/auth/experimentsandconfigs",
 ].join(" ");
-export const ANTIGRAVITY_API_BASE_URL = "https://cloudcode-pa.googleapis.com/v1internal";
+export const ANTIGRAVITY_API_BASE_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal";
 export const ANTIGRAVITY_LOAD_CODE_ASSIST_URL = `${ANTIGRAVITY_API_BASE_URL}:loadCodeAssist`;
 export const ANTIGRAVITY_ONBOARD_USER_URL = `${ANTIGRAVITY_API_BASE_URL}:onboardUser`;
 export const ANTIGRAVITY_FETCH_MODELS_URL = `${ANTIGRAVITY_API_BASE_URL}:fetchAvailableModels`;

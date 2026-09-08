@@ -126,7 +126,7 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
         "Google loopback redirect is pinned",
     );
     assert(
-        ANTIGRAVITY_API_BASE_URL === "https://cloudcode-pa.googleapis.com/v1internal",
+        ANTIGRAVITY_API_BASE_URL === "https://daily-cloudcode-pa.googleapis.com/v1internal",
         "Code Assist API is pinned",
     );
     assert(
@@ -217,12 +217,12 @@ test("pinned OpenAI and Antigravity adapters map the complete IR", () => {
     }
     assert(
         codeAssistRequestUrl(false) ===
-            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
         "Code Assist sends project routing in the body rather than the URL path",
     );
     assert(
         codeAssistRequestUrl(true) ===
-            "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
         "stream URL selects SSE",
     );
 
