@@ -1463,3 +1463,177 @@ test("Shared outward wire helpers keep dialect-specific field names and errors",
         "input_tokens_details must be an object",
     );
 });
+
+test("Chat Completions stream renumbers sparse IR tool indexes densely", () => {
+    // The IR tool index is the Responses upstream's `output_index`, which counts every
+    // output item (reasoning=0, message=1, function_call=2). Chat Completions clients
+    // assemble `delta.tool_calls` by index as a dense array, so the renderer must renumber
+    // tool calls 0..n-1 per stream — across render calls, because argument deltas arrive
+    // in later upstream frames than their start.
+    const renderer = createChatCompletionsStreamRenderer({
+        id: "chat_dense",
+        model: "public-model",
+        created: 130,
+        isUsageIncluded: false,
+    });
+    const startFrames = renderer(
+        parseResponsesStreamEvent({
+            type: "response.output_item.added",
+            output_index: 2,
+            item: {
+                type: "function_call",
+                call_id: "call_sparse",
+                name: "lookup",
+            },
+        }),
+    );
+    const deltaFrames = renderer(
+        parseResponsesStreamEvent({
+            type: "response.function_call_arguments.delta",
+            output_index: 2,
+            delta: '{"q":1}',
+        }),
+    );
+    assert(
+        startFrames.some((frame) => frame.includes('"tool_calls":[{"index":0,"id":"call_sparse"')),
+        "the tool call start renders at dense index 0 despite IR index 2",
+    );
+    assert(
+        deltaFrames.some((frame) => frame.includes('{"index":0,"function":{"arguments"')),
+        "the argument delta translates through the same dense index map in a later frame",
+    );
+});
+
+test("Chat Completions emits text thought signatures on stream deltas and coalesced parts", () => {
+    // Gemini upstreams attach thought signatures to text parts; the CC request side already
+    // accepts `thought_signature` on text content parts, so both outward renderers must
+    // carry text signatures the same way instead of dropping them.
+    const streamFrames = renderChatCompletionsStream(
+        [
+            {
+                type: "message_start",
+            },
+            {
+                type: "text_delta",
+                delta: "answer",
+                thoughtSignature: "sig-text-delta",
+            },
+            {
+                type: "done",
+            },
+        ],
+        {
+            id: "chat_sig_stream",
+            model: "public-model",
+            created: 140,
+            isUsageIncluded: false,
+        },
+    );
+    assert(
+        streamFrames.some(
+            (frame) =>
+                frame.includes('"content":"answer"') &&
+                frame.includes('"thought_signature":"sig-text-delta"'),
+        ),
+        "the text delta renders its content with its thought signature",
+    );
+
+    const response = renderChatCompletionsResponse(
+        [
+            {
+                type: "message_start",
+            },
+            {
+                type: "text_delta",
+                delta: "early",
+                thoughtSignature: "sig-text-early",
+            },
+            {
+                type: "text_delta",
+                delta: " late",
+                thoughtSignature: "sig-text-late",
+            },
+            {
+                type: "finish",
+                reason: "stop",
+            },
+            {
+                type: "done",
+            },
+        ],
+        {
+            id: "chat_sig_object",
+            model: "public-model",
+            created: 150,
+        },
+    );
+    assertEqual(
+        response.choices[0]?.message.content,
+        [
+            {
+                type: "text",
+                text: "early late",
+                thought_signature: "sig-text-late",
+            },
+        ],
+        "the coalesced text renders as one signed text part, last signature wins",
+    );
+});
+
+test("Chat Completions accepts the bare stream signature key at message level", () => {
+    // The stream emits bare `thought_signature` on deltas while rendering carries
+    // `reasoning_thought_signature` at message level; a client that stored the stream
+    // field on its history message and replays it must not silently lose the signature.
+    assertEqual(
+        parseChatCompletionsRequest({
+            model: "m",
+            messages: [
+                {
+                    role: "assistant",
+                    content: "done",
+                    reasoning_content: "work",
+                    thought_signature: "sig-bare-history",
+                },
+            ],
+        }).messages[0]?.reasoningThoughtSignature,
+        "sig-bare-history",
+        "the bare message-level thought_signature parses as the reasoning signature",
+    );
+    assertEqual(
+        parseChatCompletionsRequest({
+            model: "m",
+            messages: [
+                {
+                    role: "assistant",
+                    content: "done",
+                    reasoning_content: "work",
+                    reasoning_thought_signature: "sig-carrier",
+                    thought_signature: "sig-bare",
+                },
+            ],
+        }).messages[0]?.reasoningThoughtSignature,
+        "sig-carrier",
+        "the documented carrier key wins over the bare stream key",
+    );
+    assertEqual(
+        parseChatCompletionsResponse({
+            id: "chat_bare",
+            model: "m",
+            created: 160,
+            choices: [
+                {
+                    index: 0,
+                    message: {
+                        role: "assistant",
+                        content: null,
+                        reasoning_content: "work",
+                        thought_signature: "sig-bare-response",
+                    },
+                    finish_reason: "stop",
+                },
+            ],
+        }).find((event) => event.type === "reasoning_delta")?.thoughtSignature,
+        "sig-bare-response",
+        "the bare key is accepted when reading a Chat Completions response",
+    );
+});

@@ -136,6 +136,22 @@ function renderGoogleThoughtSignature(
     };
 }
 
+function parseMessageReasoningThoughtSignature(
+    message: Record<string, unknown>,
+    context: string,
+): string | undefined {
+    // Rendering emits `reasoning_thought_signature` as the message-level carrier, but the
+    // stream emits bare `thought_signature` on deltas, so a client that stored the stream
+    // field on its history message and replays it carries only the bare key. Prefer the
+    // documented carrier and fall back to the bare stream key.
+    return (
+        optionalString(
+            message["reasoning_thought_signature"],
+            `${context}.reasoning_thought_signature`,
+        ) ?? optionalString(message["thought_signature"], `${context}.thought_signature`)
+    );
+}
+
 type ChatResponseFormat =
     | {
           type: "json_object";
@@ -165,7 +181,14 @@ interface ChatCompletionsResponseObject {
         index: 0;
         message: {
             role: "assistant";
-            content: string | null;
+            content:
+                | string
+                | null
+                | {
+                      type: "text";
+                      text: string;
+                      thought_signature?: string;
+                  }[];
             reasoning_content?: string;
             reasoning_thought_signature?: string;
             tool_calls?: ChatToolCall[];
@@ -301,9 +324,9 @@ function parseMessage(value: unknown, index: number): IrMessage {
     if (reasoning !== undefined) {
         result["reasoning"] = reasoning;
     }
-    const reasoningThoughtSignature = optionalString(
-        message["reasoning_thought_signature"],
-        `messages[${index}].reasoning_thought_signature`,
+    const reasoningThoughtSignature = parseMessageReasoningThoughtSignature(
+        message,
+        `messages[${index}]`,
     );
     if (reasoningThoughtSignature !== undefined) {
         result.reasoningThoughtSignature = reasoningThoughtSignature;
@@ -613,10 +636,7 @@ export function parseChatCompletionsResponse(value: unknown): IrEvent[] {
         },
     ];
     const reasoning = optionalString(message["reasoning_content"], "message.reasoning_content");
-    const reasoningThoughtSignature = optionalString(
-        message["reasoning_thought_signature"],
-        "message.reasoning_thought_signature",
-    );
+    const reasoningThoughtSignature = parseMessageReasoningThoughtSignature(message, "message");
     if (reasoning !== undefined && reasoning.length > 0)
         events.push({
             type: "reasoning_delta",
@@ -775,14 +795,21 @@ export function renderChatCompletionsResponse(
     metadata: ChatResponseMetadata,
 ): ChatCompletionsResponseObject {
     let content = "";
+    let textThoughtSignature: string | undefined;
     let reasoning = "";
     let reasoningThoughtSignature: string | undefined;
     let finishReason: FinishReason = "stop";
     let usage: IrUsage | undefined;
     const toolCalls = new Map<number, ChatToolCall>();
     for (const event of events) {
-        if (event.type === "text_delta") content += event.delta;
-        else if (event.type === "reasoning_delta") {
+        if (event.type === "text_delta") {
+            content += event.delta;
+            // Last-wins: a thought signature covers only the content issued up to it, so the
+            // latest signature is the one that matches the fully coalesced text.
+            if (event.thoughtSignature !== undefined) {
+                textThoughtSignature = event.thoughtSignature;
+            }
+        } else if (event.type === "reasoning_delta") {
             reasoning += event.delta;
             // Last-wins: a thought signature covers only the content issued up to it, so the
             // latest signature is the one that matches the fully coalesced reasoning text.
@@ -814,6 +841,17 @@ export function renderChatCompletionsResponse(
         role: "assistant",
         content: content.length > 0 ? content : null,
     };
+    if (textThoughtSignature !== undefined && content.length > 0) {
+        // A bare string has nowhere to carry a signature, so emit the coalesced text the way
+        // the request side accepts it: a single text content part with `thought_signature`.
+        message.content = [
+            {
+                type: "text",
+                text: content,
+                thought_signature: textThoughtSignature,
+            },
+        ];
+    }
     if (reasoning.length > 0) message.reasoning_content = reasoning;
     if (reasoningThoughtSignature !== undefined) {
         message.reasoning_thought_signature = reasoningThoughtSignature;
@@ -866,8 +904,12 @@ export function renderChatCompletionsStream(
         const delta: Record<string, JsonValue> = {};
         let finishReason: FinishReason | null = null;
         if (event.type === "message_start") delta["role"] = "assistant";
-        else if (event.type === "text_delta") delta["content"] = event.delta;
-        else if (event.type === "reasoning_delta") {
+        else if (event.type === "text_delta") {
+            delta["content"] = event.delta;
+            if (event.thoughtSignature !== undefined) {
+                delta["thought_signature"] = event.thoughtSignature;
+            }
+        } else if (event.type === "reasoning_delta") {
             delta["reasoning_content"] = event.delta;
             if (event.thoughtSignature !== undefined) {
                 delta["thought_signature"] = event.thoughtSignature;
@@ -943,6 +985,21 @@ export function createChatCompletionsStreamRenderer(
     // re-send the assistant role on continuation chunks) collapse to the first one.
     let hasStarted = false;
     let usage: IrUsage | undefined;
+    // The IR tool index is the upstream output position (a Responses `output_index` counts
+    // reasoning and message items too), while Chat Completions `delta.tool_calls[].index`
+    // must densely number tool calls alone: clients assemble the array by index, so sparse
+    // indexes would leave holes. Each stream therefore maps IR indexes to dense indexes in
+    // first-seen order, persistently across calls because argument deltas arrive in later
+    // upstream frames than their start.
+    const denseToolIndexes = new Map<number, number>();
+    let nextDenseToolIndex = 0;
+    const denseToolIndex = (index: number): number => {
+        const mapped = denseToolIndexes.get(index);
+        if (mapped !== undefined) return mapped;
+        denseToolIndexes.set(index, nextDenseToolIndex);
+        nextDenseToolIndex += 1;
+        return nextDenseToolIndex - 1;
+    };
     return (events): string[] => {
         const immediate: IrEvent[] = [];
         for (const event of events) {
@@ -959,7 +1016,12 @@ export function createChatCompletionsStreamRenderer(
                         usage,
                     });
                 immediate.push(event);
-            } else immediate.push(event);
+            } else if (event.type === "tool_call_start" || event.type === "tool_call_delta")
+                immediate.push({
+                    ...event,
+                    index: denseToolIndex(event.index),
+                });
+            else immediate.push(event);
         }
         return renderChatCompletionsStream(immediate, metadata);
     };
