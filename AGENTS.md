@@ -22,6 +22,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 ### Rust
 
 - Declare every external dependency in `[dependencies]` with `default-features = false` and declare required features there.
+- Access configuration values directly from `crate::CONFIG` instead of threading them through function arguments.
 - Do not contort idiomatic code into verbose workarounds merely to dodge panic-related Clippy lints (such as `unwrap_used`, `expect_used`, `panic`, or `indexing_slicing`). When panicking is safe and acceptable—such as a proven invariant or an intentional fail-fast fatal condition—retain the direct construct and document the justification using `#[expect(..., reason = "...")]` on the narrowest applicable scope (such as a single statement or match arm, rather than a whole function or block).
 - After every code modification, run `cargo fmt`, `cargo check`, `cargo clippy`, and `cargo test` to ensure no formatting issues, compilation errors, lint regressions, or test failures were introduced.
 

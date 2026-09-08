@@ -9,6 +9,10 @@ use serde::Deserialize;
 use std::{env, ffi::OsString, fs::File, panic, path::PathBuf, process};
 use tokio::main;
 
+mod api;
+mod management_api;
+mod server;
+
 /// Global read-only application configuration, initialized once during process
 /// startup and accessible throughout the crate without synchronization
 /// overhead.
@@ -80,7 +84,7 @@ async fn main() -> ! {
     )]
     CONFIG.set(config).unwrap();
 
-    todo!()
+    server::run().await
 }
 
 /// Parses command-line arguments, opens the designated configuration file,
