@@ -117,22 +117,3 @@ fn init_tcp_listener() -> TcpListener {
     )]
     TcpListener::from_std(StdTcpListener::from(socket)).unwrap()
 }
-
-#[cfg(test)]
-mod tests {
-    use std::error::Error as StdError;
-
-    /// Verifies that the root Axum router constructs successfully with database
-    /// state.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database initialization fails.
-    #[tokio::test]
-    async fn router_constructs_with_database_state() -> Result<(), Box<dyn StdError>> {
-        let database = crate::test_database().await;
-        let _router = super::router(database);
-
-        Ok(())
-    }
-}

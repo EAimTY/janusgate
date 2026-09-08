@@ -10,8 +10,6 @@ use lexopt::{Arg as Argument, Parser as ArgumentsParser};
 use serde::Deserialize;
 use std::{env, ffi::OsString, fs::File, panic, path::PathBuf, process};
 use tokio::main;
-#[cfg(test)]
-use tokio::sync::OnceCell;
 
 mod api;
 mod database;
@@ -105,64 +103,6 @@ async fn main() -> ! {
     .expect("failed to open database");
 
     server::run(database).await
-}
-
-/// Initializes `CONFIG` for test execution if not already initialized.
-///
-/// # Panics
-///
-/// Panics if parsing the static test listen address fails.
-#[cfg(test)]
-pub(crate) fn init_test_config() {
-    let temp_path = env::temp_dir().join(format!("janusgate_test_{}.db", process::id()));
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "test host port pair parsing is infallible for valid literal"
-    )]
-    let listen = "127.0.0.1:8080".parse().unwrap();
-
-    let _ = CONFIG.set(Config {
-        listen,
-        database: DatabaseConfig {
-            path: temp_path,
-            max_connections: 4,
-        },
-        management_api: ManagementApiConfig {
-            token: "test_token".to_owned(),
-        },
-        api: ApiConfig {
-            key: "test_key".to_owned(),
-        },
-    });
-}
-
-/// Returns a shared database instance for test execution.
-///
-/// # Panics
-///
-/// Panics if configuration or database initialization fails.
-#[cfg(test)]
-pub(crate) async fn test_database() -> Database {
-    init_test_config();
-
-    static DATABASE: OnceCell<Database> = OnceCell::const_new();
-
-    DATABASE
-        .get_or_init(|| async {
-            #[expect(
-                clippy::expect_used,
-                reason = "test database initialization is fatal on failure"
-            )]
-            Database::open(
-                &crate::CONFIG.database.path,
-                crate::CONFIG.database.max_connections,
-            )
-            .await
-            .expect("failed to open test database")
-        })
-        .await
-        .clone()
 }
 
 /// Parses command-line arguments, opens the designated configuration file,

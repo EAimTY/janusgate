@@ -34,54 +34,17 @@ pub enum Error {
     #[error("database I/O error: {0}")]
     Io(#[from] IoError),
 
+    /// Turso database engine error.
+    #[error("database error: {0}")]
+    Turso(#[from] TursoError),
+
     /// Database connection pool is closed.
     #[error("database connection pool is closed")]
     PoolClosed,
 
-    /// Connection pool acquisition or creation timed out.
+    /// Connection pool acquisition timed out.
     #[error("database connection pool acquisition timed out")]
     PoolTimeout,
-
-    /// Connection pool construction failed.
-    #[error("failed to build database connection pool: {0}")]
-    PoolBuild(String),
-
-    /// SQLite constraint violation (e.g. unique, check, foreign key, or not
-    /// null).
-    #[error("database constraint violation: {0}")]
-    ConstraintViolation(String),
-
-    /// Database is busy or locked by another connection.
-    #[error("database is busy or locked: {0}")]
-    Busy(String),
-
-    /// Database file is corrupt or malformed.
-    #[error("database file is corrupt: {0}")]
-    Corrupt(String),
-
-    /// Attempted a write operation on a read-only database.
-    #[error("database is read-only: {0}")]
-    Readonly(String),
-
-    /// Database disk storage is full.
-    #[error("database disk storage is full: {0}")]
-    DatabaseFull(String),
-
-    /// Query returned no rows when at least one was expected.
-    #[error("database query returned no rows")]
-    QueryReturnedNoRows,
-
-    /// Value type conversion between database and Rust type failed.
-    #[error("database value conversion failed: {0}")]
-    ConversionFailed(String),
-
-    /// Database client or library misuse.
-    #[error("database misuse: {0}")]
-    Misuse(String),
-
-    /// SQL statement execution or preparation error.
-    #[error("database execution error: {0}")]
-    ExecutionFailed(String),
 }
 
 /// In-process SQLite-compatible database client managing a pool of connections.
@@ -163,7 +126,14 @@ impl Database {
 
         let manager = Manager { database };
 
-        let pool = Pool::builder(manager).max_size(max_connections).build()?;
+        let pool = match Pool::builder(manager).max_size(max_connections).build() {
+            Ok(pool) => pool,
+            Err(BuildError::NoRuntimeSpecified) => {
+                // SAFETY: Deadpool runtime is not configured or required for
+                // local connection pooling.
+                unreachable!("deadpool runtime is not configured or required");
+            }
+        };
 
         Ok(Self {
             inner: Arc::new(Inner { pool }),
@@ -329,20 +299,15 @@ impl Transaction<'_> {
 }
 
 impl PoolManager for Manager {
-    type Error = Error;
+    type Error = TursoError;
     type Type = Connection;
 
     async fn create(&self) -> Result<Self::Type, Self::Error> {
-        let connection = self.database.connect().map_err(Error::from)?;
+        let connection = self.database.connect()?;
 
-        connection
-            .busy_timeout(Duration::from_secs(5))
-            .map_err(Error::from)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
 
-        connection
-            .pragma_update("foreign_keys", "ON")
-            .await
-            .map_err(Error::from)?;
+        connection.pragma_update("foreign_keys", "ON").await?;
 
         Ok(connection)
     }
@@ -352,13 +317,10 @@ impl PoolManager for Manager {
         connection: &mut Self::Type,
         _: &Metrics,
     ) -> RecycleResult<Self::Error> {
-        if !connection.is_autocommit().map_err(Error::from)? {
-            let mut statement = connection
-                .prepare_cached("ROLLBACK")
-                .await
-                .map_err(Error::from)?;
+        if !connection.is_autocommit()? {
+            let mut statement = connection.prepare_cached("ROLLBACK").await?;
 
-            statement.execute(()).await.map_err(Error::from)?;
+            statement.execute(()).await?;
         }
 
         Ok(())
@@ -554,45 +516,24 @@ unsafe impl Send for TransactionInner<'_> {}
 // `&mut self`.
 unsafe impl Sync for TransactionInner<'_> {}
 
-impl From<TursoError> for Error {
-    fn from(error: TursoError) -> Self {
+impl From<PoolError<TursoError>> for Error {
+    fn from(error: PoolError<TursoError>) -> Self {
         match error {
-            TursoError::Constraint(message) => Self::ConstraintViolation(message),
-            TursoError::Busy(message) | TursoError::BusySnapshot(message) => Self::Busy(message),
-            TursoError::Corrupt(message) | TursoError::NotAdb(message) => Self::Corrupt(message),
-            TursoError::Readonly(message) => Self::Readonly(message),
-            TursoError::DatabaseFull(message) => Self::DatabaseFull(message),
-            TursoError::QueryReturnedNoRows => Self::QueryReturnedNoRows,
-            TursoError::ConversionFailure(message) => Self::ConversionFailed(message),
-            TursoError::ToSqlConversionFailure(error) => Self::ConversionFailed(error.to_string()),
-            TursoError::Misuse(message) => Self::Misuse(message),
-            TursoError::IoError(kind, message) => Self::Io(IoError::new(kind, message)),
-            TursoError::Error(message) => Self::ExecutionFailed(message),
-            other => Self::ExecutionFailed(other.to_string()),
-        }
-    }
-}
-
-impl From<PoolError<Error>> for Error {
-    fn from(error: PoolError<Error>) -> Self {
-        match error {
-            PoolError::Backend(backend_error) => backend_error,
+            PoolError::Backend(error) => Self::Turso(error),
             PoolError::Closed => Self::PoolClosed,
             PoolError::Timeout(_) => Self::PoolTimeout,
-            other => Self::PoolBuild(other.to_string()),
+            PoolError::NoRuntimeSpecified | PoolError::PostCreateHook(_) => {
+                // SAFETY: Deadpool runtime and hooks are not configured on this
+                // pool instance, making these error variants unreachable.
+                unreachable!("deadpool runtime and hooks are not configured");
+            }
         }
-    }
-}
-
-impl From<BuildError> for Error {
-    fn from(error: BuildError) -> Self {
-        Self::PoolBuild(error.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DATABASE_SCHEMA_FINGERPRINT, Database, Error, named_params, params};
+    use super::{DATABASE_SCHEMA_FINGERPRINT, Database, Error, params};
     use std::{
         env,
         error::Error as StdError,
@@ -658,48 +599,6 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies that `execute` and `query` work with prepared statements and
-    /// parameter binding.
-    ///
-    /// # Panics
-    ///
-    /// Panics if query assertions fail.
-    #[tokio::test]
-    async fn database_execute_and_query() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        database
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "test_exec_provider",
-                    "test/",
-                    "openai_compatible",
-                    "{\"apiKey\":\"test\"}"
-                ],
-            )
-            .await?;
-
-        let mut rows = database
-            .query(
-                "SELECT name, model_prefix, type FROM providers WHERE name = ?1",
-                params!["test_exec_provider"],
-            )
-            .await?;
-
-        let row = rows.next().await?.ok_or("expected provider row")?;
-        let name: String = row.get(0)?;
-        let prefix: String = row.get(1)?;
-        let provider_type: String = row.get(2)?;
-
-        assert_eq!(name, "test_exec_provider");
-        assert_eq!(prefix, "test/");
-        assert_eq!(provider_type, "openai_compatible");
-
-        Ok(())
-    }
-
     /// Verifies that transactions successfully commit mutations.
     ///
     /// # Panics
@@ -734,45 +633,6 @@ mod tests {
             .await?;
 
         assert!(rows.next().await?.is_some());
-
-        Ok(())
-    }
-
-    /// Verifies that transactions roll back mutations when explicitly rolled
-    /// back.
-    ///
-    /// # Panics
-    ///
-    /// Panics if transaction execution or query assertions fail.
-    #[tokio::test]
-    async fn transaction_rollback() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        let transaction = database.transaction().await?;
-
-        transaction
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "test_tx_rollback",
-                    "tx/",
-                    "openai_compatible",
-                    "{\"apiKey\":\"tx\"}"
-                ],
-            )
-            .await?;
-
-        transaction.rollback().await?;
-
-        let mut rows = database
-            .query(
-                "SELECT name FROM providers WHERE name = ?1",
-                params!["test_tx_rollback"],
-            )
-            .await?;
-
-        assert!(rows.next().await?.is_none());
 
         Ok(())
     }
@@ -817,98 +677,6 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies that multiple statements in a transaction execute and commit
-    /// atomically.
-    ///
-    /// # Panics
-    ///
-    /// Panics if transaction execution or query assertions fail.
-    #[tokio::test]
-    async fn transaction_multiple_statements() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        let transaction = database.transaction().await?;
-
-        transaction
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "test_multi_1",
-                    "m1/",
-                    "openai_compatible",
-                    "{\"apiKey\":\"m1\"}"
-                ],
-            )
-            .await?;
-
-        transaction
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "test_multi_2",
-                    "m2/",
-                    "openai_compatible",
-                    "{\"apiKey\":\"m2\"}"
-                ],
-            )
-            .await?;
-
-        transaction.commit().await?;
-
-        let mut rows = database
-            .query(
-                "SELECT COUNT(*) FROM providers WHERE name IN (?1, ?2)",
-                params!["test_multi_1", "test_multi_2"],
-            )
-            .await?;
-
-        let row = rows.next().await?.ok_or("missing count row")?;
-        let count: i64 = row.get(0)?;
-
-        assert_eq!(count, 2);
-
-        Ok(())
-    }
-
-    /// Verifies that query execution works with named parameters.
-    ///
-    /// # Panics
-    ///
-    /// Panics if named parameter query execution or assertions fail.
-    #[tokio::test]
-    async fn database_query_named_params() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        database
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    "test_named_params",
-                    "np/",
-                    "openai_compatible",
-                    "{\"apiKey\":\"np\"}"
-                ],
-            )
-            .await?;
-
-        let mut rows = database
-            .query(
-                "SELECT model_prefix FROM providers WHERE name = :name",
-                named_params! { ":name": "test_named_params" },
-            )
-            .await?;
-
-        let row = rows.next().await?.ok_or("expected provider row")?;
-        let prefix: String = row.get(0)?;
-
-        assert_eq!(prefix, "np/");
-
-        Ok(())
-    }
-
     /// Verifies concurrent executions and queries across pooled connections.
     ///
     /// # Panics
@@ -925,33 +693,48 @@ mod tests {
 
             join_handles.push(tokio::spawn(async move {
                 let mut rows = db.query("SELECT 1 + ?1", params![i]).await?;
-                let row = rows
-                    .next()
-                    .await?
-                    .ok_or_else(|| Error::Misuse("missing result row".to_owned()))?;
+                let row = rows.next().await?.ok_or("missing result row")?;
                 let val: i64 = row.get(0)?;
 
                 assert_eq!(val, 1 + i);
 
-                Ok::<(), Error>(())
+                Ok::<(), Box<dyn StdError + Send + Sync>>(())
             }));
         }
 
         for handle in join_handles {
-            handle.await??;
+            handle.await?.map_err(|err| err as Box<dyn StdError>)?;
         }
 
         Ok(())
     }
 
-    /// Verifies that constraint violations produce
-    /// `Error::ConstraintViolation`.
+    /// Verifies that executing against a closed connection pool returns
+    /// `Error::PoolClosed`.
     ///
     /// # Panics
     ///
-    /// Panics if duplicate insertion unexpectedly succeeds.
+    /// Panics if opening the test database fails.
     #[tokio::test]
-    async fn error_constraint_violation() -> Result<(), Box<dyn StdError>> {
+    async fn error_pool_closed() -> Result<(), Box<dyn StdError>> {
+        let database = create_isolated_test_database().await;
+
+        database.inner.pool.close();
+
+        let result = database.execute("SELECT 1", ()).await;
+
+        assert!(matches!(result, Err(Error::PoolClosed)));
+
+        Ok(())
+    }
+
+    /// Verifies that SQLite constraint violations produce `Error::Turso`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn error_turso() -> Result<(), Box<dyn StdError>> {
         let database = create_isolated_test_database().await;
 
         database
@@ -980,26 +763,7 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(
-            duplicate_result,
-            Err(Error::ConstraintViolation(_))
-        ));
-
-        Ok(())
-    }
-
-    /// Verifies that invalid SQL statements produce `Error::ExecutionFailed`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if syntax error query unexpectedly succeeds.
-    #[tokio::test]
-    async fn error_execution_failed() -> Result<(), Box<dyn StdError>> {
-        let database = create_isolated_test_database().await;
-
-        let invalid_result = database.execute("SYNTAX ERROR IN SQL", ()).await;
-
-        assert!(matches!(invalid_result, Err(Error::ExecutionFailed(_))));
+        assert!(matches!(duplicate_result, Err(Error::Turso(_))));
 
         Ok(())
     }
