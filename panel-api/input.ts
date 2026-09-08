@@ -10,7 +10,7 @@ import {
     parseUpstreamProtocol,
     requireJsonObject,
 } from "/common/validation";
-import { PROVIDER_NAME_MAX_LENGTH, type ThinkingLevel } from "/config";
+import { PROVIDER_NAME_CHARSET, PROVIDER_NAME_MAX_LENGTH, type ThinkingLevel } from "/config";
 
 /**
  * `type` present means creation intent (only API-key providers are created directly); absent
@@ -98,7 +98,7 @@ function parseProviderNameField(object: Record<string, unknown>, fieldName: stri
         return parseProviderName(value);
     } catch {
         throw new ValidationError(
-            `${fieldName} must match [a-z0-9_-]{1,${PROVIDER_NAME_MAX_LENGTH}}`,
+            `${fieldName} must match ${PROVIDER_NAME_CHARSET}{1,${PROVIDER_NAME_MAX_LENGTH}}`,
         );
     }
 }

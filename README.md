@@ -414,9 +414,9 @@ Returns enabled models sorted by public name. `owned_by`: `openai_oauth` → `"o
 {
   "object": "list",
   "data": [
-    { "id": "gemini-3-pro", "object": "model", "created": 0, "owned_by": "antigravity" },
-    { "id": "gpt-codex",    "object": "model", "created": 0, "owned_by": "openai" },
-    { "id": "oss-120b",     "object": "model", "created": 0, "owned_by": "custom" }
+    { "id": "gemini/pro",          "object": "model", "created": 0, "owned_by": "antigravity" },
+    { "id": "openrouter/oss-120b", "object": "model", "created": 0, "owned_by": "custom" },
+    { "id": "work/gpt-codex",      "object": "model", "created": 0, "owned_by": "openai" }
   ]
 }
 ```

@@ -11,7 +11,6 @@ export const panelConfig = {
     panelEndpoints: PANEL_API_ENDPOINTS,
 } as const;
 
-export type AppRoute =
-    | typeof panelConfig.routes.providers
-    | typeof panelConfig.routes.models
-    | "not-found";
+export type PanelRoute = typeof panelConfig.routes.providers | typeof panelConfig.routes.models;
+
+export type AppRoute = PanelRoute | "not-found";

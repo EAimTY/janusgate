@@ -2,7 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createSignal, Match, onSettled, Show, Switch } from "solid-js";
 import { PanelApiClient } from "./api-client";
 import { AuthOverlay } from "./auth-overlay";
-import { type AppRoute, panelConfig } from "./config";
+import { type AppRoute, type PanelRoute, panelConfig } from "./config";
 import { ModelsPage } from "./models-page";
 import { ProvidersPage } from "./providers-page";
 import { buttonPrimaryClasses, errorMessage } from "./ui";
@@ -59,19 +59,14 @@ export function App(): JSX.Element {
         }
     }
 
-    function navigate(
-        destination: typeof panelConfig.routes.providers | typeof panelConfig.routes.models,
-    ): void {
+    function navigate(destination: PanelRoute): void {
         if (window.location.pathname !== destination) {
             window.history.pushState(null, "", destination);
         }
         setRoute(destination);
     }
 
-    function handleNavigationClick(
-        event: MouseEvent,
-        destination: typeof panelConfig.routes.providers | typeof panelConfig.routes.models,
-    ): void {
+    function handleNavigationClick(event: MouseEvent, destination: PanelRoute): void {
         if (
             event.button !== 0 ||
             event.metaKey ||
@@ -105,6 +100,29 @@ export function App(): JSX.Element {
     const navigationLinkClasses =
         "flex items-center gap-3 rounded-[11px] border border-transparent px-3.5 py-3 text-sm font-[650] text-[#9ba89f] no-underline transition-colors duration-150 hover:bg-white/4 hover:text-[#eff8f2] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[#29a66f]/25 max-[820px]:gap-1.5 max-[820px]:px-2.5 max-[820px]:py-2";
     const activeNavigationLinkClasses = "border-[#58d797]/14 bg-[#29a66f]/16 text-[#eafff2]";
+
+    /**
+     * Shared scaffold for the sidebar's primary navigation anchors. Local to `App` so it closes
+     * over the route signal and the click handler; `App`'s body runs once, so the component is
+     * created once.
+     */
+    function NavLink(props: { destination: PanelRoute; icon: string; label: string }): JSX.Element {
+        return (
+            <a
+                class={`${navigationLinkClasses} ${
+                    route() === props.destination ? activeNavigationLinkClasses : ""
+                }`}
+                href={props.destination}
+                aria-current={route() === props.destination ? "page" : undefined}
+                onClick={(event) => handleNavigationClick(event, props.destination)}
+            >
+                <span class="grid size-[25px] place-items-center rounded-[7px] bg-[#29a66f]/11 text-[17px] text-[#58d797] max-[820px]:hidden">
+                    {props.icon}
+                </span>
+                {props.label}
+            </a>
+        );
+    }
 
     return (
         <Show
@@ -144,44 +162,16 @@ export function App(): JSX.Element {
                         class="grid gap-[7px] max-[820px]:flex"
                         aria-label="Primary navigation"
                     >
-                        <a
-                            class={`${navigationLinkClasses} ${
-                                route() === panelConfig.routes.providers
-                                    ? activeNavigationLinkClasses
-                                    : ""
-                            }`}
-                            href={panelConfig.routes.providers}
-                            aria-current={
-                                route() === panelConfig.routes.providers ? "page" : undefined
-                            }
-                            onClick={(event) =>
-                                handleNavigationClick(event, panelConfig.routes.providers)
-                            }
-                        >
-                            <span class="grid size-[25px] place-items-center rounded-[7px] bg-[#29a66f]/11 text-[17px] text-[#58d797] max-[820px]:hidden">
-                                ⌁
-                            </span>
-                            Providers
-                        </a>
-                        <a
-                            class={`${navigationLinkClasses} ${
-                                route() === panelConfig.routes.models
-                                    ? activeNavigationLinkClasses
-                                    : ""
-                            }`}
-                            href={panelConfig.routes.models}
-                            aria-current={
-                                route() === panelConfig.routes.models ? "page" : undefined
-                            }
-                            onClick={(event) =>
-                                handleNavigationClick(event, panelConfig.routes.models)
-                            }
-                        >
-                            <span class="grid size-[25px] place-items-center rounded-[7px] bg-[#29a66f]/11 text-[17px] text-[#58d797] max-[820px]:hidden">
-                                ◇
-                            </span>
-                            Models
-                        </a>
+                        <NavLink
+                            destination={panelConfig.routes.providers}
+                            icon="⌁"
+                            label="Providers"
+                        />
+                        <NavLink
+                            destination={panelConfig.routes.models}
+                            icon="◇"
+                            label="Models"
+                        />
                     </nav>
                     <div class="mt-auto grid gap-3 border-t border-white/8 px-2.5 pt-[17px] pb-1 max-[820px]:hidden">
                         <div class="flex items-center gap-2 text-xs text-[#a8b4ac]">
