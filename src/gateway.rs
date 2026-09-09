@@ -10,7 +10,7 @@ use crate::{
     provider::{Credentials, ModelRouting, ProviderType, oauth, storage},
     sse::{SseFrame, SseParser},
 };
-use futures_core::Stream;
+use futures::Stream;
 use reqwest::Client;
 use std::pin::Pin;
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};

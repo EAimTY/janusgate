@@ -1,20 +1,20 @@
 //! Build-time database schema fingerprinter.
 //!
 //! This script computes a canonical schema fingerprint for the SQLite database
-//! schema in `DATABASE.sqlite` and writes it to
+//! schema in `SCHEMA.sqlite` and writes it to
 //! `$OUT_DIR/database_schema_fingerprint`.
 
 use std::{env, error::Error as StdError, fs, path::PathBuf};
 use syntaqlite::{FormatConfig, Formatter, fmt::KeywordCase};
 
 /// Relative path to the canonical database schema file.
-const DATABASE_SCHEMA_PATH: &str = "DATABASE.sqlite";
+const DATABASE_SCHEMA_PATH: &str = "src/database/SCHEMA.sqlite";
 
 /// Computes the database schema fingerprint and emits build artifacts.
 ///
 /// # Errors
 ///
-/// Returns an error if reading `DATABASE.sqlite`, formatting, hashing, or
+/// Returns an error if reading `SCHEMA.sqlite`, formatting, hashing, or
 /// writing the fingerprint file fails.
 fn main() -> Result<(), Box<dyn StdError>> {
     println!("cargo::rerun-if-changed={DATABASE_SCHEMA_PATH}");

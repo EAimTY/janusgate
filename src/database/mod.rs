@@ -26,7 +26,7 @@ const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(conc
 )));
 
 /// Canonical SQLite DDL schema embedded at compile time.
-const DATABASE_SCHEMA: &str = include_str!("../DATABASE.sqlite");
+const DATABASE_SCHEMA: &str = include_str!("SCHEMA.sqlite");
 
 /// Database operation, connection pool, and storage engine errors.
 #[derive(Debug, thiserror::Error)]

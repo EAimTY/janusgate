@@ -103,7 +103,7 @@ The server architecture separates low-level connection driving from hierarchical
 
 ## 3. Storage & Schema (Turso)
 
-The database runs in-process via `turso` with SQLite-compatible syntax and strict column typing. `DATABASE.sqlite` is the canonical source of truth for the complete schema.
+The database runs in-process via `turso` with SQLite-compatible syntax and strict column typing. `src/database/SCHEMA.sqlite` is the canonical source of truth for the complete schema.
 
 ### Database Abstraction & Connection Pooling
 - **Connection Pool**: Database access is managed through an in-process connection pool (`deadpool`), maintaining up to `database.max_connections` concurrent `turso::Connection` instances. When every connection is checked out, connection acquisition waits at most `database.pool_timeout` milliseconds before failing with `PoolTimeout`.
@@ -113,9 +113,9 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 - **Error Domain**: The database module defines an `Error` enum using `thiserror` that directly wraps underlying Turso engine errors (`Turso`), alongside pool lifecycle errors (`PoolClosed`, `PoolTimeout`), filesystem I/O (`Io`), and invalid UTF-8 database path errors (`InvalidPath`). Connection pool errors with a backend cause are merged directly into `Turso`.
 - **No Global Database Static**: The database is opened via `Database::open(path, max_connections, pool_timeout)` during startup, yielding an owned `Database` instance that is passed to `server::run()` and injected into the Axum router hierarchy as shared state.
 - **Schema Fingerprint Verification**:
-  - During build time (`build.rs`), `DATABASE.sqlite` is canonicalized via `syntaqlite`, hashed with BLAKE3, and truncated to a non-zero 32-bit big-endian signed integer stored in `$OUT_DIR/database_schema_fingerprint`.
+  - During build time (`build.rs`), `src/database/SCHEMA.sqlite` is canonicalized via `syntaqlite`, hashed with BLAKE3, and truncated to a non-zero 32-bit big-endian signed integer stored in `$OUT_DIR/database_schema_fingerprint`.
   - On startup, `Database::open()` opens the Turso database and inspects `PRAGMA user_version`:
-    - **Fresh Database (`user_version == 0`)**: JanusGate executes the canonical DDL schema from `DATABASE.sqlite` together with the compiled schema fingerprint write inside a single atomic transaction, so a crash can never persist a partially applied schema.
+    - **Fresh Database (`user_version == 0`)**: JanusGate executes the canonical DDL schema from `src/database/SCHEMA.sqlite` together with the compiled schema fingerprint write inside a single atomic transaction, so a crash can never persist a partially applied schema.
     - **Compatible Database (`user_version == DATABASE_SCHEMA_FINGERPRINT`)**: The database schema is verified and startup proceeds.
     - **Incompatible Database (any other value)**: JanusGate panics immediately, failing fast to prevent execution against an invalid schema.
 

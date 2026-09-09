@@ -8,7 +8,6 @@ use crate::{
     unix_time,
 };
 use base64::{Engine as _, engine::general_purpose};
-use rand::RngCore;
 use reqwest::Client;
 use sha2::{Digest as _, Sha256};
 use std::time::Duration;
@@ -646,7 +645,7 @@ fn jwt_claim(jwt: &str, path: &[&str]) -> Option<serde_json::Value> {
 fn random_url_safe(byte_count: usize) -> String {
     let mut bytes = vec![0_u8; byte_count];
 
-    rand::rng().fill_bytes(&mut bytes);
+    rand::fill(&mut bytes[..]);
 
     general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
@@ -730,5 +729,87 @@ fn truncate_excerpt(body: &str) -> String {
         let excerpt: String = body.chars().take(MAX_CHARS).collect();
 
         format!("{excerpt}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that random_url_safe produces the expected number of random
+    /// bytes encoded in unpadded URL-safe Base64 and that consecutive
+    /// outputs are distinct.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails or base64 decoding fails.
+    #[test]
+    fn random_url_safe_produces_valid_unpadded_base64() {
+        let state = random_url_safe(32);
+        let verifier = random_url_safe(64);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "state is generated as valid unpadded URL-safe Base64"
+        )]
+        let decoded_state = general_purpose::URL_SAFE_NO_PAD
+            .decode(&state)
+            .expect("state should be valid unpadded url-safe base64");
+        assert_eq!(decoded_state.len(), 32);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "verifier is generated as valid unpadded URL-safe Base64"
+        )]
+        let decoded_verifier = general_purpose::URL_SAFE_NO_PAD
+            .decode(&verifier)
+            .expect("verifier should be valid unpadded url-safe base64");
+        assert_eq!(decoded_verifier.len(), 64);
+
+        let second_state = random_url_safe(32);
+        assert_ne!(state, second_state);
+    }
+
+    /// Verifies that truncate_excerpt preserves short text and bounds long
+    /// text.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn truncate_excerpt_bounds_length() {
+        let short = "short body";
+        assert_eq!(truncate_excerpt(short), short);
+
+        let long = "a".repeat(500);
+        let truncated = truncate_excerpt(&long);
+        assert_eq!(truncated.chars().count(), 401);
+        assert!(truncated.ends_with('…'));
+    }
+
+    /// Verifies that jwt_claim retrieves nested claims from a mock JWT.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn jwt_claim_retrieves_nested_values() {
+        let payload = serde_json::json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "test-account-id"
+            },
+            "exp": 2_000_000_000
+        });
+        let encoded_payload = general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string());
+        let mock_jwt = format!("header.{encoded_payload}.signature");
+
+        let claim = jwt_claim(
+            &mock_jwt,
+            &["https://api.openai.com/auth", "chatgpt_account_id"],
+        );
+        assert_eq!(claim, Some(serde_json::json!("test-account-id")));
+
+        let missing = jwt_claim(&mock_jwt, &["nonexistent"]);
+        assert_eq!(missing, None);
     }
 }
