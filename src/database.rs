@@ -17,7 +17,7 @@ mod tests;
 // The re-exported items double as the module's own imports: `Row` and
 // `IntoParams` appear in this module's signatures.
 #[allow(unused_imports)]
-pub use turso::{IntoParams, Params, Row, Value, named_params, params};
+pub use turso::{IntoParams, Params, Row, Value, named_params, params, params_from_iter};
 
 /// Non-zero 32-bit big-endian schema fingerprint computed at compile time.
 const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(concat!(

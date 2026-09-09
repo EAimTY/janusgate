@@ -33,12 +33,13 @@ CREATE TABLE models (
     PRIMARY KEY (provider_id, upstream_name)
 ) STRICT;
 
+-- A pending OAuth authorization flow. `verifier` is the PKCE code verifier for openai_oauth
+-- and the empty string for antigravity_oauth, which authenticates its exchange by client secret.
 CREATE TABLE oauth_states (
     id Integer PRIMARY KEY,
     type Text NOT NULL,
     state Text NOT NULL UNIQUE,
     verifier Text NOT NULL,
-    provider_id Integer NULL REFERENCES providers(id) ON DELETE CASCADE,
     expires_at Integer NOT NULL
 ) STRICT;
 

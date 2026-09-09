@@ -1,7 +1,7 @@
 //! Plaintext HTTP server lifecycle and connection driving.
 
 use super::{api, database::Database, management_api};
-use axum::Router;
+use axum::{Router, http::StatusCode};
 use host_port_pair::Host;
 use hserver::{ConnectionBuilder, Server};
 use socket2::{Domain, Protocol, SockAddr, Socket as Socket2, Type};
@@ -42,6 +42,7 @@ fn router(database: Database) -> Router {
     Router::new()
         .nest("/api", api::router())
         .nest("/management-api", management_api::router())
+        .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(database)
 }
 

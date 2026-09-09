@@ -1,12 +1,12 @@
 #![doc = include_str!("../README.md")]
 #![recursion_limit = "256"]
-#![allow(dead_code)]
 
 use crate::database::Database;
 use deref_once_lock::OnceLock;
 use host_port_pair::HostPortPair;
 use json_strip_comments::StripComments;
 use lexopt::{Arg as Argument, Parser as ArgumentsParser};
+use reqwest::Client;
 use serde::Deserialize;
 use serde_with::{As, DurationMilliSeconds};
 use std::{
@@ -16,13 +16,26 @@ use tokio::main;
 
 mod api;
 mod database;
+mod error;
+mod format;
+mod gateway;
+mod ids;
+mod ir;
 mod management_api;
+mod provider;
+mod security;
 mod server;
+mod sse;
+mod unix_time;
 
 /// Global read-only application configuration, initialized once during process
 /// startup and accessible throughout the crate without synchronization
 /// overhead.
 static CONFIG: OnceLock<Config> = OnceLock::new();
+
+/// Global shared HTTP client used for every upstream request, initialized
+/// once during process startup.
+static HTTP: OnceLock<Client> = OnceLock::new();
 
 /// Root gateway configuration schema.
 ///
@@ -101,6 +114,21 @@ async fn main() -> ! {
 
     #[expect(
         clippy::expect_used,
+        reason = "building the HTTP client at startup is fatal on failure"
+    )]
+    let http = Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .expect("failed to build HTTP client");
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "HTTP is initialized exactly once at application startup"
+    )]
+    HTTP.set(http).unwrap();
+
+    #[expect(
+        clippy::expect_used,
         reason = "opening database at startup is fatal on failure"
     )]
     let database = Database::open(
@@ -112,6 +140,20 @@ async fn main() -> ! {
     .expect("failed to open database");
 
     server::run(database).await
+}
+
+/// Returns the global shared HTTP client.
+///
+/// # Panics
+///
+/// Panics when called before startup initialization, which only a startup
+/// ordering bug can cause.
+pub(crate) fn http() -> &'static Client {
+    #[expect(
+        clippy::expect_used,
+        reason = "HTTP is initialized exactly once at application startup"
+    )]
+    HTTP.get().expect("HTTP client is initialized at startup")
 }
 
 /// Parses command-line arguments, opens the designated configuration file,
@@ -185,6 +227,12 @@ fn set_panic_hook() {
 
 #[cfg(test)]
 mod tests {
+    /// Replaces the global configuration for router-level tests; only the
+    /// first call per process succeeds and later calls are ignored.
+    pub(crate) fn set_config_for_tests(config: super::Config) {
+        let _ = crate::CONFIG.set(config);
+    }
+
     #[test]
     fn parses_config_example() {
         let _config = super::parse_config(["janusgate", "-c", "config.example.jsonc"]);
