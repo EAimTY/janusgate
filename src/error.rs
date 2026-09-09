@@ -201,7 +201,17 @@ impl ApiError {
                 400 => "invalid_request",
                 404 => "not_found",
                 409 => "conflict",
-                _ => "internal",
+
+                // SAFETY: every InvalidRequest constructor pins status 400
+                // (`invalid_request` / `invalid_parameter`), 404
+                // (`not_found` / `model_not_found`), or 409 (`conflict`), so
+                // no other status can reach this arm; reaching it would mean
+                // a constructor bug that must fail fast instead of silently
+                // borrowing the `internal` management category.
+                _ => unreachable!(
+                    "InvalidRequest errors carry status 400, 404, or 409, never {}",
+                    self.status
+                ),
             },
         };
 

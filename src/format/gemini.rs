@@ -12,6 +12,7 @@ use crate::{
     ir::{
         IrEvent, IrFinishReason, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice,
     },
+    provider::endpoints,
     sse::SseFrame,
 };
 use serde_json::Value;
@@ -38,7 +39,7 @@ pub(crate) fn render_antigravity_request(
         "model": upstream_name,
         "request": render_generate_content_request(ir)?,
         "requestType": "agent",
-        "userAgent": "antigravity",
+        "userAgent": endpoints::ANTIGRAVITY_USER_AGENT,
         "requestId": format!("agent-{}", new_uuid()),
     });
 
@@ -512,8 +513,6 @@ fn finish_reason_from_gemini(value: &str) -> IrFinishReason {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests fail by panicking")]
-#[expect(clippy::indexing_slicing, reason = "tests assert exact fixture shapes")]
 mod tests {
     use super::{
         UpstreamParser, render_antigravity_request, render_compatible_request,
@@ -559,11 +558,20 @@ mod tests {
     /// Panics if frame parsing fails.
     fn ingest(parser: &mut UpstreamParser, raw: &str) -> Vec<IrEvent> {
         let mut sse = SseParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the streamed fixture text is well-formed SSE"
+        )]
         let frames = sse.ingest(raw.as_bytes()).expect("frames should parse");
 
         let mut events = Vec::new();
 
         for frame in frames {
+            #[expect(
+                clippy::expect_used,
+                reason = "every fixture frame is a valid Gemini payload"
+            )]
             events.append(&mut parser.ingest_frame(&frame).expect("frame should ingest"));
         }
 
@@ -574,9 +582,13 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics when the path is missing; tests assert on exact fixture shapes.
+    /// Panics when the path is missing; tests query only paths their own
+    /// fixtures define.
     fn json_str<'a>(value: &'a Value, path: &[&str]) -> &'a str {
-        #[expect(clippy::expect_used, reason = "tests assert exact fixture shapes")]
+        #[expect(
+            clippy::expect_used,
+            reason = "tests query only paths their own fixtures define"
+        )]
         json_at(value, path)
             .as_str()
             .expect("path exists and is a string")
@@ -586,9 +598,13 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics when the path is missing; tests assert on exact fixture shapes.
+    /// Panics when the path is missing; tests query only paths their own
+    /// fixtures define.
     fn json_u64(value: &Value, path: &[&str]) -> u64 {
-        #[expect(clippy::expect_used, reason = "tests assert exact fixture shapes")]
+        #[expect(
+            clippy::expect_used,
+            reason = "tests query only paths their own fixtures define"
+        )]
         json_at(value, path)
             .as_u64()
             .expect("path exists and is a number")
@@ -598,7 +614,8 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics when the path is missing; tests assert on exact fixture shapes.
+    /// Panics when the path is missing; tests query only paths their own
+    /// fixtures define.
     fn json_at<'a>(value: &'a Value, path: &[&str]) -> &'a Value {
         let mut current = value;
 
@@ -607,6 +624,11 @@ mod tests {
                 Ok(index) => current.get(index),
                 Err(_) => current.get(*segment),
             };
+
+            #[expect(
+                clippy::expect_used,
+                reason = "every path segment is defined by the fixture being asserted"
+            )]
             let resolved = next.expect("path segment exists in fixture");
 
             current = resolved;
@@ -625,6 +647,7 @@ mod tests {
     fn antigravity_envelope_matches_contract() {
         let ir = sample_request();
 
+        #[expect(clippy::expect_used, reason = "the sample request always renders")]
         let (url, envelope) = render_antigravity_request(
             &ir,
             "https://codeassist.internal/v1internal",
@@ -702,6 +725,7 @@ mod tests {
     fn compatible_request_url_appends_model_and_action() {
         let ir = sample_request();
 
+        #[expect(clippy::expect_used, reason = "the sample request always renders")]
         let (url, body) =
             render_compatible_request(&ir, "https://upstream.internal/", "gemini-2.5-pro", true)
                 .expect("should render");
@@ -745,6 +769,10 @@ mod tests {
                 }],
             },
         ];
+        #[expect(
+            clippy::expect_used,
+            reason = "a request replaying a known tool call always renders"
+        )]
         let request = render_generate_content_request(&ir).expect("should render");
 
         assert_eq!(json_str(&request, &["contents", "0", "role"]), "model");
@@ -808,6 +836,7 @@ mod tests {
                 content: "{}".to_string(),
             }],
         }];
+        #[expect(clippy::expect_used, reason = "the test asserts this exact rejection")]
         let error =
             render_generate_content_request(&ir).expect_err("unresolvable output must fail");
 
@@ -843,6 +872,10 @@ mod tests {
                 ),
             ),
         );
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the fixture's first frame emits MessageStart first"
+        )]
         let first = &events[0];
 
         assert_eq!(
@@ -855,6 +888,10 @@ mod tests {
 
         assert!(events.contains(&IrEvent::ReasoningDelta("thinking".to_string())));
         assert!(events.contains(&IrEvent::TextDelta("answer".to_string())));
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture carries exactly one tool call"
+        )]
         let done = events
             .iter()
             .find_map(|event| match event {
@@ -882,6 +919,11 @@ mod tests {
     #[test]
     fn upstream_error_objects_map_to_502_with_embedded_code() {
         let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the test asserts each embedded error object is rejected"
+        )]
         let error = parser
             .ingest_frame(&crate::sse::SseFrame {
                 event: None,
@@ -896,6 +938,11 @@ mod tests {
 
         // A nonsense 2xx embedded code must not render a success status.
         let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the test asserts each embedded error object is rejected"
+        )]
         let error = parser
             .ingest_frame(&crate::sse::SseFrame {
                 event: None,

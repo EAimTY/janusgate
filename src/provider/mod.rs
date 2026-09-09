@@ -87,6 +87,11 @@ pub(crate) enum Credentials {
 impl Credentials {
     /// Parses credentials JSON for the given provider type.
     ///
+    /// Every arm enforces its exact field set: an unknown field is rejected
+    /// with an [`ApiError`] naming it, because a tolerated extra field — such
+    /// as an admin-pasted `expiresAt` — would be silently dropped on storage
+    /// and change the credentials' semantics without notice.
+    ///
     /// # Errors
     ///
     /// Returns [`ApiError`] when the payload does not match the shape
@@ -113,29 +118,36 @@ impl Credentials {
         };
 
         match provider_type {
-            ProviderType::OpenAiOauth => Ok(Self::OpenAiOauth {
-                access_token: field("accessToken")?,
-                refresh_token: field("refreshToken")?,
-                account_id: field("accountId")?,
-            }),
+            ProviderType::OpenAiOauth => {
+                ensure_exact_credential_fields(
+                    &value,
+                    &["accessToken", "refreshToken", "accountId"],
+                )?;
 
-            ProviderType::AntigravityOauth => Ok(Self::AntigravityOauth {
-                access_token: field("accessToken")?,
-                refresh_token: field("refreshToken")?,
-                project_id: field("projectId")?,
-            }),
+                Ok(Self::OpenAiOauth {
+                    access_token: field("accessToken")?,
+                    refresh_token: field("refreshToken")?,
+                    account_id: field("accountId")?,
+                })
+            }
+
+            ProviderType::AntigravityOauth => {
+                ensure_exact_credential_fields(
+                    &value,
+                    &["accessToken", "refreshToken", "projectId"],
+                )?;
+
+                Ok(Self::AntigravityOauth {
+                    access_token: field("accessToken")?,
+                    refresh_token: field("refreshToken")?,
+                    project_id: field("projectId")?,
+                })
+            }
 
             ProviderType::OpenAiCompatible => {
-                let api_key = field("apiKey")?;
+                ensure_exact_credential_fields(&value, &["apiKey"])?;
 
-                if value.as_object().is_some_and(|object| object.len() != 1) {
-                    return Err(ApiError::invalid_parameter(
-                        "credentials",
-                        "API key credentials must carry only an `apiKey` field",
-                    ));
-                }
-
-                Ok(Self::ApiKey(api_key))
+                Ok(Self::ApiKey(field("apiKey")?))
             }
         }
     }
@@ -330,5 +342,135 @@ pub(crate) fn validate_provider_name(name: &str) -> Result<(), ApiError> {
             "name",
             "Provider names must match [a-z0-9_-]{1,64}",
         ))
+    }
+}
+
+/// Rejects a credentials payload carrying fields outside the provider type's
+/// exact field set. Non-object payloads are accepted here; they fail the
+/// required-field checks that follow.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] naming the first unknown field.
+fn ensure_exact_credential_fields(
+    value: &serde_json::Value,
+    allowed_fields: &[&str],
+) -> Result<(), ApiError> {
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+
+    for field_name in object.keys() {
+        if !allowed_fields.contains(&field_name.as_str()) {
+            let allowed = allowed_fields.join("`, `");
+
+            return Err(ApiError::invalid_parameter(
+                "credentials",
+                format!("Credentials carry an unknown `{field_name}` field; allowed: `{allowed}`"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies both OAuth credential arms reject payloads carrying fields
+    /// outside their exact field set, naming the unknown field: a tolerated
+    /// extra field — such as an admin-pasted `expiresAt` — would be silently
+    /// dropped on storage and change the credentials' semantics without
+    /// notice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn oauth_credentials_reject_unknown_fields() {
+        for (provider_type, json) in [
+            (
+                ProviderType::OpenAiOauth,
+                r#"{"accessToken":"a","refreshToken":"r","accountId":"x","expiresAt":123}"#,
+            ),
+            (
+                ProviderType::AntigravityOauth,
+                r#"{"accessToken":"a","refreshToken":"r","projectId":"p","expiresAt":123}"#,
+            ),
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the extra field must make parsing fail; the failure is the subject"
+            )]
+            let error = Credentials::parse(provider_type, json)
+                .expect_err("an unknown credentials field must be rejected");
+
+            assert_eq!(error.status, 400);
+            assert_eq!(error.param.as_deref(), Some("credentials"));
+            assert!(
+                error.message.contains("expiresAt"),
+                "the error must name the unknown field: {error}"
+            );
+        }
+    }
+
+    /// Verifies exact-field OAuth payloads still parse into their credential
+    /// values, and the API key arm keeps rejecting extra fields.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn credentials_parse_exact_field_sets() {
+        #[expect(
+            clippy::expect_used,
+            reason = "exact-field credentials are well-formed by construction"
+        )]
+        let openai = Credentials::parse(
+            ProviderType::OpenAiOauth,
+            r#"{"accessToken":"a","refreshToken":"r","accountId":"x"}"#,
+        )
+        .expect("exact OpenAI OAuth credentials must parse");
+
+        assert_eq!(
+            openai,
+            Credentials::OpenAiOauth {
+                access_token: "a".to_string(),
+                refresh_token: "r".to_string(),
+                account_id: "x".to_string(),
+            }
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "exact-field credentials are well-formed by construction"
+        )]
+        let antigravity = Credentials::parse(
+            ProviderType::AntigravityOauth,
+            r#"{"accessToken":"a","refreshToken":"r","projectId":"p"}"#,
+        )
+        .expect("exact Antigravity OAuth credentials must parse");
+
+        assert_eq!(
+            antigravity,
+            Credentials::AntigravityOauth {
+                access_token: "a".to_string(),
+                refresh_token: "r".to_string(),
+                project_id: "p".to_string(),
+            }
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the extra field must make parsing fail; the failure is the subject"
+        )]
+        let api_key = Credentials::parse(
+            ProviderType::OpenAiCompatible,
+            r#"{"apiKey":"k","extra":true}"#,
+        )
+        .expect_err("api key credentials with extra fields must be rejected");
+
+        assert_eq!(api_key.status, 400);
     }
 }

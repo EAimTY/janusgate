@@ -6,22 +6,10 @@
 //! connection that later poisons recycling have no public API surface.
 
 use super::{Database, Error, Value, params};
-use std::{
-    env,
-    error::Error as StdError,
-    fs,
-    num::NonZero,
-    path::{Path, PathBuf},
-    process,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use crate::test_support;
+use std::{env, error::Error as StdError, fs, time::Duration};
 #[cfg(unix)]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
-
-/// Monotonic counter making every test database path unique within the
-/// process.
-static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// SQL inserting one canonical provider row with positional parameters.
 const INSERT_PROVIDER: &str = "INSERT INTO providers (name, model_prefix, type, credentials) \
@@ -36,70 +24,6 @@ const TEST_POOL_SIZE: usize = 4;
 /// Pool timeout long enough that tests exercising unrelated behavior never
 /// observe an acquisition timeout.
 const TEST_POOL_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Builds the unique file-system entry name shared by every test path:
-/// `janusgate_database_test{suffix}_{process id}_{counter}`.
-///
-/// The process id and a monotonically increasing counter make tests running
-/// concurrently within one process, and reruns after a crashed process,
-/// never collide on a file-system entry.
-fn unique_test_name(suffix: &str) -> String {
-    let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    format!(
-        "janusgate_database_test{suffix}_{}_{unique_id}",
-        process::id()
-    )
-}
-
-/// Returns a unique database file path inside the system temporary directory.
-fn unique_database_path() -> PathBuf {
-    env::temp_dir().join(format!("{}.db", unique_test_name("")))
-}
-
-/// Converts a pool size into a non-zero connection count.
-///
-/// # Panics
-///
-/// Panics if the pool size is zero.
-fn pool_size(connections: usize) -> NonZero<usize> {
-    #[expect(
-        clippy::expect_used,
-        reason = "every call site passes a non-zero pool size"
-    )]
-    NonZero::new(connections).expect("pool size is non-zero")
-}
-
-/// Opens an isolated test database at `path` with the given pool settings.
-///
-/// # Panics
-///
-/// Panics if opening the test database fails.
-async fn open_test_database(
-    path: &Path,
-    max_connections: usize,
-    pool_timeout: Duration,
-) -> Database {
-    #[expect(
-        clippy::expect_used,
-        reason = "opening the test database is fatal on failure"
-    )]
-    let database = Database::open(path, pool_size(max_connections), pool_timeout)
-        .await
-        .expect("failed to open isolated test database");
-
-    database
-}
-
-/// Builds positional parameters inserting one canonical provider row.
-fn provider_params(name: &str, model_prefix: &str) -> [Value; 4] {
-    [
-        name.into(),
-        model_prefix.into(),
-        "openai_compatible".into(),
-        TEST_CREDENTIALS.into(),
-    ]
-}
 
 /// Inserts one canonical provider row and asserts the write reports exactly
 /// one changed row.
@@ -116,13 +40,21 @@ async fn insert_provider(
     name: &str,
     model_prefix: &str,
 ) -> Result<(), Box<dyn StdError>> {
-    let changes = database
-        .execute(INSERT_PROVIDER, provider_params(name, model_prefix))
-        .await?;
+    let changes = test_support::seed_minimal_provider(database, name, model_prefix, "test").await?;
 
     assert_eq!(changes, 1);
 
     Ok(())
+}
+
+/// Builds positional parameters inserting one canonical provider row.
+fn provider_params(name: &str, model_prefix: &str) -> [Value; 4] {
+    [
+        name.into(),
+        model_prefix.into(),
+        "openai_compatible".into(),
+        TEST_CREDENTIALS.into(),
+    ]
 }
 
 /// Queries a single integer from the first column of a statement that must
@@ -149,9 +81,8 @@ async fn query_single_integer(database: &Database, sql: &str) -> Result<i64, Box
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn open_applies_canonical_schema_to_fresh_database() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let user_version = query_single_integer(&database, "PRAGMA user_version").await?;
 
@@ -178,7 +109,8 @@ async fn open_applies_canonical_schema_to_fresh_database() -> Result<(), Box<dyn
         );
     }
 
-    let reopened_database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let reopened_database =
+        test_support::open_test_database_at(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let user_version = query_single_integer(&reopened_database, "PRAGMA user_version").await?;
 
@@ -198,9 +130,15 @@ async fn open_applies_canonical_schema_to_fresh_database() -> Result<(), Box<dyn
 #[tokio::test]
 #[should_panic(expected = "schema fingerprint mismatch")]
 async fn open_panics_on_incompatible_schema_fingerprint() {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    // The first open takes the fresh-database path; its failure is setup
+    // breakage, so it fails the test directly.
+    #[expect(
+        clippy::expect_used,
+        reason = "opening the fresh test database is fatal on failure"
+    )]
+    let (database, path) = test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT)
+        .await
+        .expect("fresh test database should open");
 
     // Record a plausible but incompatible fingerprint.
     let tampered_version = super::DATABASE_SCHEMA_FINGERPRINT.wrapping_sub(1);
@@ -216,7 +154,8 @@ async fn open_panics_on_incompatible_schema_fingerprint() {
 
     drop(database);
 
-    let _ = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    // The reopening panics by contract before any result can be produced.
+    let _ = test_support::open_test_database_at(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
 }
 
 /// Verifies that opening a database creates every missing parent directory.
@@ -226,11 +165,12 @@ async fn open_panics_on_incompatible_schema_fingerprint() {
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn open_creates_missing_parent_directories() -> Result<(), Box<dyn StdError>> {
-    let directory = env::temp_dir().join(unique_test_name("_dir"));
+    let directory = test_support::unique_temp_path("database_test_dir");
 
     let path = directory.join("nested").join("gateway.db");
 
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let database =
+        test_support::open_test_database_at(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let provider_count = query_single_integer(&database, "SELECT COUNT(*) FROM providers").await?;
 
@@ -249,13 +189,13 @@ async fn open_creates_missing_parent_directories() -> Result<(), Box<dyn StdErro
 /// Panics if creating the blocking file fails.
 #[tokio::test]
 async fn open_reports_io_error_when_parent_is_a_file() -> Result<(), Box<dyn StdError>> {
-    let blocker_path = unique_database_path();
+    let blocker_path = test_support::unique_temp_path("database_test_blocker");
 
     fs::write(&blocker_path, b"")?;
 
     let result = Database::open(
         blocker_path.join("gateway.db"),
-        pool_size(TEST_POOL_SIZE),
+        test_support::pool_size(TEST_POOL_SIZE),
         TEST_POOL_TIMEOUT,
     )
     .await;
@@ -277,14 +217,19 @@ async fn open_reports_io_error_when_parent_is_a_file() -> Result<(), Box<dyn Std
 #[cfg(unix)]
 async fn open_rejects_non_utf8_path() -> Result<(), Box<dyn StdError>> {
     // 0xff can never appear in valid UTF-8, so `to_str` must reject the path.
-    let mut file_name = format!("janusgate_database_test_{}_not_utf8_", process::id()).into_bytes();
+    let mut file_name = test_support::unique_temp_name("database_test_not_utf8").into_bytes();
 
     file_name.push(0xff);
     file_name.extend_from_slice(b".db");
 
     let path = env::temp_dir().join(OsStr::from_bytes(&file_name));
 
-    let result = Database::open(path, pool_size(TEST_POOL_SIZE), TEST_POOL_TIMEOUT).await;
+    let result = Database::open(
+        path,
+        test_support::pool_size(TEST_POOL_SIZE),
+        TEST_POOL_TIMEOUT,
+    )
+    .await;
 
     assert!(matches!(result, Err(Error::InvalidPath(_))));
 
@@ -305,7 +250,8 @@ async fn open_rejects_non_utf8_path_without_creating_parents() -> Result<(), Box
     // parent directory name before any filesystem mutation can target it.
     // On Linux, `create_dir_all` would otherwise succeed on the invalid name,
     // making the missing validation observable.
-    let mut directory_name = unique_test_name("_dir_not_utf8").into_bytes();
+    let mut directory_name =
+        test_support::unique_temp_name("database_test_dir_not_utf8").into_bytes();
 
     directory_name.push(0xff);
 
@@ -313,7 +259,12 @@ async fn open_rejects_non_utf8_path_without_creating_parents() -> Result<(), Box
 
     let path = directory.join("gateway.db");
 
-    let result = Database::open(path, pool_size(TEST_POOL_SIZE), TEST_POOL_TIMEOUT).await;
+    let result = Database::open(
+        path,
+        test_support::pool_size(TEST_POOL_SIZE),
+        TEST_POOL_TIMEOUT,
+    )
+    .await;
 
     assert!(matches!(result, Err(Error::InvalidPath(_))));
 
@@ -333,9 +284,8 @@ async fn open_rejects_non_utf8_path_without_creating_parents() -> Result<(), Box
 /// Panics if the scratch table, inserts, or value assertions fail.
 #[tokio::test]
 async fn query_materializes_typed_values_and_nulls() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     database
         .execute(
@@ -410,9 +360,8 @@ async fn query_materializes_typed_values_and_nulls() -> Result<(), Box<dyn StdEr
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn foreign_keys_are_enforced_on_pooled_connections() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let orphaned_insert = database
         .execute(
@@ -450,9 +399,8 @@ async fn foreign_keys_are_enforced_on_pooled_connections() -> Result<(), Box<dyn
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn unique_constraint_violation_yields_turso_error() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     insert_provider(&database, "duplicate_provider", "dup/").await?;
 
@@ -477,9 +425,8 @@ async fn unique_constraint_violation_yields_turso_error() -> Result<(), Box<dyn 
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_commit_persists_changes() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let mut transaction = database.transaction().await?;
 
@@ -513,9 +460,8 @@ async fn transaction_commit_persists_changes() -> Result<(), Box<dyn StdError>> 
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_rollback_discards_changes() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let mut transaction = database.transaction().await?;
 
@@ -551,9 +497,8 @@ async fn transaction_rollback_discards_changes() -> Result<(), Box<dyn StdError>
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_drop_discards_uncommitted_changes() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     {
         let mut transaction = database.transaction().await?;
@@ -591,9 +536,8 @@ async fn transaction_drop_discards_uncommitted_changes() -> Result<(), Box<dyn S
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_drop_releases_write_lock_immediately() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     // Park an idle connection so the pool cannot hand the dropped
     // transaction's connection back out during this test; a leaked write lock
@@ -652,9 +596,8 @@ async fn transaction_drop_releases_write_lock_immediately() -> Result<(), Box<dy
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_drop_allows_new_transactions() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     {
         let mut transaction = database.transaction().await?;
@@ -702,9 +645,8 @@ async fn transaction_drop_allows_new_transactions() -> Result<(), Box<dyn StdErr
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_survives_failed_statement_and_rollback() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let mut transaction = database.transaction().await?;
 
@@ -754,9 +696,7 @@ async fn transaction_survives_failed_statement_and_rollback() -> Result<(), Box<
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn exhausted_pool_times_out_then_recovers() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, 1, Duration::from_millis(50)).await;
+    let (database, path) = test_support::open_test_database(1, Duration::from_millis(50)).await?;
 
     let transaction = database.transaction().await?;
 
@@ -781,9 +721,8 @@ async fn exhausted_pool_times_out_then_recovers() -> Result<(), Box<dyn StdError
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn closed_pool_reports_pool_closed_for_every_entry_point() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     database.inner.pool.close();
 
@@ -820,9 +759,7 @@ async fn closed_pool_reports_pool_closed_for_every_entry_point() -> Result<(), B
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn recycle_discards_connection_leaking_open_transaction() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, 1, TEST_POOL_TIMEOUT).await;
+    let (database, path) = test_support::open_test_database(1, TEST_POOL_TIMEOUT).await?;
 
     let leaked_checkout = database.inner.pool.get().await?;
 
@@ -860,9 +797,8 @@ async fn recycle_discards_connection_leaking_open_transaction() -> Result<(), Bo
 /// Panics if a task fails or the final row count does not match the writers.
 #[tokio::test]
 async fn concurrent_mixed_workload_across_pooled_connections() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    let (database, path) =
+        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let mut join_handles = Vec::new();
 
@@ -946,9 +882,7 @@ async fn concurrent_mixed_workload_across_pooled_connections() -> Result<(), Box
 /// Panics if a task fails or its result set does not match.
 #[tokio::test]
 async fn concurrent_identical_queries_single_connection() -> Result<(), Box<dyn StdError>> {
-    let path = unique_database_path();
-
-    let database = open_test_database(&path, 1, TEST_POOL_TIMEOUT).await;
+    let (database, path) = test_support::open_test_database(1, TEST_POOL_TIMEOUT).await?;
 
     insert_provider(&database, "shared_provider_a", "shared/").await?;
 

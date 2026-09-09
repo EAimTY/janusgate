@@ -101,12 +101,16 @@ pub(crate) async fn delete(State(database): State<Database>, body: Bytes) -> Res
 /// # Errors
 ///
 /// Returns [`ApiError`] for invalid names, unknown types, OAuth creation
-/// attempts, and type mismatches.
+/// attempts, type mismatches, and public name collisions.
 async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Value, ApiError> {
     let request: SaveProviderBody = parse_body(body)?;
 
     provider::validate_provider_name(&request.name)?;
 
+    // The outer read only pins request validation: the stored type is
+    // immutable, so it cannot drift before the transactional write. Absent
+    // fields are merged from the row re-read inside `update_provider`'s
+    // transaction, never from this snapshot (README §7.1).
     let existing = storage::find_provider(database, &request.name).await?;
 
     // The stored row pins the account kind: an omitted `type` defaults to it
@@ -158,94 +162,81 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
         }
     };
 
-    if let Some(existing) = existing {
-        let model_prefix = request
-            .model_prefix
-            .clone()
-            .unwrap_or_else(|| existing.model_prefix.clone());
-
-        let updated_protocol = protocol.or(existing.protocol);
-
-        let base_url = request
-            .base_url
-            .clone()
-            .or_else(|| existing.base_url.clone());
-
-        let enabled = request.enabled.unwrap_or(existing.enabled);
-
+    if existing.is_some() {
         // One transactional write owns the provider row, any credentials
-        // replacement, and the recomputed public model names; a prefix change
-        // that would collide is rejected with 409 before anything is written.
-        storage::update_provider(
+        // replacement, and the recomputed public model names; absent fields
+        // merge from the in-transaction row, and a prefix change that would
+        // collide is rejected with 409 before anything is written.
+        let stored = storage::update_provider(
             database,
-            &existing,
+            &request.name,
             storage::ProviderUpdate {
-                model_prefix: &model_prefix,
-                protocol: updated_protocol,
-                base_url: base_url.as_deref(),
-                enabled,
+                model_prefix: request.model_prefix.as_deref(),
+                protocol,
+                base_url: request.base_url.as_deref(),
+                enabled: request.enabled,
                 credentials: credentials.as_ref(),
             },
         )
         .await?;
-    } else {
-        let Some(provider_type) = provider_type else {
-            return Err(ApiError::invalid_parameter(
-                "type",
-                "type is required when creating a provider",
-            ));
-        };
 
-        if provider_type != ProviderType::OpenAiCompatible {
-            return Err(ApiError::invalid_parameter(
-                "type",
-                format!(
-                    "`{}` providers are created by completing an OAuth flow",
-                    provider_type.as_str()
-                ),
-            ));
-        }
-
-        let protocol = protocol.ok_or_else(|| {
-            ApiError::invalid_parameter(
-                "protocol",
-                "protocol is required for openai_compatible providers",
-            )
-        })?;
-
-        let base_url = request.base_url.clone().ok_or_else(|| {
-            ApiError::invalid_parameter(
-                "base_url",
-                "base_url is required for openai_compatible providers",
-            )
-        })?;
-
-        let credentials = credentials.ok_or_else(|| {
-            ApiError::invalid_parameter(
-                "credentials",
-                "credentials are required when creating a provider",
-            )
-        })?;
-
-        storage::insert_provider(
-            database,
-            &NewProvider {
-                name: &request.name,
-                model_prefix: request.model_prefix.as_deref().unwrap_or_default(),
-                provider_type,
-                protocol: Some(protocol),
-                base_url: Some(&base_url),
-                credentials: &credentials,
-                expires_at: None,
-                enabled: request.enabled.unwrap_or(true),
-            },
-        )
-        .await?;
+        return Ok(provider_json(&stored));
     }
 
-    let stored = storage::find_provider(database, &request.name)
-        .await?
-        .ok_or_else(|| ApiError::internal("provider vanished after save"))?;
+    let Some(provider_type) = provider_type else {
+        return Err(ApiError::invalid_parameter(
+            "type",
+            "type is required when creating a provider",
+        ));
+    };
+
+    if provider_type != ProviderType::OpenAiCompatible {
+        return Err(ApiError::invalid_parameter(
+            "type",
+            format!(
+                "`{}` providers are created by completing an OAuth flow",
+                provider_type.as_str()
+            ),
+        ));
+    }
+
+    let protocol = protocol.ok_or_else(|| {
+        ApiError::invalid_parameter(
+            "protocol",
+            "protocol is required for openai_compatible providers",
+        )
+    })?;
+
+    let base_url = request.base_url.clone().ok_or_else(|| {
+        ApiError::invalid_parameter(
+            "base_url",
+            "base_url is required for openai_compatible providers",
+        )
+    })?;
+
+    let credentials = credentials.ok_or_else(|| {
+        ApiError::invalid_parameter(
+            "credentials",
+            "credentials are required when creating a provider",
+        )
+    })?;
+
+    storage::insert_provider(
+        database,
+        &NewProvider {
+            name: &request.name,
+            model_prefix: request.model_prefix.as_deref().unwrap_or_default(),
+            provider_type,
+            protocol: Some(protocol),
+            base_url: Some(&base_url),
+            credentials: &credentials,
+            expires_at: None,
+            enabled: request.enabled.unwrap_or(true),
+        },
+    )
+    .await?;
+
+    let stored = storage::reload_provider(database, &request.name, "save").await?;
 
     Ok(provider_json(&stored))
 }
@@ -253,77 +244,8 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::NewProvider;
-    use std::{
-        env,
-        error::Error as StdError,
-        fs,
-        num::NonZero,
-        path::PathBuf,
-        process,
-        sync::atomic::{AtomicU64, Ordering},
-        time::Duration,
-    };
-
-    /// Monotonic counter making every test database path unique within the
-    /// process.
-    static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    /// Opens an isolated test database at a unique temporary path, returning
-    /// the database and its file path for cleanup.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn open_test_database() -> (Database, PathBuf) {
-        let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let path: PathBuf = env::temp_dir().join(format!(
-            "janusgate_providers_test_{}_{unique_id}.db",
-            process::id()
-        ));
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the test pool size is a non-zero constant"
-        )]
-        let database = Database::open(
-            &path,
-            NonZero::new(2).expect("pool size is non-zero"),
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("failed to open isolated test database");
-
-        (database, path)
-    }
-
-    /// Inserts one `openai_compatible` provider row with a known API key.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error encountered while inserting the row.
-    async fn insert_compatible_provider(
-        database: &Database,
-        name: &str,
-    ) -> Result<(), Box<dyn StdError>> {
-        storage::insert_provider(
-            database,
-            &NewProvider {
-                name,
-                model_prefix: "",
-                provider_type: ProviderType::OpenAiCompatible,
-                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
-                base_url: Some("https://upstream.example"),
-                credentials: &Credentials::ApiKey("old-key".to_string()),
-                expires_at: None,
-                enabled: true,
-            },
-        )
-        .await?;
-
-        Ok(())
-    }
+    use crate::test_support;
+    use std::{error::Error as StdError, fs, time::Duration};
 
     /// Reads back the stored credentials of a provider.
     ///
@@ -341,31 +263,26 @@ mod tests {
         Ok(stored.credentials)
     }
 
-    /// Builds a JSON request body for `save-provider`.
-    fn body(json: &str) -> Bytes {
-        Bytes::from(json.as_bytes().to_vec())
-    }
-
     /// Verifies an update carrying credentials without a `type` defaults to
     /// the stored provider type instead of demanding an explicit one: the
     /// stored row already pins the account kind.
     ///
     /// # Panics
     ///
-    /// Panics if opening the test database or an assertion fails.
+    /// Panics if an assertion fails.
     ///
     /// # Errors
     ///
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_provider_defaults_update_type_to_stored_row() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
 
-        insert_compatible_provider(&database, "alpha").await?;
+        test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
 
         let rendered = handle_save(
             &database,
-            &body(r#"{"name":"alpha","credentials":{"apiKey":"new-key"}}"#),
+            &test_support::body(r#"{"name":"alpha","credentials":{"apiKey":"new-key"}}"#),
         )
         .await?;
 
@@ -395,20 +312,20 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if opening the test database or an assertion fails.
+    /// Panics if an assertion fails.
     ///
     /// # Errors
     ///
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_provider_accepts_explicit_matching_type() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
 
-        insert_compatible_provider(&database, "alpha").await?;
+        test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
 
         handle_save(
             &database,
-            &body(
+            &test_support::body(
                 r#"{"name":"alpha","type":"openai_compatible","credentials":{"apiKey":"key-2"}}"#,
             ),
         )
@@ -430,7 +347,7 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if opening the test database or an assertion fails.
+    /// Panics if an assertion fails.
     ///
     /// # Errors
     ///
@@ -438,13 +355,13 @@ mod tests {
     #[tokio::test]
     async fn save_provider_rejects_mismatched_update_type_as_invalid_parameter()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
 
-        insert_compatible_provider(&database, "alpha").await?;
+        test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
 
         let error = handle_save(
             &database,
-            &body(r#"{"name":"alpha","type":"openai_oauth"}"#),
+            &test_support::body(r#"{"name":"alpha","type":"openai_oauth"}"#),
         )
         .await
         .err()

@@ -124,6 +124,23 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
 
     let now = unix_time::unix_now();
 
+    // State rows are immutable, so a provider-type mismatch is computable
+    // before the atomic consume: the rejection must not burn the pending flow
+    // or spend the token exchange. An unknown or expired state is left to the
+    // consume below, which yields the 404.
+    if let (Some(existing), Some(state_type)) = (
+        &existing,
+        storage::find_oauth_state_type(database, &request.state, now).await?,
+    ) && state_type != existing.provider_type
+    {
+        return Err(ApiError::conflict(format!(
+            "Provider `{}` has type `{}` and cannot be authorized as `{}`",
+            existing.name,
+            existing.provider_type.as_str(),
+            state_type.as_str()
+        )));
+    }
+
     let state = storage::consume_oauth_state(database, &request.state, now)
         .await?
         .ok_or_else(|| {
@@ -140,15 +157,6 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
 
     match existing {
         Some(existing) => {
-            if existing.provider_type != state.state_type {
-                return Err(ApiError::conflict(format!(
-                    "Provider `{}` has type `{}` and cannot be authorized as `{}`",
-                    existing.name,
-                    existing.provider_type.as_str(),
-                    state.state_type.as_str()
-                )));
-            }
-
             storage::update_credentials(
                 database,
                 existing.id,
@@ -176,9 +184,7 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
         }
     }
 
-    let stored = storage::find_provider(database, &request.name)
-        .await?
-        .ok_or_else(|| ApiError::internal("provider vanished after OAuth completion"))?;
+    let stored = storage::reload_provider(database, &request.name, "OAuth completion").await?;
 
     Ok(provider_json(&stored))
 }
@@ -186,77 +192,8 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{format::UpstreamFormat, provider::Credentials};
-    use std::{
-        env,
-        error::Error as StdError,
-        fs,
-        num::NonZero,
-        path::PathBuf,
-        process,
-        sync::atomic::{AtomicU64, Ordering},
-        time::Duration,
-    };
-
-    /// Monotonic counter making every test database path unique within the
-    /// process.
-    static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    /// Opens an isolated test database at a unique temporary path, returning
-    /// the database and its file path for cleanup.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn open_test_database() -> (Database, PathBuf) {
-        let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let path: PathBuf = env::temp_dir().join(format!(
-            "janusgate_oauth_flow_test_{}_{unique_id}.db",
-            process::id()
-        ));
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the test pool size is a non-zero constant"
-        )]
-        let database = Database::open(
-            &path,
-            NonZero::new(2).expect("pool size is non-zero"),
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("failed to open isolated test database");
-
-        (database, path)
-    }
-
-    /// Inserts one `openai_compatible` provider row.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error encountered while inserting the row.
-    async fn insert_compatible_provider(
-        database: &Database,
-        name: &str,
-    ) -> Result<(), Box<dyn StdError>> {
-        storage::insert_provider(
-            database,
-            &NewProvider {
-                name,
-                model_prefix: "",
-                provider_type: ProviderType::OpenAiCompatible,
-                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
-                base_url: Some("https://upstream.example"),
-                credentials: &Credentials::ApiKey("test-key".to_string()),
-                expires_at: None,
-                enabled: true,
-            },
-        )
-        .await?;
-
-        Ok(())
-    }
+    use crate::test_support;
+    use std::{error::Error as StdError, fs, time::Duration};
 
     /// Verifies supplying `model_prefix` for an existing provider is rejected
     /// with 400 naming the field, and that the rejection fires before the
@@ -264,7 +201,7 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if opening the test database or an assertion fails.
+    /// Panics if an assertion fails.
     ///
     /// # Errors
     ///
@@ -272,14 +209,12 @@ mod tests {
     #[tokio::test]
     async fn complete_rejects_model_prefix_for_existing_provider() -> Result<(), Box<dyn StdError>>
     {
-        let (database, path) = open_test_database().await;
+        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
 
-        insert_compatible_provider(&database, "alpha").await?;
+        test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
 
-        let body = Bytes::from(
-            r#"{"state":"unused-state","code":"unused-code","name":"alpha","model_prefix":"p-"}"#
-                .as_bytes()
-                .to_vec(),
+        let body = test_support::body(
+            r#"{"state":"unused-state","code":"unused-code","name":"alpha","model_prefix":"p-"}"#,
         );
 
         let error = handle_complete(&database, &body)
@@ -292,11 +227,8 @@ mod tests {
 
         // The rejection fired before state consumption: an unknown state is
         // the only reason a retry without model_prefix can still fail.
-        let retry = Bytes::from(
-            r#"{"state":"unused-state","code":"unused-code","name":"alpha"}"#
-                .as_bytes()
-                .to_vec(),
-        );
+        let retry =
+            test_support::body(r#"{"state":"unused-state","code":"unused-code","name":"alpha"}"#);
 
         let error = handle_complete(&database, &retry)
             .await
@@ -305,6 +237,63 @@ mod tests {
 
         assert_eq!(error.status, 404);
         assert!(error.message.contains("already consumed"));
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies completing a state whose provider type mismatches the existing
+    /// provider is rejected with 409 before the state is consumed, so the
+    /// pending flow stays available to a matching completion.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn complete_rejects_type_mismatch_without_burning_the_state()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+
+        test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
+
+        let now = crate::unix_time::unix_now();
+
+        storage::insert_oauth_state(
+            &database,
+            ProviderType::OpenAiOauth,
+            "state-mismatch",
+            "verifier",
+            now + 60,
+        )
+        .await?;
+
+        let body =
+            test_support::body(r#"{"state":"state-mismatch","code":"unused-code","name":"alpha"}"#);
+
+        let error = handle_complete(&database, &body)
+            .await
+            .err()
+            .ok_or("a type mismatch must be rejected")?;
+
+        assert_eq!(error.status, 409);
+
+        assert!(
+            error.message.contains("cannot be authorized"),
+            "the error must state the authorization conflict: {error}"
+        );
+
+        // The rejection fired before consumption: the state is still there for
+        // a matching completion, which is observable by consuming it now.
+        let consumed = storage::consume_oauth_state(&database, "state-mismatch", now).await?;
+
+        let consumed = consumed.ok_or("the mismatched completion must not burn the state")?;
+
+        assert_eq!(consumed.state_type, ProviderType::OpenAiOauth);
 
         let _ = fs::remove_file(path);
 

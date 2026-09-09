@@ -13,7 +13,7 @@ use crate::{
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::{OriginalUri, Request, State},
+    extract::{DefaultBodyLimit, OriginalUri, Request, State},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::Response,
@@ -24,6 +24,14 @@ use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 /// Maximum accepted request body size, large enough for inline image data.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
+/// Capacity of the channel between the SSE rendering task and the response
+/// body stream.
+///
+/// Mirrors `gateway`'s `EVENT_CHANNEL_BUFFER` for the adjacent pipeline
+/// stage: both hops buffer equally, so one slow stage cannot accumulate an
+/// asymmetric backlog in the other.
+const SSE_CHANNEL_BUFFER: usize = 64;
+
 /// Constructs the format sub-router with OpenAI bearer authentication and its
 /// own 404 fallback.
 pub(crate) fn router() -> Router<Database> {
@@ -33,7 +41,7 @@ pub(crate) fn router() -> Router<Database> {
         .route("/models", get(models))
         .fallback(fallback)
         .layer(middleware::from_fn(authenticate))
-        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
 /// Authenticates the request against the shared gateway API key using the
@@ -43,7 +51,7 @@ async fn authenticate(request: Request, next: Next) -> Response {
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(bearer_token)
         .is_some_and(|key| constant_time_eq(key, &crate::CONFIG.api.key));
 
     if !is_authorized {
@@ -51,6 +59,22 @@ async fn authenticate(request: Request, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+/// Extracts the bearer token from an `Authorization` header value.
+///
+/// The scheme is compared case-insensitively per RFC 9110 §11.1; the token
+/// is taken verbatim after the first space, so malformed forms — no space,
+/// tab separator, glued scheme, leading whitespace, trailing content — are
+/// rejected by the scheme mismatch or by the credential comparison.
+fn bearer_token(authorization: &str) -> Option<&str> {
+    let (scheme, token) = authorization.split_once(' ')?;
+
+    if scheme.eq_ignore_ascii_case("Bearer") {
+        Some(token)
+    } else {
+        None
+    }
 }
 
 /// Handles unmapped format paths with an OpenAI-shaped 404.
@@ -149,7 +173,7 @@ fn sse_response(
     mut renderer: Box<dyn ClientSseRenderer + Send>,
 ) -> Response {
     let (sender, receiver) =
-        tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(64);
+        tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(SSE_CHANNEL_BUFFER);
 
     tokio::spawn(async move {
         let mut events = events;
@@ -208,138 +232,51 @@ async fn aggregated_response(
 #[cfg(test)]
 mod tests {
     use super::router;
-    use crate::database::{Database, params};
+    use crate::{database::Database, test_support};
     use axum::{
         body::Body,
         http::{Request as HttpRequest, StatusCode},
     };
-    use std::sync::Once;
+    use std::{error::Error as StdError, time::Duration};
     use tower::ServiceExt as _;
-
-    /// Writes a test configuration file and initializes the global
-    /// configuration exactly once per process.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the configuration file cannot be written.
-    fn init_config() {
-        static INIT: Once = Once::new();
-
-        INIT.call_once(|| {
-            let path = std::env::temp_dir().join("janusgate_openai_v1_test_config.jsonc");
-
-            #[expect(
-                clippy::expect_used,
-                reason = "a configuration write failure fails the test"
-            )]
-            std::fs::write(
-                &path,
-                r#"{
-                    "listen": "127.0.0.1:1",
-                    "database": {"path": "irrelevant.db", "max_connections": 1, "pool_timeout": 1},
-                    "management_api": {"token": "test-mgmt"},
-                    "api": {"key": "test-api-key"}
-                }"#,
-            )
-            .expect("config file should write");
-
-            crate::tests::set_config_for_tests(crate::parse_config([
-                "janusgate".to_string(),
-                "-c".to_string(),
-                path.to_string_lossy().to_string(),
-            ]));
-        });
-    }
 
     /// Opens an isolated test database and returns it alongside the router
     /// with that database as state, so tests can seed routing rows.
     ///
     /// # Panics
     ///
-    /// Panics if initialization fails.
-    async fn test_router() -> (Database, axum::Router) {
-        use std::sync::atomic::{AtomicU64, Ordering};
+    /// Panics if the global test configuration is not yet initializable.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while opening the test database.
+    async fn test_router() -> Result<(Database, axum::Router), Box<dyn StdError>> {
+        test_support::init_config();
 
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-        init_config();
-
-        let unique_id = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let pool_size = {
-            #[expect(clippy::expect_used, reason = "two is non-zero")]
-            std::num::NonZero::new(2).expect("non-zero")
-        };
-
-        #[expect(clippy::expect_used, reason = "an open failure fails the test")]
-        let database = Database::open(
-            std::env::temp_dir().join(format!(
-                "janusgate_openai_v1_{}_{}.db",
-                std::process::id(),
-                unique_id
-            )),
-            pool_size,
-            std::time::Duration::from_secs(5),
-        )
-        .await
-        .expect("database should open");
+        let (database, _) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
 
         let router = router().with_state(database.clone());
 
-        (database, router)
-    }
-
-    /// Inserts one enabled `openai_compatible` provider row.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the insert fails.
-    async fn insert_provider(database: &Database, name: &str) {
-        #[expect(clippy::expect_used, reason = "an insert failure fails the test")]
-        database
-            .execute(
-                "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES (?1, '', 'openai_compatible', ?2)",
-                params![name, r#"{"apiKey":"test-key"}"#],
-            )
-            .await
-            .expect("provider row should insert");
-    }
-
-    /// Inserts one model row of a provider, joined through the provider's
-    /// name, with the given upstream and public names.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the insert fails.
-    async fn insert_model(
-        database: &Database,
-        provider_name: &str,
-        upstream_name: &str,
-        name: &str,
-    ) {
-        #[expect(clippy::expect_used, reason = "an insert failure fails the test")]
-        database
-            .execute(
-                "INSERT INTO models (provider_id, upstream_name, name) \
-                 SELECT id, ?2, ?3 FROM providers WHERE name = ?1",
-                params![provider_name, upstream_name, name],
-            )
-            .await
-            .expect("model row should insert");
+        Ok((database, router))
     }
 
     /// Sends a request through the router and returns status and body.
     ///
     /// # Panics
     ///
-    /// Panics if the request cannot be built or served.
+    /// Panics if the request cannot be built or the in-memory oneshot serve
+    /// fails, which only a router construction bug can cause.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while building the request or reading
+    /// the response body.
     async fn send(
         router: axum::Router,
         method: &str,
         uri: &str,
         authorization: Option<&str>,
-    ) -> (StatusCode, String) {
+    ) -> Result<(StatusCode, String), Box<dyn StdError>> {
         let mut builder = HttpRequest::builder().method(method).uri(uri);
 
         if let Some(authorization) = authorization {
@@ -358,12 +295,9 @@ mod tests {
 
         let status = response.status();
 
-        #[expect(clippy::expect_used, reason = "a body read failure fails the test")]
-        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
-            .await
-            .expect("body");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20).await?;
 
-        (status, String::from_utf8_lossy(&body).to_string())
+        Ok((status, String::from_utf8_lossy(&body).to_string()))
     }
 
     /// Verifies that the format sub-router authenticates every request with
@@ -375,15 +309,20 @@ mod tests {
     /// # Panics
     ///
     /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database or the
+    /// router.
     #[tokio::test]
-    async fn authenticates_and_lists_models() {
-        let (database, router) = test_router().await;
+    async fn authenticates_and_lists_models() -> Result<(), Box<dyn StdError>> {
+        let (database, router) = test_router().await?;
 
-        let (status, _) = send(router.clone(), "GET", "/models", None).await;
+        let (status, _) = send(router.clone(), "GET", "/models", None).await?;
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-        let (status, _) = send(router.clone(), "GET", "/models", Some("Bearer wrong")).await;
+        let (status, _) = send(router.clone(), "GET", "/models", Some("Bearer wrong")).await?;
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
@@ -393,43 +332,39 @@ mod tests {
             "/models",
             Some("Bearer test-api-key"),
         )
-        .await;
+        .await?;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, r#"{"data":[],"object":"list"}"#);
 
-        insert_provider(&database, "alpha").await;
+        test_support::seed_minimal_provider(&database, "alpha", "", "test-key").await?;
 
-        insert_model(&database, "alpha", "u1", "a-m1").await;
+        test_support::seed_model(&database, "alpha", "u1", "a-m1").await?;
 
-        insert_model(&database, "alpha", "u2", "a-m2").await;
+        test_support::seed_model(&database, "alpha", "u2", "a-m2").await?;
 
-        insert_model(&database, "alpha", "u3", "a-off").await;
+        test_support::seed_model(&database, "alpha", "u3", "a-off").await?;
 
-        #[expect(clippy::expect_used, reason = "an update failure fails the test")]
         database
             .execute(
                 "UPDATE models SET enabled_override = 0 WHERE upstream_name = 'u3'",
                 (),
             )
-            .await
-            .expect("override update should apply");
+            .await?;
 
-        insert_provider(&database, "beta").await;
+        test_support::seed_minimal_provider(&database, "beta", "", "test-key").await?;
 
-        insert_model(&database, "beta", "u1", "b-m1").await;
+        test_support::seed_model(&database, "beta", "u1", "b-m1").await?;
 
-        insert_provider(&database, "gamma").await;
+        test_support::seed_minimal_provider(&database, "gamma", "", "test-key").await?;
 
-        insert_model(&database, "gamma", "u1", "g-m1").await;
+        test_support::seed_model(&database, "gamma", "u1", "g-m1").await?;
 
-        #[expect(clippy::expect_used, reason = "an update failure fails the test")]
         database
             .execute("UPDATE providers SET enabled = 0 WHERE name = 'gamma'", ())
-            .await
-            .expect("provider update should apply");
+            .await?;
 
-        let (status, body) = send(router, "GET", "/models", Some("Bearer test-api-key")).await;
+        let (status, body) = send(router, "GET", "/models", Some("Bearer test-api-key")).await?;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
@@ -442,6 +377,49 @@ mod tests {
                 r#""object":"list"}"#
             )
         );
+
+        Ok(())
+    }
+
+    /// Verifies that the authorization scheme is compared case-insensitively
+    /// (RFC 9110 §11.1) while the credential stays byte-exact: lowercase and
+    /// uppercase `bearer` schemes authorize with the exact key, and malformed
+    /// forms — trailing content, tab separator, glued scheme, leading
+    /// whitespace — remain rejected.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the router.
+    #[tokio::test]
+    async fn authenticates_bearer_scheme_case_insensitively() -> Result<(), Box<dyn StdError>> {
+        let (_, router) = test_router().await?;
+
+        for authorization in ["bearer test-api-key", "BEARER test-api-key"] {
+            let (status, _) = send(router.clone(), "GET", "/models", Some(authorization)).await?;
+
+            assert_eq!(status, StatusCode::OK, "{authorization:?} should authorize");
+        }
+
+        for authorization in [
+            "bearer test-api-key extra",
+            "bearer\ttest-api-key",
+            "bearerkey test-api-key",
+            " bearer test-api-key",
+        ] {
+            let (status, _) = send(router.clone(), "GET", "/models", Some(authorization)).await?;
+
+            assert_eq!(
+                status,
+                StatusCode::UNAUTHORIZED,
+                "{authorization:?} must stay rejected"
+            );
+        }
+
+        Ok(())
     }
 
     /// Verifies that unmapped format paths yield the OpenAI-shaped 404 with
@@ -450,15 +428,21 @@ mod tests {
     /// # Panics
     ///
     /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the router.
     #[tokio::test]
-    async fn fallback_returns_openai_404_shape() {
-        let (_, router) = test_router().await;
+    async fn fallback_returns_openai_404_shape() -> Result<(), Box<dyn StdError>> {
+        let (_, router) = test_router().await?;
 
-        let (status, body) = send(router, "GET", "/bogus", Some("Bearer test-api-key")).await;
+        let (status, body) = send(router, "GET", "/bogus", Some("Bearer test-api-key")).await?;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body.contains("Invalid URL (GET "));
         assert!(body.contains("/bogus)"));
         assert!(body.contains("invalid_request_error"));
+
+        Ok(())
     }
 }

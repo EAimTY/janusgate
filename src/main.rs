@@ -26,6 +26,10 @@ mod provider;
 mod security;
 mod server;
 mod sse;
+
+#[cfg(test)]
+mod test_support;
+
 mod unix_time;
 
 /// Global read-only application configuration, initialized once during process
@@ -50,6 +54,12 @@ const EXAMPLE_PLACEHOLDER_SECRETS: [&str; 2] = ["CHANGE_ME_API_KEY", "CHANGE_ME_
 /// bounds a slow-but-flowing response; it only aborts a stalled upstream
 /// connection, which would otherwise park the request task forever.
 const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Deadline for establishing an upstream connection.
+///
+/// Connection setup never carries data to reset a read deadline, so it is
+/// bounded separately from [`UPSTREAM_READ_TIMEOUT`].
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Root gateway configuration schema.
 ///
@@ -132,7 +142,7 @@ async fn main() -> ! {
         reason = "building the HTTP client at startup is fatal on failure"
     )]
     let http = Client::builder()
-        .connect_timeout(Duration::from_secs(10))
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
         .read_timeout(UPSTREAM_READ_TIMEOUT)
         .build()
         .expect("failed to build HTTP client");
@@ -202,7 +212,17 @@ fn parse_config(args: impl IntoIterator<Item = impl Into<OsString>>) -> Config {
                 clippy::panic,
                 reason = "unrecognized command-line arguments are fatal"
             )]
-            _ => panic!("unexpected argument"),
+            _ => {
+                // Render the offending argument itself so the panic names the
+                // invocation element that must be removed or corrected.
+                let rendered = match &argument {
+                    Argument::Short(short) => format!("-{short}"),
+                    Argument::Long(long) => format!("--{long}"),
+                    Argument::Value(value) => value.to_string_lossy().into_owned(),
+                };
+
+                panic!("unexpected command-line argument {rendered:?}");
+            }
         }
     }
 
@@ -212,14 +232,15 @@ fn parse_config(args: impl IntoIterator<Item = impl Into<OsString>>) -> Config {
     )]
     let path = config_path.expect("missing argument CONFIG");
 
-    #[expect(
-        clippy::unwrap_used,
-        reason = "invalid configuration file path is fatal"
-    )]
-    let file = File::options().read(true).open(&path).unwrap();
+    #[expect(clippy::panic, reason = "unopenable configuration file is fatal")]
+    let file = File::options()
+        .read(true)
+        .open(&path)
+        .unwrap_or_else(|error| panic!("cannot open configuration file {path:?}: {error}"));
 
-    #[expect(clippy::unwrap_used, reason = "invalid configuration content is fatal")]
-    let config: Config = serde_json::from_reader(StripComments::new(file)).unwrap();
+    #[expect(clippy::panic, reason = "unparsable configuration content is fatal")]
+    let config: Config = serde_json::from_reader(StripComments::new(file))
+        .unwrap_or_else(|error| panic!("cannot parse configuration file {path:?}: {error}"));
 
     validate_secrets(&config);
 
@@ -440,5 +461,47 @@ mod tests {
     #[should_panic(expected = "placeholder")]
     fn rejects_config_example_placeholders() {
         let _config = super::parse_config(["janusgate", "-c", "config.example.jsonc"]);
+    }
+
+    /// Verifies that an unopenable configuration file is fatal with a panic
+    /// naming the offending path.
+    ///
+    /// # Panics
+    ///
+    /// Panics as required by the assertion.
+    #[test]
+    #[should_panic(expected = "janusgate-unopenable-configuration.jsonc")]
+    fn names_unopenable_configuration_file() {
+        let _config = super::parse_config([
+            "janusgate",
+            "-c",
+            "janusgate-unopenable-configuration.jsonc",
+        ]);
+    }
+
+    /// Verifies that an unparsable configuration file is fatal with a panic
+    /// naming the offending path.
+    ///
+    /// # Panics
+    ///
+    /// Panics as required by the assertion.
+    #[test]
+    #[should_panic(expected = "unparsable-configuration.jsonc")]
+    fn names_unparsable_configuration_file() {
+        let temporary = TempConfig::write("unparsable-configuration", "{");
+
+        let _config = temporary.parse();
+    }
+
+    /// Verifies that an unrecognized command-line argument is fatal with a
+    /// panic naming the offending argument.
+    ///
+    /// # Panics
+    ///
+    /// Panics as required by the assertion.
+    #[test]
+    #[should_panic(expected = "unexpected command-line argument \"--bogus\"")]
+    fn names_unexpected_command_line_argument() {
+        let _config = super::parse_config(["janusgate", "--bogus"]);
     }
 }

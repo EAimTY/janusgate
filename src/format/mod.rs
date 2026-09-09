@@ -1,10 +1,15 @@
 //! Protocol codecs connecting client and upstream wire formats through the IR.
 //!
-//! Every format exposes the same structural roles: a client request parser,
-//! an upstream payload renderer, an upstream event parser producing IR events,
-//! and client response renderers (streaming SSE and aggregated JSON). The
-//! contracts for these roles are declared once here and implemented by each
-//! codec module, so consumers depend only on `crate::format`.
+//! Two contracts are declared once here. Every outward format implements
+//! [`ClientFormat`], which parses client requests and boxes a
+//! [`ClientSseRenderer`] for live streaming (aggregated rendering is a free
+//! function behind the same trait). Every upstream format implements
+//! [`UpstreamEventParser`]. Upstream payload rendering has no shared
+//! contract — the payloads are provider-coupled — so each codec exposes
+//! free `render_request` functions that the gateway invokes directly. The
+//! Gemini codec is upstream-only (README §6.3): it implements
+//! [`UpstreamEventParser`] plus its request renderers, but no outward
+//! client format.
 
 use crate::{
     error::ApiError,

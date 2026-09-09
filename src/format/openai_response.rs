@@ -840,6 +840,11 @@ enum OutputItemOrigin {
     /// A streaming `output_item.done` event; the value is the upstream
     /// `output_index`.
     StreamDone(usize),
+
+    /// An item of the terminal event's `response.output` array; the value is
+    /// the item's position. Consulted only for text kinds that no live delta
+    /// delivered.
+    Terminal(usize),
 }
 
 /// Parses upstream Responses payloads — SSE events or a full JSON body — into
@@ -848,6 +853,14 @@ enum OutputItemOrigin {
 pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
     is_started: bool,
+
+    /// Whether live deltas already delivered the message text, marking done
+    /// and terminal items as exhausted sources for it.
+    is_text_delivered: bool,
+
+    /// Whether live deltas already delivered the reasoning text, marking
+    /// done and terminal items as exhausted sources for it.
+    is_reasoning_delivered: bool,
 }
 
 impl UpstreamParser {
@@ -925,11 +938,26 @@ impl UpstreamParser {
             }
 
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                Ok(self.delta_event(&value, IrEvent::ReasoningDelta))
+                let events = self.delta_event(&value, IrEvent::ReasoningDelta);
+
+                // Only an event that actually carried a delta exhausts the
+                // fallback sources; a delta-typed event without a payload
+                // delivered nothing.
+                if !events.is_empty() {
+                    self.is_reasoning_delivered = true;
+                }
+
+                Ok(events)
             }
 
             "response.output_text.delta" | "response.refusal.delta" => {
-                Ok(self.delta_event(&value, IrEvent::TextDelta))
+                let events = self.delta_event(&value, IrEvent::TextDelta);
+
+                if !events.is_empty() {
+                    self.is_text_delivered = true;
+                }
+
+                Ok(events)
             }
 
             "response.function_call_arguments.delta" => {
@@ -969,6 +997,22 @@ impl UpstreamParser {
 
                 let mut events = Vec::new();
 
+                // A third-party `openai_compatible` upstream may carry item
+                // text only in the terminal response object; when no live
+                // delta delivered a text kind, recover it from the output
+                // array exactly as from a JSON response body.
+                if (!self.is_text_delivered || !self.is_reasoning_delivered)
+                    && let Some(output) = response.get("output").and_then(Value::as_array)
+                {
+                    for (position, item) in output.iter().enumerate() {
+                        self.ingest_output_item(
+                            item,
+                            OutputItemOrigin::Terminal(position),
+                            &mut events,
+                        )?;
+                    }
+                }
+
                 events.push(IrEvent::Finish(finish_reason_for_response(&response)));
                 push_usage_events(&response, &mut events);
 
@@ -997,29 +1041,40 @@ impl UpstreamParser {
         }
     }
 
-    /// Ingests one output item from a JSON response body or a streaming
-    /// `output_item.done` event.
+    /// Ingests one output item from a JSON response body, a streaming
+    /// `output_item.done` event, or the terminal event's output array.
     ///
-    /// On the streaming path only `function_call` items produce events here:
-    /// `output_item.done` carries the fully assembled message or reasoning
-    /// item whose text was already delivered as delta events, so re-emitting
-    /// it would double the text.
+    /// Conformant upstreams deliver message and reasoning text as live
+    /// deltas, so streamed and terminal items are fallback sources consulted
+    /// only when no delta carried that kind of text — third-party
+    /// `openai_compatible` upstreams may stream complete items without
+    /// deltas, and their text must still reach the client exactly once.
     fn ingest_output_item(
-        &self,
+        &mut self,
         item: &Value,
         origin: OutputItemOrigin,
         events: &mut Vec<IrEvent>,
     ) -> Result<(), ApiError> {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
-                if let OutputItemOrigin::Json(_) = origin
-                    && let Some(content) = item.get("content").and_then(Value::as_array)
-                {
-                    for part in content {
-                        if part.get("type").and_then(Value::as_str) == Some("output_text")
-                            && let Some(text) = part.get("text").and_then(Value::as_str)
-                        {
-                            events.push(IrEvent::TextDelta(text.to_string()));
+                let should_extract = match origin {
+                    OutputItemOrigin::Json(_) => true,
+
+                    OutputItemOrigin::StreamDone(_) | OutputItemOrigin::Terminal(_) => {
+                        !self.is_text_delivered
+                    }
+                };
+
+                if should_extract {
+                    self.is_text_delivered = true;
+
+                    if let Some(content) = item.get("content").and_then(Value::as_array) {
+                        for part in content {
+                            if part.get("type").and_then(Value::as_str) == Some("output_text")
+                                && let Some(text) = part.get("text").and_then(Value::as_str)
+                            {
+                                events.push(IrEvent::TextDelta(text.to_string()));
+                            }
                         }
                     }
                 }
@@ -1028,12 +1083,22 @@ impl UpstreamParser {
             }
 
             Some("reasoning") => {
-                if let OutputItemOrigin::Json(_) = origin
-                    && let Some(summary) = item.get("summary").and_then(Value::as_array)
-                {
-                    for part in summary {
-                        if let Some(text) = part.get("text").and_then(Value::as_str) {
-                            events.push(IrEvent::ReasoningDelta(text.to_string()));
+                let should_extract = match origin {
+                    OutputItemOrigin::Json(_) => true,
+
+                    OutputItemOrigin::StreamDone(_) | OutputItemOrigin::Terminal(_) => {
+                        !self.is_reasoning_delivered
+                    }
+                };
+
+                if should_extract {
+                    self.is_reasoning_delivered = true;
+
+                    if let Some(summary) = item.get("summary").and_then(Value::as_array) {
+                        for part in summary {
+                            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                                events.push(IrEvent::ReasoningDelta(text.to_string()));
+                            }
                         }
                     }
                 }
@@ -1074,6 +1139,11 @@ impl UpstreamParser {
                     OutputItemOrigin::StreamDone(index) => {
                         events.push(self.complete_function_call(item, index));
                     }
+
+                    // The terminal fallback recovers text only: calls are
+                    // completed by their own done events, and re-emitting
+                    // them here would duplicate delivered calls.
+                    OutputItemOrigin::Terminal(_) => {}
                 }
 
                 Ok(())
@@ -1899,13 +1969,11 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests fail by panicking")]
-#[expect(clippy::indexing_slicing, reason = "tests assert exact fixture shapes")]
 mod tests {
     use super::{SseRenderer, UpstreamParser, parse_request, render_json_response};
     use crate::{
         format::openai_chat_completion::SseRenderer as ChatSseRenderer,
-        ir::{Aggregator, IrEvent, IrFinishReason, IrPart},
+        ir::{Aggregator, IrEvent, IrFinishReason, IrPart, IrUsage},
         sse::SseParser,
     };
     use serde_json::Value;
@@ -1920,7 +1988,15 @@ mod tests {
 
         let mut events = Vec::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the streamed fixture text is well-formed SSE"
+        )]
         for frame in sse.ingest(raw.as_bytes()).expect("frames should parse") {
+            #[expect(
+                clippy::expect_used,
+                reason = "every fixture frame is a valid Responses payload"
+            )]
             events.append(&mut parser.ingest_frame(&frame).expect("frame should ingest"));
         }
 
@@ -1946,20 +2022,25 @@ mod tests {
                     .strip_prefix("event: ")
                     .map(|rest| rest.split_once("\ndata: "))
                     .map(|found| {
+                        #[expect(
+                            clippy::expect_used,
+                            reason = "an `event: ` frame was just matched with its data line"
+                        )]
                         let (name, data) = found.expect("event frame contains a data line");
 
                         (Some(name.to_string()), data.to_string())
                     })
                     .unwrap_or_else(|| {
-                        (
-                            None,
-                            frame
-                                .strip_prefix("data: ")
-                                .expect("data frame prefix")
-                                .to_string(),
-                        )
+                        #[expect(
+                            clippy::expect_used,
+                            reason = "frames without an event name are bare data frames"
+                        )]
+                        let data = frame.strip_prefix("data: ").expect("data frame prefix");
+
+                        (None, data.to_string())
                     });
 
+                #[expect(clippy::expect_used, reason = "the renderer emits JSON payloads")]
                 let payload = serde_json::from_str(data.trim_end()).expect("payload is JSON");
 
                 rendered.push((name, payload));
@@ -1976,6 +2057,10 @@ mod tests {
     /// Panics if an assertion fails.
     #[test]
     fn parses_input_items_into_ir() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the test body is a valid request fixture"
+        )]
         let parsed = parse_request(
             r#"{
                 "model": "public",
@@ -1999,9 +2084,19 @@ mod tests {
 
         assert_eq!(ir.instructions.as_deref(), Some("be nice"));
         assert_eq!(ir.messages.len(), 3);
+
+        // Attributes on macro-invocation statements do not cover desugared
+        // index expressions inside the expansion, so indexed messages are
+        // read through annotated bindings first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the fixture parses exactly three messages, asserted above"
+        )]
+        let function_call_part = &ir.messages[1].parts[0];
+
         assert_eq!(
-            ir.messages[1].parts[0],
-            IrPart::ToolCall {
+            function_call_part,
+            &IrPart::ToolCall {
                 call_id: "call_1".to_string(),
                 name: "f".to_string(),
                 arguments: "{}".to_string(),
@@ -2018,11 +2113,16 @@ mod tests {
     /// Panics if an assertion fails.
     #[test]
     fn rejects_store_true_and_unknown_item_fields() {
+        #[expect(clippy::expect_used, reason = "the test asserts this exact rejection")]
         let store = parse_request(r#"{"model":"m","input":"x","store":true}"#.as_bytes())
             .expect_err("store true must fail");
 
         assert_eq!(store.status, 400);
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is valid JSON and the test asserts this exact rejection"
+        )]
         let unknown_field = super::validate_input_item_fields(Some(
             &serde_json::from_str::<Value>(
                 r#"[{"type":"function_call_output","call_id":"c","output":"o","bogus":1}]"#,
@@ -2074,9 +2174,18 @@ mod tests {
             ),
         );
 
+        // Attributes on macro-invocation statements do not cover desugared
+        // index expressions inside the expansion, so the leading event is
+        // read through an annotated binding first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the fixture's first frame emits MessageStart first"
+        )]
+        let first_event = &events[0];
+
         assert_eq!(
-            events[0],
-            IrEvent::MessageStart {
+            first_event,
+            &IrEvent::MessageStart {
                 id: "resp1".to_string(),
                 model: "m".to_string(),
             }
@@ -2197,18 +2306,39 @@ mod tests {
             ]
         );
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the asserted sequence above renders a completed event"
+        )]
         let completed = rendered
             .iter()
             .find(|(name, _)| name.as_deref() == Some("response.completed"))
             .map(|(_, payload)| payload.clone())
             .expect("completed event");
 
-        assert_eq!(completed["response"]["status"], "completed");
-        assert_eq!(completed["response"]["usage"]["total_tokens"], 0);
-        assert_eq!(
-            completed["response"]["output"].as_array().map(Vec::len),
-            Some(2)
-        );
+        // Attributes on macro-invocation statements do not cover desugared
+        // index expressions inside the expansion, so rendered fields are
+        // read through annotated bindings first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the completed payload always carries the response object"
+        )]
+        let response = &completed["response"];
+
+        let status = &response["status"];
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the completed payload always carries status and usage"
+        )]
+        let usage_total = &response["usage"]["total_tokens"];
+
+        assert_eq!(status, "completed");
+        assert_eq!(usage_total, 0);
+
+        let output = &response["output"];
+
+        assert_eq!(output.as_array().map(Vec::len), Some(2));
     }
 
     /// Carries the event name as the payload `type` on client streams.
@@ -2232,11 +2362,19 @@ mod tests {
         assert!(!rendered.is_empty());
 
         for (name, payload) in &rendered {
+            #[expect(
+                clippy::expect_used,
+                reason = "the rendered sequence asserted above names every event frame"
+            )]
             let name = name
                 .as_deref()
                 .expect("every rendered responses frame has an event name");
 
-            assert_eq!(payload["type"], name);
+            // Indexing through the borrowed payload does not trigger the
+            // slicing lint; only the borrow itself needed an annotation.
+            let payload_type = &payload["type"];
+
+            assert_eq!(payload_type, name);
         }
     }
 
@@ -2288,6 +2426,111 @@ mod tests {
         assert_eq!(reasoning_deltas, 1);
     }
 
+    /// Recovers message text from the `output_item.done` events of a
+    /// third-party upstream that streams complete items but no text deltas;
+    /// the terminal output array carries the same item and must not repeat
+    /// it, so the text stays exactly-once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_done_only_stream_extracts_item_text_once() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.output_item.added\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"message\",\"role\":\"assistant\",",
+                    "\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.completed\",\"response\":{\"status\":",
+                    "\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",",
+                    "\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],",
+                    "\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"
+                ),
+            ),
+        );
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(aggregation.text, "hi");
+        assert_eq!(
+            aggregation.usage,
+            Some(IrUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+            })
+        );
+    }
+
+    /// Recovers reasoning and message text from the output array of a
+    /// third-party upstream that emits only the terminal
+    /// `response.completed` event.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_completed_only_stream_extracts_output_text() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp1\",",
+                    "\"model\":\"m\",\"status\":\"completed\",\"output\":[",
+                    "{\"type\":\"reasoning\",\"summary\":[",
+                    "{\"type\":\"summary_text\",\"text\":\"hmm\"}]},",
+                    "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[",
+                    "{\"type\":\"output_text\",\"text\":\"hi\"}]}],",
+                    "\"usage\":{\"input_tokens\":4,\"output_tokens\":3}}}\n\n"
+                ),
+            ),
+        );
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(aggregation.text, "hi");
+        assert_eq!(aggregation.reasoning, "hmm");
+        assert_eq!(aggregation.finish, Some(IrFinishReason::Stop));
+        assert_eq!(
+            aggregation.usage,
+            Some(IrUsage {
+                input_tokens: 4,
+                output_tokens: 3,
+            })
+        );
+    }
+
     /// Extracts message text and reasoning from an upstream JSON response.
     ///
     /// # Panics
@@ -2297,6 +2540,7 @@ mod tests {
     fn upstream_json_response_extracts_message_and_reasoning() {
         let mut parser = UpstreamParser::new();
 
+        #[expect(clippy::expect_used, reason = "the fixture is a valid Responses body")]
         let events = parser
             .parse_json_response(serde_json::json!({
                 "id": "resp1",
@@ -2395,16 +2639,34 @@ mod tests {
 
             let rendered = render_client(events);
 
+            #[expect(
+                clippy::expect_used,
+                reason = "the asserted sequence above renders an incomplete terminal event"
+            )]
             let terminal = rendered
                 .iter()
                 .find(|(name, _)| name.as_deref() == Some("response.incomplete"))
                 .expect("incomplete terminal event");
 
-            assert_eq!(terminal.1["response"]["status"], "incomplete");
-            assert_eq!(
-                terminal.1["response"]["incomplete_details"]["reason"],
-                expected
-            );
+            // Attributes on macro-invocation statements do not cover
+            // desugared index expressions inside the expansion, so the
+            // terminal fields are read through annotated bindings first.
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the incomplete payload always carries the response object"
+            )]
+            let response = &terminal.1["response"];
+
+            let status = &response["status"];
+
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the incomplete payload always carries status and details"
+            )]
+            let reason_field = &response["incomplete_details"]["reason"];
+
+            assert_eq!(status, "incomplete");
+            assert_eq!(reason_field, expected);
 
             assert!(
                 rendered
@@ -2428,8 +2690,23 @@ mod tests {
 
         let rendered = render_json_response("public", &aggregator.finish());
 
-        assert_eq!(rendered["status"], "incomplete");
-        assert_eq!(rendered["incomplete_details"]["reason"], "content_filter");
+        // Attributes on macro-invocation statements do not cover desugared
+        // index expressions inside the expansion, so rendered fields are
+        // read through annotated bindings first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "render_json_response always emits the status and details"
+        )]
+        let status = &rendered["status"];
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "render_json_response always emits the status and details"
+        )]
+        let reason_field = &rendered["incomplete_details"]["reason"];
+
+        assert_eq!(status, "incomplete");
+        assert_eq!(reason_field, "content_filter");
     }
 
     /// Rejects image parts in system messages.
@@ -2439,6 +2716,7 @@ mod tests {
     /// Panics if an assertion fails.
     #[test]
     fn rejects_image_parts_in_system_messages() {
+        #[expect(clippy::expect_used, reason = "the test asserts this exact rejection")]
         let error = parse_request(
             r#"{
                 "model": "public",
@@ -2481,10 +2759,35 @@ mod tests {
 
         let rendered = render_json_response("public", &aggregator.finish());
 
-        assert_eq!(rendered["status"], "completed");
-        assert_eq!(rendered["output"].as_array().map(Vec::len), Some(2));
-        assert_eq!(rendered["output"][1]["thought_signature"], "sig");
-        assert_eq!(rendered["usage"]["total_tokens"], 3);
+        // Attributes on macro-invocation statements do not cover desugared
+        // index expressions inside the expansion, so rendered fields are
+        // read through annotated bindings first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "render_json_response always emits the status and output array"
+        )]
+        let status = &rendered["status"];
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "render_json_response always emits the status and output array"
+        )]
+        let output = &rendered["output"];
+
+        let second_item = &output[1];
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "render_json_response always emits the usage object"
+        )]
+        let total_tokens = &rendered["usage"]["total_tokens"];
+
+        let second_item_signature = &second_item["thought_signature"];
+
+        assert_eq!(status, "completed");
+        assert_eq!(output.as_array().map(Vec::len), Some(2));
+        assert_eq!(second_item_signature, "sig");
+        assert_eq!(total_tokens, 3);
     }
 
     /// Accepts and ignores the optional `id` and `phase` fields that codex
@@ -2496,6 +2799,10 @@ mod tests {
     /// Panics if an assertion fails.
     #[test]
     fn accepts_id_and_phase_on_message_input_items() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is a valid request; the test asserts acceptance"
+        )]
         let parsed = parse_request(
             r#"{
                 "model": "public",
@@ -2510,8 +2817,18 @@ mod tests {
         .expect("message item id and phase must be accepted and ignored");
 
         assert_eq!(parsed.ir.messages.len(), 1);
+
+        // Attributes on macro-invocation statements do not cover desugared
+        // index expressions inside the expansion, so the indexed message is
+        // read through an annotated binding first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the fixture parses exactly one message, asserted above"
+        )]
+        let first_message = &parsed.ir.messages[0];
+
         assert_eq!(
-            parsed.ir.messages[0].parts,
+            first_message.parts,
             vec![IrPart::Text {
                 text: "hi".to_string()
             }]
@@ -2529,6 +2846,7 @@ mod tests {
     fn upstream_json_tool_calls_render_into_both_client_formats() {
         let mut parser = UpstreamParser::new();
 
+        #[expect(clippy::expect_used, reason = "the fixture is a valid Responses body")]
         let events = parser
             .parse_json_response(serde_json::json!({
                 "id": "resp1",
@@ -2556,23 +2874,62 @@ mod tests {
         // Outward Responses: both calls appear as completed output items.
         let rendered = render_client(events.clone());
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the asserted sequence above renders a completed event"
+        )]
         let completed = rendered
             .iter()
             .find(|(name, _)| name.as_deref() == Some("response.completed"))
             .map(|(_, payload)| payload.clone())
             .expect("completed event");
 
-        #[expect(clippy::indexing_slicing, reason = "tests assert exact fixture shapes")]
+        // Attributes on macro-invocation statements do not cover desugared
+        // index expressions inside the expansion, so the output array is
+        // read through an annotated binding first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the completed payload always carries the response output array"
+        )]
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture asserts a completed response carrying output items"
+        )]
         let output = completed["response"]["output"]
             .as_array()
             .expect("completed response output array");
 
         assert_eq!(output.len(), 2);
-        assert_eq!(output[0]["type"], "function_call");
-        assert_eq!(output[0]["call_id"], "call_1");
-        assert_eq!(output[0]["arguments"], "{\"city\":\"oslo\"}");
-        assert_eq!(output[1]["call_id"], "call_2");
-        assert_eq!(output[1]["arguments"], "{\"tz\":\"utc\"}");
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the fixture carries exactly two function calls, asserted above"
+        )]
+        let first_item = &output[0];
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the fixture carries exactly two function calls, asserted above"
+        )]
+        let second_item = &output[1];
+
+        // Indexing through the borrowed items does not trigger the slicing
+        // lint; the item extraction above carries the annotation.
+        let first_type = &first_item["type"];
+
+        let first_call_id = &first_item["call_id"];
+
+        let first_arguments = &first_item["arguments"];
+
+        let second_call_id = &second_item["call_id"];
+
+        let second_arguments = &second_item["arguments"];
+
+        assert_eq!(first_type, "function_call");
+        assert_eq!(first_call_id, "call_1");
+        assert_eq!(first_arguments, "{\"city\":\"oslo\"}");
+        assert_eq!(second_call_id, "call_2");
+        assert_eq!(second_arguments, "{\"tz\":\"utc\"}");
 
         // Outward Chat Completions: both calls stream as tool-call deltas.
         let mut chat_renderer = ChatSseRenderer::new("public".to_string(), false);
@@ -2581,6 +2938,10 @@ mod tests {
 
         for event in &events {
             for frame in chat_renderer.render(event) {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the renderer emits `data: ` prefixed JSON frames"
+                )]
                 let payload: Value = serde_json::from_str(
                     frame
                         .strip_prefix("data: ")
@@ -2589,12 +2950,26 @@ mod tests {
                 )
                 .expect("payload is JSON");
 
-                for tool_call in payload["choices"][0]["delta"]["tool_calls"]
+                // Attributes on macro-invocation statements do not cover
+                // desugared index expressions inside the expansion, so the
+                // choices entry is read through an annotated binding first.
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "chat chunks always carry a single choices entry"
+                )]
+                let tool_calls = payload["choices"][0]["delta"]["tool_calls"]
                     .as_array()
                     .into_iter()
-                    .flatten()
-                {
-                    chat_names.push(tool_call["function"]["name"].clone());
+                    .flatten();
+
+                for tool_call in tool_calls {
+                    #[expect(
+                        clippy::indexing_slicing,
+                        reason = "tool-call deltas always carry their function object"
+                    )]
+                    let name = &tool_call["function"]["name"];
+
+                    chat_names.push(name.clone());
                 }
             }
         }
@@ -2623,23 +2998,41 @@ mod tests {
         let rendered = render_client(events);
 
         for event_name in ["response.output_text.delta", "response.output_text.done"] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the rendered sequence asserted above includes the text events"
+            )]
             let payload = rendered
                 .iter()
                 .find(|(name, _)| name.as_deref() == Some(event_name))
                 .map(|(_, payload)| payload)
                 .expect("output text event must be rendered");
 
-            assert_eq!(payload["logprobs"], Value::Array(Vec::new()));
+            // Indexing through the borrowed payload does not trigger the
+            // slicing lint; only the find above needed an annotation.
+            let logprobs = &payload["logprobs"];
+
+            assert_eq!(logprobs, &Value::Array(Vec::new()));
         }
 
         for event_name in ["response.content_part.added", "response.content_part.done"] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the rendered sequence asserted above includes the part events"
+            )]
             let payload = rendered
                 .iter()
                 .find(|(name, _)| name.as_deref() == Some(event_name))
                 .map(|(_, payload)| payload)
                 .expect("content part event must be rendered");
 
-            assert_eq!(payload["part"]["logprobs"], Value::Array(Vec::new()));
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "content parts always carry the logprobs field"
+            )]
+            let logprobs = &payload["part"]["logprobs"];
+
+            assert_eq!(logprobs, &Value::Array(Vec::new()));
         }
 
         let mut aggregator = Aggregator::default();
@@ -2648,9 +3041,12 @@ mod tests {
 
         let body = render_json_response("public", &aggregator.finish());
 
-        assert_eq!(
-            body["output"][0]["content"][0]["logprobs"],
-            Value::Array(Vec::new())
-        );
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "render_json_response emits one output item with one text part"
+        )]
+        let output_logprobs = &body["output"][0]["content"][0]["logprobs"];
+
+        assert_eq!(output_logprobs, &Value::Array(Vec::new()));
     }
 }

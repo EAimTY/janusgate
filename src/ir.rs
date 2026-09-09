@@ -66,6 +66,16 @@ impl IrReasoningEffort {
         }
     }
 
+    /// Renders the canonical level name used in `thinking_levels_override`.
+    pub(crate) fn to_canonical(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
     /// Clamps this level into the allowed set: lowered to the nearest allowed
     /// level at or below it, or raised to the lowest allowed level when none
     /// is at or below it.
@@ -580,47 +590,69 @@ pub(crate) fn apply_thinking_levels(
     }
 }
 
-/// Parses a `thinking_levels_override` JSON array into canonical levels,
-/// rejecting empty arrays, unknown names, and duplicates.
-pub(crate) fn parse_thinking_levels_override(
-    json: &str,
+/// Parses canonical thinking level names into levels, rejecting unknown
+/// names, duplicates, and empty input; `param` names the offending request
+/// field in every error.
+///
+/// This is the single validation path for canonical thinking levels: both the
+/// `save-model` request parser and the stored `thinking_levels_override`
+/// parser delegate here, so the wording can never drift between them.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] naming `param` for any violation.
+pub(crate) fn parse_thinking_levels(
+    values: &[String],
+    param: &str,
 ) -> Result<Vec<IrReasoningEffort>, ApiError> {
-    let values: Vec<String> = serde_json::from_str(json)
-        .map_err(|error| ApiError::invalid_request(format!("Invalid thinking levels: {error}")))?;
-
     let mut levels = Vec::with_capacity(values.len());
 
-    for value in &values {
+    for value in values {
         let level = IrReasoningEffort::parse_canonical(value).ok_or_else(|| {
-            ApiError::invalid_request(format!(
-                "Unknown thinking level `{value}`; expected one of off, low, medium, high"
-            ))
+            ApiError::invalid_parameter(
+                param,
+                format!("Unknown thinking level `{value}`; expected one of off, low, medium, high"),
+            )
         })?;
 
         if levels.contains(&level) {
-            return Err(ApiError::invalid_request(format!(
-                "Duplicate thinking level `{value}`"
-            )));
+            return Err(ApiError::invalid_parameter(
+                param,
+                format!("Duplicate thinking level `{value}`"),
+            ));
         }
 
         levels.push(level);
     }
 
     if levels.is_empty() {
-        return Err(ApiError::invalid_request(
-            "Thinking levels must be a non-empty array",
+        return Err(ApiError::invalid_parameter(
+            param,
+            format!("{param} must be a non-empty array"),
         ));
     }
 
     Ok(levels)
 }
 
+/// Parses a `thinking_levels_override` JSON array into canonical levels,
+/// rejecting malformed JSON, empty arrays, unknown names, and duplicates.
+pub(crate) fn parse_thinking_levels_override(
+    json: &str,
+) -> Result<Vec<IrReasoningEffort>, ApiError> {
+    let values: Vec<String> = serde_json::from_str(json)
+        .map_err(|error| ApiError::invalid_request(format!("Invalid thinking levels: {error}")))?;
+
+    parse_thinking_levels(&values, "thinking_levels_override")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Aggregator, IrAggregatedToolCall, IrEvent, IrFinishReason, IrReasoningEffort, IrUsage,
-        apply_thinking_levels, parse_thinking_levels_override,
+        apply_thinking_levels, parse_thinking_levels, parse_thinking_levels_override,
     };
+    use std::error::Error as StdError;
 
     /// Folds a slice of events into a finished aggregation.
     fn aggregate(events: &[IrEvent]) -> super::IrAggregation {
@@ -747,6 +779,86 @@ mod tests {
         assert!(parse_thinking_levels_override(r#"["turbo"]"#).is_err());
         assert!(parse_thinking_levels_override(r#"["low","low"]"#).is_err());
         assert!(parse_thinking_levels_override("not json").is_err());
+    }
+
+    /// Verifies that canonical level rendering round trips through the
+    /// canonical parser.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn canonical_rendering_round_trips() {
+        assert_eq!(IrReasoningEffort::Off.to_canonical(), "off");
+        assert_eq!(IrReasoningEffort::Low.to_canonical(), "low");
+        assert_eq!(IrReasoningEffort::Medium.to_canonical(), "medium");
+        assert_eq!(IrReasoningEffort::High.to_canonical(), "high");
+
+        for level in [
+            IrReasoningEffort::Off,
+            IrReasoningEffort::Low,
+            IrReasoningEffort::Medium,
+            IrReasoningEffort::High,
+        ] {
+            assert_eq!(
+                IrReasoningEffort::parse_canonical(level.to_canonical()),
+                Some(level)
+            );
+        }
+    }
+
+    /// Verifies the shared thinking-level parser names the offending request
+    /// parameter in every error while keeping the established wording.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the assertions.
+    #[test]
+    fn shared_thinking_level_parsing_names_the_parameter() -> Result<(), Box<dyn StdError>> {
+        let unknown = parse_thinking_levels(&["turbo".to_string()], "thinking_levels_override")
+            .err()
+            .ok_or("an unknown level must be rejected")?;
+
+        assert_eq!(unknown.status, 400);
+        assert_eq!(unknown.param.as_deref(), Some("thinking_levels_override"));
+        assert_eq!(
+            unknown.message,
+            "Unknown thinking level `turbo`; expected one of off, low, medium, high"
+        );
+
+        let duplicate = parse_thinking_levels(
+            &["low".to_string(), "low".to_string()],
+            "thinking_levels_override",
+        )
+        .err()
+        .ok_or("a duplicate level must be rejected")?;
+
+        assert_eq!(duplicate.message, "Duplicate thinking level `low`");
+
+        let empty = parse_thinking_levels(&[], "thinking_levels_override")
+            .err()
+            .ok_or("an empty level set must be rejected")?;
+
+        assert_eq!(
+            empty.message,
+            "thinking_levels_override must be a non-empty array"
+        );
+
+        let parsed = parse_thinking_levels(
+            &["high".to_string(), "off".to_string()],
+            "thinking_levels_override",
+        )?;
+
+        assert_eq!(
+            parsed,
+            vec![IrReasoningEffort::High, IrReasoningEffort::Off]
+        );
+
+        Ok(())
     }
 
     /// Verifies that aggregation folds every event kind.

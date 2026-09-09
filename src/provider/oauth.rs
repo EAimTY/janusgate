@@ -90,11 +90,14 @@ fn code_assist_metadata() -> serde_json::Value {
     })
 }
 
-/// Number of polling attempts for the `onboardUser` long-running operation.
-const ONBOARD_POLL_ATTEMPTS: usize = 10;
-
 /// Delay between `onboardUser` polling attempts.
 const ONBOARD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Total wall-clock budget for the `onboardUser` long-running operation,
+/// checked before every attempt. A fixed attempt count alone bounds nothing:
+/// each attempt inherits the shared client's 300-second read timeout, so the
+/// poll must also respect a deadline inside one management request.
+const ONBOARD_TOTAL_BUDGET: Duration = Duration::from_secs(60);
 
 /// A freshly begun OAuth authorization flow.
 #[derive(Debug, Clone)]
@@ -214,6 +217,7 @@ pub(crate) async fn exchange_code(
                     ("client_id", OPENAI_CLIENT_ID),
                     ("code_verifier", verifier),
                 ],
+                "authorization code",
             )
             .await?;
 
@@ -258,6 +262,7 @@ pub(crate) async fn exchange_code(
                     ("client_secret", ANTIGRAVITY_CLIENT_SECRET),
                     ("redirect_uri", ANTIGRAVITY_REDIRECT_URI),
                 ],
+                "authorization code",
             )
             .await?;
 
@@ -291,7 +296,7 @@ pub(crate) async fn exchange_code(
     let expires_at = token_expiry_from(
         raw_response.expires_in,
         raw_response.access_token.as_deref(),
-    );
+    )?;
 
     Ok(ExchangedTokens {
         credentials,
@@ -336,6 +341,7 @@ pub(crate) async fn refresh_tokens(
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
                 }),
+                "refresh token",
             )
             .await?
         }
@@ -350,6 +356,7 @@ pub(crate) async fn refresh_tokens(
                     ("client_id", ANTIGRAVITY_CLIENT_ID),
                     ("client_secret", ANTIGRAVITY_CLIENT_SECRET),
                 ],
+                "refresh token",
             )
             .await?
         }
@@ -375,11 +382,12 @@ pub(crate) async fn refresh_tokens(
 
 /// Resolves the Cloud Code Assist project ID for the authenticated Google
 /// account: `loadCodeAssist` first, then the `onboardUser` long-running
-/// operation.
+/// operation polled within [`ONBOARD_TOTAL_BUDGET`].
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when neither call yields a project.
+/// Returns [`ApiError`] when neither call yields a project, the operation
+/// reports a terminal failure, or the poll budget elapses.
 pub(crate) async fn resolve_project_id(
     http: &Client,
     access_token: &str,
@@ -410,7 +418,15 @@ pub(crate) async fn resolve_project_id(
         "metadata": code_assist_metadata(),
     });
 
-    for _ in 0..ONBOARD_POLL_ATTEMPTS {
+    let onboard_deadline = std::time::Instant::now() + ONBOARD_TOTAL_BUDGET;
+
+    loop {
+        if std::time::Instant::now() >= onboard_deadline {
+            return Err(ApiError::upstream_unavailable(
+                "project onboarding did not complete in time",
+            ));
+        }
+
         let response: serde_json::Value = post_code_assist(
             http,
             endpoints::ANTIGRAVITY_ONBOARD_USER_ACTION,
@@ -424,21 +440,42 @@ pub(crate) async fn resolve_project_id(
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            return response
-                .pointer("/response/cloudaicompanionProject")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    ApiError::upstream_unavailable("onboardUser completed without a project ID")
-                });
+            return onboard_operation_project(&response)?.ok_or_else(|| {
+                ApiError::upstream_unavailable("onboardUser completed without a project ID")
+            });
         }
 
         tokio::time::sleep(ONBOARD_POLL_INTERVAL).await;
     }
+}
 
-    Err(ApiError::upstream_unavailable(
-        "onboardUser did not complete in time",
-    ))
+/// Extracts the project ID from a completed `onboardUser` operation.
+///
+/// A completed `google.longrunning` operation carries its terminal failure as
+/// an `error` payload (`{code, message, status}`), which is propagated into
+/// the upstream error detail instead of collapsing into a generic
+/// missing-project failure.
+fn onboard_operation_project(operation: &serde_json::Value) -> Result<Option<String>, ApiError> {
+    if let Some(error) = operation.get("error") {
+        let status = error
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown status");
+
+        let message = error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("no message");
+
+        return Err(ApiError::upstream_unavailable(format!(
+            "onboardUser failed upstream: {status}: {message}"
+        )));
+    }
+
+    Ok(operation
+        .pointer("/response/cloudaicompanionProject")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string))
 }
 
 /// The result of a lease-owned refresh attempt.
@@ -621,7 +658,7 @@ async fn refresh_and_build_credentials(
     let access_token = refreshed.access_token.clone();
 
     // Computed before `access_token` is moved into the credentials.
-    let expires_at = token_expiry_from(refreshed.expires_in, Some(&access_token));
+    let expires_at = token_expiry_from(refreshed.expires_in, Some(&access_token))?;
 
     let credentials = match &provider.credentials {
         Credentials::OpenAiOauth {
@@ -677,17 +714,33 @@ fn is_token_fresh(provider: &Provider) -> bool {
 /// else the remaining lifetime of the access token's `exp` claim, else the
 /// default lifetime.
 ///
+/// A non-positive `expires_in` is a malformed token response and is rejected:
+/// stamping an expiry at or before `now` would mark the token permanently
+/// stale and drive a refresh grant against the endpoint on every request.
+///
 /// Google access tokens are opaque (`ya29…`) and carry no `exp` claim, so a
 /// Google refresh response without `expires_in` has no better signal than the
 /// default lifetime; both Google and OpenAI token endpoints report
 /// `expires_in`, which therefore always wins.
-fn token_expiry_from(expires_in: Option<i64>, access_token: Option<&str>) -> i64 {
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when the reported `expires_in` is zero or negative.
+fn token_expiry_from(expires_in: Option<i64>, access_token: Option<&str>) -> Result<i64, ApiError> {
+    if let Some(lifetime) = expires_in
+        && lifetime <= 0
+    {
+        return Err(ApiError::upstream_unavailable(format!(
+            "malformed token response: `expires_in` must be positive, got {lifetime}"
+        )));
+    }
+
     let now = unix_time::unix_now();
 
-    expires_in
+    Ok(expires_in
         .or_else(|| access_token.and_then(access_token_expires_in))
-        .map(|expires_in| now + expires_in)
-        .unwrap_or_else(|| now + DEFAULT_TOKEN_TTL)
+        .map(|lifetime| now + lifetime)
+        .unwrap_or_else(|| now + DEFAULT_TOKEN_TTL))
 }
 
 /// Extracts the `exp` claim of an access token JWT as a remaining lifetime.
@@ -726,8 +779,34 @@ fn random_url_safe(byte_count: usize) -> String {
     general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// POSTs a form-encoded body and deserializes the JSON response, mapping
-/// non-success statuses to upstream errors.
+/// Classifies a token-endpoint rejection body (RFC 6749 §5.2): a terminal
+/// `invalid_grant` — a revoked or expired grant that only user
+/// re-authorization recovers — is diagnosed in the message so the doomed
+/// grant is not re-attempted as if it were transient, while any other
+/// rejection keeps the generic upstream rendering with the status embedded.
+fn token_grant_rejection(status: u16, body: &str, grant: &str) -> ApiError {
+    let error_name = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+
+    if error_name.as_deref() == Some("invalid_grant") {
+        return ApiError::upstream_unavailable(format!(
+            "the token endpoint rejected the {grant} with `invalid_grant` (RFC 6749 §5.2): \
+             the grant is revoked or expired and the provider needs re-authorization"
+        ));
+    }
+
+    ApiError::upstream_rejected(status, truncate_excerpt(body))
+}
+
+/// POSTs a form-encoded body and deserializes the JSON response, classifying
+/// non-success statuses through [`token_grant_rejection`] with the given
+/// grant description.
 ///
 /// # Errors
 ///
@@ -737,6 +816,7 @@ async fn post_form<T: serde::de::DeserializeOwned>(
     http: &Client,
     url: &str,
     form: &[(&str, &str)],
+    grant: &str,
 ) -> Result<T, ApiError> {
     let response = http.post(url).form(form).send().await.map_err(|error| {
         ApiError::upstream_unavailable(format!("token endpoint unreachable: {error}"))
@@ -749,10 +829,7 @@ async fn post_form<T: serde::de::DeserializeOwned>(
     })?;
 
     if !status.is_success() {
-        return Err(ApiError::upstream_rejected(
-            status.as_u16(),
-            truncate_excerpt(&body),
-        ));
+        return Err(token_grant_rejection(status.as_u16(), &body, grant));
     }
 
     serde_json::from_str(&body).map_err(|error| {
@@ -811,7 +888,9 @@ pub(super) async fn post_code_assist<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// POSTs a JSON body and deserializes the JSON response.
+/// POSTs a JSON body and deserializes the JSON response, classifying
+/// non-success statuses through [`token_grant_rejection`] with the given
+/// grant description.
 ///
 /// # Errors
 ///
@@ -821,6 +900,7 @@ async fn post_json<T: serde::de::DeserializeOwned>(
     http: &Client,
     url: &str,
     body: &serde_json::Value,
+    grant: &str,
 ) -> Result<T, ApiError> {
     let response = http.post(url).json(body).send().await.map_err(|error| {
         ApiError::upstream_unavailable(format!("upstream unreachable: {error}"))
@@ -833,10 +913,7 @@ async fn post_json<T: serde::de::DeserializeOwned>(
     })?;
 
     if !status.is_success() {
-        return Err(ApiError::upstream_rejected(
-            status.as_u16(),
-            truncate_excerpt(&text),
-        ));
+        return Err(token_grant_rejection(status.as_u16(), &text, grant));
     }
 
     serde_json::from_str(&text).map_err(|error| {
@@ -860,55 +937,8 @@ fn truncate_excerpt(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::params;
-    use std::{
-        env,
-        error::Error as StdError,
-        fs,
-        num::NonZero,
-        path::PathBuf,
-        process,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    /// Monotonic counter making every test database path unique within the
-    /// process.
-    static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    /// Opens an isolated test database at a unique temporary path with the
-    /// given pool size and acquisition timeout, returning the database and its
-    /// file path for cleanup.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn open_test_database(
-        max_connections: usize,
-        pool_timeout: Duration,
-    ) -> (Database, PathBuf) {
-        let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let path: PathBuf = env::temp_dir().join(format!(
-            "janusgate_oauth_test_{}_{unique_id}.db",
-            process::id()
-        ));
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the test pool size is a non-zero constant"
-        )]
-        let max_connections = NonZero::new(max_connections).expect("pool size is non-zero");
-
-        #[expect(
-            clippy::expect_used,
-            reason = "opening the test database is fatal on failure"
-        )]
-        let database = Database::open(&path, max_connections, pool_timeout)
-            .await
-            .expect("failed to open isolated test database");
-
-        (database, path)
-    }
+    use crate::{database::params, test_support};
+    use std::{error::Error as StdError, fs};
 
     /// Verifies that random_url_safe produces the expected number of random
     /// bytes encoded in unpadded URL-safe Base64 and that consecutive
@@ -1011,7 +1041,12 @@ mod tests {
 
         let opaque_token = "ya29.opaque-google-access-token";
 
-        let from_expires_in = token_expiry_from(Some(3_599), Some(opaque_token));
+        #[expect(
+            clippy::expect_used,
+            reason = "a positive expires_in is a well-formed token response"
+        )]
+        let from_expires_in = token_expiry_from(Some(3_599), Some(opaque_token))
+            .expect("a positive expires_in must be accepted");
 
         assert!(
             (from_expires_in - before - 3_599).abs() <= 1,
@@ -1021,30 +1056,188 @@ mod tests {
         let exp = before + 1_200;
         let jwt = jwt_with_claims(serde_json::json!({ "exp": exp }));
 
-        let from_claim = token_expiry_from(None, Some(&jwt));
+        #[expect(
+            clippy::expect_used,
+            reason = "an absent expires_in carries no malformation"
+        )]
+        let from_claim =
+            token_expiry_from(None, Some(&jwt)).expect("an absent expires_in must be accepted");
 
         assert!(
             (from_claim - exp).abs() <= 1,
             "exp claim must decide the expiry"
         );
 
-        let from_both = token_expiry_from(Some(100), Some(&jwt));
+        #[expect(
+            clippy::expect_used,
+            reason = "a positive expires_in is a well-formed token response"
+        )]
+        let from_both = token_expiry_from(Some(100), Some(&jwt))
+            .expect("a positive expires_in must be accepted");
 
         assert!(
             (from_both - before - 100).abs() <= 1,
             "expires_in must win over the exp claim"
         );
 
-        let from_opaque = token_expiry_from(None, Some(opaque_token));
+        #[expect(
+            clippy::expect_used,
+            reason = "an absent expires_in carries no malformation"
+        )]
+        let from_opaque = token_expiry_from(None, Some(opaque_token))
+            .expect("an absent expires_in must be accepted");
 
         assert!(
             from_opaque - before - DEFAULT_TOKEN_TTL <= 1,
             "opaque token without expires_in must fall back to the default lifetime"
         );
 
-        let from_nothing = token_expiry_from(None, None);
+        #[expect(
+            clippy::expect_used,
+            reason = "an absent expires_in carries no malformation"
+        )]
+        let from_nothing =
+            token_expiry_from(None, None).expect("an absent expires_in must be accepted");
 
         assert!((from_nothing - before - DEFAULT_TOKEN_TTL).abs() <= 1);
+    }
+
+    /// Verifies a non-positive `expires_in` is rejected as a malformed token
+    /// response naming the offending field: an expiry stamped at or before
+    /// `now` would mark the token permanently stale and drive a refresh grant
+    /// against the endpoint on every request.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn token_expiry_rejects_non_positive_expires_in() {
+        for lifetime in [0, -30] {
+            #[expect(
+                clippy::panic,
+                reason = "a rejected lifetime is the very subject of this assertion"
+            )]
+            let error = token_expiry_from(Some(lifetime), None)
+                .err()
+                .unwrap_or_else(|| panic!("expires_in {lifetime} must be rejected"));
+
+            assert_eq!(error.status, 502);
+            assert_eq!(error.code.as_deref(), Some("upstream_error"));
+            assert!(
+                error.message.contains("expires_in"),
+                "the message must name the offending field: {error}"
+            );
+        }
+    }
+
+    /// Verifies a token endpoint rejection carrying the terminal
+    /// `invalid_grant` error (RFC 6749 §5.2) is diagnosed as requiring
+    /// re-authorization instead of surfacing as a generic transient failure:
+    /// only user re-authorization recovers a revoked or expired grant, so
+    /// re-attempting it on every request is futile.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn invalid_grant_rejection_requires_re_authorization() {
+        let error = token_grant_rejection(
+            400,
+            r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#,
+            "refresh token",
+        );
+
+        assert_eq!(error.status, 502);
+        assert_eq!(error.code.as_deref(), Some("upstream_error"));
+        assert!(error.message.contains("invalid_grant"));
+        assert!(error.message.contains("refresh token"));
+        assert!(
+            error.message.contains("re-authorization"),
+            "the message must name re-authorization as the recovery: {error}"
+        );
+    }
+
+    /// Verifies every other token endpoint rejection keeps the generic
+    /// upstream rendering with the upstream status embedded in the message.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn other_token_rejections_keep_upstream_rendering() {
+        let error = token_grant_rejection(401, r#"{"error":"invalid_client"}"#, "refresh token");
+
+        assert_eq!(error.status, 502);
+        assert!(error.message.contains("401"));
+        assert!(error.message.contains("invalid_client"));
+        assert_eq!(error.code.as_deref(), Some("upstream_error"));
+    }
+
+    /// Verifies a completed `onboardUser` operation propagates the terminal
+    /// `google.longrunning` error payload — status and message — into the
+    /// upstream error instead of collapsing it into a generic
+    /// missing-project failure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn onboard_operation_propagates_terminal_error() {
+        let failed = serde_json::json!({
+            "done": true,
+            "error": {
+                "code": 403,
+                "message": "onboarding is not permitted for this account",
+                "status": "PERMISSION_DENIED",
+            },
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is a terminal operation failure by construction"
+        )]
+        let error =
+            onboard_operation_project(&failed).expect_err("a terminal operation error must fail");
+
+        assert_eq!(error.status, 502);
+        assert!(error.message.contains("PERMISSION_DENIED"));
+        assert!(
+            error
+                .message
+                .contains("onboarding is not permitted for this account")
+        );
+    }
+
+    /// Verifies a completed `onboardUser` operation yields its project ID,
+    /// and no project when the completion carries neither a project nor an
+    /// error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn onboard_operation_extracts_project() {
+        let completed = serde_json::json!({
+            "done": true,
+            "response": {"cloudaicompanionProject": "proj-1"},
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is a well-formed completed operation"
+        )]
+        let project = onboard_operation_project(&completed).expect("completion must parse");
+
+        assert_eq!(project, Some("proj-1".to_string()));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is a well-formed completed operation"
+        )]
+        let projectless = onboard_operation_project(&serde_json::json!({"done": true}))
+            .expect("completion must parse");
+
+        assert_eq!(projectless, None);
     }
 
     /// Verifies both authorize URLs percent-encode the space-joined scope
@@ -1106,7 +1299,7 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn refresh_and_store_clears_lease_on_error() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database(2, Duration::from_secs(5)).await;
+        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
 
         let now = unix_time::unix_now();
 
@@ -1176,7 +1369,8 @@ mod tests {
     #[tokio::test]
     async fn refresh_and_store_prefers_original_error_over_clear_failure()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database(1, Duration::from_millis(200)).await;
+        let (database, path) =
+            test_support::open_test_database(1, Duration::from_millis(200)).await?;
 
         let now = unix_time::unix_now();
 

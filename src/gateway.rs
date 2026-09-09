@@ -209,7 +209,7 @@ fn build_upstream_request(
             Ok(http
                 .post(url)
                 .bearer_auth(access_token)
-                .header("User-Agent", "antigravity")
+                .header("User-Agent", endpoints::ANTIGRAVITY_USER_AGENT)
                 .json(&envelope))
         }
 
@@ -409,7 +409,7 @@ async fn upstream_error_of(response: reqwest::Response) -> ApiError {
     let mut bytes: Vec<u8> = Vec::new();
 
     while bytes.len() < MAX_ERROR_BODY_BYTES {
-        match tokio_stream::StreamExt::next(&mut stream).await {
+        match stream.next().await {
             Some(Ok(chunk)) => bytes.extend_from_slice(&chunk),
             Some(Err(_)) | None => break,
         }
@@ -439,7 +439,6 @@ fn truncate_excerpt(body: &str) -> String {
 mod tests {
     use super::{compatible_base_url, execute, pump_sse};
     use crate::{
-        database::Database,
         error::{ApiError, ApiErrorKind},
         format::{
             UpstreamEventParser, UpstreamFormat,
@@ -448,19 +447,13 @@ mod tests {
         ir::{IrEvent, IrRequest},
         provider::{Credentials, Model, ModelRouting, Provider, ProviderType},
         sse::SseFrame,
+        test_support,
     };
     use std::{
-        env,
+        error::Error as StdError,
         io::{Read as _, Write as _},
-        num::NonZero,
-        process,
-        sync::atomic::{AtomicU64, Ordering},
         time::Duration,
     };
-
-    /// Monotonic counter making every test database path unique within the
-    /// process.
-    static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     /// Serves one raw HTTP response on a loopback socket after reading the
     /// client request, returning the bound address.
@@ -785,35 +778,6 @@ mod tests {
         assert!(error.message.ends_with('…'));
     }
 
-    /// Opens an isolated test database at a unique temporary path. The
-    /// stored-drift mappings under test return before touching it, so it only
-    /// satisfies the `execute` signature.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn open_test_database() -> Database {
-        let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let path = env::temp_dir().join(format!(
-            "janusgate_gateway_test_{}_{unique_id}.db",
-            process::id()
-        ));
-
-        #[expect(clippy::expect_used, reason = "one is non-zero")]
-        let pool_size = NonZero::new(1_usize).expect("one is non-zero");
-
-        #[expect(
-            clippy::expect_used,
-            reason = "opening the test database is fatal on failure"
-        )]
-        let database = Database::open(path, pool_size, Duration::from_secs(5))
-            .await
-            .expect("test database should open");
-
-        database
-    }
-
     /// Builds a compatible provider carrying the given stored `base_url`.
     fn compatible_provider_with_base_url(base_url: Option<String>) -> Provider {
         Provider {
@@ -857,12 +821,16 @@ mod tests {
     ///
     /// # Panics
     ///
-    /// Panics if opening the test database fails or an assertion fails.
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while opening the test database.
     #[tokio::test]
-    async fn malformed_stored_thinking_levels_yield_internal_error() {
+    async fn malformed_stored_thinking_levels_fail_internally() -> Result<(), Box<dyn StdError>> {
         init_http_client();
 
-        let database = open_test_database().await;
+        let (database, _) = test_support::open_test_database(1, Duration::from_secs(5)).await?;
 
         // A bare JSON string is not the array the override requires, so
         // parsing the stored value must fail.
@@ -893,6 +861,8 @@ mod tests {
                 .contains("stored thinking_levels_override is invalid"),
             "the error must name the stored drift, got: {error:?}"
         );
+
+        Ok(())
     }
 
     /// Verifies that a compatible provider missing its stored `base_url`

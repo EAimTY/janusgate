@@ -97,6 +97,23 @@ pub(crate) async fn find_provider_in_transaction(
     rows.first().map(provider_from_row).transpose()
 }
 
+/// Fetches one provider by name after a write, failing with an internal error
+/// when the row is gone: a vanished row after a successful write is storage
+/// drift — an invariant violation — and never a client fault.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when the query fails or the provider does not exist.
+pub(crate) async fn reload_provider(
+    database: &Database,
+    name: &str,
+    context: &str,
+) -> Result<Provider, ApiError> {
+    find_provider(database, name)
+        .await?
+        .ok_or_else(|| ApiError::internal(format!("provider vanished after {context}")))
+}
+
 /// Deletes one provider by name, returning whether a row was removed.
 ///
 /// # Errors
@@ -133,11 +150,13 @@ pub(crate) async fn update_credentials(
     Ok(())
 }
 
-/// The mutable configuration of an existing provider about to be updated by
-/// `save-provider`.
+/// The raw `save-provider` field changes for an existing provider. Every
+/// field is supplied-or-absent: `None` means the field is absent from the
+/// request and keeps the stored value, which is resolved against the row
+/// re-read inside the update transaction.
 pub(crate) struct ProviderUpdate<'a> {
     /// Prefix prepended to every public model name.
-    pub(crate) model_prefix: &'a str,
+    pub(crate) model_prefix: Option<&'a str>,
 
     /// Upstream wire format.
     pub(crate) protocol: Option<UpstreamFormat>,
@@ -146,34 +165,63 @@ pub(crate) struct ProviderUpdate<'a> {
     pub(crate) base_url: Option<&'a str>,
 
     /// Whether the provider serves traffic.
-    pub(crate) enabled: bool,
+    pub(crate) enabled: Option<bool>,
 
     /// Replacement credentials; `None` keeps the stored ones.
     pub(crate) credentials: Option<&'a Credentials>,
 }
 
 /// Applies one `save-provider` update to an existing provider inside a single
-/// transaction: the provider row, an optional credentials replacement (which
-/// resets `expires_at` and clears any refresh lease), and — upholding the
-/// README §3 invariant — the public `name` of every model row, recomputed from
-/// the new prefix through the shared composition rule [`Model::public_name`].
+/// transaction and returns the updated row.
 ///
-/// Nothing is written when any recomputed public name would collide with an
-/// existing model row of another provider, or when two of the provider's own
-/// models would converge on one public name; both rejections are 409
-/// conflicts. Abandoning the transaction on any error discards every partial
-/// write, so the provider row and its model names can never drift apart.
+/// The provider row is re-read inside the transaction and absent fields are
+/// merged from it, so a caller's stale outer snapshot can never revert a
+/// field a concurrent `save-provider` just wrote (README §7.1). An unknown
+/// provider — including one deleted between the caller's outer read and this
+/// call — is rejected with 404 and nothing is written.
+///
+/// The write owns the provider row, an optional credentials replacement
+/// (which resets `expires_at` and clears any refresh lease), and — upholding
+/// the README §3 invariant — the public `name` of every model row, recomputed
+/// from the effective prefix through the shared composition rule
+/// [`Model::public_name`]. Nothing is written when any recomputed public name
+/// would collide with an existing model row of another provider, or when two
+/// of the provider's own models would converge on one public name; both
+/// rejections are 409 conflicts. Abandoning the transaction on any error
+/// discards every partial write, so the provider row and its model names can
+/// never drift apart.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when a statement fails or a recomputed public name
-/// collides.
+/// Returns [`ApiError`] for an unknown provider, a failed statement, or a
+/// recomputed public name collision.
 pub(crate) async fn update_provider(
     database: &Database,
-    provider: &Provider,
+    provider_name: &str,
     update: ProviderUpdate<'_>,
-) -> Result<(), ApiError> {
+) -> Result<Provider, ApiError> {
     let mut transaction = database.transaction().await?;
+
+    // The merge reads the row inside the transaction, so absent fields keep
+    // the newest stored values, never the caller's snapshot.
+    let Some(provider) = find_provider_in_transaction(&mut transaction, provider_name).await?
+    else {
+        return Err(ApiError::not_found(format!(
+            "Provider `{provider_name}` does not exist"
+        )));
+    };
+
+    let model_prefix = update
+        .model_prefix
+        .unwrap_or(provider.model_prefix.as_str());
+
+    let protocol = update.protocol.or(provider.protocol);
+
+    let base_url = update.base_url.or(provider.base_url.as_deref());
+
+    let enabled = update.enabled.unwrap_or(provider.enabled);
+
+    let is_credentials_replaced = update.credentials.is_some();
 
     let models = find_models_in_transaction(&mut transaction, provider.id).await?;
 
@@ -181,7 +229,7 @@ pub(crate) async fn update_provider(
         .iter()
         .map(|model| {
             let name = Model::public_name(
-                update.model_prefix,
+                model_prefix,
                 &model.upstream_name,
                 model.name_override.as_deref(),
             );
@@ -204,10 +252,10 @@ pub(crate) async fn update_provider(
             "UPDATE providers SET model_prefix = ?1, protocol = ?2, base_url = ?3, enabled = ?4 \
              WHERE id = ?5",
             params![
-                update.model_prefix,
-                update.protocol.map(UpstreamFormat::as_str),
-                update.base_url,
-                i64::from(update.enabled),
+                model_prefix,
+                protocol.map(UpstreamFormat::as_str),
+                base_url,
+                i64::from(enabled),
                 provider.id,
             ],
         )
@@ -240,7 +288,22 @@ pub(crate) async fn update_provider(
         ApiError::internal(format!("failed to commit provider update: {error}"))
     })?;
 
-    Ok(())
+    // The returned row mirrors exactly what this transaction wrote.
+    Ok(Provider {
+        id: provider.id,
+        name: provider.name,
+        model_prefix: model_prefix.to_string(),
+        provider_type: provider.provider_type,
+        protocol,
+        base_url: base_url.map(str::to_string),
+        credentials: update.credentials.cloned().unwrap_or(provider.credentials),
+        expires_at: if is_credentials_replaced {
+            None
+        } else {
+            provider.expires_at
+        },
+        enabled,
+    })
 }
 
 /// Rejects one provider's freshly composed public names when two of its rows
@@ -533,6 +596,12 @@ pub(crate) async fn list_enabled_models_with_owner(
 /// Replaces the model rows of one provider with a freshly discovered set
 /// inside a single transaction, returning the number of stored rows.
 ///
+/// An empty discovered set is rejected with 502 before anything is written:
+/// an upstream that legitimately reports no models — a fresh pre-onboarded
+/// account, or an outage answering 200 with an empty payload — must fail
+/// loudly instead of irreversibly wiping the provider's curated rows
+/// (README §7.1).
+///
 /// The provider row is re-read inside the transaction, so the public names are
 /// composed from the provider's current prefix even when a concurrent
 /// `save-provider` changed it after the caller's outer read (README §7.1).
@@ -546,13 +615,19 @@ pub(crate) async fn list_enabled_models_with_owner(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for an unknown provider, failed statements, or a
-/// composed public name collision.
+/// Returns [`ApiError`] for an empty discovered set, an unknown provider,
+/// failed statements, or a composed public name collision.
 pub(crate) async fn replace_discovered_models(
     database: &Database,
     provider_name: &str,
     upstream_names: &[String],
 ) -> Result<usize, ApiError> {
+    if upstream_names.is_empty() {
+        return Err(ApiError::upstream_unavailable(
+            "upstream reported no models; refusing to replace the provider's model rows",
+        ));
+    }
+
     let mut transaction = database.transaction().await?;
 
     let Some(provider) = find_provider_in_transaction(&mut transaction, provider_name).await?
@@ -836,6 +911,40 @@ pub(crate) struct OAuthState {
     pub(crate) verifier: String,
 }
 
+/// Reads the provider type of an unexpired OAuth state row without consuming
+/// it, so a completion that cannot succeed can be rejected before the atomic
+/// consume spends the state.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when the query fails or the stored type is unknown.
+pub(crate) async fn find_oauth_state_type(
+    database: &Database,
+    state: &str,
+    now: i64,
+) -> Result<Option<ProviderType>, ApiError> {
+    let rows = database
+        .query(
+            "SELECT type FROM oauth_states WHERE state = ?1 AND expires_at > ?2",
+            params![state, now],
+        )
+        .await?;
+
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+
+    let type_name: String = row.get(0)?;
+
+    let state_type = ProviderType::parse(&type_name).ok_or_else(|| {
+        ApiError::internal(format!(
+            "stored OAuth state carries unknown provider type `{type_name}`"
+        ))
+    })?;
+
+    Ok(Some(state_type))
+}
+
 /// Consumes the OAuth state row for `state`, returning its facts only when it
 /// is unexpired.
 ///
@@ -985,62 +1094,14 @@ fn model_from_row(row: &Row) -> Result<Model, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        env,
-        error::Error as StdError,
-        fs,
-        num::NonZero,
-        path::PathBuf,
-        process,
-        sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        },
-        time::Duration,
-    };
+    use crate::test_support;
+    use std::{error::Error as StdError, fs, sync::Arc, time::Duration};
 
     /// Number of consumers racing on one OAuth state in the exactly-once test.
     const STATE_CONSUMERS: usize = 8;
 
-    /// Monotonic counter making every test database path unique within the
-    /// process.
-    static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    /// Pool size large enough that every racing consumer holds its own
-    /// connection, maximizing statement interleaving.
-    const TEST_POOL_SIZE: usize = STATE_CONSUMERS;
-
     /// Pool timeout long enough that tests never observe acquisition timeouts.
     const TEST_POOL_TIMEOUT: Duration = Duration::from_secs(5);
-
-    /// Opens an isolated test database at a unique temporary path, returning
-    /// the database and its file path for cleanup.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn open_test_database() -> (Database, PathBuf) {
-        let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let path: PathBuf = env::temp_dir().join(format!(
-            "janusgate_storage_test_{}_{unique_id}.db",
-            process::id()
-        ));
-
-        #[expect(
-            clippy::expect_used,
-            reason = "opening the test database is fatal on failure"
-        )]
-        let database = Database::open(
-            &path,
-            NonZero::new(TEST_POOL_SIZE).expect("pool size is non-zero"),
-            TEST_POOL_TIMEOUT,
-        )
-        .await
-        .expect("failed to open isolated test database");
-
-        (database, path)
-    }
 
     /// Inserts one provider row with the given token expiry and refresh lease,
     /// returning its row identifier.
@@ -1107,7 +1168,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_granted_when_token_expired_without_lease() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id =
@@ -1141,7 +1203,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_denied_while_live_lease_held() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id =
@@ -1178,7 +1241,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_reclaims_stale_lease() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id =
@@ -1212,7 +1276,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_denied_while_token_fresh() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id = insert_lease_provider(&database, "fresh", Some(now + 61), None).await?;
@@ -1259,7 +1324,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_granted_when_expiry_absent() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id = insert_lease_provider(&database, "no_expiry", None, None).await?;
@@ -1291,7 +1357,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_honors_freshness_margin_parameter() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id = insert_lease_provider(&database, "margin", Some(now + 1), None).await?;
@@ -1339,7 +1406,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn consume_oauth_state_returns_facts_exactly_once() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         insert_oauth_state(
@@ -1380,7 +1448,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn consume_oauth_state_rejects_expired_state() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         insert_oauth_state(
@@ -1417,7 +1486,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn consume_oauth_state_completes_exactly_once_under_concurrency()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         for round in 0..24 {
@@ -1562,22 +1632,6 @@ mod tests {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
     }
 
-    /// Builds the minimal [`Provider`] value [`update_provider`] needs: only
-    /// `id` and `name` participate in an update.
-    fn test_provider(id: i64, name: &str) -> Provider {
-        Provider {
-            id,
-            name: name.to_string(),
-            model_prefix: String::new(),
-            provider_type: ProviderType::OpenAiCompatible,
-            protocol: None,
-            base_url: None,
-            credentials: Credentials::ApiKey("test-key".to_string()),
-            expires_at: None,
-            enabled: true,
-        }
-    }
-
     /// Verifies a `save-provider` update recomputes every public model name
     /// from the new prefix through the shared composition rule — including
     /// models carrying a `name_override` — and rewrites the provider row.
@@ -1591,25 +1645,34 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn provider_update_recomputes_all_public_names() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "p-").await?;
 
         insert_model_row(&database, provider_id, "gpt-x", "p-gpt-x", None).await?;
         insert_model_row(&database, provider_id, "gpt-y", "p-custom", Some("custom")).await?;
 
-        update_provider(
+        let stored = update_provider(
             &database,
-            &test_provider(provider_id, "alpha"),
+            "alpha",
             ProviderUpdate {
-                model_prefix: "svc/",
+                model_prefix: Some("svc/"),
                 protocol: Some(UpstreamFormat::OpenAiResponse),
                 base_url: Some("https://other.example"),
-                enabled: false,
+                enabled: Some(false),
                 credentials: None,
             },
         )
         .await?;
+
+        assert_eq!(stored.name, "alpha");
+        assert_eq!(stored.model_prefix, "svc/");
+        assert!(!stored.enabled);
+        assert_eq!(
+            stored.credentials,
+            Credentials::ApiKey("test-key".to_string())
+        );
 
         assert_eq!(
             read_model_name(&database, provider_id, "gpt-x").await?,
@@ -1647,7 +1710,8 @@ mod tests {
     #[tokio::test]
     async fn provider_update_rejects_foreign_name_collision_and_rolls_back()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let alpha_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -1659,12 +1723,12 @@ mod tests {
 
         let error = update_provider(
             &database,
-            &test_provider(alpha_id, "alpha"),
+            "alpha",
             ProviderUpdate {
-                model_prefix: "",
+                model_prefix: Some(""),
                 protocol: None,
                 base_url: None,
-                enabled: false,
+                enabled: Some(false),
                 credentials: None,
             },
         )
@@ -1708,7 +1772,8 @@ mod tests {
     #[tokio::test]
     async fn provider_update_rejects_same_provider_name_convergence()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let provider_id = insert_prefix_provider(&database, "gamma", "p-").await?;
 
@@ -1717,12 +1782,12 @@ mod tests {
 
         let error = update_provider(
             &database,
-            &test_provider(provider_id, "gamma"),
+            "gamma",
             ProviderUpdate {
-                model_prefix: "",
+                model_prefix: Some(""),
                 protocol: None,
                 base_url: None,
-                enabled: false,
+                enabled: Some(false),
                 credentials: None,
             },
         )
@@ -1761,18 +1826,19 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn provider_update_with_no_models_succeeds() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
-        let provider_id = insert_prefix_provider(&database, "delta", "p-").await?;
+        insert_prefix_provider(&database, "delta", "p-").await?;
 
         update_provider(
             &database,
-            &test_provider(provider_id, "delta"),
+            "delta",
             ProviderUpdate {
-                model_prefix: "q-",
+                model_prefix: Some("q-"),
                 protocol: None,
                 base_url: None,
-                enabled: false,
+                enabled: Some(false),
                 credentials: None,
             },
         )
@@ -1782,6 +1848,125 @@ mod tests {
 
         assert_eq!(model_prefix, "q-");
         assert_eq!(enabled, 0);
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies a `save-provider` update merges absent fields from the row
+    /// re-read inside its transaction, so a stale outer snapshot can never
+    /// revert a field a concurrent update already wrote (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn provider_update_merges_absent_fields_from_fresh_row() -> Result<(), Box<dyn StdError>>
+    {
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+
+        insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        // The caller's outer read observes the provider enabled.
+        let outer = find_provider(&database, "alpha")
+            .await?
+            .ok_or("missing provider row")?;
+
+        assert!(outer.enabled);
+
+        // A concurrent save-provider disables the provider before the
+        // caller's update commits.
+        update_provider(
+            &database,
+            "alpha",
+            ProviderUpdate {
+                model_prefix: None,
+                protocol: None,
+                base_url: None,
+                enabled: Some(false),
+                credentials: None,
+            },
+        )
+        .await?;
+
+        // The caller commits an update supplying only the prefix.
+        let stored = update_provider(
+            &database,
+            "alpha",
+            ProviderUpdate {
+                model_prefix: Some("b-"),
+                protocol: None,
+                base_url: None,
+                enabled: None,
+                credentials: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(stored.model_prefix, "b-");
+
+        assert!(
+            !stored.enabled,
+            "the stale outer read must not revert the newer stored enabled state"
+        );
+
+        let (model_prefix, enabled, _, _) = read_provider_row(&database, "alpha").await?;
+
+        assert_eq!(model_prefix, "b-");
+        assert_eq!(enabled, 0);
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies updating a provider deleted between the caller's outer read
+    /// and the update is rejected with 404 instead of silently writing no
+    /// rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn provider_update_rejects_vanished_provider_as_not_found()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+
+        insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        // The caller's outer read observes the row.
+        let _outer = find_provider(&database, "alpha").await?;
+
+        delete_provider(&database, "alpha").await?;
+
+        let error = update_provider(
+            &database,
+            "alpha",
+            ProviderUpdate {
+                model_prefix: None,
+                protocol: None,
+                base_url: None,
+                enabled: Some(false),
+                credentials: None,
+            },
+        )
+        .await
+        .err()
+        .ok_or("a vanished provider must be rejected")?;
+
+        assert_eq!(error.status, 404);
+        assert!(error.message.contains("does not exist"));
 
         let _ = fs::remove_file(path);
 
@@ -1820,7 +2005,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn credential_persist_requires_own_lease_stamp() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id = insert_lease_provider(&database, "stamp", Some(now - 100), None).await?;
@@ -1871,7 +2057,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn credential_persist_loses_to_lease_reacquisition() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         // The in-flight refresher acquired its lease 100 seconds ago.
@@ -1929,7 +2116,8 @@ mod tests {
     #[tokio::test]
     async fn credential_persist_loses_to_credentials_replacement() -> Result<(), Box<dyn StdError>>
     {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id =
@@ -1938,12 +2126,12 @@ mod tests {
         // The admin replaces the credentials, clearing the lease.
         update_provider(
             &database,
-            &test_provider(provider_id, "replaced"),
+            "replaced",
             ProviderUpdate {
-                model_prefix: "",
+                model_prefix: Some(""),
                 protocol: None,
                 base_url: None,
-                enabled: true,
+                enabled: Some(true),
                 credentials: Some(&Credentials::ApiKey("admin-key".to_string())),
             },
         )
@@ -2006,7 +2194,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn discover_replaces_models_and_carries_overrides() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2043,6 +2232,50 @@ mod tests {
         Ok(())
     }
 
+    /// Verifies a discovery replace carrying an empty upstream set is
+    /// rejected with 502 and leaves every stored row — overrides included —
+    /// untouched: an upstream outage answering 200 with an empty payload, or
+    /// a fresh pre-onboarded account, must fail loudly instead of wiping the
+    /// provider's curated routing state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn discover_rejects_empty_upstream_set_without_wiping_rows()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+
+        let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        insert_model_row(&database, provider_id, "u1", "a-custom", Some("custom")).await?;
+
+        let error = replace_discovered_models(&database, "alpha", &[])
+            .await
+            .err()
+            .ok_or("an empty discovered set must be rejected")?;
+
+        assert_eq!(error.status, 502);
+        assert!(
+            error.message.contains("no models"),
+            "the error must state the upstream reported no models: {error}"
+        );
+
+        let (name, name_override, _, _) = read_model_row(&database, provider_id, "u1").await?;
+
+        assert_eq!(name, "a-custom");
+        assert_eq!(name_override.as_deref(), Some("custom"));
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
     /// Verifies a discovery replace that would route a name already held by
     /// another provider is rejected with a name-specific 409 and writes
     /// nothing.
@@ -2057,7 +2290,8 @@ mod tests {
     #[tokio::test]
     async fn discover_rejects_routed_collision_with_name_specific_conflict()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         // The empty prefix lets alpha's composed name collide with beta's.
         let alpha_id = insert_prefix_provider(&database, "alpha", "").await?;
@@ -2108,7 +2342,8 @@ mod tests {
     #[tokio::test]
     async fn discover_composes_names_from_prefix_re_read_in_transaction()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2122,12 +2357,12 @@ mod tests {
         // A concurrent save-provider changes the prefix before the replace.
         update_provider(
             &database,
-            &test_provider(provider_id, "alpha"),
+            "alpha",
             ProviderUpdate {
-                model_prefix: "b-",
+                model_prefix: Some("b-"),
                 protocol: None,
                 base_url: None,
-                enabled: true,
+                enabled: Some(true),
                 credentials: None,
             },
         )
@@ -2159,7 +2394,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn discover_rejects_own_name_convergence() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let provider_id = insert_prefix_provider(&database, "gamma", "x-").await?;
 
@@ -2203,7 +2439,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_model_applies_overrides_with_fresh_prefix() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2213,12 +2450,12 @@ mod tests {
         // the handler would have made.
         update_provider(
             &database,
-            &test_provider(provider_id, "alpha"),
+            "alpha",
             ProviderUpdate {
-                model_prefix: "b-",
+                model_prefix: Some("b-"),
                 protocol: None,
                 base_url: None,
-                enabled: true,
+                enabled: Some(true),
                 credentials: None,
             },
         )
@@ -2264,7 +2501,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_model_rejects_collision_and_writes_nothing() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         // The empty prefix lets alpha's override name collide with beta's.
         let alpha_id = insert_prefix_provider(&database, "alpha", "").await?;
@@ -2319,7 +2557,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_model_clears_name_override_with_null() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2357,7 +2596,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_model_rejects_unknown_rows() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2415,7 +2655,8 @@ mod tests {
     #[tokio::test]
     async fn list_enabled_models_with_owner_maps_names_to_providers()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
 
         let alpha_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 

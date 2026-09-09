@@ -7,7 +7,7 @@ use crate::{
 use axum::{
     Router,
     body::Bytes,
-    extract::{OriginalUri, Request},
+    extract::{DefaultBodyLimit, OriginalUri, Request},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::Response,
@@ -18,6 +18,13 @@ use serde::de::DeserializeOwned;
 pub(crate) mod models;
 pub(crate) mod oauth_flow;
 pub(crate) mod providers;
+
+/// Maximum accepted request body size for the management API.
+///
+/// Management payloads are small JSON documents, so 2 MiB — axum's default,
+/// made explicit here so the limit is deliberate and greppable — is generous;
+/// the outward client surface allows 64 MiB for inline image data.
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Constructs the administrative management API router with its own token
 /// authentication and 404 fallback.
@@ -33,6 +40,7 @@ pub(crate) fn router() -> Router<Database> {
         .route("/save-model", post(models::save))
         .fallback(fallback)
         .layer(middleware::from_fn(authenticate))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
 /// Authenticates the request against the bearer-less management token.
