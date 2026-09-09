@@ -23,3 +23,15 @@ pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.147.0";
 /// `cloudcode-pa.googleapis.com` returns `429 RESOURCE_EXHAUSTED`.
 pub(crate) const ANTIGRAVITY_BASE_URL: &str =
     "https://daily-cloudcode-pa.googleapis.com/v1internal";
+
+/// `loadCodeAssist` action suffix on the Antigravity base URL.
+pub(crate) const ANTIGRAVITY_LOAD_CODE_ASSIST_ACTION: &str = ":loadCodeAssist";
+
+/// `onboardUser` action suffix on the Antigravity base URL.
+pub(crate) const ANTIGRAVITY_ONBOARD_USER_ACTION: &str = ":onboardUser";
+
+/// `fetchAvailableModels` action suffix on the Antigravity base URL.
+pub(crate) const ANTIGRAVITY_FETCH_AVAILABLE_MODELS_ACTION: &str = ":fetchAvailableModels";
+
+/// `User-Agent` header value required by the Antigravity Code Assist endpoint.
+pub(crate) const ANTIGRAVITY_USER_AGENT: &str = "antigravity";

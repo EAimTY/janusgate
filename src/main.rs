@@ -241,11 +241,13 @@ fn validate_secrets(config: &Config) {
         ("management_api.token", config.management_api.token.as_str()),
         ("api.key", config.api.key.as_str()),
     ] {
-        if value.trim().is_empty() {
+        let trimmed_value = value.trim();
+
+        if trimmed_value.is_empty() {
             invalid_secret(field, "must be a non-empty string");
         }
 
-        if EXAMPLE_PLACEHOLDER_SECRETS.contains(&value) {
+        if EXAMPLE_PLACEHOLDER_SECRETS.contains(&trimmed_value) {
             invalid_secret(
                 field,
                 "is still the config.example.jsonc placeholder; replace it with a real secret",
@@ -401,6 +403,19 @@ mod tests {
         let temporary = TempConfig::write(
             "placeholder-api-key",
             &config_body("CHANGE_ME_API_KEY", "token"),
+        );
+
+        let _config = temporary.parse();
+    }
+
+    /// Verifies that a placeholder secret padded with whitespace is fatal:
+    /// the placeholder comparison applies to the trimmed value.
+    #[test]
+    #[should_panic(expected = "placeholder")]
+    fn rejects_whitespace_padded_placeholder_api_key() {
+        let temporary = TempConfig::write(
+            "padded-placeholder-api-key",
+            &config_body("  CHANGE_ME_API_KEY  ", "token"),
         );
 
         let _config = temporary.parse();

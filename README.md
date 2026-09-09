@@ -107,6 +107,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 
 ### Database Abstraction & Connection Pooling
 - **Connection Pool**: Database access is managed through an in-process connection pool (`deadpool`), maintaining up to `database.max_connections` concurrent `turso::Connection` instances. When every connection is checked out, connection acquisition waits at most `database.pool_timeout` milliseconds before failing with `PoolTimeout`.
+- **Connection Busy Timeout**: Every pooled connection and schema-bootstrap connection configures a 5-second busy timeout, so a write waits at most 5 seconds for the database file lock before failing with the underlying busy error.
 - **Implicit Prepared Statement Cache**: All queries and executions on both `Database` and `Transaction` pass through `prepare_cached()`. Turso's statement cache is per-connection and persists across pool checkouts, so warm connections reuse their cached preparations; a freshly created pooled connection starts cold.
 - **Eager Query Materialization**: `query()` drains every result set to completion and returns owned `Vec<Row>` values before the pooled connection is released. Lazily-consumed cursors are never exposed, so a result can never outlive its connection checkout, interleave with another borrower's statements, or leave unfinished statement state on a recycled connection.
 - **Transaction Semantics**: A `Transaction` checks out and exclusively holds a pooled connection for its entire lifetime. Statement execution on the handle requires exclusive access (`execute()`/`query()` take `&mut self`), so statements within one transaction can never run concurrently or interleave. Explicit `commit()` or `rollback()` consumes the transaction and returns the connection to the pool; dropping an uncommitted transaction discards its connection instead of returning it to the pool, so the open engine-level write lock is released immediately rather than parked until the connection's next checkout. Connections that still report an open transaction at recycle time are discarded and replaced by the pool.
@@ -126,7 +127,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   - `type`: `openai_oauth`, `antigravity_oauth`, or `openai_compatible`.
   - `credentials`: Plaintext JSON payload (`{accessToken, refreshToken, accountId/projectId}` or `{apiKey}`) stored directly in the database without encryption.
   - `expires_at`: Unix timestamp when OAuth access token expires.
-  - `refresh_started_at`: Lease timestamp to prevent concurrent token refresh races. When the token is expired, a request wins the lease by writing `refresh_started_at = now` inside a transaction conditional on the lease being absent or stale (older than 90 seconds); the winner refreshes the token and clears the lease. Concurrent requests poll up to 100 seconds — deliberately longer than the 90-second staleness window, so a lease abandoned by a crashed refresher is always reacquired rather than waited out — until the token is renewed, then re-read it; when the poll window elapses the request fails with 502. Any refresh failure — the grant or its persistence — clears the lease before the error is returned, so waiters can acquire it instead of burning their whole wait behind a refresh that already failed.
+  - `refresh_started_at`: Lease timestamp to prevent concurrent token refresh races. When the token is expired, a request wins the lease by writing `refresh_started_at = now` inside a transaction conditional on the lease being absent or stale (older than 90 seconds); the winner refreshes the token and clears the lease. Concurrent requests poll up to 100 seconds — deliberately longer than the 90-second staleness window, so a lease abandoned by a crashed refresher is always reacquired rather than waited out — until the token is renewed, then re-read it; when the poll window elapses the request fails with 502. Any refresh failure — the grant or its persistence — clears the lease before the original error is returned, so waiters can acquire it instead of burning their whole wait behind a refresh that already failed; a failed lease clear never replaces that original error. The renewed credentials persist only while the refresher still owns the lease it acquired (`refresh_started_at` still equals the acquired stamp): a credentials replacement or stale-lease reacquisition that lands while the grant is in flight wins the row, the in-flight result — derived from superseded credentials — is discarded without touching the newer state, and the loser re-enters the lease competition.
 - **Model**:
   - Identified by `(provider_id, upstream_name)`.
   - `upstream_name`: Exact model identifier discovered from upstream; used verbatim for upstream requests without automatic mapping.
@@ -140,7 +141,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   - `verifier`: PKCE code verifier for `openai_oauth`; empty string for `antigravity_oauth` (which authenticates with a client secret instead of PKCE).
   - `expires_at`: Unix timestamp after which the flow is invalid (10 minutes after creation).
   - `oauth_states` rows are provider-agnostic: they are keyed by the opaque `state` token and never attached to a provider, so a state completed after its provider was deleted legitimately recreates the provider.
-  - State consumption is a single atomic `DELETE … RETURNING` statement, so exactly one concurrent completion can ever observe a state and a state can never complete twice. A rejected (expired or unknown) state consumes nothing, and expired rows are swept whenever `start-provider-oauth` runs; completion of an expired or unknown state yields 404.
+  - State consumption is a single atomic `DELETE … RETURNING` statement, so exactly one concurrent completion can ever observe a state and a state can never complete twice. A rejected (expired or unknown) state consumes nothing, and expired rows are swept whenever `start-provider-oauth` runs; completion of an unknown, expired, or already-consumed state yields 404.
 
 ---
 
@@ -149,9 +150,9 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 1. **Inbound Authentication**:
    - Authentication is format-specific and enforced at the router layer via Tower middleware before requests reach endpoint handlers:
      - **Management Sub-router (`/management-api/*`)**: Uses management authentication middleware applied to the `/management-api` sub-router. Requires `Authorization: <token>` without any `Bearer` prefix, matching `management_api.token` in configuration.
-     - **Outward API Sub-router (`/api/*`)**: Validates client requests against a shared gateway API key, matching `api.key` in configuration. Format-specific sub-routers enforce protocol-compliant header parsing independently (for example, the `/openai-v1` sub-router requires `Authorization: Bearer <key>` conforming to the OpenAI specification).
+     - **Outward API Sub-router (`/api`)**: Performs no authentication itself; it only nests the format sub-routers and serves the `/api` fallback. Each format-specific sub-router enforces authentication and protocol-compliant header parsing independently — the `/openai-v1` sub-router validates client requests against the shared gateway API key, matching `api.key` in configuration, via `Authorization: Bearer <key>` conforming to the OpenAI specification.
    - All token comparisons use constant-time byte comparison. Mismatch yields HTTP 401.
-   - Startup is **fatal** when `api.key` or `management_api.token` is empty, whitespace-only, or still set to its `config.example.jsonc` placeholder (`CHANGE_ME_*`): an empty shared secret would authorize requests presenting the same empty value, so it is treated as a configuration violation, not a runtime condition.
+   - Startup is **fatal** when `api.key` or `management_api.token` is empty, whitespace-only, or still set, after trimming surrounding whitespace, to its `config.example.jsonc` placeholder (`CHANGE_ME_*`): an empty shared secret would authorize requests presenting the same empty value, so it is treated as a configuration violation, not a runtime condition.
    - Error response bodies are router-domain specific:
      - Root router: plain HTTP 404 with an empty body.
      - Management API: `{"error": {"message": <human-readable message>, "code": <machine-readable code>}}`; an unauthorized request carries `code: "unauthorized"`, an unknown path `code: "not_found"` (HTTP 404).
@@ -160,6 +161,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
    - Upstream credentials and tokens are stored directly in plaintext JSON within the database. No encryption or decryption is performed.
 3. **Network Invariants**:
    - Inbound endpoints do not use sessions, cookies, or CORS headers.
+   - Inbound HTTP/1 connections that do not finish sending request headers within 30 seconds are closed.
    - Outbound requests to upstream providers connect directly without proxying.
 
 ---
@@ -190,8 +192,8 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 
 ### 5.2 Google Antigravity OAuth (`antigravity_oauth`)
 - **OAuth Constants**: Installed-app client ID `1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com`, client secret `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`, loopback redirect `http://localhost:51121/oauth-callback`. No PKCE; the client secret authenticates the exchange.
-  - Authorize URL: `https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&client_id=<client_id>&prompt=consent&redirect_uri=http://localhost:51121/oauth-callback&response_type=code&scope=<scopes space-joined>&state=<state>`.
-  - Scopes: `https://www.googleapis.com/auth/cloud-platform`, `https://www.googleapis.com/auth/userinfo.email`, `https://www.googleapis.com/auth/userinfo.profile`, `https://www.googleapis.com/auth/cclog`, `https://www.googleapis.com/auth/experimentsandconfigs`.
+  - Authorize URL: `https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&client_id=<client_id>&prompt=consent&redirect_uri=http://localhost:51121/oauth-callback&response_type=code&scope=<scopes %20-joined>&state=<state>`.
+  - Scopes: `https://www.googleapis.com/auth/cloud-platform`, `https://www.googleapis.com/auth/userinfo.email`, `https://www.googleapis.com/auth/userinfo.profile`, `https://www.googleapis.com/auth/cclog`, `https://www.googleapis.com/auth/experimentsandconfigs`. Both authorize URLs percent-encode the space-joined scope list as `%20` (RFC 3986 forbids raw spaces in a query).
   - Token exchange: `POST https://oauth2.googleapis.com/token` with form body `code=<code>&client_id=<client_id>&client_secret=<secret>&redirect_uri=<redirect>&grant_type=authorization_code`; response is JSON `{access_token, refresh_token, expires_in, ...}`.
   - Token refresh: same endpoint with form body `refresh_token=<refresh_token>&client_id=<client_id>&client_secret=<secret>&grant_type=refresh_token`.
 - **Project ID Resolution**: The Google Cloud Code Assist project ID (`projectId` credential) is resolved once during OAuth completion:
@@ -203,7 +205,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 - **Upstream Actions**:
   - Non-streaming: `:generateContent`
   - Streaming: `:streamGenerateContent?alt=sse`
-- **Headers**: `Authorization: Bearer <accessToken>`, `Content-Type: application/json`, `User-Agent: antigravity`.
+- **Headers**: `Authorization: Bearer <accessToken>`, `Content-Type: application/json`, `User-Agent: antigravity`. Every Antigravity Code Assist call — project resolution (`loadCodeAssist`, `onboardUser`), model discovery (`fetchAvailableModels`), and inference — sends this header set.
 - **Envelope**:
   ```json
   {
@@ -283,8 +285,10 @@ Every upstream response — SSE stream or JSON document — is parsed into an IR
 | `openai_compatible` | per `protocol` column | matches the client's requested mode |
 
 - Streaming clients receive live translated SSE chunks (`data: {json}\n\n`). Chat Completions streams end with a `data: [DONE]` sentinel; Responses streams end after the terminal `response.completed` or `response.incomplete` event. Every Responses SSE payload embeds its event name as a `"type"` field and a monotonically increasing `sequence_number`, so strict clients that discriminate on the JSON payload work without reading the `event:` line.
+- Responses `response.output_text.delta` and `response.output_text.done` events and `output_text` content parts always carry `logprobs: []` — empty when no logprobs are produced — because the official openai-python client requires the field.
 - `Finish(Length)` and `Finish(ContentFilter)` render as `response.incomplete` carrying `incomplete_details.reason` (`max_output_tokens` / `content_filter`), both in the streaming terminal event and in the aggregated non-streaming response's `status`/`incomplete_details`; all other finishes render `response.completed` / `status: "completed"`.
 - Malformed upstream SSE/JSON payloads abort the stream; clients that are already streaming receive a terminal `data: {"error": {...}}` frame (Chat Completions) or a `response.failed` event (Responses) with the translated error. This applies to malformed trailing frames flushed at end-of-stream as well: they abort the stream with an error frame instead of terminating cleanly.
+- On a clean upstream end-of-stream the gateway flushes buffered parser state (e.g. pending Chat Completions tool calls) into the event stream before the terminal `Done` event; an aborted stream skips the flush.
 - Upstream deadlines: the shared HTTP client enforces a 10-second connect timeout and a 300-second read timeout that resets after every successful read of the upstream body. A stalled upstream therefore aborts the request (mapped to 502 per §6.7) instead of hanging it indefinitely, while a slow-but-flowing response is never truncated.
 
 ### 6.4 Thinking Levels
@@ -302,14 +306,14 @@ Every upstream response — SSE stream or JSON document — is parsed into an IR
 
 ### 6.6 Supported Request Fields
 
-Requests are parsed strictly: unknown fields and known-but-unsupported fields are rejected with HTTP 400 `invalid_request_error` naming the offending field. Supported fields:
+Requests are parsed strictly: unknown fields and known-but-unsupported fields are rejected with HTTP 400 `invalid_request_error` naming the offending field. Two carve-outs accept and ignore extra fields for history replay: Responses `message` input items accept and ignore `id` and `phase` (codex replays its parsed output items verbatim each turn), and Chat Completions assistant messages accept and ignore `reasoning` and `reasoning_content`. Chat Completions validates assistant `tool_calls[].function.arguments` as a JSON object at parse time, in parity with Responses `function_call` items. Supported fields:
 
 - **Chat Completions**: `model`, `messages`, `tools` (function tools only), `tool_choice`, `temperature`, `top_p`, `max_tokens` / `max_completion_tokens` (both set is rejected), `response_format` (`text`, `json_object`, `json_schema`), `reasoning_effort`, `stream`, `stream_options` (`{include_usage}` only).
 - **Responses**: `model`, `input` (string or item array), `instructions`, `tools` (function tools only), `tool_choice`, `temperature`, `top_p`, `max_output_tokens`, `reasoning` (`{effort}`; `summary: "auto"` accepted, other values rejected), `stream`, `store` (must be absent or `false`), `text.format` (`text`, `json_object`, `json_schema`).
 - **Message roles**: Chat Completions `system` / `developer` / `user` / `assistant` / `tool`; Responses input items `message`, `function_call`, `function_call_output`, and `reasoning` (reasoning items are accepted and ignored — they carry no replayable state in a stateless gateway).
 - System/developer messages concatenate in encounter order into IR `instructions`.
 - Responses system/developer message content parts must be text; an `input_image` part is rejected with HTTP 400 naming the field `content` (instructions have no image channel).
-- Chat Completions reasoning key policy: upstream parsing accepts both `reasoning` (precedence when both are present) and `reasoning_content`; the gateway emits `reasoning_content` in streaming deltas and in aggregated messages. Inbound assistant messages accept and ignore both `reasoning` and `reasoning_content`.
+- Chat Completions reasoning key policy: upstream parsing accepts both `reasoning` (precedence when both are present) and `reasoning_content`; the gateway emits `reasoning_content` in streaming deltas and in aggregated messages.
 - Usage is always included in aggregated Chat Completions responses and in Responses usage-bearing events; streaming Chat Completions responses emit the usage chunk only when `stream_options.include_usage` is set.
 
 ### 6.7 Error Mapping
@@ -319,7 +323,7 @@ Requests are parsed strictly: unknown fields and known-but-unsupported fields ar
 | Malformed / unsupported request | 400 | OpenAI error, `type: "invalid_request_error"`, `code: null` |
 | Invalid API key | 401 | OpenAI error, `type: "invalid_request_error"`, `code: "invalid_api_key"` |
 | Unknown or disabled model | 404 | OpenAI error, `type: "invalid_request_error"`, `param: "model"`, `code: "model_not_found"` |
-| Upstream returned a non-2xx status | upstream status | OpenAI error, `type: "api_error"`, `code: "upstream_error"`, message carries the upstream status and body excerpt |
+| Upstream returned a non-2xx status | upstream status | OpenAI error, `type: "api_error"`, `code: "upstream_error"`; the response status mirrors the upstream status, and the message carries the upstream body excerpt |
 | Upstream transport failure / malformed upstream payload | 502 | OpenAI error, `type: "api_error"`, `code: "upstream_error"` |
 
 Error payloads for the `/responses` endpoint use the same OpenAI error JSON structure.
@@ -348,21 +352,23 @@ Responses are JSON. Success responses use HTTP 200; errors use the structure fro
 - **`GET /list-providers`** → `{"providers": [<provider>]}` where a provider object is `{"name", "model_prefix", "type", "protocol", "base_url", "expires_at", "enabled"}`; `protocol`, `base_url`, and `expires_at` are `null` when not applicable; credentials are never returned.
 - **`POST /save-provider`** — request `{"name", "type"?, "model_prefix"?, "protocol"?, "base_url"?, "credentials"?, "enabled"?}`.
   - Creation: `type` and `credentials` are required (`{"apiKey": "..."}` for `openai_compatible`); OAuth types cannot be created here — they are created by `complete-provider-oauth` (400 otherwise). `openai_compatible` requires `protocol` and `base_url`.
-  - Update: only supplied fields change; `name` is the lookup key and `type` must match the existing row (409 otherwise). Supplying `credentials` replaces them and resets `expires_at`. The whole update — the provider row, any credentials replacement, and every model public name — applies in one transaction: a `model_prefix` change recomputes each of the provider's `models.name` values as `model_prefix + (name_override ?? upstream_name)`, and if any recomputed name collides with an existing model row (of any provider, including another model of the same provider), the update is rejected with 409 and nothing is written.
+  - Update: only supplied fields change; `name` is the lookup key. The stored row pins `type`: an omitted `type` defaults to the stored one, and an explicit mismatching `type` is rejected with 400 naming the field. Supplying `credentials` replaces them and resets `expires_at`; with credentials present but no `type` on creation, the request is rejected with 400. The whole update — the provider row, any credentials replacement, and every model public name — applies in one transaction: a `model_prefix` change recomputes each of the provider's `models.name` values as `model_prefix + (name_override ?? upstream_name)`, and if any recomputed name collides with an existing model row (of any provider, including another model of the same provider), the update is rejected with 409 and nothing is written.
   - Response: `{"provider": <provider>}` (same shape as `list-providers`).
 - **`POST /delete-provider`** — request `{"name"}`; deletes the provider and, via cascade, its models only (`oauth_states` rows are provider-agnostic and not attached to a provider, so a state completed after a deletion legitimately recreates the provider — see §3). Response: `{"deleted": true}`; unknown names yield 404.
 - **`POST /start-provider-oauth`** — request `{"type"}` (`openai_oauth` or `antigravity_oauth`; others 400). Sweeps expired `oauth_states` rows, persists the new state row, and responds `{"authorize_url", "state", "expires_at"}`.
 - **`POST /complete-provider-oauth`** — request `{"state", "code", "name", "model_prefix"?}`.
-  - Looks up the unexpired state (404 otherwise), exchanges `code` at the provider's token endpoint, and for `antigravity_oauth` resolves the project ID (§5.2).
+  - Looks up the unexpired state (404 otherwise — the state is unknown, expired, or already consumed), exchanges `code` at the provider's token endpoint, and for `antigravity_oauth` resolves the project ID (§5.2).
+  - `model_prefix` only names a provider being created: supplying it for an existing provider is rejected with 400 naming the field, before the state is consumed.
   - Existing provider with matching type: credentials and `expires_at` are replaced. Existing provider with differing type: 409. New provider: created with the supplied `name` and `model_prefix` (default `""`), enabled.
   - The state row is consumed in both cases. Response: `{"provider": <provider>}`.
-- **`POST /discover-models`** — request `{"provider": <name>}`; refreshes the model list from upstream (§5.1/§5.2/§5.3). Existing model rows for the provider are replaced in one transaction, keyed by `upstream_name`: `name_override`, `enabled_override`, and `thinking_levels_override` carry over to re-discovered models and vanish with undiscovered ones; `name` is recomputed as `model_prefix + (name_override ?? upstream_name)`. OAuth providers refresh their access token first (§3). Response: `{"discovered": <count>}`.
+- **`POST /discover-models`** — request `{"provider": <name>}`; refreshes the model list from upstream (§5.1/§5.2/§5.3). The replace applies in one transaction that re-reads the provider row, so public names are composed from the provider's current prefix even when a concurrent `save-provider` changed it after the call's outer read; overrides carry over to the re-discovered rows inside the same snapshot. Existing model rows for the provider are replaced, keyed by `upstream_name`: `name_override`, `enabled_override`, and `thinking_levels_override` carry over to re-discovered models and vanish with undiscovered ones; `name` is recomputed as `model_prefix + (name_override ?? upstream_name)`. The composed public names undergo the same collision checks as `save-provider` — two discovered rows converging on one name, or a name already routed by another model row, reject the whole refresh with a name-specific 409 and write nothing. OAuth providers refresh their access token first (§3). Response: `{"discovered": <count>}`.
 - **`GET /list-models`** → `{"models": [<model>]}` where a model object is `{"provider", "upstream_name", "name", "name_override", "enabled", "enabled_override", "thinking_levels_override"}`; `enabled` is the effective status; `null` denotes absent overrides.
-- **`POST /save-model`** — request `{"provider", "upstream_name", "name_override"?, "enabled_override"?, "thinking_levels_override"?}`; the three override fields are written as supplied (`null` clears an override) and `name` is recomputed. Unknown provider/model rows yield 404; a public-name collision yields 409; thinking levels must be a non-empty array over the canonical level set (§6.4). Response: `{"model": <model>}`.
+- **`POST /save-model`** — request `{"provider", "upstream_name", "name_override"?, "enabled_override"?, "thinking_levels_override"?}`; the three override fields are written as supplied (`null` clears an override) and `name` is recomputed against the provider's current prefix. The row lookup, the public-name collision check, and the write apply in one transaction, so a name already routed by another model row yields a name-specific 409 and nothing is written. Unknown provider/model rows yield 404; thinking levels must be a non-empty array over the canonical level set (§6.4). Response: `{"model": <model>}`.
 
 ### 7.2 OAuth Completion Semantics
 
-- OAuth state rows expire 10 minutes after creation; completion of an expired or unknown state yields 404.
+- OAuth state rows expire 10 minutes after creation; completion of an unknown, expired, or already-consumed state yields 404.
+- The state row is consumed by the first completion attempt that observes it — including attempts whose token exchange or project resolution then fails — so a failed exchange burns the state and a retry requires a fresh `start-provider-oauth`.
 - A refreshed or exchanged token pair stores credentials JSON per §3 and sets `expires_at` to `now + expires_in`; when the token response omits `expires_in`, the `exp` claim of the access token JWT is used, falling back to 86400 seconds.
 
 ---
@@ -373,7 +379,7 @@ Responses are JSON. Success responses use HTTP 200; errors use the structure fro
 
 JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
 
-Startup is fatal when `api.key` or `management_api.token` is empty, whitespace-only, or still set to the example placeholder (see §4).
+Startup is fatal when `api.key` or `management_api.token` is empty, whitespace-only, or still set, after trimming surrounding whitespace, to the example placeholder (see §4).
 
 ### Running the Server
 ```bash

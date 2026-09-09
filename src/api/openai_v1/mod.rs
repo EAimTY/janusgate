@@ -118,16 +118,16 @@ where
 
 /// Handles `GET /models`.
 async fn models(State(database): State<Database>) -> Response {
-    match storage::list_enabled_public_names(&database).await {
-        Ok(names) => {
-            let data = names
+    match storage::list_enabled_models_with_owner(&database).await {
+        Ok(listed) => {
+            let data = listed
                 .iter()
-                .map(|name| {
+                .map(|(public_name, provider_name)| {
                     serde_json::json!({
-                        "id": name,
+                        "id": public_name,
                         "object": "model",
                         "created": 0,
-                        "owned_by": "janusgate",
+                        "owned_by": provider_name,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -208,7 +208,7 @@ async fn aggregated_response(
 #[cfg(test)]
 mod tests {
     use super::router;
-    use crate::database::Database;
+    use crate::database::{Database, params};
     use axum::{
         body::Body,
         http::{Request as HttpRequest, StatusCode},
@@ -251,12 +251,13 @@ mod tests {
         });
     }
 
-    /// Opens an isolated test database and returns the router with state.
+    /// Opens an isolated test database and returns it alongside the router
+    /// with that database as state, so tests can seed routing rows.
     ///
     /// # Panics
     ///
     /// Panics if initialization fails.
-    async fn test_router() -> axum::Router {
+    async fn test_router() -> (Database, axum::Router) {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -283,7 +284,49 @@ mod tests {
         .await
         .expect("database should open");
 
-        router().with_state(database)
+        let router = router().with_state(database.clone());
+
+        (database, router)
+    }
+
+    /// Inserts one enabled `openai_compatible` provider row.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the insert fails.
+    async fn insert_provider(database: &Database, name: &str) {
+        #[expect(clippy::expect_used, reason = "an insert failure fails the test")]
+        database
+            .execute(
+                "INSERT INTO providers (name, model_prefix, type, credentials) \
+                 VALUES (?1, '', 'openai_compatible', ?2)",
+                params![name, r#"{"apiKey":"test-key"}"#],
+            )
+            .await
+            .expect("provider row should insert");
+    }
+
+    /// Inserts one model row of a provider, joined through the provider's
+    /// name, with the given upstream and public names.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the insert fails.
+    async fn insert_model(
+        database: &Database,
+        provider_name: &str,
+        upstream_name: &str,
+        name: &str,
+    ) {
+        #[expect(clippy::expect_used, reason = "an insert failure fails the test")]
+        database
+            .execute(
+                "INSERT INTO models (provider_id, upstream_name, name) \
+                 SELECT id, ?2, ?3 FROM providers WHERE name = ?1",
+                params![provider_name, upstream_name, name],
+            )
+            .await
+            .expect("model row should insert");
     }
 
     /// Sends a request through the router and returns status and body.
@@ -324,14 +367,17 @@ mod tests {
     }
 
     /// Verifies that the format sub-router authenticates every request with
-    /// the shared API key and serves the models listing only when authorized.
+    /// the shared API key, serves the models listing only when authorized, and
+    /// reports each effectively enabled model's public name as `id` with its
+    /// owning provider's name as `owned_by`, hiding rows disabled by override
+    /// or by provider (README §6.5).
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
     #[tokio::test]
     async fn authenticates_and_lists_models() {
-        let router = test_router().await;
+        let (database, router) = test_router().await;
 
         let (status, _) = send(router.clone(), "GET", "/models", None).await;
 
@@ -341,10 +387,61 @@ mod tests {
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-        let (status, body) = send(router, "GET", "/models", Some("Bearer test-api-key")).await;
+        let (status, body) = send(
+            router.clone(),
+            "GET",
+            "/models",
+            Some("Bearer test-api-key"),
+        )
+        .await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, r#"{"data":[],"object":"list"}"#);
+
+        insert_provider(&database, "alpha").await;
+
+        insert_model(&database, "alpha", "u1", "a-m1").await;
+
+        insert_model(&database, "alpha", "u2", "a-m2").await;
+
+        insert_model(&database, "alpha", "u3", "a-off").await;
+
+        #[expect(clippy::expect_used, reason = "an update failure fails the test")]
+        database
+            .execute(
+                "UPDATE models SET enabled_override = 0 WHERE upstream_name = 'u3'",
+                (),
+            )
+            .await
+            .expect("override update should apply");
+
+        insert_provider(&database, "beta").await;
+
+        insert_model(&database, "beta", "u1", "b-m1").await;
+
+        insert_provider(&database, "gamma").await;
+
+        insert_model(&database, "gamma", "u1", "g-m1").await;
+
+        #[expect(clippy::expect_used, reason = "an update failure fails the test")]
+        database
+            .execute("UPDATE providers SET enabled = 0 WHERE name = 'gamma'", ())
+            .await
+            .expect("provider update should apply");
+
+        let (status, body) = send(router, "GET", "/models", Some("Bearer test-api-key")).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            concat!(
+                r#"{"data":["#,
+                r#"{"created":0,"id":"a-m1","object":"model","owned_by":"alpha"},"#,
+                r#"{"created":0,"id":"a-m2","object":"model","owned_by":"alpha"},"#,
+                r#"{"created":0,"id":"b-m1","object":"model","owned_by":"beta"}],"#,
+                r#""object":"list"}"#
+            )
+        );
     }
 
     /// Verifies that unmapped format paths yield the OpenAI-shaped 404 with
@@ -355,7 +452,7 @@ mod tests {
     /// Panics if an assertion fails.
     #[tokio::test]
     async fn fallback_returns_openai_404_shape() {
-        let router = test_router().await;
+        let (_, router) = test_router().await;
 
         let (status, body) = send(router, "GET", "/bogus", Some("Bearer test-api-key")).await;
 

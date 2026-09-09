@@ -7,8 +7,8 @@ use super::{ClientFormat, ClientSseRenderer, ParsedRequest, UpstreamEventParser}
 use crate::{
     error::{ApiError, invalid_request_from_json},
     format::{
-        allowed_fields, finish_reason_from_openai, finish_reason_to_openai, json_insert,
-        reject_unknown_fields, validate_content_part_fields,
+        allowed_fields, arguments_as_object, finish_reason_from_openai, finish_reason_to_openai,
+        json_insert, reject_unknown_fields, validate_content_part_fields,
     },
     ids::new_uuid,
     ir::{
@@ -426,6 +426,12 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
                             ));
                         }
 
+                        // Symmetric with the Responses endpoint: replayed
+                        // arguments must encode a JSON object, so malformed
+                        // replays fail here instead of at upstream render
+                        // time.
+                        arguments_as_object(&tool_call.function.arguments)?;
+
                         parts.push(IrPart::ToolCall {
                             call_id: tool_call.id.clone(),
                             name: tool_call.function.name.clone(),
@@ -656,18 +662,22 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
                 let content: Vec<Value> = message
                     .parts
                     .iter()
-                    .map(|part| match part {
+                    .filter_map(|part| match part {
                         IrPart::Text { text } => {
-                            serde_json::json!({"type": "text", "text": text})
+                            Some(serde_json::json!({"type": "text", "text": text}))
                         }
 
                         IrPart::Image { image } => {
                             let url = image.to_url();
 
-                            serde_json::json!({"type": "image_url", "image_url": {"url": url}})
+                            Some(
+                                serde_json::json!({"type": "image_url", "image_url": {"url": url}}),
+                            )
                         }
 
-                        _ => Value::Null,
+                        // The IR type system routes only text and images into
+                        // user content.
+                        _ => None,
                     })
                     .collect();
 
@@ -1080,6 +1090,13 @@ impl UpstreamEventParser for UpstreamParser {
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
         Self::parse_json_response(self, value)
     }
+
+    fn finish(&mut self) -> Vec<IrEvent> {
+        // An upstream may close its stream cleanly after streaming tool-call
+        // deltas without ever sending a finish reason or the `[DONE]`
+        // sentinel; the buffered calls are complete and must be flushed.
+        self.flush_pending_calls()
+    }
 }
 
 /// Reads the reasoning text of an upstream delta or message object.
@@ -1185,12 +1202,17 @@ fn message_events_from_full(message: &Value) -> Vec<IrEvent> {
 }
 
 /// Rejects an upstream body carrying a top-level error object.
+///
+/// An error body inside a 2xx response is a malformed upstream payload
+/// (README §6.7), so the embedded `code` is never mirrored as the outward
+/// status — a 2xx code would otherwise render a success status carrying an
+/// error body. The embedded code and text ride in the message instead.
 fn reject_upstream_error(value: &Value) -> Result<(), ApiError> {
     let Some(error) = value.get("error") else {
         return Ok(());
     };
 
-    let message = error
+    let text = error
         .as_str()
         .map(str::to_string)
         .or_else(|| {
@@ -1201,13 +1223,12 @@ fn reject_upstream_error(value: &Value) -> Result<(), ApiError> {
         })
         .unwrap_or_else(|| error.to_string());
 
-    let status = error
-        .get("code")
-        .and_then(Value::as_u64)
-        .map(|code| code.min(u64::from(u16::MAX)) as u16)
-        .unwrap_or(crate::error::UPSTREAM_UNAVAILABLE_STATUS);
+    let detail = match error.get("code") {
+        Some(code) => format!("{text} (upstream error code: {code})"),
+        None => text,
+    };
 
-    Err(ApiError::upstream(status, message))
+    Err(ApiError::upstream_unavailable(detail))
 }
 
 /// Streaming client response renderer producing Chat Completions SSE frames.
@@ -1474,6 +1495,7 @@ mod tests {
     };
     use crate::{
         error::ApiError,
+        format::UpstreamEventParser as _,
         ir::{Aggregator, IrEvent, IrFinishReason, IrPart, IrRole, IrUsage},
         sse::{SseFrame, SseParser},
     };
@@ -1793,13 +1815,15 @@ mod tests {
         assert_eq!(rendered["usage"]["total_tokens"], 3);
     }
 
-    /// Maps an upstream error payload to an upstream error.
+    /// Maps an embedded upstream error payload to a 502 upstream error whose
+    /// message keeps the upstream code and text, never mirroring the embedded
+    /// code as the outward status (README §6.7).
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
     #[test]
-    fn upstream_error_payload_maps_to_upstream_error() {
+    fn upstream_error_payload_maps_to_502_upstream_error() {
         let mut parser = UpstreamParser::new();
 
         let frame = SseFrame {
@@ -1809,8 +1833,73 @@ mod tests {
 
         let error = parser.ingest_frame(&frame).expect_err("should fail");
 
-        assert_eq!(error.status, 429);
+        assert_eq!(error.status, 502);
+        assert_eq!(error.code.as_deref(), Some("upstream_error"));
         assert!(error.message.contains("overloaded"));
+        assert!(error.message.contains("429"));
+
+        // A nonsense 2xx embedded code must not render a success status.
+        let frame = SseFrame {
+            event: None,
+            data: r#"{"error": {"message": "odd", "code": 200}}"#.to_string(),
+        };
+
+        let error = parser.ingest_frame(&frame).expect_err("should fail");
+
+        assert_eq!(error.status, 502);
+    }
+
+    /// Rejects assistant tool-call arguments that are not a JSON object,
+    /// matching the strictness the Responses endpoint applies to replayed
+    /// `function_call` items.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn rejects_non_object_tool_call_arguments() {
+        let error = parse_err(
+            r#"{"model":"m","messages":[{"role":"assistant","content":null,"tool_calls":[
+                {"id":"call_1","type":"function","function":{"name":"f","arguments":"not json"}}
+            ]}]}"#,
+        );
+
+        assert_eq!(error.status, 400);
+        assert_eq!(error.param.as_deref(), Some("arguments"));
+    }
+
+    /// Flushes pending tool calls at a clean end of stream that carries
+    /// neither a finish reason nor a `[DONE]` sentinel.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn finish_flushes_pending_tool_calls_on_clean_eof() {
+        let mut parser = UpstreamParser::new();
+
+        let mut events = ingest_all(
+            &mut parser,
+            &[concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[",
+                "{\"index\":0,\"id\":\"call_1\",\"function\":",
+                "{\"name\":\"f\",\"arguments\":\"{}\"}}]}}]}\n\n"
+            )],
+        );
+
+        events.append(&mut parser.finish());
+
+        assert!(events.contains(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "f".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        }));
+
+        // The flush is one-shot: a stream whose calls already completed
+        // yields nothing further.
+        assert!(parser.finish().is_empty());
     }
 
     /// Renders assistant content as a plain string.

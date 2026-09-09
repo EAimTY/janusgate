@@ -40,6 +40,20 @@ pub(crate) struct SseParser {
     /// Whether the leading byte-order mark has been resolved (present and
     /// stripped, or found absent).
     is_bom_resolved: bool,
+
+    /// `event:` field of the frame being assembled across chunk boundaries.
+    pending_event: Option<String>,
+
+    /// `data:` lines of the frame being assembled across chunk boundaries.
+    pending_data_lines: Vec<String>,
+}
+
+/// Malformed Server-Sent Events stream errors.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub(crate) enum SseParseError {
+    /// A single frame exceeded the maximum accepted frame size.
+    #[error("SSE frame exceeds the maximum accepted size")]
+    FrameTooLarge,
 }
 
 impl SseParser {
@@ -88,27 +102,29 @@ impl SseParser {
 
     /// Splits complete lines off the buffer and dispatches frames on blank
     /// lines.
+    ///
+    /// Frame assembly state lives on the parser, so a frame whose lines and
+    /// dispatching blank line arrive in different chunks is still emitted
+    /// whole.
     fn drain_complete_frames(&mut self) -> Result<Vec<SseFrame>, SseParseError> {
         self.strip_leading_bom();
 
         let mut frames = Vec::new();
-        let mut event_name: Option<String> = None;
-        let mut data_lines: Vec<String> = Vec::new();
 
         while let Some((line, consumed)) = next_line(&self.buffer)? {
             self.buffer.drain(..consumed);
 
             if line.is_empty() {
-                if !data_lines.is_empty() {
+                if !self.pending_data_lines.is_empty() {
                     frames.push(SseFrame {
-                        event: event_name.take(),
-                        data: data_lines.join("\n"),
+                        event: self.pending_event.take(),
+                        data: self.pending_data_lines.join("\n"),
                     });
 
-                    data_lines = Vec::new();
+                    self.pending_data_lines = Vec::new();
                 }
 
-                event_name = None;
+                self.pending_event = None;
 
                 continue;
             }
@@ -119,8 +135,8 @@ impl SseParser {
             };
 
             match field {
-                "event" => event_name = Some(value.to_string()),
-                "data" => data_lines.push(value.to_string()),
+                "event" => self.pending_event = Some(value.to_string()),
+                "data" => self.pending_data_lines.push(value.to_string()),
                 _ => {}
             }
         }
@@ -152,18 +168,13 @@ impl SseParser {
     }
 }
 
-/// Malformed Server-Sent Events stream errors.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub(crate) enum SseParseError {
-    /// A single frame exceeded the maximum accepted frame size.
-    #[error("SSE frame exceeds the maximum accepted size")]
-    FrameTooLarge,
-}
-
 /// Extracts the next complete line from the buffer, returning the line without
 /// its terminator and the number of bytes consumed.
 ///
 /// Accepts `\n`, `\r\n`, and lone `\r` terminators per the SSE specification.
+/// A `\r` as the final buffered byte is held back un-consumed until the next
+/// byte arrives, because the specification requires a following `\n` to be
+/// treated as part of one `\r\n` terminator.
 ///
 /// # Errors
 ///
@@ -172,6 +183,11 @@ pub(crate) enum SseParseError {
 fn next_line(buffer: &[u8]) -> Result<Option<(String, usize)>, SseParseError> {
     let newline_position = buffer.iter().position(|byte| *byte == b'\n');
     let carriage_position = buffer.iter().position(|byte| *byte == b'\r');
+
+    // A `\r` as the final buffered byte may pair with a `\n` arriving in the
+    // next chunk, so its fate is deliberately left undecided here.
+    let is_carriage_pending =
+        carriage_position.is_some_and(|position| position + 1 == buffer.len());
 
     let (end, terminator_length) = match (newline_position, carriage_position) {
         (Some(newline), Some(carriage)) if carriage < newline => {
@@ -182,9 +198,10 @@ fn next_line(buffer: &[u8]) -> Result<Option<(String, usize)>, SseParseError> {
 
         (Some(newline), _) => (newline, 1),
 
-        (None, Some(carriage)) => (carriage, 1),
+        (None, Some(carriage)) if !is_carriage_pending => (carriage, 1),
 
-        (None, None) => {
+        // No decidable terminator, including a pending buffer-final `\r`.
+        _ => {
             if buffer.len() > MAX_FRAME_BYTES {
                 return Err(SseParseError::FrameTooLarge);
             }
@@ -343,6 +360,69 @@ mod tests {
                     data: "b".to_string(),
                 },
             ]
+        );
+    }
+
+    /// Verifies that a `\r\n` terminator whose `\n` arrives in the next chunk
+    /// does not split the frame, so one multi-`data:`-line frame stays whole.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn parses_crlf_terminator_split_across_chunks() {
+        let frames = parse_chunks(&[b"data: line1\r", b"\ndata: line2\n\n"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                event: None,
+                data: "line1\nline2".to_string(),
+            }],
+        );
+    }
+
+    /// Verifies that a lone trailing `\r` held back across the end of the
+    /// stream still terminates the final frame at flush time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn flushes_trailing_frame_terminated_by_bare_cr() {
+        let frames = parse_chunks(&[b"data: tail\r"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                event: None,
+                data: "tail".to_string(),
+            }],
+        );
+    }
+
+    /// Verifies that a frame whose dispatching blank line arrives in a later
+    /// chunk than its data lines is still emitted whole.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn dispatches_frame_with_blank_line_in_later_chunk() {
+        let frames = parse_chunks(&[b"data: line1\r\n\r\ndata: x\n", b"\n"]);
+
+        assert_eq!(
+            frames,
+            vec![
+                SseFrame {
+                    event: None,
+                    data: "line1".to_string(),
+                },
+                SseFrame {
+                    event: None,
+                    data: "x".to_string(),
+                },
+            ],
         );
     }
 

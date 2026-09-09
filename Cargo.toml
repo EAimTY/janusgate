@@ -23,6 +23,7 @@ deref-once-lock = { version = "0.1.0", default-features = false }
 futures = { version = "0.3.34", default-features = false }
 host-port-pair = { version = "0.2.3", default-features = false, features = ["serde"] }
 hserver = { version = "0.1.1", default-features = false, features = ["http1", "http2"] }
+hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"] }
 json-strip-comments = { version = "3.1.2", default-features = false }
 lexopt = { version = "0.3.2", default-features = false }
 rand = { version = "0.10.2", default-features = false, features = ["std", "thread_rng"] }

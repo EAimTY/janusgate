@@ -1438,6 +1438,7 @@ dependencies = [
  "futures",
  "host-port-pair",
  "hserver",
+ "hyper-util",
  "json-strip-comments",
  "lexopt",
  "rand 0.10.2",

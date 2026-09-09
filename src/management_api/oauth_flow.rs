@@ -32,7 +32,7 @@ struct CompleteOAuthBody {
     /// Provider identifier to create or refresh.
     name: String,
 
-    /// Public model name prefix for a created provider.
+    /// Public model name prefix, only accepted for a provider being created.
     #[serde(default)]
     model_prefix: Option<String>,
 }
@@ -99,18 +99,36 @@ async fn handle_start(database: &Database, body: &Bytes) -> Result<oauth::OAuthF
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for unknown or expired states, exchange failures, and
-/// type mismatches.
+/// Returns [`ApiError`] for unknown, expired, or already-consumed states,
+/// exchange failures, and type mismatches.
 async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json::Value, ApiError> {
     let request: CompleteOAuthBody = parse_body(body)?;
 
     crate::provider::validate_provider_name(&request.name)?;
 
+    let existing = storage::find_provider(database, &request.name).await?;
+
+    // A `model_prefix` only names a provider being created; applying one to an
+    // existing provider would silently rename its models. The rejection fires
+    // before the state is consumed, so a malformed request cannot burn the
+    // pending flow.
+    if existing.is_some() && request.model_prefix.is_some() {
+        return Err(ApiError::invalid_parameter(
+            "model_prefix",
+            format!(
+                "Provider `{}` already exists; model_prefix cannot be supplied for it",
+                request.name
+            ),
+        ));
+    }
+
     let now = unix_time::unix_now();
 
     let state = storage::consume_oauth_state(database, &request.state, now)
         .await?
-        .ok_or_else(|| ApiError::not_found("Unknown or expired OAuth state"))?;
+        .ok_or_else(|| {
+            ApiError::not_found("OAuth state is unknown, expired, or already consumed")
+        })?;
 
     let exchanged = oauth::exchange_code(
         crate::http(),
@@ -119,8 +137,6 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
         &state.verifier,
     )
     .await?;
-
-    let existing = storage::find_provider(database, &request.name).await?;
 
     match existing {
         Some(existing) => {
@@ -165,4 +181,133 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
         .ok_or_else(|| ApiError::internal("provider vanished after OAuth completion"))?;
 
     Ok(provider_json(&stored))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{format::UpstreamFormat, provider::Credentials};
+    use std::{
+        env,
+        error::Error as StdError,
+        fs,
+        num::NonZero,
+        path::PathBuf,
+        process,
+        sync::atomic::{AtomicU64, Ordering},
+        time::Duration,
+    };
+
+    /// Monotonic counter making every test database path unique within the
+    /// process.
+    static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Opens an isolated test database at a unique temporary path, returning
+    /// the database and its file path for cleanup.
+    ///
+    /// # Panics
+    ///
+    /// Panics if opening the test database fails.
+    async fn open_test_database() -> (Database, PathBuf) {
+        let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let path: PathBuf = env::temp_dir().join(format!(
+            "janusgate_oauth_flow_test_{}_{unique_id}.db",
+            process::id()
+        ));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the test pool size is a non-zero constant"
+        )]
+        let database = Database::open(
+            &path,
+            NonZero::new(2).expect("pool size is non-zero"),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("failed to open isolated test database");
+
+        (database, path)
+    }
+
+    /// Inserts one `openai_compatible` provider row.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while inserting the row.
+    async fn insert_compatible_provider(
+        database: &Database,
+        name: &str,
+    ) -> Result<(), Box<dyn StdError>> {
+        storage::insert_provider(
+            database,
+            &NewProvider {
+                name,
+                model_prefix: "",
+                provider_type: ProviderType::OpenAiCompatible,
+                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+                base_url: Some("https://upstream.example"),
+                credentials: &Credentials::ApiKey("test-key".to_string()),
+                expires_at: None,
+                enabled: true,
+            },
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    /// Verifies supplying `model_prefix` for an existing provider is rejected
+    /// with 400 naming the field, and that the rejection fires before the
+    /// state is consumed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if opening the test database or an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn complete_rejects_model_prefix_for_existing_provider() -> Result<(), Box<dyn StdError>>
+    {
+        let (database, path) = open_test_database().await;
+
+        insert_compatible_provider(&database, "alpha").await?;
+
+        let body = Bytes::from(
+            r#"{"state":"unused-state","code":"unused-code","name":"alpha","model_prefix":"p-"}"#
+                .as_bytes()
+                .to_vec(),
+        );
+
+        let error = handle_complete(&database, &body)
+            .await
+            .err()
+            .ok_or("model_prefix on an existing provider must be rejected")?;
+
+        assert_eq!(error.status, 400);
+        assert_eq!(error.param.as_deref(), Some("model_prefix"));
+
+        // The rejection fired before state consumption: an unknown state is
+        // the only reason a retry without model_prefix can still fail.
+        let retry = Bytes::from(
+            r#"{"state":"unused-state","code":"unused-code","name":"alpha"}"#
+                .as_bytes()
+                .to_vec(),
+        );
+
+        let error = handle_complete(&database, &retry)
+            .await
+            .err()
+            .ok_or("an unknown state must be rejected")?;
+
+        assert_eq!(error.status, 404);
+        assert!(error.message.contains("already consumed"));
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
 }

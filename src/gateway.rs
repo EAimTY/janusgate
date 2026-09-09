@@ -58,11 +58,20 @@ pub(crate) async fn execute(
     mut ir: IrRequest,
     client_streaming: bool,
 ) -> Result<IrEventStream, ApiError> {
+    // Creation validates `thinking_levels_override` at the management API, so
+    // a malformed stored value is drift inside the database — an invariant
+    // violation — and never a fault of the requesting client.
     let thinking_levels = routing
         .model
         .thinking_levels_override
         .as_deref()
-        .map(parse_thinking_levels_override)
+        .map(|json| {
+            parse_thinking_levels_override(json).map_err(|error| {
+                ApiError::internal(format!(
+                    "stored thinking_levels_override is invalid: {error}"
+                ))
+            })
+        })
         .transpose()?;
 
     ir.reasoning_effort = apply_thinking_levels(ir.reasoning_effort, thinking_levels.as_deref());
@@ -127,8 +136,6 @@ fn build_upstream_request(
     ir: &IrRequest,
     client_streaming: bool,
 ) -> Result<reqwest::RequestBuilder, ApiError> {
-    let base_url = provider.base_url.as_deref().unwrap_or_default();
-
     match (upstream_format, provider.provider_type) {
         (UpstreamFormat::OpenAiResponse, ProviderType::OpenAiOauth) => {
             let Credentials::OpenAiOauth {
@@ -155,21 +162,29 @@ fn build_upstream_request(
                 .json(&body))
         }
 
-        (UpstreamFormat::OpenAiResponse, _) => Ok(http
-            .post(format!("{}/responses", base_url.trim_end_matches('/')))
-            .bearer_auth(provider.credentials.secret())
-            .json(&openai_response::render_request(ir, client_streaming))),
+        (UpstreamFormat::OpenAiResponse, _) => {
+            let base_url = compatible_base_url(provider)?;
 
-        (UpstreamFormat::OpenAiChatCompletion, _) => Ok(http
-            .post(format!(
-                "{}/chat/completions",
-                base_url.trim_end_matches('/')
-            ))
-            .bearer_auth(provider.credentials.secret())
-            .json(&openai_chat_completion::render_request(
-                ir,
-                client_streaming,
-            ))),
+            Ok(http
+                .post(format!("{}/responses", base_url.trim_end_matches('/')))
+                .bearer_auth(provider.credentials.secret())
+                .json(&openai_response::render_request(ir, client_streaming)))
+        }
+
+        (UpstreamFormat::OpenAiChatCompletion, _) => {
+            let base_url = compatible_base_url(provider)?;
+
+            Ok(http
+                .post(format!(
+                    "{}/chat/completions",
+                    base_url.trim_end_matches('/')
+                ))
+                .bearer_auth(provider.credentials.secret())
+                .json(&openai_chat_completion::render_request(
+                    ir,
+                    client_streaming,
+                )))
+        }
 
         (UpstreamFormat::GeminiGenerateContent, ProviderType::AntigravityOauth) => {
             let Credentials::AntigravityOauth {
@@ -201,7 +216,7 @@ fn build_upstream_request(
         (UpstreamFormat::GeminiGenerateContent, _) => {
             let (url, body) = gemini::render_compatible_request(
                 ir,
-                base_url,
+                compatible_base_url(provider)?,
                 &routing.model.upstream_name,
                 client_streaming,
             )?;
@@ -212,6 +227,19 @@ fn build_upstream_request(
                 .json(&body))
         }
     }
+}
+
+/// Resolves the stored base URL of a compatible provider.
+///
+/// OAuth providers carry fixed endpoints and never consult this. Creation
+/// validates `base_url` at the management API, so a missing value is stored
+/// drift — an invariant violation — and never a fault of the requesting
+/// client.
+fn compatible_base_url(provider: &Provider) -> Result<&str, ApiError> {
+    provider
+        .base_url
+        .as_deref()
+        .ok_or_else(|| ApiError::internal("compatible provider lacks a stored base_url"))
 }
 
 /// Boxes the upstream event parser for the given wire format.
@@ -236,10 +264,16 @@ async fn pump_sse(
 
     let mut body = response.bytes_stream();
 
+    // Whether an error aborted the stream; only a clean end of stream lets
+    // the parser flush buffered state before the terminal `Done`.
+    let mut is_aborted = false;
+
     'stream: while let Some(chunk) = body.next().await {
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(error) => {
+                is_aborted = true;
+
                 let _ = sender
                     .send(Err(ApiError::upstream_unavailable(format!(
                         "upstream stream failed: {error}"
@@ -253,6 +287,8 @@ async fn pump_sse(
         let frames = match sse_parser.ingest(&chunk) {
             Ok(frames) => frames,
             Err(_) => {
+                is_aborted = true;
+
                 let _ = sender
                     .send(Err(ApiError::upstream_unavailable("oversized SSE frame")))
                     .await;
@@ -272,6 +308,8 @@ async fn pump_sse(
                 }
 
                 Err(error) => {
+                    is_aborted = true;
+
                     let _ = sender.send(Err(error)).await;
 
                     break 'stream;
@@ -295,10 +333,20 @@ async fn pump_sse(
                 // exactly like a malformed frame in the main loop; the final
                 // `Done` below still terminates the event stream.
                 Err(error) => {
+                    is_aborted = true;
+
                     let _ = sender.send(Err(error)).await;
 
                     break;
                 }
+            }
+        }
+    }
+
+    if !is_aborted {
+        for event in parser.finish() {
+            if sender.send(Ok(event)).await.is_err() {
+                break;
             }
         }
     }
@@ -389,9 +437,30 @@ fn truncate_excerpt(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::pump_sse;
-    use crate::{error::ApiError, format::UpstreamEventParser, ir::IrEvent, sse::SseFrame};
-    use std::io::{Read as _, Write as _};
+    use super::{compatible_base_url, execute, pump_sse};
+    use crate::{
+        database::Database,
+        error::{ApiError, ApiErrorKind},
+        format::{
+            UpstreamEventParser, UpstreamFormat,
+            openai_chat_completion::UpstreamParser as ChatUpstreamParser,
+        },
+        ir::{IrEvent, IrRequest},
+        provider::{Credentials, Model, ModelRouting, Provider, ProviderType},
+        sse::SseFrame,
+    };
+    use std::{
+        env,
+        io::{Read as _, Write as _},
+        num::NonZero,
+        process,
+        sync::atomic::{AtomicU64, Ordering},
+        time::Duration,
+    };
+
+    /// Monotonic counter making every test database path unique within the
+    /// process.
+    static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     /// Serves one raw HTTP response on a loopback socket after reading the
     /// client request, returning the bound address.
@@ -486,6 +555,147 @@ mod tests {
         }
     }
 
+    /// Upstream parser that records whether the end-of-stream hook ran,
+    /// standing in for a parser holding flushable state.
+    struct FinishRecordingParser {
+        is_finished: bool,
+    }
+
+    impl UpstreamEventParser for FinishRecordingParser {
+        fn ingest_frame(&mut self, _frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
+            Err(ApiError::upstream_unavailable("malformed frame"))
+        }
+
+        fn parse_json_response(
+            &mut self,
+            _value: serde_json::Value,
+        ) -> Result<Vec<IrEvent>, ApiError> {
+            Ok(Vec::new())
+        }
+
+        fn finish(&mut self) -> Vec<IrEvent> {
+            self.is_finished = true;
+
+            vec![IrEvent::TextDelta("flushed".to_string())]
+        }
+    }
+
+    /// Drives `pump_sse` against a loopback upstream serving one SSE response
+    /// and collects the emitted events.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a request failure fails the test.
+    async fn pump_fixture(
+        body: &[u8],
+        parser: Box<dyn UpstreamEventParser + Send>,
+    ) -> Vec<Result<IrEvent, ApiError>> {
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+
+        let address = serve_once(head, body);
+
+        init_http_client();
+
+        #[expect(clippy::expect_used, reason = "a request failure fails the test")]
+        let response = crate::http()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect("local upstream should respond");
+
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+
+        pump_sse(response, parser, sender).await;
+
+        let mut events = Vec::new();
+
+        while let Some(event) = receiver.recv().await {
+            events.push(event);
+        }
+
+        events
+    }
+
+    /// Verifies the end-of-stream hook flushes a parser's buffered state on a
+    /// clean EOF and is skipped once an error aborts the stream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[tokio::test]
+    async fn finishes_parsers_only_on_clean_eof() {
+        // Clean EOF: an empty SSE body ends the stream without error.
+        let events =
+            pump_fixture(b"", Box::new(FinishRecordingParser { is_finished: false })).await;
+
+        let is_flush_then_done = matches!(
+            events.first(),
+            Some(Ok(IrEvent::TextDelta(delta))) if delta == "flushed"
+        ) && matches!(events.get(1), Some(Ok(IrEvent::Done)));
+
+        assert!(
+            is_flush_then_done,
+            "clean EOF must flush parser state before Done, got: {events:?}"
+        );
+
+        // Aborted stream: the trailing malformed frame suppresses the flush,
+        // so no flushed state appears between the error and `Done`.
+        let events = pump_fixture(
+            b"data: {",
+            Box::new(FinishRecordingParser { is_finished: false }),
+        )
+        .await;
+
+        assert!(
+            matches!(events.as_slice(), [Err(_), Ok(IrEvent::Done)]),
+            "an aborted stream must surface the error before Done, got: {events:?}"
+        );
+    }
+
+    /// Verifies that a chat upstream closing cleanly after tool-call deltas —
+    /// with neither a finish reason nor a `[DONE]` sentinel — still flushes
+    /// the pending calls before the terminal `Done`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[tokio::test]
+    async fn flushes_pending_chat_tool_calls_at_clean_eof() {
+        let body = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[\
+                     {\"index\":0,\"id\":\"call_1\",\"function\":\
+                     {\"name\":\"f\",\"arguments\":\"{}\"}}]}}]}\n\n";
+
+        let events = pump_fixture(body, Box::new(ChatUpstreamParser::new())).await;
+
+        let is_flushed_call = |event: &Result<IrEvent, ApiError>| {
+            matches!(
+                event,
+                Ok(IrEvent::ToolCallDone { call_id, .. }) if call_id == "call_1"
+            )
+        };
+
+        #[expect(
+            clippy::expect_used,
+            reason = "a missing flush of the pending call fails the test"
+        )]
+        let call_position = events
+            .iter()
+            .position(is_flushed_call)
+            .expect("pending tool call should flush at clean EOF");
+
+        #[expect(clippy::expect_used, reason = "a missing terminal Done fails the test")]
+        let done_position = events
+            .iter()
+            .position(|event| matches!(event, Ok(IrEvent::Done)))
+            .expect("stream should terminate with Done");
+
+        assert!(call_position < done_position);
+    }
+
     /// Verifies that a parse error raised for the trailing frame flushed at
     /// end-of-stream reaches the event channel as an `Err` before `Done`,
     /// instead of being swallowed.
@@ -573,5 +783,143 @@ mod tests {
         );
 
         assert!(error.message.ends_with('…'));
+    }
+
+    /// Opens an isolated test database at a unique temporary path. The
+    /// stored-drift mappings under test return before touching it, so it only
+    /// satisfies the `execute` signature.
+    ///
+    /// # Panics
+    ///
+    /// Panics if opening the test database fails.
+    async fn open_test_database() -> Database {
+        let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let path = env::temp_dir().join(format!(
+            "janusgate_gateway_test_{}_{unique_id}.db",
+            process::id()
+        ));
+
+        #[expect(clippy::expect_used, reason = "one is non-zero")]
+        let pool_size = NonZero::new(1_usize).expect("one is non-zero");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "opening the test database is fatal on failure"
+        )]
+        let database = Database::open(path, pool_size, Duration::from_secs(5))
+            .await
+            .expect("test database should open");
+
+        database
+    }
+
+    /// Builds a compatible provider carrying the given stored `base_url`.
+    fn compatible_provider_with_base_url(base_url: Option<String>) -> Provider {
+        Provider {
+            id: 1,
+            name: "compat".to_string(),
+            model_prefix: String::new(),
+            provider_type: ProviderType::OpenAiCompatible,
+            protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+            base_url,
+            credentials: Credentials::ApiKey("test-key".to_string()),
+            expires_at: None,
+            enabled: true,
+        }
+    }
+
+    /// Builds a routing whose stored model row carries the given raw
+    /// `thinking_levels_override` JSON.
+    fn routing_with_thinking_levels_override(json: &str) -> ModelRouting {
+        let provider = compatible_provider_with_base_url(Some("http://127.0.0.1:9".to_string()));
+
+        let model = Model {
+            provider_id: provider.id,
+            upstream_name: "gpt-test".to_string(),
+            name: "gpt-test".to_string(),
+            name_override: None,
+            enabled_override: None,
+            thinking_levels_override: Some(json.to_string()),
+        };
+
+        ModelRouting {
+            provider,
+            model,
+            is_enabled: true,
+        }
+    }
+
+    /// Verifies that a malformed stored `thinking_levels_override` reaching
+    /// `execute` surfaces as an internal error naming the drift, never as a
+    /// 400 blaming the requesting client (the management API validates the
+    /// override at write time, so a bad stored value is database drift).
+    ///
+    /// # Panics
+    ///
+    /// Panics if opening the test database fails or an assertion fails.
+    #[tokio::test]
+    async fn malformed_stored_thinking_levels_yield_internal_error() {
+        init_http_client();
+
+        let database = open_test_database().await;
+
+        // A bare JSON string is not the array the override requires, so
+        // parsing the stored value must fail.
+        let routing = routing_with_thinking_levels_override(r#""high""#);
+
+        // The success type is a boxed stream without `Debug`, so the
+        // unexpected case is rejected with a panic instead of `expect_err`.
+        #[expect(clippy::panic, reason = "an unexpected success fails the test")]
+        let Err(error) = execute(
+            &database,
+            crate::http(),
+            routing,
+            IrRequest::default(),
+            false,
+        )
+        .await
+        else {
+            panic!("drifted routing must fail before any upstream call");
+        };
+
+        assert_eq!(error.status, 500);
+
+        assert_eq!(error.kind, ApiErrorKind::Internal);
+
+        assert!(
+            error
+                .message
+                .contains("stored thinking_levels_override is invalid"),
+            "the error must name the stored drift, got: {error:?}"
+        );
+    }
+
+    /// Verifies that a compatible provider missing its stored `base_url`
+    /// yields an internal error naming the drift, instead of a misleading 502
+    /// for a relative request URL.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn missing_compatible_base_url_yields_internal_error() {
+        let provider = compatible_provider_with_base_url(None);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "a missing internal error fails the test"
+        )]
+        let error = compatible_base_url(&provider)
+            .expect_err("missing stored base_url must be rejected as internal drift");
+
+        assert_eq!(error.status, 500);
+
+        assert_eq!(error.kind, ApiErrorKind::Internal);
+
+        assert!(
+            error.message.contains("lacks a stored base_url"),
+            "the error must name the stored drift, got: {error:?}"
+        );
     }
 }

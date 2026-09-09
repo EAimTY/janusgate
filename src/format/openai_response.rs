@@ -24,8 +24,12 @@ use serde_json::Value;
 /// Fields allowed on each Responses input item, keyed by item type. Unknown
 /// fields are rejected because internally tagged serde enums cannot enforce
 /// this.
+///
+/// `message` items accept and ignore `id` and `phase`: codex replays parsed
+/// output items verbatim each turn, and the gateway itself stamps `id` values
+/// onto rendered output items, so rejecting them would break history replay.
 const INPUT_ITEM_FIELDS: &[(&str, &[&str])] = &[
-    ("message", &["type", "role", "content"]),
+    ("message", &["type", "id", "role", "content", "phase"]),
     (
         "function_call",
         &[
@@ -665,17 +669,19 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
                 let content: Vec<Value> = message
                     .parts
                     .iter()
-                    .map(|part| match part {
+                    .filter_map(|part| match part {
                         IrPart::Text { text } => {
-                            serde_json::json!({"type": "input_text", "text": text})
+                            Some(serde_json::json!({"type": "input_text", "text": text}))
                         }
 
-                        IrPart::Image { image } => serde_json::json!({
+                        IrPart::Image { image } => Some(serde_json::json!({
                             "type": "input_image",
                             "image_url": image.to_url(),
-                        }),
+                        })),
 
-                        _ => Value::Null,
+                        // The IR type system routes only text and images into
+                        // user content.
+                        _ => None,
                     })
                     .collect();
 
@@ -824,14 +830,16 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
     body
 }
 
-/// Function call being assembled from upstream events.
-#[derive(Debug)]
-struct PendingCall {
-    /// Output index of the call item within the response.
-    output_index: usize,
+/// Origin of an upstream output item, deciding how it maps to IR events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputItemOrigin {
+    /// An item of a complete JSON response body; the value is the item's
+    /// position in the `output` array.
+    Json(usize),
 
-    /// Invocation identifier.
-    call_id: String,
+    /// A streaming `output_item.done` event; the value is the upstream
+    /// `output_index`.
+    StreamDone(usize),
 }
 
 /// Parses upstream Responses payloads — SSE events or a full JSON body — into
@@ -840,9 +848,6 @@ struct PendingCall {
 pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
     is_started: bool,
-
-    /// Function calls opened by `output_item.added` and awaiting completion.
-    pending_calls: Vec<PendingCall>,
 }
 
 impl UpstreamParser {
@@ -873,8 +878,8 @@ impl UpstreamParser {
         let mut events = self.message_start_events(&value);
 
         if let Some(output) = value.get("output").and_then(Value::as_array) {
-            for item in output {
-                self.ingest_output_item(item, None, &mut events)?;
+            for (position, item) in output.iter().enumerate() {
+                self.ingest_output_item(item, OutputItemOrigin::Json(position), &mut events)?;
             }
         }
 
@@ -946,10 +951,14 @@ impl UpstreamParser {
             "response.output_item.done" => {
                 let mut events = Vec::new();
 
-                let output_index = event_output_index(&value);
-
                 if let Some(item) = value.get("item") {
-                    self.ingest_output_item(item, Some(output_index), &mut events)?;
+                    let output_index = event_output_index(&value);
+
+                    self.ingest_output_item(
+                        item,
+                        OutputItemOrigin::StreamDone(output_index),
+                        &mut events,
+                    )?;
                 }
 
                 Ok(events)
@@ -988,22 +997,22 @@ impl UpstreamParser {
         }
     }
 
-    /// Ingests one output item from a JSON response (`output_index` is
-    /// [`None`]) or a streaming `output_item.done` (`Some`).
+    /// Ingests one output item from a JSON response body or a streaming
+    /// `output_item.done` event.
     ///
-    /// On the streaming path only `function_call` items are completed here:
+    /// On the streaming path only `function_call` items produce events here:
     /// `output_item.done` carries the fully assembled message or reasoning
     /// item whose text was already delivered as delta events, so re-emitting
     /// it would double the text.
     fn ingest_output_item(
-        &mut self,
+        &self,
         item: &Value,
-        output_index: Option<usize>,
+        origin: OutputItemOrigin,
         events: &mut Vec<IrEvent>,
     ) -> Result<(), ApiError> {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
-                if output_index.is_none()
+                if let OutputItemOrigin::Json(_) = origin
                     && let Some(content) = item.get("content").and_then(Value::as_array)
                 {
                     for part in content {
@@ -1019,7 +1028,7 @@ impl UpstreamParser {
             }
 
             Some("reasoning") => {
-                if output_index.is_none()
+                if let OutputItemOrigin::Json(_) = origin
                     && let Some(summary) = item.get("summary").and_then(Value::as_array)
                 {
                     for part in summary {
@@ -1033,7 +1042,39 @@ impl UpstreamParser {
             }
 
             Some("function_call") => {
-                events.push(self.complete_function_call(item, output_index));
+                match origin {
+                    // A JSON body delivers the whole call at once; mirror the
+                    // chat and gemini JSON paths with a full-arguments delta
+                    // plus a done per call, so streaming renderers open and
+                    // complete the item.
+                    OutputItemOrigin::Json(index) => {
+                        let call_id = string_field(item, "call_id");
+                        let name = string_field(item, "name");
+                        let arguments = string_field(item, "arguments");
+
+                        events.push(IrEvent::ToolCallDelta {
+                            index,
+                            call_id: Some(call_id.clone()),
+                            name: Some(name.clone()),
+                            arguments_delta: arguments.clone(),
+                        });
+
+                        events.push(IrEvent::ToolCallDone {
+                            index,
+                            call_id,
+                            name,
+                            arguments,
+                            thought_signature: item
+                                .get("thought_signature")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                        });
+                    }
+
+                    OutputItemOrigin::StreamDone(index) => {
+                        events.push(self.complete_function_call(item, index));
+                    }
+                }
 
                 Ok(())
             }
@@ -1044,66 +1085,23 @@ impl UpstreamParser {
 
     /// Emits the opening delta for a function call item revealed by
     /// `output_item.added`.
-    fn open_function_call(&mut self, item: &Value, output_index: usize) -> IrEvent {
-        let call_id = item
-            .get("call_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-
-        let name = item
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-
-        self.pending_calls.push(PendingCall {
-            output_index,
-            call_id: call_id.clone(),
-        });
-
+    fn open_function_call(&self, item: &Value, output_index: usize) -> IrEvent {
         IrEvent::ToolCallDelta {
             index: output_index,
-            call_id: Some(call_id),
-            name: Some(name),
+            call_id: Some(string_field(item, "call_id")),
+            name: Some(string_field(item, "name")),
             arguments_delta: String::new(),
         }
     }
 
-    /// Emits the completion of a function call item delivered by
-    /// `output_item.done` or a JSON response.
-    fn complete_function_call(&mut self, item: &Value, output_index: Option<usize>) -> IrEvent {
-        let call_id = item
-            .get("call_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-
-        let resolved_index = output_index
-            .or_else(|| {
-                self.pending_calls
-                    .iter()
-                    .find(|pending| pending.call_id == call_id)
-                    .map(|pending| pending.output_index)
-            })
-            .unwrap_or_default();
-
-        self.pending_calls
-            .retain(|pending| pending.call_id != call_id);
-
+    /// Emits the completion of a function call item delivered by a streaming
+    /// `output_item.done`.
+    fn complete_function_call(&self, item: &Value, index: usize) -> IrEvent {
         IrEvent::ToolCallDone {
-            index: resolved_index,
-            call_id,
-            name: item
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            arguments: item
-                .get("arguments")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            index,
+            call_id: string_field(item, "call_id"),
+            name: string_field(item, "name"),
+            arguments: string_field(item, "arguments"),
             thought_signature: item
                 .get("thought_signature")
                 .and_then(Value::as_str)
@@ -1163,6 +1161,16 @@ fn event_output_index(value: &Value) -> usize {
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or_default() as usize
+}
+
+/// Reads a string field of an upstream JSON object, defaulting to the empty
+/// string.
+fn string_field(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Finish reason for a response object already known not to be failed.
@@ -1393,7 +1401,12 @@ impl SseRenderer {
                                 "item_id": item_id,
                                 "output_index": output_index,
                                 "content_index": 0,
-                                "part": {"type": "output_text", "text": "", "annotations": []},
+                                "part": {
+                                    "type": "output_text",
+                                    "text": "",
+                                    "annotations": [],
+                                    "logprobs": [],
+                                },
                             }),
                         ));
 
@@ -1407,11 +1420,15 @@ impl SseRenderer {
 
                 frames.push(self.event_frame(
                     "response.output_text.delta",
+                    // `logprobs` is a required field of the official event
+                    // shape (openai-python `ResponseTextDeltaEvent`), so the
+                    // gateway always carries it, empty when untracked.
                     serde_json::json!({
                         "item_id": item_id,
                         "output_index": output_index,
                         "content_index": 0,
                         "delta": delta,
+                        "logprobs": [],
                     }),
                 ));
 
@@ -1706,8 +1723,12 @@ impl SseRenderer {
         }
 
         if let Some((item_id, output_index, text)) = self.message.take() {
-            let content_part =
-                serde_json::json!({"type": "output_text", "text": text, "annotations": []});
+            let content_part = serde_json::json!({
+                "type": "output_text",
+                "text": text,
+                "annotations": [],
+                "logprobs": [],
+            });
 
             let completed_item = serde_json::json!({
                 "id": item_id,
@@ -1725,6 +1746,7 @@ impl SseRenderer {
                         "output_index": output_index,
                         "content_index": 0,
                         "text": content_part.get("text").cloned().unwrap_or(Value::Null),
+                        "logprobs": [],
                     }),
                 ),
                 (
@@ -1813,7 +1835,12 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
             "type": "message",
             "role": "assistant",
             "status": "completed",
-            "content": [{"type": "output_text", "text": aggregation.text, "annotations": []}],
+            "content": [{
+                "type": "output_text",
+                "text": aggregation.text,
+                "annotations": [],
+                "logprobs": [],
+            }],
         }));
     }
 
@@ -1877,6 +1904,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 mod tests {
     use super::{SseRenderer, UpstreamParser, parse_request, render_json_response};
     use crate::{
+        format::openai_chat_completion::SseRenderer as ChatSseRenderer,
         ir::{Aggregator, IrEvent, IrFinishReason, IrPart},
         sse::SseParser,
     };
@@ -2457,5 +2485,172 @@ mod tests {
         assert_eq!(rendered["output"].as_array().map(Vec::len), Some(2));
         assert_eq!(rendered["output"][1]["thought_signature"], "sig");
         assert_eq!(rendered["usage"]["total_tokens"], 3);
+    }
+
+    /// Accepts and ignores the optional `id` and `phase` fields that codex
+    /// replays on `message` input items, so replaying the gateway's own
+    /// rendered output items is not rejected as an unknown field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn accepts_id_and_phase_on_message_input_items() {
+        let parsed = parse_request(
+            r#"{
+                "model": "public",
+                "input": [
+                    {"type": "message", "id": "msg_1", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "hi"}],
+                     "phase": "final_answer"}
+                ]
+            }"#
+            .as_bytes(),
+        )
+        .expect("message item id and phase must be accepted and ignored");
+
+        assert_eq!(parsed.ir.messages.len(), 1);
+        assert_eq!(
+            parsed.ir.messages[0].parts,
+            vec![IrPart::Text {
+                text: "hi".to_string()
+            }]
+        );
+    }
+
+    /// Translates a JSON (non-SSE) upstream response carrying parallel tool
+    /// calls and proves the calls survive into both outward streaming formats
+    /// with collision-free indices, instead of being silently dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_json_tool_calls_render_into_both_client_formats() {
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "resp1",
+                "model": "m",
+                "status": "completed",
+                "output": [
+                    {"type": "function_call", "call_id": "call_1",
+                     "name": "weather", "arguments": "{\"city\":\"oslo\"}"},
+                    {"type": "function_call", "call_id": "call_2",
+                     "name": "time", "arguments": "{\"tz\":\"utc\"}"},
+                ],
+            }))
+            .expect("response should parse");
+
+        let done_indices: Vec<usize> = events
+            .iter()
+            .filter_map(|event| match event {
+                IrEvent::ToolCallDone { index, .. } => Some(*index),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(done_indices, vec![0, 1]);
+
+        // Outward Responses: both calls appear as completed output items.
+        let rendered = render_client(events.clone());
+
+        let completed = rendered
+            .iter()
+            .find(|(name, _)| name.as_deref() == Some("response.completed"))
+            .map(|(_, payload)| payload.clone())
+            .expect("completed event");
+
+        #[expect(clippy::indexing_slicing, reason = "tests assert exact fixture shapes")]
+        let output = completed["response"]["output"]
+            .as_array()
+            .expect("completed response output array");
+
+        assert_eq!(output.len(), 2);
+        assert_eq!(output[0]["type"], "function_call");
+        assert_eq!(output[0]["call_id"], "call_1");
+        assert_eq!(output[0]["arguments"], "{\"city\":\"oslo\"}");
+        assert_eq!(output[1]["call_id"], "call_2");
+        assert_eq!(output[1]["arguments"], "{\"tz\":\"utc\"}");
+
+        // Outward Chat Completions: both calls stream as tool-call deltas.
+        let mut chat_renderer = ChatSseRenderer::new("public".to_string(), false);
+
+        let mut chat_names: Vec<Value> = Vec::new();
+
+        for event in &events {
+            for frame in chat_renderer.render(event) {
+                let payload: Value = serde_json::from_str(
+                    frame
+                        .strip_prefix("data: ")
+                        .expect("data frame prefix")
+                        .trim_end(),
+                )
+                .expect("payload is JSON");
+
+                for tool_call in payload["choices"][0]["delta"]["tool_calls"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    chat_names.push(tool_call["function"]["name"].clone());
+                }
+            }
+        }
+
+        assert_eq!(chat_names, vec!["weather", "time"]);
+    }
+
+    /// Emits the `logprobs` field that openai-python requires on
+    /// `response.output_text.delta` and `.done` events and carries on the
+    /// `output_text` content part.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn output_text_events_and_parts_carry_logprobs() {
+        let events = vec![
+            IrEvent::MessageStart {
+                id: "up".to_string(),
+                model: "m".to_string(),
+            },
+            IrEvent::TextDelta("hi".to_string()),
+            IrEvent::Finish(IrFinishReason::Stop),
+        ];
+
+        let rendered = render_client(events);
+
+        for event_name in ["response.output_text.delta", "response.output_text.done"] {
+            let payload = rendered
+                .iter()
+                .find(|(name, _)| name.as_deref() == Some(event_name))
+                .map(|(_, payload)| payload)
+                .expect("output text event must be rendered");
+
+            assert_eq!(payload["logprobs"], Value::Array(Vec::new()));
+        }
+
+        for event_name in ["response.content_part.added", "response.content_part.done"] {
+            let payload = rendered
+                .iter()
+                .find(|(name, _)| name.as_deref() == Some(event_name))
+                .map(|(_, payload)| payload)
+                .expect("content part event must be rendered");
+
+            assert_eq!(payload["part"]["logprobs"], Value::Array(Vec::new()));
+        }
+
+        let mut aggregator = Aggregator::default();
+
+        aggregator.ingest(&IrEvent::TextDelta("hi".to_string()));
+
+        let body = render_json_response("public", &aggregator.finish());
+
+        assert_eq!(
+            body["output"][0]["content"][0]["logprobs"],
+            Value::Array(Vec::new())
+        );
     }
 }

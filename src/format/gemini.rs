@@ -351,18 +351,20 @@ impl UpstreamParser {
     /// Ingests one GenerateContentResponse object.
     fn ingest_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
         if let Some(error) = value.get("error").filter(|error| error.is_object()) {
+            // An error object inside a 2xx body is a malformed upstream
+            // payload (README §6.7), so the embedded `code` is never mirrored
+            // as the outward status; it rides in the message instead.
             let message = error
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("upstream error");
 
-            let status = error
-                .get("code")
-                .and_then(Value::as_u64)
-                .map(|code| code.min(u64::from(u16::MAX)) as u16)
-                .unwrap_or(crate::error::UPSTREAM_UNAVAILABLE_STATUS);
+            let detail = match error.get("code") {
+                Some(code) => format!("{message} (upstream error code: {code})"),
+                None => message.to_string(),
+            };
 
-            return Err(ApiError::upstream(status, message));
+            return Err(ApiError::upstream_unavailable(detail));
         }
 
         let mut events = Vec::new();
@@ -870,13 +872,15 @@ mod tests {
         }));
     }
 
-    /// Verifies that Gemini error objects map status and message.
+    /// Verifies that Gemini error objects map to a 502 upstream error whose
+    /// message keeps the upstream code and text, never mirroring the embedded
+    /// code as the outward status (README §6.7).
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
     #[test]
-    fn upstream_error_objects_map_status_and_message() {
+    fn upstream_error_objects_map_to_502_with_embedded_code() {
         let mut parser = UpstreamParser::new();
         let error = parser
             .ingest_frame(&crate::sse::SseFrame {
@@ -885,7 +889,20 @@ mod tests {
             })
             .expect_err("error object must fail");
 
-        assert_eq!(error.status, 429);
+        assert_eq!(error.status, 502);
+        assert_eq!(error.code.as_deref(), Some("upstream_error"));
         assert!(error.message.contains("RESOURCE_EXHAUSTED"));
+        assert!(error.message.contains("429"));
+
+        // A nonsense 2xx embedded code must not render a success status.
+        let mut parser = UpstreamParser::new();
+        let error = parser
+            .ingest_frame(&crate::sse::SseFrame {
+                event: None,
+                data: r#"{"error": {"code": 200, "message": "odd"}}"#.to_string(),
+            })
+            .expect_err("error object must fail");
+
+        assert_eq!(error.status, 502);
     }
 }

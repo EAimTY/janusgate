@@ -190,49 +190,14 @@ pub(crate) async fn update_provider(
         })
         .collect();
 
-    // The provider's own recomputed names must stay pairwise distinct. Healthy
-    // rows can never converge — distinct rows carry distinct
-    // `name_override ?? upstream_name` bases and share one prefix — so this
-    // guards the invariant even against drifted stored names.
-    let mut composed: HashMap<&str, &str> = HashMap::with_capacity(recomputed.len());
+    let composed: Vec<(&str, &str)> = recomputed
+        .iter()
+        .map(|(name, model)| (name.as_str(), model.upstream_name.as_str()))
+        .collect();
 
-    for (new_name, model) in &recomputed {
-        if let Some(first_upstream_name) = composed.insert(new_name.as_str(), &model.upstream_name)
-        {
-            return Err(ApiError::conflict(format!(
-                "Public model name `{new_name}` collides between upstream models \
-                 `{first_upstream_name}` and `{}` of provider `{}`",
-                model.upstream_name, provider.name
-            )));
-        }
-    }
+    ensure_names_pairwise_distinct(&provider.name, &composed)?;
 
-    let routed_rows = transaction
-        .query(
-            "SELECT m.name, m.provider_id, m.upstream_name, p.name \
-             FROM models m JOIN providers p ON p.id = m.provider_id",
-            (),
-        )
-        .await?;
-
-    let mut routed: HashMap<String, (i64, String, String)> =
-        HashMap::with_capacity(routed_rows.len());
-
-    for row in &routed_rows {
-        routed.insert(row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?));
-    }
-
-    for (new_name, model) in &recomputed {
-        if let Some((holder_provider_id, holder_upstream_name, holder_provider_name)) =
-            routed.get(new_name)
-            && (*holder_provider_id != provider.id || holder_upstream_name != &model.upstream_name)
-        {
-            return Err(ApiError::conflict(format!(
-                "Public model name `{new_name}` is already routed by provider \
-                 `{holder_provider_name}`"
-            )));
-        }
-    }
+    ensure_names_routable(&mut transaction, provider.id, &composed).await?;
 
     transaction
         .execute(
@@ -278,6 +243,76 @@ pub(crate) async fn update_provider(
     Ok(())
 }
 
+/// Rejects one provider's freshly composed public names when two of its rows
+/// would converge on one name. Healthy rows can never converge — distinct rows
+/// carry distinct `name_override ?? upstream_name` bases and share one prefix —
+/// so this guards the invariant even against drifted stored names.
+///
+/// `composed` carries `(public_name, upstream_name)` pairs.
+fn ensure_names_pairwise_distinct(
+    provider_name: &str,
+    composed: &[(&str, &str)],
+) -> Result<(), ApiError> {
+    let mut seen: HashMap<&str, &str> = HashMap::with_capacity(composed.len());
+
+    for (new_name, upstream_name) in composed {
+        if let Some(first_upstream_name) = seen.insert(new_name, upstream_name) {
+            return Err(ApiError::conflict(format!(
+                "Public model name `{new_name}` collides between upstream models \
+                 `{first_upstream_name}` and `{upstream_name}` of provider `{provider_name}`"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Rejects freshly composed public names that are already routed by another
+/// model row — of any provider, including another model of the same provider.
+/// A name held by the very row being written is not a collision.
+///
+/// `composed` carries `(public_name, upstream_name)` pairs of the provider
+/// identified by `provider_id`. Runs inside the caller's transaction, so the
+/// routed rows it observes cannot interleave with the caller's writes.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when the query fails or a name collides.
+async fn ensure_names_routable(
+    transaction: &mut Transaction,
+    provider_id: i64,
+    composed: &[(&str, &str)],
+) -> Result<(), ApiError> {
+    let routed_rows = transaction
+        .query(
+            "SELECT m.name, m.provider_id, m.upstream_name, p.name \
+             FROM models m JOIN providers p ON p.id = m.provider_id",
+            (),
+        )
+        .await?;
+
+    let mut routed: HashMap<String, (i64, String, String)> =
+        HashMap::with_capacity(routed_rows.len());
+
+    for row in &routed_rows {
+        routed.insert(row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?));
+    }
+
+    for (new_name, upstream_name) in composed {
+        if let Some((holder_provider_id, holder_upstream_name, holder_provider_name)) =
+            routed.get(*new_name)
+            && (*holder_provider_id != provider_id || holder_upstream_name != upstream_name)
+        {
+            return Err(ApiError::conflict(format!(
+                "Public model name `{new_name}` is already routed by provider \
+                 `{holder_provider_name}`"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Fetches every model row of one provider inside a transaction.
 ///
 /// # Errors
@@ -299,7 +334,8 @@ async fn find_models_in_transaction(
 ///
 /// The lease is granted only when the token is still expired (no later than
 /// `freshness_margin` seconds into the future) and no other holder owns a
-/// lease acquired after `lease_stale_before`.
+/// lease acquired after `lease_stale_before`. Returns the acquired lease
+/// stamp, or `None` when another holder owns a live lease.
 ///
 /// # Errors
 ///
@@ -310,13 +346,48 @@ pub(crate) async fn try_acquire_refresh_lease(
     now: i64,
     lease_stale_before: i64,
     freshness_margin: i64,
-) -> Result<bool, ApiError> {
+) -> Result<Option<i64>, ApiError> {
     let changes = transaction
         .execute(
             "UPDATE providers SET refresh_started_at = ?1 \
              WHERE id = ?2 AND (expires_at IS NULL OR expires_at <= ?1 + ?4) \
              AND (refresh_started_at IS NULL OR refresh_started_at < ?3)",
             params![now, provider_id, lease_stale_before, freshness_margin],
+        )
+        .await?;
+
+    Ok((changes == 1).then_some(now))
+}
+
+/// Replaces provider credentials and resets the token expiry, but only while
+/// the caller still owns the refresh lease stamped `lease_started_at`.
+///
+/// Conditioning the persist on lease ownership closes the lost-update window
+/// against a concurrent credentials replacement or stale-lease reacquisition
+/// (README §3): when the stored stamp no longer matches, tokens derived from
+/// superseded credentials are discarded, the newer state's row — its lease
+/// included — is left untouched, and `false` is returned.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when the update fails.
+pub(crate) async fn update_credentials_for_lease(
+    database: &Database,
+    provider_id: i64,
+    lease_started_at: i64,
+    credentials: &Credentials,
+    expires_at: Option<i64>,
+) -> Result<bool, ApiError> {
+    let changes = database
+        .execute(
+            "UPDATE providers SET credentials = ?1, expires_at = ?2, refresh_started_at = NULL \
+             WHERE id = ?3 AND refresh_started_at = ?4",
+            params![
+                credentials.to_json(),
+                expires_at,
+                provider_id,
+                lease_started_at
+            ],
         )
         .await?;
 
@@ -372,17 +443,17 @@ pub(crate) async fn find_routing(
         .transpose()
 }
 
-/// Fetches one model row of a provider.
+/// Fetches one model row of a provider inside a transaction.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] when the query fails or a row is malformed.
-pub(crate) async fn find_model(
-    database: &Database,
+async fn find_model_in_transaction(
+    transaction: &mut Transaction,
     provider_id: i64,
     upstream_name: &str,
 ) -> Result<Option<Model>, ApiError> {
-    let rows = database
+    let rows = transaction
         .query(
             format!(
                 "SELECT {MODEL_COLUMNS} FROM models \
@@ -406,27 +477,6 @@ pub(crate) struct ModelEntry {
 
     /// The model row.
     pub(crate) model: Model,
-}
-
-/// Lists every model row of one provider.
-///
-/// # Errors
-///
-/// Returns [`ApiError`] when the query fails or a row is malformed.
-pub(crate) async fn find_models_of_provider(
-    database: &Database,
-    provider_id: i64,
-) -> Result<Vec<Model>, ApiError> {
-    let rows = database
-        .query(
-            format!(
-                "SELECT {MODEL_COLUMNS} FROM models WHERE provider_id = ?1 ORDER BY upstream_name"
-            ),
-            params![provider_id],
-        )
-        .await?;
-
-    rows.iter().map(model_from_row).collect()
 }
 
 /// Lists every stored model with its provider facts.
@@ -458,25 +508,107 @@ pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelE
     Ok(entries)
 }
 
-/// Lists every effectively enabled public model name, ordered by name.
+/// Lists `(public_name, provider_name)` pairs for every effectively enabled
+/// model, ordered by public name.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] when the query fails.
-pub(crate) async fn list_enabled_public_names(
+pub(crate) async fn list_enabled_models_with_owner(
     database: &Database,
-) -> Result<Vec<String>, ApiError> {
+) -> Result<Vec<(String, String)>, ApiError> {
     let rows = database
         .query(
-            "SELECT m.name FROM models m JOIN providers p ON p.id = m.provider_id \
+            "SELECT m.name, p.name FROM models m JOIN providers p ON p.id = m.provider_id \
              WHERE COALESCE(m.enabled_override, p.enabled) != 0 ORDER BY m.name",
             (),
         )
         .await?;
 
     rows.iter()
-        .map(|row| row.get::<String>(0).map_err(ApiError::from))
+        .map(|row| Ok((row.get::<String>(0)?, row.get::<String>(1)?)))
         .collect()
+}
+
+/// Replaces the model rows of one provider with a freshly discovered set
+/// inside a single transaction, returning the number of stored rows.
+///
+/// The provider row is re-read inside the transaction, so the public names are
+/// composed from the provider's current prefix even when a concurrent
+/// `save-provider` changed it after the caller's outer read (README §7.1).
+/// Overrides carry over from the stored rows by `upstream_name`; discovered
+/// models absent from the stored set vanish with their overrides.
+///
+/// The composed public names undergo the same collision checks as
+/// [`update_provider`]: pairwise distinctness within the provider and no
+/// routing collision with any other model row; both rejections are name-
+/// specific 409 conflicts that write nothing.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] for an unknown provider, failed statements, or a
+/// composed public name collision.
+pub(crate) async fn replace_discovered_models(
+    database: &Database,
+    provider_name: &str,
+    upstream_names: &[String],
+) -> Result<usize, ApiError> {
+    let mut transaction = database.transaction().await?;
+
+    let Some(provider) = find_provider_in_transaction(&mut transaction, provider_name).await?
+    else {
+        return Err(ApiError::not_found(format!(
+            "Provider `{provider_name}` does not exist"
+        )));
+    };
+
+    let previous = find_models_in_transaction(&mut transaction, provider.id).await?;
+
+    let stored: HashMap<&str, &Model> = previous
+        .iter()
+        .map(|model| (model.upstream_name.as_str(), model))
+        .collect();
+
+    let mut models: Vec<Model> = Vec::with_capacity(upstream_names.len());
+
+    for upstream_name in upstream_names {
+        let prior = stored.get(upstream_name.as_str()).copied();
+
+        let name_override = prior.and_then(|model| model.name_override.clone());
+
+        let name = Model::public_name(
+            &provider.model_prefix,
+            upstream_name,
+            name_override.as_deref(),
+        );
+
+        models.push(Model {
+            provider_id: provider.id,
+            upstream_name: upstream_name.clone(),
+            name,
+            name_override,
+            enabled_override: prior.and_then(|model| model.enabled_override),
+            thinking_levels_override: prior
+                .and_then(|model| model.thinking_levels_override.clone()),
+        });
+    }
+
+    let composed: Vec<(&str, &str)> = models
+        .iter()
+        .map(|model| (model.name.as_str(), model.upstream_name.as_str()))
+        .collect();
+
+    ensure_names_pairwise_distinct(&provider.name, &composed)?;
+
+    ensure_names_routable(&mut transaction, provider.id, &composed).await?;
+
+    replace_provider_models(&mut transaction, provider.id, &models).await?;
+
+    transaction.commit().await.map_err(|error| {
+        ApiError::internal(format!("failed to commit discovered models: {error}"))
+    })?;
+
+    Ok(models.len())
 }
 
 /// Replaces the model rows of a provider inside a transaction.
@@ -484,7 +616,7 @@ pub(crate) async fn list_enabled_public_names(
 /// # Errors
 ///
 /// Returns [`ApiError`] when any statement fails.
-pub(crate) async fn replace_provider_models(
+async fn replace_provider_models(
     transaction: &mut Transaction,
     provider_id: i64,
     models: &[Model],
@@ -516,54 +648,160 @@ pub(crate) async fn replace_provider_models(
     Ok(())
 }
 
-/// Updates the override fields of one model, recomputing its public name.
-/// `None` leaves a field unchanged; `Some` writes the inner value, clearing
-/// the column when the inner value is `None`.
+/// One `save-model` override update about to be applied transactionally.
+pub(crate) struct ModelOverrideUpdate<'a> {
+    /// Owning provider's identifier, the lookup key.
+    pub(crate) provider_name: &'a str,
+
+    /// Exact upstream model identifier.
+    pub(crate) upstream_name: &'a str,
+
+    /// Public name override; `None` leaves it unchanged, `Some` writes the
+    /// inner value, clearing the column when the inner value is `None`.
+    pub(crate) name_override: Option<Option<String>>,
+
+    /// Serving state override; same tri-state semantics.
+    pub(crate) enabled_override: Option<Option<bool>>,
+
+    /// Canonical thinking levels override; same tri-state semantics.
+    pub(crate) thinking_levels_override: Option<Option<String>>,
+}
+
+/// Writes one model's overrides and recomputes its public name inside a single
+/// transaction, returning the updated row with its provider facts.
+///
+/// The provider row is re-read inside the transaction, so the recomputed
+/// public name uses the provider's current prefix even when a concurrent
+/// `save-provider` changed it after the caller's outer read; the stored model
+/// row and the routed-name collision check observe the same snapshot. The
+/// collision check matches [`update_provider`]'s quality tier: a name already
+/// routed by another model row yields a 409 naming the holder, and nothing is
+/// written. Unknown providers or models yield 404.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the update fails.
-pub(crate) async fn update_model_overrides(
+/// Returns [`ApiError`] for unknown rows, failed statements, or a public name
+/// collision.
+pub(crate) async fn update_model_overrides_checked(
     database: &Database,
-    provider_id: i64,
-    upstream_name: &str,
-    new_name: &str,
-    name_override: Option<Option<String>>,
-    enabled_override: Option<Option<bool>>,
-    thinking_levels_override: Option<Option<String>>,
-) -> Result<(), ApiError> {
+    update: ModelOverrideUpdate<'_>,
+) -> Result<ModelEntry, ApiError> {
+    let mut transaction = database.transaction().await?;
+
+    let Some(provider) =
+        find_provider_in_transaction(&mut transaction, update.provider_name).await?
+    else {
+        return Err(ApiError::not_found(format!(
+            "Provider `{}` does not exist",
+            update.provider_name
+        )));
+    };
+
+    let Some(model) =
+        find_model_in_transaction(&mut transaction, provider.id, update.upstream_name).await?
+    else {
+        return Err(ApiError::not_found(format!(
+            "Model `{}` does not exist on provider `{}`",
+            update.upstream_name, provider.name
+        )));
+    };
+
+    let new_name_override = update
+        .name_override
+        .clone()
+        .unwrap_or_else(|| model.name_override.clone());
+
+    let new_name = Model::public_name(
+        &provider.model_prefix,
+        update.upstream_name,
+        new_name_override.as_deref(),
+    );
+
+    ensure_names_routable(
+        &mut transaction,
+        provider.id,
+        &[(new_name.as_str(), update.upstream_name)],
+    )
+    .await?;
+
     let mut assignments: Vec<String> = Vec::new();
+
     let mut values: Vec<Value> = Vec::new();
 
-    if let Some(override_value) = name_override {
+    if let Some(override_value) = update.name_override {
         assignments.push("name_override = ?".to_string());
+
         values.push(override_value.into());
     }
 
-    if let Some(override_value) = enabled_override {
+    if let Some(override_value) = update.enabled_override {
         assignments.push("enabled_override = ?".to_string());
+
         values.push(override_value.map(i64::from).into());
     }
 
-    if let Some(override_value) = thinking_levels_override {
+    if let Some(override_value) = update.thinking_levels_override {
         assignments.push("thinking_levels_override = ?".to_string());
+
         values.push(override_value.into());
     }
 
     assignments.push("name = ?".to_string());
+
     values.push(new_name.into());
 
-    values.push(provider_id.into());
-    values.push(upstream_name.into());
+    values.push(provider.id.into());
+
+    values.push(update.upstream_name.into());
 
     let sql = format!(
         "UPDATE models SET {} WHERE provider_id = ? AND upstream_name = ?",
         assignments.join(", ")
     );
 
-    database.execute(sql, params_from_iter(values)).await?;
+    transaction.execute(sql, params_from_iter(values)).await?;
 
-    Ok(())
+    let entry =
+        find_model_entry_in_transaction(&mut transaction, provider.id, update.upstream_name)
+            .await?
+            .ok_or_else(|| ApiError::internal("model vanished after override update"))?;
+
+    transaction.commit().await.map_err(|error| {
+        ApiError::internal(format!("failed to commit model override update: {error}"))
+    })?;
+
+    Ok(entry)
+}
+
+/// Reads back one model row with its provider facts inside a transaction.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when the query fails or a row is malformed.
+async fn find_model_entry_in_transaction(
+    transaction: &mut Transaction,
+    provider_id: i64,
+    upstream_name: &str,
+) -> Result<Option<ModelEntry>, ApiError> {
+    let rows = transaction
+        .query(
+            "SELECT p.name, p.enabled, m.provider_id, m.upstream_name, m.name, m.name_override, \
+             m.enabled_override, m.thinking_levels_override FROM models m \
+             JOIN providers p ON p.id = m.provider_id \
+             WHERE m.provider_id = ?1 AND m.upstream_name = ?2",
+            params![provider_id, upstream_name],
+        )
+        .await?;
+
+    rows.first()
+        .map(|row| {
+            Ok(ModelEntry {
+                provider_name: row.get(0)?,
+                is_provider_enabled: row.get::<i64>(1)? != 0,
+                model: model_from_row_offset(row, 2)?,
+            })
+        })
+        .transpose()
 }
 
 /// Inserts one pending OAuth state row.
@@ -877,12 +1115,13 @@ mod tests {
 
         let mut transaction = database.transaction().await?;
 
-        let is_acquired =
+        let lease_started_at =
             try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 60).await?;
 
         transaction.commit().await?;
 
-        assert!(is_acquired);
+        assert_eq!(lease_started_at, Some(now));
+
         assert_eq!(read_refresh_lease(&database, provider_id).await?, Some(now));
 
         let _ = fs::remove_file(path);
@@ -910,12 +1149,13 @@ mod tests {
 
         let mut transaction = database.transaction().await?;
 
-        let is_acquired =
+        let lease_started_at =
             try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 60).await?;
 
         transaction.commit().await?;
 
-        assert!(!is_acquired);
+        assert_eq!(lease_started_at, None);
+
         assert_eq!(
             read_refresh_lease(&database, provider_id).await?,
             Some(now - 10)
@@ -946,12 +1186,13 @@ mod tests {
 
         let mut transaction = database.transaction().await?;
 
-        let is_acquired =
+        let lease_started_at =
             try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 60).await?;
 
         transaction.commit().await?;
 
-        assert!(is_acquired);
+        assert_eq!(lease_started_at, Some(now));
+
         assert_eq!(read_refresh_lease(&database, provider_id).await?, Some(now));
 
         let _ = fs::remove_file(path);
@@ -978,12 +1219,12 @@ mod tests {
 
         let mut transaction = database.transaction().await?;
 
-        let is_acquired =
+        let lease_started_at =
             try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 60).await?;
 
         transaction.rollback().await?;
 
-        assert!(!is_acquired);
+        assert_eq!(lease_started_at, None);
 
         database
             .execute(
@@ -994,12 +1235,12 @@ mod tests {
 
         let mut transaction = database.transaction().await?;
 
-        let is_acquired =
+        let lease_started_at =
             try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 60).await?;
 
         transaction.commit().await?;
 
-        assert!(is_acquired);
+        assert_eq!(lease_started_at, Some(now));
 
         let _ = fs::remove_file(path);
 
@@ -1025,12 +1266,12 @@ mod tests {
 
         let mut transaction = database.transaction().await?;
 
-        let is_acquired =
+        let lease_started_at =
             try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 60).await?;
 
         transaction.commit().await?;
 
-        assert!(is_acquired);
+        assert_eq!(lease_started_at, Some(now));
 
         let _ = fs::remove_file(path);
 
@@ -1057,12 +1298,12 @@ mod tests {
 
         let mut transaction = database.transaction().await?;
 
-        let is_acquired =
+        let lease_started_at =
             try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 0).await?;
 
         transaction.rollback().await?;
 
-        assert!(!is_acquired);
+        assert_eq!(lease_started_at, None);
 
         database
             .execute(
@@ -1073,12 +1314,12 @@ mod tests {
 
         let mut transaction = database.transaction().await?;
 
-        let is_acquired =
+        let lease_started_at =
             try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 0).await?;
 
         transaction.commit().await?;
 
-        assert!(is_acquired);
+        assert_eq!(lease_started_at, Some(now));
 
         let _ = fs::remove_file(path);
 
@@ -1541,6 +1782,671 @@ mod tests {
 
         assert_eq!(model_prefix, "q-");
         assert_eq!(enabled, 0);
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Reads back the stored credentials JSON of a provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while querying the row.
+    async fn read_provider_credentials(
+        database: &Database,
+        provider_id: i64,
+    ) -> Result<String, Box<dyn StdError>> {
+        let rows = database
+            .query(
+                "SELECT credentials FROM providers WHERE id = ?1",
+                params![provider_id],
+            )
+            .await?;
+
+        Ok(rows.first().ok_or("missing provider row")?.get(0)?)
+    }
+
+    /// Verifies the lease-guarded credential persist succeeds only under the
+    /// caller's own lease stamp, persisting the credentials and clearing the
+    /// lease.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn credential_persist_requires_own_lease_stamp() -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+        let now = crate::unix_time::unix_now();
+
+        let provider_id = insert_lease_provider(&database, "stamp", Some(now - 100), None).await?;
+
+        let mut transaction = database.transaction().await?;
+
+        let lease_started_at =
+            try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 60).await?;
+
+        transaction.commit().await?;
+
+        let lease_started_at = lease_started_at.ok_or("the lease must be acquired")?;
+
+        let is_persisted = update_credentials_for_lease(
+            &database,
+            provider_id,
+            lease_started_at,
+            &Credentials::ApiKey("renewed-key".to_string()),
+            Some(now + 3_600),
+        )
+        .await?;
+
+        assert!(is_persisted);
+
+        assert_eq!(
+            read_provider_credentials(&database, provider_id).await?,
+            r#"{"apiKey":"renewed-key"}"#
+        );
+
+        assert_eq!(read_refresh_lease(&database, provider_id).await?, None);
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies a refresh whose lease was stolen by a stale-lease
+    /// reacquisition cannot persist tokens derived from superseded
+    /// credentials: the conditional persist reports the loss and the newer
+    /// holder's lease and credentials survive untouched.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn credential_persist_loses_to_lease_reacquisition() -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+        let now = crate::unix_time::unix_now();
+
+        // The in-flight refresher acquired its lease 100 seconds ago.
+        let provider_id =
+            insert_lease_provider(&database, "stolen", Some(now - 100), Some(now - 100)).await?;
+
+        // A waiter reacquires the abandoned lease now.
+        let mut transaction = database.transaction().await?;
+
+        let reacquired =
+            try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 60).await?;
+
+        transaction.commit().await?;
+
+        assert_eq!(reacquired, Some(now));
+
+        let is_persisted = update_credentials_for_lease(
+            &database,
+            provider_id,
+            now - 100,
+            &Credentials::ApiKey("superseded-key".to_string()),
+            Some(now + 3_600),
+        )
+        .await?;
+
+        assert!(!is_persisted, "the stale stamp must not persist");
+
+        assert_eq!(
+            read_provider_credentials(&database, provider_id).await?,
+            r#"{"apiKey":"test-key"}"#
+        );
+
+        assert_eq!(
+            read_refresh_lease(&database, provider_id).await?,
+            Some(now),
+            "the newer holder's lease must survive"
+        );
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies a refresh whose lease was cleared by a concurrent admin
+    /// credentials replacement cannot overwrite the replacement with tokens
+    /// derived from the pre-replacement refresh token.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn credential_persist_loses_to_credentials_replacement() -> Result<(), Box<dyn StdError>>
+    {
+        let (database, path) = open_test_database().await;
+        let now = crate::unix_time::unix_now();
+
+        let provider_id =
+            insert_lease_provider(&database, "replaced", Some(now - 100), Some(now - 5)).await?;
+
+        // The admin replaces the credentials, clearing the lease.
+        update_provider(
+            &database,
+            &test_provider(provider_id, "replaced"),
+            ProviderUpdate {
+                model_prefix: "",
+                protocol: None,
+                base_url: None,
+                enabled: true,
+                credentials: Some(&Credentials::ApiKey("admin-key".to_string())),
+            },
+        )
+        .await?;
+
+        let is_persisted = update_credentials_for_lease(
+            &database,
+            provider_id,
+            now - 5,
+            &Credentials::ApiKey("superseded-key".to_string()),
+            Some(now + 3_600),
+        )
+        .await?;
+
+        assert!(!is_persisted, "the in-flight refresher must lose the row");
+
+        assert_eq!(
+            read_provider_credentials(&database, provider_id).await?,
+            r#"{"apiKey":"admin-key"}"#
+        );
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Reads back one model's stored override fields alongside its name.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while querying the row.
+    async fn read_model_row(
+        database: &Database,
+        provider_id: i64,
+        upstream_name: &str,
+    ) -> Result<(String, Option<String>, Option<i64>, Option<String>), Box<dyn StdError>> {
+        let rows = database
+            .query(
+                "SELECT name, name_override, enabled_override, thinking_levels_override \
+                 FROM models WHERE provider_id = ?1 AND upstream_name = ?2",
+                params![provider_id, upstream_name],
+            )
+            .await?;
+
+        let row = rows.first().ok_or("missing model row")?;
+
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    }
+
+    /// Verifies a discovery replace keys overrides over by `upstream_name`,
+    /// drops undiscovered rows, and recomputes every public name from the
+    /// provider's current prefix.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn discover_replaces_models_and_carries_overrides() -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+
+        let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        insert_model_row(&database, provider_id, "u1", "a-custom", Some("custom")).await?;
+        insert_model_row(&database, provider_id, "gone", "a-gone", None).await?;
+
+        let discovered =
+            replace_discovered_models(&database, "alpha", &["u1".to_string(), "u2".to_string()])
+                .await?;
+
+        assert_eq!(discovered, 2);
+
+        let (name, name_override, enabled_override, _) =
+            read_model_row(&database, provider_id, "u1").await?;
+
+        assert_eq!(name, "a-custom");
+        assert_eq!(name_override.as_deref(), Some("custom"));
+        assert!(enabled_override.is_none());
+
+        let (name, name_override, _, _) = read_model_row(&database, provider_id, "u2").await?;
+
+        assert_eq!(name, "a-u2");
+        assert_eq!(name_override, None);
+
+        assert!(
+            read_model_name(&database, provider_id, "gone")
+                .await?
+                .is_none(),
+            "undiscovered rows must vanish with their overrides"
+        );
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies a discovery replace that would route a name already held by
+    /// another provider is rejected with a name-specific 409 and writes
+    /// nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn discover_rejects_routed_collision_with_name_specific_conflict()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+
+        // The empty prefix lets alpha's composed name collide with beta's.
+        let alpha_id = insert_prefix_provider(&database, "alpha", "").await?;
+
+        insert_model_row(&database, alpha_id, "u1", "u1", None).await?;
+
+        let beta_id = insert_prefix_provider(&database, "beta", "").await?;
+
+        insert_model_row(&database, beta_id, "m1", "m1", None).await?;
+
+        let error =
+            replace_discovered_models(&database, "alpha", &["u1".to_string(), "m1".to_string()])
+                .await
+                .err()
+                .ok_or("the routed collision must be rejected")?;
+
+        assert_eq!(error.status, 409);
+        assert!(
+            error.message.contains("m1") && error.message.contains("beta"),
+            "the conflict must name the colliding name and holder: {error}"
+        );
+
+        assert_eq!(
+            read_model_name(&database, alpha_id, "u1").await?,
+            Some("u1".to_string()),
+            "the colliding refresh must not write anything"
+        );
+
+        assert!(read_model_name(&database, alpha_id, "m1").await?.is_none());
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies the discovery replace composes public names from the provider
+    /// prefix re-read inside its transaction: a prefix changed between the
+    /// caller's outer read and the replace call decides the stored names, so a
+    /// concurrent `save-provider` prefix change is never silently reverted.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn discover_composes_names_from_prefix_re_read_in_transaction()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+
+        let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        // The caller's outer read observes the old prefix.
+        let outer = find_provider(&database, "alpha")
+            .await?
+            .ok_or("missing provider row")?;
+
+        assert_eq!(outer.model_prefix, "a-");
+
+        // A concurrent save-provider changes the prefix before the replace.
+        update_provider(
+            &database,
+            &test_provider(provider_id, "alpha"),
+            ProviderUpdate {
+                model_prefix: "b-",
+                protocol: None,
+                base_url: None,
+                enabled: true,
+                credentials: None,
+            },
+        )
+        .await?;
+
+        replace_discovered_models(&database, "alpha", &["gpt-x".to_string()]).await?;
+
+        assert_eq!(
+            read_model_name(&database, provider_id, "gpt-x").await?,
+            Some("b-gpt-x".to_string()),
+            "the fresh in-transaction prefix must decide the public name"
+        );
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies a discovery replace whose carried-over overrides converge two
+    /// of the provider's own models on one public name is rejected with 409
+    /// and writes nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn discover_rejects_own_name_convergence() -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+
+        let provider_id = insert_prefix_provider(&database, "gamma", "x-").await?;
+
+        // The drifted stored name of `u2` keeps the direct insert itself
+        // collision-free; the override makes the recomputed names converge.
+        insert_model_row(&database, provider_id, "u1", "x-u1", None).await?;
+        insert_model_row(&database, provider_id, "u2", "x-keep", Some("u1")).await?;
+
+        let error =
+            replace_discovered_models(&database, "gamma", &["u1".to_string(), "u2".to_string()])
+                .await
+                .err()
+                .ok_or("the convergence must be rejected")?;
+
+        assert_eq!(error.status, 409);
+        assert!(
+            error.message.contains("u1") && error.message.contains("u2"),
+            "the conflict must name both converging upstream models: {error}"
+        );
+
+        assert_eq!(
+            read_model_name(&database, provider_id, "u1").await?,
+            Some("x-u1".to_string())
+        );
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies `save-model` recomputes the public name from the provider
+    /// prefix re-read inside its transaction and writes the supplied
+    /// overrides atomically with the collision check.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_model_applies_overrides_with_fresh_prefix() -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+
+        let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        insert_model_row(&database, provider_id, "u1", "a-u1", None).await?;
+
+        // A concurrent save-provider changes the prefix after the outer read
+        // the handler would have made.
+        update_provider(
+            &database,
+            &test_provider(provider_id, "alpha"),
+            ProviderUpdate {
+                model_prefix: "b-",
+                protocol: None,
+                base_url: None,
+                enabled: true,
+                credentials: None,
+            },
+        )
+        .await?;
+
+        let entry = update_model_overrides_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_name: "alpha",
+                upstream_name: "u1",
+                name_override: Some(Some("hero".to_string())),
+                enabled_override: Some(Some(false)),
+                thinking_levels_override: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(entry.provider_name, "alpha");
+
+        assert!(
+            entry.is_provider_enabled,
+            "is_provider_enabled reflects the provider row, which stays enabled"
+        );
+
+        assert_eq!(entry.model.name, "b-hero", "the fresh prefix must decide");
+        assert_eq!(entry.model.name_override.as_deref(), Some("hero"));
+        assert_eq!(entry.model.enabled_override, Some(false));
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies `save-model` rejecting a public-name collision with another
+    /// provider's model yields a name-specific 409 and writes nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_model_rejects_collision_and_writes_nothing() -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+
+        // The empty prefix lets alpha's override name collide with beta's.
+        let alpha_id = insert_prefix_provider(&database, "alpha", "").await?;
+
+        insert_model_row(&database, alpha_id, "u1", "u1", None).await?;
+
+        let beta_id = insert_prefix_provider(&database, "beta", "").await?;
+
+        insert_model_row(&database, beta_id, "m1", "m1", None).await?;
+
+        let error = update_model_overrides_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_name: "alpha",
+                upstream_name: "u1",
+                name_override: Some(Some("m1".to_string())),
+                enabled_override: None,
+                thinking_levels_override: None,
+            },
+        )
+        .await
+        .err()
+        .ok_or("the collision must be rejected")?;
+
+        assert_eq!(error.status, 409);
+        assert!(
+            error.message.contains("m1") && error.message.contains("beta"),
+            "the conflict must name the colliding name and holder: {error}"
+        );
+
+        let (name, name_override, enabled_override, _) =
+            read_model_row(&database, alpha_id, "u1").await?;
+
+        assert_eq!(name, "u1");
+        assert_eq!(name_override, None);
+        assert_eq!(enabled_override, None);
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies `save-model` clearing the name override with `null` recomputes
+    /// the public name from the upstream name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_model_clears_name_override_with_null() -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+
+        let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        insert_model_row(&database, provider_id, "u1", "a-custom", Some("custom")).await?;
+
+        let entry = update_model_overrides_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_name: "alpha",
+                upstream_name: "u1",
+                name_override: Some(None),
+                enabled_override: None,
+                thinking_levels_override: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(entry.model.name, "a-u1");
+        assert_eq!(entry.model.name_override, None);
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies `save-model` rejects unknown providers and unknown models
+    /// with 404.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_model_rejects_unknown_rows() -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+
+        let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        insert_model_row(&database, provider_id, "u1", "a-u1", None).await?;
+
+        let unknown_provider = update_model_overrides_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_name: "missing",
+                upstream_name: "u1",
+                name_override: None,
+                enabled_override: None,
+                thinking_levels_override: None,
+            },
+        )
+        .await
+        .err()
+        .ok_or("unknown provider must be rejected")?;
+
+        assert_eq!(unknown_provider.status, 404);
+
+        let unknown_model = update_model_overrides_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_name: "alpha",
+                upstream_name: "missing",
+                name_override: None,
+                enabled_override: None,
+                thinking_levels_override: None,
+            },
+        )
+        .await
+        .err()
+        .ok_or("unknown model must be rejected")?;
+
+        assert_eq!(unknown_model.status, 404);
+        assert!(unknown_model.message.contains("missing"));
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies the enabled-model listing pairs every effectively enabled
+    /// public name with its owning provider's name, excludes rows disabled by
+    /// override or by provider, and stays ordered by public name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn list_enabled_models_with_owner_maps_names_to_providers()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, path) = open_test_database().await;
+
+        let alpha_id = insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        insert_model_row(&database, alpha_id, "u2", "a-m2", None).await?;
+        insert_model_row(&database, alpha_id, "u1", "a-m1", None).await?;
+        insert_model_row(&database, alpha_id, "u3", "a-off", None).await?;
+
+        database
+            .execute(
+                "UPDATE models SET enabled_override = 0 WHERE upstream_name = 'u3'",
+                (),
+            )
+            .await?;
+
+        let beta_id = insert_prefix_provider(&database, "beta", "b-").await?;
+
+        insert_model_row(&database, beta_id, "u1", "b-m1", None).await?;
+
+        database
+            .execute("UPDATE providers SET enabled = 0 WHERE name = 'beta'", ())
+            .await?;
+
+        let listed = list_enabled_models_with_owner(&database).await?;
+
+        assert_eq!(
+            listed,
+            vec![
+                ("a-m1".to_string(), "alpha".to_string()),
+                ("a-m2".to_string(), "alpha".to_string()),
+            ]
+        );
 
         let _ = fs::remove_file(path);
 

@@ -1,6 +1,6 @@
 //! Upstream model discovery per provider type.
 
-use super::{Provider, ProviderType, endpoints};
+use super::{Provider, ProviderType, endpoints, oauth};
 use crate::{error::ApiError, format::UpstreamFormat};
 use reqwest::Client;
 use serde_json::Value;
@@ -86,9 +86,9 @@ async fn discover_codex(
 
 /// Discovers Antigravity models from Cloud Code Assist.
 async fn discover_antigravity(http: &Client, access_token: &str) -> Result<Vec<String>, ApiError> {
-    let value: Value = post_json(
+    let value: Value = oauth::post_code_assist(
         http,
-        &format!("{}:fetchAvailableModels", endpoints::ANTIGRAVITY_BASE_URL),
+        endpoints::ANTIGRAVITY_FETCH_AVAILABLE_MODELS_ACTION,
         access_token,
         &serde_json::json!({}),
     )
@@ -203,29 +203,4 @@ async fn parse_success_body(response: reqwest::Response) -> Result<Value, ApiErr
     serde_json::from_str(&body).map_err(|error| {
         ApiError::upstream_unavailable(format!("malformed upstream response: {error}"))
     })
-}
-
-/// POSTs a JSON body with a bearer token and parses the JSON response.
-///
-/// # Errors
-///
-/// Returns [`ApiError`] for transport failures, non-success statuses, and
-/// malformed bodies.
-async fn post_json(
-    http: &Client,
-    url: &str,
-    access_token: &str,
-    body: &Value,
-) -> Result<Value, ApiError> {
-    let response = http
-        .post(url)
-        .bearer_auth(access_token)
-        .json(body)
-        .send()
-        .await
-        .map_err(|error| {
-            ApiError::upstream_unavailable(format!("upstream unreachable: {error}"))
-        })?;
-
-    parse_success_body(response).await
 }

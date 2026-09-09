@@ -60,6 +60,18 @@ pub(crate) trait UpstreamEventParser {
     ///
     /// Returns [`ApiError`] for malformed upstream payloads.
     fn parse_json_response(&mut self, value: serde_json::Value) -> Result<Vec<IrEvent>, ApiError>;
+
+    /// Ends a cleanly terminated upstream stream, flushing state buffered
+    /// across frames into final IR events.
+    ///
+    /// Called exactly once when the upstream body reached a clean end of
+    /// stream, after the last frame was ingested and before the terminal
+    /// [`IrEvent::Done`]. It is never called once an error aborted the
+    /// stream, so an aborted stream publishes no further parser state.
+    /// Parsers that buffer no completable cross-frame state keep the default.
+    fn finish(&mut self) -> Vec<IrEvent> {
+        Vec::new()
+    }
 }
 
 /// Client-side SSE rendering contract implemented by every outward codec.

@@ -16,8 +16,7 @@ mod tests;
 
 // The re-exported items double as the module's own imports: `Row` and
 // `IntoParams` appear in this module's signatures.
-#[allow(unused_imports)]
-pub use turso::{IntoParams, Params, Row, Value, named_params, params, params_from_iter};
+pub use turso::{IntoParams, Row, Value, params, params_from_iter};
 
 /// Non-zero 32-bit big-endian schema fingerprint computed at compile time.
 const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(concat!(
@@ -27,6 +26,14 @@ const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(conc
 
 /// Canonical SQLite DDL schema embedded at compile time.
 const DATABASE_SCHEMA: &str = include_str!("SCHEMA.sqlite");
+
+/// Maximum duration a database write waits for the database file lock held by
+/// another connection before failing.
+///
+/// SQLite-compatible engines lock the whole database file for writes, so this
+/// bounds how long concurrent writers block each other instead of failing
+/// immediately with a busy error.
+const CONNECTION_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Database operation, connection pool, and storage engine errors.
 #[derive(Debug, thiserror::Error)]
@@ -122,15 +129,17 @@ impl Database {
     ) -> Result<Self, Error> {
         let path = path.as_ref();
 
+        // Validate before mutating the filesystem, so an invalid path never
+        // leaves freshly created parent directories behind.
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| Error::InvalidPath(path.to_string_lossy().into_owned()))?;
+
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
             fs::create_dir_all(parent)?;
         }
-
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| Error::InvalidPath(path.to_string_lossy().into_owned()))?;
 
         let database = TursoBuilder::new_local(path_str).build().await?;
 
@@ -366,6 +375,21 @@ impl PoolManager for Manager {
     }
 }
 
+impl From<PoolError<TursoError>> for Error {
+    fn from(error: PoolError<TursoError>) -> Self {
+        match error {
+            PoolError::Backend(error) => Self::Turso(error),
+            PoolError::Closed => Self::PoolClosed,
+            PoolError::Timeout(_) => Self::PoolTimeout,
+            PoolError::NoRuntimeSpecified | PoolError::PostCreateHook(_) => {
+                // SAFETY: The pool attaches a Tokio runtime and installs no
+                // hooks, making these error variants unreachable.
+                unreachable!("deadpool runtime is attached and no hooks are installed");
+            }
+        }
+    }
+}
+
 impl Drop for Transaction {
     fn drop(&mut self) {
         if self.is_completed {
@@ -434,7 +458,7 @@ async fn query(
 /// Returns [`TursoError`] if configuring the busy timeout or the foreign key
 /// pragma fails.
 async fn configure_connection(connection: &Connection) -> Result<(), TursoError> {
-    connection.busy_timeout(Duration::from_secs(5))?;
+    connection.busy_timeout(CONNECTION_BUSY_TIMEOUT)?;
 
     connection.pragma_update("foreign_keys", "ON").await?;
 
@@ -556,19 +580,4 @@ async fn apply_canonical_schema(connection: &Connection) {
         .execute_batch(batch_sql)
         .await
         .expect("failed to apply database schema");
-}
-
-impl From<PoolError<TursoError>> for Error {
-    fn from(error: PoolError<TursoError>) -> Self {
-        match error {
-            PoolError::Backend(error) => Self::Turso(error),
-            PoolError::Closed => Self::PoolClosed,
-            PoolError::Timeout(_) => Self::PoolTimeout,
-            PoolError::NoRuntimeSpecified | PoolError::PostCreateHook(_) => {
-                // SAFETY: The pool attaches a Tokio runtime and installs no
-                // hooks, making these error variants unreachable.
-                unreachable!("deadpool runtime is attached and no hooks are installed");
-            }
-        }
-    }
 }

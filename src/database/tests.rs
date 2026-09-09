@@ -37,18 +37,24 @@ const TEST_POOL_SIZE: usize = 4;
 /// observe an acquisition timeout.
 const TEST_POOL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Returns a unique database file path inside the system temporary directory.
+/// Builds the unique file-system entry name shared by every test path:
+/// `janusgate_database_test{suffix}_{process id}_{counter}`.
 ///
-/// The path embeds the process id and a monotonically increasing counter, so
-/// tests running concurrently within one process, and reruns after a crashed
-/// process, never collide on a database file.
-fn unique_database_path() -> PathBuf {
+/// The process id and a monotonically increasing counter make tests running
+/// concurrently within one process, and reruns after a crashed process,
+/// never collide on a file-system entry.
+fn unique_test_name(suffix: &str) -> String {
     let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    env::temp_dir().join(format!(
-        "janusgate_database_test_{}_{unique_id}.db",
+    format!(
+        "janusgate_database_test{suffix}_{}_{unique_id}",
         process::id()
-    ))
+    )
+}
+
+/// Returns a unique database file path inside the system temporary directory.
+fn unique_database_path() -> PathBuf {
+    env::temp_dir().join(format!("{}.db", unique_test_name("")))
 }
 
 /// Converts a pool size into a non-zero connection count.
@@ -220,12 +226,7 @@ async fn open_panics_on_incompatible_schema_fingerprint() {
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn open_creates_missing_parent_directories() -> Result<(), Box<dyn StdError>> {
-    let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    let directory = env::temp_dir().join(format!(
-        "janusgate_database_test_dir_{}_{unique_id}",
-        process::id()
-    ));
+    let directory = env::temp_dir().join(unique_test_name("_dir"));
 
     let path = directory.join("nested").join("gateway.db");
 
@@ -286,6 +287,38 @@ async fn open_rejects_non_utf8_path() -> Result<(), Box<dyn StdError>> {
     let result = Database::open(path, pool_size(TEST_POOL_SIZE), TEST_POOL_TIMEOUT).await;
 
     assert!(matches!(result, Err(Error::InvalidPath(_))));
+
+    Ok(())
+}
+
+/// Verifies that a database path that is not valid UTF-8 is rejected with
+/// [`Error::InvalidPath`] before any filesystem mutation, so no parent
+/// directory is created for the rejected path.
+///
+/// # Panics
+///
+/// Panics if the non-UTF-8 path cannot be constructed.
+#[tokio::test]
+#[cfg(unix)]
+async fn open_rejects_non_utf8_path_without_creating_parents() -> Result<(), Box<dyn StdError>> {
+    // 0xff can never appear in valid UTF-8, so `to_str` must reject the
+    // parent directory name before any filesystem mutation can target it.
+    // On Linux, `create_dir_all` would otherwise succeed on the invalid name,
+    // making the missing validation observable.
+    let mut directory_name = unique_test_name("_dir_not_utf8").into_bytes();
+
+    directory_name.push(0xff);
+
+    let directory = env::temp_dir().join(OsStr::from_bytes(&directory_name));
+
+    let path = directory.join("gateway.db");
+
+    let result = Database::open(path, pool_size(TEST_POOL_SIZE), TEST_POOL_TIMEOUT).await;
+
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
+
+    // The rejected path must not have left its parent directory behind.
+    assert!(!directory.exists());
 
     Ok(())
 }

@@ -6,7 +6,7 @@ use crate::{
     error::ApiError,
     ir::IrReasoningEffort,
     provider::{
-        Model, discovery, oauth,
+        discovery, oauth,
         storage::{self, ModelEntry},
     },
 };
@@ -99,50 +99,25 @@ async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, Api
 
     let upstream_names = discovery::discover_upstream_models(crate::http(), &fresh).await?;
 
-    let previous = storage::find_models_of_provider(database, provider.id).await?;
-
-    let mut models: Vec<Model> = Vec::with_capacity(upstream_names.len());
+    // Discovery payloads can repeat an upstream name; keep the first
+    // occurrence.
+    let mut unique_names: Vec<String> = Vec::with_capacity(upstream_names.len());
 
     for upstream_name in upstream_names {
-        if models
+        if unique_names
             .iter()
-            .any(|model| model.upstream_name == upstream_name)
+            .any(|existing| existing == &upstream_name)
         {
             continue;
         }
 
-        let previous = previous
-            .iter()
-            .find(|model| model.upstream_name == upstream_name);
-
-        let name_override = previous.and_then(|model| model.name_override.clone());
-
-        let name = Model::public_name(
-            &provider.model_prefix,
-            &upstream_name,
-            name_override.as_deref(),
-        );
-
-        models.push(Model {
-            provider_id: provider.id,
-            upstream_name,
-            name,
-            name_override,
-            enabled_override: previous.and_then(|model| model.enabled_override),
-            thinking_levels_override: previous
-                .and_then(|model| model.thinking_levels_override.clone()),
-        });
+        unique_names.push(upstream_name);
     }
 
-    let mut transaction = database.transaction().await?;
-
-    storage::replace_provider_models(&mut transaction, provider.id, &models).await?;
-
-    transaction.commit().await.map_err(|error| {
-        ApiError::internal(format!("failed to commit discovered models: {error}"))
-    })?;
-
-    Ok(models.len())
+    // The replace re-reads the provider row inside its transaction, so the
+    // public names are composed from the provider's current prefix and checked
+    // for collisions atomically with the write (README §7.1).
+    storage::replace_discovered_models(database, &request.provider, &unique_names).await
 }
 
 /// Writes one model's overrides and recomputes its public name.
@@ -153,21 +128,6 @@ async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, Api
 /// name collisions.
 async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiError> {
     let request: SaveModelBody = parse_body(body)?;
-
-    let provider = storage::find_provider(database, &request.provider)
-        .await?
-        .ok_or_else(|| {
-            ApiError::not_found(format!("Provider `{}` does not exist", request.provider))
-        })?;
-
-    let model = storage::find_model(database, provider.id, &request.upstream_name)
-        .await?
-        .ok_or_else(|| {
-            ApiError::not_found(format!(
-                "Model `{}` does not exist on provider `{}`",
-                request.upstream_name, provider.name
-            ))
-        })?;
 
     let thinking_levels_override = match &request.thinking_levels_override {
         None => None,
@@ -221,53 +181,23 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
         }
     };
 
-    let name_override = request.name_override.clone();
-
-    let new_name_override = request
-        .name_override
-        .clone()
-        .unwrap_or_else(|| model.name_override.clone());
-
-    let new_name = Model::public_name(
-        &provider.model_prefix,
-        &request.upstream_name,
-        new_name_override.as_deref(),
-    );
-
-    if let Some(routing) = storage::find_routing(database, &new_name).await?
-        && !(routing.provider.id == provider.id
-            && routing.model.upstream_name == request.upstream_name)
-    {
-        return Err(ApiError::conflict(format!(
-            "Public model name `{new_name}` is already routed by provider `{}`",
-            routing.provider.name
-        )));
-    }
-
-    storage::update_model_overrides(
+    // The checked update re-reads the provider and model rows inside its
+    // transaction, so the recomputed public name uses the provider's current
+    // prefix and the collision check applies atomically with the write
+    // (README §7.1).
+    let entry = storage::update_model_overrides_checked(
         database,
-        provider.id,
-        &request.upstream_name,
-        &new_name,
-        name_override,
-        request.enabled_override,
-        thinking_levels_override,
+        storage::ModelOverrideUpdate {
+            provider_name: &request.provider,
+            upstream_name: &request.upstream_name,
+            name_override: request.name_override.clone(),
+            enabled_override: request.enabled_override,
+            thinking_levels_override,
+        },
     )
     .await?;
 
-    let updated = storage::find_model(database, provider.id, &request.upstream_name)
-        .await?
-        .ok_or_else(|| ApiError::internal("model vanished after save"))?;
-
-    Ok(serde_json::json!({
-        "provider": provider.name,
-        "upstream_name": updated.upstream_name,
-        "name": updated.name,
-        "name_override": updated.name_override,
-        "enabled": updated.enabled_override.unwrap_or(provider.enabled),
-        "enabled_override": updated.enabled_override,
-        "thinking_levels_override": thinking_levels_json(&updated.thinking_levels_override),
-    }))
+    Ok(model_entry_json(&entry))
 }
 
 /// Renders one model listing entry.

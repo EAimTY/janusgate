@@ -7,28 +7,6 @@ use turso::Error as TursoError;
 /// response from one that failed at the transport level.
 pub(crate) const UPSTREAM_UNAVAILABLE_STATUS: u16 = 502;
 
-/// Converts a raw Turso engine failure (row conversion, statement execution)
-/// into an internal API error.
-impl From<TursoError> for ApiError {
-    fn from(error: TursoError) -> Self {
-        Self::internal(format!("database error: {error}"))
-    }
-}
-
-/// Converts a database failure into an API error: constraint violations
-/// surface as 409 conflicts, everything else as 500 internal errors.
-impl From<DatabaseError> for ApiError {
-    fn from(error: DatabaseError) -> Self {
-        match &error {
-            DatabaseError::Turso(turso::Error::Constraint(detail)) => {
-                Self::conflict(format!("database constraint violated: {detail}"))
-            }
-
-            _ => Self::internal(format!("database error: {error}")),
-        }
-    }
-}
-
 /// An error surfaced to an API client, carrying everything needed to render
 /// the management and OpenAI error bodies.
 #[derive(Debug, thiserror::Error)]
@@ -233,6 +211,28 @@ impl ApiError {
                 "code": code,
             }
         })
+    }
+}
+
+/// Converts a raw Turso engine failure (row conversion, statement execution)
+/// into an internal API error.
+impl From<TursoError> for ApiError {
+    fn from(error: TursoError) -> Self {
+        Self::internal(format!("database error: {error}"))
+    }
+}
+
+/// Converts a database failure into an API error: constraint violations
+/// surface as 409 conflicts, everything else as 500 internal errors.
+impl From<DatabaseError> for ApiError {
+    fn from(error: DatabaseError) -> Self {
+        match &error {
+            DatabaseError::Turso(turso::Error::Constraint(detail)) => {
+                Self::conflict(format!("database constraint violated: {detail}"))
+            }
+
+            _ => Self::internal(format!("database error: {error}")),
+        }
     }
 }
 

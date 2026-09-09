@@ -4,6 +4,7 @@ use super::{api, database::Database, management_api};
 use axum::{Router, http::StatusCode};
 use host_port_pair::Host;
 use hserver::{ConnectionBuilder, Server};
+use hyper_util::rt::TokioTimer;
 use socket2::{Domain, Protocol, SockAddr, Socket as Socket2, Type};
 use std::{
     net::{SocketAddr, TcpListener as StdTcpListener, ToSocketAddrs as _},
@@ -27,6 +28,19 @@ fn accept_backoff_delay(consecutive_failures: u32) -> Duration {
     (ACCEPT_BACKOFF_INITIAL * (1 << doublings)).min(ACCEPT_BACKOFF_MAX)
 }
 
+/// Creates the HTTP connection builder used for every accepted connection.
+///
+/// Hyper's HTTP/1 timer is armed so its default 30-second header-read
+/// deadline takes effect: without a timer, hyper silently disables its
+/// timeouts and a slow client can park a connection task indefinitely.
+fn connection_builder() -> ConnectionBuilder {
+    let mut connection_builder = ConnectionBuilder::new();
+
+    connection_builder.http1().timer(TokioTimer::new());
+
+    connection_builder
+}
+
 /// Runs the HTTP server, accepting incoming TCP connections and serving HTTP
 /// requests using an Axum router over `hserver`.
 ///
@@ -37,8 +51,7 @@ fn accept_backoff_delay(consecutive_failures: u32) -> Duration {
 /// Panics if the TCP listener fails to initialize.
 pub(crate) async fn run(database: Database) -> ! {
     let tcp_listener = init_tcp_listener();
-    let connection_builder = ConnectionBuilder::new();
-    let mut server = Server::new(connection_builder, router(database));
+    let mut server = Server::new(connection_builder(), router(database));
 
     let mut consecutive_failures: u32 = 0;
 
@@ -153,7 +166,25 @@ fn init_tcp_listener() -> TcpListener {
 
 #[cfg(test)]
 mod tests {
-    use super::{ACCEPT_BACKOFF_INITIAL, ACCEPT_BACKOFF_MAX, accept_backoff_delay};
+    use super::{
+        ACCEPT_BACKOFF_INITIAL, ACCEPT_BACKOFF_MAX, accept_backoff_delay, connection_builder,
+    };
+    use axum::{
+        body::Body,
+        http::{Request, Response},
+    };
+    use hserver::{Incoming, Server};
+    use std::{
+        convert::Infallible,
+        future::{self, Ready},
+        task::{Context, Poll},
+        time::Duration,
+    };
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::{TcpListener, TcpStream},
+    };
+    use tower::Service;
 
     /// Verifies that the accept backoff starts at the initial delay and
     /// doubles per additional consecutive failure.
@@ -178,5 +209,96 @@ mod tests {
     fn caps_at_maximum_delay() {
         assert_eq!(accept_backoff_delay(1_000), ACCEPT_BACKOFF_MAX);
         assert_eq!(accept_backoff_delay(u32::MAX), ACCEPT_BACKOFF_MAX);
+    }
+
+    /// A no-op request service that immediately answers with an empty
+    /// response.
+    #[derive(Clone)]
+    struct ImmediateEmptyService;
+
+    impl Service<Request<Incoming>> for ImmediateEmptyService {
+        type Error = Infallible;
+        type Future = Ready<Result<Response<Body>, Infallible>>;
+        type Response = Response<Body>;
+
+        fn call(&mut self, _request: Request<Incoming>) -> Self::Future {
+            future::ready(Ok(Response::new(Body::empty())))
+        }
+
+        fn poll_ready(&mut self, _context: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Verifies that a client stalling mid-request-headers is disconnected
+    /// quickly when the header-read deadline is configured below a second,
+    /// proving the connection builder's HTTP/1 timer is armed: hyper
+    /// silently disables its timeouts without a timer and panics when a
+    /// timeout is configured without one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails or a deadline is exceeded.
+    #[tokio::test]
+    async fn drops_connections_stalling_in_header_read() {
+        #[expect(clippy::expect_used, reason = "a bind failure fails the test")]
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+
+        #[expect(clippy::expect_used, reason = "a local address failure fails the test")]
+        let address = listener
+            .local_addr()
+            .expect("listener should have a local address");
+
+        let mut connection_builder = connection_builder();
+
+        connection_builder
+            .http1()
+            .header_read_timeout(Duration::from_millis(50));
+
+        let mut server = Server::new(connection_builder, ImmediateEmptyService);
+
+        let connection_task = tokio::spawn(async move {
+            #[expect(clippy::expect_used, reason = "an accept failure fails the test")]
+            let (stream, peer_address) = listener.accept().await.expect("accept should succeed");
+
+            server.handle_upgradable(stream, peer_address).await
+        });
+
+        #[expect(clippy::expect_used, reason = "a connect failure fails the test")]
+        let mut client = TcpStream::connect(address)
+            .await
+            .expect("client should connect");
+
+        #[expect(clippy::expect_used, reason = "a write failure fails the test")]
+        client
+            .write_all(b"GET / ")
+            .await
+            .expect("partial headers should be writable");
+
+        let mut dropped = [0_u8; 16];
+
+        #[expect(clippy::expect_used, reason = "a stalled drop fails the test")]
+        let bytes_read = tokio::time::timeout(Duration::from_secs(2), client.read(&mut dropped))
+            .await
+            .expect("connection should drop within two seconds")
+            .expect("read should succeed");
+
+        assert_eq!(bytes_read, 0);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "a panicking connection future means the timer is not armed"
+        )]
+        let connection_result = tokio::time::timeout(Duration::from_secs(2), connection_task)
+            .await
+            .expect("connection future should finish within two seconds")
+            .expect("connection future should not panic");
+
+        assert!(
+            connection_result.is_err(),
+            "the header-read timeout should surface as a connection error"
+        );
     }
 }
