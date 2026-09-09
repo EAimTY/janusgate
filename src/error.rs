@@ -1,22 +1,11 @@
 //! Error type shared by the management and outward API surfaces.
 
 use crate::database::Error as DatabaseError;
-use std::time::Duration;
 use turso::Error as TursoError;
 
 /// Status code distinguishing an upstream failure that produced an HTTP
 /// response from one that failed at the transport level.
 pub(crate) const UPSTREAM_UNAVAILABLE_STATUS: u16 = 502;
-
-/// Lease duration after which an abandoned token refresh is considered dead.
-pub(crate) const REFRESH_LEASE_STALE_AFTER: Duration = Duration::from_secs(90);
-
-/// Upper bound on how long a request waits for a concurrent token refresh to
-/// finish before failing.
-pub(crate) const REFRESH_WAIT_LIMIT: Duration = Duration::from_secs(30);
-
-/// Interval between polls while waiting for a concurrent token refresh.
-pub(crate) const REFRESH_WAIT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Converts a raw Turso engine failure (row conversion, statement execution)
 /// into an internal API error.
@@ -72,6 +61,9 @@ pub(crate) enum ApiErrorKind {
 
     /// The upstream provider failed or could not be reached.
     Upstream,
+
+    /// JanusGate itself failed; never a client's or upstream's fault.
+    Internal,
 }
 
 impl ApiError {
@@ -150,12 +142,36 @@ impl ApiError {
     }
 
     /// Builds an error mirroring a failed upstream HTTP response.
+    ///
+    /// The upstream status is preserved verbatim for the outward gateway
+    /// surface (README §6.7); management-served callers must use
+    /// [`ApiError::upstream_rejected`] instead, because the management
+    /// contract never forwards foreign statuses.
     pub(crate) fn upstream(status: u16, detail: impl Into<String>) -> Self {
         Self::new(
             status,
             ApiErrorKind::Upstream,
             Some("upstream_error"),
             format!("Upstream request failed: {}", detail.into()),
+        )
+    }
+
+    /// Builds a 502 error for a management-served upstream call that returned
+    /// a non-2xx response.
+    ///
+    /// The upstream status rides in the message because the management error
+    /// contract (README §7) keys its `code` taxonomy on its own statuses and
+    /// reserves `upstream_error` for 502; forwarding the upstream status
+    /// verbatim would mislabel it as a management category.
+    pub(crate) fn upstream_rejected(status: u16, detail: impl Into<String>) -> Self {
+        Self::new(
+            UPSTREAM_UNAVAILABLE_STATUS,
+            ApiErrorKind::Upstream,
+            Some("upstream_error"),
+            format!(
+                "Upstream request failed with status {status}: {}",
+                detail.into()
+            ),
         )
     }
 
@@ -172,14 +188,14 @@ impl ApiError {
 
     /// Builds a 500 internal error.
     pub(crate) fn internal(detail: impl Into<String>) -> Self {
-        Self::new(500, ApiErrorKind::Upstream, Some("internal"), detail)
+        Self::new(500, ApiErrorKind::Internal, Some("internal"), detail)
     }
 
     /// Renders the OpenAI JSON error structure.
     pub(crate) fn to_openai_json(&self) -> serde_json::Value {
         let kind = match self.kind {
             ApiErrorKind::InvalidRequest | ApiErrorKind::Authentication => "invalid_request_error",
-            ApiErrorKind::Upstream => "api_error",
+            ApiErrorKind::Upstream | ApiErrorKind::Internal => "api_error",
         };
 
         serde_json::json!({
@@ -193,14 +209,22 @@ impl ApiError {
     }
 
     /// Renders the management JSON error structure.
+    ///
+    /// The `code` follows the error taxonomy ([`ApiErrorKind`]) rather than
+    /// the raw status, so an upstream failure can never borrow a management
+    /// category such as `unauthorized` or `not_found` by carrying a foreign
+    /// status.
     pub(crate) fn to_management_json(&self) -> serde_json::Value {
-        let code = match self.status {
-            401 => "unauthorized",
-            400 => "invalid_request",
-            404 => "not_found",
-            409 => "conflict",
-            502 => "upstream_error",
-            _ => "internal",
+        let code = match self.kind {
+            ApiErrorKind::Authentication => "unauthorized",
+            ApiErrorKind::Upstream => "upstream_error",
+            ApiErrorKind::Internal => "internal",
+            ApiErrorKind::InvalidRequest => match self.status {
+                400 => "invalid_request",
+                404 => "not_found",
+                409 => "conflict",
+                _ => "internal",
+            },
         };
 
         serde_json::json!({
@@ -215,4 +239,107 @@ impl ApiError {
 /// Flattens a serialization error into an invalid request error message.
 pub(crate) fn invalid_request_from_json(error: serde_json::Error) -> ApiError {
     ApiError::invalid_request(format!("Invalid JSON body: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads the management `code` out of a rendered error body.
+    fn management_code(error: &ApiError) -> serde_json::Value {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "to_management_json always renders nested objects, so string keys never panic"
+        )]
+        error.to_management_json()["error"]["code"].clone()
+    }
+
+    /// Verifies the management `code` follows the error taxonomy and never
+    /// borrows a management category from a foreign upstream status.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn management_rendering_follows_error_taxonomy() {
+        let upstream_unauthorized = ApiError::upstream(401, "expired token");
+        let upstream_missing = ApiError::upstream(404, "no such model");
+
+        assert_eq!(management_code(&upstream_unauthorized), "upstream_error");
+        assert_eq!(management_code(&upstream_missing), "upstream_error");
+
+        assert_eq!(
+            management_code(&ApiError::authentication("no token")),
+            "unauthorized"
+        );
+        assert_eq!(
+            management_code(&ApiError::invalid_request("bad body")),
+            "invalid_request"
+        );
+        assert_eq!(management_code(&ApiError::not_found("no row")), "not_found");
+        assert_eq!(
+            management_code(&ApiError::conflict("name taken")),
+            "conflict"
+        );
+        assert_eq!(
+            management_code(&ApiError::upstream_unavailable("unreachable")),
+            "upstream_error"
+        );
+        assert_eq!(management_code(&ApiError::internal("boom")), "internal");
+    }
+
+    /// Verifies management-served upstream failures map to 502 with the
+    /// upstream status embedded in the message instead of the error status.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_rejected_maps_to_502_with_embedded_status() {
+        let error = ApiError::upstream_rejected(404, "model list missing");
+
+        assert_eq!(error.status, UPSTREAM_UNAVAILABLE_STATUS);
+        assert!(error.message.contains("404"));
+        assert!(error.message.contains("model list missing"));
+        assert_eq!(management_code(&error), "upstream_error");
+    }
+
+    /// Verifies the outward OpenAI rendering keeps mirroring a failed upstream
+    /// response verbatim: an upstream 401 still renders as `api_error` with
+    /// code `upstream_error` (README §6.7).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn openai_rendering_preserves_upstream_passthrough() {
+        let body = ApiError::upstream(401, "expired token").to_openai_json();
+
+        // Attributes on macro-invocation statements do not cover the
+        // desugared index expressions inside the expansion, so the rendered
+        // fields are read through annotated bindings first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "to_openai_json always renders nested objects, so string keys never panic"
+        )]
+        let error_type = body["error"]["type"].clone();
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "to_openai_json always renders nested objects, so string keys never panic"
+        )]
+        let error_code = body["error"]["code"].clone();
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "to_openai_json always renders nested objects, so string keys never panic"
+        )]
+        let error_message = body["error"]["message"].clone();
+
+        assert_eq!(error_type, "api_error");
+
+        assert_eq!(error_code, "upstream_error");
+
+        assert_eq!(error_message, "Upstream request failed: expired token");
+    }
 }

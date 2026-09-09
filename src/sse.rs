@@ -6,6 +6,10 @@
 /// buffer growth from a hostile stream.
 pub(crate) const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
+/// The UTF-8 byte-order mark the SSE decoder must strip from the head of the
+/// stream.
+const UTF8_BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
+
 /// One complete Server-Sent Events frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SseFrame {
@@ -23,7 +27,8 @@ pub(crate) struct SseFrame {
 /// value prefixes, and line terminators of `\n`, `\r\n`, or `\r`. Unknown
 /// fields (`id`, `retry`) are ignored. A frame is dispatched on an empty line
 /// only when at least one `data:` line was seen, so heartbeat comments and
-/// eventless keep-alive frames never surface.
+/// eventless keep-alive frames never surface. One leading UTF-8 BOM is
+/// stripped as the specification's decoding step requires.
 #[derive(Debug, Default)]
 pub(crate) struct SseParser {
     /// Bytes received but not yet consumed as complete lines.
@@ -31,6 +36,10 @@ pub(crate) struct SseParser {
 
     /// Whether at least one frame was malformed beyond [`MAX_FRAME_BYTES`].
     is_oversized: bool,
+
+    /// Whether the leading byte-order mark has been resolved (present and
+    /// stripped, or found absent).
+    is_bom_resolved: bool,
 }
 
 impl SseParser {
@@ -80,6 +89,8 @@ impl SseParser {
     /// Splits complete lines off the buffer and dispatches frames on blank
     /// lines.
     fn drain_complete_frames(&mut self) -> Result<Vec<SseFrame>, SseParseError> {
+        self.strip_leading_bom();
+
         let mut frames = Vec::new();
         let mut event_name: Option<String> = None;
         let mut data_lines: Vec<String> = Vec::new();
@@ -115,6 +126,29 @@ impl SseParser {
         }
 
         Ok(frames)
+    }
+
+    /// Resolves and strips the one leading UTF-8 BOM required to be removed
+    /// by the SSE specification's decoding step, tolerating a BOM split
+    /// across chunk boundaries.
+    fn strip_leading_bom(&mut self) {
+        if self.is_bom_resolved {
+            return;
+        }
+
+        // A shorter buffer may still be an in-flight BOM prefix, so the
+        // decision waits for more bytes.
+        let is_pending = self.buffer.len() < UTF8_BOM.len() && UTF8_BOM.starts_with(&self.buffer);
+
+        if is_pending {
+            return;
+        }
+
+        self.is_bom_resolved = true;
+
+        if self.buffer.starts_with(&UTF8_BOM) {
+            self.buffer.drain(..UTF8_BOM.len());
+        }
     }
 }
 
@@ -228,7 +262,7 @@ mod tests {
         frames
     }
 
-    /// Verifies that parses single line frames holds.
+    /// Parses single-line frames.
     ///
     /// # Panics
     ///
@@ -246,7 +280,7 @@ mod tests {
         );
     }
 
-    /// Verifies that parses chunks split mid frame holds.
+    /// Parses chunks split mid-frame.
     ///
     /// # Panics
     ///
@@ -270,7 +304,7 @@ mod tests {
         );
     }
 
-    /// Verifies that parses event names and multi line data holds.
+    /// Parses event names and multi-line data.
     ///
     /// # Panics
     ///
@@ -350,7 +384,7 @@ mod tests {
         );
     }
 
-    /// Verifies that rejects oversized frames holds.
+    /// Rejects oversized frames.
     ///
     /// # Panics
     ///
@@ -364,7 +398,59 @@ mod tests {
         assert!(parser.ingest(&oversized_line).is_err());
     }
 
-    /// Verifies that formats frames with and without event names holds.
+    /// Verifies that one leading UTF-8 BOM is stripped from the stream so the
+    /// first `data` field parses, as the WHATWG SSE decoding step requires.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn strips_leading_utf8_bom() {
+        let frames = parse_chunks(&[b"\xEF\xBB\xBFdata: {\"a\":1}\n\n"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                event: None,
+                data: "{\"a\":1}".to_string(),
+            }]
+        );
+    }
+
+    /// Verifies that a UTF-8 BOM split across chunk boundaries is still
+    /// stripped exactly once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn strips_utf8_bom_split_across_chunks() {
+        let frames = parse_chunks(&[b"\xEF", b"\xBB", b"\xBFdata: x\n\n"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                event: None,
+                data: "x".to_string(),
+            }]
+        );
+    }
+
+    /// Verifies that a first line whose leading bytes merely resemble a BOM
+    /// prefix is not stripped, so the corrupted field is dropped instead of
+    /// shifting the first line's bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn does_not_strip_a_bom_like_prefix() {
+        let frames = parse_chunks(&[b"\xEF\xBBdata: x\n\n"]);
+
+        assert!(frames.is_empty());
+    }
+
+    /// Verifies that frames are formatted with and without event names.
     ///
     /// # Panics
     ///

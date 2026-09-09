@@ -1,6 +1,9 @@
 //! Administrative management API routing and handling.
 
-use crate::{database::Database, error::ApiError, provider::Provider, security::constant_time_eq};
+use crate::{
+    database::Database, error::ApiError, format::UpstreamFormat, provider::Provider,
+    security::constant_time_eq,
+};
 use axum::{
     Router,
     body::Bytes,
@@ -97,7 +100,7 @@ pub(crate) fn provider_json(provider: &Provider) -> serde_json::Value {
         "name": provider.name,
         "model_prefix": provider.model_prefix,
         "type": provider.provider_type.as_str(),
-        "protocol": provider.protocol.map(crate::provider::UpstreamProtocol::as_str),
+        "protocol": provider.protocol.map(UpstreamFormat::as_str),
         "base_url": provider.base_url,
         "expires_at": provider.expires_at,
         "enabled": provider.enabled,

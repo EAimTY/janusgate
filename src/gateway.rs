@@ -4,25 +4,18 @@
 use crate::{
     database::Database,
     error::ApiError,
-    format::{UpstreamFormat, gemini, openai_chat_completion, openai_response},
+    format::{
+        UpstreamEventParser, UpstreamFormat, gemini, openai_chat_completion, openai_response,
+    },
     ids::new_uuid,
     ir::{IrEvent, IrRequest, apply_thinking_levels, parse_thinking_levels_override},
-    provider::{Credentials, ModelRouting, ProviderType, oauth, storage},
-    sse::{SseFrame, SseParser},
+    provider::{Credentials, ModelRouting, Provider, ProviderType, endpoints, oauth, storage},
+    sse::SseParser,
 };
 use futures::Stream;
 use reqwest::Client;
 use std::pin::Pin;
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
-
-/// Upstream URL of the Codex Responses endpoint.
-const CODEX_UPSTREAM_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-
-/// `Originator` header value required by the Codex endpoint.
-const CODEX_ORIGINATOR: &str = "codex_cli_rs";
-
-/// `User-Agent` header value required by the Codex endpoint.
-const CODEX_USER_AGENT: &str = "codex_cli_rs/0.147.0";
 
 /// Number of IR events buffered between the upstream pump task and the
 /// response stream.
@@ -77,9 +70,18 @@ pub(crate) async fn execute(
 
     let provider = oauth::ensure_fresh_token(database, http, &routing.provider).await?;
 
+    // The wire format is resolved once per request and shared by request
+    // building and event parsing.
     let upstream_format = provider.upstream_format()?;
 
-    let request_builder = build_upstream_request(http, &provider, &routing, &ir, client_streaming)?;
+    let request_builder = build_upstream_request(
+        http,
+        upstream_format,
+        &provider,
+        &routing,
+        &ir,
+        client_streaming,
+    )?;
 
     let response = request_builder.send().await.map_err(|error| {
         ApiError::upstream_unavailable(format!("upstream unreachable: {error}"))
@@ -88,9 +90,7 @@ pub(crate) async fn execute(
     let status = response.status();
 
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-
-        return Err(ApiError::upstream(status.as_u16(), truncate_excerpt(&body)));
+        return Err(upstream_error_of(response).await);
     }
 
     let is_event_stream = response
@@ -102,13 +102,11 @@ pub(crate) async fn execute(
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<Result<IrEvent, ApiError>>(EVENT_CHANNEL_BUFFER);
 
-    if is_event_stream {
-        let parser = upstream_parser(upstream_format);
+    let parser = upstream_parser(upstream_format);
 
+    if is_event_stream {
         tokio::spawn(pump_sse(response, parser, sender));
     } else {
-        let parser = upstream_parser(upstream_format);
-
         tokio::spawn(pump_json(response, parser, sender));
     }
 
@@ -123,13 +121,12 @@ pub(crate) async fn execute(
 /// request.
 fn build_upstream_request(
     http: &Client,
-    provider: &crate::provider::Provider,
+    upstream_format: UpstreamFormat,
+    provider: &Provider,
     routing: &ModelRouting,
     ir: &IrRequest,
     client_streaming: bool,
 ) -> Result<reqwest::RequestBuilder, ApiError> {
-    let upstream_format = provider.upstream_format()?;
-
     let base_url = provider.base_url.as_deref().unwrap_or_default();
 
     match (upstream_format, provider.provider_type) {
@@ -148,11 +145,11 @@ fn build_upstream_request(
             let body = openai_response::render_request(ir, true);
 
             Ok(http
-                .post(CODEX_UPSTREAM_URL)
+                .post(endpoints::CODEX_INFERENCE_URL)
                 .bearer_auth(access_token)
                 .header("chatgpt-account-id", account_id)
-                .header("Originator", CODEX_ORIGINATOR)
-                .header("User-Agent", CODEX_USER_AGENT)
+                .header("Originator", endpoints::CODEX_ORIGINATOR)
+                .header("User-Agent", endpoints::CODEX_USER_AGENT)
                 .header("Session-Id", new_uuid())
                 .header("Accept", "text/event-stream")
                 .json(&body))
@@ -160,7 +157,7 @@ fn build_upstream_request(
 
         (UpstreamFormat::OpenAiResponse, _) => Ok(http
             .post(format!("{}/responses", base_url.trim_end_matches('/')))
-            .bearer_auth(access_token_of(&provider.credentials)?)
+            .bearer_auth(provider.credentials.secret())
             .json(&openai_response::render_request(ir, client_streaming))),
 
         (UpstreamFormat::OpenAiChatCompletion, _) => Ok(http
@@ -168,7 +165,7 @@ fn build_upstream_request(
                 "{}/chat/completions",
                 base_url.trim_end_matches('/')
             ))
-            .bearer_auth(access_token_of(&provider.credentials)?)
+            .bearer_auth(provider.credentials.secret())
             .json(&openai_chat_completion::render_request(
                 ir,
                 client_streaming,
@@ -188,6 +185,7 @@ fn build_upstream_request(
 
             let (url, envelope) = gemini::render_antigravity_request(
                 ir,
+                endpoints::ANTIGRAVITY_BASE_URL,
                 &routing.model.upstream_name,
                 project_id,
                 client_streaming,
@@ -210,23 +208,9 @@ fn build_upstream_request(
 
             Ok(http
                 .post(url)
-                .header("x-goog-api-key", access_token_of(&provider.credentials)?)
+                .header("x-goog-api-key", provider.credentials.secret())
                 .json(&body))
         }
-    }
-}
-
-/// The bearer secret used against an upstream: the API key itself for
-/// key-based providers.
-///
-/// # Errors
-///
-/// Returns [`ApiError`] when the credential kind cannot authorize a request.
-fn access_token_of(credentials: &Credentials) -> Result<&str, ApiError> {
-    match credentials {
-        Credentials::ApiKey(api_key) => Ok(api_key),
-        Credentials::OpenAiOauth { access_token, .. }
-        | Credentials::AntigravityOauth { access_token, .. } => Ok(access_token),
     }
 }
 
@@ -238,53 +222,6 @@ fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventPars
             Box::new(openai_chat_completion::UpstreamParser::new())
         }
         UpstreamFormat::GeminiGenerateContent => Box::new(gemini::UpstreamParser::new()),
-    }
-}
-
-/// Format-independent upstream parsing contract.
-trait UpstreamEventParser {
-    /// Ingests one upstream SSE frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError`] for malformed upstream payloads.
-    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError>;
-
-    /// Parses one complete upstream JSON response.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError`] for malformed upstream payloads.
-    fn parse_json_response(&mut self, value: serde_json::Value) -> Result<Vec<IrEvent>, ApiError>;
-}
-
-impl UpstreamEventParser for openai_chat_completion::UpstreamParser {
-    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
-        Self::ingest_frame(self, frame)
-    }
-
-    fn parse_json_response(&mut self, value: serde_json::Value) -> Result<Vec<IrEvent>, ApiError> {
-        Self::parse_json_response(self, value)
-    }
-}
-
-impl UpstreamEventParser for openai_response::UpstreamParser {
-    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
-        Self::ingest_frame(self, frame)
-    }
-
-    fn parse_json_response(&mut self, value: serde_json::Value) -> Result<Vec<IrEvent>, ApiError> {
-        Self::parse_json_response(self, value)
-    }
-}
-
-impl UpstreamEventParser for gemini::UpstreamParser {
-    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
-        Self::ingest_frame(self, frame)
-    }
-
-    fn parse_json_response(&mut self, value: serde_json::Value) -> Result<Vec<IrEvent>, ApiError> {
-        Self::parse_json_response(self, value)
     }
 }
 
@@ -354,7 +291,14 @@ async fn pump_sse(
                     }
                 }
 
-                Err(_) => break,
+                // A malformed trailing frame aborts the stream with an error
+                // exactly like a malformed frame in the main loop; the final
+                // `Done` below still terminates the event stream.
+                Err(error) => {
+                    let _ = sender.send(Err(error)).await;
+
+                    break;
+                }
             }
         }
     }
@@ -399,6 +343,37 @@ async fn pump_json(
     let _ = sender.send(Ok(IrEvent::Done)).await;
 }
 
+/// Maximum number of bytes read from a non-2xx upstream body before it is
+/// truncated into an error message. The excerpt is capped at 400 characters
+/// anyway, so a few kilobytes leave ample margin for multi-byte characters
+/// while bounding what a hostile upstream can make the gateway buffer.
+const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
+
+/// Builds the upstream error for a non-2xx response, reading at most
+/// [`MAX_ERROR_BODY_BYTES`] of its body. The full body is never buffered:
+/// a hostile upstream must not be able to stream unbounded bytes into
+/// gateway memory just to shape an error message.
+async fn upstream_error_of(response: reqwest::Response) -> ApiError {
+    let status = response.status();
+
+    let mut stream = response.bytes_stream();
+
+    let mut bytes: Vec<u8> = Vec::new();
+
+    while bytes.len() < MAX_ERROR_BODY_BYTES {
+        match tokio_stream::StreamExt::next(&mut stream).await {
+            Some(Ok(chunk)) => bytes.extend_from_slice(&chunk),
+            Some(Err(_)) | None => break,
+        }
+    }
+
+    // A chunk boundary can split a multi-byte character; the excerpt is
+    // human-facing, so a replacement character is acceptable.
+    let body = String::from_utf8_lossy(&bytes);
+
+    ApiError::upstream(status.as_u16(), truncate_excerpt(&body))
+}
+
 /// Truncates an upstream body to a bounded excerpt for error messages.
 fn truncate_excerpt(body: &str) -> String {
     const MAX_CHARS: usize = 400;
@@ -409,5 +384,194 @@ fn truncate_excerpt(body: &str) -> String {
         let excerpt: String = body.chars().take(MAX_CHARS).collect();
 
         format!("{excerpt}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pump_sse;
+    use crate::{error::ApiError, format::UpstreamEventParser, ir::IrEvent, sse::SseFrame};
+    use std::io::{Read as _, Write as _};
+
+    /// Serves one raw HTTP response on a loopback socket after reading the
+    /// client request, returning the bound address.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the socket fails, which fails the test.
+    fn serve_once(head: String, body: &[u8]) -> std::net::SocketAddr {
+        #[expect(clippy::expect_used, reason = "a bind failure fails the test")]
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "an address lookup failure fails the test"
+        )]
+        let address = listener
+            .local_addr()
+            .expect("bound listener should report an address");
+
+        let body = body.to_vec();
+
+        std::thread::spawn(move || {
+            #[expect(clippy::expect_used, reason = "a socket failure fails the test")]
+            let mut socket = listener.accept().expect("accept should succeed").0;
+
+            // Read the client request before responding: a response that
+            // arrives while the request is still being processed makes the
+            // HTTP client reject the connection with an unexpected-message
+            // error instead of returning the response.
+            let mut request = Vec::new();
+            let mut scratch = [0u8; 1024];
+
+            loop {
+                #[expect(clippy::expect_used, reason = "a read failure fails the test")]
+                let read = socket
+                    .read(&mut scratch)
+                    .expect("request should be readable");
+
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "Read::read returns a count within the buffer length"
+                )]
+                request.extend_from_slice(&scratch[..read]);
+
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            #[expect(clippy::expect_used, reason = "a write failure fails the test")]
+            socket.write_all(head.as_bytes()).expect("head is writable");
+
+            #[expect(clippy::expect_used, reason = "a write failure fails the test")]
+            socket.write_all(&body).expect("body is writable");
+        });
+
+        address
+    }
+
+    /// Points the process-global HTTP client at a plain client, exactly once
+    /// per test process.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test HTTP client fails to build, which fails the test.
+    fn init_http_client() {
+        // Tests share the process-global client; the first initialization
+        // wins and later ones are ignored.
+        #[expect(clippy::expect_used, reason = "a client build failure fails the test")]
+        let client = reqwest::Client::builder()
+            .build()
+            .expect("test HTTP client should build");
+
+        let _ = crate::HTTP.set(client);
+    }
+
+    /// Upstream parser that rejects every frame, standing in for a parser
+    /// failing on a malformed payload.
+    struct RejectingParser;
+
+    impl UpstreamEventParser for RejectingParser {
+        fn ingest_frame(&mut self, _frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
+            Err(ApiError::upstream_unavailable("malformed frame"))
+        }
+
+        fn parse_json_response(
+            &mut self,
+            _value: serde_json::Value,
+        ) -> Result<Vec<IrEvent>, ApiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Verifies that a parse error raised for the trailing frame flushed at
+    /// end-of-stream reaches the event channel as an `Err` before `Done`,
+    /// instead of being swallowed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[tokio::test]
+    async fn forwards_trailing_frame_parse_error() {
+        // A hand-rolled HTTP/1.1 server serving an SSE body whose final
+        // frame is terminated by end-of-stream instead of a blank line, so
+        // it is only dispatched by the flush path of `pump_sse`.
+        let body = b"data: tail";
+
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+
+        let address = serve_once(head, body);
+
+        init_http_client();
+
+        #[expect(clippy::expect_used, reason = "a request failure fails the test")]
+        let response = crate::http()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect("local upstream should respond");
+
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+
+        pump_sse(response, Box::new(RejectingParser), sender).await;
+
+        let mut events = Vec::new();
+
+        while let Some(event) = receiver.recv().await {
+            events.push(event);
+        }
+
+        assert!(
+            matches!(events.as_slice(), [Err(_), Ok(IrEvent::Done)]),
+            "the trailing-frame parse error must precede Done, got: {events:?}"
+        );
+    }
+
+    /// Verifies that a non-2xx upstream body whose declared length exceeds
+    /// what the server actually delivers still yields its leading bytes as
+    /// the bounded error excerpt, instead of an empty message from a failed
+    /// full-body read.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[tokio::test]
+    async fn bounds_upstream_error_body_reads() {
+        // Declares a megabyte-sized body but sends and delivers only a few
+        // kilobytes before closing, so reading the full body fails.
+        let head = "HTTP/1.1 500 Internal Server Error\r\n\
+                    content-type: text/plain\r\n\
+                    content-length: 1000000\r\n\
+                    connection: close\r\n\r\n";
+
+        let body = vec![b'x'; 6000];
+
+        let address = serve_once(head.to_string(), &body);
+
+        init_http_client();
+
+        #[expect(clippy::expect_used, reason = "a request failure fails the test")]
+        let response = crate::http()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect("local upstream should respond");
+
+        let error: ApiError = super::upstream_error_of(response).await;
+
+        assert_eq!(error.status, 500);
+
+        assert_eq!(
+            error.message.chars().filter(|char| *char == 'x').count(),
+            400
+        );
+
+        assert!(error.message.ends_with('…'));
     }
 }

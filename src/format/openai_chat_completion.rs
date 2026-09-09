@@ -3,13 +3,17 @@
 //! Serves the outward `POST /chat/completions` endpoint and speaks the
 //! `openai_chat_completion` upstream protocol.
 
+use super::{ClientFormat, ClientSseRenderer, ParsedRequest, UpstreamEventParser};
 use crate::{
     error::{ApiError, invalid_request_from_json},
-    format::{finish_reason_from_openai, finish_reason_to_openai, json_insert},
+    format::{
+        allowed_fields, finish_reason_from_openai, finish_reason_to_openai, json_insert,
+        reject_unknown_fields, validate_content_part_fields,
+    },
     ids::new_uuid,
     ir::{
-        Aggregation, FinishReason, IrEvent, IrImage, IrMessage, IrPart, IrRequest,
-        IrResponseFormat, IrRole, IrTool, ReasoningEffort, ToolChoice,
+        IrAggregation, IrEvent, IrFinishReason, IrImage, IrMessage, IrPart, IrReasoningEffort,
+        IrRequest, IrResponseFormat, IrRole, IrTool, IrToolChoice,
     },
     sse::{SseFrame, format_data_frame},
     unix_time,
@@ -23,7 +27,16 @@ const MESSAGE_FIELDS_BY_ROLE: &[(&str, &[&str])] = &[
     ("system", &["role", "content"]),
     ("developer", &["role", "content"]),
     ("user", &["role", "content"]),
-    ("assistant", &["role", "content", "reasoning", "tool_calls"]),
+    (
+        "assistant",
+        &[
+            "role",
+            "content",
+            "reasoning",
+            "reasoning_content",
+            "tool_calls",
+        ],
+    ),
     ("tool", &["role", "content", "tool_call_id"]),
 ];
 
@@ -106,8 +119,10 @@ enum MessageIn {
         content: UserContentIn,
     },
 
-    /// Assistant turn. A `reasoning` field, when present, is accepted and
-    /// ignored: it carries no replayable state in a stateless gateway.
+    /// Assistant turn. The `reasoning` and `reasoning_content` fields, when
+    /// present, are accepted and ignored: they carry no replayable state in a
+    /// stateless gateway, and the gateway itself emits `reasoning_content`,
+    /// so clients may replay it.
     Assistant {
         /// Text content, when any.
         #[serde(default)]
@@ -312,17 +327,22 @@ struct StreamOptionsIn {
     include_usage: bool,
 }
 
-/// Client request parsed into IR with endpoint options.
+/// Marker of the outward Chat Completions client format.
 #[derive(Debug)]
-pub(crate) struct ParsedRequest {
-    /// Format-independent request.
-    pub(crate) ir: IrRequest,
+pub(crate) struct Format;
 
-    /// Whether the client requested streaming.
-    pub(crate) stream: bool,
+impl ClientFormat for Format {
+    fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
+        parse_request(body)
+    }
 
-    /// Whether the client requested a final usage chunk while streaming.
-    pub(crate) include_usage: bool,
+    fn sse_renderer(include_usage: bool, public_name: String) -> Box<dyn ClientSseRenderer + Send> {
+        Box::new(SseRenderer::new(public_name, include_usage))
+    }
+
+    fn render_json_response(public_name: &str, aggregation: &IrAggregation) -> Value {
+        render_json_response(public_name, aggregation)
+    }
 }
 
 /// Parses a Chat Completions request body into IR.
@@ -331,13 +351,16 @@ pub(crate) struct ParsedRequest {
 ///
 /// Returns [`ApiError`] for malformed JSON, unknown or unsupported fields,
 /// invalid parameter ranges, and invalid image references.
-pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
+fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
     let raw: Value = serde_json::from_slice(body).map_err(invalid_request_from_json)?;
-    let request: RequestBody =
-        serde_json::from_value(raw.clone()).map_err(invalid_request_from_json)?;
 
+    // Raw-field validation runs before deserialization so `raw` can be
+    // consumed directly instead of cloned; deserializing a body with inline
+    // base64 images can reach the 64 MB request cap.
     validate_message_fields(raw.get("messages"))?;
     validate_response_format_fields(raw.get("response_format"))?;
+
+    let request: RequestBody = serde_json::from_value(raw).map_err(invalid_request_from_json)?;
 
     let mut instructions_parts: Vec<String> = Vec::new();
     let mut messages: Vec<IrMessage> = Vec::new();
@@ -358,7 +381,7 @@ pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
                             converted.push(match part {
                                 UserPartIn::Text { text } => IrPart::Text { text: text.clone() },
                                 UserPartIn::ImageUrl { image_url } => IrPart::Image {
-                                    image: parse_image_url(&image_url.url)?,
+                                    image: IrImage::from_url(&image_url.url)?,
                                 },
                             });
                         }
@@ -463,9 +486,9 @@ pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
 
         (Some(choice), false) => Some(match choice {
             ToolChoiceIn::Mode(mode) => match mode.as_str() {
-                "auto" => ToolChoice::Auto,
-                "none" => ToolChoice::None,
-                "required" => ToolChoice::Required,
+                "auto" => IrToolChoice::Auto,
+                "none" => IrToolChoice::None,
+                "required" => IrToolChoice::Required,
                 other => {
                     return Err(ApiError::invalid_parameter(
                         "tool_choice",
@@ -485,7 +508,7 @@ pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
                     ));
                 }
 
-                ToolChoice::Function {
+                IrToolChoice::Function {
                     name: function.name.clone(),
                 }
             }
@@ -531,7 +554,7 @@ pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
 
     let reasoning_effort = match &request.reasoning_effort {
         None => None,
-        Some(effort) => Some(ReasoningEffort::parse_openai(effort).ok_or_else(|| {
+        Some(effort) => Some(IrReasoningEffort::parse_openai(effort).ok_or_else(|| {
             ApiError::invalid_parameter(
                 "reasoning_effort",
                 format!("Unknown reasoning_effort `{effort}`"),
@@ -585,56 +608,14 @@ fn validate_message_fields(messages: Option<&Value>) -> Result<(), ApiError> {
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        let Some((_, allowed_fields)) = MESSAGE_FIELDS_BY_ROLE
-            .iter()
-            .find(|(name, _)| *name == role)
-        else {
+        let Some(allowed_fields) = allowed_fields(MESSAGE_FIELDS_BY_ROLE, role) else {
             continue;
         };
 
-        for field in object.keys() {
-            if !allowed_fields.contains(&field.as_str()) {
-                return Err(ApiError::invalid_parameter(
-                    field,
-                    format!("Unsupported field `{field}` in `{role}` message"),
-                ));
-            }
-        }
+        reject_unknown_fields(object, allowed_fields, &format!("`{role}` message"))?;
 
         if let Some(parts) = object.get("content").and_then(Value::as_array) {
-            validate_content_part_fields(parts)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Rejects unknown fields on content part objects.
-fn validate_content_part_fields(parts: &[Value]) -> Result<(), ApiError> {
-    for part in parts {
-        let Some(object) = part.as_object() else {
-            continue;
-        };
-
-        let part_type = object
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        let Some((_, allowed_fields)) = CONTENT_PART_FIELDS
-            .iter()
-            .find(|(name, _)| *name == part_type)
-        else {
-            continue;
-        };
-
-        for field in object.keys() {
-            if !allowed_fields.contains(&field.as_str()) {
-                return Err(ApiError::invalid_parameter(
-                    field,
-                    format!("Unsupported field `{field}` in `{part_type}` content part"),
-                ));
-            }
+            validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
         }
     }
 
@@ -653,65 +634,12 @@ fn validate_response_format_fields(response_format: Option<&Value>) -> Result<()
         .and_then(Value::as_str)
         .unwrap_or_default();
 
-    let allowed_fields: &[&str] = match format_type {
+    let permitted_fields: &[&str] = match format_type {
         "json_schema" => &["type", "json_schema"],
         _ => &["type"],
     };
 
-    for field in object.keys() {
-        if !allowed_fields.contains(&field.as_str()) {
-            return Err(ApiError::invalid_parameter(
-                field,
-                format!("Unsupported field `{field}` in response_format"),
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-/// Parses an image reference into an [`IrImage`].
-///
-/// # Errors
-///
-/// Returns [`ApiError`] for schemes other than `data:`, `http:`, and `https:`,
-/// and for malformed data URLs.
-fn parse_image_url(url: &str) -> Result<IrImage, ApiError> {
-    if let Some(rest) = url.strip_prefix("data:") {
-        let (metadata, data) = rest.split_once(',').ok_or_else(|| {
-            ApiError::invalid_parameter("image_url", "Data URL is missing its payload")
-        })?;
-
-        let mime_type = metadata.strip_suffix(";base64").ok_or_else(|| {
-            ApiError::invalid_parameter("image_url", "Only base64-encoded data URLs are supported")
-        })?;
-
-        return Ok(IrImage::Inline {
-            mime_type: mime_type.to_string(),
-            data_base64: data.to_string(),
-        });
-    }
-
-    if url.starts_with("http://") || url.starts_with("https://") {
-        return Ok(IrImage::Url(url.to_string()));
-    }
-
-    Err(ApiError::invalid_parameter(
-        "image_url",
-        "Image URLs must use the data:, http:, or https: schemes",
-    ))
-}
-
-/// Renders an [`IrImage`] back into an OpenAI image URL value.
-fn render_image_url(image: &IrImage) -> String {
-    match image {
-        IrImage::Inline {
-            mime_type,
-            data_base64,
-        } => format!("data:{mime_type};base64,{data_base64}"),
-
-        IrImage::Url(url) => url.clone(),
-    }
+    reject_unknown_fields(object, permitted_fields, "response_format")
 }
 
 /// Renders an IR request into an upstream Chat Completions payload.
@@ -734,7 +662,7 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
                         }
 
                         IrPart::Image { image } => {
-                            let url = render_image_url(image);
+                            let url = image.to_url();
 
                             serde_json::json!({"type": "image_url", "image_url": {"url": url}})
                         }
@@ -787,13 +715,19 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
                     })
                     .collect();
 
+                // The Chat Completions wire spec types assistant `content` as
+                // `string | null`; parts arrays are not universally accepted
+                // by compatible upstreams, and the gateway attaches no
+                // per-part semantics to assistant text, so parts join like
+                // system instructions do.
                 let content = match texts.as_slice() {
                     [] => Value::Null,
-                    [only] => serde_json::json!({ "text": only }),
-                    many => Value::Array(
-                        many.iter()
-                            .map(|text| serde_json::json!({"type": "text", "text": text}))
-                            .collect(),
+                    texts => Value::String(
+                        texts
+                            .iter()
+                            .map(|text| text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
                     ),
                 };
 
@@ -855,10 +789,10 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
 
     if let Some(tool_choice) = &ir.tool_choice {
         let choice = match tool_choice {
-            ToolChoice::Auto => Value::String("auto".to_string()),
-            ToolChoice::None => Value::String("none".to_string()),
-            ToolChoice::Required => Value::String("required".to_string()),
-            ToolChoice::Function { name } => {
+            IrToolChoice::Auto => Value::String("auto".to_string()),
+            IrToolChoice::None => Value::String("none".to_string()),
+            IrToolChoice::Required => Value::String("required".to_string()),
+            IrToolChoice::Function { name } => {
                 serde_json::json!({"type": "function", "function": {"name": name}})
             }
         };
@@ -977,7 +911,7 @@ impl UpstreamParser {
             .and_then(|choice| choice.get("finish_reason"))
             .and_then(Value::as_str)
             .map(finish_reason_from_openai)
-            .unwrap_or(FinishReason::Stop);
+            .unwrap_or(IrFinishReason::Stop);
 
         events.push(IrEvent::Finish(finish_reason));
 
@@ -996,7 +930,9 @@ impl UpstreamParser {
 
         if let Some(choice) = first_choice(&value) {
             if let Some(delta) = choice.get("delta") {
-                if let Some(reasoning) = delta.get("reasoning").and_then(Value::as_str) {
+                if let Some(reasoning) = reasoning_field(delta)
+                    && !reasoning.is_empty()
+                {
                     events.push(IrEvent::ReasoningDelta(reasoning.to_string()));
                 }
 
@@ -1136,6 +1072,28 @@ impl UpstreamParser {
     }
 }
 
+impl UpstreamEventParser for UpstreamParser {
+    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
+        Self::ingest_frame(self, frame)
+    }
+
+    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
+        Self::parse_json_response(self, value)
+    }
+}
+
+/// Reads the reasoning text of an upstream delta or message object.
+///
+/// Both `reasoning` (OpenRouter, vLLM) and `reasoning_content` (the DeepSeek
+/// de-facto standard for OpenAI-compatible reasoners) are accepted; when both
+/// keys are present, `reasoning` wins.
+fn reasoning_field(value: &Value) -> Option<&str> {
+    value
+        .get("reasoning")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("reasoning_content").and_then(Value::as_str))
+}
+
 /// Extracts the primary choice, preferring `index == 0`; parallel choices are
 /// not supported and the remainder is ignored.
 fn first_choice(value: &Value) -> Option<&Value> {
@@ -1172,7 +1130,7 @@ fn parse_usage(usage: Option<&Value>) -> Option<IrEvent> {
 fn message_events_from_full(message: &Value) -> Vec<IrEvent> {
     let mut events = Vec::new();
 
-    if let Some(reasoning) = message.get("reasoning").and_then(Value::as_str)
+    if let Some(reasoning) = reasoning_field(message)
         && !reasoning.is_empty()
     {
         events.push(IrEvent::ReasoningDelta(reasoning.to_string()));
@@ -1304,7 +1262,11 @@ impl SseRenderer {
             }
 
             IrEvent::ReasoningDelta(delta) => {
-                vec![self.chunk_frame(serde_json::json!({"reasoning": delta}), None)]
+                // Chat Completions has no official reasoning delta field;
+                // `reasoning_content` is the de-facto key that reasoner-aware
+                // OpenAI-compatible clients read (see DeepSeek's reasoning
+                // model guide).
+                vec![self.chunk_frame(serde_json::json!({"reasoning_content": delta}), None)]
             }
 
             IrEvent::ToolCallDelta {
@@ -1417,9 +1379,19 @@ impl SseRenderer {
     }
 }
 
+impl ClientSseRenderer for SseRenderer {
+    fn render(&mut self, event: &IrEvent) -> Vec<String> {
+        Self::render(self, event)
+    }
+
+    fn error_frame(&mut self, error: &ApiError) -> String {
+        Self::error_frame(self, error)
+    }
+}
+
 /// Renders an aggregated completion as a non-streaming Chat Completions
 /// response.
-pub(crate) fn render_json_response(model: &str, aggregation: &Aggregation) -> Value {
+pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> Value {
     let tool_calls: Vec<Value> = aggregation
         .tool_calls
         .iter()
@@ -1458,7 +1430,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &Aggregation) -> Va
     if !aggregation.reasoning.is_empty() {
         json_insert(
             &mut message,
-            "reasoning",
+            "reasoning_content",
             Value::String(aggregation.reasoning.clone()),
         );
     }
@@ -1472,7 +1444,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &Aggregation) -> Va
         .map(finish_reason_to_openai)
         .unwrap_or("stop");
 
-    let (input_tokens, output_tokens) = aggregation.usage.unwrap_or((0, 0));
+    let usage = aggregation.usage.unwrap_or_default();
 
     serde_json::json!({
         "id": format!("chatcmpl-{}", new_uuid()),
@@ -1485,9 +1457,9 @@ pub(crate) fn render_json_response(model: &str, aggregation: &Aggregation) -> Va
             "finish_reason": finish_reason,
         }],
         "usage": {
-            "prompt_tokens": input_tokens,
-            "completion_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
+            "prompt_tokens": usage.input_tokens,
+            "completion_tokens": usage.output_tokens,
+            "total_tokens": usage.input_tokens + usage.output_tokens,
         },
     })
 }
@@ -1497,13 +1469,15 @@ pub(crate) fn render_json_response(model: &str, aggregation: &Aggregation) -> Va
 #[expect(clippy::indexing_slicing, reason = "tests assert exact fixture shapes")]
 mod tests {
     use super::{
-        ParsedRequest, UpstreamParser, parse_request, render_json_response, render_request,
+        ParsedRequest, SseRenderer, UpstreamParser, parse_request, render_json_response,
+        render_request,
     };
     use crate::{
         error::ApiError,
-        ir::{Aggregator, FinishReason, IrEvent, IrPart, IrRole},
+        ir::{Aggregator, IrEvent, IrFinishReason, IrPart, IrRole, IrUsage},
         sse::{SseFrame, SseParser},
     };
+    use serde_json::Value;
 
     /// Parses a request from a JSON string.
     ///
@@ -1542,12 +1516,11 @@ mod tests {
         events
     }
 
-    /// Verifies that parses conversation with images tools and reasoning holds.
+    /// Parses a conversation containing images, tools, and reasoning.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
-
     #[test]
     fn parses_conversation_with_images_tools_and_reasoning() {
         let parsed = parse(
@@ -1602,12 +1575,11 @@ mod tests {
         assert!(parsed.include_usage);
     }
 
-    /// Verifies that rejects unknown and unsupported fields holds.
+    /// Rejects unknown and unsupported request fields.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
-
     #[test]
     fn rejects_unknown_and_unsupported_fields() {
         let unknown = parse_err(r#"{"model":"m","messages":[],"bogus":1}"#);
@@ -1630,12 +1602,11 @@ mod tests {
         assert_eq!(bad_effort.status, 400);
     }
 
-    /// Verifies that renders upstream request with tools and reasoning holds.
+    /// Renders an upstream request carrying tools and reasoning.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
-
     #[test]
     fn renders_upstream_request_with_tools_and_reasoning() {
         let parsed = parse(
@@ -1658,12 +1629,11 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "function");
     }
 
-    /// Verifies that upstream stream parses deltas tool calls and usage holds.
+    /// Parses an upstream stream of deltas, tool calls, and usage.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
-
     #[test]
     fn upstream_stream_parses_deltas_tool_calls_and_usage() {
         let mut parser = UpstreamParser::new();
@@ -1710,19 +1680,64 @@ mod tests {
             thought_signature: None,
         }));
 
-        assert!(events.contains(&IrEvent::Finish(FinishReason::ToolCall)));
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ToolCall)));
         assert!(events.contains(&IrEvent::Usage {
             input_tokens: 3,
             output_tokens: 2,
         }));
     }
 
-    /// Verifies that upstream json parses into events and aggregates holds.
+    /// Aggregates a streamed tool call completed by the flush at the finish
+    /// chunk, proving the streaming done path feeds aggregation.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
+    #[test]
+    fn upstream_stream_aggregates_tool_calls_from_done_event() {
+        let mut parser = UpstreamParser::new();
 
+        let events = ingest_all(
+            &mut parser,
+            &[
+                concat!(
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[",
+                    "{\"index\":0,\"id\":\"call_1\",\"function\":",
+                    "{\"name\":\"f\",\"arguments\":\"12\"}}]}}]}\n\n"
+                ),
+                concat!(
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[",
+                    "{\"index\":0,\"function\":{\"arguments\":\"34\"}}]}}]}\n\n"
+                ),
+                concat!(
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{},",
+                    "\"finish_reason\":\"tool_calls\"}]}\n\n"
+                ),
+            ],
+        );
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(
+            aggregation
+                .tool_calls
+                .first()
+                .map(|call| (call.name.as_str(), call.arguments.as_str())),
+            Some(("f", "1234"))
+        );
+    }
+
+    /// Parses an upstream JSON response into events and aggregates them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
     #[test]
     fn upstream_json_parses_into_events_and_aggregates() {
         let mut parser = UpstreamParser::new();
@@ -1759,8 +1774,15 @@ mod tests {
         assert_eq!(aggregation.text, "hello");
         assert_eq!(aggregation.reasoning, "hmm");
         assert_eq!(aggregation.tool_calls.len(), 1);
-        assert_eq!(aggregation.finish, Some(FinishReason::Stop));
-        assert_eq!(aggregation.usage, Some((1, 2)));
+        assert_eq!(aggregation.finish, Some(IrFinishReason::Stop));
+
+        assert_eq!(
+            aggregation.usage,
+            Some(IrUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+            })
+        );
 
         let rendered = render_json_response("public", &aggregation);
 
@@ -1771,12 +1793,11 @@ mod tests {
         assert_eq!(rendered["usage"]["total_tokens"], 3);
     }
 
-    /// Verifies that upstream error payload maps to upstream error holds.
+    /// Maps an upstream error payload to an upstream error.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
-
     #[test]
     fn upstream_error_payload_maps_to_upstream_error() {
         let mut parser = UpstreamParser::new();
@@ -1790,5 +1811,178 @@ mod tests {
 
         assert_eq!(error.status, 429);
         assert!(error.message.contains("overloaded"));
+    }
+
+    /// Renders assistant content as a plain string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn renders_assistant_content_as_plain_string() {
+        let parsed = parse(
+            r#"{
+                "model": "public",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "previous answer"},
+                    {"role": "assistant", "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": "b"}
+                    ]}
+                ]
+            }"#,
+        );
+
+        let body = render_request(&parsed.ir, false);
+
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert_eq!(body["messages"][1]["content"], "previous answer");
+        assert_eq!(body["messages"][2]["content"], "a\n\nb");
+    }
+
+    /// Parses the upstream `reasoning_content` key as reasoning text.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_parses_reasoning_content_key() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_all(
+            &mut parser,
+            &[concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":",
+                "{\"reasoning_content\":\"think\"}}]}\n\n"
+            )],
+        );
+
+        assert!(events.contains(&IrEvent::ReasoningDelta("think".to_string())));
+    }
+
+    /// Prefers `reasoning` over `reasoning_content` when both are present.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_prefers_reasoning_over_reasoning_content() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_all(
+            &mut parser,
+            &[concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":",
+                "{\"reasoning\":\"a\",\"reasoning_content\":\"b\"}}]}\n\n"
+            )],
+        );
+
+        let reasoning_deltas: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                IrEvent::ReasoningDelta(delta) => Some(delta),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(reasoning_deltas, vec![&"a".to_string()]);
+    }
+
+    /// Parses `reasoning_content` from an upstream JSON message and emits the
+    /// same key when rendering the aggregated client response.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_json_parses_reasoning_content_and_render_emits_it() {
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "up", "model": "m",
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "hello",
+                                "reasoning_content": "hmm"}
+                }]
+            }))
+            .expect("response should parse");
+
+        assert!(events.contains(&IrEvent::ReasoningDelta("hmm".to_string())));
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let rendered = render_json_response("public", &aggregator.finish());
+
+        assert_eq!(
+            rendered["choices"][0]["message"]["reasoning_content"],
+            "hmm"
+        );
+    }
+
+    /// Verifies that an assistant message replaying the gateway's own
+    /// `reasoning_content` field is accepted and the field ignored,
+    /// symmetrically with `reasoning`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn accepts_reasoning_content_on_assistant_messages() {
+        let parsed = parse(
+            r#"{
+                "model": "public",
+                "messages": [
+                    {"role": "assistant", "content": "a", "reasoning_content": "think"},
+                    {"role": "assistant", "content": "b", "reasoning": "think"}
+                ]
+            }"#,
+        );
+
+        assert_eq!(
+            parsed.ir.messages[0].parts,
+            vec![IrPart::Text {
+                text: "a".to_string()
+            }]
+        );
+
+        assert_eq!(
+            parsed.ir.messages[1].parts,
+            vec![IrPart::Text {
+                text: "b".to_string()
+            }]
+        );
+    }
+
+    /// Emits the `reasoning_content` key on client streaming deltas.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn client_stream_emits_reasoning_content_key() {
+        let mut renderer = SseRenderer::new("public".to_string(), false);
+
+        let frame = renderer
+            .render(&IrEvent::ReasoningDelta("think".to_string()))
+            .pop()
+            .expect("reasoning delta renders a frame");
+
+        let payload: Value = serde_json::from_str(
+            frame
+                .strip_prefix("data: ")
+                .expect("data frame prefix")
+                .trim_end(),
+        )
+        .expect("payload is JSON");
+
+        assert_eq!(payload["choices"][0]["delta"]["reasoning_content"], "think");
     }
 }

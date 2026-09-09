@@ -3,13 +3,17 @@
 //! Serves the outward `POST /responses` endpoint and speaks the
 //! `openai_response` upstream protocol (including the Codex backend).
 
+use super::{ClientFormat, ClientSseRenderer, ParsedRequest, UpstreamEventParser};
 use crate::{
     error::{ApiError, invalid_request_from_json},
-    format::{arguments_as_object, json_insert},
+    format::{
+        allowed_fields, arguments_as_object, json_insert, reject_unknown_fields,
+        validate_content_part_fields,
+    },
     ids::new_uuid,
     ir::{
-        Aggregation, FinishReason, IrEvent, IrImage, IrMessage, IrPart, IrRequest,
-        IrResponseFormat, IrRole, IrTool, ReasoningEffort, ToolChoice,
+        IrAggregation, IrEvent, IrFinishReason, IrImage, IrMessage, IrPart, IrReasoningEffort,
+        IrRequest, IrResponseFormat, IrRole, IrTool, IrToolChoice, IrUsage,
     },
     sse::{SseFrame, format_frame},
     unix_time,
@@ -276,14 +280,25 @@ enum FormatIn {
     },
 }
 
-/// Client request parsed into IR with endpoint options.
+/// Marker of the outward Responses client format.
 #[derive(Debug)]
-pub(crate) struct ParsedRequest {
-    /// Format-independent request.
-    pub(crate) ir: IrRequest,
+pub(crate) struct Format;
 
-    /// Whether the client requested streaming.
-    pub(crate) stream: bool,
+impl ClientFormat for Format {
+    fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
+        parse_request(body)
+    }
+
+    fn sse_renderer(
+        _include_usage: bool,
+        public_name: String,
+    ) -> Box<dyn ClientSseRenderer + Send> {
+        Box::new(SseRenderer::new(public_name))
+    }
+
+    fn render_json_response(public_name: &str, aggregation: &IrAggregation) -> Value {
+        render_json_response(public_name, aggregation)
+    }
 }
 
 /// Parses a Responses request body into IR.
@@ -292,12 +307,14 @@ pub(crate) struct ParsedRequest {
 ///
 /// Returns [`ApiError`] for malformed JSON, unknown or unsupported fields,
 /// invalid parameter ranges, and invalid image references.
-pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
+fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
     let raw: Value = serde_json::from_slice(body).map_err(invalid_request_from_json)?;
-    let request: RequestBody =
-        serde_json::from_value(raw.clone()).map_err(invalid_request_from_json)?;
 
+    // Raw-field validation runs before deserialization so `raw` can be
+    // consumed directly instead of cloned.
     validate_input_item_fields(raw.get("input"))?;
+
+    let request: RequestBody = serde_json::from_value(raw).map_err(invalid_request_from_json)?;
 
     if request.store == Some(true) {
         return Err(ApiError::invalid_parameter(
@@ -352,9 +369,7 @@ pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
         match item {
             ItemIn::Message { role, content } => match role.as_str() {
                 "system" | "developer" => {
-                    if let Some(text) = message_content_text(&content) {
-                        instruction_parts.push(text);
-                    }
+                    instruction_parts.push(message_content_text(&content)?);
                 }
 
                 "user" => messages.push(IrMessage {
@@ -440,9 +455,9 @@ pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
 
         (Some(choice), false) => Some(match choice {
             ToolChoiceIn::Mode(mode) => match mode.as_str() {
-                "auto" => ToolChoice::Auto,
-                "none" => ToolChoice::None,
-                "required" => ToolChoice::Required,
+                "auto" => IrToolChoice::Auto,
+                "none" => IrToolChoice::None,
+                "required" => IrToolChoice::Required,
                 other => {
                     return Err(ApiError::invalid_parameter(
                         "tool_choice",
@@ -459,7 +474,7 @@ pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
                     ));
                 }
 
-                ToolChoice::Function { name: name.clone() }
+                IrToolChoice::Function { name: name.clone() }
             }
         }),
     };
@@ -484,7 +499,7 @@ pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
         .and_then(|reasoning| reasoning.effort.as_ref())
     {
         None => None,
-        Some(effort) => Some(ReasoningEffort::parse_openai(effort).ok_or_else(|| {
+        Some(effort) => Some(IrReasoningEffort::parse_openai(effort).ok_or_else(|| {
             ApiError::invalid_parameter("effort", format!("Unknown reasoning effort `{effort}`"))
         })?),
     };
@@ -503,6 +518,7 @@ pub(crate) fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
             reasoning_effort,
         },
         stream: request.stream.unwrap_or(false),
+        include_usage: false,
     })
 }
 
@@ -524,10 +540,16 @@ fn build_instructions(direct: Option<String>, pushed: Vec<String>) -> Option<Str
     }
 }
 
-/// Extracts plain text from message content, when the content is purely text.
-fn message_content_text(content: &MessageContentIn) -> Option<String> {
+/// Extracts plain text from system/developer message content.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] naming the offending content part when the message
+/// carries non-text parts: instructions have no image channel, so silently
+/// dropping parts would lose request content.
+fn message_content_text(content: &MessageContentIn) -> Result<String, ApiError> {
     match content {
-        MessageContentIn::Text(text) => Some(text.clone()),
+        MessageContentIn::Text(text) => Ok(text.clone()),
 
         MessageContentIn::Parts(parts) => {
             let mut combined = String::new();
@@ -542,11 +564,17 @@ fn message_content_text(content: &MessageContentIn) -> Option<String> {
                         combined.push_str(text);
                     }
 
-                    PartIn::InputImage { .. } => return None,
+                    PartIn::InputImage { .. } => {
+                        return Err(ApiError::invalid_parameter(
+                            "content",
+                            "System and developer message content parts must be text; \
+                             `input_image` is not supported",
+                        ));
+                    }
                 }
             }
 
-            Some(combined)
+            Ok(combined)
         }
     }
 }
@@ -570,7 +598,7 @@ fn message_content_parts(content: &MessageContentIn) -> Result<Vec<IrPart>, ApiE
                     }
 
                     PartIn::InputImage { image_url } => IrPart::Image {
-                        image: parse_image_url(image_url)?,
+                        image: IrImage::from_url(image_url)?,
                     },
                 });
             }
@@ -580,45 +608,16 @@ fn message_content_parts(content: &MessageContentIn) -> Result<Vec<IrPart>, ApiE
     }
 }
 
-/// Parses an image reference into an [`IrImage`].
-///
-/// # Errors
-///
-/// Returns [`ApiError`] for schemes other than `data:`, `http:`, and `https:`,
-/// and for malformed data URLs.
-fn parse_image_url(url: &str) -> Result<IrImage, ApiError> {
-    if let Some(rest) = url.strip_prefix("data:") {
-        let (metadata, data) = rest.split_once(',').ok_or_else(|| {
-            ApiError::invalid_parameter("image_url", "Data URL is missing its payload")
-        })?;
-
-        let mime_type = metadata.strip_suffix(";base64").ok_or_else(|| {
-            ApiError::invalid_parameter("image_url", "Only base64-encoded data URLs are supported")
-        })?;
-
-        return Ok(IrImage::Inline {
-            mime_type: mime_type.to_string(),
-            data_base64: data.to_string(),
-        });
-    }
-
-    if url.starts_with("http://") || url.starts_with("https://") {
-        return Ok(IrImage::Url(url.to_string()));
-    }
-
-    Err(ApiError::invalid_parameter(
-        "image_url",
-        "Image URLs must use the data:, http:, or https: schemes",
-    ))
-}
-
 /// Rejects unknown fields on Responses input items; internally tagged serde
 /// enums cannot enforce this themselves.
+///
+/// Reasoning items are skipped wholesale: they are accepted and ignored, so
+/// their payload is not validated.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] naming the first unknown field.
-pub(crate) fn validate_input_item_fields(input: Option<&Value>) -> Result<(), ApiError> {
+fn validate_input_item_fields(input: Option<&Value>) -> Result<(), ApiError> {
     let items = match input {
         Some(Value::Array(items)) => items,
         _ => return Ok(()),
@@ -638,49 +637,18 @@ pub(crate) fn validate_input_item_fields(input: Option<&Value>) -> Result<(), Ap
             continue;
         }
 
-        let Some((_, allowed_fields)) = INPUT_ITEM_FIELDS
-            .iter()
-            .find(|(name, _)| *name == item_type)
-        else {
+        let Some(permitted_fields) = allowed_fields(INPUT_ITEM_FIELDS, item_type) else {
             continue;
         };
 
-        for field in object.keys() {
-            if !allowed_fields.contains(&field.as_str()) {
-                return Err(ApiError::invalid_parameter(
-                    field,
-                    format!("Unsupported field `{field}` in `{item_type}` input item"),
-                ));
-            }
-        }
+        reject_unknown_fields(
+            object,
+            permitted_fields,
+            &format!("`{item_type}` input item"),
+        )?;
 
         if let Some(parts) = object.get("content").and_then(Value::as_array) {
-            for part in parts {
-                let Some(part_object) = part.as_object() else {
-                    continue;
-                };
-
-                let part_type = part_object
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-
-                let Some((_, allowed_fields)) = CONTENT_PART_FIELDS
-                    .iter()
-                    .find(|(name, _)| *name == part_type)
-                else {
-                    continue;
-                };
-
-                for field in part_object.keys() {
-                    if !allowed_fields.contains(&field.as_str()) {
-                        return Err(ApiError::invalid_parameter(
-                            field,
-                            format!("Unsupported field `{field}` in `{part_type}` content part"),
-                        ));
-                    }
-                }
-            }
+            validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
         }
     }
 
@@ -704,7 +672,7 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
 
                         IrPart::Image { image } => serde_json::json!({
                             "type": "input_image",
-                            "image_url": render_image_url(image),
+                            "image_url": image.to_url(),
                         }),
 
                         _ => Value::Null,
@@ -806,10 +774,12 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
 
     if let Some(tool_choice) = &ir.tool_choice {
         let choice = match tool_choice {
-            ToolChoice::Auto => Value::String("auto".to_string()),
-            ToolChoice::None => Value::String("none".to_string()),
-            ToolChoice::Required => Value::String("required".to_string()),
-            ToolChoice::Function { name } => serde_json::json!({"type": "function", "name": name}),
+            IrToolChoice::Auto => Value::String("auto".to_string()),
+            IrToolChoice::None => Value::String("none".to_string()),
+            IrToolChoice::Required => Value::String("required".to_string()),
+            IrToolChoice::Function { name } => {
+                serde_json::json!({"type": "function", "name": name})
+            }
         };
 
         json_insert(&mut body, "tool_choice", choice);
@@ -852,18 +822,6 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
     }
 
     body
-}
-
-/// Renders an [`IrImage`] back into a Responses image URL value.
-fn render_image_url(image: &IrImage) -> String {
-    match image {
-        IrImage::Inline {
-            mime_type,
-            data_base64,
-        } => format!("data:{mime_type};base64,{data_base64}"),
-
-        IrImage::Url(url) => url.clone(),
-    }
 }
 
 /// Function call being assembled from upstream events.
@@ -931,22 +889,8 @@ impl UpstreamParser {
             return Err(ApiError::upstream_unavailable(message));
         }
 
-        events.push(IrEvent::Finish(finish_reason_for_non_failed_status(
-            status.and_then(Value::as_str),
-        )));
-
-        if let Some(usage) = value.get("usage").filter(|usage| usage.is_object()) {
-            events.push(IrEvent::Usage {
-                input_tokens: usage
-                    .get("input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                output_tokens: usage
-                    .get("output_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-            });
-        }
+        events.push(IrEvent::Finish(finish_reason_for_response(&value)));
+        push_usage_events(&value, &mut events);
 
         Ok(events)
     }
@@ -1011,27 +955,13 @@ impl UpstreamParser {
                 Ok(events)
             }
 
-            "response.completed" => {
+            "response.completed" | "response.incomplete" => {
                 let response = value.get("response").cloned().unwrap_or(Value::Null);
 
                 let mut events = Vec::new();
 
-                events.push(IrEvent::Finish(finish_reason_for_non_failed_status(
-                    response.get("status").and_then(Value::as_str),
-                )));
-
-                if let Some(usage) = response.get("usage").filter(|usage| usage.is_object()) {
-                    events.push(IrEvent::Usage {
-                        input_tokens: usage
-                            .get("input_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                        output_tokens: usage
-                            .get("output_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                    });
-                }
+                events.push(IrEvent::Finish(finish_reason_for_response(&response)));
+                push_usage_events(&response, &mut events);
 
                 Ok(events)
             }
@@ -1058,7 +988,13 @@ impl UpstreamParser {
         }
     }
 
-    /// Ingests one output item from `output_item.done` or a JSON response.
+    /// Ingests one output item from a JSON response (`output_index` is
+    /// [`None`]) or a streaming `output_item.done` (`Some`).
+    ///
+    /// On the streaming path only `function_call` items are completed here:
+    /// `output_item.done` carries the fully assembled message or reasoning
+    /// item whose text was already delivered as delta events, so re-emitting
+    /// it would double the text.
     fn ingest_output_item(
         &mut self,
         item: &Value,
@@ -1067,7 +1003,9 @@ impl UpstreamParser {
     ) -> Result<(), ApiError> {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
-                if let Some(content) = item.get("content").and_then(Value::as_array) {
+                if output_index.is_none()
+                    && let Some(content) = item.get("content").and_then(Value::as_array)
+                {
                     for part in content {
                         if part.get("type").and_then(Value::as_str) == Some("output_text")
                             && let Some(text) = part.get("text").and_then(Value::as_str)
@@ -1081,7 +1019,9 @@ impl UpstreamParser {
             }
 
             Some("reasoning") => {
-                if let Some(summary) = item.get("summary").and_then(Value::as_array) {
+                if output_index.is_none()
+                    && let Some(summary) = item.get("summary").and_then(Value::as_array)
+                {
                     for part in summary {
                         if let Some(text) = part.get("text").and_then(Value::as_str) {
                             events.push(IrEvent::ReasoningDelta(text.to_string()));
@@ -1207,6 +1147,16 @@ impl UpstreamParser {
     }
 }
 
+impl UpstreamEventParser for UpstreamParser {
+    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
+        Self::ingest_frame(self, frame)
+    }
+
+    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
+        Self::parse_json_response(self, value)
+    }
+}
+
 /// Reads the `output_index` field of an upstream stream event.
 fn event_output_index(value: &Value) -> usize {
     value
@@ -1215,12 +1165,51 @@ fn event_output_index(value: &Value) -> usize {
         .unwrap_or_default() as usize
 }
 
-/// Finish reason for a status string already known not to be a failure.
-fn finish_reason_for_non_failed_status(status: Option<&str>) -> FinishReason {
-    if status == Some("incomplete") {
-        FinishReason::Length
-    } else {
-        FinishReason::Stop
+/// Finish reason for a response object already known not to be failed.
+///
+/// An `incomplete` status maps through `incomplete_details.reason` (unknown
+/// reasons degrade to [`IrFinishReason::Length`] — the output was cut short);
+/// every other status finished normally.
+fn finish_reason_for_response(response: &Value) -> IrFinishReason {
+    if response.get("status").and_then(Value::as_str) != Some("incomplete") {
+        return IrFinishReason::Stop;
+    }
+
+    match response
+        .pointer("/incomplete_details/reason")
+        .and_then(Value::as_str)
+    {
+        Some("content_filter") => IrFinishReason::ContentFilter,
+
+        _ => IrFinishReason::Length,
+    }
+}
+
+/// Appends an [`IrEvent::Usage`] for the response's usage object, when present.
+fn push_usage_events(response: &Value, events: &mut Vec<IrEvent>) {
+    if let Some(usage) = response.get("usage").filter(|usage| usage.is_object()) {
+        events.push(IrEvent::Usage {
+            input_tokens: usage
+                .get("input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            output_tokens: usage
+                .get("output_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        });
+    }
+}
+
+/// Renders the `incomplete_details.reason` string for a finish reason that
+/// marks an incomplete response; [`None`] for complete responses.
+fn incomplete_details_reason(reason: IrFinishReason) -> Option<&'static str> {
+    match reason {
+        IrFinishReason::Length => Some("max_output_tokens"),
+
+        IrFinishReason::ContentFilter => Some("content_filter"),
+
+        IrFinishReason::Stop | IrFinishReason::ToolCall => None,
     }
 }
 
@@ -1269,7 +1258,11 @@ pub(crate) struct SseRenderer {
     next_output_index: usize,
 
     /// Token accounting observed before completion.
-    usage: Option<(u64, u64)>,
+    usage: Option<IrUsage>,
+
+    /// Finish reason reported before [`IrEvent::Done`], deciding whether the
+    /// terminal event is `response.completed` or `response.incomplete`.
+    finish: Option<IrFinishReason>,
 }
 
 impl SseRenderer {
@@ -1287,6 +1280,7 @@ impl SseRenderer {
             completed_items: Vec::new(),
             next_output_index: 0,
             usage: None,
+            finish: None,
         }
     }
 
@@ -1560,13 +1554,20 @@ impl SseRenderer {
                 frames
             }
 
-            IrEvent::Finish(_) => self.close_open_items(),
+            IrEvent::Finish(reason) => {
+                self.finish = Some(*reason);
+
+                self.close_open_items()
+            }
 
             IrEvent::Usage {
                 input_tokens,
                 output_tokens,
             } => {
-                self.usage = Some((*input_tokens, *output_tokens));
+                self.usage = Some(IrUsage {
+                    input_tokens: *input_tokens,
+                    output_tokens: *output_tokens,
+                });
 
                 Vec::new()
             }
@@ -1584,23 +1585,50 @@ impl SseRenderer {
 
                 let output: Vec<Value> = output.into_iter().map(|(_, item)| item).collect();
 
-                let (input_tokens, output_tokens) = self.usage.unwrap_or((0, 0));
+                let usage = self.usage.unwrap_or_default();
 
-                let mut shell = self.response_shell("completed", Value::Array(output));
+                // A Length/ContentFilter finish must surface as
+                // `response.incomplete` with `incomplete_details.reason`, so
+                // strict clients can tell a truncated response from a full
+                // one.
+                let incomplete_reason = self.finish.and_then(incomplete_details_reason);
+                let is_incomplete = incomplete_reason.is_some();
+
+                let mut shell = self.response_shell(
+                    if is_incomplete {
+                        "incomplete"
+                    } else {
+                        "completed"
+                    },
+                    Value::Array(output),
+                );
 
                 json_insert(
                     &mut shell,
                     "usage",
                     serde_json::json!({
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                        "total_tokens": input_tokens + output_tokens,
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "total_tokens": usage.input_tokens + usage.output_tokens,
                     }),
                 );
 
-                frames.push(
-                    self.event_frame("response.completed", serde_json::json!({"response": shell})),
-                );
+                if let Some(reason) = incomplete_reason {
+                    json_insert(
+                        &mut shell,
+                        "incomplete_details",
+                        serde_json::json!({"reason": reason}),
+                    );
+                }
+
+                let terminal_event = if is_incomplete {
+                    "response.incomplete"
+                } else {
+                    "response.completed"
+                };
+
+                frames
+                    .push(self.event_frame(terminal_event, serde_json::json!({"response": shell})));
 
                 frames
             }
@@ -1742,7 +1770,13 @@ impl SseRenderer {
 
     /// Formats one SSE frame with the given event name and payload, assigning
     /// the next sequence number.
+    ///
+    /// The payload carries `type` because strict clients — openai-python's
+    /// `ResponseStreamEvent` union and openai/codex's serde type-tagged enum —
+    /// discriminate events on the JSON payload, not the `event:` line.
     fn event_frame(&mut self, event_name: &str, mut payload: Value) -> String {
+        json_insert(&mut payload, "type", Value::String(event_name.to_string()));
+
         json_insert(&mut payload, "sequence_number", Value::from(self.sequence));
 
         self.sequence += 1;
@@ -1751,8 +1785,18 @@ impl SseRenderer {
     }
 }
 
+impl ClientSseRenderer for SseRenderer {
+    fn render(&mut self, event: &IrEvent) -> Vec<String> {
+        Self::render(self, event)
+    }
+
+    fn error_frame(&mut self, error: &ApiError) -> String {
+        Self::error_frame(self, error)
+    }
+}
+
 /// Renders an aggregated completion as a non-streaming Responses API response.
-pub(crate) fn render_json_response(model: &str, aggregation: &Aggregation) -> Value {
+pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> Value {
     let mut output: Vec<Value> = Vec::new();
 
     if !aggregation.reasoning.is_empty() {
@@ -1794,21 +1838,37 @@ pub(crate) fn render_json_response(model: &str, aggregation: &Aggregation) -> Va
         output.push(item);
     }
 
-    let (input_tokens, output_tokens) = aggregation.usage.unwrap_or((0, 0));
+    let usage = aggregation.usage.unwrap_or_default();
 
-    serde_json::json!({
+    let incomplete_reason = aggregation.finish.and_then(incomplete_details_reason);
+
+    let mut body = serde_json::json!({
         "id": format!("resp_{}", new_uuid()),
         "object": "response",
         "created_at": unix_time::unix_now(),
-        "status": "completed",
+        "status": if incomplete_reason.is_some() {
+            "incomplete"
+        } else {
+            "completed"
+        },
         "model": model,
         "output": output,
         "usage": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "total_tokens": usage.input_tokens + usage.output_tokens,
         },
-    })
+    });
+
+    if let Some(reason) = incomplete_reason {
+        json_insert(
+            &mut body,
+            "incomplete_details",
+            serde_json::json!({"reason": reason}),
+        );
+    }
+
+    body
 }
 
 #[cfg(test)]
@@ -1817,7 +1877,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &Aggregation) -> Va
 mod tests {
     use super::{SseRenderer, UpstreamParser, parse_request, render_json_response};
     use crate::{
-        ir::{Aggregator, FinishReason, IrEvent, IrPart},
+        ir::{Aggregator, IrEvent, IrFinishReason, IrPart},
         sse::SseParser,
     };
     use serde_json::Value;
@@ -1881,12 +1941,11 @@ mod tests {
         rendered
     }
 
-    /// Verifies that parses input items into ir holds.
+    /// Parses Responses input items into IR.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
-
     #[test]
     fn parses_input_items_into_ir() {
         let parsed = parse_request(
@@ -1921,15 +1980,14 @@ mod tests {
                 thought_signature: Some("sig".to_string()),
             }
         );
-        assert_eq!(ir.reasoning_effort, Some(crate::ir::ReasoningEffort::Low));
+        assert_eq!(ir.reasoning_effort, Some(crate::ir::IrReasoningEffort::Low));
     }
 
-    /// Verifies that rejects store true and unknown item fields holds.
+    /// Rejects `store: true` and unknown input item fields.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
-
     #[test]
     fn rejects_store_true_and_unknown_item_fields() {
         let store = parse_request(r#"{"model":"m","input":"x","store":true}"#.as_bytes())
@@ -1948,12 +2006,11 @@ mod tests {
         assert_eq!(unknown_field.param.as_deref(), Some("bogus"));
     }
 
-    /// Verifies that upstream codex stream translates to ir events holds.
+    /// Translates a Codex upstream stream into IR events.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
-
     #[test]
     fn upstream_codex_stream_translates_to_ir_events() {
         let mut parser = UpstreamParser::new();
@@ -2012,19 +2069,66 @@ mod tests {
             arguments: "{}".to_string(),
             thought_signature: None,
         }));
-        assert!(events.contains(&IrEvent::Finish(FinishReason::Stop)));
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
         assert!(events.contains(&IrEvent::Usage {
             input_tokens: 4,
             output_tokens: 3,
         }));
     }
 
-    /// Verifies that client stream renders conformant event sequence holds.
+    /// Aggregates a Codex upstream stream whose `output_item.done` carries no
+    /// assembled arguments, proving the streaming done path feeds the
+    /// accumulated argument deltas into the aggregation.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
+    #[test]
+    fn codex_stream_aggregates_tool_calls_from_done_event() {
+        let mut parser = UpstreamParser::new();
 
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.output_item.added\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",",
+                    "\"name\":\"f\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.function_call_arguments.delta\",",
+                    "\"output_index\":0,\"delta\":\"{}\"}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",",
+                    "\"name\":\"f\"}}\n\n"
+                ),
+            ),
+        );
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(
+            aggregation
+                .tool_calls
+                .first()
+                .map(|call| call.arguments.as_str()),
+            Some("{}")
+        );
+    }
+
+    /// Renders a conformant client streaming event sequence.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
     #[test]
     fn client_stream_renders_conformant_event_sequence() {
         let events = vec![
@@ -2034,7 +2138,7 @@ mod tests {
             },
             IrEvent::ReasoningDelta("hmm".to_string()),
             IrEvent::TextDelta("hello".to_string()),
-            IrEvent::Finish(FinishReason::Stop),
+            IrEvent::Finish(IrFinishReason::Stop),
         ];
 
         let rendered = render_client(events);
@@ -2079,12 +2183,257 @@ mod tests {
         );
     }
 
-    /// Verifies that aggregated response renders output items holds.
+    /// Carries the event name as the payload `type` on client streams.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
+    #[test]
+    fn client_stream_payloads_carry_event_type() {
+        let events = vec![
+            IrEvent::MessageStart {
+                id: "up".to_string(),
+                model: "m".to_string(),
+            },
+            IrEvent::TextDelta("hello".to_string()),
+            IrEvent::Finish(IrFinishReason::Stop),
+        ];
 
+        let rendered = render_client(events);
+
+        assert!(!rendered.is_empty());
+
+        for (name, payload) in &rendered {
+            let name = name
+                .as_deref()
+                .expect("every rendered responses frame has an event name");
+
+            assert_eq!(payload["type"], name);
+        }
+    }
+
+    /// Emits item text only via deltas on the upstream streaming path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_stream_emits_item_text_only_via_deltas() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+                concat!(
+                    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"message\",\"role\":\"assistant\",",
+                    "\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}}\n\n"
+                ),
+                "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"hmm\"}\n\n",
+                concat!(
+                    "data: {\"type\":\"response.output_item.done\",\"output_index\":1,",
+                    "\"item\":{\"type\":\"reasoning\",\"summary\":[",
+                    "{\"type\":\"summary_text\",\"text\":\"hmm\"}]}}\n\n"
+                ),
+            ),
+        );
+
+        let text_deltas: usize = events
+            .iter()
+            .filter_map(|event| match event {
+                IrEvent::TextDelta(text) if text == "hi" => Some(()),
+                _ => None,
+            })
+            .count();
+
+        assert_eq!(text_deltas, 1);
+
+        let reasoning_deltas: usize = events
+            .iter()
+            .filter_map(|event| match event {
+                IrEvent::ReasoningDelta(text) if text == "hmm" => Some(()),
+                _ => None,
+            })
+            .count();
+
+        assert_eq!(reasoning_deltas, 1);
+    }
+
+    /// Extracts message text and reasoning from an upstream JSON response.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_json_response_extracts_message_and_reasoning() {
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "resp1",
+                "model": "m",
+                "status": "completed",
+                "output": [
+                    {"type": "reasoning",
+                     "summary": [{"type": "summary_text", "text": "hmm"}]},
+                    {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "hi"}]},
+                ],
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+            }))
+            .expect("response should parse");
+
+        assert!(events.contains(&IrEvent::ReasoningDelta("hmm".to_string())));
+        assert!(events.contains(&IrEvent::TextDelta("hi".to_string())));
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+        assert!(events.contains(&IrEvent::Usage {
+            input_tokens: 2,
+            output_tokens: 3,
+        }));
+    }
+
+    /// Yields a finish reason and usage from `response.incomplete` events.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_incomplete_event_yields_finish_and_usage() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.incomplete\",",
+                    "\"response\":{\"status\":\"incomplete\",",
+                    "\"incomplete_details\":{\"reason\":\"max_output_tokens\"},",
+                    "\"usage\":{\"input_tokens\":4,\"output_tokens\":3}}}\n\n"
+                ),
+            ),
+        );
+
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Length)));
+        assert!(events.contains(&IrEvent::Usage {
+            input_tokens: 4,
+            output_tokens: 3,
+        }));
+
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.incomplete\",",
+                    "\"response\":{\"status\":\"incomplete\",",
+                    "\"incomplete_details\":{\"reason\":\"content_filter\"}}}\n\n"
+                ),
+            ),
+        );
+
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+    }
+
+    /// Renders `response.incomplete` as the terminal client event for truncated
+    /// responses.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn client_stream_renders_incomplete_terminal_event() {
+        for (reason, expected) in [
+            (IrFinishReason::Length, "max_output_tokens"),
+            (IrFinishReason::ContentFilter, "content_filter"),
+        ] {
+            let events = vec![
+                IrEvent::MessageStart {
+                    id: "up".to_string(),
+                    model: "m".to_string(),
+                },
+                IrEvent::TextDelta("partial".to_string()),
+                IrEvent::Finish(reason),
+            ];
+
+            let rendered = render_client(events);
+
+            let terminal = rendered
+                .iter()
+                .find(|(name, _)| name.as_deref() == Some("response.incomplete"))
+                .expect("incomplete terminal event");
+
+            assert_eq!(terminal.1["response"]["status"], "incomplete");
+            assert_eq!(
+                terminal.1["response"]["incomplete_details"]["reason"],
+                expected
+            );
+
+            assert!(
+                rendered
+                    .iter()
+                    .all(|(name, _)| name.as_deref() != Some("response.completed"))
+            );
+        }
+    }
+
+    /// Renders an aggregated incomplete response with `incomplete` status.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn aggregated_incomplete_response_renders_incomplete_status() {
+        let mut aggregator = Aggregator::default();
+
+        aggregator.ingest(&IrEvent::TextDelta("partial".to_string()));
+        aggregator.ingest(&IrEvent::Finish(IrFinishReason::ContentFilter));
+
+        let rendered = render_json_response("public", &aggregator.finish());
+
+        assert_eq!(rendered["status"], "incomplete");
+        assert_eq!(rendered["incomplete_details"]["reason"], "content_filter");
+    }
+
+    /// Rejects image parts in system messages.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn rejects_image_parts_in_system_messages() {
+        let error = parse_request(
+            r#"{
+                "model": "public",
+                "input": [
+                    {"type": "message", "role": "system", "content": [
+                        {"type": "input_text", "text": "be nice"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,QUJD"}
+                    ]}
+                ]
+            }"#
+            .as_bytes(),
+        )
+        .expect_err("image parts in system messages must fail");
+
+        assert_eq!(error.status, 400);
+        assert_eq!(error.param.as_deref(), Some("content"));
+    }
+
+    /// Renders aggregated output items.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
     #[test]
     fn aggregated_response_renders_output_items() {
         let mut aggregator = Aggregator::default();

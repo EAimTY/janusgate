@@ -13,11 +13,13 @@
 
     "management_api": {
         // Management token for /management-api/* (Authorization: <token>).
+        // Placeholder values fail at startup; replace with a real secret.
         "token": "CHANGE_ME_MANAGEMENT_TOKEN"
     },
 
     "api": {
         // Shared API key for outward protocol endpoints (under /api/*).
+        // Placeholder values fail at startup; replace with a real secret.
         "key": "CHANGE_ME_API_KEY"
     }
 }

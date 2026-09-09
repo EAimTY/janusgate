@@ -4,9 +4,9 @@ use super::{error_response, json_response, parse_body};
 use crate::{
     database::Database,
     error::ApiError,
-    ir::ReasoningEffort,
+    ir::IrReasoningEffort,
     provider::{
-        Credentials, Model, oauth,
+        Model, discovery, oauth,
         storage::{self, ModelEntry},
     },
 };
@@ -97,15 +97,7 @@ async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, Api
 
     let fresh = oauth::ensure_fresh_token(database, crate::http(), &provider).await?;
 
-    let access_token = match &fresh.credentials {
-        Credentials::OpenAiOauth { access_token, .. }
-        | Credentials::AntigravityOauth { access_token, .. }
-        | Credentials::ApiKey(access_token) => access_token.clone(),
-    };
-
-    let upstream_names =
-        crate::provider::discovery::discover_upstream_models(crate::http(), &fresh, &access_token)
-            .await?;
+    let upstream_names = discovery::discover_upstream_models(crate::http(), &fresh).await?;
 
     let previous = storage::find_models_of_provider(database, provider.id).await?;
 
@@ -186,7 +178,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
             let mut parsed = Vec::with_capacity(levels.len());
 
             for level in levels {
-                let effort = ReasoningEffort::parse_canonical(level).ok_or_else(|| {
+                let effort = IrReasoningEffort::parse_canonical(level).ok_or_else(|| {
                     ApiError::invalid_parameter(
                         "thinking_levels_override",
                         format!(
@@ -216,10 +208,10 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
             let canonical: Vec<&str> = parsed
                 .iter()
                 .map(|effort| match effort {
-                    ReasoningEffort::Off => "off",
-                    ReasoningEffort::Low => "low",
-                    ReasoningEffort::Medium => "medium",
-                    ReasoningEffort::High => "high",
+                    IrReasoningEffort::Off => "off",
+                    IrReasoningEffort::Low => "low",
+                    IrReasoningEffort::Medium => "medium",
+                    IrReasoningEffort::High => "high",
                 })
                 .collect();
 

@@ -3,8 +3,8 @@
 
 use crate::{
     database::Database,
-    error::{ApiError, REFRESH_LEASE_STALE_AFTER, REFRESH_WAIT_INTERVAL, REFRESH_WAIT_LIMIT},
-    provider::{Credentials, Provider, ProviderType, storage},
+    error::ApiError,
+    provider::{Credentials, Provider, ProviderType, endpoints, storage},
     unix_time,
 };
 use base64::{Engine as _, engine::general_purpose};
@@ -58,8 +58,28 @@ const OAUTH_STATE_TTL: i64 = 600;
 const DEFAULT_TOKEN_TTL: i64 = 86_400;
 
 /// Margin subtracted from the token expiry when deciding freshness, so a
-/// token is never used into its final seconds.
+/// token is never used into its final seconds. The same margin participates
+/// in the refresh-lease predicate, keeping "expired enough to refresh"
+/// consistent with [`is_token_fresh`].
 const TOKEN_FRESHNESS_MARGIN: i64 = 60;
+
+/// Lease duration after which an abandoned token refresh is considered dead.
+const REFRESH_LEASE_STALE_AFTER: Duration = Duration::from_secs(90);
+
+/// Upper bound on how long a request waits for a concurrent token refresh to
+/// finish before failing.
+///
+/// This must exceed [`REFRESH_LEASE_STALE_AFTER`]: a waiter outlives the
+/// stale-lease window and therefore reaches the stale-lease reacquire path
+/// promised by README §3 instead of failing while the lease abandoned by a
+/// crashed holder is still live.
+const REFRESH_WAIT_LIMIT: Duration = Duration::from_secs(100);
+
+/// Interval between polls while waiting for a concurrent token refresh.
+const REFRESH_WAIT_INTERVAL: Duration = Duration::from_millis(250);
+
+// Compile-time guarantee that the wait limit outlives lease staleness.
+const _: () = assert!(REFRESH_WAIT_LIMIT.as_secs() > REFRESH_LEASE_STALE_AFTER.as_secs());
 
 /// Code Assist metadata identifying the Antigravity IDE.
 fn code_assist_metadata() -> serde_json::Value {
@@ -267,7 +287,10 @@ pub(crate) async fn exchange_code(
         }
     };
 
-    let expires_at = token_expiry(&raw_response);
+    let expires_at = token_expiry_from(
+        raw_response.expires_in,
+        raw_response.access_token.as_deref(),
+    );
 
     Ok(ExchangedTokens {
         credentials,
@@ -286,6 +309,9 @@ pub(crate) struct RefreshedTokens {
 
     /// Replacement identity token, when issued.
     pub(crate) id_token: Option<String>,
+
+    /// Lifetime of the access token in seconds, when the endpoint reports it.
+    pub(crate) expires_in: Option<i64>,
 }
 
 /// Refreshes an OAuth access token with the provider's refresh grant.
@@ -343,6 +369,7 @@ pub(crate) async fn refresh_tokens(
         access_token,
         refresh_token: response.refresh_token,
         id_token: response.id_token,
+        expires_in: response.expires_in,
     })
 }
 
@@ -359,10 +386,7 @@ pub(crate) async fn resolve_project_id(
 ) -> Result<String, ApiError> {
     let load_response: serde_json::Value = post_json(
         http,
-        &format!(
-            "{}/loadCodeAssist",
-            crate::format::gemini::ANTIGRAVITY_BASE_URL
-        ),
+        &format!("{}/loadCodeAssist", endpoints::ANTIGRAVITY_BASE_URL),
         Some(access_token),
         &serde_json::json!({"metadata": code_assist_metadata()}),
     )
@@ -386,10 +410,7 @@ pub(crate) async fn resolve_project_id(
         "metadata": code_assist_metadata(),
     });
 
-    let url = format!(
-        "{}/onboardUser",
-        crate::format::gemini::ANTIGRAVITY_BASE_URL
-    );
+    let url = format!("{}/onboardUser", endpoints::ANTIGRAVITY_BASE_URL);
 
     for _ in 0..ONBOARD_POLL_ATTEMPTS {
         let response: serde_json::Value = post_json(http, &url, Some(access_token), &body).await?;
@@ -470,6 +491,7 @@ pub(crate) async fn ensure_fresh_token(
             current.id,
             now,
             now - i64::try_from(REFRESH_LEASE_STALE_AFTER.as_secs()).unwrap_or(i64::MAX),
+            TOKEN_FRESHNESS_MARGIN,
         )
         .await?;
 
@@ -495,33 +517,34 @@ pub(crate) async fn ensure_fresh_token(
 
 /// Performs the refresh grant and persists the renewed credentials.
 ///
+/// Every error after the lease was acquired clears the lease before it is
+/// returned, so concurrent waiters can acquire the lease instead of burning
+/// their whole wait behind a refresh that already failed.
+///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the refresh fails; the lease is cleared before
-/// returning.
+/// Returns [`ApiError`] when the refresh or the persistence fails.
 async fn refresh_and_store(
     database: &Database,
     http: &Client,
     provider: &Provider,
 ) -> Result<Provider, ApiError> {
-    let refresh_outcome = refresh_and_build_credentials(http, provider).await;
+    let outcome = async {
+        let (credentials, expires_at) = refresh_and_build_credentials(http, provider).await?;
 
-    match refresh_outcome {
-        Ok((credentials, expires_at)) => {
-            storage::update_credentials(database, provider.id, &credentials, Some(expires_at))
-                .await?;
+        storage::update_credentials(database, provider.id, &credentials, Some(expires_at)).await?;
 
-            storage::find_provider(database, &provider.name)
-                .await?
-                .ok_or_else(|| ApiError::internal("provider vanished after token refresh"))
-        }
-
-        Err(error) => {
-            storage::clear_refresh_lease(database, provider.id).await?;
-
-            Err(error)
-        }
+        storage::find_provider(database, &provider.name)
+            .await?
+            .ok_or_else(|| ApiError::internal("provider vanished after token refresh"))
     }
+    .await;
+
+    if outcome.is_err() {
+        storage::clear_refresh_lease(database, provider.id).await?;
+    }
+
+    outcome
 }
 
 /// Calls the provider's refresh grant and merges the result into new
@@ -549,7 +572,9 @@ async fn refresh_and_build_credentials(
     };
 
     let access_token = refreshed.access_token.clone();
-    let expires_in = access_token_expires_in(&access_token);
+
+    // Computed before `access_token` is moved into the credentials.
+    let expires_at = token_expiry_from(refreshed.expires_in, Some(&access_token));
 
     let credentials = match &provider.credentials {
         Credentials::OpenAiOauth {
@@ -591,8 +616,6 @@ async fn refresh_and_build_credentials(
         }
     };
 
-    let expires_at = unix_time::unix_now() + expires_in.unwrap_or(DEFAULT_TOKEN_TTL);
-
     Ok((credentials, expires_at))
 }
 
@@ -603,24 +626,21 @@ fn is_token_fresh(provider: &Provider) -> bool {
         .is_some_and(|expires_at| expires_at > unix_time::unix_now() + TOKEN_FRESHNESS_MARGIN)
 }
 
-/// Computes the expiry of an exchanged token set: `expires_in` when present,
-/// else the access token's `exp` claim, else the default lifetime.
-fn token_expiry(token: &TokenResponse) -> i64 {
+/// Computes the expiry of a token set: a reported `expires_in` when present,
+/// else the remaining lifetime of the access token's `exp` claim, else the
+/// default lifetime.
+///
+/// Google access tokens are opaque (`ya29…`) and carry no `exp` claim, so a
+/// Google refresh response without `expires_in` has no better signal than the
+/// default lifetime; both Google and OpenAI token endpoints report
+/// `expires_in`, which therefore always wins.
+fn token_expiry_from(expires_in: Option<i64>, access_token: Option<&str>) -> i64 {
     let now = unix_time::unix_now();
 
-    if let Some(expires_in) = token.expires_in {
-        return now + expires_in;
-    }
-
-    if let Some(expires_in) = token
-        .access_token
-        .as_deref()
-        .and_then(access_token_expires_in)
-    {
-        return now + expires_in;
-    }
-
-    now + DEFAULT_TOKEN_TTL
+    expires_in
+        .or_else(|| access_token.and_then(access_token_expires_in))
+        .map(|expires_in| now + expires_in)
+        .unwrap_or_else(|| now + DEFAULT_TOKEN_TTL)
 }
 
 /// Extracts the `exp` claim of an access token JWT as a remaining lifetime.
@@ -673,7 +693,10 @@ async fn post_form<T: serde::de::DeserializeOwned>(
     })?;
 
     if !status.is_success() {
-        return Err(ApiError::upstream(status.as_u16(), truncate_excerpt(&body)));
+        return Err(ApiError::upstream_rejected(
+            status.as_u16(),
+            truncate_excerpt(&body),
+        ));
     }
 
     serde_json::from_str(&body).map_err(|error| {
@@ -711,7 +734,10 @@ async fn post_json<T: serde::de::DeserializeOwned>(
     })?;
 
     if !status.is_success() {
-        return Err(ApiError::upstream(status.as_u16(), truncate_excerpt(&text)));
+        return Err(ApiError::upstream_rejected(
+            status.as_u16(),
+            truncate_excerpt(&text),
+        ));
     }
 
     serde_json::from_str(&text).map_err(|error| {
@@ -735,6 +761,7 @@ fn truncate_excerpt(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as StdError;
 
     /// Verifies that random_url_safe produces the expected number of random
     /// bytes encoded in unpadded URL-safe Base64 and that consecutive
@@ -811,5 +838,162 @@ mod tests {
 
         let missing = jwt_claim(&mock_jwt, &["nonexistent"]);
         assert_eq!(missing, None);
+    }
+
+    /// Builds a JWT carrying the given payload claims.
+    fn jwt_with_claims(claims: serde_json::Value) -> String {
+        format!(
+            "header.{}.signature",
+            general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string())
+        )
+    }
+
+    /// Verifies token expiry selection: a reported `expires_in` always wins,
+    /// the access token's `exp` claim is the fallback, and an opaque access
+    /// token without `expires_in` falls back to the default lifetime. The
+    /// opaque case is the Google refresh shape: `ya29…` tokens carry no `exp`
+    /// claim, so ignoring a reported `expires_in` would stamp a day-long
+    /// expiry onto an hour-lived token.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn token_expiry_prefers_expires_in_then_jwt_claim_then_default() {
+        let before = unix_time::unix_now();
+
+        let opaque_token = "ya29.opaque-google-access-token";
+
+        let from_expires_in = token_expiry_from(Some(3_599), Some(opaque_token));
+
+        assert!(
+            (from_expires_in - before - 3_599).abs() <= 1,
+            "expires_in must decide the expiry"
+        );
+
+        let exp = before + 1_200;
+        let jwt = jwt_with_claims(serde_json::json!({ "exp": exp }));
+
+        let from_claim = token_expiry_from(None, Some(&jwt));
+
+        assert!(
+            (from_claim - exp).abs() <= 1,
+            "exp claim must decide the expiry"
+        );
+
+        let from_both = token_expiry_from(Some(100), Some(&jwt));
+
+        assert!(
+            (from_both - before - 100).abs() <= 1,
+            "expires_in must win over the exp claim"
+        );
+
+        let from_opaque = token_expiry_from(None, Some(opaque_token));
+
+        assert!(
+            from_opaque - before - DEFAULT_TOKEN_TTL <= 1,
+            "opaque token without expires_in must fall back to the default lifetime"
+        );
+
+        let from_nothing = token_expiry_from(None, None);
+
+        assert!((from_nothing - before - DEFAULT_TOKEN_TTL).abs() <= 1);
+    }
+
+    /// Verifies a failed refresh clears the refresh lease before the error is
+    /// returned, so concurrent waiters can acquire the lease instead of
+    /// burning their whole wait behind a dead refresh.
+    ///
+    /// API key credentials fail the refresh grant without any network access,
+    /// isolating the lease-release contract from the grant itself.
+    ///
+    /// # Panics
+    ///
+    /// Panics if opening the test database or an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn refresh_and_store_clears_lease_on_error() -> Result<(), Box<dyn StdError>> {
+        use crate::database::params;
+        use std::{
+            env, fs,
+            num::NonZero,
+            path::PathBuf,
+            process,
+            sync::atomic::{AtomicU64, Ordering},
+        };
+
+        static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let path: PathBuf = env::temp_dir().join(format!(
+            "janusgate_oauth_test_{}_{unique_id}.db",
+            process::id()
+        ));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the test pool size is a non-zero constant"
+        )]
+        let max_connections = NonZero::new(2).expect("pool size is non-zero");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "opening the test database is fatal on failure"
+        )]
+        let database = Database::open(&path, max_connections, Duration::from_secs(5))
+            .await
+            .expect("failed to open isolated test database");
+
+        let now = unix_time::unix_now();
+
+        database
+            .execute(
+                "INSERT INTO providers (name, model_prefix, type, credentials, expires_at, \
+                 refresh_started_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    "lease-provider",
+                    "",
+                    "openai_compatible",
+                    r#"{"apiKey":"test-key"}"#,
+                    Option::<i64>::None,
+                    now
+                ],
+            )
+            .await?;
+
+        let provider = Provider {
+            id: 1,
+            name: "lease-provider".to_string(),
+            model_prefix: String::new(),
+            provider_type: ProviderType::OpenAiCompatible,
+            protocol: None,
+            base_url: None,
+            credentials: Credentials::ApiKey("test-key".to_string()),
+            expires_at: None,
+            enabled: true,
+        };
+
+        let outcome = refresh_and_store(&database, &Client::new(), &provider).await;
+
+        assert!(outcome.is_err());
+
+        let rows = database
+            .query(
+                "SELECT refresh_started_at FROM providers WHERE id = ?1",
+                params![1_i64],
+            )
+            .await?;
+
+        let stored_lease: Option<i64> = rows.first().ok_or("missing provider row")?.get(0)?;
+
+        assert_eq!(stored_lease, None, "the refresh lease must be cleared");
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
     }
 }

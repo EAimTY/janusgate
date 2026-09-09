@@ -4,37 +4,34 @@
 //! Antigravity Code Assist envelope (§5.2) and as a bare OpenAI-compatible
 //! upstream protocol (§5.3).
 
+use super::UpstreamEventParser;
 use crate::{
     error::ApiError,
     format::{arguments_as_object, json_insert},
     ids::new_uuid,
-    ir::{FinishReason, IrEvent, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, ToolChoice},
+    ir::{
+        IrEvent, IrFinishReason, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice,
+    },
     sse::SseFrame,
 };
 use serde_json::Value;
 
-/// Base URL of the Antigravity Code Assist API.
-pub(crate) const ANTIGRAVITY_BASE_URL: &str =
-    "https://daily-cloudcode-pa.googleapis.com/v1internal";
-
 /// Renders the upstream request URL and payload for an Antigravity provider.
+///
+/// `base_url` is the provider's Code Assist endpoint; the provider layer owns
+/// endpoint knowledge, so it is threaded in rather than owned by the codec.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] when the request cannot be rendered.
 pub(crate) fn render_antigravity_request(
     ir: &IrRequest,
+    base_url: &str,
     upstream_name: &str,
     project: &str,
     streaming: bool,
 ) -> Result<(String, Value), ApiError> {
-    let action = if streaming {
-        "streamGenerateContent?alt=sse"
-    } else {
-        "generateContent"
-    };
-
-    let url = format!("{ANTIGRAVITY_BASE_URL}:{action}");
+    let url = render_request_url(base_url, upstream_name, streaming, true);
 
     let envelope = serde_json::json!({
         "project": project,
@@ -60,17 +57,40 @@ pub(crate) fn render_compatible_request(
     upstream_name: &str,
     streaming: bool,
 ) -> Result<(String, Value), ApiError> {
-    let action = if streaming {
-        ":streamGenerateContent?alt=sse"
-    } else {
-        ":generateContent"
-    };
+    let url = render_request_url(base_url, upstream_name, streaming, false);
+
+    Ok((url, render_generate_content_request(ir)?))
+}
+
+/// Renders the GenerateContent URL for one call, the single place where the
+/// action segment (including its leading colon) is assembled: enveloped Code
+/// Assist upstreams take the action directly on the base URL, compatible
+/// upstreams insert `/models/<upstream_name>` before it.
+fn render_request_url(
+    base_url: &str,
+    upstream_name: &str,
+    streaming: bool,
+    is_enveloped: bool,
+) -> String {
+    /// Action segment selecting plain generation.
+    const GENERATE_ACTION: &str = ":generateContent";
+
+    /// Action segment selecting SSE streaming generation.
+    const STREAM_GENERATE_ACTION: &str = ":streamGenerateContent?alt=sse";
 
     let base_url = base_url.trim_end_matches('/');
 
-    let url = format!("{base_url}/models/{upstream_name}{action}");
+    let action = if streaming {
+        STREAM_GENERATE_ACTION
+    } else {
+        GENERATE_ACTION
+    };
 
-    Ok((url, render_generate_content_request(ir)?))
+    if is_enveloped {
+        format!("{base_url}{action}")
+    } else {
+        format!("{base_url}/models/{upstream_name}{action}")
+    }
 }
 
 /// Renders the bare GenerateContentRequest carried in the envelope `request`
@@ -137,10 +157,10 @@ pub(crate) fn render_generate_content_request(ir: &IrRequest) -> Result<Value, A
 
     if let Some(tool_choice) = &ir.tool_choice {
         let config = match tool_choice {
-            ToolChoice::Auto => serde_json::json!({"mode": "AUTO"}),
-            ToolChoice::None => serde_json::json!({"mode": "NONE"}),
-            ToolChoice::Required => serde_json::json!({"mode": "ANY"}),
-            ToolChoice::Function { name } => {
+            IrToolChoice::Auto => serde_json::json!({"mode": "AUTO"}),
+            IrToolChoice::None => serde_json::json!({"mode": "NONE"}),
+            IrToolChoice::Required => serde_json::json!({"mode": "ANY"}),
+            IrToolChoice::Function { name } => {
                 serde_json::json!({"mode": "ANY", "allowedFunctionNames": [name]})
             }
         };
@@ -455,6 +475,16 @@ impl UpstreamParser {
     }
 }
 
+impl UpstreamEventParser for UpstreamParser {
+    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
+        Self::ingest_frame(self, frame)
+    }
+
+    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
+        Self::parse_json_response(self, value)
+    }
+}
+
 /// Extracts the primary candidate, preferring `index == 0`; parallel
 /// candidates are not supported and the remainder is ignored.
 fn primary_candidate(value: &Value) -> Option<&Value> {
@@ -467,15 +497,15 @@ fn primary_candidate(value: &Value) -> Option<&Value> {
 }
 
 /// Maps a Gemini `finishReason` to the canonical reason.
-fn finish_reason_from_gemini(value: &str) -> FinishReason {
+fn finish_reason_from_gemini(value: &str) -> IrFinishReason {
     match value {
-        "MAX_TOKENS" => FinishReason::Length,
+        "MAX_TOKENS" => IrFinishReason::Length,
 
         "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" => {
-            FinishReason::ContentFilter
+            IrFinishReason::ContentFilter
         }
 
-        _ => FinishReason::Stop,
+        _ => IrFinishReason::Stop,
     }
 }
 
@@ -483,10 +513,14 @@ fn finish_reason_from_gemini(value: &str) -> FinishReason {
 #[expect(clippy::expect_used, reason = "tests fail by panicking")]
 #[expect(clippy::indexing_slicing, reason = "tests assert exact fixture shapes")]
 mod tests {
-    use super::{UpstreamParser, render_antigravity_request, render_generate_content_request};
+    use super::{
+        UpstreamParser, render_antigravity_request, render_compatible_request,
+        render_generate_content_request,
+    };
     use crate::{
         ir::{
-            FinishReason, IrEvent, IrImage, IrMessage, IrPart, IrRequest, IrRole, ReasoningEffort,
+            IrEvent, IrFinishReason, IrImage, IrMessage, IrPart, IrReasoningEffort, IrRequest,
+            IrRole,
         },
         sse::SseParser,
     };
@@ -511,7 +545,7 @@ mod tests {
                     },
                 ],
             }],
-            reasoning_effort: Some(ReasoningEffort::Medium),
+            reasoning_effort: Some(IrReasoningEffort::Medium),
             ..IrRequest::default()
         }
     }
@@ -579,7 +613,8 @@ mod tests {
         current
     }
 
-    /// Verifies the Antigravity envelope contract of §5.2.
+    /// Verifies the Antigravity envelope contract of §5.2 and the enveloped
+    /// URL assembly.
     ///
     /// # Panics
     ///
@@ -587,12 +622,19 @@ mod tests {
     #[test]
     fn antigravity_envelope_matches_contract() {
         let ir = sample_request();
-        let (url, envelope) = render_antigravity_request(&ir, "gemini-2.5-pro", "project-1", true)
-            .expect("should render");
+
+        let (url, envelope) = render_antigravity_request(
+            &ir,
+            "https://codeassist.internal/v1internal",
+            "gemini-2.5-pro",
+            "project-1",
+            true,
+        )
+        .expect("should render");
 
         assert_eq!(
             url,
-            "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+            "https://codeassist.internal/v1internal:streamGenerateContent?alt=sse"
         );
 
         assert_eq!(json_str(&envelope, &["project"]), "project-1");
@@ -646,6 +688,28 @@ mod tests {
             ),
             8192
         );
+    }
+
+    /// Verifies the compatible (bare) URL assembly of §5.3: the model segment
+    /// and action are appended after the trimmed base URL.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn compatible_request_url_appends_model_and_action() {
+        let ir = sample_request();
+
+        let (url, body) =
+            render_compatible_request(&ir, "https://upstream.internal/", "gemini-2.5-pro", true)
+                .expect("should render");
+
+        assert_eq!(
+            url,
+            "https://upstream.internal/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        );
+
+        assert_eq!(json_str(&body, &["contents", "0", "role"]), "user");
     }
 
     /// Verifies that tool calls carry signatures and tool outputs resolve
@@ -799,7 +863,7 @@ mod tests {
 
         assert_eq!(done, format!("call_{}", &done["call_".len()..]));
 
-        assert!(events.contains(&IrEvent::Finish(FinishReason::Stop)));
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
         assert!(events.contains(&IrEvent::Usage {
             input_tokens: 9,
             output_tokens: 6,

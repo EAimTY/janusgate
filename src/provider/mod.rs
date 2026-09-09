@@ -4,6 +4,7 @@
 use crate::{error::ApiError, format::UpstreamFormat};
 
 pub(crate) mod discovery;
+pub(crate) mod endpoints;
 pub(crate) mod oauth;
 pub(crate) mod storage;
 
@@ -46,49 +47,6 @@ impl ProviderType {
             Self::OpenAiOauth => Some(UpstreamFormat::OpenAiResponse),
             Self::AntigravityOauth => Some(UpstreamFormat::GeminiGenerateContent),
             Self::OpenAiCompatible => None,
-        }
-    }
-}
-
-/// Upstream wire protocol of an `openai_compatible` provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpstreamProtocol {
-    /// OpenAI Responses protocol.
-    OpenAiResponse,
-
-    /// OpenAI Chat Completions protocol.
-    OpenAiChatCompletion,
-
-    /// Gemini GenerateContent protocol.
-    GeminiGenerateContent,
-}
-
-impl UpstreamProtocol {
-    /// Parses the canonical protocol name.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "openai_response" => Some(Self::OpenAiResponse),
-            "openai_chat_completion" => Some(Self::OpenAiChatCompletion),
-            "gemini_generate_content" => Some(Self::GeminiGenerateContent),
-            _ => None,
-        }
-    }
-
-    /// Renders the canonical protocol name.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::OpenAiResponse => "openai_response",
-            Self::OpenAiChatCompletion => "openai_chat_completion",
-            Self::GeminiGenerateContent => "gemini_generate_content",
-        }
-    }
-
-    /// The wire format this protocol speaks.
-    pub(crate) fn upstream_format(self) -> UpstreamFormat {
-        match self {
-            Self::OpenAiResponse => UpstreamFormat::OpenAiResponse,
-            Self::OpenAiChatCompletion => UpstreamFormat::OpenAiChatCompletion,
-            Self::GeminiGenerateContent => UpstreamFormat::GeminiGenerateContent,
         }
     }
 }
@@ -182,6 +140,19 @@ impl Credentials {
         }
     }
 
+    /// The secret these credentials present to an upstream: the OAuth access
+    /// token for OAuth accounts, the static API key for key-based accounts.
+    /// Depending on the wire format it is sent as a bearer token or as an
+    /// API key header.
+    pub(crate) fn secret(&self) -> &str {
+        match self {
+            Self::OpenAiOauth { access_token, .. }
+            | Self::AntigravityOauth { access_token, .. } => access_token,
+
+            Self::ApiKey(api_key) => api_key,
+        }
+    }
+
     /// Renders the credentials into their plaintext JSON storage form.
     pub(crate) fn to_json(&self) -> String {
         match self {
@@ -224,8 +195,8 @@ pub(crate) struct NewProvider<'a> {
     /// Account kind.
     pub(crate) provider_type: ProviderType,
 
-    /// Upstream protocol; required for `openai_compatible`.
-    pub(crate) protocol: Option<UpstreamProtocol>,
+    /// Upstream wire format; required for `openai_compatible`.
+    pub(crate) protocol: Option<UpstreamFormat>,
 
     /// Upstream base URL; required for `openai_compatible`.
     pub(crate) base_url: Option<&'a str>,
@@ -255,8 +226,8 @@ pub(crate) struct Provider {
     /// Account kind.
     pub(crate) provider_type: ProviderType,
 
-    /// Upstream protocol; required for `openai_compatible`.
-    pub(crate) protocol: Option<UpstreamProtocol>,
+    /// Upstream wire format; required for `openai_compatible`.
+    pub(crate) protocol: Option<UpstreamFormat>,
 
     /// Upstream base URL; required for `openai_compatible`.
     pub(crate) base_url: Option<String>,
@@ -272,19 +243,22 @@ pub(crate) struct Provider {
 }
 
 impl Provider {
-    /// The upstream wire format the provider speaks.
+    /// The upstream wire format the provider speaks: the type-fixed format
+    /// when the account kind pins one, otherwise the configured `protocol`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] when an `openai_compatible` provider carries no
+    /// protocol, which is a configuration invariant violation.
     pub(crate) fn upstream_format(&self) -> Result<UpstreamFormat, ApiError> {
         match self.provider_type.upstream_format() {
             Some(format) => Ok(format),
-            None => self
-                .protocol
-                .map(UpstreamProtocol::upstream_format)
-                .ok_or_else(|| {
-                    ApiError::internal(format!(
-                        "provider `{}` has no upstream protocol configured",
-                        self.name
-                    ))
-                }),
+            None => self.protocol.ok_or_else(|| {
+                ApiError::internal(format!(
+                    "provider `{}` has no upstream protocol configured",
+                    self.name
+                ))
+            }),
         }
     }
 }

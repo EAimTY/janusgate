@@ -4,9 +4,9 @@ use super::json_response;
 use crate::{
     database::Database,
     error::ApiError,
-    format::{openai_chat_completion, openai_response},
+    format::{ClientFormat, ClientSseRenderer, openai_chat_completion, openai_response},
     gateway::{self, IrEventStream},
-    ir::{Aggregator, IrEvent},
+    ir::{Aggregator, IrAggregation},
     provider::storage,
     security::constant_time_eq,
 };
@@ -65,21 +65,54 @@ async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
 
 /// Handles `POST /chat/completions`.
 async fn chat_completions(State(database): State<Database>, body: Bytes) -> Response {
-    let outcome = handle_chat_completions(&database, &body).await;
+    outcome_response(handle_completion::<openai_chat_completion::Format>(&database, &body).await)
+}
 
+/// Handles `POST /responses`.
+async fn responses(State(database): State<Database>, body: Bytes) -> Response {
+    outcome_response(handle_completion::<openai_response::Format>(&database, &body).await)
+}
+
+/// Renders a handler outcome, mapping failures to OpenAI error responses.
+fn outcome_response(outcome: Result<Response, ApiError>) -> Response {
     match outcome {
         Ok(response) => response,
         Err(error) => json_response(error.status, error.to_openai_json()),
     }
 }
 
-/// Handles `POST /responses`.
-async fn responses(State(database): State<Database>, body: Bytes) -> Response {
-    let outcome = handle_responses(&database, &body).await;
+/// Routes one completion request through the gateway in the given client
+/// format: parse to IR, resolve routing, execute upstream, and render the
+/// event stream live or aggregated.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] for request, routing, and upstream failures.
+async fn handle_completion<TFormat>(database: &Database, body: &[u8]) -> Result<Response, ApiError>
+where
+    TFormat: ClientFormat,
+{
+    let parsed = TFormat::parse_request(body)?;
 
-    match outcome {
-        Ok(response) => response,
-        Err(error) => json_response(error.status, error.to_openai_json()),
+    let routing = gateway::resolve_routing(database, &parsed.ir.model).await?;
+
+    let public_name = routing.model.name.clone();
+
+    let is_streaming = parsed.stream;
+
+    let events =
+        gateway::execute(database, crate::http(), routing, parsed.ir, is_streaming).await?;
+
+    if is_streaming {
+        Ok(sse_response(
+            events,
+            TFormat::sse_renderer(parsed.include_usage, public_name),
+        ))
+    } else {
+        aggregated_response(events, |aggregation| {
+            TFormat::render_json_response(&public_name, aggregation)
+        })
+        .await
     }
 }
 
@@ -106,96 +139,15 @@ async fn models(State(database): State<Database>) -> Response {
     }
 }
 
-/// Routes one Chat Completions request through the gateway.
-///
-/// # Errors
-///
-/// Returns [`ApiError`] for request, routing, and upstream failures.
-async fn handle_chat_completions(database: &Database, body: &[u8]) -> Result<Response, ApiError> {
-    let parsed = openai_chat_completion::parse_request(body)?;
-    let routing = gateway::resolve_routing(database, &parsed.ir.model).await?;
-    let public_name = routing.model.name.clone();
-
-    let events =
-        gateway::execute(database, crate::http(), routing, parsed.ir, parsed.stream).await?;
-
-    if parsed.stream {
-        Ok(sse_response(
-            events,
-            Box::new(openai_chat_completion::SseRenderer::new(
-                public_name,
-                parsed.include_usage,
-            )),
-        ))
-    } else {
-        aggregated_response(events, |aggregation| {
-            openai_chat_completion::render_json_response(&public_name, aggregation)
-        })
-        .await
-    }
-}
-
-/// Routes one Responses request through the gateway.
-///
-/// # Errors
-///
-/// Returns [`ApiError`] for request, routing, and upstream failures.
-async fn handle_responses(database: &Database, body: &[u8]) -> Result<Response, ApiError> {
-    let parsed = openai_response::parse_request(body)?;
-    let routing = gateway::resolve_routing(database, &parsed.ir.model).await?;
-    let public_name = routing.model.name.clone();
-
-    let events =
-        gateway::execute(database, crate::http(), routing, parsed.ir, parsed.stream).await?;
-
-    if parsed.stream {
-        Ok(sse_response(
-            events,
-            Box::new(openai_response::SseRenderer::new(public_name)),
-        ))
-    } else {
-        aggregated_response(events, |aggregation| {
-            openai_response::render_json_response(&public_name, aggregation)
-        })
-        .await
-    }
-}
-
-/// Client-side SSE rendering contract shared by both outward formats.
-trait ClientSseRenderer: Send {
-    /// Renders one IR event into zero or more SSE frames.
-    fn render(&mut self, event: &IrEvent) -> Vec<String>;
-
-    /// Renders a mid-stream error as a terminal frame.
-    fn error_frame(&mut self, error: &ApiError) -> String;
-}
-
-impl ClientSseRenderer for openai_chat_completion::SseRenderer {
-    fn render(&mut self, event: &IrEvent) -> Vec<String> {
-        Self::render(self, event)
-    }
-
-    fn error_frame(&mut self, error: &ApiError) -> String {
-        Self::error_frame(self, error)
-    }
-}
-
-impl ClientSseRenderer for openai_response::SseRenderer {
-    fn render(&mut self, event: &IrEvent) -> Vec<String> {
-        Self::render(self, event)
-    }
-
-    fn error_frame(&mut self, error: &ApiError) -> String {
-        Self::error_frame(self, error)
-    }
-}
-
 /// Wraps an IR event stream into a live `text/event-stream` response.
 ///
 /// # Panics
 ///
 /// Panics if the static response parts fail to build, which cannot occur.
-fn sse_response(events: IrEventStream, mut renderer: Box<dyn ClientSseRenderer>) -> Response {
+fn sse_response(
+    events: IrEventStream,
+    mut renderer: Box<dyn ClientSseRenderer + Send>,
+) -> Response {
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(64);
 
@@ -237,7 +189,7 @@ fn sse_response(events: IrEventStream, mut renderer: Box<dyn ClientSseRenderer>)
 /// Returns [`ApiError`] when the stream carries a failure.
 async fn aggregated_response(
     events: IrEventStream,
-    render: impl Fn(&crate::ir::Aggregation) -> serde_json::Value,
+    render: impl Fn(&IrAggregation) -> serde_json::Value,
 ) -> Result<Response, ApiError> {
     let mut aggregator = Aggregator::default();
 

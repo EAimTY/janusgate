@@ -81,7 +81,7 @@ The server architecture separates low-level connection driving from hierarchical
    - `axum::serve` is **strictly unused**. Instead, `hserver` delegates incoming HTTP requests directly to Axum's root `Router` as an implementation of `tower::Service`.
 2. **Hierarchical Routers (`axum::Router`)**:
    - **Root Router**:
-     - Holds the application state (`AppState` containing `Database`) and propagates it to sub-routers.
+     - Holds the `Database` value directly as its router state (there is no `AppState` wrapper type) and propagates it to sub-routers.
      - Nests `/management-api` and `/api` sub-routers.
      - Maintains its own top-level fallback route returning an HTTP 404 response for any unmapped root paths.
    - **Management API Sub-router (`/management-api`)**:
@@ -107,7 +107,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 
 ### Database Abstraction & Connection Pooling
 - **Connection Pool**: Database access is managed through an in-process connection pool (`deadpool`), maintaining up to `database.max_connections` concurrent `turso::Connection` instances. When every connection is checked out, connection acquisition waits at most `database.pool_timeout` milliseconds before failing with `PoolTimeout`.
-- **Implicit Prepared Statement Cache**: All queries and executions on both `Database` and `Transaction` pass through `prepare_cached()`, eliminating statement preparation overhead across pooled connections.
+- **Implicit Prepared Statement Cache**: All queries and executions on both `Database` and `Transaction` pass through `prepare_cached()`. Turso's statement cache is per-connection and persists across pool checkouts, so warm connections reuse their cached preparations; a freshly created pooled connection starts cold.
 - **Eager Query Materialization**: `query()` drains every result set to completion and returns owned `Vec<Row>` values before the pooled connection is released. Lazily-consumed cursors are never exposed, so a result can never outlive its connection checkout, interleave with another borrower's statements, or leave unfinished statement state on a recycled connection.
 - **Transaction Semantics**: A `Transaction` checks out and exclusively holds a pooled connection for its entire lifetime. Statement execution on the handle requires exclusive access (`execute()`/`query()` take `&mut self`), so statements within one transaction can never run concurrently or interleave. Explicit `commit()` or `rollback()` consumes the transaction and returns the connection to the pool; dropping an uncommitted transaction discards its connection instead of returning it to the pool, so the open engine-level write lock is released immediately rather than parked until the connection's next checkout. Connections that still report an open transaction at recycle time are discarded and replaced by the pool.
 - **Error Domain**: The database module defines an `Error` enum using `thiserror` that directly wraps underlying Turso engine errors (`Turso`), alongside pool lifecycle errors (`PoolClosed`, `PoolTimeout`), filesystem I/O (`Io`), and invalid UTF-8 database path errors (`InvalidPath`). Connection pool errors with a backend cause are merged directly into `Turso`.
@@ -126,7 +126,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   - `type`: `openai_oauth`, `antigravity_oauth`, or `openai_compatible`.
   - `credentials`: Plaintext JSON payload (`{accessToken, refreshToken, accountId/projectId}` or `{apiKey}`) stored directly in the database without encryption.
   - `expires_at`: Unix timestamp when OAuth access token expires.
-  - `refresh_started_at`: Lease timestamp to prevent concurrent token refresh races. When the token is expired, a request wins the lease by writing `refresh_started_at = now` inside a transaction conditional on the lease being absent or stale (older than 90 seconds); the winner refreshes the token and clears the lease, while concurrent requests poll until the token is renewed, the lease is cleared, or the lease goes stale (then retry). A failed refresh clears the lease.
+  - `refresh_started_at`: Lease timestamp to prevent concurrent token refresh races. When the token is expired, a request wins the lease by writing `refresh_started_at = now` inside a transaction conditional on the lease being absent or stale (older than 90 seconds); the winner refreshes the token and clears the lease. Concurrent requests poll up to 100 seconds — deliberately longer than the 90-second staleness window, so a lease abandoned by a crashed refresher is always reacquired rather than waited out — until the token is renewed, then re-read it; when the poll window elapses the request fails with 502. Any refresh failure — the grant or its persistence — clears the lease before the error is returned, so waiters can acquire it instead of burning their whole wait behind a refresh that already failed.
 - **Model**:
   - Identified by `(provider_id, upstream_name)`.
   - `upstream_name`: Exact model identifier discovered from upstream; used verbatim for upstream requests without automatic mapping.
@@ -139,7 +139,8 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   - `type`: Provider type the flow is for (`openai_oauth` or `antigravity_oauth`).
   - `verifier`: PKCE code verifier for `openai_oauth`; empty string for `antigravity_oauth` (which authenticates with a client secret instead of PKCE).
   - `expires_at`: Unix timestamp after which the flow is invalid (10 minutes after creation).
-  - Exactly one provider may be completed per state; the row is deleted at completion, and expired rows are rejected with 404.
+  - `oauth_states` rows are provider-agnostic: they are keyed by the opaque `state` token and never attached to a provider, so a state completed after its provider was deleted legitimately recreates the provider.
+  - State consumption is a single atomic `DELETE … RETURNING` statement, so exactly one concurrent completion can ever observe a state and a state can never complete twice. A rejected (expired or unknown) state consumes nothing, and expired rows are swept whenever `start-provider-oauth` runs; completion of an expired or unknown state yields 404.
 
 ---
 
@@ -150,6 +151,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
      - **Management Sub-router (`/management-api/*`)**: Uses management authentication middleware applied to the `/management-api` sub-router. Requires `Authorization: <token>` without any `Bearer` prefix, matching `management_api.token` in configuration.
      - **Outward API Sub-router (`/api/*`)**: Validates client requests against a shared gateway API key, matching `api.key` in configuration. Format-specific sub-routers enforce protocol-compliant header parsing independently (for example, the `/openai-v1` sub-router requires `Authorization: Bearer <key>` conforming to the OpenAI specification).
    - All token comparisons use constant-time byte comparison. Mismatch yields HTTP 401.
+   - Startup is **fatal** when `api.key` or `management_api.token` is empty, whitespace-only, or still set to its `config.example.jsonc` placeholder (`CHANGE_ME_*`): an empty shared secret would authorize requests presenting the same empty value, so it is treated as a configuration violation, not a runtime condition.
    - Error response bodies are router-domain specific:
      - Root router: plain HTTP 404 with an empty body.
      - Management API: `{"error": {"message": <human-readable message>, "code": <machine-readable code>}}`; an unauthorized request carries `code: "unauthorized"`, an unknown path `code: "not_found"` (HTTP 404).
@@ -264,7 +266,7 @@ All incoming and outgoing payloads map through an internal Intermediate Represen
 - `Usage {input_tokens, output_tokens}` — token accounting.
 - `Done` — terminal event; always the last event of every event stream, regardless of upstream shape. Parsers never emit it; the gateway appends it when the upstream response is fully consumed.
 
-Every upstream response — SSE stream or JSON document — is parsed into an IR event stream; every client response — streamed or aggregated — is rendered from IR events. Non-streaming client responses are aggregated in memory from the same event stream (MessageStart → id/model, Text/Reasoning/ToolCall deltas → accumulated content, ToolCallDone → final calls, Finish, Usage).
+Every upstream response — SSE stream or JSON document — is parsed into an IR event stream; every client response — streamed or aggregated — is rendered from IR events. Non-streaming client responses are aggregated in memory from the same event stream (MessageStart → id/model, Text/Reasoning/ToolCall deltas → accumulated content, ToolCallDone → final calls, Finish, Usage). When a tool-call done event carries no assembled arguments, the accumulated streamed deltas are used.
 
 ### 6.3 Format Matrix
 
@@ -280,8 +282,10 @@ Every upstream response — SSE stream or JSON document — is parsed into an IR
 | `antigravity_oauth` | Gemini GenerateContent (envelope §5.2) | matches the client's requested mode |
 | `openai_compatible` | per `protocol` column | matches the client's requested mode |
 
-- Streaming clients receive live translated SSE chunks (`data: {json}\n\n`). Chat Completions streams end with a `data: [DONE]` sentinel; Responses streams end after the `response.completed` event.
-- Malformed upstream SSE/JSON payloads abort the stream; clients that are already streaming receive a terminal `data: {"error": {...}}` frame (Chat Completions) or a `response.failed` event (Responses) with the translated error.
+- Streaming clients receive live translated SSE chunks (`data: {json}\n\n`). Chat Completions streams end with a `data: [DONE]` sentinel; Responses streams end after the terminal `response.completed` or `response.incomplete` event. Every Responses SSE payload embeds its event name as a `"type"` field and a monotonically increasing `sequence_number`, so strict clients that discriminate on the JSON payload work without reading the `event:` line.
+- `Finish(Length)` and `Finish(ContentFilter)` render as `response.incomplete` carrying `incomplete_details.reason` (`max_output_tokens` / `content_filter`), both in the streaming terminal event and in the aggregated non-streaming response's `status`/`incomplete_details`; all other finishes render `response.completed` / `status: "completed"`.
+- Malformed upstream SSE/JSON payloads abort the stream; clients that are already streaming receive a terminal `data: {"error": {...}}` frame (Chat Completions) or a `response.failed` event (Responses) with the translated error. This applies to malformed trailing frames flushed at end-of-stream as well: they abort the stream with an error frame instead of terminating cleanly.
+- Upstream deadlines: the shared HTTP client enforces a 10-second connect timeout and a 300-second read timeout that resets after every successful read of the upstream body. A stalled upstream therefore aborts the request (mapped to 502 per §6.7) instead of hanging it indefinitely, while a slow-but-flowing response is never truncated.
 
 ### 6.4 Thinking Levels
 
@@ -304,6 +308,8 @@ Requests are parsed strictly: unknown fields and known-but-unsupported fields ar
 - **Responses**: `model`, `input` (string or item array), `instructions`, `tools` (function tools only), `tool_choice`, `temperature`, `top_p`, `max_output_tokens`, `reasoning` (`{effort}`; `summary: "auto"` accepted, other values rejected), `stream`, `store` (must be absent or `false`), `text.format` (`text`, `json_object`, `json_schema`).
 - **Message roles**: Chat Completions `system` / `developer` / `user` / `assistant` / `tool`; Responses input items `message`, `function_call`, `function_call_output`, and `reasoning` (reasoning items are accepted and ignored — they carry no replayable state in a stateless gateway).
 - System/developer messages concatenate in encounter order into IR `instructions`.
+- Responses system/developer message content parts must be text; an `input_image` part is rejected with HTTP 400 naming the field `content` (instructions have no image channel).
+- Chat Completions reasoning key policy: upstream parsing accepts both `reasoning` (precedence when both are present) and `reasoning_content`; the gateway emits `reasoning_content` in streaming deltas and in aggregated messages. Inbound assistant messages accept and ignore both `reasoning` and `reasoning_content`.
 - Usage is always included in aggregated Chat Completions responses and in Responses usage-bearing events; streaming Chat Completions responses emit the usage chunk only when `stream_options.include_usage` is set.
 
 ### 6.7 Error Mapping
@@ -324,14 +330,14 @@ Error payloads for the `/responses` endpoint use the same OpenAI error JSON stru
 
 All management routes are registered under the `/management-api` sub-router with its own 404 fallback handler and require authorization via `Authorization: <token>` (without any `Bearer` prefix).
 
-Responses are JSON. Success responses use HTTP 200; errors use the structure from §4 with codes `unauthorized` (401), `invalid_request` (400), `not_found` (404), `conflict` (409), `upstream_error` (502), and `internal` (500). Provider `name` values must match `[a-z0-9_-]{1,64}`.
+Responses are JSON. Success responses use HTTP 200; errors use the structure from §4 with codes `unauthorized` (401), `invalid_request` (400), `not_found` (404), `conflict` (409), `upstream_error` (502), and `internal` (500). Upstream failures on management endpoints always render HTTP 502 with `upstream_error` and the upstream status embedded in the message; a foreign upstream status is never forwarded verbatim. Provider `name` values must match `[a-z0-9_-]{1,64}`.
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
 | `GET` | `/management-api/list-providers` | List all configured providers and their status |
 | `POST` | `/management-api/save-provider` | Create or update a provider |
 | `POST` | `/management-api/delete-provider` | Delete a provider and its models |
-| `POST` | `management-api/start-provider-oauth` | Generate OAuth authorize URL and PKCE state |
+| `POST` | `/management-api/start-provider-oauth` | Generate OAuth authorize URL and PKCE state |
 | `POST` | `/management-api/complete-provider-oauth` | Exchange auth code for tokens and save provider |
 | `POST` | `/management-api/discover-models` | Refresh available models from upstream |
 | `GET` | `/management-api/list-models` | List all routed models and their overrides |
@@ -342,10 +348,10 @@ Responses are JSON. Success responses use HTTP 200; errors use the structure fro
 - **`GET /list-providers`** → `{"providers": [<provider>]}` where a provider object is `{"name", "model_prefix", "type", "protocol", "base_url", "expires_at", "enabled"}`; `protocol`, `base_url`, and `expires_at` are `null` when not applicable; credentials are never returned.
 - **`POST /save-provider`** — request `{"name", "type"?, "model_prefix"?, "protocol"?, "base_url"?, "credentials"?, "enabled"?}`.
   - Creation: `type` and `credentials` are required (`{"apiKey": "..."}` for `openai_compatible`); OAuth types cannot be created here — they are created by `complete-provider-oauth` (400 otherwise). `openai_compatible` requires `protocol` and `base_url`.
-  - Update: only supplied fields change; `name` is the lookup key and `type` must match the existing row (409 otherwise). Supplying `credentials` replaces them and resets `expires_at`.
+  - Update: only supplied fields change; `name` is the lookup key and `type` must match the existing row (409 otherwise). Supplying `credentials` replaces them and resets `expires_at`. The whole update — the provider row, any credentials replacement, and every model public name — applies in one transaction: a `model_prefix` change recomputes each of the provider's `models.name` values as `model_prefix + (name_override ?? upstream_name)`, and if any recomputed name collides with an existing model row (of any provider, including another model of the same provider), the update is rejected with 409 and nothing is written.
   - Response: `{"provider": <provider>}` (same shape as `list-providers`).
-- **`POST /delete-provider`** — request `{"name"}`; deletes the provider and, via cascade, its models and OAuth state attachments. Response: `{"deleted": true}`; unknown names yield 404.
-- **`POST /start-provider-oauth`** — request `{"type"}` (`openai_oauth` or `antigravity_oauth`; others 400). Persists an `oauth_states` row and responds `{"authorize_url", "state", "expires_at"}`.
+- **`POST /delete-provider`** — request `{"name"}`; deletes the provider and, via cascade, its models only (`oauth_states` rows are provider-agnostic and not attached to a provider, so a state completed after a deletion legitimately recreates the provider — see §3). Response: `{"deleted": true}`; unknown names yield 404.
+- **`POST /start-provider-oauth`** — request `{"type"}` (`openai_oauth` or `antigravity_oauth`; others 400). Sweeps expired `oauth_states` rows, persists the new state row, and responds `{"authorize_url", "state", "expires_at"}`.
 - **`POST /complete-provider-oauth`** — request `{"state", "code", "name", "model_prefix"?}`.
   - Looks up the unexpired state (404 otherwise), exchanges `code` at the provider's token endpoint, and for `antigravity_oauth` resolves the project ID (§5.2).
   - Existing provider with matching type: credentials and `expires_at` are replaced. Existing provider with differing type: 409. New provider: created with the supplied `name` and `model_prefix` (default `""`), enabled.
@@ -366,6 +372,8 @@ Responses are JSON. Success responses use HTTP 200; errors use the structure fro
 ### Configuration File (`config.jsonc`)
 
 JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
+
+Startup is fatal when `api.key` or `management_api.token` is empty, whitespace-only, or still set to the example placeholder (see §4).
 
 ### Running the Server
 ```bash

@@ -4,7 +4,8 @@ use super::{error_response, json_response, parse_body, provider_json};
 use crate::{
     database::Database,
     error::ApiError,
-    provider::{self, Credentials, NewProvider, ProviderType, UpstreamProtocol, storage},
+    format::UpstreamFormat,
+    provider::{self, Credentials, NewProvider, ProviderType, storage},
 };
 use axum::{body::Bytes, extract::State, response::Response};
 use serde::Deserialize;
@@ -115,7 +116,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
 
     let protocol = match request.protocol.as_deref() {
         None => None,
-        Some(raw) => Some(UpstreamProtocol::parse(raw).ok_or_else(|| {
+        Some(raw) => Some(UpstreamFormat::parse(raw).ok_or_else(|| {
             ApiError::invalid_parameter("protocol", format!("Unknown protocol `{raw}`"))
         })?),
     };
@@ -159,19 +160,21 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
 
         let enabled = request.enabled.unwrap_or(existing.enabled);
 
-        storage::update_provider_config(
+        // One transactional write owns the provider row, any credentials
+        // replacement, and the recomputed public model names; a prefix change
+        // that would collide is rejected with 409 before anything is written.
+        storage::update_provider(
             database,
-            existing.id,
-            &model_prefix,
-            updated_protocol,
-            base_url.as_deref(),
-            enabled,
+            &existing,
+            storage::ProviderUpdate {
+                model_prefix: &model_prefix,
+                protocol: updated_protocol,
+                base_url: base_url.as_deref(),
+                enabled,
+                credentials: credentials.as_ref(),
+            },
         )
         .await?;
-
-        if let Some(credentials) = credentials {
-            storage::update_credentials(database, existing.id, &credentials, None).await?;
-        }
     } else {
         let Some(provider_type) = provider_type else {
             return Err(ApiError::invalid_parameter(

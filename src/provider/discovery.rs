@@ -1,7 +1,7 @@
 //! Upstream model discovery per provider type.
 
-use super::{Provider, ProviderType, UpstreamProtocol};
-use crate::{error::ApiError, format::gemini::ANTIGRAVITY_BASE_URL};
+use super::{Provider, ProviderType, endpoints};
+use crate::{error::ApiError, format::UpstreamFormat};
 use reqwest::Client;
 use serde_json::Value;
 
@@ -15,14 +15,18 @@ use serde_json::Value;
 pub(crate) async fn discover_upstream_models(
     http: &Client,
     provider: &Provider,
-    access_token: &str,
 ) -> Result<Vec<String>, ApiError> {
+    // Every credential kind carries an upstream secret; the codex path below
+    // still fails with an explicit internal error when the credentials are
+    // not of the kind its provider type requires.
+    let secret = provider.credentials.secret();
+
     match provider.provider_type {
-        ProviderType::OpenAiOauth => discover_codex(http, provider, access_token).await,
+        ProviderType::OpenAiOauth => discover_codex(http, provider, secret).await,
 
-        ProviderType::AntigravityOauth => discover_antigravity(http, access_token).await,
+        ProviderType::AntigravityOauth => discover_antigravity(http, secret).await,
 
-        ProviderType::OpenAiCompatible => discover_compatible(http, provider, access_token).await,
+        ProviderType::OpenAiCompatible => discover_compatible(http, provider, secret).await,
     }
 }
 
@@ -45,7 +49,7 @@ async fn discover_codex(
     };
 
     let response = http
-        .get("https://chatgpt.com/backend-api/codex/models")
+        .get(endpoints::CODEX_MODELS_URL)
         .bearer_auth(access_token)
         .header("chatgpt-account-id", account_id)
         .send()
@@ -84,7 +88,7 @@ async fn discover_codex(
 async fn discover_antigravity(http: &Client, access_token: &str) -> Result<Vec<String>, ApiError> {
     let value: Value = post_json(
         http,
-        &format!("{ANTIGRAVITY_BASE_URL}:fetchAvailableModels"),
+        &format!("{}:fetchAvailableModels", endpoints::ANTIGRAVITY_BASE_URL),
         access_token,
         &serde_json::json!({}),
     )
@@ -121,11 +125,11 @@ async fn discover_compatible(
     let mut request = http.get(format!("{base_url}/models"));
 
     request = match protocol {
-        UpstreamProtocol::OpenAiResponse | UpstreamProtocol::OpenAiChatCompletion => {
+        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
             request.bearer_auth(access_token)
         }
 
-        UpstreamProtocol::GeminiGenerateContent => request.header("x-goog-api-key", access_token),
+        UpstreamFormat::GeminiGenerateContent => request.header("x-goog-api-key", access_token),
     };
 
     let response = request.send().await.map_err(|error| {
@@ -135,7 +139,7 @@ async fn discover_compatible(
     let value = parse_success_body(response).await?;
 
     match protocol {
-        UpstreamProtocol::OpenAiResponse | UpstreamProtocol::OpenAiChatCompletion => {
+        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
             let entries = value.get("data").and_then(Value::as_array).ok_or_else(|| {
                 ApiError::upstream_unavailable("model discovery payload lacks a `data` array")
             })?;
@@ -156,7 +160,7 @@ async fn discover_compatible(
                 .collect()
         }
 
-        UpstreamProtocol::GeminiGenerateContent => {
+        UpstreamFormat::GeminiGenerateContent => {
             let entries = value
                 .get("models")
                 .and_then(Value::as_array)
@@ -193,7 +197,7 @@ async fn parse_success_body(response: reqwest::Response) -> Result<Value, ApiErr
     })?;
 
     if !status.is_success() {
-        return Err(ApiError::upstream(status.as_u16(), body));
+        return Err(ApiError::upstream_rejected(status.as_u16(), body));
     }
 
     serde_json::from_str(&body).map_err(|error| {

@@ -8,7 +8,7 @@ use crate::error::ApiError;
 
 /// Canonical thinking levels, ordered by increasing reasoning strength.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ReasoningEffort {
+pub(crate) enum IrReasoningEffort {
     /// No reasoning (OpenAI `minimal`, Gemini budget `0`).
     Off,
 
@@ -22,9 +22,9 @@ pub(crate) enum ReasoningEffort {
     High,
 }
 
-impl ReasoningEffort {
+impl IrReasoningEffort {
     /// Parses a client-supplied OpenAI effort string; `minimal` maps to
-    /// [`ReasoningEffort::Off`].
+    /// [`IrReasoningEffort::Off`].
     pub(crate) fn parse_openai(value: &str) -> Option<Self> {
         match value {
             "minimal" => Some(Self::Off),
@@ -98,7 +98,7 @@ impl ReasoningEffort {
 
 /// Reason a completion finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FinishReason {
+pub(crate) enum IrFinishReason {
     /// The model completed its output.
     Stop,
 
@@ -139,6 +139,58 @@ pub(crate) enum IrImage {
 
     /// Remote image referenced by URL.
     Url(String),
+}
+
+impl IrImage {
+    /// Parses a client-supplied image reference: a `data:<mime>;base64,<data>`
+    /// URL becomes inline data, an `http`/`https` URL stays remote.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] for schemes other than `data:`, `http:`, and
+    /// `https:`, and for malformed data URLs.
+    pub(crate) fn from_url(url: &str) -> Result<Self, ApiError> {
+        if let Some(rest) = url.strip_prefix("data:") {
+            let (metadata, data) = rest.split_once(',').ok_or_else(|| {
+                ApiError::invalid_parameter("image_url", "Data URL is missing its payload")
+            })?;
+
+            let mime_type = metadata.strip_suffix(";base64").ok_or_else(|| {
+                ApiError::invalid_parameter(
+                    "image_url",
+                    "Only base64-encoded data URLs are supported",
+                )
+            })?;
+
+            return Ok(Self::Inline {
+                mime_type: mime_type.to_string(),
+                data_base64: data.to_string(),
+            });
+        }
+
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Ok(Self::Url(url.to_string()));
+        }
+
+        Err(ApiError::invalid_parameter(
+            "image_url",
+            "Image URLs must use the data:, http:, or https: schemes",
+        ))
+    }
+
+    /// Renders the image back into the OpenAI `image_url` form shared by the
+    /// Chat Completions and Responses codecs; the inverse of
+    /// [`IrImage::from_url`].
+    pub(crate) fn to_url(&self) -> String {
+        match self {
+            Self::Inline {
+                mime_type,
+                data_base64,
+            } => format!("data:{mime_type};base64,{data_base64}"),
+
+            Self::Url(url) => url.clone(),
+        }
+    }
 }
 
 /// One typed segment of a message.
@@ -207,7 +259,7 @@ pub(crate) struct IrTool {
 
 /// Restriction on which tool the model may call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ToolChoice {
+pub(crate) enum IrToolChoice {
     /// The model decides freely.
     Auto,
 
@@ -259,7 +311,7 @@ pub(crate) struct IrRequest {
     pub(crate) tools: Vec<IrTool>,
 
     /// Tool selection restriction.
-    pub(crate) tool_choice: Option<ToolChoice>,
+    pub(crate) tool_choice: Option<IrToolChoice>,
 
     /// Sampling temperature.
     pub(crate) temperature: Option<f64>,
@@ -275,7 +327,7 @@ pub(crate) struct IrRequest {
 
     /// Canonical reasoning level requested by the client, before any
     /// `thinking_levels_override` filtering.
-    pub(crate) reasoning_effort: Option<ReasoningEffort>,
+    pub(crate) reasoning_effort: Option<IrReasoningEffort>,
 }
 
 /// One event of a completion, in upstream-agnostic form.
@@ -330,7 +382,7 @@ pub(crate) enum IrEvent {
     },
 
     /// The completion finished.
-    Finish(FinishReason),
+    Finish(IrFinishReason),
 
     /// Token accounting.
     Usage {
@@ -346,12 +398,19 @@ pub(crate) enum IrEvent {
     Done,
 }
 
+/// Token accounting of a completion.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct IrUsage {
+    /// Tokens consumed by the input.
+    pub(crate) input_tokens: u64,
+
+    /// Tokens produced by the output.
+    pub(crate) output_tokens: u64,
+}
+
 /// One completed tool call produced by aggregation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AggregatedToolCall {
-    /// Stable index of the call within the response.
-    pub(crate) index: usize,
-
+pub(crate) struct IrAggregatedToolCall {
     /// Identifier of the invocation.
     pub(crate) call_id: String,
 
@@ -367,7 +426,7 @@ pub(crate) struct AggregatedToolCall {
 
 /// The complete result of folding an IR event stream.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Aggregation {
+pub(crate) struct IrAggregation {
     /// Upstream response identifier from [`IrEvent::MessageStart`].
     pub(crate) id: Option<String>,
 
@@ -381,32 +440,29 @@ pub(crate) struct Aggregation {
     pub(crate) reasoning: String,
 
     /// Completed tool calls in emission order.
-    pub(crate) tool_calls: Vec<AggregatedToolCall>,
+    pub(crate) tool_calls: Vec<IrAggregatedToolCall>,
 
     /// Reason the completion finished, when reported.
-    pub(crate) finish: Option<FinishReason>,
+    pub(crate) finish: Option<IrFinishReason>,
 
     /// Token accounting, when reported.
-    pub(crate) usage: Option<(u64, u64)>,
+    pub(crate) usage: Option<IrUsage>,
 }
 
-/// Folds IR events into an [`Aggregation`].
+/// Folds IR events into an [`IrAggregation`].
 #[derive(Debug, Default)]
 pub(crate) struct Aggregator {
     /// State under construction.
-    aggregation: Aggregation,
+    aggregation: IrAggregation,
 
-    /// Arguments accumulated per in-flight tool call index.
+    /// Arguments accumulated per in-flight tool call index; consulted when a
+    /// [`IrEvent::ToolCallDone`] arrives without assembled `arguments` of its
+    /// own.
     pending_arguments: Vec<(usize, String)>,
 }
 
 impl Aggregator {
     /// Ingests one event, updating the aggregation in place.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a newly started tool call cannot be buffered, violating
-    /// the push-then-read invariant.
     pub(crate) fn ingest(&mut self, event: &IrEvent) {
         match event {
             IrEvent::MessageStart { id, model } => {
@@ -423,23 +479,17 @@ impl Aggregator {
                 arguments_delta,
                 ..
             } => {
-                let pending = match self
+                match self
                     .pending_arguments
                     .iter_mut()
                     .find(|(pending_index, _)| pending_index == index)
                 {
-                    Some(pending) => pending,
-                    None => {
-                        self.pending_arguments.push((*index, String::new()));
+                    Some(pending) => pending.1.push_str(arguments_delta),
 
-                        #[expect(clippy::expect_used, reason = "the entry was just pushed above")]
-                        self.pending_arguments
-                            .last_mut()
-                            .expect("entry was just pushed")
-                    }
-                };
-
-                pending.1.push_str(arguments_delta);
+                    None => self
+                        .pending_arguments
+                        .push((*index, arguments_delta.clone())),
+                }
             }
 
             IrEvent::ToolCallDone {
@@ -449,14 +499,21 @@ impl Aggregator {
                 arguments,
                 thought_signature,
             } => {
-                self.pending_arguments
-                    .retain(|(pending_index, _)| pending_index != index);
+                let accumulated = self.take_pending_arguments(*index);
 
-                self.aggregation.tool_calls.push(AggregatedToolCall {
-                    index: *index,
+                // Upstreams normally assemble the complete arguments in the
+                // done event itself; when one arrives without them, the
+                // streamed deltas are the authoritative arguments.
+                let arguments = if arguments.is_empty() {
+                    accumulated
+                } else {
+                    arguments.clone()
+                };
+
+                self.aggregation.tool_calls.push(IrAggregatedToolCall {
                     call_id: call_id.clone(),
                     name: name.clone(),
-                    arguments: arguments.clone(),
+                    arguments,
                     thought_signature: thought_signature.clone(),
                 });
             }
@@ -466,7 +523,12 @@ impl Aggregator {
             IrEvent::Usage {
                 input_tokens,
                 output_tokens,
-            } => self.aggregation.usage = Some((*input_tokens, *output_tokens)),
+            } => {
+                self.aggregation.usage = Some(IrUsage {
+                    input_tokens: *input_tokens,
+                    output_tokens: *output_tokens,
+                });
+            }
 
             IrEvent::Done => {}
         }
@@ -474,8 +536,22 @@ impl Aggregator {
 
     /// Consumes the accumulator, dropping any unfinished in-flight tool call
     /// state.
-    pub(crate) fn finish(self) -> Aggregation {
+    pub(crate) fn finish(self) -> IrAggregation {
         self.aggregation
+    }
+
+    /// Removes and returns the arguments accumulated for one in-flight tool
+    /// call index.
+    fn take_pending_arguments(&mut self, index: usize) -> String {
+        match self
+            .pending_arguments
+            .iter()
+            .position(|(pending_index, _)| *pending_index == index)
+        {
+            Some(position) => self.pending_arguments.swap_remove(position).1,
+
+            None => String::new(),
+        }
     }
 }
 
@@ -487,9 +563,9 @@ impl Aggregator {
 /// is clamped into the allowed set, and a missing request defaults to the
 /// highest allowed level.
 pub(crate) fn apply_thinking_levels(
-    requested: Option<ReasoningEffort>,
-    allowed_override: Option<&[ReasoningEffort]>,
-) -> Option<ReasoningEffort> {
+    requested: Option<IrReasoningEffort>,
+    allowed_override: Option<&[IrReasoningEffort]>,
+) -> Option<IrReasoningEffort> {
     match allowed_override {
         None => requested,
 
@@ -506,14 +582,16 @@ pub(crate) fn apply_thinking_levels(
 
 /// Parses a `thinking_levels_override` JSON array into canonical levels,
 /// rejecting empty arrays, unknown names, and duplicates.
-pub(crate) fn parse_thinking_levels_override(json: &str) -> Result<Vec<ReasoningEffort>, ApiError> {
+pub(crate) fn parse_thinking_levels_override(
+    json: &str,
+) -> Result<Vec<IrReasoningEffort>, ApiError> {
     let values: Vec<String> = serde_json::from_str(json)
         .map_err(|error| ApiError::invalid_request(format!("Invalid thinking levels: {error}")))?;
 
     let mut levels = Vec::with_capacity(values.len());
 
     for value in &values {
-        let level = ReasoningEffort::parse_canonical(value).ok_or_else(|| {
+        let level = IrReasoningEffort::parse_canonical(value).ok_or_else(|| {
             ApiError::invalid_request(format!(
                 "Unknown thinking level `{value}`; expected one of off, low, medium, high"
             ))
@@ -540,12 +618,12 @@ pub(crate) fn parse_thinking_levels_override(json: &str) -> Result<Vec<Reasoning
 #[cfg(test)]
 mod tests {
     use super::{
-        AggregatedToolCall, Aggregator, FinishReason, IrEvent, ReasoningEffort,
+        Aggregator, IrAggregatedToolCall, IrEvent, IrFinishReason, IrReasoningEffort, IrUsage,
         apply_thinking_levels, parse_thinking_levels_override,
     };
 
     /// Folds a slice of events into a finished aggregation.
-    fn aggregate(events: &[IrEvent]) -> super::Aggregation {
+    fn aggregate(events: &[IrEvent]) -> super::IrAggregation {
         let mut aggregator = Aggregator::default();
 
         for event in events {
@@ -555,7 +633,7 @@ mod tests {
         aggregator.finish()
     }
 
-    /// Verifies that openai effort parsing round trips holds.
+    /// Verifies that OpenAI effort parsing round trips.
     ///
     /// # Panics
     ///
@@ -563,92 +641,94 @@ mod tests {
     #[test]
     fn openai_effort_parsing_round_trips() {
         assert_eq!(
-            ReasoningEffort::parse_openai("minimal"),
-            Some(ReasoningEffort::Off)
+            IrReasoningEffort::parse_openai("minimal"),
+            Some(IrReasoningEffort::Off)
         );
 
         assert_eq!(
-            ReasoningEffort::parse_openai("high"),
-            Some(ReasoningEffort::High)
+            IrReasoningEffort::parse_openai("high"),
+            Some(IrReasoningEffort::High)
         );
 
-        assert_eq!(ReasoningEffort::parse_openai("off"), None);
+        assert_eq!(IrReasoningEffort::parse_openai("off"), None);
 
-        assert_eq!(ReasoningEffort::Off.to_openai(), "minimal");
-        assert_eq!(ReasoningEffort::High.to_openai(), "high");
+        assert_eq!(IrReasoningEffort::Off.to_openai(), "minimal");
+        assert_eq!(IrReasoningEffort::High.to_openai(), "high");
     }
 
-    /// Verifies that thinking budgets match documented levels holds.
+    /// Verifies that thinking budgets match the documented per-level values.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
     #[test]
     fn thinking_budgets_match_documented_levels() {
-        assert_eq!(ReasoningEffort::Off.to_thinking_budget(), 0);
-        assert_eq!(ReasoningEffort::Low.to_thinking_budget(), 1024);
-        assert_eq!(ReasoningEffort::Medium.to_thinking_budget(), 8192);
-        assert_eq!(ReasoningEffort::High.to_thinking_budget(), 24576);
+        assert_eq!(IrReasoningEffort::Off.to_thinking_budget(), 0);
+        assert_eq!(IrReasoningEffort::Low.to_thinking_budget(), 1024);
+        assert_eq!(IrReasoningEffort::Medium.to_thinking_budget(), 8192);
+        assert_eq!(IrReasoningEffort::High.to_thinking_budget(), 24576);
     }
 
-    /// Verifies that clamping follows nearest allowed level holds.
+    /// Verifies that clamping follows the nearest allowed level.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
     #[test]
     fn clamping_follows_nearest_allowed_level() {
-        let allowed = [ReasoningEffort::Off, ReasoningEffort::Medium];
+        let allowed = [IrReasoningEffort::Off, IrReasoningEffort::Medium];
 
         assert_eq!(
-            ReasoningEffort::High.clamp_into(&allowed),
-            ReasoningEffort::Medium
+            IrReasoningEffort::High.clamp_into(&allowed),
+            IrReasoningEffort::Medium
         );
 
         assert_eq!(
-            ReasoningEffort::Low.clamp_into(&allowed),
-            ReasoningEffort::Off
+            IrReasoningEffort::Low.clamp_into(&allowed),
+            IrReasoningEffort::Off
         );
 
         assert_eq!(
-            ReasoningEffort::Off.clamp_into(&[ReasoningEffort::Medium, ReasoningEffort::High]),
-            ReasoningEffort::Medium
+            IrReasoningEffort::Off
+                .clamp_into(&[IrReasoningEffort::Medium, IrReasoningEffort::High]),
+            IrReasoningEffort::Medium
         );
     }
 
-    /// Verifies that thinking level filtering matches contract holds.
+    /// Verifies that thinking level filtering matches the documented
+    /// contract.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
     #[test]
     fn thinking_level_filtering_matches_contract() {
-        let allowed = [ReasoningEffort::Low, ReasoningEffort::High];
+        let allowed = [IrReasoningEffort::Low, IrReasoningEffort::High];
 
         assert_eq!(
-            apply_thinking_levels(Some(ReasoningEffort::Medium), Some(&allowed)),
-            Some(ReasoningEffort::Low)
+            apply_thinking_levels(Some(IrReasoningEffort::Medium), Some(&allowed)),
+            Some(IrReasoningEffort::Low)
         );
 
         assert_eq!(
-            apply_thinking_levels(Some(ReasoningEffort::High), Some(&allowed)),
-            Some(ReasoningEffort::High)
+            apply_thinking_levels(Some(IrReasoningEffort::High), Some(&allowed)),
+            Some(IrReasoningEffort::High)
         );
 
         assert_eq!(
             apply_thinking_levels(None, Some(&allowed)),
-            Some(ReasoningEffort::High)
+            Some(IrReasoningEffort::High)
         );
 
         assert_eq!(apply_thinking_levels(None, None), None);
 
         assert_eq!(
-            apply_thinking_levels(Some(ReasoningEffort::Medium), None),
-            Some(ReasoningEffort::Medium)
+            apply_thinking_levels(Some(IrReasoningEffort::Medium), None),
+            Some(IrReasoningEffort::Medium)
         );
     }
 
-    /// Verifies that thinking level override parsing validates input holds.
+    /// Verifies that thinking level override parsing validates its input.
     ///
     /// # Panics
     ///
@@ -658,7 +738,10 @@ mod tests {
         #[expect(clippy::expect_used, reason = "a parse failure fails the test")]
         let parsed = parse_thinking_levels_override(r#"["high","off"]"#).expect("must parse");
 
-        assert_eq!(parsed, vec![ReasoningEffort::High, ReasoningEffort::Off]);
+        assert_eq!(
+            parsed,
+            vec![IrReasoningEffort::High, IrReasoningEffort::Off]
+        );
 
         assert!(parse_thinking_levels_override("[]").is_err());
         assert!(parse_thinking_levels_override(r#"["turbo"]"#).is_err());
@@ -666,7 +749,7 @@ mod tests {
         assert!(parse_thinking_levels_override("not json").is_err());
     }
 
-    /// Verifies that aggregation folds all event kinds holds.
+    /// Verifies that aggregation folds every event kind.
     ///
     /// # Panics
     ///
@@ -700,7 +783,7 @@ mod tests {
                 arguments: "{\"city\":\"oslo\"}".to_string(),
                 thought_signature: Some("sig".to_string()),
             },
-            IrEvent::Finish(FinishReason::ToolCall),
+            IrEvent::Finish(IrFinishReason::ToolCall),
             IrEvent::Usage {
                 input_tokens: 10,
                 output_tokens: 5,
@@ -714,15 +797,98 @@ mod tests {
         assert_eq!(aggregation.text, "hello");
         assert_eq!(
             aggregation.tool_calls,
-            vec![AggregatedToolCall {
-                index: 0,
+            vec![IrAggregatedToolCall {
                 call_id: "call_a".to_string(),
                 name: "weather".to_string(),
                 arguments: "{\"city\":\"oslo\"}".to_string(),
                 thought_signature: Some("sig".to_string()),
             }]
         );
-        assert_eq!(aggregation.finish, Some(FinishReason::ToolCall));
-        assert_eq!(aggregation.usage, Some((10, 5)));
+
+        assert_eq!(aggregation.finish, Some(IrFinishReason::ToolCall));
+
+        assert_eq!(
+            aggregation.usage,
+            Some(IrUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+            })
+        );
+    }
+
+    /// Verifies that a done event without assembled arguments falls back to
+    /// the accumulated argument deltas.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn tool_call_done_without_arguments_uses_accumulated_deltas() {
+        let aggregation = aggregate(&[
+            IrEvent::ToolCallDelta {
+                index: 3,
+                call_id: Some("call_a".to_string()),
+                name: Some("weather".to_string()),
+                arguments_delta: "{\"city\":".to_string(),
+            },
+            IrEvent::ToolCallDelta {
+                index: 3,
+                call_id: None,
+                name: None,
+                arguments_delta: "\"oslo\"}".to_string(),
+            },
+            IrEvent::ToolCallDone {
+                index: 3,
+                call_id: "call_a".to_string(),
+                name: "weather".to_string(),
+                arguments: String::new(),
+                thought_signature: None,
+            },
+        ]);
+
+        assert_eq!(
+            aggregation.tool_calls,
+            vec![IrAggregatedToolCall {
+                call_id: "call_a".to_string(),
+                name: "weather".to_string(),
+                arguments: "{\"city\":\"oslo\"}".to_string(),
+                thought_signature: None,
+            }]
+        );
+    }
+
+    /// Verifies that assembled done-event arguments outrank the accumulated
+    /// deltas when both are present.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn tool_call_done_arguments_outrank_accumulated_deltas() {
+        let aggregation = aggregate(&[
+            IrEvent::ToolCallDelta {
+                index: 0,
+                call_id: Some("call_a".to_string()),
+                name: Some("weather".to_string()),
+                arguments_delta: "{\"stale\":".to_string(),
+            },
+            IrEvent::ToolCallDone {
+                index: 0,
+                call_id: "call_a".to_string(),
+                name: "weather".to_string(),
+                arguments: "{\"fresh\":1}".to_string(),
+                thought_signature: None,
+            },
+        ]);
+
+        assert_eq!(aggregation.tool_calls.len(), 1);
+
+        assert_eq!(
+            aggregation
+                .tool_calls
+                .first()
+                .map(|call| call.arguments.as_str()),
+            Some("{\"fresh\":1}")
+        );
     }
 }
