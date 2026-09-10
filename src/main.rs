@@ -6,6 +6,7 @@ use deref_once_lock::OnceLock;
 use host_port_pair::HostPortPair;
 use json_strip_comments::StripComments;
 use lexopt::{Arg as Argument, Parser as ArgumentsParser};
+use log::LevelFilter;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_with::{As, DurationMilliSeconds};
@@ -21,6 +22,7 @@ mod format;
 mod gateway;
 mod ids;
 mod ir;
+mod logging;
 mod management_api;
 mod provider;
 mod security;
@@ -60,6 +62,10 @@ const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    /// Minimum severity a log record must carry to be emitted to standard
+    /// error.
+    log_level: LevelFilter,
+
     /// Address and TCP port on which the gateway listens for plaintext HTTP
     /// connections.
     listen: HostPortPair,
@@ -113,7 +119,7 @@ struct ApiConfig {
 /// # Panics
 ///
 /// Panics if command-line arguments or configuration cannot be parsed or if
-/// the global configuration has already been initialized.
+/// the global configuration or logger has already been initialized.
 #[main]
 async fn main() -> ! {
     // Install a process-terminating panic hook before any other operation to
@@ -128,6 +134,8 @@ async fn main() -> ! {
         reason = "CONFIG is initialized exactly once at application startup"
     )]
     CONFIG.set(config).unwrap();
+
+    logging::init();
 
     #[expect(
         clippy::expect_used,
@@ -258,6 +266,7 @@ fn set_panic_hook() {
 
 #[cfg(test)]
 mod tests {
+    use log::LevelFilter;
     use std::{ffi::OsString, path::PathBuf};
 
     /// Replaces the global configuration for router-level tests; only the
@@ -266,16 +275,17 @@ mod tests {
         let _ = crate::CONFIG.set(config);
     }
 
-    /// Renders a configuration file body carrying the given secrets.
-    fn config_body(api_key: &str, management_token: &str) -> String {
-        let database = concat!(
-            r#"{"listen":"127.0.0.1:0","database":{"path":"test.db","max_connections":1,"#,
-            r#""pool_timeout":1}"#
+    /// Renders a configuration file body carrying the given log level and
+    /// secrets.
+    fn config_body(log_level: &str, api_key: &str, management_token: &str) -> String {
+        let head = format!(
+            r#"{{"log_level":"{log_level}","listen":"127.0.0.1:0","database":{{"path":"test.db","#,
         );
+        let database = r#""max_connections":1,"pool_timeout":1}"#;
         let management = format!(r#","management_api":{{"token":"{management_token}"}}"#);
         let api = format!(r#","api":{{"key":"{api_key}"}}}}"#);
 
-        format!("{database}{management}{api}")
+        format!("{head}{database}{management}{api}")
     }
 
     /// A temporary configuration file deleted on drop, including through
@@ -320,14 +330,66 @@ mod tests {
         }
     }
 
-    /// Verifies that valid configuration parses.
+    /// Verifies that valid configuration parses, carrying the configured
+    /// log level.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
     #[test]
     fn parses_valid_configuration() {
-        let temporary = TempConfig::write("valid-secrets", &config_body("key", "token"));
+        let temporary = TempConfig::write("valid-secrets", &config_body("info", "key", "token"));
+
+        let config = temporary.parse();
+
+        assert_eq!(config.log_level, LevelFilter::Info);
+    }
+
+    /// Verifies that log levels parse case-insensitively.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn parses_log_level_case_insensitively() {
+        let temporary = TempConfig::write("upper-log-level", &config_body("WARN", "key", "token"));
+
+        let config = temporary.parse();
+
+        assert_eq!(config.log_level, LevelFilter::Warn);
+    }
+
+    /// Verifies that a configuration file missing the log level is fatal
+    /// with a panic naming the offending field.
+    ///
+    /// # Panics
+    ///
+    /// Panics as required by the assertion.
+    #[test]
+    #[should_panic(expected = "missing field `log_level`")]
+    fn names_missing_log_level_field() {
+        let temporary = TempConfig::write(
+            "missing-log-level",
+            concat!(
+                r#"{"listen":"127.0.0.1:0","database":{"path":"test.db","#,
+                r#""max_connections":1,"pool_timeout":1},"management_api":{"token":"token"},"#,
+                r#""api":{"key":"key"}}"#,
+            ),
+        );
+
+        let _config = temporary.parse();
+    }
+
+    /// Verifies that an unknown log level is fatal with a panic naming the
+    /// offending value.
+    ///
+    /// # Panics
+    ///
+    /// Panics as required by the assertion.
+    #[test]
+    #[should_panic(expected = "unknown variant `bogus`")]
+    fn names_unknown_log_level_value() {
+        let temporary = TempConfig::write("bogus-log-level", &config_body("bogus", "key", "token"));
 
         let _config = temporary.parse();
     }

@@ -181,6 +181,7 @@ pub(crate) fn init_config() {
         fs::write(
             &path,
             r#"{
+                "log_level": "info",
                 "listen": "127.0.0.1:1",
                 "database": {"path": "irrelevant.db", "max_connections": 1, "pool_timeout": 1},
                 "management_api": {"token": "test-mgmt"},

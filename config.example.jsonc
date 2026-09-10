@@ -1,4 +1,7 @@
 {
+    // Minimum log severity emitted to stderr (off, error, warn, info, debug, trace).
+    "log_level": "info",
+
     // Listen address and port (host:port).
     "listen": "0.0.0.0:8080",
 

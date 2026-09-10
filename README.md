@@ -42,6 +42,7 @@
 | **Database** | `turso` | In-process SQLite-compatible SQL database (`tursodatabase/turso`) |
 | **HTTP Client** | `reqwest` | Connection pooling and streaming |
 | **Serialization** | `serde` + `serde_json` | Strongly typed parsing and serialization |
+| **Logging** | `log` + `env_logger` | Log facade and stderr emission (§8); `env_logger` is built entirely from configuration, never from environment variables |
 | **Async Runtime** | `tokio` | Multi-threaded async I/O |
 
 ### 2.2 Server Pipeline Architecture & Router Hierarchy
@@ -402,7 +403,17 @@ Responses are JSON. Success responses use HTTP 200; errors use the structure fro
 
 ### Configuration File (`config.jsonc`)
 
-JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
+JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. The root schema is: `log_level` (level filter, see below), `listen`, `database` (`path`, `max_connections`, `pool_timeout`), `management_api` (`token`), and `api` (`key`). Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
+
+### Logging
+
+- The global logger is installed once during startup, after the configuration is parsed and before every other subsystem is initialized.
+- The minimum severity a log record must carry to be emitted is taken **exclusively** from the root `log_level` configuration value, one of `off`, `error`, `warn`, `info`, `debug`, `trace` (case-insensitive). Environment variables — `RUST_LOG` in particular — are never consulted, and no per-target directives exist.
+- Records are written to standard error as plain text without ANSI styling, one line per record in the format `<RFC 3339 UTC timestamp (millisecond precision)> <level padded to 5 characters> <target>: <message>`, for example:
+
+  ```text
+  2026-09-11T08:15:30.123Z INFO  janusgate::server: listening on 0.0.0.0:8080
+  ```
 
 ### Running the Server
 ```bash

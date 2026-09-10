@@ -698,6 +698,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
 dependencies = [
  "env_filter",
+ "jiff",
  "log",
 ]
 
@@ -1435,12 +1436,14 @@ dependencies = [
  "blake3",
  "deadpool",
  "deref-once-lock",
+ "env_logger",
  "futures",
  "host-port-pair",
  "hserver",
  "hyper-util",
  "json-strip-comments",
  "lexopt",
+ "log",
  "rand 0.10.2",
  "reqwest",
  "serde",
@@ -1682,6 +1685,9 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "loom"
