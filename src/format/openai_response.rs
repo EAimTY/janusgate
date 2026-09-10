@@ -878,53 +878,6 @@ impl UpstreamParser {
         Self::default()
     }
 
-    /// Ingests one upstream SSE frame carrying a `response.*` event.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError`] for malformed JSON and upstream failure events.
-    pub(crate) fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
-        let value: Value = serde_json::from_str(&frame.data)
-            .map_err(|_| ApiError::upstream_unavailable("malformed JSON in upstream SSE frame"))?;
-
-        self.ingest_event(value)
-    }
-
-    /// Parses a complete upstream non-streaming JSON response.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError`] for upstream failure statuses and malformed
-    /// bodies.
-    pub(crate) fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
-        let mut events = self.message_start_events(&value);
-
-        if let Some(output) = value.get("output").and_then(Value::as_array) {
-            for (position, item) in output.iter().enumerate() {
-                self.ingest_output_item(item, OutputItemOrigin::Json(position), &mut events)?;
-            }
-        }
-
-        let status = value.get("status");
-
-        if status.and_then(Value::as_str) == Some("failed") {
-            let message = value
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("upstream response failed");
-
-            return Err(ApiError::upstream_unavailable(message));
-        }
-
-        self.is_finished = true;
-
-        events.push(IrEvent::Finish(finish_reason_for_response(&value)));
-
-        push_usage_events(&value, &mut events);
-
-        Ok(events)
-    }
-
     /// Ingests one upstream event object.
     fn ingest_event(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
         let event_type = value
@@ -1268,12 +1221,51 @@ impl UpstreamParser {
 }
 
 impl UpstreamEventParser for UpstreamParser {
+    /// Ingests one upstream SSE frame carrying a `response.*` event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] for malformed JSON and upstream failure events.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
-        Self::ingest_frame(self, frame)
+        let value: Value = serde_json::from_str(&frame.data)
+            .map_err(|_| ApiError::upstream_unavailable("malformed JSON in upstream SSE frame"))?;
+
+        self.ingest_event(value)
     }
 
+    /// Parses a complete upstream non-streaming JSON response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] for upstream failure statuses and malformed
+    /// bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
-        Self::parse_json_response(self, value)
+        let mut events = self.message_start_events(&value);
+
+        if let Some(output) = value.get("output").and_then(Value::as_array) {
+            for (position, item) in output.iter().enumerate() {
+                self.ingest_output_item(item, OutputItemOrigin::Json(position), &mut events)?;
+            }
+        }
+
+        let status = value.get("status");
+
+        if status.and_then(Value::as_str) == Some("failed") {
+            let message = value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("upstream response failed");
+
+            return Err(ApiError::upstream_unavailable(message));
+        }
+
+        self.is_finished = true;
+
+        events.push(IrEvent::Finish(finish_reason_for_response(&value)));
+
+        push_usage_events(&value, &mut events);
+
+        Ok(events)
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {
@@ -1429,8 +1421,152 @@ impl SseRenderer {
         }
     }
 
+    /// Closes any open reasoning or message items, emitting their done event
+    /// sequences and recording the completed items.
+    fn close_open_items(&mut self) -> Vec<String> {
+        let mut frames = Vec::new();
+
+        if let Some((item_id, output_index, text)) = self.reasoning.take() {
+            for (event_name, payload) in [
+                (
+                    "response.reasoning_summary_text.done",
+                    serde_json::json!({
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "summary_index": 0,
+                        "text": text,
+                    }),
+                ),
+                (
+                    "response.reasoning_summary_part.done",
+                    serde_json::json!({
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "summary_index": 0,
+                        "part": {"type": "summary_text", "text": text},
+                    }),
+                ),
+                (
+                    "response.output_item.done",
+                    serde_json::json!({
+                        "output_index": output_index,
+                        "item": {"id": item_id, "type": "reasoning", "summary": [
+                            {"type": "summary_text", "text": text}
+                        ]},
+                    }),
+                ),
+            ] {
+                frames.push(self.event_frame(event_name, payload));
+            }
+
+            self.completed_items.push(OpenOutputItem {
+                output_index,
+                item: serde_json::json!({
+                    "id": item_id,
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": text}],
+                }),
+            });
+        }
+
+        if let Some((item_id, output_index, text)) = self.message.take() {
+            let content_part = serde_json::json!({
+                "type": "output_text",
+                "text": text,
+                "annotations": [],
+                "logprobs": [],
+            });
+
+            let completed_item = serde_json::json!({
+                "id": item_id,
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [content_part.clone()],
+            });
+
+            for (event_name, payload) in [
+                (
+                    "response.output_text.done",
+                    serde_json::json!({
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "text": content_part.get("text").cloned().unwrap_or(Value::Null),
+                        "logprobs": [],
+                    }),
+                ),
+                (
+                    "response.content_part.done",
+                    serde_json::json!({
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "part": content_part,
+                    }),
+                ),
+                (
+                    "response.output_item.done",
+                    serde_json::json!({
+                        "output_index": output_index,
+                        "item": completed_item.clone(),
+                    }),
+                ),
+            ] {
+                frames.push(self.event_frame(event_name, payload));
+            }
+
+            self.completed_items.push(OpenOutputItem {
+                output_index,
+                item: completed_item,
+            });
+        }
+
+        frames
+    }
+
+    /// Builds the response object shell shared by all events.
+    fn response_shell(&self, status: &str, output: Value) -> Value {
+        serde_json::json!({
+            "id": self.id,
+            "object": "response",
+            "created_at": self.created_at,
+            "status": status,
+            "model": self.model,
+            "output": output,
+            // `parallel_tool_calls`, `tool_choice`, and `tools` are required
+            // fields of the official Response shape (openai-python `Response`
+            // types them without defaults), so the shell always carries the
+            // statics describing the gateway itself: it advertises no
+            // parallel tool-call control, tool calls happen whenever the
+            // model decides (`auto`), and no tool definitions are echoed
+            // back to the client.
+            "parallel_tool_calls": false,
+            "tool_choice": "auto",
+            "tools": [],
+        })
+    }
+
+    /// Formats one SSE frame with the given event name and payload, assigning
+    /// the next sequence number.
+    ///
+    /// The payload carries `type` because strict clients — openai-python's
+    /// `ResponseStreamEvent` union and openai/codex's serde type-tagged enum —
+    /// discriminate events on the JSON payload, not the `event:` line.
+    fn event_frame(&mut self, event_name: &str, mut payload: Value) -> String {
+        json_insert(&mut payload, "type", Value::String(event_name.to_string()));
+
+        json_insert(&mut payload, "sequence_number", Value::from(self.sequence));
+
+        self.sequence += 1;
+
+        format_frame(Some(event_name), &payload.to_string())
+    }
+}
+
+impl ClientSseRenderer for SseRenderer {
     /// Renders one IR event into zero or more SSE frames.
-    pub(crate) fn render(&mut self, event: &IrEvent) -> Vec<String> {
+    fn render(&mut self, event: &IrEvent) -> Vec<String> {
         match event {
             IrEvent::MessageStart { .. } => {
                 if self.is_created {
@@ -1830,7 +1966,7 @@ impl SseRenderer {
     }
 
     /// Renders a mid-stream error as a terminal `response.failed` event.
-    pub(crate) fn error_frame(&mut self, error: &ApiError) -> String {
+    fn error_frame(&mut self, error: &ApiError) -> String {
         let payload = error.to_openai_json();
 
         let error_payload = payload
@@ -1851,158 +1987,6 @@ impl SseRenderer {
                 "response": shell,
             }),
         )
-    }
-
-    /// Closes any open reasoning or message items, emitting their done event
-    /// sequences and recording the completed items.
-    fn close_open_items(&mut self) -> Vec<String> {
-        let mut frames = Vec::new();
-
-        if let Some((item_id, output_index, text)) = self.reasoning.take() {
-            for (event_name, payload) in [
-                (
-                    "response.reasoning_summary_text.done",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "summary_index": 0,
-                        "text": text,
-                    }),
-                ),
-                (
-                    "response.reasoning_summary_part.done",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "summary_index": 0,
-                        "part": {"type": "summary_text", "text": text},
-                    }),
-                ),
-                (
-                    "response.output_item.done",
-                    serde_json::json!({
-                        "output_index": output_index,
-                        "item": {"id": item_id, "type": "reasoning", "summary": [
-                            {"type": "summary_text", "text": text}
-                        ]},
-                    }),
-                ),
-            ] {
-                frames.push(self.event_frame(event_name, payload));
-            }
-
-            self.completed_items.push(OpenOutputItem {
-                output_index,
-                item: serde_json::json!({
-                    "id": item_id,
-                    "type": "reasoning",
-                    "summary": [{"type": "summary_text", "text": text}],
-                }),
-            });
-        }
-
-        if let Some((item_id, output_index, text)) = self.message.take() {
-            let content_part = serde_json::json!({
-                "type": "output_text",
-                "text": text,
-                "annotations": [],
-                "logprobs": [],
-            });
-
-            let completed_item = serde_json::json!({
-                "id": item_id,
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [content_part.clone()],
-            });
-
-            for (event_name, payload) in [
-                (
-                    "response.output_text.done",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "content_index": 0,
-                        "text": content_part.get("text").cloned().unwrap_or(Value::Null),
-                        "logprobs": [],
-                    }),
-                ),
-                (
-                    "response.content_part.done",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "content_index": 0,
-                        "part": content_part,
-                    }),
-                ),
-                (
-                    "response.output_item.done",
-                    serde_json::json!({
-                        "output_index": output_index,
-                        "item": completed_item.clone(),
-                    }),
-                ),
-            ] {
-                frames.push(self.event_frame(event_name, payload));
-            }
-
-            self.completed_items.push(OpenOutputItem {
-                output_index,
-                item: completed_item,
-            });
-        }
-
-        frames
-    }
-
-    /// Builds the response object shell shared by all events.
-    fn response_shell(&self, status: &str, output: Value) -> Value {
-        serde_json::json!({
-            "id": self.id,
-            "object": "response",
-            "created_at": self.created_at,
-            "status": status,
-            "model": self.model,
-            "output": output,
-            // `parallel_tool_calls`, `tool_choice`, and `tools` are required
-            // fields of the official Response shape (openai-python `Response`
-            // types them without defaults), so the shell always carries the
-            // statics describing the gateway itself: it advertises no
-            // parallel tool-call control, tool calls happen whenever the
-            // model decides (`auto`), and no tool definitions are echoed
-            // back to the client.
-            "parallel_tool_calls": false,
-            "tool_choice": "auto",
-            "tools": [],
-        })
-    }
-
-    /// Formats one SSE frame with the given event name and payload, assigning
-    /// the next sequence number.
-    ///
-    /// The payload carries `type` because strict clients — openai-python's
-    /// `ResponseStreamEvent` union and openai/codex's serde type-tagged enum —
-    /// discriminate events on the JSON payload, not the `event:` line.
-    fn event_frame(&mut self, event_name: &str, mut payload: Value) -> String {
-        json_insert(&mut payload, "type", Value::String(event_name.to_string()));
-
-        json_insert(&mut payload, "sequence_number", Value::from(self.sequence));
-
-        self.sequence += 1;
-
-        format_frame(Some(event_name), &payload.to_string())
-    }
-}
-
-impl ClientSseRenderer for SseRenderer {
-    fn render(&mut self, event: &IrEvent) -> Vec<String> {
-        Self::render(self, event)
-    }
-
-    fn error_frame(&mut self, error: &ApiError) -> String {
-        Self::error_frame(self, error)
     }
 }
 
@@ -2099,7 +2083,8 @@ mod tests {
     use crate::{
         error::ApiError,
         format::{
-            UpstreamEventParser as _, openai_chat_completion::SseRenderer as ChatSseRenderer,
+            ClientSseRenderer as _, UpstreamEventParser as _,
+            openai_chat_completion::SseRenderer as ChatSseRenderer,
         },
         ir::{Aggregator, IrEvent, IrFinishReason, IrPart, IrUsage},
         sse::SseParser,

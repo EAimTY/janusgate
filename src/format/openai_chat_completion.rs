@@ -258,6 +258,11 @@ struct ToolFunctionIn {
     /// JSON Schema of accepted arguments.
     #[serde(default)]
     parameters: Option<Value>,
+
+    /// OpenAI strictness flag; accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    strict: Option<bool>,
 }
 
 /// Tool choice, tagged by `type` when an object.
@@ -892,53 +897,6 @@ impl UpstreamParser {
         Self::default()
     }
 
-    /// Ingests one upstream SSE frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError`] for malformed JSON and upstream error payloads.
-    pub(crate) fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
-        if frame.data.trim() == "[DONE]" {
-            return Ok(self.flush_pending_calls());
-        }
-
-        let value: Value = serde_json::from_str(&frame.data)
-            .map_err(|_| ApiError::upstream_unavailable("malformed JSON in upstream SSE frame"))?;
-
-        self.ingest_chunk(value)
-    }
-
-    /// Parses a complete upstream non-streaming JSON response.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError`] for upstream error payloads and malformed bodies.
-    pub(crate) fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
-        reject_upstream_error(&value)?;
-
-        let mut events = self.message_start_events(&value);
-
-        if let Some(message) = first_choice(&value).and_then(|choice| choice.get("message")) {
-            events.append(&mut message_events_from_full(message));
-        }
-
-        let finish_reason = first_choice(&value)
-            .and_then(|choice| choice.get("finish_reason"))
-            .and_then(Value::as_str)
-            .map(finish_reason_from_openai)
-            .unwrap_or(IrFinishReason::Stop);
-
-        self.is_finished = true;
-
-        events.push(IrEvent::Finish(finish_reason));
-
-        if let Some(usage) = parse_usage(value.get("usage")) {
-            events.push(usage);
-        }
-
-        Ok(events)
-    }
-
     /// Ingests one streaming chunk object.
     fn ingest_chunk(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
         reject_upstream_error(&value)?;
@@ -1093,12 +1051,51 @@ impl UpstreamParser {
 }
 
 impl UpstreamEventParser for UpstreamParser {
+    /// Ingests one upstream SSE frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] for malformed JSON and upstream error payloads.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
-        Self::ingest_frame(self, frame)
+        if frame.data.trim() == "[DONE]" {
+            return Ok(self.flush_pending_calls());
+        }
+
+        let value: Value = serde_json::from_str(&frame.data)
+            .map_err(|_| ApiError::upstream_unavailable("malformed JSON in upstream SSE frame"))?;
+
+        self.ingest_chunk(value)
     }
 
+    /// Parses a complete upstream non-streaming JSON response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] for upstream error payloads and malformed bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
-        Self::parse_json_response(self, value)
+        reject_upstream_error(&value)?;
+
+        let mut events = self.message_start_events(&value);
+
+        if let Some(message) = first_choice(&value).and_then(|choice| choice.get("message")) {
+            events.append(&mut message_events_from_full(message));
+        }
+
+        let finish_reason = first_choice(&value)
+            .and_then(|choice| choice.get("finish_reason"))
+            .and_then(Value::as_str)
+            .map(finish_reason_from_openai)
+            .unwrap_or(IrFinishReason::Stop);
+
+        self.is_finished = true;
+
+        events.push(IrEvent::Finish(finish_reason));
+
+        if let Some(usage) = parse_usage(value.get("usage")) {
+            events.push(usage);
+        }
+
+        Ok(events)
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {
@@ -1295,8 +1292,46 @@ impl SseRenderer {
         }
     }
 
+    /// Formats one delta chunk with an optional finish reason.
+    fn chunk_frame(&self, delta: Value, finish_reason: Option<&str>) -> String {
+        let chunk = serde_json::json!({
+            "id": self.id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "choices": [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": finish_reason,
+            }],
+        });
+
+        format_data_frame(&chunk.to_string())
+    }
+
+    /// Formats the terminal usage-only chunk carrying an empty choices
+    /// array, matching the official stream shape.
+    fn usage_frame(&self, usage: IrUsage) -> String {
+        let chunk = serde_json::json!({
+            "id": self.id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "choices": [],
+            "usage": {
+                "prompt_tokens": usage.input_tokens,
+                "completion_tokens": usage.output_tokens,
+                "total_tokens": usage.input_tokens + usage.output_tokens,
+            },
+        });
+
+        format_data_frame(&chunk.to_string())
+    }
+}
+
+impl ClientSseRenderer for SseRenderer {
     /// Renders one IR event into zero or more SSE frames.
-    pub(crate) fn render(&mut self, event: &IrEvent) -> Vec<String> {
+    fn render(&mut self, event: &IrEvent) -> Vec<String> {
         match event {
             IrEvent::MessageStart { .. } => {
                 if self.is_role_sent {
@@ -1445,54 +1480,8 @@ impl SseRenderer {
     }
 
     /// Renders a mid-stream error as a terminal SSE frame.
-    pub(crate) fn error_frame(&self, error: &ApiError) -> String {
-        format_data_frame(&error.to_openai_json().to_string())
-    }
-
-    /// Formats one delta chunk with an optional finish reason.
-    fn chunk_frame(&self, delta: Value, finish_reason: Option<&str>) -> String {
-        let chunk = serde_json::json!({
-            "id": self.id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": self.model,
-            "choices": [{
-                "index": 0,
-                "delta": delta,
-                "finish_reason": finish_reason,
-            }],
-        });
-
-        format_data_frame(&chunk.to_string())
-    }
-
-    /// Formats the terminal usage-only chunk carrying an empty choices
-    /// array, matching the official stream shape.
-    fn usage_frame(&self, usage: IrUsage) -> String {
-        let chunk = serde_json::json!({
-            "id": self.id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": self.model,
-            "choices": [],
-            "usage": {
-                "prompt_tokens": usage.input_tokens,
-                "completion_tokens": usage.output_tokens,
-                "total_tokens": usage.input_tokens + usage.output_tokens,
-            },
-        });
-
-        format_data_frame(&chunk.to_string())
-    }
-}
-
-impl ClientSseRenderer for SseRenderer {
-    fn render(&mut self, event: &IrEvent) -> Vec<String> {
-        Self::render(self, event)
-    }
-
     fn error_frame(&mut self, error: &ApiError) -> String {
-        Self::error_frame(self, error)
+        format_data_frame(&error.to_openai_json().to_string())
     }
 }
 
@@ -1579,7 +1568,7 @@ mod tests {
     };
     use crate::{
         error::ApiError,
-        format::UpstreamEventParser as _,
+        format::{ClientSseRenderer as _, UpstreamEventParser as _},
         ir::{Aggregator, IrEvent, IrFinishReason, IrPart, IrRole, IrUsage},
         sse::{SseFrame, SseParser},
     };
@@ -1742,6 +1731,47 @@ mod tests {
                "reasoning_effort":"turbo"}"#,
         );
         assert_eq!(bad_effort.status, 400);
+    }
+
+    /// Accepts and ignores the `strict` flag on function tools; OpenAI's Chat
+    /// Completions API supports it, so strict-schema clients must not be
+    /// rejected with an unknown-field error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn accepts_strict_on_function_tools() {
+        let parsed = parse(
+            r#"{
+                "model": "public",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {"type": "function", "function": {
+                        "name": "weather",
+                        "description": "d",
+                        "parameters": {"type": "object"},
+                        "strict": true
+                    }}
+                ]
+            }"#,
+        );
+
+        let ir = &parsed.ir;
+
+        assert_eq!(ir.tools.len(), 1);
+
+        // Attributes on macro-invocation statements do not cover desugared
+        // index expressions inside the expansion, so the indexed tool is
+        // read through an annotated binding first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the fixture parses exactly one tool, asserted above"
+        )]
+        let first_tool = &ir.tools[0];
+
+        assert_eq!(first_tool.name, "weather");
+        assert_eq!(first_tool.description.as_deref(), Some("d"));
     }
 
     /// Renders an upstream request carrying tools and reasoning.

@@ -14,7 +14,7 @@ use tokio_stream::StreamExt as _;
 /// truncated into an error message. The excerpt is capped at 400 characters
 /// anyway, so a few kilobytes leave ample margin for multi-byte characters
 /// while bounding what a hostile upstream can make the gateway buffer.
-pub(crate) const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
+const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
 
 /// Maximum number of characters an upstream body excerpt carries in an error
 /// message.

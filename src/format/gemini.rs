@@ -333,27 +333,6 @@ impl UpstreamParser {
         Self::default()
     }
 
-    /// Ingests one upstream SSE frame carrying a GenerateContentResponse.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError`] for malformed JSON and upstream error objects.
-    pub(crate) fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
-        let value: Value = serde_json::from_str(&frame.data)
-            .map_err(|_| ApiError::upstream_unavailable("malformed JSON in upstream SSE frame"))?;
-
-        self.ingest_response(value)
-    }
-
-    /// Parses a complete upstream non-streaming JSON response.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError`] for upstream error objects and malformed bodies.
-    pub(crate) fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
-        self.ingest_response(value)
-    }
-
     /// Ingests one GenerateContentResponse object.
     fn ingest_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
         if let Some(error) = value.get("error").filter(|error| error.is_object()) {
@@ -486,12 +465,25 @@ impl UpstreamParser {
 }
 
 impl UpstreamEventParser for UpstreamParser {
+    /// Ingests one upstream SSE frame carrying a GenerateContentResponse.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] for malformed JSON and upstream error objects.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
-        Self::ingest_frame(self, frame)
+        let value: Value = serde_json::from_str(&frame.data)
+            .map_err(|_| ApiError::upstream_unavailable("malformed JSON in upstream SSE frame"))?;
+
+        self.ingest_response(value)
     }
 
+    /// Parses a complete upstream non-streaming JSON response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] for upstream error objects and malformed bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
-        Self::parse_json_response(self, value)
+        self.ingest_response(value)
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {

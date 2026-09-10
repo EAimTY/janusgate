@@ -46,12 +46,20 @@ pub(crate) struct SseParser {
 
     /// `data:` lines of the frame being assembled across chunk boundaries.
     pending_data_lines: Vec<String>,
+
+    /// Accumulated size of the frame being assembled: every accepted `data:`
+    /// line's bytes plus one join separator per line, an upper bound on the
+    /// size the frame occupies once its lines are joined at dispatch. The
+    /// per-line ingest bound cannot see a frame split across many lines, so
+    /// this is what keeps such frames under [`MAX_FRAME_BYTES`].
+    pending_frame_bytes: usize,
 }
 
 /// Malformed Server-Sent Events stream errors.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum SseParseError {
-    /// A single frame exceeded the maximum accepted frame size.
+    /// A frame exceeded the maximum accepted frame size, counting all of its
+    /// `data:` lines together.
     #[error("SSE frame exceeds the maximum accepted size")]
     FrameTooLarge,
 }
@@ -105,7 +113,9 @@ impl SseParser {
     ///
     /// Frame assembly state lives on the parser, so a frame whose lines and
     /// dispatching blank line arrive in different chunks is still emitted
-    /// whole.
+    /// whole. The frame cap counts every accepted `data:` line of the frame
+    /// being assembled, so splitting one oversized frame into many lines
+    /// cannot skirt [`MAX_FRAME_BYTES`].
     fn drain_complete_frames(&mut self) -> Result<Vec<SseFrame>, SseParseError> {
         self.strip_leading_bom();
 
@@ -122,6 +132,7 @@ impl SseParser {
                     });
 
                     self.pending_data_lines = Vec::new();
+                    self.pending_frame_bytes = 0;
                 }
 
                 self.pending_event = None;
@@ -136,7 +147,20 @@ impl SseParser {
 
             match field {
                 "event" => self.pending_event = Some(value.to_string()),
-                "data" => self.pending_data_lines.push(value.to_string()),
+                "data" => {
+                    // One separator byte per line upper-bounds the line's
+                    // eventual contribution to the dispatch-time `join`, so
+                    // the cap is enforced before the line is materialized.
+                    self.pending_frame_bytes += value.len() + 1;
+
+                    if self.pending_frame_bytes > MAX_FRAME_BYTES {
+                        self.is_oversized = true;
+
+                        return Err(SseParseError::FrameTooLarge);
+                    }
+
+                    self.pending_data_lines.push(value.to_string());
+                }
                 _ => {}
             }
         }
@@ -256,7 +280,7 @@ pub(crate) fn format_data_frame(data: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SseFrame, SseParser, format_data_frame, format_frame};
+    use super::{SseFrame, SseParseError, SseParser, format_data_frame, format_frame};
 
     /// Collects the frames produced by ingesting every chunk.
     ///
@@ -476,6 +500,70 @@ mod tests {
         let mut parser = SseParser::new();
 
         assert!(parser.ingest(&oversized_line).is_err());
+    }
+
+    /// Builds one chunk holding a single `data:` line of `payload_bytes`
+    /// payload bytes.
+    fn data_line_chunk(payload_bytes: usize) -> Vec<u8> {
+        let mut chunk = b"data: ".to_vec();
+
+        chunk.resize(chunk.len() + payload_bytes, b'x');
+        chunk.push(b'\n');
+
+        chunk
+    }
+
+    /// Rejects a frame assembled from many `data:` lines once its accumulated
+    /// size crosses [`super::MAX_FRAME_BYTES`], even though every line and the
+    /// ingest buffer individually stay under it, and latches the rejection so
+    /// a later flush still fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn rejects_frame_accumulated_past_cap_across_data_lines() {
+        let chunk = data_line_chunk(2 * 1024 * 1024);
+
+        let mut parser = SseParser::new();
+
+        // Seven two-mebibyte lines total under the cap; the eighth crosses it.
+        for _ in 0..7 {
+            assert_eq!(parser.ingest(&chunk), Ok(Vec::new()));
+        }
+
+        assert_eq!(parser.ingest(&chunk), Err(SseParseError::FrameTooLarge));
+
+        assert_eq!(parser.finish(), Err(SseParseError::FrameTooLarge));
+    }
+
+    /// Dispatches consecutive multi-line frames, each staying under the cap,
+    /// verifying the accumulated frame size resets at every dispatch so one
+    /// frame's lines never count toward the next frame's cap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn dispatches_consecutive_multi_line_frames_under_cap() {
+        let payload = "x".repeat(5 * 1024 * 1024);
+
+        let mut frame = b"data: ".to_vec();
+        frame.extend_from_slice(payload.as_bytes());
+        frame.push(b'\n');
+        frame.extend_from_slice(b"data: ");
+        frame.extend_from_slice(payload.as_bytes());
+        frame.extend_from_slice(b"\n\n");
+
+        let expected = SseFrame {
+            event: None,
+            data: format!("{payload}\n{payload}"),
+        };
+
+        assert_eq!(
+            parse_chunks(&[frame.as_slice(), frame.as_slice()]),
+            vec![expected.clone(), expected]
+        );
     }
 
     /// Verifies that one leading UTF-8 BOM is stripped from the stream so the
