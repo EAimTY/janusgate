@@ -2,7 +2,7 @@
 //! Code Assist project resolution for OAuth-backed providers.
 
 use crate::{
-    database::Database,
+    database::{Database, Error as DatabaseError, Transaction},
     error::{self, ApiError},
     provider::{Credentials, Provider, ProviderType, endpoints, http_body, storage},
     unix_time,
@@ -11,6 +11,10 @@ use base64::{Engine as _, engine::general_purpose};
 use reqwest::Client;
 use sha2::{Digest as _, Sha256};
 use std::time::Duration;
+#[cfg(test)]
+use std::{cell::RefCell, collections::VecDeque};
+#[cfg(test)]
+use turso::Error as TursoError;
 
 /// OpenAI OAuth client identifier of the Codex CLI.
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -549,40 +553,32 @@ pub(crate) async fn ensure_fresh_token(
             return Ok(current);
         }
 
-        let lease_started_at = match storage::try_acquire_refresh_lease(
-            &mut transaction,
-            current.id,
-            now,
-            now - i64::try_from(REFRESH_LEASE_STALE_AFTER.as_secs()).unwrap_or(i64::MAX),
-            TOKEN_FRESHNESS_MARGIN,
-        )
-        .await
-        {
-            Ok(lease_started_at) => lease_started_at,
+        let lease_started_at =
+            match acquire_refresh_lease(&mut transaction, current.id, now).await {
+                Ok(lease_started_at) => lease_started_at,
 
-            // The acquire is a read-then-write transaction: the SELECT fixed
-            // the read snapshot and the lease UPDATE upgrades it to a write.
-            // A commit that landed in between invalidates the snapshot, and
-            // the engine refuses the upgrade — that is the lease burst this
-            // loop exists to absorb, not a failed request. The engine
-            // requires a rollback before retrying, and the next iteration is
-            // the retry: it re-reads the newer state and either finds the
-            // token fresh or waits its turn.
-            Err(lease_error) if error::is_stale_snapshot(&lease_error) => {
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|error| ApiError::internal(format!("failed to roll back: {error}")))?;
+                // The acquire is a read-then-write transaction: the SELECT fixed
+                // the read snapshot and the lease UPDATE upgrades it to a write.
+                // A commit that landed in between invalidates the snapshot, and
+                // the engine refuses the upgrade — that is the lease burst this
+                // loop exists to absorb, not a failed request. The engine
+                // requires a rollback before retrying, and the next iteration is
+                // the retry: it re-reads the newer state and either finds the
+                // token fresh or waits its turn.
+                Err(lease_error) if error::is_stale_snapshot(&lease_error) => {
+                    transaction.rollback().await.map_err(|error| {
+                        ApiError::internal(format!("failed to roll back: {error}"))
+                    })?;
 
-                tokio::time::sleep(REFRESH_WAIT_INTERVAL).await;
+                    tokio::time::sleep(REFRESH_WAIT_INTERVAL).await;
 
-                wait_or_fail(wait_deadline)?;
+                    wait_or_fail(wait_deadline)?;
 
-                continue;
-            }
+                    continue;
+                }
 
-            Err(lease_error) => return Err(lease_error.into()),
-        };
+                Err(lease_error) => return Err(lease_error.into()),
+            };
 
         transaction.commit().await.map_err(|error| {
             ApiError::internal(format!("failed to commit refresh lease: {error}"))
@@ -602,6 +598,68 @@ pub(crate) async fn ensure_fresh_token(
 
         wait_or_fail(wait_deadline)?;
     }
+}
+
+/// Attempts to acquire the token refresh lease inside the loop's open
+/// transaction, returning the raw database error so the caller can classify a
+/// stale snapshot as "not acquired" and retry through its poll loop.
+///
+/// This wrapper is the test seam for that retry arm (README §3): the arm fires
+/// only when the acquire's read-then-write upgrade loses its read snapshot to
+/// a concurrent commit, which otherwise requires racing a commit into the
+/// loop's SELECT-to-UPDATE window. A test queues fault results with
+/// [`queue_lease_acquire_fault`] and this step substitutes them for the
+/// storage call, one per attempt, making the burst-and-retry cycle
+/// deterministic.
+///
+/// # Errors
+///
+/// Returns the underlying database error when the acquire fails.
+async fn acquire_refresh_lease(
+    transaction: &mut Transaction,
+    provider_id: i64,
+    now: i64,
+) -> Result<Option<i64>, DatabaseError> {
+    #[cfg(test)]
+    if let Some(fault) = pop_lease_acquire_fault() {
+        return Err(fault);
+    }
+
+    storage::try_acquire_refresh_lease(
+        transaction,
+        provider_id,
+        now,
+        now - i64::try_from(REFRESH_LEASE_STALE_AFTER.as_secs()).unwrap_or(i64::MAX),
+        TOKEN_FRESHNESS_MARGIN,
+    )
+    .await
+}
+
+// Fault results replacing the next `acquire_refresh_lease` attempts, one per
+// attempt in queue order. Thread-local because each `#[tokio::test]` runs on
+// its own thread, so concurrent tests cannot observe each other's faults.
+#[cfg(test)]
+thread_local! {
+    static LEASE_ACQUIRE_FAULTS: RefCell<VecDeque<DatabaseError>> =
+        const { RefCell::new(VecDeque::new()) };
+}
+
+/// Queues `fault` as the result of the next lease-acquire attempt (test-only).
+#[cfg(test)]
+fn queue_lease_acquire_fault(fault: DatabaseError) {
+    LEASE_ACQUIRE_FAULTS.with(|faults| faults.borrow_mut().push_back(fault));
+}
+
+/// Pops the queued fault for one lease-acquire attempt, if any (test-only).
+#[cfg(test)]
+fn pop_lease_acquire_fault() -> Option<DatabaseError> {
+    LEASE_ACQUIRE_FAULTS.with(|faults| faults.borrow_mut().pop_front())
+}
+
+/// Whether a queued lease-acquire fault remains unconsumed (test-only).
+#[cfg(test)]
+fn has_queued_lease_acquire_fault() -> bool {
+    LEASE_ACQUIRE_FAULTS.with(|faults| !faults.borrow().is_empty())
 }
 
 /// Fails the request once the poll window for a concurrent token refresh has
@@ -1445,6 +1503,105 @@ mod tests {
         assert!(
             error.message.contains("API key credentials never refresh"),
             "the original refresh error must win, got: {error}"
+        );
+
+        Ok(())
+    }
+
+    /// Drives `ensure_fresh_token` through the stale-snapshot retry arm at the
+    /// loop level: the first lease acquire faults with the engine's
+    /// stale-snapshot busy error — exactly what a commit interleaved into the
+    /// acquire's read-then-write window produces (the storage staging test
+    /// `lease_acquire_after_interleaved_commit_classifies_stale_snapshot`
+    /// raises it for real) — and the caller must never see that class. The
+    /// loop must roll back, wait, and re-enter; the second attempt faults with
+    /// an ordinary constraint error that is allowed to propagate, so the
+    /// propagated 409 naming that fault proves the stale snapshot was absorbed.
+    /// Removing the retry arm makes the stale-snapshot error take the
+    /// pass-through instead, and this test fails on the resulting 500
+    /// "database is busy".
+    ///
+    /// # Panics
+    ///
+    /// Panics if opening the test database or an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn stale_snapshot_lease_acquire_is_absorbed_by_retry_loop()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let now = unix_time::unix_now();
+
+        database
+            .execute(
+                "INSERT INTO providers (name, model_prefix, type, credentials, expires_at, \
+                 refresh_started_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    "stale-snapshot-provider",
+                    "",
+                    "openai_oauth",
+                    r#"{"accessToken":"expired","refreshToken":"refresh","accountId":"acct"}"#,
+                    now - 100,
+                    Option::<i64>::None,
+                ],
+            )
+            .await?;
+
+        let provider = Provider {
+            id: 1,
+            name: "stale-snapshot-provider".to_string(),
+            model_prefix: String::new(),
+            provider_type: ProviderType::OpenAiOauth,
+            protocol: None,
+            base_url: None,
+            credentials: Credentials::OpenAiOauth {
+                access_token: "expired".to_string(),
+                refresh_token: "refresh".to_string(),
+                account_id: "acct".to_string(),
+            },
+            expires_at: Some(now - 100),
+            is_enabled: true,
+        };
+
+        // Attempt 1 hits the stale-snapshot class the retry arm must absorb;
+        // attempt 2 hits an ordinary constraint error that must propagate, so
+        // the propagated error distinguishes a retry from a pass-through.
+        queue_lease_acquire_fault(DatabaseError::Turso(TursoError::BusySnapshot(
+            "read snapshot superseded".to_string(),
+        )));
+        queue_lease_acquire_fault(DatabaseError::Turso(TursoError::Constraint(
+            "injected constraint".to_string(),
+        )));
+
+        let error = ensure_fresh_token(&database, &Client::new(), &provider)
+            .await
+            .err()
+            .ok_or("the second injected fault must fail the call")?;
+
+        assert_eq!(
+            error.status, 409,
+            "the constraint fault must propagate, not the absorbed stale snapshot: {error}"
+        );
+
+        assert_eq!(error.code.as_deref(), Some("conflict"));
+
+        assert!(
+            error.message.contains("injected constraint"),
+            "the propagated error must be the second fault: {error}"
+        );
+
+        assert!(
+            !error.message.contains("database is busy"),
+            "the stale-snapshot busy error must never reach the caller: {error}"
+        );
+
+        assert!(
+            !has_queued_lease_acquire_fault(),
+            "both faults must have been consumed by exactly two acquire attempts"
         );
 
         Ok(())
