@@ -39,7 +39,7 @@ tokio = { version = "1.53.1", default-features = false, features = ["macros", "n
 tokio-stream = { version = "0.1.19", default-features = false }
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 turso = { version = "0.8.0-pre.9", default-features = false }
-uuid = { version = "1.26.0", default-features = false, features = ["v4"] }
+uuid = { version = "1.26.1", default-features = false, features = ["v4"] }
 
 [build-dependencies]
 blake3 = { version = "1.8.7", default-features = false }
