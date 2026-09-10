@@ -174,7 +174,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
                 model_prefix: request.model_prefix.as_deref(),
                 protocol,
                 base_url: request.base_url.as_deref(),
-                enabled: request.enabled,
+                is_enabled: request.enabled,
                 credentials: credentials.as_ref(),
             },
         )
@@ -231,7 +231,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
             base_url: Some(&base_url),
             credentials: &credentials,
             expires_at: None,
-            enabled: request.enabled.unwrap_or(true),
+            is_enabled: request.enabled.unwrap_or(true),
         },
     )
     .await?;
@@ -245,7 +245,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
 mod tests {
     use super::*;
     use crate::test_support;
-    use std::{error::Error as StdError, fs, time::Duration};
+    use std::{error::Error as StdError, time::Duration};
 
     /// Reads back the stored credentials of a provider.
     ///
@@ -276,7 +276,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_provider_defaults_update_type_to_stored_row() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
 
@@ -303,8 +304,6 @@ mod tests {
             Credentials::ApiKey("new-key".to_string())
         );
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -319,7 +318,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_provider_accepts_explicit_matching_type() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
 
@@ -335,8 +335,6 @@ mod tests {
             read_credentials(&database, "alpha").await?,
             Credentials::ApiKey("key-2".to_string())
         );
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -355,7 +353,8 @@ mod tests {
     #[tokio::test]
     async fn save_provider_rejects_mismatched_update_type_as_invalid_parameter()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
 
@@ -370,8 +369,6 @@ mod tests {
         assert_eq!(error.status, 400);
 
         assert_eq!(error.param.as_deref(), Some("type"));
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }

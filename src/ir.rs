@@ -437,12 +437,6 @@ pub(crate) struct IrAggregatedToolCall {
 /// The complete result of folding an IR event stream.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct IrAggregation {
-    /// Upstream response identifier from [`IrEvent::MessageStart`].
-    pub(crate) id: Option<String>,
-
-    /// Upstream model name from [`IrEvent::MessageStart`].
-    pub(crate) model: Option<String>,
-
     /// All accumulated assistant text.
     pub(crate) text: String,
 
@@ -469,16 +463,21 @@ pub(crate) struct Aggregator {
     /// [`IrEvent::ToolCallDone`] arrives without assembled `arguments` of its
     /// own.
     pending_arguments: Vec<(usize, String)>,
+
+    /// Tool call indexes already completed in this aggregation; a repeated
+    /// done for one of them is ignored.
+    completed_call_indexes: Vec<usize>,
 }
 
 impl Aggregator {
     /// Ingests one event, updating the aggregation in place.
     pub(crate) fn ingest(&mut self, event: &IrEvent) {
         match event {
-            IrEvent::MessageStart { id, model } => {
-                self.aggregation.id = Some(id.clone());
-                self.aggregation.model = Some(model.clone());
-            }
+            // MessageStart carries the upstream identity only as the
+            // streaming renderers' start signal; aggregation records nothing
+            // from it — the outward responses carry renderer-minted
+            // identifiers.
+            IrEvent::MessageStart { .. } | IrEvent::Done => {}
 
             IrEvent::TextDelta(delta) => self.aggregation.text.push_str(delta),
 
@@ -509,23 +508,30 @@ impl Aggregator {
                 arguments,
                 thought_signature,
             } => {
-                let accumulated = self.take_pending_arguments(*index);
+                // Conformant streams complete each call index exactly once; a
+                // repeated done for an already-completed index is ignored, so
+                // a duplicating upstream cannot double-deliver a call.
+                if !self.completed_call_indexes.contains(index) {
+                    self.completed_call_indexes.push(*index);
 
-                // Upstreams normally assemble the complete arguments in the
-                // done event itself; when one arrives without them, the
-                // streamed deltas are the authoritative arguments.
-                let arguments = if arguments.is_empty() {
-                    accumulated
-                } else {
-                    arguments.clone()
-                };
+                    let accumulated = self.take_pending_arguments(*index);
 
-                self.aggregation.tool_calls.push(IrAggregatedToolCall {
-                    call_id: call_id.clone(),
-                    name: name.clone(),
-                    arguments,
-                    thought_signature: thought_signature.clone(),
-                });
+                    // Upstreams normally assemble the complete arguments in
+                    // the done event itself; when one arrives without them,
+                    // the streamed deltas are the authoritative arguments.
+                    let arguments = if arguments.is_empty() {
+                        accumulated
+                    } else {
+                        arguments.clone()
+                    };
+
+                    self.aggregation.tool_calls.push(IrAggregatedToolCall {
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        arguments,
+                        thought_signature: thought_signature.clone(),
+                    });
+                }
             }
 
             IrEvent::Finish(reason) => self.aggregation.finish = Some(*reason),
@@ -539,8 +545,6 @@ impl Aggregator {
                     output_tokens: *output_tokens,
                 });
             }
-
-            IrEvent::Done => {}
         }
     }
 
@@ -903,8 +907,6 @@ mod tests {
             IrEvent::Done,
         ]);
 
-        assert_eq!(aggregation.id.as_deref(), Some("resp_1"));
-        assert_eq!(aggregation.model.as_deref(), Some("gpt-5"));
         assert_eq!(aggregation.reasoning, "thinking");
         assert_eq!(aggregation.text, "hello");
         assert_eq!(
@@ -1002,5 +1004,34 @@ mod tests {
                 .map(|call| call.arguments.as_str()),
             Some("{\"fresh\":1}")
         );
+    }
+
+    /// Verifies that a repeated done event for an already-completed call
+    /// index is ignored, so a duplicating upstream cannot double-deliver a
+    /// call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn duplicate_tool_call_done_is_ignored() {
+        let aggregation = aggregate(&[
+            IrEvent::ToolCallDone {
+                index: 0,
+                call_id: "call_a".to_string(),
+                name: "weather".to_string(),
+                arguments: "{\"city\":\"oslo\"}".to_string(),
+                thought_signature: None,
+            },
+            IrEvent::ToolCallDone {
+                index: 0,
+                call_id: "call_a".to_string(),
+                name: "weather".to_string(),
+                arguments: "{\"city\":\"oslo\"}".to_string(),
+                thought_signature: None,
+            },
+        ]);
+
+        assert_eq!(aggregation.tool_calls.len(), 1);
     }
 }

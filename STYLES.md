@@ -33,7 +33,7 @@ This file contains the coding style guide applies to the whole project. Periodic
 
 ## Tests
 
-- Tests that drive I/O or the database return `Result<(), Box<dyn StdError>>` and propagate failures with `?`, while pure-logic tests use plain assertions.
+- Tests that drive the database return `Result<(), Box<dyn StdError>>` and propagate failures with `?`; network-loopback and pure-logic tests use direct assertions.
 
 ## SQL (SQLite)
 

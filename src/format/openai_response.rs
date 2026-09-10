@@ -842,8 +842,8 @@ enum OutputItemOrigin {
     StreamDone(usize),
 
     /// An item of the terminal event's `response.output` array; the value is
-    /// the item's position. Consulted only for text kinds that no live delta
-    /// delivered.
+    /// the item's position, used as the index of a call the terminal walk
+    /// recovers. Consulted only for kinds that no live event delivered.
     Terminal(usize),
 }
 
@@ -861,6 +861,15 @@ pub(crate) struct UpstreamParser {
     /// Whether live deltas already delivered the reasoning text, marking
     /// done and terminal items as exhausted sources for it.
     is_reasoning_delivered: bool,
+
+    /// Whether a live event already delivered a tool call, marking the
+    /// terminal output array as an exhausted source for them.
+    is_call_delivered: bool,
+
+    /// Whether a finish reason was already emitted; a clean end-of-stream
+    /// without one degrades to [`IrFinishReason::Stop`] in the parser's
+    /// finish hook, matching the aggregated rendering default.
+    is_finished: bool,
 }
 
 impl UpstreamParser {
@@ -907,7 +916,10 @@ impl UpstreamParser {
             return Err(ApiError::upstream_unavailable(message));
         }
 
+        self.is_finished = true;
+
         events.push(IrEvent::Finish(finish_reason_for_response(&value)));
+
         push_usage_events(&value, &mut events);
 
         Ok(events)
@@ -931,6 +943,8 @@ impl UpstreamParser {
                 if let Some(item) = value.get("item")
                     && item.get("type").and_then(Value::as_str) == Some("function_call")
                 {
+                    self.is_call_delivered = true;
+
                     events.push(self.open_function_call(item, output_index));
                 }
 
@@ -968,6 +982,8 @@ impl UpstreamParser {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
 
+                self.is_call_delivered = true;
+
                 Ok(vec![IrEvent::ToolCallDelta {
                     index: output_index,
                     call_id: None,
@@ -997,11 +1013,17 @@ impl UpstreamParser {
 
                 let mut events = Vec::new();
 
-                // A third-party `openai_compatible` upstream may carry item
-                // text only in the terminal response object; when no live
-                // delta delivered a text kind, recover it from the output
-                // array exactly as from a JSON response body.
-                if (!self.is_text_delivered || !self.is_reasoning_delivered)
+                // A third-party `openai_compatible` upstream may carry items
+                // only in the terminal response object; when no live event
+                // delivered a kind, recover it from the output array exactly
+                // as from a JSON response body. The call recovery decision is
+                // snapshotted before the walk: the walk must consult the
+                // pre-walk state for every item, so a terminal output array
+                // carrying several function_call items delivers each of them
+                // instead of only the first.
+                let is_call_recoverable = !self.is_call_delivered;
+
+                if (!self.is_text_delivered || !self.is_reasoning_delivered || is_call_recoverable)
                     && let Some(output) = response.get("output").and_then(Value::as_array)
                 {
                     for (position, item) in output.iter().enumerate() {
@@ -1012,6 +1034,15 @@ impl UpstreamParser {
                         )?;
                     }
                 }
+
+                // The flag flips only after the whole walk: flipping it per
+                // item would mute the recovery for every function_call item
+                // after the first.
+                if is_call_recoverable {
+                    self.is_call_delivered = true;
+                }
+
+                self.is_finished = true;
 
                 events.push(IrEvent::Finish(finish_reason_for_response(&response)));
                 push_usage_events(&response, &mut events);
@@ -1044,11 +1075,12 @@ impl UpstreamParser {
     /// Ingests one output item from a JSON response body, a streaming
     /// `output_item.done` event, or the terminal event's output array.
     ///
-    /// Conformant upstreams deliver message and reasoning text as live
-    /// deltas, so streamed and terminal items are fallback sources consulted
-    /// only when no delta carried that kind of text — third-party
-    /// `openai_compatible` upstreams may stream complete items without
-    /// deltas, and their text must still reach the client exactly once.
+    /// Conformant upstreams deliver message text, reasoning text, and tool
+    /// calls as live events, so streamed and terminal items are fallback
+    /// sources consulted only when no live event delivered that kind of item
+    /// — third-party `openai_compatible` upstreams may stream complete items
+    /// without deltas, and their items must still reach the client exactly
+    /// once.
     fn ingest_output_item(
         &mut self,
         item: &Value,
@@ -1065,16 +1097,20 @@ impl UpstreamParser {
                     }
                 };
 
-                if should_extract {
-                    self.is_text_delivered = true;
+                if should_extract
+                    && let Some(content) = item.get("content").and_then(Value::as_array)
+                {
+                    for part in content {
+                        if part.get("type").and_then(Value::as_str) == Some("output_text")
+                            && let Some(text) = part.get("text").and_then(Value::as_str)
+                        {
+                            // The delivery flag is set only when a delta was
+                            // actually pushed, so a text-less item does not
+                            // exhaust the source for a later item that
+                            // carries the text.
+                            self.is_text_delivered = true;
 
-                    if let Some(content) = item.get("content").and_then(Value::as_array) {
-                        for part in content {
-                            if part.get("type").and_then(Value::as_str) == Some("output_text")
-                                && let Some(text) = part.get("text").and_then(Value::as_str)
-                            {
-                                events.push(IrEvent::TextDelta(text.to_string()));
-                            }
+                            events.push(IrEvent::TextDelta(text.to_string()));
                         }
                     }
                 }
@@ -1091,14 +1127,16 @@ impl UpstreamParser {
                     }
                 };
 
-                if should_extract {
-                    self.is_reasoning_delivered = true;
+                if should_extract
+                    && let Some(summary) = item.get("summary").and_then(Value::as_array)
+                {
+                    for part in summary {
+                        if let Some(text) = part.get("text").and_then(Value::as_str) {
+                            // Same per-extraction rule as the message arm: a
+                            // summary-less item does not exhaust the source.
+                            self.is_reasoning_delivered = true;
 
-                    if let Some(summary) = item.get("summary").and_then(Value::as_array) {
-                        for part in summary {
-                            if let Some(text) = part.get("text").and_then(Value::as_str) {
-                                events.push(IrEvent::ReasoningDelta(text.to_string()));
-                            }
+                            events.push(IrEvent::ReasoningDelta(text.to_string()));
                         }
                     }
                 }
@@ -1113,6 +1151,8 @@ impl UpstreamParser {
                     // plus a done per call, so streaming renderers open and
                     // complete the item.
                     OutputItemOrigin::Json(index) => {
+                        self.is_call_delivered = true;
+
                         let call_id = string_field(item, "call_id");
                         let name = string_field(item, "name");
                         let arguments = string_field(item, "arguments");
@@ -1137,13 +1177,25 @@ impl UpstreamParser {
                     }
 
                     OutputItemOrigin::StreamDone(index) => {
+                        self.is_call_delivered = true;
+
                         events.push(self.complete_function_call(item, index));
                     }
 
-                    // The terminal fallback recovers text only: calls are
-                    // completed by their own done events, and re-emitting
-                    // them here would duplicate delivered calls.
-                    OutputItemOrigin::Terminal(_) => {}
+                    // The terminal fallback completes a call exactly-once:
+                    // only when no live call event was delivered before the
+                    // terminal event may the output array deliver calls,
+                    // mirroring the per-kind text recovery; re-emitting
+                    // delivered calls here would duplicate them. The delivery
+                    // flag is owned by the terminal-event arm, which flips it
+                    // only after the whole output array is walked, so several
+                    // recovered calls each deliver exactly once; the flag
+                    // keeps its pre-walk value for every item of this walk.
+                    OutputItemOrigin::Terminal(index) => {
+                        if !self.is_call_delivered {
+                            events.push(self.complete_function_call(item, index));
+                        }
+                    }
                 }
 
                 Ok(())
@@ -1222,6 +1274,21 @@ impl UpstreamEventParser for UpstreamParser {
 
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
         Self::parse_json_response(self, value)
+    }
+
+    fn finish(&mut self) -> Vec<IrEvent> {
+        // An upstream may close its stream cleanly after streaming deltas
+        // without ever sending the terminal `response.completed` or
+        // `response.incomplete` event; the missing finish reason degrades to
+        // `Stop` so the streamed client sees the same terminal finish as the
+        // aggregated rendering of the same stream.
+        if !self.is_finished {
+            self.is_finished = true;
+
+            return vec![IrEvent::Finish(IrFinishReason::Stop)];
+        }
+
+        Vec::new()
     }
 }
 
@@ -2031,7 +2098,9 @@ mod tests {
     use super::{SseRenderer, UpstreamParser, parse_request, render_json_response};
     use crate::{
         error::ApiError,
-        format::openai_chat_completion::SseRenderer as ChatSseRenderer,
+        format::{
+            UpstreamEventParser as _, openai_chat_completion::SseRenderer as ChatSseRenderer,
+        },
         ir::{Aggregator, IrEvent, IrFinishReason, IrPart, IrUsage},
         sse::SseParser,
     };
@@ -3402,5 +3471,386 @@ mod tests {
         );
 
         assert_required_response_fields(&failed_response);
+    }
+
+    /// Degrades a clean end-of-stream that carried no terminal
+    /// `response.completed`/`response.incomplete` event to a single
+    /// `Finish(Stop)`, matching the aggregated rendering of the same stream,
+    /// whose outward body defaults the status to `completed`; the streamed
+    /// client then also sees a terminal finish.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn clean_eof_without_terminal_event_yields_finish_stop() {
+        let mut parser = UpstreamParser::new();
+
+        let mut events = ingest_upstream(
+            &mut parser,
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+        );
+
+        assert!(!events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+
+        events.append(&mut parser.finish());
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::Finish(_)))
+                .count(),
+            1
+        );
+
+        assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)));
+    }
+
+    /// Never duplicates the finish reason: a clean end-of-stream after a
+    /// terminal `response.completed` event yields exactly one finish event.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn clean_eof_after_terminal_event_does_not_duplicate_finish() {
+        let mut parser = UpstreamParser::new();
+
+        let mut events = ingest_upstream(
+            &mut parser,
+            concat!(
+                "data: {\"type\":\"response.completed\",",
+                "\"response\":{\"status\":\"completed\"}}\n\n"
+            ),
+        );
+
+        events.append(&mut parser.finish());
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::Finish(_)))
+                .count(),
+            1
+        );
+    }
+
+    /// Recovers a function call from the output array of a third-party
+    /// upstream that emits only the terminal `response.completed` event and
+    /// no live call events: the call reaches the aggregation and both client
+    /// streams exactly once (README §6.3 recovery class).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_completed_only_stream_recovers_function_calls() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp1\",",
+                    "\"model\":\"m\",\"status\":\"completed\",\"output\":[",
+                    "{\"type\":\"function_call\",\"call_id\":\"call_1\",",
+                    "\"name\":\"f\",\"arguments\":\"{}\"}]}}\n\n"
+                ),
+            ),
+        );
+
+        // The terminal walk completed the call exactly once.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::ToolCallDone { .. }))
+                .count(),
+            1
+        );
+
+        // Aggregated: the recovered call is kept.
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(
+            aggregation.tool_calls.first().map(|call| (
+                call.call_id.as_str(),
+                call.name.as_str(),
+                call.arguments.as_str()
+            )),
+            Some(("call_1", "f", "{}"))
+        );
+
+        // Outward Responses: the call is opened and completed as an output
+        // item and lands in the terminal response's output array.
+        let rendered = render_client(events.clone());
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture asserts a rendered output_item.done event"
+        )]
+        let item_done = rendered
+            .iter()
+            .find(|(name, _)| name.as_deref() == Some("response.output_item.done"))
+            .map(|(_, payload)| payload.clone())
+            .expect("output_item.done event");
+
+        let item = item_done.get("item").cloned().unwrap_or_default();
+
+        assert_eq!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call")
+        );
+
+        assert_eq!(item.get("call_id").and_then(Value::as_str), Some("call_1"));
+
+        // Outward Chat Completions: the call streams as one full tool_calls
+        // delta chunk.
+        let mut chat_renderer = ChatSseRenderer::new("public".to_string(), false);
+
+        let mut chat_tool_calls: Vec<Value> = Vec::new();
+
+        for event in &events {
+            for frame in chat_renderer.render(event) {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the renderer emits `data: ` prefixed JSON frames"
+                )]
+                let payload: Value = serde_json::from_str(
+                    frame
+                        .strip_prefix("data: ")
+                        .expect("data frame prefix")
+                        .trim_end(),
+                )
+                .expect("payload is JSON");
+
+                if let Some(tool_calls) = payload
+                    .pointer("/choices/0/delta/tool_calls")
+                    .and_then(Value::as_array)
+                {
+                    chat_tool_calls.extend(tool_calls.iter().cloned());
+                }
+            }
+        }
+
+        assert_eq!(chat_tool_calls.len(), 1);
+    }
+
+    /// Recovers every function call from the output array of a third-party
+    /// upstream that emits only the terminal `response.completed` event and
+    /// no live call events: a terminal output carrying two calls delivers
+    /// each of them to the aggregation and both client streams exactly once
+    /// (README §6.3 recovery class).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_completed_only_stream_recovers_every_function_call() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp1\",",
+                    "\"model\":\"m\",\"status\":\"completed\",\"output\":[",
+                    "{\"type\":\"function_call\",\"call_id\":\"call_1\",",
+                    "\"name\":\"f\",\"arguments\":\"{}\"},",
+                    "{\"type\":\"function_call\",\"call_id\":\"call_2\",",
+                    "\"name\":\"g\",\"arguments\":\"{\\\"x\\\":1}\"}]}}\n\n"
+                ),
+            ),
+        );
+
+        // The terminal walk completed both calls exactly once.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::ToolCallDone { .. }))
+                .count(),
+            2
+        );
+
+        // Aggregated: both recovered calls are kept, in output order.
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(
+            aggregation
+                .tool_calls
+                .iter()
+                .map(|call| (
+                    call.call_id.as_str(),
+                    call.name.as_str(),
+                    call.arguments.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("call_1", "f", "{}"), ("call_2", "g", "{\"x\":1}")]
+        );
+
+        // Outward Responses: each recovered call is completed as its own
+        // function_call output item.
+        let rendered = render_client(events.clone());
+
+        let completed_items = rendered
+            .iter()
+            .filter(|(name, _)| name.as_deref() == Some("response.output_item.done"))
+            .map(|(_, payload)| payload.get("item").cloned().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            completed_items
+                .iter()
+                .map(|item| item.get("call_id").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec![Some("call_1"), Some("call_2")]
+        );
+
+        // Outward Chat Completions: each call streams as one full tool_calls
+        // delta chunk.
+        let mut chat_renderer = ChatSseRenderer::new("public".to_string(), false);
+
+        let mut chat_tool_calls: Vec<Value> = Vec::new();
+
+        for event in &events {
+            for frame in chat_renderer.render(event) {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the renderer emits `data: ` prefixed JSON frames"
+                )]
+                let payload: Value = serde_json::from_str(
+                    frame
+                        .strip_prefix("data: ")
+                        .expect("data frame prefix")
+                        .trim_end(),
+                )
+                .expect("payload is JSON");
+
+                if let Some(tool_calls) = payload
+                    .pointer("/choices/0/delta/tool_calls")
+                    .and_then(Value::as_array)
+                {
+                    chat_tool_calls.extend(tool_calls.iter().cloned());
+                }
+            }
+        }
+
+        assert_eq!(chat_tool_calls.len(), 2);
+    }
+
+    /// Never duplicates calls the stream already completed live: a terminal
+    /// output array repeating a delivered function call is skipped, so the
+    /// call reaches the aggregation exactly once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_completed_output_array_does_not_duplicate_delivered_calls() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.output_item.added\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",",
+                    "\"name\":\"f\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.function_call_arguments.delta\",",
+                    "\"output_index\":0,\"delta\":\"{}\"}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",",
+                    "\"name\":\"f\",\"arguments\":\"{}\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.completed\",\"response\":{\"status\":",
+                    "\"completed\",\"output\":[{\"type\":\"function_call\",",
+                    "\"call_id\":\"call_1\",\"name\":\"f\",\"arguments\":\"{}\"}]}}\n\n"
+                ),
+            ),
+        );
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(aggregation.tool_calls.len(), 1);
+
+        assert_eq!(
+            aggregation
+                .tool_calls
+                .first()
+                .map(|call| call.call_id.as_str()),
+            Some("call_1")
+        );
+    }
+
+    /// Recovers the text of a later message item when an earlier done item of
+    /// a done-only upstream carried none: only an item that actually
+    /// extracts text exhausts the per-kind recovery source.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_done_only_stream_extracts_text_from_later_items() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"message\",\"role\":\"assistant\",",
+                    "\"content\":[]}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.output_item.done\",\"output_index\":1,",
+                    "\"item\":{\"type\":\"message\",\"role\":\"assistant\",",
+                    "\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}}\n\n"
+                ),
+            ),
+        );
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(aggregation.text, "hi");
     }
 }

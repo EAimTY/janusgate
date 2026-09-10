@@ -3,8 +3,8 @@
 
 use crate::{
     database::Database,
-    error::ApiError,
-    provider::{Credentials, Provider, ProviderType, endpoints, storage},
+    error::{self, ApiError},
+    provider::{Credentials, Provider, ProviderType, endpoints, http_body, storage},
     unix_time,
 };
 use base64::{Engine as _, engine::general_purpose};
@@ -496,7 +496,12 @@ enum RefreshOutcome {
 /// A refresh whose persist observes a lost lease — a concurrent credentials
 /// replacement or a stale-lease reacquisition won the row — discards its
 /// tokens-derived-from-superseded-credentials and re-enters the lease
-/// competition, so the newer state is never overwritten (README §3).
+/// competition, so the newer state is never overwritten (README §3). The
+/// same holds for a lease acquire whose read snapshot a concurrent commit
+/// invalidated: the engine refuses the read-then-write upgrade with the
+/// stale-snapshot busy error, which is classified as "not acquired" so the
+/// burst of concurrent acquirers takes the poll-and-wait path instead of
+/// failing.
 ///
 /// # Errors
 ///
@@ -544,14 +549,40 @@ pub(crate) async fn ensure_fresh_token(
             return Ok(current);
         }
 
-        let lease_started_at = storage::try_acquire_refresh_lease(
+        let lease_started_at = match storage::try_acquire_refresh_lease(
             &mut transaction,
             current.id,
             now,
             now - i64::try_from(REFRESH_LEASE_STALE_AFTER.as_secs()).unwrap_or(i64::MAX),
             TOKEN_FRESHNESS_MARGIN,
         )
-        .await?;
+        .await
+        {
+            Ok(lease_started_at) => lease_started_at,
+
+            // The acquire is a read-then-write transaction: the SELECT fixed
+            // the read snapshot and the lease UPDATE upgrades it to a write.
+            // A commit that landed in between invalidates the snapshot, and
+            // the engine refuses the upgrade — that is the lease burst this
+            // loop exists to absorb, not a failed request. The engine
+            // requires a rollback before retrying, and the next iteration is
+            // the retry: it re-reads the newer state and either finds the
+            // token fresh or waits its turn.
+            Err(lease_error) if error::is_stale_snapshot(&lease_error) => {
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(|error| ApiError::internal(format!("failed to roll back: {error}")))?;
+
+                tokio::time::sleep(REFRESH_WAIT_INTERVAL).await;
+
+                wait_or_fail(wait_deadline)?;
+
+                continue;
+            }
+
+            Err(lease_error) => return Err(lease_error.into()),
+        };
 
         transaction.commit().await.map_err(|error| {
             ApiError::internal(format!("failed to commit refresh lease: {error}"))
@@ -569,12 +600,20 @@ pub(crate) async fn ensure_fresh_token(
             tokio::time::sleep(REFRESH_WAIT_INTERVAL).await;
         }
 
-        if std::time::Instant::now() >= wait_deadline {
-            return Err(ApiError::upstream_unavailable(
-                "timed out waiting for a concurrent token refresh",
-            ));
-        }
+        wait_or_fail(wait_deadline)?;
     }
+}
+
+/// Fails the request once the poll window for a concurrent token refresh has
+/// elapsed (README §3); otherwise the caller re-enters the poll loop.
+fn wait_or_fail(wait_deadline: std::time::Instant) -> Result<(), ApiError> {
+    if std::time::Instant::now() >= wait_deadline {
+        return Err(ApiError::upstream_unavailable(
+            "timed out waiting for a concurrent token refresh",
+        ));
+    }
+
+    Ok(())
 }
 
 /// Performs the refresh grant and persists the renewed credentials while the
@@ -613,9 +652,7 @@ async fn refresh_and_store(
             return Ok(RefreshOutcome::LostLease);
         }
 
-        let renewed = storage::find_provider(database, &provider.name)
-            .await?
-            .ok_or_else(|| ApiError::internal("provider vanished after token refresh"))?;
+        let renewed = storage::reload_provider(database, &provider.name, "token refresh").await?;
 
         Ok(RefreshOutcome::Renewed(renewed))
     }
@@ -801,36 +838,44 @@ fn token_grant_rejection(status: u16, body: &str, grant: &str) -> ApiError {
         ));
     }
 
-    ApiError::upstream_rejected(status, truncate_excerpt(body))
+    ApiError::upstream_rejected(status, http_body::truncate_excerpt(body))
 }
 
 /// POSTs a form-encoded body and deserializes the JSON response, classifying
 /// non-success statuses through [`token_grant_rejection`] with the given
 /// grant description.
 ///
+/// Only the error path is read through the bounded error-body read; a success
+/// body is legitimate JSON of unbounded size and is read in full.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] for transport failures, non-success statuses, and
 /// malformed response bodies.
-async fn post_form<T: serde::de::DeserializeOwned>(
+async fn post_form<T>(
     http: &Client,
     url: &str,
     form: &[(&str, &str)],
     grant: &str,
-) -> Result<T, ApiError> {
+) -> Result<T, ApiError>
+where
+    T: serde::de::DeserializeOwned,
+{
     let response = http.post(url).form(form).send().await.map_err(|error| {
         ApiError::upstream_unavailable(format!("token endpoint unreachable: {error}"))
     })?;
 
     let status = response.status();
 
+    if !status.is_success() {
+        let body = http_body::read_error_body(response).await;
+
+        return Err(token_grant_rejection(status.as_u16(), &body, grant));
+    }
+
     let body = response.text().await.map_err(|error| {
         ApiError::upstream_unavailable(format!("token endpoint read failed: {error}"))
     })?;
-
-    if !status.is_success() {
-        return Err(token_grant_rejection(status.as_u16(), &body, grant));
-    }
 
     serde_json::from_str(&body).map_err(|error| {
         ApiError::upstream_unavailable(format!("malformed token endpoint response: {error}"))
@@ -842,18 +887,23 @@ async fn post_form<T: serde::de::DeserializeOwned>(
 ///
 /// Every Antigravity Code Assist call — project resolution and model
 /// discovery — routes through here, so the mandatory `User-Agent: antigravity`
-/// header (README §5.2) is set in exactly one place.
+/// header (README §5.2) is set in exactly one place. Only the error path is
+/// read through the bounded error-body read; a success body is legitimate
+/// JSON of unbounded size and is read in full.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for transport failures, non-success statuses, and
 /// malformed response bodies.
-pub(super) async fn post_code_assist<T: serde::de::DeserializeOwned>(
+pub(super) async fn post_code_assist<T>(
     http: &Client,
     action: &str,
     access_token: &str,
     body: &serde_json::Value,
-) -> Result<T, ApiError> {
+) -> Result<T, ApiError>
+where
+    T: serde::de::DeserializeOwned,
+{
     let url = format!("{}{action}", endpoints::ANTIGRAVITY_BASE_URL);
 
     let response = http
@@ -872,16 +922,18 @@ pub(super) async fn post_code_assist<T: serde::de::DeserializeOwned>(
 
     let status = response.status();
 
+    if !status.is_success() {
+        let text = http_body::read_error_body(response).await;
+
+        return Err(ApiError::upstream_rejected(
+            status.as_u16(),
+            http_body::truncate_excerpt(&text),
+        ));
+    }
+
     let text = response.text().await.map_err(|error| {
         ApiError::upstream_unavailable(format!("upstream read failed: {error}"))
     })?;
-
-    if !status.is_success() {
-        return Err(ApiError::upstream_rejected(
-            status.as_u16(),
-            truncate_excerpt(&text),
-        ));
-    }
 
     serde_json::from_str(&text).map_err(|error| {
         ApiError::upstream_unavailable(format!("malformed upstream response: {error}"))
@@ -892,53 +944,48 @@ pub(super) async fn post_code_assist<T: serde::de::DeserializeOwned>(
 /// non-success statuses through [`token_grant_rejection`] with the given
 /// grant description.
 ///
+/// Only the error path is read through the bounded error-body read; a success
+/// body is legitimate JSON of unbounded size and is read in full.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] for transport failures, non-success statuses, and
 /// malformed response bodies.
-async fn post_json<T: serde::de::DeserializeOwned>(
+async fn post_json<T>(
     http: &Client,
     url: &str,
     body: &serde_json::Value,
     grant: &str,
-) -> Result<T, ApiError> {
+) -> Result<T, ApiError>
+where
+    T: serde::de::DeserializeOwned,
+{
     let response = http.post(url).json(body).send().await.map_err(|error| {
         ApiError::upstream_unavailable(format!("upstream unreachable: {error}"))
     })?;
 
     let status = response.status();
 
+    if !status.is_success() {
+        let text = http_body::read_error_body(response).await;
+
+        return Err(token_grant_rejection(status.as_u16(), &text, grant));
+    }
+
     let text = response.text().await.map_err(|error| {
         ApiError::upstream_unavailable(format!("upstream read failed: {error}"))
     })?;
-
-    if !status.is_success() {
-        return Err(token_grant_rejection(status.as_u16(), &text, grant));
-    }
 
     serde_json::from_str(&text).map_err(|error| {
         ApiError::upstream_unavailable(format!("malformed upstream response: {error}"))
     })
 }
 
-/// Truncates a response body to a bounded excerpt for error messages.
-fn truncate_excerpt(body: &str) -> String {
-    const MAX_CHARS: usize = 400;
-
-    if body.chars().count() <= MAX_CHARS {
-        body.to_string()
-    } else {
-        let excerpt: String = body.chars().take(MAX_CHARS).collect();
-
-        format!("{excerpt}…")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{database::params, test_support};
-    use std::{error::Error as StdError, fs};
+    use std::error::Error as StdError;
 
     /// Verifies that random_url_safe produces the expected number of random
     /// bytes encoded in unpadded URL-safe Base64 and that consecutive
@@ -972,23 +1019,6 @@ mod tests {
 
         let second_state = random_url_safe(32);
         assert_ne!(state, second_state);
-    }
-
-    /// Verifies that truncate_excerpt preserves short text and bounds long
-    /// text.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails.
-    #[test]
-    fn truncate_excerpt_bounds_length() {
-        let short = "short body";
-        assert_eq!(truncate_excerpt(short), short);
-
-        let long = "a".repeat(500);
-        let truncated = truncate_excerpt(&long);
-        assert_eq!(truncated.chars().count(), 401);
-        assert!(truncated.ends_with('…'));
     }
 
     /// Verifies that jwt_claim retrieves nested claims from a mock JWT.
@@ -1299,7 +1329,8 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn refresh_and_store_clears_lease_on_error() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         let now = unix_time::unix_now();
 
@@ -1327,7 +1358,7 @@ mod tests {
             base_url: None,
             credentials: Credentials::ApiKey("test-key".to_string()),
             expires_at: None,
-            enabled: true,
+            is_enabled: true,
         };
 
         let outcome = refresh_and_store(&database, &Client::new(), &provider, now).await;
@@ -1344,8 +1375,6 @@ mod tests {
         let stored_lease: Option<i64> = rows.first().ok_or("missing provider row")?.get(0)?;
 
         assert_eq!(stored_lease, None, "the refresh lease must be cleared");
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -1369,8 +1398,8 @@ mod tests {
     #[tokio::test]
     async fn refresh_and_store_prefers_original_error_over_clear_failure()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(1, Duration::from_millis(200)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(1, Duration::from_millis(200)).await?;
 
         let now = unix_time::unix_now();
 
@@ -1398,7 +1427,7 @@ mod tests {
             base_url: None,
             credentials: Credentials::ApiKey("test-key".to_string()),
             expires_at: None,
-            enabled: true,
+            is_enabled: true,
         };
 
         // Exhausts the only pool connection so the lease clear cannot run.
@@ -1417,8 +1446,6 @@ mod tests {
             error.message.contains("API key credentials never refresh"),
             "the original refresh error must win, got: {error}"
         );
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }

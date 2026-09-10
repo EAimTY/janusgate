@@ -43,8 +43,8 @@ struct TempArtifactGuard {
 }
 
 impl TempArtifactGuard {
-    /// Builds the unique temporary database path used by
-    /// [`test_support::open_test_database`], guards it, and opens a database
+    /// Builds the unique temporary database path via
+    /// [`test_support::unique_temp_path`], guards it, and opens a database
     /// at it. The guard exists before the database opens, so the file is
     /// removed even when opening fails.
     ///
@@ -103,6 +103,16 @@ impl Drop for TempArtifactGuard {
         // Cleanup is best-effort: a leftover artifact in the system temporary
         // directory must not fail an otherwise passing test from `Drop`.
         let _ = removal;
+
+        // The engine keeps a write-ahead log and a shared-memory sidecar
+        // beside the database file; remove them too, still best-effort.
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar_path = self.path.as_os_str().to_os_string();
+
+            sidecar_path.push(suffix);
+
+            let _ = fs::remove_file(PathBuf::from(sidecar_path));
+        }
     }
 }
 

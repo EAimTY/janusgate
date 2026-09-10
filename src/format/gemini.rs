@@ -320,6 +320,11 @@ pub(crate) struct UpstreamParser {
 
     /// Count of function calls synthesized in this response.
     call_counter: usize,
+
+    /// Whether a finish reason was already emitted; a clean end-of-stream
+    /// without one degrades to [`IrFinishReason::Stop`] in the parser's
+    /// finish hook, matching the aggregated rendering default.
+    is_finished: bool,
 }
 
 impl UpstreamParser {
@@ -397,6 +402,8 @@ impl UpstreamParser {
             }
 
             if let Some(finish_reason) = candidate.get("finishReason").and_then(Value::as_str) {
+                self.is_finished = true;
+
                 events.push(IrEvent::Finish(finish_reason_from_gemini(finish_reason)));
             }
         }
@@ -486,6 +493,20 @@ impl UpstreamEventParser for UpstreamParser {
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
         Self::parse_json_response(self, value)
     }
+
+    fn finish(&mut self) -> Vec<IrEvent> {
+        // An upstream may close its stream cleanly after streaming content
+        // without ever sending a `finishReason`; the missing finish reason
+        // degrades to `Stop` so the streamed client sees the same terminal
+        // finish reason as the aggregated rendering of the same stream.
+        if !self.is_finished {
+            self.is_finished = true;
+
+            return vec![IrEvent::Finish(IrFinishReason::Stop)];
+        }
+
+        Vec::new()
+    }
 }
 
 /// Extracts the primary candidate, preferring `index == 0`; parallel
@@ -519,6 +540,7 @@ mod tests {
         render_generate_content_request,
     };
     use crate::{
+        format::UpstreamEventParser as _,
         ir::{
             IrEvent, IrFinishReason, IrImage, IrMessage, IrPart, IrReasoningEffort, IrRequest,
             IrRole,
@@ -951,5 +973,70 @@ mod tests {
             .expect_err("error object must fail");
 
         assert_eq!(error.status, 502);
+    }
+
+    /// Degrades a clean end-of-stream that carried no `finishReason` to a
+    /// single `Finish(Stop)`, matching the aggregated rendering of the same
+    /// stream, whose outward body defaults the finish reason to `stop`; the
+    /// streamed client then also sees a terminal finish reason chunk.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn clean_eof_without_finish_reason_yields_finish_stop() {
+        let mut parser = UpstreamParser::new();
+
+        let mut events = ingest(
+            &mut parser,
+            concat!(
+                "data: {\"candidates\":[{\"index\":0,\"content\":{\"parts\":[",
+                "{\"text\":\"answer\"}]}}]}\n\n"
+            ),
+        );
+
+        assert!(!events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+
+        events.append(&mut parser.finish());
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::Finish(_)))
+                .count(),
+            1
+        );
+
+        assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)));
+    }
+
+    /// Never duplicates the finish reason: a clean end-of-stream after a
+    /// chunk that already carried a `finishReason` yields exactly one finish
+    /// event.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn clean_eof_after_finish_reason_does_not_duplicate_finish() {
+        let mut parser = UpstreamParser::new();
+
+        let mut events = ingest(
+            &mut parser,
+            concat!(
+                "data: {\"candidates\":[{\"index\":0,",
+                "\"finishReason\":\"STOP\"}]}\n\n"
+            ),
+        );
+
+        events.append(&mut parser.finish());
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::Finish(_)))
+                .count(),
+            1
+        );
     }
 }

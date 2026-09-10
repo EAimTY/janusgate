@@ -237,13 +237,35 @@ impl From<TursoError> for ApiError {
     }
 }
 
+/// Whether the database failure is the engine's stale-snapshot busy error: a
+/// read-then-write transaction attempted its first write after a concurrent
+/// commit invalidated its read snapshot, and the engine refused the upgrade
+/// ("database snapshot is stale, rollback and retry"; busy timeouts never
+/// help). The transaction must be rolled back and the attempt retried, and
+/// the retry re-reads the newer state — so a read-then-write lease such as
+/// the token-refresh acquire classifies it as "not acquired" rather than as
+/// failed work.
+pub(crate) fn is_stale_snapshot(error: &DatabaseError) -> bool {
+    matches!(error, DatabaseError::Turso(TursoError::BusySnapshot(_)))
+}
+
 /// Converts a database failure into an API error: constraint violations
-/// surface as 409 conflicts, everything else as 500 internal errors.
+/// surface as 409 conflicts, busy contention renders with a retry-flavored
+/// message, everything else as 500 internal errors.
 impl From<DatabaseError> for ApiError {
     fn from(error: DatabaseError) -> Self {
         match &error {
-            DatabaseError::Turso(turso::Error::Constraint(detail)) => {
+            DatabaseError::Turso(TursoError::Constraint(detail)) => {
                 Self::conflict(format!("database constraint violated: {detail}"))
+            }
+
+            // Database contention is a gateway-side transient. The error
+            // taxonomy (README §7) has no 503-style category and reserves
+            // 502 `upstream_error` for upstream failures, so busy conditions
+            // keep the 500 `internal` code with a message that names the
+            // contention as retryable instead of the generic drift wording.
+            DatabaseError::Turso(TursoError::Busy(detail) | TursoError::BusySnapshot(detail)) => {
+                Self::internal(format!("database is busy: {detail}"))
             }
 
             _ => Self::internal(format!("database error: {error}")),
@@ -337,6 +359,68 @@ mod tests {
         assert!(error.message.contains("404"));
         assert!(error.message.contains("model list missing"));
         assert_eq!(management_code(&error), "upstream_error");
+    }
+
+    /// Verifies the stale-snapshot busy error is classified exactly, so a
+    /// read-then-write lease can recover it as "not acquired" without
+    /// swallowing unrelated busy or engine failures.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn stale_snapshot_classification_is_exact() {
+        let snapshot = DatabaseError::Turso(TursoError::BusySnapshot("snapshot is stale".into()));
+
+        assert!(is_stale_snapshot(&snapshot));
+
+        let held_lock = DatabaseError::Turso(TursoError::Busy("database is locked".into()));
+
+        assert!(
+            !is_stale_snapshot(&held_lock),
+            "a plain busy lock wait is not a stale snapshot"
+        );
+
+        assert!(!is_stale_snapshot(&DatabaseError::PoolTimeout));
+
+        let constraint = DatabaseError::Turso(TursoError::Constraint("CHECK failed".to_string()));
+
+        assert!(!is_stale_snapshot(&constraint));
+    }
+
+    /// Verifies database busy conditions render as 500 `internal` with a
+    /// message naming the contention as retryable: the taxonomy (README §7)
+    /// reserves 502 for upstream failures and has no 503 category, so the
+    /// retry flavor must ride in the message.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn database_busy_renders_internal_with_retry_flavor() {
+        let busy = ApiError::from(DatabaseError::Turso(TursoError::Busy("locked".into())));
+
+        assert_eq!(busy.status, 500);
+
+        assert_eq!(busy.code.as_deref(), Some("internal"));
+
+        assert!(
+            busy.message.contains("database is busy"),
+            "the message must name the busy condition: {busy}"
+        );
+
+        assert!(busy.message.contains("locked"));
+
+        let snapshot = ApiError::from(DatabaseError::Turso(TursoError::BusySnapshot(
+            "stale".into(),
+        )));
+
+        assert_eq!(snapshot.status, 500);
+
+        assert!(
+            snapshot.message.contains("database is busy"),
+            "a stale snapshot surfacing outside a lease must render busy: {snapshot}"
+        );
     }
 
     /// Verifies the outward OpenAI rendering keeps mirroring a failed upstream

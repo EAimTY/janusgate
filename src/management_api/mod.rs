@@ -98,6 +98,6 @@ pub(crate) fn provider_json(provider: &Provider) -> serde_json::Value {
         "protocol": provider.protocol.map(UpstreamFormat::as_str),
         "base_url": provider.base_url,
         "expires_at": provider.expires_at,
-        "enabled": provider.enabled,
+        "enabled": provider.is_enabled,
     })
 }

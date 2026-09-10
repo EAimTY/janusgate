@@ -182,12 +182,14 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
 fn model_entry_json(entry: &ModelEntry) -> Result<Value, ApiError> {
     let thinking_levels_override = thinking_levels_json(&entry.model.thinking_levels_override)?;
 
+    // The effective status comes from the canonical rule; the management wire
+    // name stays `enabled` (README §7.1).
     Ok(serde_json::json!({
         "provider": entry.provider_name,
         "upstream_name": entry.model.upstream_name,
         "name": entry.model.name,
         "name_override": entry.model.name_override,
-        "enabled": entry.model.enabled_override.unwrap_or(entry.is_provider_enabled),
+        "enabled": entry.model.is_effectively_enabled(entry.is_provider_enabled),
         "enabled_override": entry.model.enabled_override,
         "thinking_levels_override": thinking_levels_override,
     }))
@@ -223,7 +225,7 @@ mod tests {
     use super::*;
     use crate::{database::params, test_support};
     use axum::http::StatusCode;
-    use std::{error::Error as StdError, fs, time::Duration};
+    use std::{error::Error as StdError, time::Duration};
 
     /// Inserts one `openai_compatible` provider row with one model row whose
     /// stored thinking-level override is given, returning nothing.
@@ -273,15 +275,14 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn list_surfaces_corrupt_stored_override_as_internal() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         insert_compatible_model(&database, Some("[\"turbo\"]")).await?;
 
         let response = list(State(database)).await;
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -299,7 +300,8 @@ mod tests {
     #[tokio::test]
     async fn save_model_rejects_unknown_thinking_level_with_parameter()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         insert_compatible_model(&database, None).await?;
 
@@ -321,8 +323,6 @@ mod tests {
             error.message.contains("Unknown thinking level `turbo`"),
             "the error must name the unknown level: {error}"
         );
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }

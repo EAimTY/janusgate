@@ -1,6 +1,6 @@
 //! Upstream model discovery per provider type.
 
-use super::{Provider, ProviderType, endpoints, oauth};
+use super::{Provider, ProviderType, endpoints, http_body, oauth};
 use crate::{error::ApiError, format::UpstreamFormat};
 use reqwest::Client;
 use serde_json::Value;
@@ -186,19 +186,27 @@ async fn discover_compatible(
 
 /// Verifies a successful status and parses the JSON body.
 ///
+/// Only the error path is read through the bounded error-body read: a success
+/// body is legitimate discovery JSON of unbounded size and is read in full.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] for non-success statuses and malformed bodies.
 async fn parse_success_body(response: reqwest::Response) -> Result<Value, ApiError> {
     let status = response.status();
 
+    if !status.is_success() {
+        let body = http_body::read_error_body(response).await;
+
+        return Err(ApiError::upstream_rejected(
+            status.as_u16(),
+            http_body::truncate_excerpt(&body),
+        ));
+    }
+
     let body = response.text().await.map_err(|error| {
         ApiError::upstream_unavailable(format!("upstream read failed: {error}"))
     })?;
-
-    if !status.is_success() {
-        return Err(ApiError::upstream_rejected(status.as_u16(), body));
-    }
 
     serde_json::from_str(&body).map_err(|error| {
         ApiError::upstream_unavailable(format!("malformed upstream response: {error}"))

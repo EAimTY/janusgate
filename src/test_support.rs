@@ -1,6 +1,6 @@
 //! Shared test support for test builds: unique temporary paths, isolated
-//! test databases, canonical provider and model seed rows, request bodies,
-//! and global configuration initialization.
+//! guarded test databases, canonical provider and model seed rows, request
+//! bodies, and global configuration initialization.
 //!
 //! Every test receives its own file-system artifacts; the only process-wide
 //! shared state is the global configuration, which [`init_config`] installs
@@ -30,25 +30,38 @@ use std::{
 /// the process.
 static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Opens an isolated test database at a unique temporary path with the given
-/// pool size and acquisition timeout, returning the database and its file
-/// path for cleanup. Every call yields its own database file; the path is
-/// never shared across tests.
-///
-/// # Errors
-///
-/// Returns any error encountered while opening the database.
-pub(crate) async fn open_test_database(
-    max_connections: usize,
-    pool_timeout: Duration,
-) -> Result<(Database, PathBuf), Box<dyn StdError>> {
-    let mut path = unique_temp_path("test_database");
+/// RAII guard deleting a test's temporary database file when dropped, so the
+/// file is removed on the success path, on any error return, and during the
+/// unwind of a panicking test.
+pub(crate) struct TempDatabaseGuard {
+    /// Path removed when this guard is dropped.
+    path: PathBuf,
+}
 
-    path.set_extension("db");
+impl TempDatabaseGuard {
+    /// Opens an isolated test database at a unique temporary path with the
+    /// given pool size and acquisition timeout and guards the path for
+    /// deletion on drop. Every call yields its own database file; the path is
+    /// never shared across tests. The guard exists before the database opens,
+    /// so the file is removed even when opening fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while opening the database.
+    pub(crate) async fn open_database(
+        max_connections: usize,
+        pool_timeout: Duration,
+    ) -> Result<(Database, Self), Box<dyn StdError>> {
+        let mut path = unique_temp_path("test_database");
 
-    let database = open_test_database_at(&path, max_connections, pool_timeout).await?;
+        path.set_extension("db");
 
-    Ok((database, path))
+        let guard = Self { path };
+
+        let database = open_test_database_at(&guard.path, max_connections, pool_timeout).await?;
+
+        Ok((database, guard))
+    }
 }
 
 /// Opens an isolated test database at the given path with the given pool size
@@ -90,7 +103,7 @@ pub(crate) async fn seed_compatible_provider(
             base_url: Some("https://upstream.example"),
             credentials: &Credentials::ApiKey(api_key.to_string()),
             expires_at: None,
-            enabled: true,
+            is_enabled: true,
         },
     )
     .await?;
@@ -218,4 +231,22 @@ pub(crate) fn unique_temp_name(prefix: &str) -> String {
 /// directory carrying the given `prefix`.
 pub(crate) fn unique_temp_path(prefix: &str) -> PathBuf {
     env::temp_dir().join(unique_temp_name(prefix))
+}
+
+impl Drop for TempDatabaseGuard {
+    fn drop(&mut self) {
+        // Cleanup is best-effort: a leftover artifact in the system temporary
+        // directory must not fail an otherwise passing test from `Drop`.
+        let _ = fs::remove_file(&self.path);
+
+        // The engine keeps a write-ahead log and a shared-memory sidecar
+        // beside the database file; remove them too, still best-effort.
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar_path = self.path.as_os_str().to_os_string();
+
+            sidecar_path.push(suffix);
+
+            let _ = fs::remove_file(PathBuf::from(sidecar_path));
+        }
+    }
 }

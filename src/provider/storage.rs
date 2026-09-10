@@ -44,7 +44,7 @@ pub(crate) async fn insert_provider(
                 provider.base_url,
                 provider.credentials.to_json(),
                 provider.expires_at,
-                i64::from(provider.enabled),
+                i64::from(provider.is_enabled),
             ],
         )
         .await?;
@@ -65,6 +65,14 @@ pub(crate) async fn list_providers(database: &Database) -> Result<Vec<Provider>,
     rows.iter().map(provider_from_row).collect()
 }
 
+/// The `WHERE name = ?1` provider lookup, executed through both the pooled
+/// database ([`find_provider`]) and an open transaction
+/// ([`find_provider_in_transaction`]); the two executor types share no query
+/// trait, so the statement text is the shared part.
+fn find_provider_sql() -> String {
+    format!("SELECT {PROVIDER_COLUMNS} FROM providers WHERE name = ?1")
+}
+
 /// Fetches one provider by name.
 ///
 /// # Errors
@@ -74,14 +82,13 @@ pub(crate) async fn find_provider(
     database: &Database,
     name: &str,
 ) -> Result<Option<Provider>, ApiError> {
-    let sql = format!("SELECT {PROVIDER_COLUMNS} FROM providers WHERE name = ?1");
-
-    let rows = database.query(sql, params![name]).await?;
+    let rows = database.query(find_provider_sql(), params![name]).await?;
 
     rows.first().map(provider_from_row).transpose()
 }
 
-/// Fetches one provider by name inside a transaction.
+/// Fetches one provider by name inside a transaction, mirroring
+/// [`find_provider`] against the transactional executor.
 ///
 /// # Errors
 ///
@@ -90,9 +97,9 @@ pub(crate) async fn find_provider_in_transaction(
     transaction: &mut Transaction,
     name: &str,
 ) -> Result<Option<Provider>, ApiError> {
-    let sql = format!("SELECT {PROVIDER_COLUMNS} FROM providers WHERE name = ?1");
-
-    let rows = transaction.query(sql, params![name]).await?;
+    let rows = transaction
+        .query(find_provider_sql(), params![name])
+        .await?;
 
     rows.first().map(provider_from_row).transpose()
 }
@@ -170,7 +177,7 @@ pub(crate) struct ProviderUpdate<'a> {
     pub(crate) base_url: Option<&'a str>,
 
     /// Whether the provider serves traffic.
-    pub(crate) enabled: Option<bool>,
+    pub(crate) is_enabled: Option<bool>,
 
     /// Replacement credentials; `None` keeps the stored ones.
     pub(crate) credentials: Option<&'a Credentials>,
@@ -224,7 +231,7 @@ pub(crate) async fn update_provider(
 
     let base_url = update.base_url.or(provider.base_url.as_deref());
 
-    let enabled = update.enabled.unwrap_or(provider.enabled);
+    let is_enabled = update.is_enabled.unwrap_or(provider.is_enabled);
 
     let is_credentials_replaced = update.credentials.is_some();
 
@@ -260,7 +267,7 @@ pub(crate) async fn update_provider(
                 model_prefix,
                 protocol.map(UpstreamFormat::as_str),
                 base_url,
-                i64::from(enabled),
+                i64::from(is_enabled),
                 provider.id,
             ],
         )
@@ -307,7 +314,7 @@ pub(crate) async fn update_provider(
         } else {
             provider.expires_at
         },
-        enabled,
+        is_enabled,
     })
 }
 
@@ -405,16 +412,22 @@ async fn find_models_in_transaction(
 /// lease acquired after `lease_stale_before`. Returns the acquired lease
 /// stamp, or `None` when another holder owns a live lease.
 ///
+/// The raw [`crate::database::Error`] is returned instead of an [`ApiError`]
+/// because the caller must classify a stale-snapshot busy failure — a
+/// concurrent commit invalidating the read-then-write upgrade — as "not
+/// acquired" and retry through its poll loop, rather than render it as a
+/// failed request.
+///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the update fails.
+/// Returns the underlying database error when the update fails.
 pub(crate) async fn try_acquire_refresh_lease(
     transaction: &mut Transaction,
     provider_id: i64,
     now: i64,
     lease_stale_before: i64,
     freshness_margin: i64,
-) -> Result<Option<i64>, ApiError> {
+) -> Result<Option<i64>, crate::database::Error> {
     let changes = transaction
         .execute(
             "UPDATE providers SET refresh_started_at = ?1 \
@@ -502,8 +515,7 @@ pub(crate) async fn find_routing(
             provider_model_from_row(row).map(|joined| ModelRouting {
                 is_enabled: joined
                     .model
-                    .enabled_override
-                    .unwrap_or(joined.provider.enabled),
+                    .is_effectively_enabled(joined.provider.is_enabled),
                 provider: joined.provider,
                 model: joined.model,
             })
@@ -578,6 +590,12 @@ pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelE
 
 /// Lists `(public_name, provider_name)` pairs for every effectively enabled
 /// model, ordered by public name.
+///
+/// The `COALESCE(m.enabled_override, p.enabled) != 0` predicate is the SQL
+/// form of [`Model::is_effectively_enabled`], the canonical Rust rule. It is
+/// applied in SQL rather than Rust-side filtering on purpose: disabled rows
+/// never leave the engine, so the Rust side materializes only what the
+/// outward model listing serves.
 ///
 /// # Errors
 ///
@@ -1032,6 +1050,9 @@ fn provider_from_row(row: &Row) -> Result<Provider, ApiError> {
     let name: String = row.get(1)?;
     let credentials_json: String = row.get(6)?;
 
+    // The typed parse failure is wrapped exactly once as internal storage
+    // drift: the row was written only through the validated management path,
+    // so a payload failing here is never the requesting client's fault.
     let credentials = Credentials::parse(provider_type, &credentials_json).map_err(|error| {
         ApiError::internal(format!(
             "provider `{name}` has malformed credentials: {error}"
@@ -1047,7 +1068,7 @@ fn provider_from_row(row: &Row) -> Result<Provider, ApiError> {
         base_url: row.get(5)?,
         credentials,
         expires_at: row.get(7)?,
-        enabled: row.get::<i64>(8)? != 0,
+        is_enabled: row.get::<i64>(8)? != 0,
     })
 }
 
@@ -1100,7 +1121,7 @@ fn model_from_row(row: &Row) -> Result<Model, ApiError> {
 mod tests {
     use super::*;
     use crate::test_support;
-    use std::{error::Error as StdError, fs, sync::Arc, time::Duration};
+    use std::{error::Error as StdError, sync::Arc, time::Duration};
 
     /// Number of consumers racing on one OAuth state in the exactly-once test.
     const STATE_CONSUMERS: usize = 8;
@@ -1173,8 +1194,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_granted_when_token_expired_without_lease() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id =
@@ -1191,8 +1213,6 @@ mod tests {
 
         assert_eq!(read_refresh_lease(&database, provider_id).await?, Some(now));
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -1208,8 +1228,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_denied_while_live_lease_held() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id =
@@ -1229,8 +1250,6 @@ mod tests {
             Some(now - 10)
         );
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -1246,8 +1265,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_reclaims_stale_lease() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id =
@@ -1264,7 +1284,66 @@ mod tests {
 
         assert_eq!(read_refresh_lease(&database, provider_id).await?, Some(now));
 
-        let _ = fs::remove_file(path);
+        Ok(())
+    }
+
+    /// Verifies the engine raises the stale-snapshot busy error when the
+    /// lease acquire's read-then-write upgrade loses its snapshot to an
+    /// interleaved commit, and that the error is classified as a stale
+    /// snapshot: K concurrent acquirers on one expired token all hit this
+    /// exact failure, and the token-refresh caller must recover it as "not
+    /// acquired" — the poll-and-wait path of README §3 — instead of failing
+    /// the request with a database error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn lease_acquire_after_interleaved_commit_classifies_stale_snapshot()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, TEST_POOL_TIMEOUT).await?;
+        let now = crate::unix_time::unix_now();
+
+        let provider_id = insert_lease_provider(&database, "racer", Some(now - 100), None).await?;
+
+        // Winner and loser both read the provider row, pinning one read
+        // snapshot for both transactions.
+        let mut winner = database.transaction().await?;
+
+        let _ = find_provider_in_transaction(&mut winner, "racer").await?;
+
+        let mut loser = database.transaction().await?;
+
+        let _ = find_provider_in_transaction(&mut loser, "racer").await?;
+
+        // The winner acquires the lease and commits, landing a write after
+        // the loser's snapshot was taken.
+        let winner_lease =
+            try_acquire_refresh_lease(&mut winner, provider_id, now, now - 90, 60).await?;
+
+        assert_eq!(winner_lease, Some(now));
+
+        winner.commit().await?;
+
+        // The loser's lease write upgrades its stale snapshot and must fail
+        // with the engine's stale-snapshot busy error, classified so the
+        // refresh loop can treat the attempt as "not acquired".
+        let error = try_acquire_refresh_lease(&mut loser, provider_id, now, now - 90, 60)
+            .await
+            .err()
+            .ok_or("the stale-snapshot acquire must fail")?;
+
+        assert!(
+            crate::error::is_stale_snapshot(&error),
+            "the interleaved acquire must fail with the stale-snapshot busy error: {error}"
+        );
+
+        drop(loser);
 
         Ok(())
     }
@@ -1281,8 +1360,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_denied_while_token_fresh() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id = insert_lease_provider(&database, "fresh", Some(now + 61), None).await?;
@@ -1312,8 +1392,6 @@ mod tests {
 
         assert_eq!(lease_started_at, Some(now));
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -1329,8 +1407,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_granted_when_expiry_absent() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id = insert_lease_provider(&database, "no_expiry", None, None).await?;
@@ -1343,8 +1422,6 @@ mod tests {
         transaction.commit().await?;
 
         assert_eq!(lease_started_at, Some(now));
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -1362,8 +1439,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn lease_honors_freshness_margin_parameter() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id = insert_lease_provider(&database, "margin", Some(now + 1), None).await?;
@@ -1393,8 +1471,6 @@ mod tests {
 
         assert_eq!(lease_started_at, Some(now));
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -1411,8 +1487,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn consume_oauth_state_returns_facts_exactly_once() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         insert_oauth_state(
@@ -1437,8 +1514,6 @@ mod tests {
                 .is_none()
         );
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -1453,8 +1528,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn consume_oauth_state_rejects_expired_state() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         insert_oauth_state(
@@ -1471,8 +1547,6 @@ mod tests {
                 .await?
                 .is_none()
         );
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -1491,8 +1565,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn consume_oauth_state_completes_exactly_once_under_concurrency()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         for round in 0..24 {
@@ -1533,8 +1608,6 @@ mod tests {
 
             assert_eq!(winner_count, 1, "state {state} completed more than once");
         }
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -1650,8 +1723,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn provider_update_recomputes_all_public_names() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "p-").await?;
 
@@ -1665,7 +1739,7 @@ mod tests {
                 model_prefix: Some("svc/"),
                 protocol: Some(UpstreamFormat::OpenAiResponse),
                 base_url: Some("https://other.example"),
-                enabled: Some(false),
+                is_enabled: Some(false),
                 credentials: None,
             },
         )
@@ -1673,7 +1747,7 @@ mod tests {
 
         assert_eq!(stored.name, "alpha");
         assert_eq!(stored.model_prefix, "svc/");
-        assert!(!stored.enabled);
+        assert!(!stored.is_enabled);
         assert_eq!(
             stored.credentials,
             Credentials::ApiKey("test-key".to_string())
@@ -1696,8 +1770,6 @@ mod tests {
         assert_eq!(protocol.as_deref(), Some("openai_response"));
         assert_eq!(base_url.as_deref(), Some("https://other.example"));
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -1715,8 +1787,9 @@ mod tests {
     #[tokio::test]
     async fn provider_update_rejects_foreign_name_collision_and_rolls_back()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let alpha_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -1733,7 +1806,7 @@ mod tests {
                 model_prefix: Some(""),
                 protocol: None,
                 base_url: None,
-                enabled: Some(false),
+                is_enabled: Some(false),
                 credentials: None,
             },
         )
@@ -1756,8 +1829,6 @@ mod tests {
             Some("m1".to_string())
         );
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -1777,8 +1848,9 @@ mod tests {
     #[tokio::test]
     async fn provider_update_rejects_same_provider_name_convergence()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let provider_id = insert_prefix_provider(&database, "gamma", "p-").await?;
 
@@ -1792,7 +1864,7 @@ mod tests {
                 model_prefix: Some(""),
                 protocol: None,
                 base_url: None,
-                enabled: Some(false),
+                is_enabled: Some(false),
                 credentials: None,
             },
         )
@@ -1814,8 +1886,6 @@ mod tests {
             Some("keep-2".to_string())
         );
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -1831,8 +1901,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn provider_update_with_no_models_succeeds() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         insert_prefix_provider(&database, "delta", "p-").await?;
 
@@ -1843,7 +1914,7 @@ mod tests {
                 model_prefix: Some("q-"),
                 protocol: None,
                 base_url: None,
-                enabled: Some(false),
+                is_enabled: Some(false),
                 credentials: None,
             },
         )
@@ -1853,8 +1924,6 @@ mod tests {
 
         assert_eq!(model_prefix, "q-");
         assert_eq!(enabled, 0);
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -1873,8 +1942,9 @@ mod tests {
     #[tokio::test]
     async fn provider_update_merges_absent_fields_from_fresh_row() -> Result<(), Box<dyn StdError>>
     {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -1883,7 +1953,7 @@ mod tests {
             .await?
             .ok_or("missing provider row")?;
 
-        assert!(outer.enabled);
+        assert!(outer.is_enabled);
 
         // A concurrent save-provider disables the provider before the
         // caller's update commits.
@@ -1894,7 +1964,7 @@ mod tests {
                 model_prefix: None,
                 protocol: None,
                 base_url: None,
-                enabled: Some(false),
+                is_enabled: Some(false),
                 credentials: None,
             },
         )
@@ -1908,7 +1978,7 @@ mod tests {
                 model_prefix: Some("b-"),
                 protocol: None,
                 base_url: None,
-                enabled: None,
+                is_enabled: None,
                 credentials: None,
             },
         )
@@ -1917,7 +1987,7 @@ mod tests {
         assert_eq!(stored.model_prefix, "b-");
 
         assert!(
-            !stored.enabled,
+            !stored.is_enabled,
             "the stale outer read must not revert the newer stored enabled state"
         );
 
@@ -1925,8 +1995,6 @@ mod tests {
 
         assert_eq!(model_prefix, "b-");
         assert_eq!(enabled, 0);
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -1945,8 +2013,9 @@ mod tests {
     #[tokio::test]
     async fn provider_update_rejects_vanished_provider_as_not_found()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -1962,7 +2031,7 @@ mod tests {
                 model_prefix: None,
                 protocol: None,
                 base_url: None,
-                enabled: Some(false),
+                is_enabled: Some(false),
                 credentials: None,
             },
         )
@@ -1972,8 +2041,6 @@ mod tests {
 
         assert_eq!(error.status, 404);
         assert!(error.message.contains("does not exist"));
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -2010,8 +2077,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn credential_persist_requires_own_lease_stamp() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id = insert_lease_provider(&database, "stamp", Some(now - 100), None).await?;
@@ -2043,8 +2111,6 @@ mod tests {
 
         assert_eq!(read_refresh_lease(&database, provider_id).await?, None);
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2062,8 +2128,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn credential_persist_loses_to_lease_reacquisition() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         // The in-flight refresher acquired its lease 100 seconds ago.
@@ -2073,12 +2140,12 @@ mod tests {
         // A waiter reacquires the abandoned lease now.
         let mut transaction = database.transaction().await?;
 
-        let reacquired =
+        let is_lease_acquired =
             try_acquire_refresh_lease(&mut transaction, provider_id, now, now - 90, 60).await?;
 
         transaction.commit().await?;
 
-        assert_eq!(reacquired, Some(now));
+        assert_eq!(is_lease_acquired, Some(now));
 
         let is_persisted = update_credentials_for_lease(
             &database,
@@ -2102,8 +2169,6 @@ mod tests {
             "the newer holder's lease must survive"
         );
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2121,8 +2186,9 @@ mod tests {
     #[tokio::test]
     async fn credential_persist_loses_to_credentials_replacement() -> Result<(), Box<dyn StdError>>
     {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id =
@@ -2136,7 +2202,7 @@ mod tests {
                 model_prefix: Some(""),
                 protocol: None,
                 base_url: None,
-                enabled: Some(true),
+                is_enabled: Some(true),
                 credentials: Some(&Credentials::ApiKey("admin-key".to_string())),
             },
         )
@@ -2158,8 +2224,6 @@ mod tests {
             r#"{"apiKey":"admin-key"}"#
         );
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2177,8 +2241,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn credential_update_reports_vanished_provider() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
         let now = crate::unix_time::unix_now();
 
         let provider_id =
@@ -2207,7 +2272,61 @@ mod tests {
             "a vanished provider must be reported as unwritten"
         );
 
-        let _ = fs::remove_file(path);
+        Ok(())
+    }
+
+    /// Verifies a stored provider row carrying malformed credentials decodes
+    /// as a 500 internal error that names the drift and wraps the typed parse
+    /// failure exactly once: stored credentials are written only through the
+    /// validated management path, so a payload failing here is database drift
+    /// and never a client fault.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn malformed_stored_credentials_decode_as_internal_wrapped_once()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
+
+        // An OpenAI OAuth row missing `refreshToken` and carrying a stray
+        // `expiresAt` field is double drift; the decode must fail either way.
+        database
+            .execute(
+                "INSERT INTO providers (name, model_prefix, type, credentials) \
+                 VALUES ('drifted', '', 'openai_oauth', '{\"accessToken\":\"a\"}')",
+                (),
+            )
+            .await?;
+
+        #[expect(clippy::panic, reason = "an unexpected success fails the test")]
+        let error = find_provider(&database, "drifted")
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("malformed stored credentials must fail decoding"));
+
+        assert_eq!(error.status, 500);
+
+        assert_eq!(error.code.as_deref(), Some("internal"));
+
+        assert!(
+            error
+                .message
+                .starts_with("provider `drifted` has malformed credentials: "),
+            "the drift must be named exactly once at the wrap: {error}"
+        );
+
+        assert_eq!(
+            error.message.matches("malformed credentials").count(),
+            1,
+            "the wrap must not double-prefix the cause: {error}"
+        );
 
         Ok(())
     }
@@ -2248,8 +2367,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn discover_replaces_models_and_carries_overrides() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2281,8 +2401,6 @@ mod tests {
             "undiscovered rows must vanish with their overrides"
         );
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2302,8 +2420,9 @@ mod tests {
     #[tokio::test]
     async fn discover_rejects_empty_upstream_set_without_wiping_rows()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2325,8 +2444,6 @@ mod tests {
         assert_eq!(name, "a-custom");
         assert_eq!(name_override.as_deref(), Some("custom"));
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2344,8 +2461,9 @@ mod tests {
     #[tokio::test]
     async fn discover_rejects_routed_collision_with_name_specific_conflict()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         // The empty prefix lets alpha's composed name collide with beta's.
         let alpha_id = insert_prefix_provider(&database, "alpha", "").await?;
@@ -2376,8 +2494,6 @@ mod tests {
 
         assert!(read_model_name(&database, alpha_id, "m1").await?.is_none());
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2396,8 +2512,9 @@ mod tests {
     #[tokio::test]
     async fn discover_composes_names_from_prefix_re_read_in_transaction()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2416,7 +2533,7 @@ mod tests {
                 model_prefix: Some("b-"),
                 protocol: None,
                 base_url: None,
-                enabled: Some(true),
+                is_enabled: Some(true),
                 credentials: None,
             },
         )
@@ -2429,8 +2546,6 @@ mod tests {
             Some("b-gpt-x".to_string()),
             "the fresh in-transaction prefix must decide the public name"
         );
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }
@@ -2448,8 +2563,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn discover_rejects_own_name_convergence() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let provider_id = insert_prefix_provider(&database, "gamma", "x-").await?;
 
@@ -2475,8 +2591,6 @@ mod tests {
             Some("x-u1".to_string())
         );
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2493,8 +2607,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_model_applies_overrides_with_fresh_prefix() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2509,7 +2624,7 @@ mod tests {
                 model_prefix: Some("b-"),
                 protocol: None,
                 base_url: None,
-                enabled: Some(true),
+                is_enabled: Some(true),
                 credentials: None,
             },
         )
@@ -2538,8 +2653,6 @@ mod tests {
         assert_eq!(entry.model.name_override.as_deref(), Some("hero"));
         assert_eq!(entry.model.enabled_override, Some(false));
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2555,8 +2668,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_model_rejects_collision_and_writes_nothing() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         // The empty prefix lets alpha's override name collide with beta's.
         let alpha_id = insert_prefix_provider(&database, "alpha", "").await?;
@@ -2594,8 +2708,6 @@ mod tests {
         assert_eq!(name_override, None);
         assert_eq!(enabled_override, None);
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2611,8 +2723,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_model_clears_name_override_with_null() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2633,8 +2746,6 @@ mod tests {
         assert_eq!(entry.model.name, "a-u1");
         assert_eq!(entry.model.name_override, None);
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2650,8 +2761,9 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn save_model_rejects_unknown_rows() -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2690,8 +2802,6 @@ mod tests {
         assert_eq!(unknown_model.status, 404);
         assert!(unknown_model.message.contains("missing"));
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -2709,8 +2819,9 @@ mod tests {
     #[tokio::test]
     async fn list_enabled_models_with_owner_maps_names_to_providers()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) =
-            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
 
         let alpha_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
@@ -2742,8 +2853,6 @@ mod tests {
                 ("a-m2".to_string(), "alpha".to_string()),
             ]
         );
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }

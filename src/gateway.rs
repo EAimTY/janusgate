@@ -9,8 +9,10 @@ use crate::{
     },
     ids::new_uuid,
     ir::{IrEvent, IrRequest, apply_thinking_levels, parse_thinking_levels_override},
-    provider::{Credentials, ModelRouting, Provider, ProviderType, endpoints, oauth, storage},
-    sse::SseParser,
+    provider::{
+        Credentials, ModelRouting, Provider, ProviderType, endpoints, http_body, oauth, storage,
+    },
+    sse::{SseFrame, SseParseError, SseParser},
 };
 use futures::Stream;
 use reqwest::Client;
@@ -24,6 +26,18 @@ const EVENT_CHANNEL_BUFFER: usize = 64;
 /// A stream of translated IR events; always terminates with
 /// [`IrEvent::Done`].
 pub(crate) type IrEventStream = Pin<Box<dyn Stream<Item = Result<IrEvent, ApiError>> + Send>>;
+
+/// Incremental source of complete upstream SSE frames: the framing half of
+/// the upstream pump, kept a trait so the end-of-stream flush contract is
+/// testable independently of the real parser.
+trait SseFrameSource {
+    /// Ingests a raw byte chunk and returns every frame completed by it.
+    fn ingest(&mut self, chunk: &[u8]) -> Result<Vec<SseFrame>, SseParseError>;
+
+    /// Flushes a trailing frame terminated by the end of the stream instead
+    /// of a final empty line.
+    fn finish(&mut self) -> Result<Vec<SseFrame>, SseParseError>;
+}
 
 /// Resolves a public model name to its enabled routing row.
 ///
@@ -114,7 +128,7 @@ pub(crate) async fn execute(
     let parser = upstream_parser(upstream_format);
 
     if is_event_stream {
-        tokio::spawn(pump_sse(response, parser, sender));
+        tokio::spawn(pump_sse(response, parser, SseParser::new(), sender));
     } else {
         tokio::spawn(pump_json(response, parser, sender));
     }
@@ -258,10 +272,9 @@ fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventPars
 async fn pump_sse(
     response: reqwest::Response,
     mut parser: Box<dyn UpstreamEventParser + Send>,
+    mut sse_parser: impl SseFrameSource + Send,
     sender: tokio::sync::mpsc::Sender<Result<IrEvent, ApiError>>,
 ) {
-    let mut sse_parser = SseParser::new();
-
     let mut body = response.bytes_stream();
 
     // Whether an error aborted the stream; only a clean end of stream lets
@@ -322,27 +335,45 @@ async fn pump_sse(
     // parser only on a clean end of stream: replaying them after an abort
     // would emit events after the stream's error and break the
     // error-then-`Done` contract of the event stream.
-    if !is_aborted && let Ok(frames) = sse_parser.finish() {
-        for frame in frames {
-            match parser.ingest_frame(&frame) {
-                Ok(events) => {
-                    for event in events {
-                        if sender.send(Ok(event)).await.is_err() {
+    if !is_aborted {
+        match sse_parser.finish() {
+            Ok(frames) => {
+                for frame in frames {
+                    match parser.ingest_frame(&frame) {
+                        Ok(events) => {
+                            for event in events {
+                                if sender.send(Ok(event)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+
+                        // A malformed trailing frame aborts the stream with an
+                        // error exactly like a malformed frame in the main
+                        // loop; the final `Done` below still terminates the
+                        // event stream.
+                        Err(error) => {
+                            is_aborted = true;
+
+                            let _ = sender.send(Err(error)).await;
+
                             break;
                         }
                     }
                 }
+            }
 
-                // A malformed trailing frame aborts the stream with an error
-                // exactly like a malformed frame in the main loop; the final
-                // `Done` below still terminates the event stream.
-                Err(error) => {
-                    is_aborted = true;
+            // A trailing frame the framing layer rejects at flush time aborts
+            // the stream exactly like an oversized frame in the main loop;
+            // silently completing the stream here would drop the trailing
+            // frame on the floor. The final `Done` below still terminates the
+            // event stream.
+            Err(_) => {
+                is_aborted = true;
 
-                    let _ = sender.send(Err(error)).await;
-
-                    break;
-                }
+                let _ = sender
+                    .send(Err(ApiError::upstream_unavailable("oversized SSE frame")))
+                    .await;
             }
         }
     }
@@ -395,53 +426,32 @@ async fn pump_json(
     let _ = sender.send(Ok(IrEvent::Done)).await;
 }
 
-/// Maximum number of bytes read from a non-2xx upstream body before it is
-/// truncated into an error message. The excerpt is capped at 400 characters
-/// anyway, so a few kilobytes leave ample margin for multi-byte characters
-/// while bounding what a hostile upstream can make the gateway buffer.
-const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
-
-/// Builds the upstream error for a non-2xx response, reading at most
-/// [`MAX_ERROR_BODY_BYTES`] of its body. The full body is never buffered:
-/// a hostile upstream must not be able to stream unbounded bytes into
-/// gateway memory just to shape an error message.
+/// Builds the upstream error for a non-2xx response through the shared
+/// bounded error-body read ([`http_body::read_error_body`]) and the one
+/// excerpt policy ([`http_body::truncate_excerpt`]): the full body is never
+/// buffered, because a hostile upstream must not be able to stream unbounded
+/// bytes into gateway memory just to shape an error message.
 async fn upstream_error_of(response: reqwest::Response) -> ApiError {
     let status = response.status();
 
-    let mut stream = response.bytes_stream();
+    let body = http_body::read_error_body(response).await;
 
-    let mut bytes: Vec<u8> = Vec::new();
-
-    while bytes.len() < MAX_ERROR_BODY_BYTES {
-        match stream.next().await {
-            Some(Ok(chunk)) => bytes.extend_from_slice(&chunk),
-            Some(Err(_)) | None => break,
-        }
-    }
-
-    // A chunk boundary can split a multi-byte character; the excerpt is
-    // human-facing, so a replacement character is acceptable.
-    let body = String::from_utf8_lossy(&bytes);
-
-    ApiError::upstream(status.as_u16(), truncate_excerpt(&body))
+    ApiError::upstream(status.as_u16(), http_body::truncate_excerpt(&body))
 }
 
-/// Truncates an upstream body to a bounded excerpt for error messages.
-fn truncate_excerpt(body: &str) -> String {
-    const MAX_CHARS: usize = 400;
+impl SseFrameSource for SseParser {
+    fn ingest(&mut self, chunk: &[u8]) -> Result<Vec<SseFrame>, SseParseError> {
+        SseParser::ingest(self, chunk)
+    }
 
-    if body.chars().count() <= MAX_CHARS {
-        body.to_string()
-    } else {
-        let excerpt: String = body.chars().take(MAX_CHARS).collect();
-
-        format!("{excerpt}…")
+    fn finish(&mut self) -> Result<Vec<SseFrame>, SseParseError> {
+        SseParser::finish(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compatible_base_url, execute, pump_sse};
+    use super::{SseFrameSource, compatible_base_url, execute, pump_sse};
     use crate::{
         error::{ApiError, ApiErrorKind},
         format::{
@@ -450,7 +460,7 @@ mod tests {
         },
         ir::{IrEvent, IrRequest},
         provider::{Credentials, Model, ModelRouting, Provider, ProviderType},
-        sse::SseFrame,
+        sse::{SseFrame, SseParseError, SseParser},
         test_support,
     };
     use std::{
@@ -577,6 +587,23 @@ mod tests {
         }
     }
 
+    /// SSE frame source whose end-of-stream flush fails, standing in for the
+    /// flush-error branch of the framing layer. The real parser cannot raise
+    /// it today — the flush appends the line terminator itself, and an
+    /// oversized frame already aborts the main loop — so the pump contract is
+    /// pinned with this stub instead.
+    struct FailingFinishFrames;
+
+    impl SseFrameSource for FailingFinishFrames {
+        fn ingest(&mut self, _chunk: &[u8]) -> Result<Vec<SseFrame>, SseParseError> {
+            Ok(Vec::new())
+        }
+
+        fn finish(&mut self) -> Result<Vec<SseFrame>, SseParseError> {
+            Err(SseParseError::FrameTooLarge)
+        }
+    }
+
     /// Drives `pump_sse` against a loopback upstream serving one SSE response
     /// and collects the emitted events.
     ///
@@ -586,6 +613,7 @@ mod tests {
     async fn pump_fixture(
         body: &[u8],
         parser: Box<dyn UpstreamEventParser + Send>,
+        sse_parser: impl SseFrameSource + Send,
     ) -> Vec<Result<IrEvent, ApiError>> {
         let head = format!(
             "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
@@ -606,7 +634,7 @@ mod tests {
 
         let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
 
-        pump_sse(response, parser, sender).await;
+        pump_sse(response, parser, sse_parser, sender).await;
 
         let mut events = Vec::new();
 
@@ -626,8 +654,12 @@ mod tests {
     #[tokio::test]
     async fn finishes_parsers_only_on_clean_eof() {
         // Clean EOF: an empty SSE body ends the stream without error.
-        let events =
-            pump_fixture(b"", Box::new(FinishRecordingParser { is_finished: false })).await;
+        let events = pump_fixture(
+            b"",
+            Box::new(FinishRecordingParser { is_finished: false }),
+            SseParser::new(),
+        )
+        .await;
 
         let is_flush_then_done = matches!(
             events.first(),
@@ -644,6 +676,7 @@ mod tests {
         let events = pump_fixture(
             b"data: {",
             Box::new(FinishRecordingParser { is_finished: false }),
+            SseParser::new(),
         )
         .await;
 
@@ -700,6 +733,7 @@ mod tests {
             Box::new(AbortsFirstFrameParser {
                 is_first_frame: true,
             }),
+            SseParser::new(),
         )
         .await;
 
@@ -710,7 +744,7 @@ mod tests {
 
         // An always-rejecting parser proves the buffered frame is not even
         // dispatched after the abort, so no second error can be emitted.
-        let events = pump_fixture(body, Box::new(RejectingParser)).await;
+        let events = pump_fixture(body, Box::new(RejectingParser), SseParser::new()).await;
 
         assert!(
             matches!(events.as_slice(), [Err(_), Ok(IrEvent::Done)]),
@@ -731,7 +765,8 @@ mod tests {
                      {\"index\":0,\"id\":\"call_1\",\"function\":\
                      {\"name\":\"f\",\"arguments\":\"{}\"}}]}}]}\n\n";
 
-        let events = pump_fixture(body, Box::new(ChatUpstreamParser::new())).await;
+        let events =
+            pump_fixture(body, Box::new(ChatUpstreamParser::new()), SseParser::new()).await;
 
         let is_flushed_call = |event: &Result<IrEvent, ApiError>| {
             matches!(
@@ -791,7 +826,13 @@ mod tests {
 
         let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
 
-        pump_sse(response, Box::new(RejectingParser), sender).await;
+        pump_sse(
+            response,
+            Box::new(RejectingParser),
+            SseParser::new(),
+            sender,
+        )
+        .await;
 
         let mut events = Vec::new();
 
@@ -802,6 +843,25 @@ mod tests {
         assert!(
             matches!(events.as_slice(), [Err(_), Ok(IrEvent::Done)]),
             "the trailing-frame parse error must precede Done, got: {events:?}"
+        );
+    }
+
+    /// Verifies that a framing error raised by the SSE parser's own
+    /// end-of-stream flush — a trailing frame only rejected at flush time —
+    /// reaches the event channel as an `Err` before `Done`, instead of
+    /// terminating the stream cleanly as if the trailing frame had never
+    /// existed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[tokio::test]
+    async fn forwards_flush_time_framing_error() {
+        let events = pump_fixture(b"", Box::new(RejectingParser), FailingFinishFrames).await;
+
+        assert!(
+            matches!(events.as_slice(), [Err(_), Ok(IrEvent::Done)]),
+            "the flush-time framing error must precede Done, got: {events:?}"
         );
     }
 
@@ -858,7 +918,7 @@ mod tests {
             base_url,
             credentials: Credentials::ApiKey("test-key".to_string()),
             expires_at: None,
-            enabled: true,
+            is_enabled: true,
         }
     }
 
@@ -899,7 +959,8 @@ mod tests {
     async fn malformed_stored_thinking_levels_fail_internally() -> Result<(), Box<dyn StdError>> {
         init_http_client();
 
-        let (database, _) = test_support::open_test_database(1, Duration::from_secs(5)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(1, Duration::from_secs(5)).await?;
 
         // A bare JSON string is not the array the override requires, so
         // parsing the stored value must fail.

@@ -188,7 +188,7 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
                     base_url: None,
                     credentials: &exchanged.credentials,
                     expires_at: Some(exchanged.expires_at),
-                    enabled: true,
+                    is_enabled: true,
                 },
             )
             .await?;
@@ -204,7 +204,7 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
 mod tests {
     use super::*;
     use crate::test_support;
-    use std::{error::Error as StdError, fs, time::Duration};
+    use std::{error::Error as StdError, time::Duration};
 
     /// Verifies supplying `model_prefix` for an existing provider is rejected
     /// with 400 naming the field, and that the rejection fires before the
@@ -220,7 +220,8 @@ mod tests {
     #[tokio::test]
     async fn complete_rejects_model_prefix_for_existing_provider() -> Result<(), Box<dyn StdError>>
     {
-        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
 
@@ -249,8 +250,6 @@ mod tests {
         assert_eq!(error.status, 404);
         assert!(error.message.contains("already consumed"));
 
-        let _ = fs::remove_file(path);
-
         Ok(())
     }
 
@@ -268,7 +267,8 @@ mod tests {
     #[tokio::test]
     async fn complete_rejects_type_mismatch_without_burning_the_state()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
 
@@ -305,8 +305,6 @@ mod tests {
         let consumed = consumed.ok_or("the mismatched completion must not burn the state")?;
 
         assert_eq!(consumed.state_type, ProviderType::OpenAiOauth);
-
-        let _ = fs::remove_file(path);
 
         Ok(())
     }

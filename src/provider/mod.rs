@@ -5,6 +5,7 @@ use crate::{error::ApiError, format::UpstreamFormat};
 
 pub(crate) mod discovery;
 pub(crate) mod endpoints;
+pub(crate) mod http_body;
 pub(crate) mod oauth;
 pub(crate) mod storage;
 
@@ -84,37 +85,49 @@ pub(crate) enum Credentials {
     ApiKey(String),
 }
 
+/// A credentials parse failure, typed so each boundary renders its own error
+/// domain: management input validation maps it to a 400 invalid request
+/// naming `credentials`, while storage row decoding wraps it once as a 500
+/// internal error — stored credentials are written only through the validated
+/// management path, so a payload that fails there is database drift and never
+/// a client fault.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ParseError {
+    /// The payload is not valid JSON.
+    #[error("Credentials are not valid JSON: {0}")]
+    Json(serde_json::Error),
+
+    /// A required field is absent or not a string.
+    #[error("Credentials must carry a string `{0}` field")]
+    MissingField(String),
+
+    /// The payload carries a field outside the provider type's exact field
+    /// set.
+    #[error("Credentials carry an unknown `{0}` field; allowed: `{1}`")]
+    UnknownField(String, String),
+}
+
 impl Credentials {
     /// Parses credentials JSON for the given provider type.
     ///
     /// Every arm enforces its exact field set: an unknown field is rejected
-    /// with an [`ApiError`] naming it, because a tolerated extra field — such
-    /// as an admin-pasted `expiresAt` — would be silently dropped on storage
-    /// and change the credentials' semantics without notice.
+    /// naming it, because a tolerated extra field — such as an admin-pasted
+    /// `expiresAt` — would be silently dropped on storage and change the
+    /// credentials' semantics without notice.
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError`] when the payload does not match the shape
+    /// Returns [`ParseError`] when the payload does not match the shape
     /// required by the provider type.
-    pub(crate) fn parse(provider_type: ProviderType, json: &str) -> Result<Self, ApiError> {
-        let value: serde_json::Value = serde_json::from_str(json).map_err(|error| {
-            ApiError::invalid_parameter(
-                "credentials",
-                format!("Credentials are not valid JSON: {error}"),
-            )
-        })?;
+    pub(crate) fn parse(provider_type: ProviderType, json: &str) -> Result<Self, ParseError> {
+        let value: serde_json::Value = serde_json::from_str(json).map_err(ParseError::Json)?;
 
-        let field = |name: &str| -> Result<String, ApiError> {
+        let field = |name: &str| -> Result<String, ParseError> {
             value
                 .get(name)
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
-                .ok_or_else(|| {
-                    ApiError::invalid_parameter(
-                        "credentials",
-                        format!("Credentials must carry a string `{name}` field"),
-                    )
-                })
+                .ok_or_else(|| ParseError::MissingField(name.to_string()))
         };
 
         match provider_type {
@@ -195,6 +208,16 @@ impl Credentials {
     }
 }
 
+/// Maps a credentials parse failure onto the management error domain: a 400
+/// invalid request naming `credentials`, preserving the exact message wording
+/// the management contract documents. Storage decoding never travels through
+/// here; it wraps the typed error as an internal one instead.
+impl From<ParseError> for ApiError {
+    fn from(error: ParseError) -> Self {
+        ApiError::invalid_parameter("credentials", error.to_string())
+    }
+}
+
 /// The fields of a provider about to be inserted.
 #[derive(Debug, Clone)]
 pub(crate) struct NewProvider<'a> {
@@ -220,7 +243,7 @@ pub(crate) struct NewProvider<'a> {
     pub(crate) expires_at: Option<i64>,
 
     /// Whether the provider serves traffic.
-    pub(crate) enabled: bool,
+    pub(crate) is_enabled: bool,
 }
 
 /// A stored upstream provider with its parsed credentials.
@@ -251,7 +274,7 @@ pub(crate) struct Provider {
     pub(crate) expires_at: Option<i64>,
 
     /// Whether the provider serves traffic.
-    pub(crate) enabled: bool,
+    pub(crate) is_enabled: bool,
 }
 
 impl Provider {
@@ -307,7 +330,7 @@ pub(crate) struct ModelRouting {
     pub(crate) model: Model,
 
     /// Whether the model effectively serves traffic
-    /// (`enabled_override ?? provider.enabled`).
+    /// ([`Model::is_effectively_enabled`]).
     pub(crate) is_enabled: bool,
 }
 
@@ -319,6 +342,20 @@ impl Model {
         name_override: Option<&str>,
     ) -> String {
         format!("{model_prefix}{}", name_override.unwrap_or(upstream_name))
+    }
+
+    /// The model's effective serving status under its owning provider's
+    /// state: the override when present, else the provider's own state
+    /// (README §3).
+    ///
+    /// This is the canonical Rust form of the effective-enabled rule. The
+    /// listing query in [`crate::provider::storage`] applies the equivalent
+    /// SQL predicate `COALESCE(m.enabled_override, p.enabled) != 0` instead
+    /// of filtering here, because pushing the predicate into the SQL keeps
+    /// disabled rows out of the result set entirely; the SQL is kept as the
+    /// documented derived form of this helper.
+    pub(crate) fn is_effectively_enabled(&self, is_provider_enabled: bool) -> bool {
+        self.enabled_override.unwrap_or(is_provider_enabled)
     }
 }
 
@@ -351,11 +388,11 @@ pub(crate) fn validate_provider_name(name: &str) -> Result<(), ApiError> {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] naming the first unknown field.
+/// Returns [`ParseError::UnknownField`] naming the first unknown field.
 fn ensure_exact_credential_fields(
     value: &serde_json::Value,
     allowed_fields: &[&str],
-) -> Result<(), ApiError> {
+) -> Result<(), ParseError> {
     let Some(object) = value.as_object() else {
         return Ok(());
     };
@@ -364,10 +401,7 @@ fn ensure_exact_credential_fields(
         if !allowed_fields.contains(&field_name.as_str()) {
             let allowed = allowed_fields.join("`, `");
 
-            return Err(ApiError::invalid_parameter(
-                "credentials",
-                format!("Credentials carry an unknown `{field_name}` field; allowed: `{allowed}`"),
-            ));
+            return Err(ParseError::UnknownField(field_name.to_string(), allowed));
         }
     }
 
@@ -382,7 +416,8 @@ mod tests {
     /// outside their exact field set, naming the unknown field: a tolerated
     /// extra field — such as an admin-pasted `expiresAt` — would be silently
     /// dropped on storage and change the credentials' semantics without
-    /// notice.
+    /// notice. The typed failure maps to the management domain as a 400
+    /// invalid request naming `credentials`.
     ///
     /// # Panics
     ///
@@ -406,13 +441,72 @@ mod tests {
             let error = Credentials::parse(provider_type, json)
                 .expect_err("an unknown credentials field must be rejected");
 
-            assert_eq!(error.status, 400);
-            assert_eq!(error.param.as_deref(), Some("credentials"));
+            #[expect(
+                clippy::panic,
+                reason = "an unexpected match arm is the assertion's subject"
+            )]
+            let ParseError::UnknownField(field_name, allowed) = &error else {
+                panic!("an unknown field must parse as UnknownField, got: {error:?}");
+            };
+
+            assert_eq!(field_name, "expiresAt");
+
+            assert!(allowed.contains("accessToken"));
+
+            let rendered: ApiError = error.into();
+
+            assert_eq!(rendered.status, 400);
+
+            assert_eq!(rendered.param.as_deref(), Some("credentials"));
+
             assert!(
-                error.message.contains("expiresAt"),
-                "the error must name the unknown field: {error}"
+                rendered.message.contains("expiresAt"),
+                "the error must name the unknown field: {rendered}"
             );
         }
+    }
+
+    /// Verifies malformed credentials JSON and missing fields carry their
+    /// exact management wording through the typed failure's 400 mapping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn credential_parse_failures_keep_management_wording() {
+        #[expect(
+            clippy::expect_used,
+            reason = "malformed JSON must make parsing fail; the failure is the subject"
+        )]
+        let json_error = Credentials::parse(ProviderType::OpenAiCompatible, "{not json")
+            .expect_err("malformed JSON must be rejected");
+
+        let rendered: ApiError = json_error.into();
+
+        assert_eq!(rendered.status, 400);
+
+        assert_eq!(rendered.param.as_deref(), Some("credentials"));
+
+        assert!(
+            rendered
+                .message
+                .starts_with("Credentials are not valid JSON: "),
+            "the management wording must be preserved: {rendered}"
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "a missing field must make parsing fail; the failure is the subject"
+        )]
+        let field_error = Credentials::parse(ProviderType::OpenAiCompatible, r#"{"apiKey":true}"#)
+            .expect_err("a non-string api key must be rejected");
+
+        let rendered: ApiError = field_error.into();
+
+        assert_eq!(
+            rendered.message,
+            "Credentials must carry a string `apiKey` field"
+        );
     }
 
     /// Verifies exact-field OAuth payloads still parse into their credential
@@ -465,12 +559,47 @@ mod tests {
             clippy::expect_used,
             reason = "the extra field must make parsing fail; the failure is the subject"
         )]
-        let api_key = Credentials::parse(
+        let error = Credentials::parse(
             ProviderType::OpenAiCompatible,
             r#"{"apiKey":"k","extra":true}"#,
         )
         .expect_err("api key credentials with extra fields must be rejected");
 
-        assert_eq!(api_key.status, 400);
+        #[expect(
+            clippy::panic,
+            reason = "an unexpected match arm is the assertion's subject"
+        )]
+        let ParseError::UnknownField(field_name, _) = error else {
+            panic!("an unknown field must parse as UnknownField");
+        };
+
+        assert_eq!(field_name, "extra");
+    }
+
+    /// Verifies the effective-enabled rule keeps one canonical Rust form: the
+    /// override wins when present, the provider's own state decides otherwise
+    /// (README §3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn effective_enabled_prefers_override_over_provider_state() {
+        let model_with_override = |enabled_override| Model {
+            provider_id: 1,
+            upstream_name: "u1".to_string(),
+            name: "u1".to_string(),
+            name_override: None,
+            enabled_override,
+            thinking_levels_override: None,
+        };
+
+        assert!(model_with_override(Some(true)).is_effectively_enabled(false));
+
+        assert!(!model_with_override(Some(false)).is_effectively_enabled(true));
+
+        assert!(!model_with_override(None).is_effectively_enabled(false));
+
+        assert!(model_with_override(None).is_effectively_enabled(true));
     }
 }

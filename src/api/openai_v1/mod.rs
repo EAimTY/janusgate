@@ -232,7 +232,10 @@ async fn aggregated_response(
 #[cfg(test)]
 mod tests {
     use super::router;
-    use crate::{database::Database, test_support};
+    use crate::{
+        database::Database,
+        test_support::{self, TempDatabaseGuard},
+    };
     use axum::{
         body::Body,
         http::{Request as HttpRequest, StatusCode},
@@ -240,8 +243,9 @@ mod tests {
     use std::{error::Error as StdError, time::Duration};
     use tower::ServiceExt as _;
 
-    /// Opens an isolated test database and returns it alongside the router
-    /// with that database as state, so tests can seed routing rows.
+    /// Opens an isolated guarded test database and returns it alongside the
+    /// router with that database as state and the database's deletion guard,
+    /// so tests can seed routing rows without leaking the temporary file.
     ///
     /// # Panics
     ///
@@ -250,14 +254,16 @@ mod tests {
     /// # Errors
     ///
     /// Returns any error encountered while opening the test database.
-    async fn test_router() -> Result<(Database, axum::Router), Box<dyn StdError>> {
+    async fn test_router() -> Result<(Database, axum::Router, TempDatabaseGuard), Box<dyn StdError>>
+    {
         test_support::init_config();
 
-        let (database, _) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
+        let (database, guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         let router = router().with_state(database.clone());
 
-        Ok((database, router))
+        Ok((database, router, guard))
     }
 
     /// Sends a request through the router and returns status and body.
@@ -316,7 +322,7 @@ mod tests {
     /// router.
     #[tokio::test]
     async fn authenticates_and_lists_models() -> Result<(), Box<dyn StdError>> {
-        let (database, router) = test_router().await?;
+        let (database, router, _guard) = test_router().await?;
 
         let (status, _) = send(router.clone(), "GET", "/models", None).await?;
 
@@ -396,7 +402,7 @@ mod tests {
     /// Returns any error encountered while driving the router.
     #[tokio::test]
     async fn authenticates_bearer_scheme_case_insensitively() -> Result<(), Box<dyn StdError>> {
-        let (_, router) = test_router().await?;
+        let (_, router, _guard) = test_router().await?;
 
         for authorization in ["bearer test-api-key", "BEARER test-api-key"] {
             let (status, _) = send(router.clone(), "GET", "/models", Some(authorization)).await?;
@@ -434,7 +440,7 @@ mod tests {
     /// Returns any error encountered while driving the router.
     #[tokio::test]
     async fn fallback_returns_openai_404_shape() -> Result<(), Box<dyn StdError>> {
-        let (_, router) = test_router().await?;
+        let (_, router, _guard) = test_router().await?;
 
         let (status, body) = send(router, "GET", "/bogus", Some("Bearer test-api-key")).await?;
 
