@@ -451,18 +451,23 @@ impl SseFrameSource for SseParser {
 
 #[cfg(test)]
 mod tests {
-    use super::{SseFrameSource, compatible_base_url, execute, pump_sse};
+    use super::{
+        SseFrameSource, build_upstream_request, compatible_base_url, execute, pump_sse,
+        resolve_routing,
+    };
     use crate::{
         error::{ApiError, ApiErrorKind},
         format::{
             UpstreamEventParser, UpstreamFormat,
             openai_chat_completion::UpstreamParser as ChatUpstreamParser,
         },
-        ir::{IrEvent, IrRequest},
-        provider::{Credentials, Model, ModelRouting, Provider, ProviderType},
+        ir::{IrEvent, IrMessage, IrPart, IrRequest, IrRole},
+        provider::{Credentials, Model, ModelRouting, Provider, ProviderType, endpoints},
         sse::{SseFrame, SseParseError, SseParser},
         test_support,
     };
+    use reqwest::header::HeaderMap;
+    use serde_json::Value;
     use std::{
         error::Error as StdError,
         io::{Read as _, Write as _},
@@ -1021,5 +1026,369 @@ mod tests {
             error.message.contains("lacks a stored base_url"),
             "the error must name the stored drift, got: {error:?}"
         );
+    }
+
+    /// Reads one request header as UTF-8, failing the test when absent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header is absent or not UTF-8.
+    fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
+        #[expect(
+            clippy::panic,
+            reason = "a missing required upstream header fails the test"
+        )]
+        let header = headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_else(|| panic!("the upstream request should carry a UTF-8 `{name}` header"));
+
+        header
+    }
+
+    /// Builds a Codex OAuth provider with fixed credential values.
+    fn codex_provider() -> Provider {
+        Provider {
+            id: 1,
+            name: "codex".to_string(),
+            model_prefix: String::new(),
+            provider_type: ProviderType::OpenAiOauth,
+            protocol: None,
+            base_url: None,
+            credentials: Credentials::OpenAiOauth {
+                access_token: "test-access".to_string(),
+                refresh_token: "test-refresh".to_string(),
+                account_id: "test-account".to_string(),
+            },
+            expires_at: None,
+            is_enabled: true,
+        }
+    }
+
+    /// Builds an Antigravity OAuth provider with fixed credential values.
+    fn antigravity_provider() -> Provider {
+        Provider {
+            id: 1,
+            name: "agy".to_string(),
+            model_prefix: String::new(),
+            provider_type: ProviderType::AntigravityOauth,
+            protocol: None,
+            base_url: None,
+            credentials: Credentials::AntigravityOauth {
+                access_token: "test-access".to_string(),
+                refresh_token: "test-refresh".to_string(),
+                project_id: "test-project".to_string(),
+            },
+            expires_at: None,
+            is_enabled: true,
+        }
+    }
+
+    /// Builds an `openai_compatible` provider speaking the given protocol.
+    fn compatible_provider_with_protocol(protocol: UpstreamFormat) -> Provider {
+        Provider {
+            id: 1,
+            name: "compat".to_string(),
+            model_prefix: String::new(),
+            provider_type: ProviderType::OpenAiCompatible,
+            protocol: Some(protocol),
+            base_url: Some("https://upstream.example".to_string()),
+            credentials: Credentials::ApiKey("test-key".to_string()),
+            expires_at: None,
+            is_enabled: true,
+        }
+    }
+
+    /// Builds a routing of `provider` to one upstream model named `u1`.
+    fn routing_for(provider: &Provider) -> ModelRouting {
+        ModelRouting {
+            provider: provider.clone(),
+
+            model: Model {
+                provider_id: provider.id,
+                upstream_name: "u1".to_string(),
+                name: "u1".to_string(),
+                name_override: None,
+                enabled_override: None,
+                thinking_levels_override: None,
+            },
+
+            is_enabled: true,
+        }
+    }
+
+    /// Builds the upstream request for the given provider and wire format
+    /// with a one-turn fixture request, returning the constructed request
+    /// with its headers and serialized body.
+    ///
+    /// # Panics
+    ///
+    /// Panics if request construction fails, which fails the test.
+    fn built_request(
+        upstream_format: UpstreamFormat,
+        provider: &Provider,
+        client_streaming: bool,
+    ) -> reqwest::Request {
+        init_http_client();
+
+        let routing = routing_for(provider);
+
+        let ir = IrRequest {
+            model: routing.model.upstream_name.clone(),
+            messages: vec![IrMessage {
+                role: IrRole::User,
+                parts: vec![IrPart::Text {
+                    text: "hi".to_string(),
+                }],
+            }],
+            ..IrRequest::default()
+        };
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the provider fixture always renders an upstream request"
+        )]
+        let builder = build_upstream_request(
+            crate::http(),
+            upstream_format,
+            provider,
+            &routing,
+            &ir,
+            client_streaming,
+        )
+        .expect("the provider fixture should render an upstream request");
+
+        #[expect(clippy::expect_used, reason = "the rendered builder always builds")]
+        builder.build().expect("the request builder should build")
+    }
+
+    /// Parses the JSON body of a constructed upstream request.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the body is absent or not JSON.
+    fn request_json(request: &reqwest::Request) -> Value {
+        #[expect(
+            clippy::expect_used,
+            reason = "every built upstream request carries a serialized JSON body"
+        )]
+        let bytes = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .expect("the upstream request should carry a JSON body");
+
+        #[expect(clippy::expect_used, reason = "the rendered body is JSON")]
+        serde_json::from_slice(bytes).expect("the upstream request body should be JSON")
+    }
+
+    /// Verifies the Codex upstream request carries the mandatory six-header
+    /// set of README §5.1 and, per the same contract, forces `stream: true`
+    /// upstream alongside `store: false` even when the client requested
+    /// non-streaming mode.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn codex_upstream_request_carries_mandatory_header_set() {
+        let request = built_request(UpstreamFormat::OpenAiResponse, &codex_provider(), false);
+
+        let headers = request.headers();
+
+        assert_eq!(header_value(headers, "authorization"), "Bearer test-access");
+
+        assert_eq!(header_value(headers, "chatgpt-account-id"), "test-account");
+
+        assert_eq!(
+            header_value(headers, "originator"),
+            endpoints::CODEX_ORIGINATOR
+        );
+
+        assert_eq!(
+            header_value(headers, "user-agent"),
+            endpoints::CODEX_USER_AGENT
+        );
+
+        assert!(
+            !header_value(headers, "session-id").is_empty(),
+            "the Session-Id header must carry a request identifier"
+        );
+
+        assert_eq!(header_value(headers, "accept"), "text/event-stream");
+
+        let body = request_json(&request);
+
+        assert_eq!(body.get("stream"), Some(&Value::Bool(true)));
+
+        assert_eq!(body.get("store"), Some(&Value::Bool(false)));
+    }
+
+    /// Verifies the Antigravity upstream request presents
+    /// `User-Agent: antigravity` with the bearer access token and a JSON
+    /// content type, dials the Code Assist endpoint (README §5.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn antigravity_upstream_request_carries_user_agent_and_bearer() {
+        let request = built_request(
+            UpstreamFormat::GeminiGenerateContent,
+            &antigravity_provider(),
+            false,
+        );
+
+        let headers = request.headers();
+
+        assert_eq!(header_value(headers, "authorization"), "Bearer test-access");
+
+        assert_eq!(
+            header_value(headers, "user-agent"),
+            endpoints::ANTIGRAVITY_USER_AGENT
+        );
+
+        assert_eq!(header_value(headers, "content-type"), "application/json");
+
+        assert!(
+            request
+                .url()
+                .as_str()
+                .starts_with(endpoints::ANTIGRAVITY_BASE_URL),
+            "the antigravity request must dial the Code Assist endpoint"
+        );
+    }
+
+    /// Verifies the compatible Gemini upstream request authenticates through
+    /// `x-goog-api-key` instead of a bearer token (README §5.2, §5.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn compatible_gemini_upstream_request_uses_api_key_header() {
+        let request = built_request(
+            UpstreamFormat::GeminiGenerateContent,
+            &compatible_provider_with_protocol(UpstreamFormat::GeminiGenerateContent),
+            false,
+        );
+
+        assert_eq!(
+            header_value(request.headers(), "x-goog-api-key"),
+            "test-key"
+        );
+
+        assert!(
+            request.headers().get("authorization").is_none(),
+            "the compatible Gemini request must not carry a bearer token"
+        );
+    }
+
+    /// Verifies a compatible OpenAI-protocol upstream renders the client's
+    /// requested streaming mode verbatim — unlike the Codex endpoint, no
+    /// upstream invariant forces `stream: true` here (README §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn compatible_openai_upstream_request_passes_client_stream_mode_through() {
+        let provider = compatible_provider_with_protocol(UpstreamFormat::OpenAiResponse);
+
+        let non_streaming = built_request(UpstreamFormat::OpenAiResponse, &provider, false);
+
+        assert_eq!(
+            request_json(&non_streaming).get("stream"),
+            Some(&Value::Bool(false))
+        );
+
+        let streaming = built_request(UpstreamFormat::OpenAiResponse, &provider, true);
+
+        assert_eq!(
+            request_json(&streaming).get("stream"),
+            Some(&Value::Bool(true))
+        );
+    }
+
+    /// Verifies routing resolution requires an effectively enabled model row:
+    /// unknown, override-disabled, and provider-disabled public names all
+    /// yield 404 with `param: "model"` and `code: "model_not_found"`
+    /// (README §6.5, §6.7), while a live row resolves to its upstream name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn resolve_routing_rejects_unknown_and_disabled_models() -> Result<(), Box<dyn StdError>>
+    {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
+
+        test_support::seed_model(&database, "alpha", "u1", "a-m1").await?;
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the unknown-model rejection is the subject of the assertion"
+        )]
+        let unknown = resolve_routing(&database, "missing")
+            .await
+            .expect_err("an unknown model must be rejected");
+
+        assert_eq!(unknown.status, 404);
+        assert_eq!(unknown.param.as_deref(), Some("model"));
+        assert_eq!(unknown.code.as_deref(), Some("model_not_found"));
+
+        let routing = resolve_routing(&database, "a-m1").await?;
+
+        assert_eq!(routing.model.upstream_name, "u1");
+
+        database
+            .execute(
+                "UPDATE models SET enabled_override = 0 WHERE upstream_name = 'u1'",
+                (),
+            )
+            .await?;
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the disabled-model rejection is the subject of the assertion"
+        )]
+        let disabled = resolve_routing(&database, "a-m1")
+            .await
+            .expect_err("an override-disabled model must be rejected");
+
+        assert_eq!(disabled.status, 404);
+        assert_eq!(disabled.param.as_deref(), Some("model"));
+        assert_eq!(disabled.code.as_deref(), Some("model_not_found"));
+
+        database
+            .execute(
+                "UPDATE models SET enabled_override = NULL WHERE upstream_name = 'u1'",
+                (),
+            )
+            .await?;
+
+        database
+            .execute("UPDATE providers SET enabled = 0 WHERE name = 'alpha'", ())
+            .await?;
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the provider-disabled rejection is the subject of the assertion"
+        )]
+        let provider_disabled = resolve_routing(&database, "a-m1")
+            .await
+            .expect_err("a model of a disabled provider must be rejected");
+
+        assert_eq!(provider_disabled.status, 404);
+        assert_eq!(provider_disabled.param.as_deref(), Some("model"));
+        assert_eq!(provider_disabled.code.as_deref(), Some("model_not_found"));
+
+        Ok(())
     }
 }

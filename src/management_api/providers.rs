@@ -372,4 +372,140 @@ mod tests {
 
         Ok(())
     }
+
+    /// Verifies OAuth providers cannot be created through `save-provider`:
+    /// they come into existence only by completing an OAuth flow, so a
+    /// creation attempt is rejected with 400 naming `type` (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_provider_rejects_oauth_creation() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        for (name, provider_type) in [
+            ("fresh-oai", "openai_oauth"),
+            ("fresh-agy", "antigravity_oauth"),
+        ] {
+            let body =
+                test_support::body(&format!(r#"{{"name":"{name}","type":"{provider_type}"}}"#));
+
+            let error = handle_save(&database, &body)
+                .await
+                .err()
+                .ok_or("creating an OAuth provider must be rejected")?;
+
+            assert_eq!(error.status, 400);
+
+            assert_eq!(error.param.as_deref(), Some("type"));
+
+            assert!(
+                error.message.contains("OAuth"),
+                "the error must point at the OAuth flow: {error}"
+            );
+
+            assert!(
+                storage::find_provider(&database, name).await?.is_none(),
+                "a rejected creation must write no row"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Verifies `openai_compatible` creation requires both `protocol` and
+    /// `base_url`, each rejection naming its field (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_provider_requires_protocol_and_base_url_on_creation()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let missing_protocol = test_support::body(
+            r#"{"name":"no-protocol","type":"openai_compatible",
+                "base_url":"https://upstream.example","credentials":{"apiKey":"k"}}"#,
+        );
+
+        let error = handle_save(&database, &missing_protocol)
+            .await
+            .err()
+            .ok_or("creation without protocol must be rejected")?;
+
+        assert_eq!(error.status, 400);
+
+        assert_eq!(error.param.as_deref(), Some("protocol"));
+
+        let missing_base_url = test_support::body(
+            r#"{"name":"no-base-url","type":"openai_compatible",
+                "protocol":"openai_chat_completion","credentials":{"apiKey":"k"}}"#,
+        );
+
+        let error = handle_save(&database, &missing_base_url)
+            .await
+            .err()
+            .ok_or("creation without base_url must be rejected")?;
+
+        assert_eq!(error.status, 400);
+
+        assert_eq!(error.param.as_deref(), Some("base_url"));
+
+        Ok(())
+    }
+
+    /// Verifies credentials supplied without a `type` on creation are
+    /// rejected with 400 naming `type`: the credentials cannot be interpreted
+    /// without the account kind they belong to (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_provider_rejects_credentials_without_type_on_creation()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let body = test_support::body(r#"{"name":"typeless","credentials":{"apiKey":"k"}}"#);
+
+        let error = handle_save(&database, &body)
+            .await
+            .err()
+            .ok_or("credentials without type on creation must be rejected")?;
+
+        assert_eq!(error.status, 400);
+
+        assert_eq!(error.param.as_deref(), Some("type"));
+
+        assert!(
+            error.message.contains("credentials require a `type`"),
+            "the error must state the missing type: {error}"
+        );
+
+        assert!(
+            storage::find_provider(&database, "typeless")
+                .await?
+                .is_none(),
+            "a rejected creation must write no row"
+        );
+
+        Ok(())
+    }
 }

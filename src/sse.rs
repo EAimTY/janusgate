@@ -89,7 +89,10 @@ impl SseParser {
     }
 
     /// Flushes a trailing frame that was terminated by the end of the stream
-    /// instead of a final empty line.
+    /// instead of a final empty line. This covers both a final line still
+    /// sitting unterminated in the buffer and a frame whose final line
+    /// terminator an earlier ingest already consumed without its dispatching
+    /// blank line ever arriving.
     ///
     /// # Errors
     ///
@@ -99,10 +102,15 @@ impl SseParser {
             return Err(SseParseError::FrameTooLarge);
         }
 
-        if self.buffer.is_empty() {
+        if self.pending_data_lines.is_empty() && self.buffer.is_empty() {
             return Ok(Vec::new());
         }
 
+        // Dispatching reuses the blank-line path: either the buffer holds the
+        // frame's unterminated tail, or the frame's lines already live in the
+        // pending assembly state and only the appended blank line is missing.
+        // The dispatch resets `pending_frame_bytes`, so the accounting stays
+        // consistent with an ordinary mid-stream dispatch.
         self.buffer.extend_from_slice(b"\n\n");
 
         self.drain_complete_frames()
@@ -467,6 +475,57 @@ mod tests {
                 data: "x".to_string(),
             }]
         );
+    }
+
+    /// Verifies that a frame whose final line terminator was consumed but
+    /// whose dispatching blank line never arrived is still flushed at end of
+    /// stream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if parsing does not yield the expected frames.
+    #[test]
+    fn flushes_trailing_frame_terminated_by_final_newline() {
+        let frames = parse_chunks(&[b"data: tail\n"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                event: None,
+                data: "tail".to_string(),
+            }]
+        );
+    }
+
+    /// Verifies that a named trailing frame whose final line terminator was
+    /// consumed without a dispatching blank line is flushed with its event
+    /// name intact.
+    ///
+    /// # Panics
+    ///
+    /// Panics if parsing does not yield the expected frames.
+    #[test]
+    fn flushes_trailing_named_frame_terminated_by_final_newline() {
+        let frames = parse_chunks(&[b"event: error\ndata: tail\n"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                event: Some("error".to_string()),
+                data: "tail".to_string(),
+            }]
+        );
+    }
+
+    /// Verifies that finishing a parser that received no bytes at all yields
+    /// no frames and no error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn finish_on_empty_stream_yields_no_frames() {
+        assert_eq!(parse_chunks(&[]), Vec::new());
     }
 
     /// Verifies that a frame terminated by the end of the stream instead of

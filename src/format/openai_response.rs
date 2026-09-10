@@ -2079,14 +2079,14 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{SseRenderer, UpstreamParser, parse_request, render_json_response};
+    use super::{SseRenderer, UpstreamParser, parse_request, render_json_response, render_request};
     use crate::{
         error::ApiError,
         format::{
             ClientSseRenderer as _, UpstreamEventParser as _,
             openai_chat_completion::SseRenderer as ChatSseRenderer,
         },
-        ir::{Aggregator, IrEvent, IrFinishReason, IrPart, IrUsage},
+        ir::{Aggregator, IrEvent, IrFinishReason, IrMessage, IrPart, IrRequest, IrRole, IrUsage},
         sse::SseParser,
     };
     use serde_json::Value;
@@ -3837,5 +3837,66 @@ mod tests {
         let aggregation = aggregator.finish();
 
         assert_eq!(aggregation.text, "hi");
+    }
+
+    /// Builds a minimal IR request carrying one user text turn.
+    fn user_turn_request() -> IrRequest {
+        IrRequest {
+            model: "up-model".to_string(),
+            messages: vec![IrMessage {
+                role: IrRole::User,
+                parts: vec![IrPart::Text {
+                    text: "hi".to_string(),
+                }],
+            }],
+            ..IrRequest::default()
+        }
+    }
+
+    /// Verifies the upstream Responses payload always carries `store: false`
+    /// and renders the requested streaming mode verbatim (README §5.1
+    /// invariant 1): the gateway is stateless, whatever the client asks.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn render_request_always_stores_false_and_renders_stream_mode() {
+        let ir = user_turn_request();
+
+        for stream in [true, false] {
+            let body = render_request(&ir, stream);
+
+            assert_eq!(body.get("store"), Some(&Value::Bool(false)));
+
+            assert_eq!(body.get("stream"), Some(&Value::Bool(stream)));
+        }
+    }
+
+    /// Verifies `reasoning.summary` strictness: only `"auto"` is accepted;
+    /// any other value is rejected with 400 naming `summary` (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn rejects_unsupported_reasoning_summary_and_accepts_auto() {
+        #[expect(clippy::expect_used, reason = "the test asserts this exact rejection")]
+        let error =
+            parse_request(br#"{"model":"m","input":"x","reasoning":{"summary":"minimal"}}"#)
+                .expect_err("an unsupported reasoning summary must fail");
+
+        assert_eq!(error.status, 400);
+
+        assert_eq!(error.param.as_deref(), Some("summary"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the summary auto fixture is a valid request"
+        )]
+        let parsed = parse_request(br#"{"model":"m","input":"x","reasoning":{"summary":"auto"}}"#)
+            .expect("reasoning summary auto must be accepted");
+
+        assert_eq!(parsed.ir.model, "m");
     }
 }

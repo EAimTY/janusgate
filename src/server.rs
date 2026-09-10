@@ -384,11 +384,12 @@ fn init_tcp_listener() -> TcpListener {
 mod tests {
     use super::{
         ACCEPT_BACKOFF_INITIAL, ACCEPT_BACKOFF_MAX, accept_backoff_delay, connection_builder,
-        serve_accepted_connection,
+        router, serve_accepted_connection,
     };
+    use crate::test_support;
     use axum::{
         body::Body,
-        http::{Request, Response},
+        http::{Request, Response, StatusCode},
     };
     use hserver::{Incoming, Server};
     use std::{
@@ -403,7 +404,7 @@ mod tests {
         net::{TcpListener, TcpStream},
         task::JoinHandle,
     };
-    use tower::Service;
+    use tower::{Service, ServiceExt as _};
 
     /// Verifies that the accept backoff starts at the initial delay and
     /// doubles per additional consecutive failure.
@@ -736,5 +737,49 @@ mod tests {
 
         #[expect(clippy::expect_used, reason = "a panicking server task fails the test")]
         connection_task.await.expect("server task should not panic");
+    }
+
+    /// Verifies the root router's fallback answers unmapped root paths with
+    /// a plain HTTP 404 carrying an empty body, unlike the JSON 404 shapes
+    /// of the nested management and API sub-routers (README §2.2, §4).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while opening the test database or
+    /// serving the request.
+    #[tokio::test]
+    async fn root_fallback_returns_empty_404_body() -> Result<(), Box<dyn std::error::Error>> {
+        test_support::init_config();
+
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(1, Duration::from_secs(5)).await?;
+
+        let router = router(database);
+
+        #[expect(clippy::expect_used, reason = "a build failure fails the test")]
+        let request = Request::builder()
+            .method("GET")
+            .uri("/definitely-unmapped")
+            .body(Body::empty())
+            .expect("request should build");
+
+        // SAFETY: not applicable; the in-memory oneshot serve is infallible,
+        // so the unreachable arm documents the invariant.
+        let response = match router.oneshot(request).await {
+            Ok(response) => response,
+            Err(error) => unreachable!("in-memory oneshot cannot fail: {error}"),
+        };
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20).await?;
+
+        assert!(body.is_empty(), "the root 404 must carry an empty body");
+
+        Ok(())
     }
 }

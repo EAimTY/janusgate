@@ -2856,4 +2856,55 @@ mod tests {
 
         Ok(())
     }
+
+    /// Verifies the expired-state sweep deletes only rows past their expiry,
+    /// leaving pending flows untouched: the sweep runs whenever
+    /// `start-provider-oauth` starts a new flow (README §3, §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn delete_expired_oauth_states_sweeps_only_expired_rows() -> Result<(), Box<dyn StdError>>
+    {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
+        let now = crate::unix_time::unix_now();
+
+        insert_oauth_state(
+            &database,
+            ProviderType::OpenAiOauth,
+            "state-expired",
+            "",
+            now - 1,
+        )
+        .await?;
+
+        insert_oauth_state(
+            &database,
+            ProviderType::AntigravityOauth,
+            "state-live",
+            "verifier",
+            now + 60,
+        )
+        .await?;
+
+        delete_expired_oauth_states(&database, now).await?;
+
+        let rows = database.query("SELECT state FROM oauth_states", ()).await?;
+
+        let survivors: Vec<String> = rows
+            .iter()
+            .map(|row| row.get(0))
+            .collect::<Result<_, _>>()?;
+
+        assert_eq!(survivors, vec!["state-live".to_string()]);
+
+        Ok(())
+    }
 }

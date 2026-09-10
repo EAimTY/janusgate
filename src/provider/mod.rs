@@ -602,4 +602,38 @@ mod tests {
 
         assert!(model_with_override(None).is_effectively_enabled(true));
     }
+
+    /// Verifies provider name validation against the documented pattern
+    /// `[a-z0-9_-]{1,64}` (README §7.1): the boundaries of length, character
+    /// set, and case are each pinned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn provider_name_validation_matches_documented_pattern() {
+        let boundary_64 = "a".repeat(64);
+
+        for name in ["a", "codex", "a-b_c9", boundary_64.as_str()] {
+            assert!(
+                validate_provider_name(name).is_ok(),
+                "{name:?} must validate"
+            );
+        }
+
+        let boundary_65 = "a".repeat(65);
+
+        for name in ["", "A", "a b", "a.b", "ä", "a/b", boundary_65.as_str()] {
+            #[expect(
+                clippy::expect_used,
+                reason = "every rejection is the subject of the assertion"
+            )]
+            let error = validate_provider_name(name)
+                .expect_err("an out-of-pattern provider name must be rejected");
+
+            assert_eq!(error.status, 400, "{name:?} must reject as invalid");
+
+            assert_eq!(error.param.as_deref(), Some("name"), "{name:?}");
+        }
+    }
 }
