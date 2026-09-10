@@ -8,6 +8,7 @@ use crate::{
     unix_time,
 };
 use base64::{Engine as _, engine::general_purpose};
+use log::{debug, info, warn};
 use reqwest::Client;
 use sha2::{Digest as _, Sha256};
 use std::time::Duration;
@@ -710,6 +711,11 @@ async fn refresh_and_store(
             return Ok(RefreshOutcome::LostLease);
         }
 
+        info!(
+            "refreshed the access token for provider `{}` (expires at {expires_at})",
+            provider.name
+        );
+
         let renewed = storage::reload_provider(database, &provider.name, "token refresh").await?;
 
         Ok(RefreshOutcome::Renewed(renewed))
@@ -719,8 +725,25 @@ async fn refresh_and_store(
     if outcome.is_err() {
         // The original refresh failure is decisive; a failed lease clear —
         // typically the same database outage that failed the persist — must
-        // not replace it.
-        let _ = storage::clear_refresh_lease(database, provider.id).await;
+        // not replace it. The clear failure itself is tolerated and bounded
+        // by the lease staleness window (README §3), so the warning is the
+        // only record it ever gets.
+        if let Err(clear_error) = storage::clear_refresh_lease(database, provider.id).await {
+            warn!(
+                "failed to clear the refresh lease of provider `{}`: {clear_error}",
+                provider.name
+            );
+        }
+    }
+
+    // The refreshed credentials were derived from superseded credentials
+    // and were discarded; the lease competition re-entry that follows is
+    // ordinary contention, so the discard is recorded at debug level.
+    if let Ok(RefreshOutcome::LostLease) = &outcome {
+        debug!(
+            "lost the refresh lease of provider `{}`; discarding the refreshed credentials",
+            provider.name
+        );
     }
 
     outcome

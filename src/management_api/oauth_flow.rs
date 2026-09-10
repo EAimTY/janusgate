@@ -3,11 +3,12 @@
 use super::{error_response, parse_body, provider_json};
 use crate::{
     database::Database,
-    error::{self, ApiError},
+    error::{self, ApiError, log_api_error},
     provider::{NewProvider, ProviderType, oauth, storage},
     unix_time,
 };
 use axum::{body::Bytes, extract::State, response::Response};
+use log::info;
 use serde::Deserialize;
 
 /// Strictly parsed `start-provider-oauth` request.
@@ -64,38 +65,53 @@ pub(crate) async fn complete(State(database): State<Database>, body: Bytes) -> R
     }
 }
 
-/// Begins an OAuth flow and persists its state row.
+/// Begins an OAuth flow and persists its state row. The outcome is logged:
+/// the started flow at info level, every failure at the flow's response
+/// boundary.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for unknown provider types and storage failures.
 async fn handle_start(database: &Database, body: &Bytes) -> Result<oauth::OAuthFlow, ApiError> {
-    let request: StartOAuthBody = parse_body(body)?;
+    let request: StartOAuthBody = parse_body(body, "start-provider-oauth")?;
 
-    let provider_type = ProviderType::parse(&request.provider_type).ok_or_else(|| {
-        ApiError::invalid_parameter(
-            "type",
-            format!("Unknown provider type `{}`", request.provider_type),
+    let outcome = async {
+        let provider_type = ProviderType::parse(&request.provider_type).ok_or_else(|| {
+            ApiError::invalid_parameter(
+                "type",
+                format!("Unknown provider type `{}`", request.provider_type),
+            )
+        })?;
+
+        let flow = oauth::begin_flow(provider_type)?;
+
+        storage::delete_expired_oauth_states(database, unix_time::unix_now()).await?;
+
+        storage::insert_oauth_state(
+            database,
+            provider_type,
+            &flow.state,
+            &flow.verifier,
+            flow.expires_at,
         )
-    })?;
+        .await?;
 
-    let flow = oauth::begin_flow(provider_type)?;
+        Ok(flow)
+    }
+    .await;
 
-    storage::delete_expired_oauth_states(database, unix_time::unix_now()).await?;
+    match &outcome {
+        Ok(_) => info!("started a `{}` OAuth flow", request.provider_type),
 
-    storage::insert_oauth_state(
-        database,
-        provider_type,
-        &flow.state,
-        &flow.verifier,
-        flow.expires_at,
-    )
-    .await?;
+        Err(error) => log_api_error("start-provider-oauth", error),
+    }
 
-    Ok(flow)
+    outcome
 }
 
 /// Exchanges the authorization code and creates or refreshes the provider.
+/// The outcome is logged: the created or refreshed provider at info level,
+/// every failure at the completion's response boundary.
 ///
 /// # Errors
 ///
@@ -103,101 +119,120 @@ async fn handle_start(database: &Database, body: &Bytes) -> Result<oauth::OAuthF
 /// exchange failures, type mismatches, and a provider deleted concurrently
 /// after the completion's lookup.
 async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json::Value, ApiError> {
-    let request: CompleteOAuthBody = parse_body(body)?;
+    let request: CompleteOAuthBody = parse_body(body, "complete-provider-oauth")?;
 
-    crate::provider::validate_provider_name(&request.name)?;
+    let outcome = async {
+        crate::provider::validate_provider_name(&request.name)?;
 
-    let existing = storage::find_provider(database, &request.name).await?;
+        let existing = storage::find_provider(database, &request.name).await?;
 
-    // A `model_prefix` only names a provider being created; applying one to an
-    // existing provider would silently rename its models. The rejection fires
-    // before the state is consumed, so a malformed request cannot burn the
-    // pending flow.
-    if existing.is_some() && request.model_prefix.is_some() {
-        return Err(ApiError::invalid_parameter(
-            "model_prefix",
-            format!(
-                "Provider `{}` already exists; model_prefix cannot be supplied for it",
-                request.name
-            ),
-        ));
-    }
+        // A `model_prefix` only names a provider being created; applying one to
+        // an existing provider would silently rename its models. The
+        // rejection fires before the state is consumed, so a malformed
+        // request cannot burn the pending flow.
+        if existing.is_some() && request.model_prefix.is_some() {
+            return Err(ApiError::invalid_parameter(
+                "model_prefix",
+                format!(
+                    "Provider `{}` already exists; model_prefix cannot be supplied for it",
+                    request.name
+                ),
+            ));
+        }
 
-    let now = unix_time::unix_now();
+        let now = unix_time::unix_now();
 
-    // State rows are immutable, so a provider-type mismatch is computable
-    // before the atomic consume: the rejection must not burn the pending flow
-    // or spend the token exchange. An unknown or expired state is left to the
-    // consume below, which yields the 404.
-    if let (Some(existing), Some(state_type)) = (
-        &existing,
-        storage::find_oauth_state_type(database, &request.state, now).await?,
-    ) && state_type != existing.provider_type
-    {
-        return Err(ApiError::conflict(format!(
-            "Provider `{}` has type `{}` and cannot be authorized as `{}`",
-            existing.name,
-            existing.provider_type.as_str(),
-            state_type.as_str()
-        )));
-    }
+        // State rows are immutable, so a provider-type mismatch is computable
+        // before the atomic consume: the rejection must not burn the pending
+        // flow or spend the token exchange. An unknown or expired state
+        // is left to the consume below, which yields the 404.
+        if let (Some(existing), Some(state_type)) = (
+            &existing,
+            storage::find_oauth_state_type(database, &request.state, now).await?,
+        ) && state_type != existing.provider_type
+        {
+            return Err(ApiError::conflict(format!(
+                "Provider `{}` has type `{}` and cannot be authorized as `{}`",
+                existing.name,
+                existing.provider_type.as_str(),
+                state_type.as_str()
+            )));
+        }
 
-    let state = storage::consume_oauth_state(database, &request.state, now)
-        .await?
-        .ok_or_else(|| {
-            ApiError::not_found("OAuth state is unknown, expired, or already consumed")
-        })?;
+        let state = storage::consume_oauth_state(database, &request.state, now)
+            .await?
+            .ok_or_else(|| {
+                ApiError::not_found("OAuth state is unknown, expired, or already consumed")
+            })?;
 
-    let exchanged = oauth::exchange_code(
-        crate::http(),
-        state.state_type,
-        &request.code,
-        &state.verifier,
-    )
-    .await?;
+        let exchanged = oauth::exchange_code(
+            crate::http(),
+            state.state_type,
+            &request.code,
+            &state.verifier,
+        )
+        .await?;
 
-    match existing {
-        Some(existing) => {
-            let is_updated = storage::update_credentials(
-                database,
-                existing.id,
-                &exchanged.credentials,
-                Some(exchanged.expires_at),
-            )
-            .await?;
+        match existing {
+            Some(existing) => {
+                let is_updated = storage::update_credentials(
+                    database,
+                    existing.id,
+                    &exchanged.credentials,
+                    Some(exchanged.expires_at),
+                )
+                .await?;
 
-            // A concurrent `delete-provider` between the outer lookup and
-            // this write affects zero rows; like the refresh path, the
-            // vanished provider is a 404, not a storage-drift 500 from the
-            // reload below.
-            if !is_updated {
-                return Err(ApiError::not_found(
-                    "provider vanished during OAuth completion",
-                ));
+                // A concurrent `delete-provider` between the outer lookup and
+                // this write affects zero rows; like the refresh path, the
+                // vanished provider is a 404, not a storage-drift 500 from the
+                // reload below.
+                if !is_updated {
+                    return Err(ApiError::not_found(
+                        "provider vanished during OAuth completion",
+                    ));
+                }
+
+                info!("refreshed the credentials of provider `{}`", request.name);
+            }
+
+            None => {
+                storage::insert_provider(
+                    database,
+                    &NewProvider {
+                        name: &request.name,
+                        model_prefix: request.model_prefix.as_deref().unwrap_or_default(),
+                        provider_type: state.state_type,
+                        protocol: None,
+                        base_url: None,
+                        credentials: &exchanged.credentials,
+                        expires_at: Some(exchanged.expires_at),
+                        is_enabled: true,
+                    },
+                )
+                .await?;
+
+                info!(
+                    "created provider `{}` from an OAuth completion",
+                    request.name
+                );
             }
         }
 
-        None => {
-            storage::insert_provider(
-                database,
-                &NewProvider {
-                    name: &request.name,
-                    model_prefix: request.model_prefix.as_deref().unwrap_or_default(),
-                    provider_type: state.state_type,
-                    protocol: None,
-                    base_url: None,
-                    credentials: &exchanged.credentials,
-                    expires_at: Some(exchanged.expires_at),
-                    is_enabled: true,
-                },
-            )
-            .await?;
-        }
+        storage::reload_provider(database, &request.name, "OAuth completion")
+            .await
+            .map(|stored| provider_json(&stored))
+    }
+    .await;
+
+    if let Err(error) = &outcome {
+        log_api_error(
+            &format!("complete-provider-oauth for provider `{}`", request.name),
+            error,
+        );
     }
 
-    let stored = storage::reload_provider(database, &request.name, "OAuth completion").await?;
-
-    Ok(provider_json(&stored))
+    outcome
 }
 
 #[cfg(test)]

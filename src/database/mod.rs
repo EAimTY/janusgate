@@ -8,6 +8,7 @@ use deadpool::{
         RecycleResult,
     },
 };
+use log::{debug, info};
 use std::{fs, io::Error as IoError, num::NonZero, path::Path, time::Duration};
 use turso::{Builder as TursoBuilder, Connection, Database as TursoDatabase, Error as TursoError};
 
@@ -136,7 +137,7 @@ impl Database {
 
         let database = TursoBuilder::new_local(path_str).build().await?;
 
-        bootstrap_schema(&database).await;
+        bootstrap_schema(&database, path_str).await;
 
         let manager = Manager { database };
 
@@ -455,14 +456,16 @@ async fn configure_connection(connection: &Connection) -> Result<(), TursoError>
 }
 
 /// Verifies that the database schema matches [`DATABASE_SCHEMA_FINGERPRINT`],
-/// applying the canonical schema if the database is newly created.
+/// applying the canonical schema if the database is newly created. The
+/// bootstrap outcome is logged: a fresh schema application at info level, a
+/// verified existing schema at debug level.
 ///
 /// # Panics
 ///
 /// Panics if connecting fails, setting pragmas fails, querying the fingerprint
 /// fails, applying the schema fails, or if an incompatible schema fingerprint
 /// is detected.
-async fn bootstrap_schema(database: &TursoDatabase) {
+async fn bootstrap_schema(database: &TursoDatabase, path: &str) {
     #[expect(
         clippy::expect_used,
         reason = "opening initial connection to verify schema is fatal on failure"
@@ -480,9 +483,15 @@ async fn bootstrap_schema(database: &TursoDatabase) {
         .expect("failed to configure database connection");
 
     match query_schema_fingerprint(&connection).await {
-        DATABASE_SCHEMA_FINGERPRINT => {}
+        DATABASE_SCHEMA_FINGERPRINT => {
+            debug!("verified the schema fingerprint of database {path}");
+        }
 
-        0 => apply_canonical_schema(&connection).await,
+        0 => {
+            apply_canonical_schema(&connection).await;
+
+            info!("applied the canonical schema to fresh database {path}");
+        }
 
         other => {
             #[expect(

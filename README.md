@@ -415,6 +415,15 @@ JanusGate is configured through a JSON file supporting comments (JSONC), supplie
   2026-09-11T08:15:30.123Z INFO  janusgate::server: listening on 0.0.0.0:8080
   ```
 
+- **Severity policy**:
+  - `error` — an operation failed on the gateway's or an upstream's behalf: a request failed with an upstream or internal error (logged once at the response boundary that renders it, with the model and provider context the boundary holds), an upstream stream aborted mid-flight (logged where the pump detects the abort), or the TCP accept loop failed an accept (retried with backoff).
+  - `warn` — the gateway continues with degraded or anomalous-but-tolerated behavior: the best-effort `TCP_NODELAY` activation failed, a token-refresh lease could not be cleared after a failed refresh, or an unauthorized management API request was rejected.
+  - `info` — lifecycle and state changes: canonical schema application on a fresh database, the listening socket, a completed token refresh, and every management mutation (provider saved or deleted, OAuth flow started or completed, model discovery, model overrides saved).
+  - `debug` — per-request pipeline detail: the outward dispatch (public model, provider, upstream model, wire format, streaming mode), the upstream response status, client-fault rejections (malformed body, failed authentication, unknown model, conflicts), connection-edge anomalies (HTTP/2 preface and unresponsive connections closed), and unauthorized outward requests.
+  - `trace` — reserved; the gateway emits no `trace` records.
+- Every rendered API error is logged exactly once — at the response boundary rendering it, or, for failures that become mid-stream error frames instead of an HTTP error response, at the pump that detects them. Log records never carry credentials, tokens, OAuth authorization codes or state tokens, prompt text, or completion text, matching the stateless-execution design (§1).
+- Records emitted by dependency crates (`reqwest`, `hyper`, …) pass through the same global filter and appear under their own targets; there is no per-target suppression.
+
 ### Running the Server
 ```bash
 cargo build --release

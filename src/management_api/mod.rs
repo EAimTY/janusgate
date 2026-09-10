@@ -2,7 +2,7 @@
 
 use crate::{
     database::Database,
-    error::{self, ApiError},
+    error::{self, ApiError, log_api_error},
     format::UpstreamFormat,
     provider::Provider,
     security::constant_time_eq,
@@ -16,6 +16,7 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
+use log::warn;
 use serde::de::DeserializeOwned;
 
 pub(crate) mod models;
@@ -55,6 +56,8 @@ async fn authenticate(request: Request, next: Next) -> Response {
         .is_some_and(|token| constant_time_eq(token, &crate::CONFIG.management_api.token));
 
     if !is_authorized {
+        warn!("rejected an unauthorized management request");
+
         return error::json_response(
             401,
             ApiError::authentication("Missing or invalid management token").to_management_json(),
@@ -76,16 +79,24 @@ pub(crate) fn error_response(error: ApiError) -> Response {
     error::json_response(error.status, error.to_management_json())
 }
 
-/// Deserializes a strictly typed request body.
+/// Deserializes a strictly typed request body, logging a malformed body at
+/// debug level as a rejection of the named `operation` (the rendered error
+/// is the caller's only feedback; the log record is the server-side trace).
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for malformed JSON and unknown fields.
-pub(crate) fn parse_body<T>(body: &Bytes) -> Result<T, ApiError>
+pub(crate) fn parse_body<T>(body: &Bytes, operation: &str) -> Result<T, ApiError>
 where
     T: DeserializeOwned,
 {
-    serde_json::from_slice(body).map_err(error::invalid_request_from_json)
+    serde_json::from_slice(body).map_err(|error| {
+        let api_error = error::invalid_request_from_json(error);
+
+        log_api_error(&format!("{operation} request"), &api_error);
+
+        api_error
+    })
 }
 
 /// Renders a provider row into its management JSON shape; credentials are

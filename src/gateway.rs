@@ -15,6 +15,7 @@ use crate::{
     sse::{SseFrame, SseParseError, SseParser},
 };
 use futures::Stream;
+use log::{debug, error};
 use reqwest::Client;
 use std::pin::Pin;
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
@@ -91,11 +92,26 @@ pub(crate) async fn execute(
     ir.reasoning_effort = apply_thinking_levels(ir.reasoning_effort, thinking_levels.as_deref());
     ir.model = routing.model.upstream_name.clone();
 
+    // Names every mid-stream log record the pump tasks emit; the pump errors
+    // surface to streaming clients as terminal error frames and never pass a
+    // response boundary, so the pump is the only place they are logged.
+    let upstream_label = format!(
+        "provider `{}` upstream model `{}`",
+        routing.provider.name, ir.model
+    );
+
     let provider = oauth::ensure_fresh_token(database, http, &routing.provider).await?;
 
     // The wire format is resolved once per request and shared by request
     // building and event parsing.
     let upstream_format = provider.upstream_format()?;
+
+    debug!(
+        "dispatching public model `{}` via {upstream_label} ({}, streaming: {})",
+        routing.model.name,
+        upstream_format.as_str(),
+        is_client_streaming
+    );
 
     let request_builder = build_upstream_request(
         http,
@@ -116,6 +132,8 @@ pub(crate) async fn execute(
         return Err(upstream_error_of(response).await);
     }
 
+    debug!("{upstream_label}: upstream responded {status}");
+
     let is_event_stream = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -128,9 +146,15 @@ pub(crate) async fn execute(
     let parser = upstream_parser(upstream_format);
 
     if is_event_stream {
-        tokio::spawn(pump_sse(response, parser, SseParser::new(), sender));
+        tokio::spawn(pump_sse(
+            response,
+            parser,
+            SseParser::new(),
+            sender,
+            upstream_label,
+        ));
     } else {
-        tokio::spawn(pump_json(response, parser, sender));
+        tokio::spawn(pump_json(response, parser, sender, upstream_label));
     }
 
     Ok(Box::pin(ReceiverStream::new(receiver)))
@@ -269,11 +293,16 @@ fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventPars
 
 /// Relays an upstream SSE stream into the IR event channel, always
 /// terminating with [`IrEvent::Done`].
+///
+/// `upstream_label` names the upstream in every error the pump logs; these
+/// failures become terminal error frames for streaming clients and never
+/// reach a response boundary, so this is the only place they are logged.
 async fn pump_sse(
     response: reqwest::Response,
     mut parser: Box<dyn UpstreamEventParser + Send>,
     mut sse_parser: impl SseFrameSource + Send,
     sender: tokio::sync::mpsc::Sender<Result<IrEvent, ApiError>>,
+    upstream_label: String,
 ) {
     let mut body = response.bytes_stream();
 
@@ -287,11 +316,12 @@ async fn pump_sse(
             Err(error) => {
                 is_aborted = true;
 
-                let _ = sender
-                    .send(Err(ApiError::upstream_unavailable(format!(
-                        "upstream stream failed: {error}"
-                    ))))
-                    .await;
+                let error =
+                    ApiError::upstream_unavailable(format!("upstream stream failed: {error}"));
+
+                error!("{upstream_label}: {error}");
+
+                let _ = sender.send(Err(error)).await;
 
                 break 'stream;
             }
@@ -302,9 +332,11 @@ async fn pump_sse(
             Err(_) => {
                 is_aborted = true;
 
-                let _ = sender
-                    .send(Err(ApiError::upstream_unavailable("oversized SSE frame")))
-                    .await;
+                let error = ApiError::upstream_unavailable("oversized SSE frame");
+
+                error!("{upstream_label}: {error}");
+
+                let _ = sender.send(Err(error)).await;
 
                 break 'stream;
             }
@@ -322,6 +354,8 @@ async fn pump_sse(
 
                 Err(error) => {
                     is_aborted = true;
+
+                    error!("{upstream_label}: {error}");
 
                     let _ = sender.send(Err(error)).await;
 
@@ -355,6 +389,8 @@ async fn pump_sse(
                         Err(error) => {
                             is_aborted = true;
 
+                            error!("{upstream_label}: {error}");
+
                             let _ = sender.send(Err(error)).await;
 
                             break;
@@ -371,9 +407,11 @@ async fn pump_sse(
             Err(_) => {
                 is_aborted = true;
 
-                let _ = sender
-                    .send(Err(ApiError::upstream_unavailable("oversized SSE frame")))
-                    .await;
+                let error = ApiError::upstream_unavailable("oversized SSE frame");
+
+                error!("{upstream_label}: {error}");
+
+                let _ = sender.send(Err(error)).await;
             }
         }
     }
@@ -391,10 +429,15 @@ async fn pump_sse(
 
 /// Relays an upstream JSON response into the IR event channel, always
 /// terminating with [`IrEvent::Done`].
+///
+/// `upstream_label` names the upstream in every error the pump logs; for a
+/// streaming client these failures become terminal error frames and never
+/// reach a response boundary, so the pump is the only place they are logged.
 async fn pump_json(
     response: reqwest::Response,
     mut parser: Box<dyn UpstreamEventParser + Send>,
     sender: tokio::sync::mpsc::Sender<Result<IrEvent, ApiError>>,
+    upstream_label: String,
 ) {
     let outcome = async {
         let bytes = response.bytes().await.map_err(|error| {
@@ -419,6 +462,8 @@ async fn pump_json(
         }
 
         Err(error) => {
+            error!("{upstream_label}: {error}");
+
             let _ = sender.send(Err(error)).await;
         }
     }
@@ -639,7 +684,14 @@ mod tests {
 
         let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
 
-        pump_sse(response, parser, sse_parser, sender).await;
+        pump_sse(
+            response,
+            parser,
+            sse_parser,
+            sender,
+            "test upstream".to_string(),
+        )
+        .await;
 
         let mut events = Vec::new();
 
@@ -836,6 +888,7 @@ mod tests {
             Box::new(RejectingParser),
             SseParser::new(),
             sender,
+            "test upstream".to_string(),
         )
         .await;
 

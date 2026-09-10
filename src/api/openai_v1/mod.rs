@@ -3,7 +3,7 @@
 use super::json_response;
 use crate::{
     database::Database,
-    error::ApiError,
+    error::{ApiError, log_api_error},
     format::{ClientFormat, ClientSseRenderer, openai_chat_completion, openai_response},
     gateway::{self, IrEventStream},
     ir::{Aggregator, IrAggregation},
@@ -19,6 +19,7 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
+use log::debug;
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 
 /// Maximum accepted request body size, large enough for inline image data.
@@ -55,6 +56,8 @@ async fn authenticate(request: Request, next: Next) -> Response {
         .is_some_and(|key| constant_time_eq(key, &crate::CONFIG.api.key));
 
     if !is_authorized {
+        debug!("rejected an unauthorized API request");
+
         return json_response(401, ApiError::invalid_api_key().to_openai_json());
     }
 
@@ -109,6 +112,11 @@ fn outcome_response(outcome: Result<Response, ApiError>) -> Response {
 /// format: parse to IR, resolve routing, execute upstream, and render the
 /// event stream live or aggregated.
 ///
+/// Every failure that reaches this boundary is logged exactly once here,
+/// with the request context available at each stage: a parse rejection names
+/// only the endpoint, a routing rejection names the requested model, and
+/// everything past routing additionally names the resolved provider.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] for request, routing, and upstream failures.
@@ -116,28 +124,61 @@ async fn handle_completion<TFormat>(database: &Database, body: &[u8]) -> Result<
 where
     TFormat: ClientFormat,
 {
-    let parsed = TFormat::parse_request(body)?;
+    let parsed = match TFormat::parse_request(body) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            log_api_error("completion request", &error);
 
-    let routing = gateway::resolve_routing(database, &parsed.ir.model).await?;
+            return Err(error);
+        }
+    };
+
+    let routing = match gateway::resolve_routing(database, &parsed.ir.model).await {
+        Ok(routing) => routing,
+        Err(error) => {
+            log_api_error(
+                &format!("completion for model `{}`", parsed.ir.model),
+                &error,
+            );
+
+            return Err(error);
+        }
+    };
+
+    let operation = format!(
+        "completion for model `{}` via provider `{}`",
+        routing.model.name, routing.provider.name
+    );
 
     let public_name = routing.model.name.clone();
 
     let is_streaming = parsed.is_streaming;
 
-    let events =
-        gateway::execute(database, crate::http(), routing, parsed.ir, is_streaming).await?;
+    let should_include_usage = parsed.should_include_usage;
 
-    if is_streaming {
-        Ok(sse_response(
-            events,
-            TFormat::sse_renderer(parsed.should_include_usage, public_name),
-        ))
-    } else {
-        aggregated_response(events, |aggregation| {
-            TFormat::render_json_response(&public_name, aggregation)
-        })
-        .await
+    let outcome = async {
+        let events =
+            gateway::execute(database, crate::http(), routing, parsed.ir, is_streaming).await?;
+
+        if is_streaming {
+            Ok(sse_response(
+                events,
+                TFormat::sse_renderer(should_include_usage, public_name),
+            ))
+        } else {
+            aggregated_response(events, |aggregation| {
+                TFormat::render_json_response(&public_name, aggregation)
+            })
+            .await
+        }
     }
+    .await;
+
+    if let Err(error) = &outcome {
+        log_api_error(&operation, error);
+    }
+
+    outcome
 }
 
 /// Handles `GET /models`.
@@ -159,7 +200,11 @@ async fn models(State(database): State<Database>) -> Response {
             json_response(200, serde_json::json!({"object": "list", "data": data}))
         }
 
-        Err(error) => json_response(error.status, error.to_openai_json()),
+        Err(error) => {
+            log_api_error("model listing", &error);
+
+            json_response(error.status, error.to_openai_json())
+        }
     }
 }
 

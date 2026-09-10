@@ -3,11 +3,12 @@
 use super::{error_response, parse_body, provider_json};
 use crate::{
     database::Database,
-    error::{self, ApiError},
+    error::{self, ApiError, log_api_error},
     format::UpstreamFormat,
     provider::{self, Credentials, NewProvider, ProviderType, storage},
 };
 use axum::{body::Bytes, extract::State, response::Response};
+use log::info;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -60,7 +61,11 @@ pub(crate) async fn list(State(database): State<Database>) -> Response {
             error::json_response(200, serde_json::json!({ "providers": rendered }))
         }
 
-        Err(error) => error_response(error),
+        Err(error) => {
+            log_api_error("list-providers", &error);
+
+            error_response(error)
+        }
     }
 }
 
@@ -77,7 +82,7 @@ pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Respo
 /// Handles `POST /delete-provider`.
 pub(crate) async fn delete(State(database): State<Database>, body: Bytes) -> Response {
     let outcome = async {
-        let request: DeleteProviderBody = parse_body(&body)?;
+        let request: DeleteProviderBody = parse_body(&body, "delete-provider")?;
 
         if !storage::delete_provider(&database, &request.name).await? {
             return Err(ApiError::not_found(format!(
@@ -86,159 +91,183 @@ pub(crate) async fn delete(State(database): State<Database>, body: Bytes) -> Res
             )));
         }
 
-        Ok(())
+        Ok(request.name)
     }
     .await;
 
     match outcome {
-        Ok(()) => error::json_response(200, serde_json::json!({"deleted": true})),
-        Err(error) => error_response(error),
+        Ok(name) => {
+            info!("deleted provider `{name}`");
+
+            error::json_response(200, serde_json::json!({"deleted": true}))
+        }
+        Err(error) => {
+            log_api_error("delete-provider", &error);
+
+            error_response(error)
+        }
     }
 }
 
-/// Creates or updates one provider per the management contract.
+/// Creates or updates one provider per the management contract. The outcome
+/// is logged: every failure at the provider's response boundary, the
+/// successful creation or update at info level.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for invalid names, unknown types, OAuth creation
 /// attempts, type mismatches, and public name collisions.
 async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Value, ApiError> {
-    let request: SaveProviderBody = parse_body(body)?;
+    let request: SaveProviderBody = parse_body(body, "save-provider")?;
 
-    provider::validate_provider_name(&request.name)?;
+    let outcome = async {
+        provider::validate_provider_name(&request.name)?;
 
-    // The outer read only pins request validation: the stored type is
-    // immutable, so it cannot drift before the transactional write. Absent
-    // fields are merged from the row re-read inside `update_provider`'s
-    // transaction, never from this snapshot (README §7.1).
-    let existing = storage::find_provider(database, &request.name).await?;
+        // The outer read only pins request validation: the stored type is
+        // immutable, so it cannot drift before the transactional write. Absent
+        // fields are merged from the row re-read inside `update_provider`'s
+        // transaction, never from this snapshot (README §7.1).
+        let existing = storage::find_provider(database, &request.name).await?;
 
-    // The stored row pins the account kind: an omitted `type` defaults to it
-    // on update, and an explicit mismatching `type` is an invalid request
-    // rather than a conflict, because no concurrent state is overwritten.
-    let provider_type = match request.provider_type.as_deref() {
-        Some(raw) => {
-            let provider_type = ProviderType::parse(raw).ok_or_else(|| {
-                ApiError::invalid_parameter("type", format!("Unknown provider type `{raw}`"))
-            })?;
+        // The stored row pins the account kind: an omitted `type` defaults to
+        // it on update, and an explicit mismatching `type` is an
+        // invalid request rather than a conflict, because no concurrent
+        // state is overwritten.
+        let provider_type = match request.provider_type.as_deref() {
+            Some(raw) => {
+                let provider_type = ProviderType::parse(raw).ok_or_else(|| {
+                    ApiError::invalid_parameter("type", format!("Unknown provider type `{raw}`"))
+                })?;
 
-            if let Some(existing) = &existing
-                && provider_type != existing.provider_type
-            {
-                return Err(ApiError::invalid_parameter(
-                    "type",
-                    format!(
-                        "Provider `{}` has type `{}` and cannot become `{}`",
-                        existing.name,
-                        existing.provider_type.as_str(),
-                        provider_type.as_str()
-                    ),
-                ));
+                if let Some(existing) = &existing
+                    && provider_type != existing.provider_type
+                {
+                    return Err(ApiError::invalid_parameter(
+                        "type",
+                        format!(
+                            "Provider `{}` has type `{}` and cannot become `{}`",
+                            existing.name,
+                            existing.provider_type.as_str(),
+                            provider_type.as_str()
+                        ),
+                    ));
+                }
+
+                Some(provider_type)
             }
 
-            Some(provider_type)
+            None => existing.as_ref().map(|provider| provider.provider_type),
+        };
+
+        let protocol = match request.protocol.as_deref() {
+            None => None,
+            Some(raw) => Some(UpstreamFormat::parse(raw).ok_or_else(|| {
+                ApiError::invalid_parameter("protocol", format!("Unknown protocol `{raw}`"))
+            })?),
+        };
+
+        let credentials = match (&request.credentials, provider_type) {
+            (None, _) => None,
+
+            (Some(value), Some(kind)) => Some(Credentials::parse(kind, &value.to_string())?),
+
+            (Some(_), None) => {
+                return Err(ApiError::invalid_parameter(
+                    "type",
+                    "credentials require a `type` in the same request",
+                ));
+            }
+        };
+
+        if existing.is_some() {
+            // One transactional write owns the provider row, any credentials
+            // replacement, and the recomputed public model names; absent fields
+            // merge from the in-transaction row, and a prefix change that would
+            // collide is rejected with 409 before anything is written.
+            let stored = storage::update_provider(
+                database,
+                &request.name,
+                storage::ProviderUpdate {
+                    model_prefix: request.model_prefix.as_deref(),
+                    protocol,
+                    base_url: request.base_url.as_deref(),
+                    is_enabled: request.enabled,
+                    credentials: credentials.as_ref(),
+                },
+            )
+            .await?;
+
+            info!("updated provider `{}`", request.name);
+
+            return Ok(provider_json(&stored));
         }
 
-        None => existing.as_ref().map(|provider| provider.provider_type),
-    };
-
-    let protocol = match request.protocol.as_deref() {
-        None => None,
-        Some(raw) => Some(UpstreamFormat::parse(raw).ok_or_else(|| {
-            ApiError::invalid_parameter("protocol", format!("Unknown protocol `{raw}`"))
-        })?),
-    };
-
-    let credentials = match (&request.credentials, provider_type) {
-        (None, _) => None,
-
-        (Some(value), Some(kind)) => Some(Credentials::parse(kind, &value.to_string())?),
-
-        (Some(_), None) => {
+        let Some(provider_type) = provider_type else {
             return Err(ApiError::invalid_parameter(
                 "type",
-                "credentials require a `type` in the same request",
+                "type is required when creating a provider",
+            ));
+        };
+
+        if provider_type != ProviderType::OpenAiCompatible {
+            return Err(ApiError::invalid_parameter(
+                "type",
+                format!(
+                    "`{}` providers are created by completing an OAuth flow",
+                    provider_type.as_str()
+                ),
             ));
         }
-    };
 
-    if existing.is_some() {
-        // One transactional write owns the provider row, any credentials
-        // replacement, and the recomputed public model names; absent fields
-        // merge from the in-transaction row, and a prefix change that would
-        // collide is rejected with 409 before anything is written.
-        let stored = storage::update_provider(
+        let protocol = protocol.ok_or_else(|| {
+            ApiError::invalid_parameter(
+                "protocol",
+                "protocol is required for openai_compatible providers",
+            )
+        })?;
+
+        let base_url = request.base_url.clone().ok_or_else(|| {
+            ApiError::invalid_parameter(
+                "base_url",
+                "base_url is required for openai_compatible providers",
+            )
+        })?;
+
+        let credentials = credentials.ok_or_else(|| {
+            ApiError::invalid_parameter(
+                "credentials",
+                "credentials are required when creating a provider",
+            )
+        })?;
+
+        storage::insert_provider(
             database,
-            &request.name,
-            storage::ProviderUpdate {
-                model_prefix: request.model_prefix.as_deref(),
-                protocol,
-                base_url: request.base_url.as_deref(),
-                is_enabled: request.enabled,
-                credentials: credentials.as_ref(),
+            &NewProvider {
+                name: &request.name,
+                model_prefix: request.model_prefix.as_deref().unwrap_or_default(),
+                provider_type,
+                protocol: Some(protocol),
+                base_url: Some(&base_url),
+                credentials: &credentials,
+                expires_at: None,
+                is_enabled: request.enabled.unwrap_or(true),
             },
         )
         .await?;
 
-        return Ok(provider_json(&stored));
+        let stored = storage::reload_provider(database, &request.name, "save").await?;
+
+        info!("created provider `{}`", request.name);
+
+        Ok(provider_json(&stored))
+    }
+    .await;
+
+    if let Err(error) = &outcome {
+        log_api_error(&format!("save-provider `{}`", request.name), error);
     }
 
-    let Some(provider_type) = provider_type else {
-        return Err(ApiError::invalid_parameter(
-            "type",
-            "type is required when creating a provider",
-        ));
-    };
-
-    if provider_type != ProviderType::OpenAiCompatible {
-        return Err(ApiError::invalid_parameter(
-            "type",
-            format!(
-                "`{}` providers are created by completing an OAuth flow",
-                provider_type.as_str()
-            ),
-        ));
-    }
-
-    let protocol = protocol.ok_or_else(|| {
-        ApiError::invalid_parameter(
-            "protocol",
-            "protocol is required for openai_compatible providers",
-        )
-    })?;
-
-    let base_url = request.base_url.clone().ok_or_else(|| {
-        ApiError::invalid_parameter(
-            "base_url",
-            "base_url is required for openai_compatible providers",
-        )
-    })?;
-
-    let credentials = credentials.ok_or_else(|| {
-        ApiError::invalid_parameter(
-            "credentials",
-            "credentials are required when creating a provider",
-        )
-    })?;
-
-    storage::insert_provider(
-        database,
-        &NewProvider {
-            name: &request.name,
-            model_prefix: request.model_prefix.as_deref().unwrap_or_default(),
-            provider_type,
-            protocol: Some(protocol),
-            base_url: Some(&base_url),
-            credentials: &credentials,
-            expires_at: None,
-            is_enabled: request.enabled.unwrap_or(true),
-        },
-    )
-    .await?;
-
-    let stored = storage::reload_provider(database, &request.name, "save").await?;
-
-    Ok(provider_json(&stored))
+    outcome
 }
 
 #[cfg(test)]

@@ -3,13 +3,14 @@
 use super::{error_response, parse_body};
 use crate::{
     database::Database,
-    error::{self, ApiError},
+    error::{self, ApiError, log_api_error},
     provider::{
         discovery, oauth,
         storage::{self, ModelEntry},
     },
 };
 use axum::{body::Bytes, extract::State, response::Response};
+use log::info;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -75,7 +76,11 @@ pub(crate) async fn list(State(database): State<Database>) -> Response {
 
     match outcome {
         Ok(rendered) => error::json_response(200, rendered),
-        Err(error) => error_response(error),
+        Err(error) => {
+            log_api_error("list-models", &error);
+
+            error_response(error)
+        }
     }
 }
 
@@ -90,90 +95,137 @@ pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Respo
 }
 
 /// Refreshes one provider's model rows from upstream, carrying overrides over
-/// by `upstream_name`.
+/// by `upstream_name`. The outcome is logged: the discovered count at info
+/// level, every failure at the provider's response boundary.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for unknown providers, upstream failures, and public
 /// name collisions.
 async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, ApiError> {
-    let request: DiscoverModelsBody = parse_body(body)?;
+    let request: DiscoverModelsBody = parse_body(body, "discover-models")?;
 
-    let provider = storage::find_provider(database, &request.provider)
-        .await?
-        .ok_or_else(|| {
-            ApiError::not_found(format!("Provider `{}` does not exist", request.provider))
-        })?;
+    let outcome = async {
+        let provider = storage::find_provider(database, &request.provider)
+            .await?
+            .ok_or_else(|| {
+                ApiError::not_found(format!("Provider `{}` does not exist", request.provider))
+            })?;
 
-    let fresh = oauth::ensure_fresh_token(database, crate::http(), &provider).await?;
+        let fresh = oauth::ensure_fresh_token(database, crate::http(), &provider).await?;
 
-    let upstream_names = discovery::discover_upstream_models(crate::http(), &fresh).await?;
+        let upstream_names = discovery::discover_upstream_models(crate::http(), &fresh).await?;
 
-    // Discovery payloads can repeat an upstream name; keep the first
-    // occurrence.
-    let mut unique_names: Vec<String> = Vec::with_capacity(upstream_names.len());
+        // Discovery payloads can repeat an upstream name; keep the first
+        // occurrence.
+        let mut unique_names: Vec<String> = Vec::with_capacity(upstream_names.len());
 
-    for upstream_name in upstream_names {
-        if unique_names
-            .iter()
-            .any(|existing| existing == &upstream_name)
-        {
-            continue;
+        for upstream_name in upstream_names {
+            if unique_names
+                .iter()
+                .any(|existing| existing == &upstream_name)
+            {
+                continue;
+            }
+
+            unique_names.push(upstream_name);
         }
 
-        unique_names.push(upstream_name);
+        // The replace re-reads the provider row inside its transaction, so the
+        // public names are composed from the provider's current prefix and
+        // checked for collisions atomically with the write (README
+        // §7.1).
+        storage::replace_discovered_models(database, &request.provider, &unique_names).await
+    }
+    .await;
+
+    match &outcome {
+        Ok(discovered) => {
+            info!(
+                "discovered {discovered} models for provider `{}`",
+                request.provider
+            )
+        }
+
+        Err(error) => {
+            log_api_error(
+                &format!("model discovery for provider `{}`", request.provider),
+                error,
+            );
+        }
     }
 
-    // The replace re-reads the provider row inside its transaction, so the
-    // public names are composed from the provider's current prefix and checked
-    // for collisions atomically with the write (README §7.1).
-    storage::replace_discovered_models(database, &request.provider, &unique_names).await
+    outcome
 }
 
-/// Writes one model's overrides and recomputes its public name.
+/// Writes one model's overrides and recomputes its public name. The outcome
+/// is logged: the saved overrides at info level, every failure at the
+/// model's response boundary.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for unknown rows, invalid thinking levels, and public
 /// name collisions.
 async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiError> {
-    let request: SaveModelBody = parse_body(body)?;
+    let request: SaveModelBody = parse_body(body, "save-model")?;
 
-    let thinking_levels_override = match &request.thinking_levels_override {
-        None => None,
+    let outcome = async {
+        let thinking_levels_override = match &request.thinking_levels_override {
+            None => None,
 
-        Some(None) => Some(None),
+            Some(None) => Some(None),
 
-        Some(Some(levels)) => {
-            // The shared parser keeps save-model validation byte-identical
-            // with the stored-override contract (README §7.1).
-            let parsed = crate::ir::parse_thinking_levels(levels, "thinking_levels_override")?;
+            Some(Some(levels)) => {
+                // The shared parser keeps save-model validation byte-identical
+                // with the stored-override contract (README §7.1).
+                let parsed = crate::ir::parse_thinking_levels(levels, "thinking_levels_override")?;
 
-            let canonical: Vec<&str> = parsed.iter().map(|level| level.to_canonical()).collect();
+                let canonical: Vec<&str> =
+                    parsed.iter().map(|level| level.to_canonical()).collect();
 
-            Some(Some(serde_json::to_string(&canonical).map_err(
-                |error| ApiError::internal(format!("failed to encode thinking levels: {error}")),
-            )?))
-        }
-    };
+                Some(Some(serde_json::to_string(&canonical).map_err(
+                    |error| {
+                        ApiError::internal(format!("failed to encode thinking levels: {error}"))
+                    },
+                )?))
+            }
+        };
 
-    // The checked update re-reads the provider and model rows inside its
-    // transaction, so the recomputed public name uses the provider's current
-    // prefix and the collision check applies atomically with the write
-    // (README §7.1).
-    let entry = storage::update_model_overrides_checked(
-        database,
-        storage::ModelOverrideUpdate {
-            provider_name: &request.provider,
-            upstream_name: &request.upstream_name,
-            name_override: request.name_override.clone(),
-            enabled_override: request.enabled_override,
-            thinking_levels_override,
-        },
-    )
-    .await?;
+        // The checked update re-reads the provider and model rows inside its
+        // transaction, so the recomputed public name uses the provider's
+        // current prefix and the collision check applies atomically
+        // with the write (README §7.1).
+        storage::update_model_overrides_checked(
+            database,
+            storage::ModelOverrideUpdate {
+                provider_name: &request.provider,
+                upstream_name: &request.upstream_name,
+                name_override: request.name_override.clone(),
+                enabled_override: request.enabled_override,
+                thinking_levels_override,
+            },
+        )
+        .await
+    }
+    .await
+    .and_then(|entry| model_entry_json(&entry));
 
-    model_entry_json(&entry)
+    match &outcome {
+        Ok(_) => info!(
+            "saved the overrides of model `{}`/`{}`",
+            request.provider, request.upstream_name
+        ),
+
+        Err(error) => log_api_error(
+            &format!(
+                "save-model `{}`/`{}`",
+                request.provider, request.upstream_name
+            ),
+            error,
+        ),
+    }
+
+    outcome
 }
 
 /// Renders one model listing entry.

@@ -9,6 +9,7 @@ use axum::{
 use host_port_pair::Host;
 use hserver::{ConnectionBuilder, Incoming, Server};
 use hyper_util::rt::TokioTimer;
+use log::{debug, error, info, warn};
 use socket2::{Domain, Protocol, SockAddr, Socket as Socket2, Type};
 use std::{
     error::Error,
@@ -218,7 +219,10 @@ async fn read_request_prelude(stream: &mut TcpStream) -> RequestPrelude {
 ///
 /// Panics if the TCP listener fails to initialize.
 pub(crate) async fn run(database: Database) -> ! {
-    let tcp_listener = init_tcp_listener();
+    let (tcp_listener, socket_address) = init_tcp_listener();
+
+    info!("listening on {socket_address}");
+
     let router = router(database);
 
     let mut consecutive_failures: u32 = 0;
@@ -234,7 +238,7 @@ pub(crate) async fn run(database: Database) -> ! {
             Err(error) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
 
-                eprintln!("TCP accept failed: {error}");
+                error!("TCP accept failed: {error}");
 
                 tokio::time::sleep(accept_backoff_delay(consecutive_failures)).await;
 
@@ -249,7 +253,7 @@ pub(crate) async fn run(database: Database) -> ! {
         // default merely degrades latency, so the connection is served
         // anyway.
         if let Err(error) = stream.set_nodelay(true) {
-            eprintln!("TCP_NODELAY set failed for {peer_address}: {error}");
+            warn!("failed to set TCP_NODELAY for {peer_address}: {error}");
         }
 
         tokio::spawn(serve_accepted_connection(
@@ -283,13 +287,23 @@ where
 
             let connection = server.handle_upgradable(transport, peer_address);
 
-            let _ = connection.await;
+            // A connection error is routinely the client vanishing mid-request
+            // or mid-stream, so it is recorded at debug level only.
+            if let Err(error) = connection.await {
+                debug!("{peer_address}: connection ended with error: {error}");
+            }
         }
 
         // Dropping the socket closes the connection without a response;
         // hserver is never invoked, so an HTTP/2 preface client can never
         // reach hyper-util's deadline-less auto protocol detection.
-        RequestPrelude::Http2Preface | RequestPrelude::Unreadable => {}
+        RequestPrelude::Http2Preface => {
+            debug!("{peer_address}: closed an HTTP/2 preface connection");
+        }
+
+        RequestPrelude::Unreadable => {
+            debug!("{peer_address}: closed an unresponsive connection");
+        }
     }
 }
 
@@ -303,13 +317,14 @@ fn router(database: Database) -> Router {
 }
 
 /// Initializes the Tokio TCP listener using the global application
-/// configuration.
+/// configuration, returning the listener with the socket address it is bound
+/// to.
 ///
 /// # Panics
 ///
 /// Panics if `CONFIG` is uninitialized, if socket creation, configuration, or
 /// binding fails, or if a DNS name cannot be resolved to a socket address.
-fn init_tcp_listener() -> TcpListener {
+fn init_tcp_listener() -> (TcpListener, SocketAddr) {
     let socket_address = match crate::CONFIG.listen.host() {
         Host::IpAddr(ip_address) => SocketAddr::from((*ip_address, crate::CONFIG.listen.port())),
         Host::DnsName(dns_name) => {
@@ -375,9 +390,12 @@ fn init_tcp_listener() -> TcpListener {
     });
 
     #[expect(clippy::panic, reason = "converting TCP listener to tokio is fatal")]
-    TcpListener::from_std(StdTcpListener::from(socket)).unwrap_or_else(|error| {
-        panic!("cannot register TCP listener on {socket_address} with tokio: {error}")
-    })
+    let tcp_listener =
+        TcpListener::from_std(StdTcpListener::from(socket)).unwrap_or_else(|error| {
+            panic!("cannot register TCP listener on {socket_address} with tokio: {error}")
+        });
+
+    (tcp_listener, socket_address)
 }
 
 #[cfg(test)]

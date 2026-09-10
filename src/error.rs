@@ -6,6 +6,7 @@ use axum::{
     http::{StatusCode, header},
     response::Response,
 };
+use log::{debug, error};
 use turso::Error as TursoError;
 
 /// Status code distinguishing an upstream failure that produced an HTTP
@@ -174,6 +175,16 @@ impl ApiError {
         Self::new(500, ApiErrorKind::Internal, Some("internal"), detail)
     }
 
+    /// Whether the error is the calling client's own fault — a malformed or
+    /// unsupported request or a failed authentication — as opposed to a
+    /// gateway or upstream failure.
+    pub(crate) fn is_client_fault(&self) -> bool {
+        matches!(
+            self.kind,
+            ApiErrorKind::InvalidRequest | ApiErrorKind::Authentication
+        )
+    }
+
     /// Renders the OpenAI JSON error structure.
     pub(crate) fn to_openai_json(&self) -> serde_json::Value {
         let kind = match self.kind {
@@ -291,6 +302,20 @@ pub(crate) fn json_response(status: u16, body: serde_json::Value) -> Response {
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_string()))
         .expect("static response parts are always valid")
+}
+
+/// Logs one [`ApiError`] exactly once, at the response boundary about to
+/// render it to its caller: a client fault is recorded at debug level (the
+/// rendered response already informs the caller), while a gateway or
+/// upstream failure is recorded at error level. `operation` names the
+/// request the error belongs to, with whatever identifying context the
+/// boundary holds (such as the model or provider name).
+pub(crate) fn log_api_error(operation: &str, error: &ApiError) {
+    if error.is_client_fault() {
+        debug!("{operation} rejected: {error}");
+    } else {
+        error!("{operation} failed: {error}");
+    }
 }
 
 /// Flattens a serialization error into an invalid request error message.
@@ -421,6 +446,31 @@ mod tests {
             snapshot.message.contains("database is busy"),
             "a stale snapshot surfacing outside a lease must render busy: {snapshot}"
         );
+    }
+
+    /// Verifies the client-fault classification that drives the log level
+    /// policy: malformed requests, failed authentications, and missing
+    /// resources are the caller's own fault, while upstream and internal
+    /// failures belong to the gateway or its upstream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn classifies_client_faults_by_kind() {
+        assert!(ApiError::invalid_request("bad body").is_client_fault());
+
+        assert!(ApiError::invalid_api_key().is_client_fault());
+
+        assert!(ApiError::model_not_found("missing").is_client_fault());
+
+        assert!(ApiError::not_found("no row").is_client_fault());
+
+        assert!(ApiError::conflict("name taken").is_client_fault());
+
+        assert!(!ApiError::upstream_unavailable("unreachable").is_client_fault());
+
+        assert!(!ApiError::internal("boom").is_client_fault());
     }
 
     /// Verifies the outward OpenAI rendering keeps mirroring a failed upstream
