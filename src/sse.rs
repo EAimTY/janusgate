@@ -256,16 +256,7 @@ fn next_line(buffer: &[u8]) -> Result<Option<(String, usize)>, SseParseError> {
 ///
 /// The data payload must not contain newlines; multi-line payloads must be
 /// passed as separate frames or joined by the caller before formatting.
-///
-/// # Panics
-///
-/// Panics in debug builds when the data payload contains a newline.
 pub(crate) fn format_frame(event: Option<&str>, data: &str) -> String {
-    debug_assert!(
-        !data.contains('\n'),
-        "SSE data payload must not contain newlines"
-    );
-
     let mut frame = String::new();
 
     if let Some(event) = event {

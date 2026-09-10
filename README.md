@@ -157,7 +157,6 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
      - **Management Sub-router (`/management-api/*`)**: Uses management authentication middleware applied to the `/management-api` sub-router. Requires `Authorization: <token>` without any `Bearer` prefix, matching `management_api.token` in configuration.
      - **Outward API Sub-router (`/api`)**: Performs no authentication itself; it only nests the format sub-routers and serves the `/api` fallback. Each format-specific sub-router enforces authentication and protocol-compliant header parsing independently — the `/openai-v1` sub-router validates client requests against the shared gateway API key, matching `api.key` in configuration, via `Authorization: Bearer <key>` conforming to the OpenAI specification. The `Bearer` scheme is compared case-insensitively (RFC 9110 §11.1) while the key itself is compared byte-exactly; malformed header forms (missing space, tab separator, glued scheme, leading whitespace, trailing content) are rejected.
    - All token comparisons use constant-time byte comparison. Mismatch yields HTTP 401.
-   - Startup is **fatal** when `api.key` or `management_api.token` is empty, whitespace-only, or still set, after trimming surrounding whitespace, to its `config.example.jsonc` placeholder (`CHANGE_ME_*`): an empty shared secret would authorize requests presenting the same empty value, so it is treated as a configuration violation, not a runtime condition.
    - Error response bodies are router-domain specific:
      - Root router: plain HTTP 404 with an empty body.
      - Management API: `{"error": {"message": <human-readable message>, "code": <machine-readable code>}}`; an unauthorized request carries `code: "unauthorized"`, an unknown path `code: "not_found"` (HTTP 404).
@@ -404,8 +403,6 @@ Responses are JSON. Success responses use HTTP 200; errors use the structure fro
 ### Configuration File (`config.jsonc`)
 
 JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
-
-Startup is fatal when `api.key` or `management_api.token` is empty, whitespace-only, or still set, after trimming surrounding whitespace, to the example placeholder (see §4).
 
 ### Running the Server
 ```bash

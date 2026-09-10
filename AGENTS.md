@@ -13,7 +13,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 - Name booleans with predicate-style name prefixes such as `is`, `can`, `has`, or `should`.
 - Prefer unabbreviated names. For example, use `permanent_id` instead of `perm_id`. Exceptions: "ctx", "txn", "err", "repr", "src", "dst", "std".
 - Give every item the most restrictive visibility that permits its intended use.
-- Treat fatal configuration, contract and invariant violations as fatal instead of adding recovery paths that obscure bugs and complicate debugging.
+- All code and configuration are first-party — the project's author is its only user and guarantees the configuration is valid — so trust them instead of re-validating at runtime. Constraints belong in the types that carry the values — `NonZero` integers, enums, serde's deserialization rejection — not in production asserts. A violation of a documented contract, such as a demand for a bar size the provider cannot stream, is fatal: never a runtime error event or a recovery path.
 - Add comments for non-trivial or hard-to-understand logic.
 - Keep folder-local `AGENTS.md` files focused on stable guidance. Do not include implementation details that must be updated after code changes.
 - Every `AGENTS.md` must have a sibling `CLAUDE.md` containing exactly `@AGENTS.md`.

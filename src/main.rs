@@ -41,13 +41,6 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 /// once during process startup.
 static HTTP: OnceLock<Client> = OnceLock::new();
 
-/// Secret values that [`config.example.jsonc`](config.example.jsonc) ships
-/// as placeholders.
-///
-/// They must never reach a running deployment: a gateway started with a
-/// known placeholder secret is open to everyone.
-const EXAMPLE_PLACEHOLDER_SECRETS: [&str; 2] = ["CHANGE_ME_API_KEY", "CHANGE_ME_MANAGEMENT_TOKEN"];
-
 /// Maximum idle time between two consecutive reads of an upstream response.
 ///
 /// reqwest resets this deadline after every successful read, so it never
@@ -119,9 +112,8 @@ struct ApiConfig {
 ///
 /// # Panics
 ///
-/// Panics if command-line arguments or configuration cannot be parsed, if
-/// a configured secret is unsafe to deploy, or if the global configuration
-/// has already been initialized.
+/// Panics if command-line arguments or configuration cannot be parsed or if
+/// the global configuration has already been initialized.
 #[main]
 async fn main() -> ! {
     // Install a process-terminating panic hook before any other operation to
@@ -183,13 +175,12 @@ pub(crate) fn http() -> &'static Client {
 }
 
 /// Parses command-line arguments, opens the designated configuration file,
-/// strips comments, and deserializes and validates the configuration.
+/// strips comments, and deserializes the configuration.
 ///
 /// # Panics
 ///
 /// Panics if command-line arguments are invalid, the configuration file cannot
-/// be opened, deserialization fails, or a configured secret is unsafe to
-/// deploy.
+/// be opened, or deserialization fails.
 fn parse_config(args: impl IntoIterator<Item = impl Into<OsString>>) -> Config {
     let mut parser = ArgumentsParser::from_iter(args);
     let mut config_path = None;
@@ -242,54 +233,7 @@ fn parse_config(args: impl IntoIterator<Item = impl Into<OsString>>) -> Config {
     let config: Config = serde_json::from_reader(StripComments::new(file))
         .unwrap_or_else(|error| panic!("cannot parse configuration file {path:?}: {error}"));
 
-    validate_secrets(&config);
-
     config
-}
-
-/// Rejects secret configuration values that would fail inbound authentication
-/// open: empty, whitespace-only, or still set to the example placeholder.
-///
-/// An empty shared secret authorizes requests presenting the same empty
-/// value, so it is a fatal configuration violation rather than a runtime
-/// condition.
-///
-/// # Panics
-///
-/// Panics when any secret field is unsafe to deploy.
-fn validate_secrets(config: &Config) {
-    for (field, value) in [
-        ("management_api.token", config.management_api.token.as_str()),
-        ("api.key", config.api.key.as_str()),
-    ] {
-        let trimmed_value = value.trim();
-
-        if trimmed_value.is_empty() {
-            invalid_secret(field, "must be a non-empty string");
-        }
-
-        if EXAMPLE_PLACEHOLDER_SECRETS.contains(&trimmed_value) {
-            invalid_secret(
-                field,
-                "is still the config.example.jsonc placeholder; replace it with a real secret",
-            );
-        }
-    }
-}
-
-/// Reports an unsafe configured secret and aborts the process.
-///
-/// # Panics
-///
-/// Always: the caller has already established that the secret is unsafe to
-/// deploy, and an unsafe secret must fail startup instead of failing
-/// authentication open.
-#[expect(
-    clippy::panic,
-    reason = "an unsafe configured secret is a fatal configuration violation"
-)]
-fn invalid_secret(field: &str, problem: &str) -> ! {
-    panic!("configuration secret `{field}` {problem}");
 }
 
 /// Configures a custom panic hook that terminates the entire process
@@ -376,91 +320,16 @@ mod tests {
         }
     }
 
-    /// Verifies that non-empty operator secrets parse.
+    /// Verifies that valid configuration parses.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
     #[test]
-    fn parses_non_empty_secrets() {
+    fn parses_valid_configuration() {
         let temporary = TempConfig::write("valid-secrets", &config_body("key", "token"));
 
         let _config = temporary.parse();
-    }
-
-    /// Verifies that an empty `api.key` is fatal instead of authorizing
-    /// empty bearer tokens.
-    #[test]
-    #[should_panic(expected = "`api.key`")]
-    fn rejects_empty_api_key() {
-        let temporary = TempConfig::write("empty-api-key", &config_body("", "token"));
-
-        let _config = temporary.parse();
-    }
-
-    /// Verifies that a whitespace-only `api.key` is fatal.
-    #[test]
-    #[should_panic(expected = "must be a non-empty string")]
-    fn rejects_whitespace_only_api_key() {
-        let temporary = TempConfig::write("blank-api-key", &config_body("   ", "token"));
-
-        let _config = temporary.parse();
-    }
-
-    /// Verifies that an empty `management_api.token` is fatal instead of
-    /// authorizing empty authorization headers.
-    #[test]
-    #[should_panic(expected = "`management_api.token`")]
-    fn rejects_empty_management_token() {
-        let temporary = TempConfig::write("empty-token", &config_body("key", ""));
-
-        let _config = temporary.parse();
-    }
-
-    /// Verifies that an example placeholder `api.key` is fatal.
-    #[test]
-    #[should_panic(expected = "`api.key`")]
-    fn rejects_placeholder_api_key() {
-        let temporary = TempConfig::write(
-            "placeholder-api-key",
-            &config_body("CHANGE_ME_API_KEY", "token"),
-        );
-
-        let _config = temporary.parse();
-    }
-
-    /// Verifies that a placeholder secret padded with whitespace is fatal:
-    /// the placeholder comparison applies to the trimmed value.
-    #[test]
-    #[should_panic(expected = "placeholder")]
-    fn rejects_whitespace_padded_placeholder_api_key() {
-        let temporary = TempConfig::write(
-            "padded-placeholder-api-key",
-            &config_body("  CHANGE_ME_API_KEY  ", "token"),
-        );
-
-        let _config = temporary.parse();
-    }
-
-    /// Verifies that an example placeholder `management_api.token` is fatal.
-    #[test]
-    #[should_panic(expected = "`management_api.token`")]
-    fn rejects_placeholder_management_token() {
-        let temporary = TempConfig::write(
-            "placeholder-token",
-            &config_body("key", "CHANGE_ME_MANAGEMENT_TOKEN"),
-        );
-
-        let _config = temporary.parse();
-    }
-
-    /// Verifies that the shipped example configuration, which still carries
-    /// its placeholder secrets, is fatal to run: deserialization must
-    /// succeed so the panic can only originate from secret validation.
-    #[test]
-    #[should_panic(expected = "placeholder")]
-    fn rejects_config_example_placeholders() {
-        let _config = super::parse_config(["janusgate", "-c", "config.example.jsonc"]);
     }
 
     /// Verifies that an unopenable configuration file is fatal with a panic
