@@ -1,9 +1,9 @@
 //! Management endpoints beginning and completing OAuth authorization flows.
 
-use super::{error_response, json_response, parse_body, provider_json};
+use super::{error_response, parse_body, provider_json};
 use crate::{
     database::Database,
-    error::ApiError,
+    error::{self, ApiError},
     provider::{NewProvider, ProviderType, oauth, storage},
     unix_time,
 };
@@ -42,7 +42,7 @@ pub(crate) async fn start(State(database): State<Database>, body: Bytes) -> Resp
     let outcome = handle_start(&database, &body).await;
 
     match outcome {
-        Ok(flow) => json_response(
+        Ok(flow) => error::json_response(
             200,
             serde_json::json!({
                 "authorize_url": flow.authorize_url,
@@ -59,7 +59,7 @@ pub(crate) async fn complete(State(database): State<Database>, body: Bytes) -> R
     let outcome = handle_complete(&database, &body).await;
 
     match outcome {
-        Ok(rendered) => json_response(200, serde_json::json!({ "provider": rendered })),
+        Ok(rendered) => error::json_response(200, serde_json::json!({ "provider": rendered })),
         Err(error) => error_response(error),
     }
 }
@@ -100,7 +100,8 @@ async fn handle_start(database: &Database, body: &Bytes) -> Result<oauth::OAuthF
 /// # Errors
 ///
 /// Returns [`ApiError`] for unknown, expired, or already-consumed states,
-/// exchange failures, and type mismatches.
+/// exchange failures, type mismatches, and a provider deleted concurrently
+/// after the completion's lookup.
 async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json::Value, ApiError> {
     let request: CompleteOAuthBody = parse_body(body)?;
 
@@ -157,13 +158,23 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
 
     match existing {
         Some(existing) => {
-            storage::update_credentials(
+            let is_updated = storage::update_credentials(
                 database,
                 existing.id,
                 &exchanged.credentials,
                 Some(exchanged.expires_at),
             )
             .await?;
+
+            // A concurrent `delete-provider` between the outer lookup and
+            // this write affects zero rows; like the refresh path, the
+            // vanished provider is a 404, not a storage-drift 500 from the
+            // reload below.
+            if !is_updated {
+                return Err(ApiError::not_found(
+                    "provider vanished during OAuth completion",
+                ));
+            }
         }
 
         None => {

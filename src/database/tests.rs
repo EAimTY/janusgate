@@ -7,7 +7,13 @@
 
 use super::{Database, Error, Value, params};
 use crate::test_support;
-use std::{env, error::Error as StdError, fs, time::Duration};
+use std::{
+    env,
+    error::Error as StdError,
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 #[cfg(unix)]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
@@ -24,6 +30,81 @@ const TEST_POOL_SIZE: usize = 4;
 /// Pool timeout long enough that tests exercising unrelated behavior never
 /// observe an acquisition timeout.
 const TEST_POOL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// RAII guard deleting a test's temporary file-system artifact when dropped,
+/// so a database file or directory is removed on the success path, on any
+/// error return, and during the unwind of a panicking test.
+struct TempArtifactGuard {
+    /// Path removed when this guard is dropped.
+    path: PathBuf,
+
+    /// Whether the path is a directory tree rather than a single file.
+    is_directory: bool,
+}
+
+impl TempArtifactGuard {
+    /// Builds the unique temporary database path used by
+    /// [`test_support::open_test_database`], guards it, and opens a database
+    /// at it. The guard exists before the database opens, so the file is
+    /// removed even when opening fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while opening the database.
+    async fn open_database(
+        max_connections: usize,
+        pool_timeout: Duration,
+    ) -> Result<(Database, Self), Box<dyn StdError>> {
+        let mut path = test_support::unique_temp_path("test_database");
+
+        path.set_extension("db");
+
+        let guard = Self {
+            path,
+            is_directory: false,
+        };
+
+        let database =
+            test_support::open_test_database_at(&guard.path, max_connections, pool_timeout).await?;
+
+        Ok((database, guard))
+    }
+
+    /// Guards a single file for deletion on drop.
+    fn file(path: PathBuf) -> Self {
+        Self {
+            path,
+            is_directory: false,
+        }
+    }
+
+    /// Guards a directory tree for deletion on drop.
+    fn directory(path: PathBuf) -> Self {
+        Self {
+            path,
+            is_directory: true,
+        }
+    }
+
+    /// The guarded path, for tests that reopen the same artifact.
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempArtifactGuard {
+    fn drop(&mut self) {
+        let removal = if self.is_directory {
+            fs::remove_dir_all(&self.path)
+        } else {
+            fs::remove_file(&self.path)
+        };
+
+        // Cleanup is best-effort: a leftover artifact in the system temporary
+        // directory must not fail an otherwise passing test from `Drop`.
+        let _ = removal;
+    }
+}
 
 /// Inserts one canonical provider row and asserts the write reports exactly
 /// one changed row.
@@ -81,8 +162,8 @@ async fn query_single_integer(database: &Database, sql: &str) -> Result<i64, Box
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn open_applies_canonical_schema_to_fresh_database() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let user_version = query_single_integer(&database, "PRAGMA user_version").await?;
 
@@ -110,13 +191,12 @@ async fn open_applies_canonical_schema_to_fresh_database() -> Result<(), Box<dyn
     }
 
     let reopened_database =
-        test_support::open_test_database_at(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+        test_support::open_test_database_at(path_guard.path(), TEST_POOL_SIZE, TEST_POOL_TIMEOUT)
+            .await?;
 
     let user_version = query_single_integer(&reopened_database, "PRAGMA user_version").await?;
 
     assert_eq!(user_version, i64::from(super::DATABASE_SCHEMA_FINGERPRINT));
-
-    let _ = fs::remove_file(path);
 
     Ok(())
 }
@@ -136,9 +216,10 @@ async fn open_panics_on_incompatible_schema_fingerprint() {
         clippy::expect_used,
         reason = "opening the fresh test database is fatal on failure"
     )]
-    let (database, path) = test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT)
-        .await
-        .expect("fresh test database should open");
+    let (database, path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT)
+            .await
+            .expect("fresh test database should open");
 
     // Record a plausible but incompatible fingerprint.
     let tampered_version = super::DATABASE_SCHEMA_FINGERPRINT.wrapping_sub(1);
@@ -154,8 +235,11 @@ async fn open_panics_on_incompatible_schema_fingerprint() {
 
     drop(database);
 
-    // The reopening panics by contract before any result can be produced.
-    let _ = test_support::open_test_database_at(&path, TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await;
+    // The reopening panics by contract before any result can be produced; the
+    // unwinding panic drops the guard and still removes the database file.
+    let _ =
+        test_support::open_test_database_at(path_guard.path(), TEST_POOL_SIZE, TEST_POOL_TIMEOUT)
+            .await;
 }
 
 /// Verifies that opening a database creates every missing parent directory.
@@ -167,6 +251,8 @@ async fn open_panics_on_incompatible_schema_fingerprint() {
 async fn open_creates_missing_parent_directories() -> Result<(), Box<dyn StdError>> {
     let directory = test_support::unique_temp_path("database_test_dir");
 
+    let _directory_guard = TempArtifactGuard::directory(directory.clone());
+
     let path = directory.join("nested").join("gateway.db");
 
     let database =
@@ -175,8 +261,6 @@ async fn open_creates_missing_parent_directories() -> Result<(), Box<dyn StdErro
     let provider_count = query_single_integer(&database, "SELECT COUNT(*) FROM providers").await?;
 
     assert_eq!(provider_count, 0);
-
-    let _ = fs::remove_dir_all(directory);
 
     Ok(())
 }
@@ -191,6 +275,8 @@ async fn open_creates_missing_parent_directories() -> Result<(), Box<dyn StdErro
 async fn open_reports_io_error_when_parent_is_a_file() -> Result<(), Box<dyn StdError>> {
     let blocker_path = test_support::unique_temp_path("database_test_blocker");
 
+    let _blocker_guard = TempArtifactGuard::file(blocker_path.clone());
+
     fs::write(&blocker_path, b"")?;
 
     let result = Database::open(
@@ -201,8 +287,6 @@ async fn open_reports_io_error_when_parent_is_a_file() -> Result<(), Box<dyn Std
     .await;
 
     assert!(matches!(result, Err(Error::Io(_))));
-
-    let _ = fs::remove_file(blocker_path);
 
     Ok(())
 }
@@ -284,8 +368,8 @@ async fn open_rejects_non_utf8_path_without_creating_parents() -> Result<(), Box
 /// Panics if the scratch table, inserts, or value assertions fail.
 #[tokio::test]
 async fn query_materializes_typed_values_and_nulls() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     database
         .execute(
@@ -345,8 +429,6 @@ async fn query_materializes_typed_values_and_nulls() -> Result<(), Box<dyn StdEr
 
     assert!(rows.is_empty());
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -360,8 +442,8 @@ async fn query_materializes_typed_values_and_nulls() -> Result<(), Box<dyn StdEr
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn foreign_keys_are_enforced_on_pooled_connections() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let orphaned_insert = database
         .execute(
@@ -387,8 +469,6 @@ async fn foreign_keys_are_enforced_on_pooled_connections() -> Result<(), Box<dyn
         )
         .await?;
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -399,8 +479,8 @@ async fn foreign_keys_are_enforced_on_pooled_connections() -> Result<(), Box<dyn
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn unique_constraint_violation_yields_turso_error() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     insert_provider(&database, "duplicate_provider", "dup/").await?;
 
@@ -413,7 +493,200 @@ async fn unique_constraint_violation_yields_turso_error() -> Result<(), Box<dyn 
 
     assert!(matches!(duplicate_insert, Err(Error::Turso(_))));
 
-    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+/// Verifies that the `providers.type` closed domain admits exactly the three
+/// canonical provider type names and rejects every other value at the storage
+/// layer.
+///
+/// # Panics
+///
+/// Panics if database initialization or an assertion fails.
+///
+/// # Errors
+///
+/// Returns any error encountered while executing the inserts.
+#[tokio::test]
+async fn provider_type_check_rejects_unknown_values() -> Result<(), Box<dyn StdError>> {
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+
+    for provider_type in ["openai_oauth", "antigravity_oauth", "openai_compatible"] {
+        let name = format!("provider_{provider_type}");
+
+        database
+            .execute(
+                INSERT_PROVIDER,
+                params![name.as_str(), "", provider_type, TEST_CREDENTIALS],
+            )
+            .await?;
+    }
+
+    let rejected_insert = database
+        .execute(
+            INSERT_PROVIDER,
+            params!["provider_unknown", "", "unknown", TEST_CREDENTIALS],
+        )
+        .await;
+
+    assert!(matches!(rejected_insert, Err(Error::Turso(_))));
+
+    Ok(())
+}
+
+/// Verifies that the `oauth_states.type` closed domain admits exactly the two
+/// OAuth flow types and rejects the API-key-only provider type, which is a
+/// valid `providers.type` but never an OAuth flow type.
+///
+/// # Panics
+///
+/// Panics if database initialization or an assertion fails.
+///
+/// # Errors
+///
+/// Returns any error encountered while executing the inserts.
+#[tokio::test]
+async fn oauth_state_type_check_rejects_unknown_values() -> Result<(), Box<dyn StdError>> {
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+
+    for flow_type in ["openai_oauth", "antigravity_oauth"] {
+        let state = format!("state_{flow_type}");
+        let verifier = format!("verifier_{flow_type}");
+
+        database
+            .execute(
+                "INSERT INTO oauth_states (type, state, verifier, expires_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![flow_type, state.as_str(), verifier.as_str(), 0_i64],
+            )
+            .await?;
+    }
+
+    let rejected_insert = database
+        .execute(
+            "INSERT INTO oauth_states (type, state, verifier, expires_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["openai_compatible", "state_unknown", "", 0_i64],
+        )
+        .await;
+
+    assert!(matches!(rejected_insert, Err(Error::Turso(_))));
+
+    Ok(())
+}
+
+/// Verifies that the `providers.enabled` boolean closed domain admits exactly
+/// 0 and 1 and rejects every other integer.
+///
+/// # Panics
+///
+/// Panics if database initialization or an assertion fails.
+///
+/// # Errors
+///
+/// Returns any error encountered while executing the inserts.
+#[tokio::test]
+async fn provider_enabled_check_rejects_non_boolean_values() -> Result<(), Box<dyn StdError>> {
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+
+    for enabled_value in [0_i64, 1_i64] {
+        let name = format!("provider_enabled_{enabled_value}");
+
+        database
+            .execute(
+                "INSERT INTO providers (name, model_prefix, type, credentials, enabled) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    name.as_str(),
+                    "",
+                    "openai_compatible",
+                    TEST_CREDENTIALS,
+                    enabled_value
+                ],
+            )
+            .await?;
+    }
+
+    let rejected_insert = database
+        .execute(
+            "INSERT INTO providers (name, model_prefix, type, credentials, enabled) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                "provider_non_boolean",
+                "",
+                "openai_compatible",
+                TEST_CREDENTIALS,
+                2_i64
+            ],
+        )
+        .await;
+
+    assert!(matches!(rejected_insert, Err(Error::Turso(_))));
+
+    Ok(())
+}
+
+/// Verifies that the `models.enabled_override` boolean closed domain admits
+/// exactly `NULL`, 0, and 1 and rejects every other integer.
+///
+/// # Panics
+///
+/// Panics if database initialization or an assertion fails.
+///
+/// # Errors
+///
+/// Returns any error encountered while executing the inserts.
+#[tokio::test]
+async fn model_enabled_override_check_rejects_non_boolean() -> Result<(), Box<dyn StdError>> {
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+
+    insert_provider(&database, "override_provider", "override/").await?;
+
+    let provider_id = query_single_integer(
+        &database,
+        "SELECT id FROM providers WHERE name = 'override_provider'",
+    )
+    .await?;
+
+    for (case_index, enabled_override_value) in [Option::<i64>::None, Some(0_i64), Some(1_i64)]
+        .into_iter()
+        .enumerate()
+    {
+        let upstream_name = format!("gpt-5-admitted-{case_index}");
+        let name = format!("override/{upstream_name}");
+
+        database
+            .execute(
+                "INSERT INTO models (provider_id, upstream_name, name, enabled_override) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    provider_id,
+                    upstream_name.as_str(),
+                    name.as_str(),
+                    enabled_override_value
+                ],
+            )
+            .await?;
+    }
+
+    let rejected_insert = database
+        .execute(
+            "INSERT INTO models (provider_id, upstream_name, name, enabled_override) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                provider_id,
+                "gpt-5-rejected",
+                "override/gpt-5-rejected",
+                2_i64
+            ],
+        )
+        .await;
+
+    assert!(matches!(rejected_insert, Err(Error::Turso(_))));
 
     Ok(())
 }
@@ -425,8 +698,8 @@ async fn unique_constraint_violation_yields_turso_error() -> Result<(), Box<dyn 
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_commit_persists_changes() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let mut transaction = database.transaction().await?;
 
@@ -447,8 +720,6 @@ async fn transaction_commit_persists_changes() -> Result<(), Box<dyn StdError>> 
 
     assert_eq!(committed_rows, 1);
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -460,8 +731,8 @@ async fn transaction_commit_persists_changes() -> Result<(), Box<dyn StdError>> 
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_rollback_discards_changes() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let mut transaction = database.transaction().await?;
 
@@ -485,8 +756,6 @@ async fn transaction_rollback_discards_changes() -> Result<(), Box<dyn StdError>
     // The rolled-back connection is reusable through the pool.
     insert_provider(&database, "after_rollback_provider", "after/").await?;
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -497,8 +766,8 @@ async fn transaction_rollback_discards_changes() -> Result<(), Box<dyn StdError>
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_drop_discards_uncommitted_changes() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     {
         let mut transaction = database.transaction().await?;
@@ -521,8 +790,6 @@ async fn transaction_drop_discards_uncommitted_changes() -> Result<(), Box<dyn S
 
     assert_eq!(dropped_rows, 0);
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -536,13 +803,13 @@ async fn transaction_drop_discards_uncommitted_changes() -> Result<(), Box<dyn S
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_drop_releases_write_lock_immediately() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     // Park an idle connection so the pool cannot hand the dropped
     // transaction's connection back out during this test; a leaked write lock
     // would then stall the independent write below.
-    let idle_checkout = database.inner.pool.get().await?;
+    let idle_checkout = database.pool.get().await?;
 
     {
         let mut transaction = database.transaction().await?;
@@ -582,8 +849,6 @@ async fn transaction_drop_releases_write_lock_immediately() -> Result<(), Box<dy
 
     assert_eq!(names, ["unparked_provider"]);
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -596,8 +861,8 @@ async fn transaction_drop_releases_write_lock_immediately() -> Result<(), Box<dy
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_drop_allows_new_transactions() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     {
         let mut transaction = database.transaction().await?;
@@ -631,8 +896,6 @@ async fn transaction_drop_allows_new_transactions() -> Result<(), Box<dyn StdErr
 
     assert_eq!(recovered_rows, 1);
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -645,8 +908,8 @@ async fn transaction_drop_allows_new_transactions() -> Result<(), Box<dyn StdErr
 /// Panics if transaction execution or an assertion fails.
 #[tokio::test]
 async fn transaction_survives_failed_statement_and_rollback() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let mut transaction = database.transaction().await?;
 
@@ -682,8 +945,6 @@ async fn transaction_survives_failed_statement_and_rollback() -> Result<(), Box<
 
     insert_provider(&database, "healthy_provider", "healthy/").await?;
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -696,7 +957,8 @@ async fn transaction_survives_failed_statement_and_rollback() -> Result<(), Box<
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn exhausted_pool_times_out_then_recovers() -> Result<(), Box<dyn StdError>> {
-    let (database, path) = test_support::open_test_database(1, Duration::from_millis(50)).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(1, Duration::from_millis(50)).await?;
 
     let transaction = database.transaction().await?;
 
@@ -707,8 +969,6 @@ async fn exhausted_pool_times_out_then_recovers() -> Result<(), Box<dyn StdError
     transaction.commit().await?;
 
     database.query("SELECT 1", ()).await?;
-
-    let _ = fs::remove_file(path);
 
     Ok(())
 }
@@ -721,10 +981,10 @@ async fn exhausted_pool_times_out_then_recovers() -> Result<(), Box<dyn StdError
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn closed_pool_reports_pool_closed_for_every_entry_point() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
-    database.inner.pool.close();
+    database.pool.close();
 
     assert!(matches!(
         database.execute("SELECT 1", ()).await,
@@ -740,8 +1000,6 @@ async fn closed_pool_reports_pool_closed_for_every_entry_point() -> Result<(), B
         database.transaction().await,
         Err(Error::PoolClosed)
     ));
-
-    let _ = fs::remove_file(path);
 
     Ok(())
 }
@@ -759,9 +1017,9 @@ async fn closed_pool_reports_pool_closed_for_every_entry_point() -> Result<(), B
 /// Panics if database initialization or an assertion fails.
 #[tokio::test]
 async fn recycle_discards_connection_leaking_open_transaction() -> Result<(), Box<dyn StdError>> {
-    let (database, path) = test_support::open_test_database(1, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) = TempArtifactGuard::open_database(1, TEST_POOL_TIMEOUT).await?;
 
-    let leaked_checkout = database.inner.pool.get().await?;
+    let leaked_checkout = database.pool.get().await?;
 
     leaked_checkout.execute("BEGIN IMMEDIATE", ()).await?;
 
@@ -783,8 +1041,6 @@ async fn recycle_discards_connection_leaking_open_transaction() -> Result<(), Bo
     // The replacement connection keeps the pool operational.
     insert_provider(&database, "replacement_provider", "replacement/").await?;
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -797,8 +1053,8 @@ async fn recycle_discards_connection_leaking_open_transaction() -> Result<(), Bo
 /// Panics if a task fails or the final row count does not match the writers.
 #[tokio::test]
 async fn concurrent_mixed_workload_across_pooled_connections() -> Result<(), Box<dyn StdError>> {
-    let (database, path) =
-        test_support::open_test_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
 
     let mut join_handles = Vec::new();
 
@@ -868,8 +1124,6 @@ async fn concurrent_mixed_workload_across_pooled_connections() -> Result<(), Box
 
     assert_eq!(written_rows, 8);
 
-    let _ = fs::remove_file(path);
-
     Ok(())
 }
 
@@ -882,7 +1136,7 @@ async fn concurrent_mixed_workload_across_pooled_connections() -> Result<(), Box
 /// Panics if a task fails or its result set does not match.
 #[tokio::test]
 async fn concurrent_identical_queries_single_connection() -> Result<(), Box<dyn StdError>> {
-    let (database, path) = test_support::open_test_database(1, TEST_POOL_TIMEOUT).await?;
+    let (database, _path_guard) = TempArtifactGuard::open_database(1, TEST_POOL_TIMEOUT).await?;
 
     insert_provider(&database, "shared_provider_a", "shared/").await?;
 
@@ -915,8 +1169,6 @@ async fn concurrent_identical_queries_single_connection() -> Result<(), Box<dyn 
     for handle in join_handles {
         handle.await?.map_err(|err| err as Box<dyn StdError>)?;
     }
-
-    let _ = fs::remove_file(path);
 
     Ok(())
 }

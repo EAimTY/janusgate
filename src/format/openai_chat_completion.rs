@@ -874,6 +874,11 @@ pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
     is_started: bool,
 
+    /// Whether a finish reason was already emitted; a clean end-of-stream
+    /// without one degrades to [`IrFinishReason::Stop`] in the parser's
+    /// finish hook, matching the aggregated rendering default.
+    is_finished: bool,
+
     /// Tool calls being assembled from deltas.
     pending_tool_calls: Vec<PendingToolCall>,
 
@@ -923,6 +928,8 @@ impl UpstreamParser {
             .map(finish_reason_from_openai)
             .unwrap_or(IrFinishReason::Stop);
 
+        self.is_finished = true;
+
         events.push(IrEvent::Finish(finish_reason));
 
         if let Some(usage) = parse_usage(value.get("usage")) {
@@ -961,6 +968,9 @@ impl UpstreamParser {
 
             if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
                 events.append(&mut self.flush_pending_calls());
+
+                self.is_finished = true;
+
                 events.push(IrEvent::Finish(finish_reason_from_openai(finish_reason)));
             }
         }
@@ -1094,8 +1104,19 @@ impl UpstreamEventParser for UpstreamParser {
     fn finish(&mut self) -> Vec<IrEvent> {
         // An upstream may close its stream cleanly after streaming tool-call
         // deltas without ever sending a finish reason or the `[DONE]`
-        // sentinel; the buffered calls are complete and must be flushed.
-        self.flush_pending_calls()
+        // sentinel; the buffered calls are complete and must be flushed, and
+        // the missing finish reason degrades to `Stop` so the streamed
+        // client sees the same terminal finish reason as the aggregated
+        // rendering of the same stream.
+        let mut events = self.flush_pending_calls();
+
+        if !self.is_finished {
+            self.is_finished = true;
+
+            events.push(IrEvent::Finish(IrFinishReason::Stop));
+        }
+
+        events
     }
 }
 
@@ -1246,6 +1267,11 @@ pub(crate) struct SseRenderer {
     /// Whether the leading role chunk was emitted.
     is_role_sent: bool,
 
+    /// Tool call indexes opened by a delta chunk; a done for an index outside
+    /// this set carries the complete call of an upstream that never streamed
+    /// deltas, so it renders as one full tool_calls delta chunk.
+    opened_tool_call_indexes: Vec<usize>,
+
     /// Whether the trailing usage chunk is wanted.
     include_usage: bool,
 
@@ -1263,6 +1289,7 @@ impl SseRenderer {
             model,
             created: unix_time::unix_now(),
             is_role_sent: false,
+            opened_tool_call_indexes: Vec::new(),
             include_usage,
             usage: None,
         }
@@ -1302,6 +1329,10 @@ impl SseRenderer {
                 name,
                 arguments_delta,
             } => {
+                if !self.opened_tool_call_indexes.contains(index) {
+                    self.opened_tool_call_indexes.push(*index);
+                }
+
                 let mut function = serde_json::Map::new();
 
                 if let Some(name) = name {
@@ -1332,19 +1363,48 @@ impl SseRenderer {
 
             IrEvent::ToolCallDone {
                 index,
-                thought_signature: Some(signature),
-                ..
+                call_id,
+                name,
+                arguments,
+                thought_signature,
             } => {
-                vec![self.chunk_frame(
-                    serde_json::json!({"tool_calls": [{
-                        "index": index,
-                        "thought_signature": signature,
-                    }]}),
-                    None,
-                )]
-            }
+                let is_opened = self.opened_tool_call_indexes.contains(index);
 
-            IrEvent::ToolCallDone { .. } => Vec::new(),
+                if !is_opened {
+                    // The upstream never streamed a delta for this index
+                    // (README §6.3 recovery class), so the done payload
+                    // carries the complete call and renders as one full
+                    // tool_calls delta chunk, exactly the shape a delta
+                    // would have produced.
+                    let mut tool_call = serde_json::json!({
+                        "index": index,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": arguments},
+                    });
+
+                    if let Some(signature) = thought_signature {
+                        json_insert(
+                            &mut tool_call,
+                            "thought_signature",
+                            Value::String(signature.clone()),
+                        );
+                    }
+
+                    vec![self.chunk_frame(serde_json::json!({"tool_calls": [tool_call]}), None)]
+                } else if let Some(signature) = thought_signature {
+                    vec![self.chunk_frame(
+                        serde_json::json!({"tool_calls": [{
+                            "index": index,
+                            "thought_signature": signature,
+                        }]}),
+                        None,
+                    )]
+                } else {
+                    // The call was fully assembled by its deltas.
+                    Vec::new()
+                }
+            }
 
             IrEvent::Finish(reason) => {
                 vec![self.chunk_frame(
@@ -2042,6 +2102,102 @@ mod tests {
         // The flush is one-shot: a stream whose calls already completed
         // yields nothing further.
         assert!(parser.finish().is_empty());
+    }
+
+    /// Degrades a clean end-of-stream that carried no finish reason to a
+    /// single `Finish(Stop)`, matching the aggregated rendering of the same
+    /// stream, whose outward body defaults the finish reason to `stop`; the
+    /// streamed client then also sees a terminal `finish_reason` chunk.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn clean_eof_without_finish_reason_yields_finish_stop() {
+        let mut parser = UpstreamParser::new();
+
+        let mut events = ingest_all(
+            &mut parser,
+            &["data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"],
+        );
+
+        assert!(!events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+
+        events.append(&mut parser.finish());
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::Finish(_)))
+                .count(),
+            1
+        );
+
+        assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)));
+
+        let mut renderer = SseRenderer::new("public".to_string(), false);
+
+        let finish_reason_chunks: Vec<Value> = events
+            .iter()
+            .flat_map(|event| renderer.render(event))
+            .filter_map(|frame| {
+                serde_json::from_str::<Value>(frame.strip_prefix("data: ")?.trim_end()).ok()
+            })
+            .filter(|chunk| {
+                chunk
+                    .pointer("/choices/0/finish_reason")
+                    .is_some_and(Value::is_string)
+            })
+            .collect();
+
+        assert_eq!(finish_reason_chunks.len(), 1);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the fixture asserts exactly one finish chunk exists"
+        )]
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture asserts exactly one finish chunk exists"
+        )]
+        let finish_reason = finish_reason_chunks[0]
+            .pointer("/choices/0/finish_reason")
+            .expect("finish chunk carries a finish reason");
+
+        assert_eq!(finish_reason, "stop");
+    }
+
+    /// Never duplicates the finish reason: a clean end-of-stream after a
+    /// chunk that already carried `finish_reason` yields exactly one finish
+    /// event.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn clean_eof_after_finish_reason_does_not_duplicate_finish() {
+        let mut parser = UpstreamParser::new();
+
+        let mut events = ingest_all(
+            &mut parser,
+            &[
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                concat!(
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{},",
+                    "\"finish_reason\":\"stop\"}]}\n\n"
+                ),
+            ],
+        );
+
+        events.append(&mut parser.finish());
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::Finish(_)))
+                .count(),
+            1
+        );
     }
 
     /// Renders assistant content as a plain string.

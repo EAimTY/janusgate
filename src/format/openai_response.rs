@@ -1580,15 +1580,55 @@ impl SseRenderer {
                 arguments,
                 thought_signature,
             } => {
-                let Some(position) = self
+                let position = self
                     .calls
                     .iter()
-                    .position(|(open_index, _)| open_index == index)
-                else {
-                    return Vec::new();
-                };
+                    .position(|(open_index, _)| open_index == index);
 
-                let (_, mut open) = self.calls.swap_remove(position);
+                let (mut open, mut frames) = match position {
+                    Some(position) => (self.calls.swap_remove(position).1, Vec::new()),
+
+                    None => {
+                        // A third-party upstream may deliver
+                        // `output_item.done` for a call it never revealed
+                        // with `output_item.added` or argument deltas — the
+                        // recovery class of README §6.3. The done payload
+                        // carries the complete call, so the item is opened
+                        // here exactly as a live delta would have opened it;
+                        // dropping it would lose the call only on the
+                        // streaming path, while aggregation keeps it.
+                        let item_id = format!("fc_{}", new_uuid());
+                        let output_index = self.next_output_index;
+
+                        self.next_output_index += 1;
+
+                        let frames = vec![self.event_frame(
+                            "response.output_item.added",
+                            serde_json::json!({
+                                "output_index": output_index,
+                                "item": {
+                                    "id": item_id,
+                                    "type": "function_call",
+                                    "status": "in_progress",
+                                    "call_id": call_id,
+                                    "name": name,
+                                    "arguments": "",
+                                },
+                            }),
+                        )];
+
+                        (
+                            OpenOutputItem {
+                                output_index,
+                                item: serde_json::json!({
+                                    "id": item_id,
+                                    "type": "function_call",
+                                }),
+                            },
+                            frames,
+                        )
+                    }
+                };
 
                 json_insert(
                     &mut open.item,
@@ -1619,14 +1659,14 @@ impl SseRenderer {
                     .unwrap_or_default()
                     .to_string();
 
-                let mut frames = vec![self.event_frame(
+                frames.push(self.event_frame(
                     "response.function_call_arguments.done",
                     serde_json::json!({
                         "item_id": item_id,
                         "output_index": output_index,
                         "arguments": arguments,
                     }),
-                )];
+                ));
 
                 frames.push(self.event_frame(
                     "response.output_item.done",
@@ -1731,15 +1771,17 @@ impl SseRenderer {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
+        // Strict clients validate the embedded response object like any
+        // other, so it carries the full required shell rather than a bare
+        // id/status/error subset.
+        let mut shell = self.response_shell("failed", Value::Array(Vec::new()));
+
+        json_insert(&mut shell, "error", error_payload);
+
         self.event_frame(
             "response.failed",
             serde_json::json!({
-                "response": {
-                    "id": self.id,
-                    "object": "response",
-                    "status": "failed",
-                    "error": error_payload,
-                }
+                "response": shell,
             }),
         )
     }
@@ -1857,6 +1899,16 @@ impl SseRenderer {
             "status": status,
             "model": self.model,
             "output": output,
+            // `parallel_tool_calls`, `tool_choice`, and `tools` are required
+            // fields of the official Response shape (openai-python `Response`
+            // types them without defaults), so the shell always carries the
+            // statics describing the gateway itself: it advertises no
+            // parallel tool-call control, tool calls happen whenever the
+            // model decides (`auto`), and no tool definitions are echoed
+            // back to the client.
+            "parallel_tool_calls": false,
+            "tool_choice": "auto",
+            "tools": [],
         })
     }
 
@@ -1950,6 +2002,12 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
         },
         "model": model,
         "output": output,
+        // Same required-field statics as the streaming shells: the gateway
+        // advertises no parallel tool-call control, the model decides when
+        // to call tools, and no tool definitions are echoed back.
+        "parallel_tool_calls": false,
+        "tool_choice": "auto",
+        "tools": [],
         "usage": {
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
@@ -1972,6 +2030,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 mod tests {
     use super::{SseRenderer, UpstreamParser, parse_request, render_json_response};
     use crate::{
+        error::ApiError,
         format::openai_chat_completion::SseRenderer as ChatSseRenderer,
         ir::{Aggregator, IrEvent, IrFinishReason, IrPart, IrUsage},
         sse::SseParser,
@@ -2478,6 +2537,192 @@ mod tests {
                 input_tokens: 1,
                 output_tokens: 2,
             })
+        );
+    }
+
+    /// Renders a tool call delivered only by `output_item.done` — no
+    /// `output_item.added` or argument deltas preceded it — into both client
+    /// streams, matching the aggregated result, which already keeps
+    /// standalone done events (README §6.3 recovers this upstream class).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_done_only_tool_call_reaches_both_client_streams() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",",
+                    "\"name\":\"f\",\"arguments\":\"{}\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.completed\",",
+                    "\"response\":{\"status\":\"completed\"}}\n\n"
+                ),
+            ),
+        );
+
+        assert!(events.contains(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "f".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        }));
+
+        // The upstream opened no item and streamed no deltas, so the parser
+        // emitted a standalone done.
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, IrEvent::ToolCallDelta { .. }))
+        );
+
+        // Outward Responses: the call is opened and completed as an output
+        // item and lands in the terminal response's output array.
+        let rendered = render_client(events.clone());
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture asserts a rendered output_item.done event"
+        )]
+        let item_done = rendered
+            .iter()
+            .find(|(name, _)| name.as_deref() == Some("response.output_item.done"))
+            .map(|(_, payload)| payload.clone())
+            .expect("output_item.done event");
+
+        let item = item_done.get("item").cloned().unwrap_or_default();
+
+        assert_eq!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call")
+        );
+        assert_eq!(
+            item.get("status").and_then(Value::as_str),
+            Some("completed")
+        );
+        assert_eq!(item.get("call_id").and_then(Value::as_str), Some("call_1"));
+        assert_eq!(item.get("name").and_then(Value::as_str), Some("f"));
+        assert_eq!(item.get("arguments").and_then(Value::as_str), Some("{}"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the asserted sequence above renders a completed event"
+        )]
+        let completed = rendered
+            .iter()
+            .find(|(name, _)| name.as_deref() == Some("response.completed"))
+            .map(|(_, payload)| payload.clone())
+            .expect("completed event");
+
+        let completed_item = completed
+            .pointer("/response/output/0")
+            .cloned()
+            .unwrap_or_default();
+
+        assert_eq!(
+            completed_item.get("type").and_then(Value::as_str),
+            Some("function_call")
+        );
+
+        assert_eq!(
+            completed_item.get("call_id").and_then(Value::as_str),
+            Some("call_1")
+        );
+
+        assert_eq!(
+            completed_item.get("arguments").and_then(Value::as_str),
+            Some("{}")
+        );
+
+        // Outward Chat Completions: the never-opened done streams as one
+        // full tool_calls delta chunk.
+        let mut chat_renderer = ChatSseRenderer::new("public".to_string(), false);
+
+        let mut chat_tool_calls: Vec<Value> = Vec::new();
+
+        for event in &events {
+            for frame in chat_renderer.render(event) {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the renderer emits `data: ` prefixed JSON frames"
+                )]
+                let payload: Value = serde_json::from_str(
+                    frame
+                        .strip_prefix("data: ")
+                        .expect("data frame prefix")
+                        .trim_end(),
+                )
+                .expect("payload is JSON");
+
+                if let Some(tool_calls) = payload
+                    .pointer("/choices/0/delta/tool_calls")
+                    .and_then(Value::as_array)
+                {
+                    chat_tool_calls.extend(tool_calls.iter().cloned());
+                }
+            }
+        }
+
+        assert_eq!(chat_tool_calls.len(), 1);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture asserts exactly one streamed tool call exists"
+        )]
+        let chat_tool_call = chat_tool_calls.first().expect("one streamed tool call");
+
+        assert_eq!(chat_tool_call.get("index").and_then(Value::as_u64), Some(0));
+        assert_eq!(
+            chat_tool_call.get("id").and_then(Value::as_str),
+            Some("call_1")
+        );
+        assert_eq!(
+            chat_tool_call.get("type").and_then(Value::as_str),
+            Some("function")
+        );
+        assert_eq!(
+            chat_tool_call
+                .pointer("/function/name")
+                .and_then(Value::as_str),
+            Some("f")
+        );
+        assert_eq!(
+            chat_tool_call
+                .pointer("/function/arguments")
+                .and_then(Value::as_str),
+            Some("{}")
+        );
+
+        // Aggregated: the standalone done is kept, so both streams must
+        // deliver the same call.
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(aggregation.tool_calls.len(), 1);
+
+        assert_eq!(
+            aggregation.tool_calls.first().map(|call| (
+                call.call_id.as_str(),
+                call.name.as_str(),
+                call.arguments.as_str()
+            )),
+            Some(("call_1", "f", "{}"))
         );
     }
 
@@ -3048,5 +3293,114 @@ mod tests {
         let output_logprobs = &body["output"][0]["content"][0]["logprobs"];
 
         assert_eq!(output_logprobs, &Value::Array(Vec::new()));
+    }
+
+    /// Asserts that a Response object carries the fields the official
+    /// openai-python `Response` type requires without defaults: the tool
+    /// statics describing what the gateway supports.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    fn assert_required_response_fields(response: &Value) {
+        assert_eq!(
+            response.get("parallel_tool_calls"),
+            Some(&Value::Bool(false))
+        );
+
+        assert_eq!(
+            response.get("tool_choice"),
+            Some(&Value::String("auto".to_string()))
+        );
+
+        assert_eq!(response.get("tools"), Some(&Value::Array(Vec::new())));
+    }
+
+    /// Carries `parallel_tool_calls`, `tool_choice`, and `tools` — required
+    /// fields of the official Response shape — on every rendered response
+    /// object: the streaming shells, the terminal body, the aggregated
+    /// non-streaming body, and the `response.failed` frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn response_objects_carry_required_fields() {
+        let events = vec![
+            IrEvent::MessageStart {
+                id: "up".to_string(),
+                model: "m".to_string(),
+            },
+            IrEvent::TextDelta("hello".to_string()),
+            IrEvent::Finish(IrFinishReason::Stop),
+        ];
+
+        let rendered = render_client(events);
+
+        for event_name in [
+            "response.created",
+            "response.in_progress",
+            "response.completed",
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the asserted sequence above renders each shell event"
+            )]
+            let shell = rendered
+                .iter()
+                .find(|(name, _)| name.as_deref() == Some(event_name))
+                .and_then(|(_, payload)| payload.get("response"))
+                .expect("shell event must carry the response object");
+
+            assert_required_response_fields(shell);
+        }
+
+        let body = render_json_response("public", &Aggregator::default().finish());
+
+        assert_required_response_fields(&body);
+
+        let mut renderer = SseRenderer::new("public".to_string());
+
+        let frame = renderer.error_frame(&ApiError::internal("boom"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the error frame is a well-formed `response.failed` SSE frame"
+        )]
+        let payload: Value = serde_json::from_str(
+            frame
+                .strip_prefix("event: response.failed\ndata: ")
+                .expect("failed frame prefix")
+                .trim_end(),
+        )
+        .expect("payload is JSON");
+
+        let failed_response = payload.get("response").cloned().unwrap_or_default();
+
+        assert_eq!(
+            failed_response.get("status").and_then(Value::as_str),
+            Some("failed")
+        );
+
+        assert_eq!(
+            failed_response.get("model").and_then(Value::as_str),
+            Some("public")
+        );
+
+        assert!(failed_response.get("created_at").is_some_and(Value::is_i64));
+
+        assert_eq!(
+            failed_response.get("output"),
+            Some(&Value::Array(Vec::new()))
+        );
+
+        assert_eq!(
+            failed_response
+                .pointer("/error/message")
+                .and_then(Value::as_str),
+            Some("boom")
+        );
+
+        assert_required_response_fields(&failed_response);
     }
 }

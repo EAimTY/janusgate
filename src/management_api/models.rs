@@ -1,9 +1,9 @@
 //! Management endpoints discovering, listing, and overriding models.
 
-use super::{error_response, json_response, parse_body};
+use super::{error_response, parse_body};
 use crate::{
     database::Database,
-    error::ApiError,
+    error::{self, ApiError},
     provider::{
         discovery, oauth,
         storage::{self, ModelEntry},
@@ -50,7 +50,9 @@ pub(crate) async fn discover(State(database): State<Database>, body: Bytes) -> R
     let outcome = handle_discover(&database, &body).await;
 
     match outcome {
-        Ok(discovered) => json_response(200, serde_json::json!({ "discovered": discovered })),
+        Ok(discovered) => {
+            error::json_response(200, serde_json::json!({ "discovered": discovered }))
+        }
         Err(error) => error_response(error),
     }
 }
@@ -70,7 +72,7 @@ pub(crate) async fn list(State(database): State<Database>) -> Response {
     .await;
 
     match outcome {
-        Ok(rendered) => json_response(200, rendered),
+        Ok(rendered) => error::json_response(200, rendered),
         Err(error) => error_response(error),
     }
 }
@@ -80,7 +82,7 @@ pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Respo
     let outcome = handle_save(&database, &body).await;
 
     match outcome {
-        Ok(rendered) => json_response(200, serde_json::json!({ "model": rendered })),
+        Ok(rendered) => error::json_response(200, serde_json::json!({ "model": rendered })),
         Err(error) => error_response(error),
     }
 }
@@ -219,51 +221,9 @@ fn thinking_levels_json(stored: &Option<String>) -> Result<Value, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::params;
+    use crate::{database::params, test_support};
     use axum::http::StatusCode;
-    use std::{
-        env,
-        error::Error as StdError,
-        fs,
-        num::NonZero,
-        path::PathBuf,
-        process,
-        sync::atomic::{AtomicU64, Ordering},
-        time::Duration,
-    };
-
-    /// Monotonic counter making every test database path unique within the
-    /// process.
-    static PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    /// Opens an isolated test database at a unique temporary path, returning
-    /// the database and its file path for cleanup.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn open_test_database() -> (Database, PathBuf) {
-        let unique_id = PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let path: PathBuf = env::temp_dir().join(format!(
-            "janusgate_models_test_{}_{unique_id}.db",
-            process::id()
-        ));
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the test pool size is a non-zero constant"
-        )]
-        let database = Database::open(
-            &path,
-            NonZero::new(2).expect("pool size is non-zero"),
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("failed to open isolated test database");
-
-        (database, path)
-    }
+    use std::{error::Error as StdError, fs, time::Duration};
 
     /// Inserts one `openai_compatible` provider row with one model row whose
     /// stored thinking-level override is given, returning nothing.
@@ -313,7 +273,7 @@ mod tests {
     /// Returns any error encountered while driving the database.
     #[tokio::test]
     async fn list_surfaces_corrupt_stored_override_as_internal() -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
 
         insert_compatible_model(&database, Some("[\"turbo\"]")).await?;
 
@@ -339,7 +299,7 @@ mod tests {
     #[tokio::test]
     async fn save_model_rejects_unknown_thinking_level_with_parameter()
     -> Result<(), Box<dyn StdError>> {
-        let (database, path) = open_test_database().await;
+        let (database, path) = test_support::open_test_database(2, Duration::from_secs(5)).await?;
 
         insert_compatible_model(&database, None).await?;
 

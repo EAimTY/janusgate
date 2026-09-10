@@ -1,6 +1,11 @@
 //! Error type shared by the management and outward API surfaces.
 
 use crate::database::Error as DatabaseError;
+use axum::{
+    body::Body,
+    http::{StatusCode, header},
+    response::Response,
+};
 use turso::Error as TursoError;
 
 /// Status code distinguishing an upstream failure that produced an HTTP
@@ -244,6 +249,26 @@ impl From<DatabaseError> for ApiError {
             _ => Self::internal(format!("database error: {error}")),
         }
     }
+}
+
+/// Builds a JSON response with the given status code.
+///
+/// Shared by every router that renders [`ApiError`] bodies (the management
+/// API, the outward API, and the format sub-routers), so the status fallback
+/// and static response parts have exactly one definition.
+///
+/// # Panics
+///
+/// Panics if the static response parts fail to build, which cannot occur.
+pub(crate) fn json_response(status: u16, body: serde_json::Value) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+    #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("static response parts are always valid")
 }
 
 /// Flattens a serialization error into an invalid request error message.

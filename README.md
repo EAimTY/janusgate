@@ -36,7 +36,7 @@
 | Layer | Component | Notes |
 | :--- | :--- | :--- |
 | **Language** | Rust (2024 edition) | Strict types, memory safety, zero-cost abstractions |
-| **HTTP Server** | `hserver` | Low-level Hyper-based HTTP server driving accept loop and connection lifecycle (plaintext HTTP, no TLS for now) |
+| **HTTP Server** | `hserver` + `socket2` | The gateway's `server` module owns the TCP listener (`socket2`) and the accept loop; `hserver` drives the per-connection Hyper HTTP/1 lifecycle (plaintext HTTP, no TLS for now) |
 | **Routing & Handlers** | `axum` (Router & utils) | Hierarchical routing (implements `tower::Service`), request extractors, and response helpers; `axum::serve` is strictly unused |
 | **Middleware** | `tower` | Service abstraction, middleware composition, and layer stacking |
 | **Database** | `turso` | In-process SQLite-compatible SQL database (`tursodatabase/turso`) |
@@ -51,7 +51,7 @@
                │
                ▼
       ┌─────────────────┐
-      │     hserver     │  (Accept loop & HTTP connection lifecycle; no TLS; axum::serve unused)
+      │server.rs+hserver│  (server.rs: TCP listener & accept loop; hserver: HTTP/1 lifecycle; no TLS)
       └────────┬────────┘
                │ (invokes Router as tower::Service)
                ▼
@@ -75,10 +75,10 @@
 ```
 
 The server architecture separates low-level connection driving from hierarchical routing:
-1. **Server Lifecycle (`hserver`)**:
-   - `hserver` directly manages the TCP listener, socket accept loop, and low-level Hyper connection lifecycle over plaintext HTTP (TLS is omitted for now).
-   - Receives the `Database` instance initialized at startup and supplies it to the root router as router state.
-   - `axum::serve` is **strictly unused**. Instead, `hserver` delegates incoming HTTP requests directly to Axum's root `Router` as an implementation of `tower::Service`.
+1. **Server Lifecycle (`server` module + `hserver`)**:
+   - The gateway's own `server` module owns the TCP listener (`socket2`: dual-stack IPv4/IPv6, non-blocking, explicit listen backlog) and the accept loop, which retries failed accepts with exponential backoff and spawns one task per accepted connection; `hserver` only drives the low-level Hyper HTTP/1 connection lifecycle over plaintext HTTP (TLS is omitted for now).
+   - The `server` module receives the `Database` instance initialized at startup and supplies it to the root router as router state.
+   - `axum::serve` is **strictly unused**. Instead, every accepted HTTP/1 connection is delegated directly to Axum's root `Router` as an implementation of `tower::Service`.
 2. **Hierarchical Routers (`axum::Router`)**:
    - **Root Router**:
      - Holds the `Database` value directly as its router state (there is no `AppState` wrapper type) and propagates it to sub-routers.
@@ -101,6 +101,8 @@ The server architecture separates low-level connection driving from hierarchical
 4. **Method Mismatch on Routed Paths**:
    - A request whose method is not registered on an otherwise-matching routed path (e.g. `GET /api/openai-v1/chat/completions`) never reaches the 404 fallbacks: axum's method routing answers HTTP 405 with an empty body and an `Allow` header listing the registered methods.
    - This 405 is distinct from the JSON 404 fallbacks above, which serve only unmapped paths; the router-level authentication middleware still applies, so an unauthorized request is rejected with 401 before the 405 is produced.
+
+**Fail-fast panics are contractual**: the process installs a panic hook before any other startup operation that prints the panic diagnostic to stderr and terminates the process with exit code 1, so a panic in any spawned task — accepted-connection or request-pipeline — kills the whole gateway by design instead of leaving a partially operational server behind.
 
 ---
 
@@ -164,6 +166,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
    - Upstream credentials and tokens are stored directly in plaintext JSON within the database. No encryption or decryption is performed.
 3. **Network Invariants**:
    - Inbound endpoints do not use sessions, cookies, or CORS headers.
+   - Accepted inbound TCP connections enable `TCP_NODELAY` (best-effort: a failure is logged and the connection is still served), so small streaming frames — SSE events in particular — are written immediately instead of stalling against Nagle's algorithm and the peer's delayed ACK.
    - Inbound HTTP/1 connections that do not finish sending request headers within 30 seconds are closed.
    - Inbound connections presenting the HTTP/2 connection preface are closed: only plaintext HTTP/1 is spoken.
    - Outbound requests to upstream providers connect directly without proxying.
@@ -302,6 +305,7 @@ Every upstream response — SSE stream or JSON document — is parsed into an IR
 - Streaming clients receive live translated SSE chunks (`data: {json}\n\n`). Chat Completions streams end with a `data: [DONE]` sentinel; Responses streams end after the terminal `response.completed` or `response.incomplete` event. Every Responses SSE payload embeds its event name as a `"type"` field and a monotonically increasing `sequence_number`, so strict clients that discriminate on the JSON payload work without reading the `event:` line.
 - Streaming Chat Completions deliver usage in a single terminal usage chunk immediately before `data: [DONE]`; when an upstream reports usage repeatedly, the last observation wins and renders once. Delta chunks carry no `usage` field at all — usage appears only in the final chunk.
 - Responses `response.output_text.delta` and `response.output_text.done` events and `output_text` content parts always carry `logprobs: []` — empty when no logprobs are produced — because the official openai-python client requires the field.
+- Every Responses response object the gateway emits — the `response` field embedded in streaming events, the terminal `response.failed` frame, and the aggregated non-streaming body — carries `parallel_tool_calls: false`, `tool_choice: "auto"`, and `tools: []`: the official Response shape types these fields without defaults, and the statics truthfully describe the gateway (no parallel tool-call control, the model decides when to call tools, no tool definitions are echoed back).
 - `Finish(Length)` and `Finish(ContentFilter)` render as `response.incomplete` carrying `incomplete_details.reason` (`max_output_tokens` / `content_filter`), both in the streaming terminal event and in the aggregated non-streaming response's `status`/`incomplete_details`; all other finishes render `response.completed` / `status: "completed"`.
 - Malformed upstream SSE/JSON payloads abort the stream; clients that are already streaming receive a terminal `data: {"error": {...}}` frame (Chat Completions) or a `response.failed` event (Responses) with the translated error. This applies to malformed trailing frames flushed at end-of-stream as well: they abort the stream with an error frame instead of terminating cleanly.
 - The Responses upstream parser recovers message and reasoning text exactly once: streamed and terminal items are fallback sources consulted only when no live delta delivered that kind of text, so an `openai_compatible` upstream that streams complete `output_item.done` items or only a terminal `response.completed`/`response.incomplete` event without text deltas still delivers its `output`-array text to the client exactly once.
@@ -378,7 +382,7 @@ Responses are JSON. Success responses use HTTP 200; errors use the structure fro
 - **`POST /complete-provider-oauth`** — request `{"state", "code", "name", "model_prefix"?}`.
   - Looks up the unexpired state (404 otherwise — the state is unknown, expired, or already consumed), exchanges `code` at the provider's token endpoint, and for `antigravity_oauth` resolves the project ID (§5.2).
   - `model_prefix` only names a provider being created: supplying it for an existing provider is rejected with 400 naming the field, before the state is consumed.
-  - Existing provider with matching type: credentials and `expires_at` are replaced. Existing provider with differing type: 409 — the mismatch is computed from the still-unconsumed state and fires before the state is consumed, so the pending flow survives for a matching completion (as with the `model_prefix` rejection above). New provider: created with the supplied `name` and `model_prefix` (default `""`), enabled.
+  - Existing provider with matching type: credentials and `expires_at` are replaced; a provider deleted between the completion's lookup and the credentials write (a concurrent `delete-provider`) fails the completion with 404 — mirroring the refresh path's vanished-provider classification — instead of a silent no-op write and a storage-drift 500. Existing provider with differing type: 409 — the mismatch is computed from the still-unconsumed state and fires before the state is consumed, so the pending flow survives for a matching completion (as with the `model_prefix` rejection above). New provider: created with the supplied `name` and `model_prefix` (default `""`), enabled.
   - The state row is consumed in both cases. Response: `{"provider": <provider>}`.
 - **`POST /discover-models`** — request `{"provider": <name>}`; refreshes the model list from upstream (§5.1/§5.2/§5.3). An upstream that reports no models — a fresh pre-onboarded account or an outage answering 200 with an empty payload — fails the refresh with 502 `upstream_error` instead of writing an empty replacement, so curated rows are never wiped by a silent empty discovery. The replace applies in one transaction that re-reads the provider row, so public names are composed from the provider's current prefix even when a concurrent `save-provider` changed it after the call's outer read; overrides carry over to the re-discovered rows inside the same snapshot. Existing model rows for the provider are replaced, keyed by `upstream_name`: `name_override`, `enabled_override`, and `thinking_levels_override` carry over to re-discovered models and vanish with undiscovered ones; `name` is recomputed as `model_prefix + (name_override ?? upstream_name)`. The composed public names undergo the same collision checks as `save-provider` — two discovered rows converging on one name, or a name already routed by another model row, reject the whole refresh with a name-specific 409 and write nothing. OAuth providers refresh their access token first (§3). Response: `{"discovered": <count>}`.
 - **`GET /list-models`** → `{"models": [<model>]}` where a model object is `{"provider", "upstream_name", "name", "name_override", "enabled", "enabled_override", "thinking_levels_override"}`; `enabled` is the effective status; `null` denotes absent overrides. A corrupt stored `thinking_levels_override` is database drift and renders as 500 `internal` instead of being masked as an absent override.

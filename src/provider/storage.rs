@@ -128,7 +128,12 @@ pub(crate) async fn delete_provider(database: &Database, name: &str) -> Result<b
 }
 
 /// Replaces provider credentials, resets the token expiry, and clears any
-/// refresh lease.
+/// refresh lease, returning whether a provider row was still there to update.
+///
+/// Reporting `false` lets a caller whose outer read observed the row — the
+/// OAuth completion — fail with the refresh path's 404 classification when a
+/// concurrent `delete-provider` won the race, instead of a silent no-op
+/// followed by a storage-drift 500 from the reload.
 ///
 /// # Errors
 ///
@@ -138,8 +143,8 @@ pub(crate) async fn update_credentials(
     provider_id: i64,
     credentials: &Credentials,
     expires_at: Option<i64>,
-) -> Result<(), ApiError> {
-    database
+) -> Result<bool, ApiError> {
+    let changes = database
         .execute(
             "UPDATE providers SET credentials = ?1, expires_at = ?2, refresh_started_at = NULL \
              WHERE id = ?3",
@@ -147,7 +152,7 @@ pub(crate) async fn update_credentials(
         )
         .await?;
 
-    Ok(())
+    Ok(changes == 1)
 }
 
 /// The raw `save-provider` field changes for an existing provider. Every
@@ -2151,6 +2156,55 @@ mod tests {
         assert_eq!(
             read_provider_credentials(&database, provider_id).await?,
             r#"{"apiKey":"admin-key"}"#
+        );
+
+        let _ = fs::remove_file(path);
+
+        Ok(())
+    }
+
+    /// Verifies the OAuth-completion credentials write reports whether it
+    /// wrote: a provider deleted between the caller's outer read and the
+    /// update is reported as unwritten — rendered as the refresh path's 404
+    /// by the completion handler — instead of silently writing nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn credential_update_reports_vanished_provider() -> Result<(), Box<dyn StdError>> {
+        let (database, path) =
+            test_support::open_test_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT).await?;
+        let now = crate::unix_time::unix_now();
+
+        let provider_id =
+            insert_lease_provider(&database, "deleted", Some(now - 100), None).await?;
+
+        // The completion's outer read observes the row before a concurrent
+        // delete-provider removes it.
+        let existing = find_provider(&database, "deleted")
+            .await?
+            .ok_or("missing provider row")?;
+
+        assert_eq!(existing.id, provider_id);
+
+        delete_provider(&database, "deleted").await?;
+
+        let is_updated = update_credentials(
+            &database,
+            existing.id,
+            &Credentials::ApiKey("exchanged-key".to_string()),
+            Some(now + 3_600),
+        )
+        .await?;
+
+        assert!(
+            !is_updated,
+            "a vanished provider must be reported as unwritten"
         );
 
         let _ = fs::remove_file(path);

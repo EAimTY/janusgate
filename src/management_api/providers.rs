@@ -1,9 +1,9 @@
 //! Management endpoints listing, saving, and deleting providers.
 
-use super::{error_response, json_response, parse_body, provider_json};
+use super::{error_response, parse_body, provider_json};
 use crate::{
     database::Database,
-    error::ApiError,
+    error::{self, ApiError},
     format::UpstreamFormat,
     provider::{self, Credentials, NewProvider, ProviderType, storage},
 };
@@ -57,7 +57,7 @@ pub(crate) async fn list(State(database): State<Database>) -> Response {
         Ok(providers) => {
             let rendered = providers.iter().map(provider_json).collect::<Vec<_>>();
 
-            json_response(200, serde_json::json!({ "providers": rendered }))
+            error::json_response(200, serde_json::json!({ "providers": rendered }))
         }
 
         Err(error) => error_response(error),
@@ -69,7 +69,7 @@ pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Respo
     let outcome = handle_save(&database, &body).await;
 
     match outcome {
-        Ok(rendered) => json_response(200, serde_json::json!({ "provider": rendered })),
+        Ok(rendered) => error::json_response(200, serde_json::json!({ "provider": rendered })),
         Err(error) => error_response(error),
     }
 }
@@ -91,7 +91,7 @@ pub(crate) async fn delete(State(database): State<Database>, body: Bytes) -> Res
     .await;
 
     match outcome {
-        Ok(()) => json_response(200, serde_json::json!({"deleted": true})),
+        Ok(()) => error::json_response(200, serde_json::json!({"deleted": true})),
         Err(error) => error_response(error),
     }
 }

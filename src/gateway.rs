@@ -318,7 +318,11 @@ async fn pump_sse(
         }
     }
 
-    if let Ok(frames) = sse_parser.finish() {
+    // Trailing frames buffered in the SSE parser are flushed through the
+    // parser only on a clean end of stream: replaying them after an abort
+    // would emit events after the stream's error and break the
+    // error-then-`Done` contract of the event stream.
+    if !is_aborted && let Ok(frames) = sse_parser.finish() {
         for frame in frames {
             match parser.ingest_frame(&frame) {
                 Ok(events) => {
@@ -646,6 +650,71 @@ mod tests {
         assert!(
             matches!(events.as_slice(), [Err(_), Ok(IrEvent::Done)]),
             "an aborted stream must surface the error before Done, got: {events:?}"
+        );
+    }
+
+    /// Upstream parser that errors on the first frame it ingests and accepts
+    /// every later frame by emitting a text delta, standing in for an
+    /// upstream whose trailing frame is still buffered in the SSE parser when
+    /// the stream aborts.
+    struct AbortsFirstFrameParser {
+        is_first_frame: bool,
+    }
+
+    impl UpstreamEventParser for AbortsFirstFrameParser {
+        fn ingest_frame(&mut self, _frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
+            if self.is_first_frame {
+                self.is_first_frame = false;
+
+                return Err(ApiError::upstream_unavailable("malformed frame"));
+            }
+
+            Ok(vec![IrEvent::TextDelta("replayed".to_string())])
+        }
+
+        fn parse_json_response(
+            &mut self,
+            _value: serde_json::Value,
+        ) -> Result<Vec<IrEvent>, ApiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Verifies that a stream aborted by a frame-parse error never replays a
+    /// trailing frame still buffered in the SSE parser: after the abort
+    /// error, the event stream must carry exactly one terminal `Done`, with
+    /// neither a replayed delta nor a second error from the flushed frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[tokio::test]
+    async fn skips_buffered_trailing_frames_on_aborted_streams() {
+        // The first frame aborts the main pump loop; `data: tail` stays
+        // buffered in the SSE parser because it lacks a terminating blank
+        // line and would only surface through the end-of-stream flush.
+        let body = b"data: ok\n\ndata: tail";
+
+        let events = pump_fixture(
+            body,
+            Box::new(AbortsFirstFrameParser {
+                is_first_frame: true,
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(events.as_slice(), [Err(_), Ok(IrEvent::Done)]),
+            "an aborted stream must end with the error and Done alone, got: {events:?}"
+        );
+
+        // An always-rejecting parser proves the buffered frame is not even
+        // dispatched after the abort, so no second error can be emitted.
+        let events = pump_fixture(body, Box::new(RejectingParser)).await;
+
+        assert!(
+            matches!(events.as_slice(), [Err(_), Ok(IrEvent::Done)]),
+            "an aborted stream must surface exactly one error before Done, got: {events:?}"
         );
     }
 

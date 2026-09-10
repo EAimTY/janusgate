@@ -8,7 +8,7 @@ use deadpool::{
         RecycleResult,
     },
 };
-use std::{fs, io::Error as IoError, num::NonZero, path::Path, sync::Arc, time::Duration};
+use std::{fs, io::Error as IoError, num::NonZero, path::Path, time::Duration};
 use turso::{Builder as TursoBuilder, Connection, Database as TursoDatabase, Error as TursoError};
 
 #[cfg(test)]
@@ -16,7 +16,7 @@ mod tests;
 
 // The re-exported items double as the module's own imports: `Row` and
 // `IntoParams` appear in this module's signatures.
-pub use turso::{IntoParams, Row, Value, params, params_from_iter};
+pub(crate) use turso::{IntoParams, Row, Value, params, params_from_iter};
 
 /// Non-zero 32-bit big-endian schema fingerprint computed at compile time.
 const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(concat!(
@@ -37,7 +37,7 @@ const CONNECTION_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Database operation, connection pool, and storage engine errors.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub(crate) enum Error {
     /// Database path is not valid UTF-8.
     #[error("database path is not valid UTF-8: {0}")]
     InvalidPath(String),
@@ -61,9 +61,9 @@ pub enum Error {
 
 /// In-process SQLite-compatible database client managing a pool of connections.
 #[derive(Clone, Debug)]
-pub struct Database {
-    /// Internal shared state holding the connection pool.
-    inner: Arc<Inner>,
+pub(crate) struct Database {
+    /// Connection pool managing reusable Turso connections.
+    pool: Pool<Manager>,
 }
 
 /// Database transaction handle holding exclusive ownership of a pooled
@@ -75,7 +75,7 @@ pub struct Database {
 /// is still open, and returning it to the pool would park the database write
 /// lock until the connection's next checkout.
 #[derive(Debug)]
-pub struct Transaction {
+pub(crate) struct Transaction {
     /// Pooled connection hosting the open transaction.
     ///
     /// This is an `Option` only so `Drop` can dismantle the checkout with
@@ -84,13 +84,6 @@ pub struct Transaction {
 
     /// Whether the transaction has been finished by commit or rollback.
     is_completed: bool,
-}
-
-/// Internal database state containing the connection pool.
-#[derive(Debug)]
-struct Inner {
-    /// Connection pool managing reusable Turso connections.
-    pool: Pool<Manager>,
 }
 
 /// Deadpool connection manager for Turso database connections.
@@ -122,7 +115,7 @@ impl Database {
     /// Panics if database verification connection fails, schema application
     /// fails, or the schema fingerprint does not match
     /// [`DATABASE_SCHEMA_FINGERPRINT`].
-    pub async fn open(
+    pub(crate) async fn open(
         path: impl AsRef<Path>,
         max_connections: NonZero<usize>,
         pool_timeout: Duration,
@@ -162,9 +155,7 @@ impl Database {
             }
         };
 
-        Ok(Self {
-            inner: Arc::new(Inner { pool }),
-        })
+        Ok(Self { pool })
     }
 
     /// Executes a SQL statement with parameters using a pooled connection and
@@ -177,12 +168,12 @@ impl Database {
     ///
     /// Returns [`Error`] if acquiring a connection, preparing the statement, or
     /// execution fails.
-    pub async fn execute(
+    pub(crate) async fn execute(
         &self,
         sql: impl AsRef<str>,
         params: impl IntoParams,
     ) -> Result<u64, Error> {
-        let connection = self.inner.pool.get().await?;
+        let connection = self.pool.get().await?;
 
         execute(&connection, sql, params).await
     }
@@ -198,12 +189,12 @@ impl Database {
     ///
     /// Returns [`Error`] if acquiring a connection, preparing the statement, or
     /// executing the query fails.
-    pub async fn query(
+    pub(crate) async fn query(
         &self,
         sql: impl AsRef<str>,
         params: impl IntoParams,
     ) -> Result<Vec<Row>, Error> {
-        let connection = self.inner.pool.get().await?;
+        let connection = self.pool.get().await?;
 
         query(&connection, sql, params).await
     }
@@ -218,8 +209,8 @@ impl Database {
     ///
     /// Returns [`Error`] if acquiring a connection or starting the transaction
     /// fails.
-    pub async fn transaction(&self) -> Result<Transaction, Error> {
-        let connection = self.inner.pool.get().await?;
+    pub(crate) async fn transaction(&self) -> Result<Transaction, Error> {
+        let connection = self.pool.get().await?;
 
         execute(&connection, "BEGIN DEFERRED", ()).await?;
 
@@ -249,21 +240,12 @@ impl Transaction {
     ///
     /// Panics if the transaction connection has already been dismantled, which
     /// violates an internal invariant.
-    pub async fn execute(
+    pub(crate) async fn execute(
         &mut self,
         sql: impl AsRef<str>,
         params: impl IntoParams,
     ) -> Result<u64, Error> {
-        #[expect(
-            clippy::expect_used,
-            reason = "connection is held until Drop dismantles the checkout"
-        )]
-        let connection = self
-            .connection
-            .as_ref()
-            .expect("connection is held until Drop dismantles the checkout");
-
-        execute(connection, sql, params).await
+        execute(self.connection(), sql, params).await
     }
 
     /// Queries the database within this transaction using a cached prepared
@@ -283,21 +265,12 @@ impl Transaction {
     ///
     /// Panics if the transaction connection has already been dismantled, which
     /// violates an internal invariant.
-    pub async fn query(
+    pub(crate) async fn query(
         &mut self,
         sql: impl AsRef<str>,
         params: impl IntoParams,
     ) -> Result<Vec<Row>, Error> {
-        #[expect(
-            clippy::expect_used,
-            reason = "connection is held until Drop dismantles the checkout"
-        )]
-        let connection = self
-            .connection
-            .as_ref()
-            .expect("connection is held until Drop dismantles the checkout");
-
-        query(connection, sql, params).await
+        query(self.connection(), sql, params).await
     }
 
     /// Commits the transaction, applying all changes and returning the pooled
@@ -313,7 +286,7 @@ impl Transaction {
     ///
     /// Panics if the transaction connection has already been dismantled, which
     /// violates an internal invariant.
-    pub async fn commit(mut self) -> Result<(), Error> {
+    pub(crate) async fn commit(mut self) -> Result<(), Error> {
         self.execute("COMMIT", ()).await?;
 
         self.is_completed = true;
@@ -334,12 +307,28 @@ impl Transaction {
     ///
     /// Panics if the transaction connection has already been dismantled, which
     /// violates an internal invariant.
-    pub async fn rollback(mut self) -> Result<(), Error> {
+    pub(crate) async fn rollback(mut self) -> Result<(), Error> {
         self.execute("ROLLBACK", ()).await?;
 
         self.is_completed = true;
 
         Ok(())
+    }
+
+    /// Returns the checked out connection hosting the open transaction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the transaction connection has already been dismantled, which
+    /// violates an internal invariant.
+    #[expect(
+        clippy::expect_used,
+        reason = "connection is held until Drop dismantles the checkout"
+    )]
+    fn connection(&self) -> &Connection {
+        self.connection
+            .as_ref()
+            .expect("connection is held until Drop dismantles the checkout")
     }
 }
 

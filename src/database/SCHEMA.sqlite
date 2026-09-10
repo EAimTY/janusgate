@@ -1,14 +1,14 @@
 CREATE TABLE providers (
-    id Integer PRIMARY KEY,
+    id Integer PRIMARY KEY NOT NULL,
     name Text NOT NULL UNIQUE,
     model_prefix Text NOT NULL DEFAULT '',
-    type Text NOT NULL,
+    type Text NOT NULL CHECK (type IN ('openai_oauth', 'antigravity_oauth', 'openai_compatible')),
     protocol Text NULL,
     base_url Text NULL,
     credentials Text NOT NULL,
     expires_at Integer NULL,
     refresh_started_at Integer NULL,
-    enabled Integer NOT NULL DEFAULT 1
+    enabled Integer NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))
 ) STRICT;
 
 -- A model is identified by its owning provider plus the upstream model name. Discovery-derived
@@ -25,7 +25,7 @@ CREATE TABLE models (
     name_override Text NULL,
 
     -- Non-NULL pins the serving state instead of the discovery default (enabled).
-    enabled_override Integer NULL,
+    enabled_override Integer NULL CHECK (enabled_override IN (0, 1)),
 
     -- JSON array of canonical thinking levels; NULL means no filtering, pure passthrough.
     thinking_levels_override Text NULL,
@@ -36,8 +36,8 @@ CREATE TABLE models (
 -- A pending OAuth authorization flow. `verifier` is the PKCE code verifier for openai_oauth
 -- and the empty string for antigravity_oauth, which authenticates its exchange by client secret.
 CREATE TABLE oauth_states (
-    id Integer PRIMARY KEY,
-    type Text NOT NULL,
+    id Integer PRIMARY KEY NOT NULL,
+    type Text NOT NULL CHECK (type IN ('openai_oauth', 'antigravity_oauth')),
     state Text NOT NULL UNIQUE,
     verifier Text NOT NULL,
     expires_at Integer NOT NULL

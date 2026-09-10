@@ -242,6 +242,16 @@ pub(crate) async fn run(database: Database) -> ! {
             }
         };
 
+        // Disabling Nagle's algorithm lets small streaming frames, such as
+        // SSE events, leave immediately instead of stalling against the
+        // peer's delayed ACK. Best-effort, in the same log-and-continue
+        // style as the accept error above: a socket that keeps the kernel
+        // default merely degrades latency, so the connection is served
+        // anyway.
+        if let Err(error) = stream.set_nodelay(true) {
+            eprintln!("TCP_NODELAY set failed for {peer_address}: {error}");
+        }
+
         tokio::spawn(serve_accepted_connection(
             router.clone(),
             stream,
@@ -303,19 +313,15 @@ fn init_tcp_listener() -> TcpListener {
     let socket_address = match crate::CONFIG.listen.host() {
         Host::IpAddr(ip_address) => SocketAddr::from((*ip_address, crate::CONFIG.listen.port())),
         Host::DnsName(dns_name) => {
-            #[expect(
-                clippy::unwrap_used,
-                reason = "binding to unresolvable listen host is fatal"
-            )]
+            #[expect(clippy::panic, reason = "binding to unresolvable listen host is fatal")]
             let mut socket_addresses = (dns_name.as_str(), crate::CONFIG.listen.port())
                 .to_socket_addrs()
-                .unwrap();
+                .unwrap_or_else(|error| panic!("cannot resolve listen host {dns_name}: {error}"));
 
-            #[expect(
-                clippy::unwrap_used,
-                reason = "binding to empty address resolution is fatal"
-            )]
-            socket_addresses.next().unwrap()
+            #[expect(clippy::panic, reason = "binding to empty address resolution is fatal")]
+            socket_addresses
+                .next()
+                .unwrap_or_else(|| panic!("listen host {dns_name} resolved to no addresses"))
         }
     };
 
@@ -324,44 +330,54 @@ fn init_tcp_listener() -> TcpListener {
         SocketAddr::V6(_) => Domain::IPV6,
     };
 
-    #[expect(clippy::unwrap_used, reason = "TCP socket creation failure is fatal")]
-    let socket = Socket2::new(domain, Type::STREAM, Some(Protocol::TCP)).unwrap();
+    #[expect(clippy::panic, reason = "TCP socket creation failure is fatal")]
+    let socket = Socket2::new(domain, Type::STREAM, Some(Protocol::TCP))
+        .unwrap_or_else(|error| panic!("cannot create TCP socket for {socket_address}: {error}"));
 
     if socket_address.is_ipv6() {
         #[expect(
-            clippy::unwrap_used,
+            clippy::panic,
             reason = "TCP socket dual-stack configuration failure is fatal"
         )]
-        socket.set_only_v6(false).unwrap();
+        socket.set_only_v6(false).unwrap_or_else(|error| {
+            panic!("cannot configure dual-stack mode on {socket_address}: {error}")
+        });
     }
 
     #[expect(
-        clippy::unwrap_used,
+        clippy::panic,
         reason = "TCP socket nonblocking configuration failure is fatal"
     )]
-    socket.set_nonblocking(true).unwrap();
+    socket.set_nonblocking(true).unwrap_or_else(|error| {
+        panic!("cannot configure nonblocking mode on {socket_address}: {error}")
+    });
 
     // Make socket reusable right after restart in debug builds.
     #[cfg(debug_assertions)]
     {
         #[expect(
-            clippy::unwrap_used,
+            clippy::panic,
             reason = "TCP socket address reuse configuration failure is fatal"
         )]
-        socket.set_reuse_address(true).unwrap();
+        socket.set_reuse_address(true).unwrap_or_else(|error| {
+            panic!("cannot configure address reuse on {socket_address}: {error}")
+        });
     }
 
-    #[expect(clippy::unwrap_used, reason = "binding TCP listener is fatal")]
-    socket.bind(&SockAddr::from(socket_address)).unwrap();
+    #[expect(clippy::panic, reason = "binding TCP listener is fatal")]
+    socket
+        .bind(&SockAddr::from(socket_address))
+        .unwrap_or_else(|error| panic!("cannot bind TCP listener on {socket_address}: {error}"));
 
-    #[expect(clippy::unwrap_used, reason = "listening on TCP socket is fatal")]
-    socket.listen(LISTEN_BACKLOG).unwrap();
+    #[expect(clippy::panic, reason = "listening on TCP socket is fatal")]
+    socket.listen(LISTEN_BACKLOG).unwrap_or_else(|error| {
+        panic!("cannot listen on TCP socket for {socket_address}: {error}")
+    });
 
-    #[expect(
-        clippy::unwrap_used,
-        reason = "converting TCP listener to tokio is fatal"
-    )]
-    TcpListener::from_std(StdTcpListener::from(socket)).unwrap()
+    #[expect(clippy::panic, reason = "converting TCP listener to tokio is fatal")]
+    TcpListener::from_std(StdTcpListener::from(socket)).unwrap_or_else(|error| {
+        panic!("cannot register TCP listener on {socket_address} with tokio: {error}")
+    })
 }
 
 #[cfg(test)]
