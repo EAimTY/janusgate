@@ -49,9 +49,13 @@ const INPUT_ITEM_FIELDS: &[(&str, &[&str])] = &[
 ];
 
 /// Fields allowed on each Responses content part, keyed by part type.
+///
+/// `output_text` accepts and ignores `annotations` and `logprobs`: the
+/// gateway's own rendered `output_text` parts carry both fields, so
+/// replaying an aggregated response verbatim must parse.
 const CONTENT_PART_FIELDS: &[(&str, &[&str])] = &[
     ("input_text", &["type", "text"]),
-    ("output_text", &["type", "text"]),
+    ("output_text", &["type", "text", "annotations", "logprobs"]),
     ("input_image", &["type", "image_url"]),
 ];
 
@@ -976,6 +980,13 @@ impl UpstreamParser {
                 // instead of only the first.
                 let is_call_recoverable = !self.is_call_delivered;
 
+                // Whether the walk actually recovered calls: the delivery
+                // flag keeps its pre-walk value for every item of the walk,
+                // so the flip afterwards records the walk's outcome — the
+                // finish mapping consults it, and a text-only output array
+                // must not mark the turn as a tool-call turn.
+                let mut is_call_recovered = false;
+
                 if (!self.is_text_delivered || !self.is_reasoning_delivered || is_call_recoverable)
                     && let Some(output) = response.get("output").and_then(Value::as_array)
                 {
@@ -985,19 +996,27 @@ impl UpstreamParser {
                             OutputItemOrigin::Terminal(position),
                             &mut events,
                         )?;
+
+                        if is_call_recoverable
+                            && item.get("type").and_then(Value::as_str) == Some("function_call")
+                        {
+                            is_call_recovered = true;
+                        }
                     }
                 }
 
-                // The flag flips only after the whole walk: flipping it per
-                // item would mute the recovery for every function_call item
-                // after the first.
-                if is_call_recoverable {
+                if is_call_recovered {
                     self.is_call_delivered = true;
                 }
 
                 self.is_finished = true;
 
-                events.push(IrEvent::Finish(finish_reason_for_response(&response)));
+                // The delivery flag was flipped after the terminal walk above,
+                // so calls recovered from the output array count too.
+                events.push(IrEvent::Finish(finish_reason_for_response(
+                    &response,
+                    self.is_call_delivered,
+                )));
                 push_usage_events(&response, &mut events);
 
                 Ok(events)
@@ -1054,9 +1073,17 @@ impl UpstreamParser {
                     && let Some(content) = item.get("content").and_then(Value::as_array)
                 {
                     for part in content {
-                        if part.get("type").and_then(Value::as_str) == Some("output_text")
-                            && let Some(text) = part.get("text").and_then(Value::as_str)
-                        {
+                        // Refusal text is message text: it rides the same
+                        // text channel as `output_text` parts (README §6.2).
+                        let text = match part.get("type").and_then(Value::as_str) {
+                            Some("output_text") => part.get("text").and_then(Value::as_str),
+
+                            Some("refusal") => part.get("refusal").and_then(Value::as_str),
+
+                            _ => None,
+                        };
+
+                        if let Some(text) = text {
                             // The delivery flag is set only when a delta was
                             // actually pushed, so a text-less item does not
                             // exhaust the source for a later item that
@@ -1261,7 +1288,12 @@ impl UpstreamEventParser for UpstreamParser {
 
         self.is_finished = true;
 
-        events.push(IrEvent::Finish(finish_reason_for_response(&value)));
+        // The output walk above flipped the delivery flag for every
+        // `function_call` item the body carried.
+        events.push(IrEvent::Finish(finish_reason_for_response(
+            &value,
+            self.is_call_delivered,
+        )));
 
         push_usage_events(&value, &mut events);
 
@@ -1305,10 +1337,19 @@ fn string_field(value: &Value, key: &str) -> String {
 /// Finish reason for a response object already known not to be failed.
 ///
 /// An `incomplete` status maps through `incomplete_details.reason` (unknown
-/// reasons degrade to [`IrFinishReason::Length`] — the output was cut short);
-/// every other status finished normally.
-fn finish_reason_for_response(response: &Value) -> IrFinishReason {
+/// reasons degrade to [`IrFinishReason::Length`] — the output was cut short).
+/// Any other status finished normally, and a normally finished turn that
+/// delivered function calls carries the canonical [`IrFinishReason::ToolCall`]
+/// finish: the Responses status vocabulary has no tool-call value (completed /
+/// failed / in_progress / cancelled / queued / incomplete), so the delivered
+/// calls decide, matching official Chat Completions semantics for
+/// text+tool-call mixed turns too.
+fn finish_reason_for_response(response: &Value, is_call_delivered: bool) -> IrFinishReason {
     if response.get("status").and_then(Value::as_str) != Some("incomplete") {
+        if is_call_delivered {
+            return IrFinishReason::ToolCall;
+        }
+
         return IrFinishReason::Stop;
     }
 
@@ -2319,7 +2360,10 @@ mod tests {
             arguments: "{}".to_string(),
             thought_signature: None,
         }));
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+
+        // The turn mixed text with a delivered function call, so it carries
+        // the canonical tool-call finish (README §6.3).
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ToolCall)));
         assert!(events.contains(&IrEvent::Usage {
             input_tokens: 4,
             output_tokens: 3,
@@ -3837,6 +3881,223 @@ mod tests {
         let aggregation = aggregator.finish();
 
         assert_eq!(aggregation.text, "hi");
+    }
+
+    /// Finishes a tool-call turn with the canonical `ToolCall` reason on both
+    /// upstream shapes: the streaming terminal event and the JSON body. The
+    /// Responses status vocabulary has no tool-call value (openai-python
+    /// `ResponseStatus`: completed/failed/in_progress/cancelled/queued/
+    /// incomplete), so a successfully completed turn that delivered function
+    /// calls is the `ToolCall` finish, matching official Chat semantics; a
+    /// text-only turn keeps finishing `Stop` (README §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_tool_call_turn_finishes_with_tool_call() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.output_item.added\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",",
+                    "\"name\":\"f\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.function_call_arguments.delta\",",
+                    "\"output_index\":0,\"delta\":\"{}\"}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,",
+                    "\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",",
+                    "\"name\":\"f\",\"arguments\":\"{}\"}}\n\n"
+                ),
+                concat!(
+                    "data: {\"type\":\"response.completed\",",
+                    "\"response\":{\"status\":\"completed\"}}\n\n"
+                ),
+            ),
+        );
+
+        assert_eq!(
+            events.last(),
+            Some(&IrEvent::Finish(IrFinishReason::ToolCall))
+        );
+
+        // The JSON body shape agrees.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(clippy::expect_used, reason = "the fixture is a valid Responses body")]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "resp1",
+                "model": "m",
+                "status": "completed",
+                "output": [
+                    {"type": "function_call", "call_id": "call_1",
+                     "name": "f", "arguments": "{}"},
+                ],
+            }))
+            .expect("response should parse");
+
+        assert_eq!(
+            events.last(),
+            Some(&IrEvent::Finish(IrFinishReason::ToolCall))
+        );
+
+        // A text-only turn keeps finishing `Stop`.
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+                concat!(
+                    "data: {\"type\":\"response.completed\",",
+                    "\"response\":{\"status\":\"completed\"}}\n\n"
+                ),
+            ),
+        );
+
+        assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)));
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(clippy::expect_used, reason = "the fixture is a valid Responses body")]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "resp1",
+                "model": "m",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "role": "assistant",
+                     "content": [{"type": "output_text", "text": "hi"}]},
+                ],
+            }))
+            .expect("response should parse");
+
+        assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)));
+    }
+
+    /// Delivers upstream refusal text through the ordinary message text
+    /// channel: the `response.refusal.delta` streaming event (pinned) and
+    /// `refusal` content parts of JSON and terminal message items, exactly
+    /// like `output_text` parts (README §6.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_refusal_delivers_as_message_text() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            "data: {\"type\":\"response.refusal.delta\",\"delta\":\"cannot\"}\n\n",
+        );
+
+        assert!(events.contains(&IrEvent::TextDelta("cannot".to_string())));
+
+        // The JSON body path extracts `refusal` content parts as message text.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(clippy::expect_used, reason = "the fixture is a valid Responses body")]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "resp1",
+                "model": "m",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "role": "assistant",
+                     "content": [{"type": "refusal", "refusal": "cannot help"}]},
+                ],
+            }))
+            .expect("response should parse");
+
+        assert!(events.contains(&IrEvent::TextDelta("cannot help".to_string())));
+
+        // The terminal-recovery walk treats refusal parts as message text
+        // exactly like output_text parts: a live refusal delta mutes the
+        // terminal array's refusal part, keeping the text exactly-once.
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_upstream(
+            &mut parser,
+            concat!(
+                concat!(
+                    "data: {\"type\":\"response.created\",",
+                    "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+                ),
+                "data: {\"type\":\"response.refusal.delta\",\"delta\":\"cannot\"}\n\n",
+                concat!(
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp1\",",
+                    "\"status\":\"completed\",\"output\":[",
+                    "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[",
+                    "{\"type\":\"refusal\",\"refusal\":\"cannot\"}]}]}}\n\n"
+                ),
+            ),
+        );
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event == &&IrEvent::TextDelta("cannot".to_string()))
+                .count(),
+            1
+        );
+    }
+
+    /// Accepts and ignores `annotations` and `logprobs` on `output_text`
+    /// input content parts: the gateway's own rendered `output_text` parts
+    /// carry both fields (openai-python types `annotations` without a
+    /// default), so replaying an aggregated response verbatim must parse
+    /// (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn accepts_annotations_and_logprobs_on_output_text_parts() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is a valid request; the test asserts acceptance"
+        )]
+        let parsed = parse_request(
+            r#"{
+                "model": "public",
+                "input": [
+                    {"type": "message", "role": "assistant", "content": [
+                        {"type": "output_text", "text": "hi",
+                         "annotations": [], "logprobs": []}
+                    ]}
+                ]
+            }"#
+            .as_bytes(),
+        )
+        .expect("output_text annotations and logprobs must be accepted and ignored");
+
+        // Attributes on macro-invocation statements do not cover desugared
+        // index expressions inside the expansion, so the indexed message is
+        // read through an annotated binding first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the fixture parses exactly one message, asserted below"
+        )]
+        let first_message = &parsed.ir.messages[0];
+
+        assert_eq!(
+            first_message.parts,
+            vec![IrPart::Text {
+                text: "hi".to_string()
+            }]
+        );
     }
 
     /// Builds a minimal IR request carrying one user text turn.

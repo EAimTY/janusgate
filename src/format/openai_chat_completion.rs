@@ -870,6 +870,10 @@ struct PendingToolCall {
 
     /// Arguments accumulated so far.
     arguments: String,
+
+    /// Upstream thought signature carried on the delta entries; the gateway
+    /// extension must survive into the completion (README §5.2).
+    thought_signature: Option<String>,
 }
 
 /// Parses upstream Chat Completions responses — streamed chunks or a full
@@ -915,6 +919,14 @@ impl UpstreamParser {
                     && !content.is_empty()
                 {
                     events.push(IrEvent::TextDelta(content.to_string()));
+                }
+
+                // Refusal text rides the ordinary text channel, after any
+                // content text of the same delta (README §6.2).
+                if let Some(refusal) = delta.get("refusal").and_then(Value::as_str)
+                    && !refusal.is_empty()
+                {
+                    events.push(IrEvent::TextDelta(refusal.to_string()));
                 }
 
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -966,6 +978,11 @@ impl UpstreamParser {
             .and_then(Value::as_str)
             .unwrap_or_default();
 
+        let thought_signature = tool_call
+            .get("thought_signature")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
         let pending = match self
             .pending_tool_calls
             .iter_mut()
@@ -978,6 +995,7 @@ impl UpstreamParser {
                     call_id: call_id.unwrap_or_default().to_string(),
                     name: name.unwrap_or_default().to_string(),
                     arguments: String::new(),
+                    thought_signature: None,
                 });
                 #[expect(clippy::expect_used, reason = "the entry was just pushed above")]
                 self.pending_tool_calls
@@ -992,6 +1010,12 @@ impl UpstreamParser {
 
         if let Some(name) = name {
             pending.name = name.to_string();
+        }
+
+        // The last delta entry carrying a signature wins; upstreams repeat it
+        // on the entry that completes the call.
+        if thought_signature.is_some() {
+            pending.thought_signature = thought_signature;
         }
 
         pending.arguments.push_str(arguments_delta);
@@ -1022,7 +1046,7 @@ impl UpstreamParser {
                 call_id: pending.call_id,
                 name: pending.name,
                 arguments: pending.arguments,
-                thought_signature: None,
+                thought_signature: pending.thought_signature,
             })
             .collect()
     }
@@ -1160,8 +1184,8 @@ fn parse_usage(usage: Option<&Value>) -> Option<IrEvent> {
     })
 }
 
-/// Extracts message text, reasoning, and complete tool calls from a full
-/// upstream message object into IR events.
+/// Extracts message text (including refusal text), reasoning, and complete
+/// tool calls from a full upstream message object into IR events.
 fn message_events_from_full(message: &Value) -> Vec<IrEvent> {
     let mut events = Vec::new();
 
@@ -1175,6 +1199,14 @@ fn message_events_from_full(message: &Value) -> Vec<IrEvent> {
         && !content.is_empty()
     {
         events.push(IrEvent::TextDelta(content.to_string()));
+    }
+
+    // Refusal text rides the ordinary text channel, after the message's
+    // content text (README §6.2).
+    if let Some(refusal) = message.get("refusal").and_then(Value::as_str)
+        && !refusal.is_empty()
+    {
+        events.push(IrEvent::TextDelta(refusal.to_string()));
     }
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
@@ -1211,7 +1243,10 @@ fn message_events_from_full(message: &Value) -> Vec<IrEvent> {
                 call_id,
                 name,
                 arguments,
-                thought_signature: None,
+                thought_signature: tool_call
+                    .get("thought_signature")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             });
         }
     }
@@ -1568,7 +1603,10 @@ mod tests {
     };
     use crate::{
         error::ApiError,
-        format::{ClientSseRenderer as _, UpstreamEventParser as _},
+        format::{
+            ClientSseRenderer as _, UpstreamEventParser as _,
+            openai_response::SseRenderer as ResponsesSseRenderer,
+        },
         ir::{Aggregator, IrEvent, IrFinishReason, IrPart, IrRole, IrUsage},
         sse::{SseFrame, SseParser},
     };
@@ -2619,5 +2657,219 @@ mod tests {
 
             assert!(payload.get("usage").is_none());
         }
+    }
+
+    /// Delivers upstream refusal text through the ordinary text channel: a
+    /// streaming `delta.refusal` and a full-message `refusal` field both
+    /// become text deltas, after any content text of the same delta
+    /// (openai-python types `refusal: Optional[str]` on both `ChoiceDelta`
+    /// and `ChatCompletionMessage`) (README §6.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_refusal_text_delivers_as_text_deltas() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_all(
+            &mut parser,
+            &["data: {\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\"cannot\"}}]}\n\n"],
+        );
+
+        assert!(events.contains(&IrEvent::TextDelta("cannot".to_string())));
+
+        // Content and refusal in one delta emit both, content first.
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_all(
+            &mut parser,
+            &[concat!(
+                "data: {\"choices\":[{\"index\":0,",
+                "\"delta\":{\"content\":\"a\",\"refusal\":\"b\"}}]}\n\n"
+            )],
+        );
+
+        let text_deltas: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                IrEvent::TextDelta(delta) => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(text_deltas, vec!["a", "b"]);
+
+        // JSON: the full message's refusal text reaches the aggregated text.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(clippy::expect_used, reason = "the fixture is a valid chat body")]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "up", "model": "m",
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "hello",
+                                "refusal": "no"}
+                }]
+            }))
+            .expect("response should parse");
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        assert_eq!(aggregator.finish().text, "hellono");
+    }
+
+    /// Preserves upstream `thought_signature` values on Chat Completions
+    /// tool calls — on streamed delta entries and on full-message
+    /// `tool_calls` entries alike — through aggregation and into both outward
+    /// renders (README §5.2 reattachment invariant, §6.6 extension field).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_tool_call_signatures_survive_to_both_outward_formats() {
+        let mut parser = UpstreamParser::new();
+
+        let events = ingest_all(
+            &mut parser,
+            &[
+                concat!(
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[",
+                    "{\"index\":0,\"id\":\"call_1\",\"thought_signature\":\"sig1\",",
+                    "\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]}}]}\n\n"
+                ),
+                concat!(
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{},",
+                    "\"finish_reason\":\"tool_calls\"}]}\n\n"
+                ),
+            ],
+        );
+
+        assert!(events.contains(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "f".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: Some("sig1".to_string()),
+        }));
+
+        // Aggregated: the signature survives the fold.
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        assert_eq!(
+            aggregation
+                .tool_calls
+                .first()
+                .map(|call| (call.call_id.as_str(), call.thought_signature.as_deref())),
+            Some(("call_1", Some("sig1")))
+        );
+
+        // Outward Chat Completions: the done renders the signature on the
+        // call's tool_calls entry.
+        let mut chat_renderer = SseRenderer::new("public".to_string(), false);
+
+        let mut chat_signatures: Vec<Value> = Vec::new();
+
+        for event in &events {
+            for frame in chat_renderer.render(event) {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the renderer emits `data: ` prefixed JSON frames"
+                )]
+                let payload: Value = serde_json::from_str(
+                    frame
+                        .strip_prefix("data: ")
+                        .expect("data frame prefix")
+                        .trim_end(),
+                )
+                .expect("payload is JSON");
+
+                if let Some(tool_calls) = payload
+                    .pointer("/choices/0/delta/tool_calls")
+                    .and_then(Value::as_array)
+                {
+                    for tool_call in tool_calls {
+                        if let Some(signature) = tool_call.get("thought_signature") {
+                            chat_signatures.push(signature.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(chat_signatures, vec![Value::String("sig1".to_string())]);
+
+        // Outward Responses: the completed function_call item carries it.
+        let mut responses_renderer = ResponsesSseRenderer::new("public".to_string());
+
+        let mut item_signatures: Vec<Value> = Vec::new();
+
+        let mut streamed = events.clone();
+
+        streamed.push(IrEvent::Done);
+
+        for event in &streamed {
+            for frame in responses_renderer.render(event) {
+                let Ok(payload) = serde_json::from_str::<Value>(
+                    frame
+                        .strip_prefix("event: response.output_item.done\ndata: ")
+                        .unwrap_or_default()
+                        .trim_end(),
+                ) else {
+                    continue;
+                };
+
+                if let Some(signature) = payload.pointer("/item/thought_signature") {
+                    item_signatures.push(signature.clone());
+                }
+            }
+        }
+
+        assert_eq!(item_signatures, vec![Value::String("sig1".to_string())]);
+
+        // JSON: the full message's tool_calls entries carry the signature too.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(clippy::expect_used, reason = "the fixture is a valid chat body")]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "up", "model": "m",
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {"name": "g", "arguments": "{}"},
+                            "thought_signature": "sig2"
+                        }]
+                    }
+                }]
+            }))
+            .expect("response should parse");
+
+        assert!(events.contains(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_2".to_string(),
+            name: "g".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: Some("sig2".to_string()),
+        }));
     }
 }

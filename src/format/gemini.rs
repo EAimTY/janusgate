@@ -321,6 +321,11 @@ pub(crate) struct UpstreamParser {
     /// Count of function calls synthesized in this response.
     call_counter: usize,
 
+    /// Whether the response delivered any `functionCall` part; Gemini ends
+    /// tool-call turns with the plain `STOP` reason, so the delivered calls
+    /// decide the canonical tool-call finish.
+    is_call_delivered: bool,
+
     /// Whether a finish reason was already emitted; a clean end-of-stream
     /// without one degrades to [`IrFinishReason::Stop`] in the parser's
     /// finish hook, matching the aggregated rendering default.
@@ -383,7 +388,10 @@ impl UpstreamParser {
             if let Some(finish_reason) = candidate.get("finishReason").and_then(Value::as_str) {
                 self.is_finished = true;
 
-                events.push(IrEvent::Finish(finish_reason_from_gemini(finish_reason)));
+                events.push(IrEvent::Finish(finish_reason_from_gemini(
+                    finish_reason,
+                    self.is_call_delivered,
+                )));
             }
         }
 
@@ -427,6 +435,8 @@ impl UpstreamParser {
         let Some(function_call) = part.get("functionCall") else {
             return;
         };
+
+        self.is_call_delivered = true;
 
         let name = function_call
             .get("name")
@@ -513,13 +523,21 @@ fn primary_candidate(value: &Value) -> Option<&Value> {
 }
 
 /// Maps a Gemini `finishReason` to the canonical reason.
-fn finish_reason_from_gemini(value: &str) -> IrFinishReason {
+///
+/// Gemini ends function-call turns with the plain `STOP` reason — the
+/// `finishReason` vocabulary has no tool-call value — so a turn that
+/// delivered `functionCall` parts carries the canonical
+/// [`IrFinishReason::ToolCall`] finish, matching official Chat Completions
+/// semantics for text+tool-call mixed turns too.
+fn finish_reason_from_gemini(value: &str, is_call_delivered: bool) -> IrFinishReason {
     match value {
         "MAX_TOKENS" => IrFinishReason::Length,
 
         "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" => {
             IrFinishReason::ContentFilter
         }
+
+        _ if is_call_delivered => IrFinishReason::ToolCall,
 
         _ => IrFinishReason::Stop,
     }
@@ -916,7 +934,9 @@ mod tests {
 
         assert_eq!(done, format!("call_{}", &done["call_".len()..]));
 
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+        // The turn delivered a function call, so the plain `STOP` reason maps
+        // to the canonical tool-call finish (README §6.3).
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ToolCall)));
         assert!(events.contains(&IrEvent::Usage {
             input_tokens: 9,
             output_tokens: 6,
@@ -998,6 +1018,46 @@ mod tests {
                 .count(),
             1
         );
+
+        assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)));
+    }
+
+    /// Finishes a JSON function-call turn with `ToolCall` while a text-only
+    /// `STOP` turn keeps finishing `Stop`: Gemini ends function-call turns
+    /// with the plain `STOP` reason, so the delivered calls decide the
+    /// canonical finish (README §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_stop_finish_follows_delivered_calls() {
+        let mut parser = UpstreamParser::new();
+
+        #[expect(clippy::expect_used, reason = "the fixture is a valid Gemini body")]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "candidates": [{"index": 0, "content": {"parts": [
+                    {"functionCall": {"name": "weather", "args": {"city": "oslo"}}},
+                ]}, "finishReason": "STOP"}],
+            }))
+            .expect("response should parse");
+
+        assert_eq!(
+            events.last(),
+            Some(&IrEvent::Finish(IrFinishReason::ToolCall))
+        );
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(clippy::expect_used, reason = "the fixture is a valid Gemini body")]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "candidates": [{"index": 0, "content": {"parts": [
+                    {"text": "hi"},
+                ]}, "finishReason": "STOP"}],
+            }))
+            .expect("response should parse");
 
         assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)));
     }
