@@ -4,7 +4,5 @@
 # Rust
 /target/
 
-# Runtime secrets and database (never commit)
-/config.jsonc
-/janusgate.db
-/janusgate.db-*
+# dev config
+/config.dev.jsonc
