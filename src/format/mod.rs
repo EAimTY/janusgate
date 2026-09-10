@@ -41,12 +41,12 @@ pub(crate) struct ParsedRequest {
     pub(crate) ir: IrRequest,
 
     /// Whether the client requested a streamed response.
-    pub(crate) stream: bool,
+    pub(crate) is_streaming: bool,
 
     /// Whether the client asked for a trailing usage-only chunk; only the
     /// Chat Completions format exposes the option, every other format
     /// includes usage unconditionally.
-    pub(crate) include_usage: bool,
+    pub(crate) should_include_usage: bool,
 }
 
 /// Format-independent upstream parsing contract implemented by every codec's
@@ -100,10 +100,13 @@ pub(crate) trait ClientFormat {
     where
         Self: Sized;
 
-    /// Boxes the streaming renderer for one parsed request. `include_usage`
-    /// is the trailing usage-chunk option; formats that always include usage
-    /// ignore it.
-    fn sse_renderer(include_usage: bool, public_name: String) -> Box<dyn ClientSseRenderer + Send>
+    /// Boxes the streaming renderer for one parsed request.
+    /// `should_include_usage` is the trailing usage-chunk option; formats
+    /// that always include usage ignore it.
+    fn sse_renderer(
+        should_include_usage: bool,
+        public_name: String,
+    ) -> Box<dyn ClientSseRenderer + Send>
     where
         Self: Sized;
 

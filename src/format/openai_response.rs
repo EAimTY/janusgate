@@ -298,7 +298,7 @@ impl ClientFormat for Format {
     }
 
     fn sse_renderer(
-        _include_usage: bool,
+        _should_include_usage: bool,
         public_name: String,
     ) -> Box<dyn ClientSseRenderer + Send> {
         Box::new(SseRenderer::new(public_name))
@@ -525,8 +525,8 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
             response_format,
             reasoning_effort,
         },
-        stream: request.stream.unwrap_or(false),
-        include_usage: false,
+        is_streaming: request.stream.unwrap_or(false),
+        should_include_usage: false,
     })
 }
 
@@ -664,7 +664,7 @@ fn validate_input_item_fields(input: Option<&Value>) -> Result<(), ApiError> {
 }
 
 /// Renders an IR request into an upstream Responses payload.
-pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
+pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
     let mut input: Vec<Value> = Vec::new();
 
     for message in &ir.messages {
@@ -753,7 +753,7 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
     let mut body = serde_json::json!({
         "model": ir.model,
         "input": input,
-        "stream": stream,
+        "stream": is_streaming,
         "store": false,
     });
 

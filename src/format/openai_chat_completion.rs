@@ -341,8 +341,11 @@ impl ClientFormat for Format {
         parse_request(body)
     }
 
-    fn sse_renderer(include_usage: bool, public_name: String) -> Box<dyn ClientSseRenderer + Send> {
-        Box::new(SseRenderer::new(public_name, include_usage))
+    fn sse_renderer(
+        should_include_usage: bool,
+        public_name: String,
+    ) -> Box<dyn ClientSseRenderer + Send> {
+        Box::new(SseRenderer::new(public_name, should_include_usage))
     }
 
     fn render_json_response(public_name: &str, aggregation: &IrAggregation) -> Value {
@@ -590,8 +593,8 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
             response_format,
             reasoning_effort,
         },
-        stream: request.stream.unwrap_or(false),
-        include_usage: request
+        is_streaming: request.stream.unwrap_or(false),
+        should_include_usage: request
             .stream_options
             .as_ref()
             .is_some_and(|options| options.include_usage),
@@ -654,7 +657,7 @@ fn validate_response_format_fields(response_format: Option<&Value>) -> Result<()
 }
 
 /// Renders an IR request into an upstream Chat Completions payload.
-pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
+pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
     let mut messages: Vec<Value> = Vec::new();
 
     if let Some(instructions) = &ir.instructions {
@@ -772,10 +775,10 @@ pub(crate) fn render_request(ir: &IrRequest, stream: bool) -> Value {
     let mut body = serde_json::json!({
         "model": ir.model,
         "messages": messages,
-        "stream": stream,
+        "stream": is_streaming,
     });
 
-    if stream {
+    if is_streaming {
         json_insert(
             &mut body,
             "stream_options",
@@ -1305,7 +1308,7 @@ pub(crate) struct SseRenderer {
     opened_tool_call_indexes: Vec<usize>,
 
     /// Whether the trailing usage chunk is wanted.
-    include_usage: bool,
+    should_include_usage: bool,
 
     /// Latest token accounting observed; rendered once as the terminal
     /// usage chunk, because the official stream shape carries usage only on
@@ -1315,14 +1318,14 @@ pub(crate) struct SseRenderer {
 
 impl SseRenderer {
     /// Creates a renderer for one streamed completion.
-    pub(crate) fn new(model: String, include_usage: bool) -> Self {
+    pub(crate) fn new(model: String, should_include_usage: bool) -> Self {
         Self {
             id: format!("chatcmpl-{}", new_uuid()),
             model,
             created: unix_time::unix_now(),
             is_role_sent: false,
             opened_tool_call_indexes: Vec::new(),
-            include_usage,
+            should_include_usage,
             usage: None,
         }
     }
@@ -1501,7 +1504,7 @@ impl ClientSseRenderer for SseRenderer {
             IrEvent::Done => {
                 let mut frames = Vec::new();
 
-                if self.include_usage
+                if self.should_include_usage
                     && let Some(usage) = self.usage
                 {
                     frames.push(self.usage_frame(usage));
@@ -1740,8 +1743,8 @@ mod tests {
         assert_eq!(tool_message.role, IrRole::Tool);
         assert_eq!(ir.tools.len(), 1);
         assert_eq!(ir.max_output_tokens, Some(32));
-        assert!(parsed.stream);
-        assert!(parsed.include_usage);
+        assert!(parsed.is_streaming);
+        assert!(parsed.should_include_usage);
     }
 
     /// Rejects unknown and unsupported request fields.
@@ -2506,8 +2509,8 @@ mod tests {
 
     /// Renders events through a chat client renderer, returning raw SSE
     /// frames.
-    fn render_chat_client(include_usage: bool, events: &[IrEvent]) -> Vec<String> {
-        let mut renderer = SseRenderer::new("public".to_string(), include_usage);
+    fn render_chat_client(should_include_usage: bool, events: &[IrEvent]) -> Vec<String> {
+        let mut renderer = SseRenderer::new("public".to_string(), should_include_usage);
 
         let mut frames = Vec::new();
 

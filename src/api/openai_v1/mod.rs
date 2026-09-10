@@ -122,7 +122,7 @@ where
 
     let public_name = routing.model.name.clone();
 
-    let is_streaming = parsed.stream;
+    let is_streaming = parsed.is_streaming;
 
     let events =
         gateway::execute(database, crate::http(), routing, parsed.ir, is_streaming).await?;
@@ -130,7 +130,7 @@ where
     if is_streaming {
         Ok(sse_response(
             events,
-            TFormat::sse_renderer(parsed.include_usage, public_name),
+            TFormat::sse_renderer(parsed.should_include_usage, public_name),
         ))
     } else {
         aggregated_response(events, |aggregation| {

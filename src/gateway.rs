@@ -70,7 +70,7 @@ pub(crate) async fn execute(
     http: &Client,
     routing: ModelRouting,
     mut ir: IrRequest,
-    client_streaming: bool,
+    is_client_streaming: bool,
 ) -> Result<IrEventStream, ApiError> {
     // Creation validates `thinking_levels_override` at the management API, so
     // a malformed stored value is drift inside the database — an invariant
@@ -103,7 +103,7 @@ pub(crate) async fn execute(
         &provider,
         &routing,
         &ir,
-        client_streaming,
+        is_client_streaming,
     )?;
 
     let response = request_builder.send().await.map_err(|error| {
@@ -148,7 +148,7 @@ fn build_upstream_request(
     provider: &Provider,
     routing: &ModelRouting,
     ir: &IrRequest,
-    client_streaming: bool,
+    is_client_streaming: bool,
 ) -> Result<reqwest::RequestBuilder, ApiError> {
     match (upstream_format, provider.provider_type) {
         (UpstreamFormat::OpenAiResponse, ProviderType::OpenAiOauth) => {
@@ -182,7 +182,7 @@ fn build_upstream_request(
             Ok(http
                 .post(format!("{}/responses", base_url.trim_end_matches('/')))
                 .bearer_auth(provider.credentials.secret())
-                .json(&openai_response::render_request(ir, client_streaming)))
+                .json(&openai_response::render_request(ir, is_client_streaming)))
         }
 
         (UpstreamFormat::OpenAiChatCompletion, _) => {
@@ -196,7 +196,7 @@ fn build_upstream_request(
                 .bearer_auth(provider.credentials.secret())
                 .json(&openai_chat_completion::render_request(
                     ir,
-                    client_streaming,
+                    is_client_streaming,
                 )))
         }
 
@@ -217,7 +217,7 @@ fn build_upstream_request(
                 endpoints::ANTIGRAVITY_BASE_URL,
                 &routing.model.upstream_name,
                 project_id,
-                client_streaming,
+                is_client_streaming,
             )?;
 
             Ok(http
@@ -232,7 +232,7 @@ fn build_upstream_request(
                 ir,
                 compatible_base_url(provider)?,
                 &routing.model.upstream_name,
-                client_streaming,
+                is_client_streaming,
             )?;
 
             Ok(http
@@ -1127,7 +1127,7 @@ mod tests {
     fn built_request(
         upstream_format: UpstreamFormat,
         provider: &Provider,
-        client_streaming: bool,
+        is_client_streaming: bool,
     ) -> reqwest::Request {
         init_http_client();
 
@@ -1154,7 +1154,7 @@ mod tests {
             provider,
             &routing,
             &ir,
-            client_streaming,
+            is_client_streaming,
         )
         .expect("the provider fixture should render an upstream request");
 

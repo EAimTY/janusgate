@@ -22,7 +22,9 @@ struct DiscoverModelsBody {
 }
 
 /// Strictly parsed `save-model` request; each override field is tri-state:
-/// absent leaves it unchanged, `null` clears it, a value sets it.
+/// absent leaves it unchanged, `null` clears it, a value sets it. The
+/// `double_option` adapter is what makes the mapping explicit, since plain
+/// serde maps JSON `null` and field absence to the same outer `None`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SaveModelBody {
@@ -33,15 +35,15 @@ struct SaveModelBody {
     upstream_name: String,
 
     /// Public name override.
-    #[serde(default)]
+    #[serde(default, with = "::serde_with::rust::double_option")]
     name_override: Option<Option<String>>,
 
     /// Serving state override.
-    #[serde(default)]
+    #[serde(default, with = "::serde_with::rust::double_option")]
     enabled_override: Option<Option<bool>>,
 
     /// Canonical thinking levels override.
-    #[serde(default)]
+    #[serde(default, with = "::serde_with::rust::double_option")]
     thinking_levels_override: Option<Option<Vec<String>>>,
 }
 
@@ -224,8 +226,17 @@ fn thinking_levels_json(stored: &Option<String>) -> Result<Value, ApiError> {
 mod tests {
     use super::*;
     use crate::{database::params, test_support};
-    use axum::http::StatusCode;
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        http::{Request as HttpRequest, StatusCode},
+    };
+    use serde_json::Value;
     use std::{error::Error as StdError, time::Duration};
+    use tower::ServiceExt as _;
+
+    /// The management token the shared test configuration installs.
+    const MANAGEMENT_TOKEN: &str = "test-mgmt";
 
     /// Inserts one `openai_compatible` provider row with one model row whose
     /// stored thinking-level override is given, returning nothing.
@@ -260,6 +271,42 @@ mod tests {
     /// Builds a JSON request body for `save-model`.
     fn body(json: &str) -> Bytes {
         Bytes::from(json.as_bytes().to_vec())
+    }
+
+    /// Drives one `save-model` request through the management router,
+    /// returning the status and the rendered JSON body.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the request cannot be built or the in-memory oneshot serve
+    /// fails, which only a router construction bug can cause.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while building the request or reading
+    /// the response body.
+    async fn save_model(
+        router: &Router,
+        json: &str,
+    ) -> Result<(StatusCode, Value), Box<dyn StdError>> {
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/save-model")
+            .header("authorization", MANAGEMENT_TOKEN)
+            .body(Body::from(json.to_string()))?;
+
+        // SAFETY: not applicable; the in-memory oneshot serve is infallible,
+        // so the unreachable arm documents the invariant.
+        let response = match router.clone().oneshot(request).await {
+            Ok(response) => response,
+            Err(error) => unreachable!("in-memory oneshot cannot fail: {error}"),
+        };
+
+        let status = response.status();
+
+        let body = to_bytes(response.into_body(), 1 << 20).await?;
+
+        Ok((status, serde_json::from_slice(&body)?))
     }
 
     /// Verifies listing models surfaces a corrupt stored thinking-level
@@ -323,6 +370,121 @@ mod tests {
             error.message.contains("Unknown thinking level `turbo`"),
             "the error must name the unknown level: {error}"
         );
+
+        Ok(())
+    }
+
+    /// Verifies the `save-model` tri-state contract over the wire: an
+    /// explicit JSON `null` clears an override while an absent field keeps
+    /// the stored one (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if opening the test database or an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the router or database.
+    #[tokio::test]
+    async fn save_model_null_clears_and_absence_keeps_overrides() -> Result<(), Box<dyn StdError>> {
+        test_support::init_config();
+
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        insert_compatible_model(&database, None).await?;
+
+        let router = crate::management_api::router().with_state(database.clone());
+
+        let set = concat!(
+            r#"{"provider":"alpha","upstream_name":"u1","name_override":"public","#,
+            r#""enabled_override":false,"thinking_levels_override":["low"]}"#,
+        );
+
+        let (status, rendered) = save_model(&router, set).await?;
+
+        assert_eq!(status, StatusCode::OK);
+
+        let model = rendered
+            .get("model")
+            .ok_or("the body must carry the model")?;
+
+        assert_eq!(
+            model.get("name_override"),
+            Some(&Value::String("public".to_string()))
+        );
+
+        assert_eq!(model.get("enabled_override"), Some(&Value::Bool(false)));
+
+        assert_eq!(
+            model.get("thinking_levels_override"),
+            Some(&serde_json::json!(["low"]))
+        );
+
+        // An absent field keeps every stored override.
+        let (status, rendered) =
+            save_model(&router, r#"{"provider":"alpha","upstream_name":"u1"}"#).await?;
+
+        assert_eq!(status, StatusCode::OK);
+
+        let model = rendered
+            .get("model")
+            .ok_or("the body must carry the model")?;
+
+        assert_eq!(
+            model.get("name_override"),
+            Some(&Value::String("public".to_string()))
+        );
+
+        assert_eq!(model.get("enabled_override"), Some(&Value::Bool(false)));
+
+        assert_eq!(
+            model.get("thinking_levels_override"),
+            Some(&serde_json::json!(["low"]))
+        );
+
+        // An explicit JSON `null` clears every override.
+        let clear = concat!(
+            r#"{"provider":"alpha","upstream_name":"u1","name_override":null,"#,
+            r#""enabled_override":null,"thinking_levels_override":null}"#,
+        );
+
+        let (status, rendered) = save_model(&router, clear).await?;
+
+        assert_eq!(status, StatusCode::OK);
+
+        let model = rendered
+            .get("model")
+            .ok_or("the body must carry the model")?;
+
+        assert_eq!(model.get("name_override"), Some(&Value::Null));
+
+        assert_eq!(model.get("enabled_override"), Some(&Value::Null));
+
+        assert_eq!(model.get("thinking_levels_override"), Some(&Value::Null));
+
+        // The cleared overrides reach the database as SQL NULL.
+        let rows = database
+            .query(
+                "SELECT name_override, enabled_override, thinking_levels_override \
+                 FROM models WHERE upstream_name = 'u1'",
+                (),
+            )
+            .await?;
+
+        let row = rows.first().ok_or("the model row must exist")?;
+
+        let name_override: Option<String> = row.get(0)?;
+
+        let enabled_override: Option<i64> = row.get(1)?;
+
+        let thinking_levels_override: Option<String> = row.get(2)?;
+
+        assert_eq!(name_override, None);
+
+        assert_eq!(enabled_override, None);
+
+        assert_eq!(thinking_levels_override, None);
 
         Ok(())
     }

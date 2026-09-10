@@ -30,9 +30,9 @@ pub(crate) fn render_antigravity_request(
     base_url: &str,
     upstream_name: &str,
     project: &str,
-    streaming: bool,
+    is_streaming: bool,
 ) -> Result<(String, Value), ApiError> {
-    let url = render_request_url(base_url, upstream_name, streaming, true);
+    let url = render_request_url(base_url, upstream_name, is_streaming, true);
 
     let envelope = serde_json::json!({
         "project": project,
@@ -56,9 +56,9 @@ pub(crate) fn render_compatible_request(
     ir: &IrRequest,
     base_url: &str,
     upstream_name: &str,
-    streaming: bool,
+    is_streaming: bool,
 ) -> Result<(String, Value), ApiError> {
-    let url = render_request_url(base_url, upstream_name, streaming, false);
+    let url = render_request_url(base_url, upstream_name, is_streaming, false);
 
     Ok((url, render_generate_content_request(ir)?))
 }
@@ -70,7 +70,7 @@ pub(crate) fn render_compatible_request(
 fn render_request_url(
     base_url: &str,
     upstream_name: &str,
-    streaming: bool,
+    is_streaming: bool,
     is_enveloped: bool,
 ) -> String {
     /// Action segment selecting plain generation.
@@ -81,7 +81,7 @@ fn render_request_url(
 
     let base_url = base_url.trim_end_matches('/');
 
-    let action = if streaming {
+    let action = if is_streaming {
         STREAM_GENERATE_ACTION
     } else {
         GENERATE_ACTION
