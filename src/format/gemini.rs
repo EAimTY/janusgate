@@ -357,6 +357,16 @@ impl UpstreamParser {
             return Err(ApiError::upstream_unavailable(detail));
         }
 
+        // The Cloud Code Assist API wraps every GenerateContentResponse —
+        // `:generateContent` JSON bodies and `alt=sse` frames alike — in a
+        // `response` envelope beside `traceId` and `metadata` (README §5.2),
+        // while Gemini-compatible upstreams carry the bare response, which
+        // has no top-level `response` field of its own. Unwrap when present.
+        let value = match value.get("response") {
+            Some(inner) if inner.is_object() => inner,
+            _ => &value,
+        };
+
         let mut events = Vec::new();
 
         if !self.is_started {
@@ -1058,6 +1068,96 @@ mod tests {
                 ]}, "finishReason": "STOP"}],
             }))
             .expect("response should parse");
+
+        assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)));
+    }
+
+    /// Verifies the Code Assist `response` envelope — wrapped around
+    /// `:generateContent` JSON bodies and `alt=sse` frames alike — is
+    /// unwrapped, with identity and usage read from inside it, while the
+    /// bare GenerateContentResponse shape keeps parsing (README §5.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_unwraps_code_assist_response_envelope() {
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture is a valid Code Assist body"
+        )]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "response": {
+                    "candidates": [{
+                        "content": {"role": "model", "parts": [{"text": "ok"}]},
+                        "finishReason": "STOP",
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 12,
+                        "candidatesTokenCount": 4,
+                        "totalTokenCount": 16,
+                    },
+                    "modelVersion": "claude-sonnet-4-6",
+                    "responseId": "msg_1",
+                },
+                "traceId": "trace",
+                "metadata": {},
+            }))
+            .expect("response should parse");
+
+        assert_eq!(
+            events.first(),
+            Some(&IrEvent::MessageStart {
+                id: "msg_1".to_string(),
+                model: "claude-sonnet-4-6".to_string(),
+            })
+        );
+
+        assert!(events.contains(&IrEvent::TextDelta("ok".to_string())));
+
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+
+        // Usage is emitted after the finish event by the parser's ordering.
+        assert_eq!(
+            events.last(),
+            Some(&IrEvent::Usage {
+                input_tokens: 12,
+                output_tokens: 4,
+            })
+        );
+
+        let mut parser = UpstreamParser::new();
+
+        let mut events = ingest(
+            &mut parser,
+            concat!(
+                "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",",
+                "\"parts\":[{\"text\":\"ok\"}]}}],\"modelVersion\":\"claude-sonnet-4-6\",",
+                "\"responseId\":\"req_1\"},\"traceId\":\"trace\",\"metadata\":{}}\n\n"
+            ),
+        );
+
+        events.append(&mut parser.finish());
+
+        assert_eq!(
+            events.first(),
+            Some(&IrEvent::MessageStart {
+                id: "req_1".to_string(),
+                model: "claude-sonnet-4-6".to_string(),
+            })
+        );
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, IrEvent::TextDelta(text) if text == "ok"))
+                .count(),
+            1,
+            "the enveloped frame must deliver its text exactly once"
+        );
 
         assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)));
     }

@@ -134,18 +134,21 @@ pub(crate) async fn execute(
 
     debug!("{upstream_label}: upstream responded {status}");
 
-    let is_event_stream = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains("text/event-stream"));
+    // The parser is chosen by the upstream streaming mode the gateway
+    // requested, never by response-header sniffing: the Codex upstream
+    // answers its 200 SSE streams without a `Content-Type` header, and a
+    // 200 response to a streaming request is contractually a stream while a
+    // 200 response to a non-streaming request is contractually a JSON
+    // document (README §6.2).
+    let is_upstream_streaming =
+        is_upstream_streaming(upstream_format, provider.provider_type, is_client_streaming);
 
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<Result<IrEvent, ApiError>>(EVENT_CHANNEL_BUFFER);
 
     let parser = upstream_parser(upstream_format);
 
-    if is_event_stream {
+    if is_upstream_streaming {
         tokio::spawn(pump_sse(
             response,
             parser,
@@ -158,6 +161,22 @@ pub(crate) async fn execute(
     }
 
     Ok(Box::pin(ReceiverStream::new(receiver)))
+}
+
+/// Decides the upstream streaming mode the gateway requests: Codex always
+/// streams upstream — the ChatGPT Codex endpoint requires `stream: true`
+/// (README §5.1 invariant 2) — and every other built-in upstream matches the
+/// client's requested mode (README §6.3). The same decision selects the SSE
+/// or JSON response parser.
+fn is_upstream_streaming(
+    upstream_format: UpstreamFormat,
+    provider_type: ProviderType,
+    is_client_streaming: bool,
+) -> bool {
+    matches!(
+        (upstream_format, provider_type),
+        (UpstreamFormat::OpenAiResponse, ProviderType::OpenAiOauth)
+    ) || is_client_streaming
 }
 
 /// Builds the upstream HTTP request for the provider's wire format.
@@ -187,14 +206,14 @@ fn build_upstream_request(
                 ));
             };
 
-            let body = openai_response::render_request(ir, true);
+            let body = openai_response::render_codex_request(ir);
 
             Ok(http
                 .post(endpoints::CODEX_INFERENCE_URL)
                 .bearer_auth(access_token)
                 .header("chatgpt-account-id", account_id)
                 .header("Originator", endpoints::CODEX_ORIGINATOR)
-                .header("User-Agent", endpoints::CODEX_USER_AGENT)
+                .header("User-Agent", endpoints::codex_user_agent())
                 .header("Session-Id", new_uuid())
                 .header("Accept", "text/event-stream")
                 .json(&body))
@@ -497,8 +516,8 @@ impl SseFrameSource for SseParser {
 #[cfg(test)]
 mod tests {
     use super::{
-        SseFrameSource, build_upstream_request, compatible_base_url, execute, pump_sse,
-        resolve_routing,
+        SseFrameSource, build_upstream_request, compatible_base_url, execute,
+        is_upstream_streaming, pump_sse, resolve_routing,
     };
     use crate::{
         error::{ApiError, ApiErrorKind},
@@ -1053,6 +1072,130 @@ mod tests {
         Ok(())
     }
 
+    /// Verifies the upstream streaming mode the gateway requests: Codex
+    /// always streams upstream (README §5.1); every other built-in upstream
+    /// matches the client's requested mode (README §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn upstream_streaming_mode_follows_provider_contract() {
+        assert!(is_upstream_streaming(
+            UpstreamFormat::OpenAiResponse,
+            ProviderType::OpenAiOauth,
+            false,
+        ));
+
+        assert!(!is_upstream_streaming(
+            UpstreamFormat::OpenAiResponse,
+            ProviderType::OpenAiCompatible,
+            false,
+        ));
+
+        for format in [
+            UpstreamFormat::OpenAiResponse,
+            UpstreamFormat::OpenAiChatCompletion,
+            UpstreamFormat::GeminiGenerateContent,
+        ] {
+            assert!(is_upstream_streaming(
+                format,
+                ProviderType::OpenAiCompatible,
+                true
+            ));
+        }
+    }
+
+    /// Verifies an upstream 200 SSE stream served without a `Content-Type`
+    /// header is parsed as a stream when the gateway requested streaming: the
+    /// Codex upstream answers exactly this way, so the parser is chosen by
+    /// the requested upstream mode, never by response-header sniffing
+    /// (README §5.1, §6.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while opening the test database.
+    #[tokio::test]
+    async fn streaming_request_parses_content_type_less_sse_response()
+    -> Result<(), Box<dyn StdError>> {
+        init_http_client();
+
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(1, Duration::from_secs(5)).await?;
+
+        let body = concat!(
+            concat!(
+                "data: {\"type\":\"response.created\",",
+                "\"response\":{\"id\":\"resp1\",\"model\":\"m\"}}\n\n"
+            ),
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+            concat!(
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",",
+                "\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+            ),
+        );
+
+        // No `content-type` header at all — the header the old sniffing
+        // dispatch relied on.
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+
+        let address = serve_once(head, body.as_bytes());
+
+        let mut provider = compatible_provider_with_protocol(UpstreamFormat::OpenAiResponse);
+
+        provider.base_url = Some(format!("http://{address}"));
+
+        let events = execute(
+            &database,
+            crate::http(),
+            routing_for(&provider),
+            IrRequest {
+                model: "u1".to_string(),
+                messages: vec![IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: "hi".to_string(),
+                    }],
+                }],
+                ..IrRequest::default()
+            },
+            true,
+        )
+        .await;
+
+        use futures::StreamExt as _;
+
+        let mut stream = events?;
+
+        let mut events = Vec::new();
+
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        assert!(
+            events.iter().all(|event| event.is_ok()),
+            "a content-type-less SSE stream must parse as a stream: {events:?}"
+        );
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Ok(IrEvent::TextDelta(text)) if text == "ok"))
+        );
+
+        assert!(matches!(events.last(), Some(Ok(IrEvent::Done))));
+
+        Ok(())
+    }
+
     /// Verifies that a compatible provider missing its stored `base_url`
     /// yields an internal error naming the drift, instead of a misleading 502
     /// for a relative request URL.
@@ -1259,7 +1402,7 @@ mod tests {
 
         assert_eq!(
             header_value(headers, "user-agent"),
-            endpoints::CODEX_USER_AGENT
+            endpoints::codex_user_agent()
         );
 
         assert!(

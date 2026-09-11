@@ -22,7 +22,9 @@ pub(crate) async fn discover_upstream_models(
     let secret = provider.credentials.secret();
 
     match provider.provider_type {
-        ProviderType::OpenAiOauth => discover_codex(http, provider, secret).await,
+        ProviderType::OpenAiOauth => {
+            discover_codex(http, endpoints::CODEX_MODELS_URL, provider, secret).await
+        }
 
         ProviderType::AntigravityOauth => discover_antigravity(http, secret).await,
 
@@ -36,6 +38,7 @@ pub(crate) async fn discover_upstream_models(
 /// a `slug` string.
 async fn discover_codex(
     http: &Client,
+    models_url: &str,
     provider: &Provider,
     access_token: &str,
 ) -> Result<Vec<String>, ApiError> {
@@ -49,7 +52,8 @@ async fn discover_codex(
     };
 
     let response = http
-        .get(endpoints::CODEX_MODELS_URL)
+        .get(models_url)
+        .query(&[("client_version", endpoints::CODEX_CLIENT_VERSION)])
         .bearer_auth(access_token)
         .header("chatgpt-account-id", account_id)
         .send()
@@ -215,7 +219,9 @@ async fn parse_success_body(response: reqwest::Response) -> Result<Value, ApiErr
 
 #[cfg(test)]
 mod tests {
-    use super::{discover_compatible, discover_upstream_models, parse_success_body};
+    use super::{
+        discover_codex, discover_compatible, discover_upstream_models, parse_success_body,
+    };
     use crate::{
         error::ApiError,
         format::UpstreamFormat,
@@ -228,12 +234,16 @@ mod tests {
     };
 
     /// Serves one raw HTTP response on a loopback socket after reading the
-    /// client request, returning the bound address.
+    /// client request, returning the bound address and a handle yielding the
+    /// captured request bytes once the thread has responded.
     ///
     /// # Panics
     ///
     /// Panics if the socket fails, which fails the test.
-    fn serve_once(head: String, body: &[u8]) -> std::net::SocketAddr {
+    fn serve_once(
+        head: String,
+        body: &[u8],
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<Vec<u8>>) {
         #[expect(clippy::expect_used, reason = "a bind failure fails the test")]
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
@@ -248,7 +258,7 @@ mod tests {
 
         let body = body.to_vec();
 
-        std::thread::spawn(move || {
+        let server = std::thread::spawn(move || {
             #[expect(clippy::expect_used, reason = "a socket failure fails the test")]
             let mut socket = listener.accept().expect("accept should succeed").0;
 
@@ -281,9 +291,11 @@ mod tests {
 
             #[expect(clippy::expect_used, reason = "a write failure fails the test")]
             socket.write_all(&body).expect("body is writable");
+
+            request
         });
 
-        address
+        (address, server)
     }
 
     /// Builds an `openai_compatible` provider of the given protocol dialing
@@ -297,6 +309,26 @@ mod tests {
             protocol: Some(protocol),
             base_url: Some(base_url),
             credentials: Credentials::ApiKey("test-key".to_string()),
+            expires_at: None,
+            is_enabled: true,
+        }
+    }
+
+    /// Builds an `openai_oauth` provider carrying the given ChatGPT account
+    /// ID.
+    fn codex_provider(account_id: &str) -> Provider {
+        Provider {
+            id: 1,
+            name: "codex".to_string(),
+            model_prefix: String::new(),
+            provider_type: ProviderType::OpenAiOauth,
+            protocol: None,
+            base_url: None,
+            credentials: Credentials::OpenAiOauth {
+                access_token: "test-access".to_string(),
+                refresh_token: "test-refresh".to_string(),
+                account_id: account_id.to_string(),
+            },
             expires_at: None,
             is_enabled: true,
         }
@@ -320,7 +352,7 @@ mod tests {
             body.len()
         );
 
-        let address = serve_once(head, body.as_bytes());
+        let address = serve_once(head, body.as_bytes()).0;
 
         #[expect(clippy::expect_used, reason = "a client build failure fails the test")]
         let http = Client::builder()
@@ -467,6 +499,72 @@ mod tests {
             error.message.contains("requires OpenAI OAuth credentials"),
             "the error must name the credentials contract: {error}"
         );
+    }
+
+    /// Verifies the Codex discovery request carries the mandatory
+    /// `client_version` query parameter (matching the pinned `User-Agent`
+    /// version), the account-ID header, and the bearer token, and that the
+    /// `{items: [{slug, ...}]}` payload parses into slug values (README
+    /// §5.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the discovery call, which
+    /// fails the test.
+    #[tokio::test]
+    async fn codex_discovery_sends_client_version_query_and_parses_slugs()
+    -> Result<(), Box<dyn StdError>> {
+        let body = br#"{"items":[{"slug":"gpt-5.1"},{"slug":"gpt-5"}]}"#;
+
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+             connection: close\r\n\r\n",
+            body.len()
+        );
+
+        let (address, server) = serve_once(head, body);
+
+        #[expect(clippy::expect_used, reason = "a client build failure fails the test")]
+        let http = Client::builder()
+            .build()
+            .expect("test HTTP client should build");
+
+        let models = discover_codex(
+            &http,
+            &format!("http://{address}/models"),
+            &codex_provider("acct-1"),
+            "test-access",
+        )
+        .await?;
+
+        assert_eq!(models, vec!["gpt-5.1".to_string(), "gpt-5".to_string()]);
+
+        let request = String::from_utf8(
+            server
+                .join()
+                .expect("server thread should join without panicking"),
+        )?;
+
+        assert!(
+            request.starts_with("GET /models?client_version=0.147.0 HTTP/1.1\r\n"),
+            "the request line must carry the client_version query parameter: {request}"
+        );
+
+        assert!(
+            request.contains("chatgpt-account-id: acct-1"),
+            "the request must carry the account-ID header: {request}"
+        );
+
+        assert!(
+            request.contains("authorization: Bearer test-access"),
+            "the request must carry the bearer access token: {request}"
+        );
+
+        Ok(())
     }
 
     /// Verifies the compatible OpenAI-protocol discovery parses the

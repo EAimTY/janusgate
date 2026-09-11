@@ -14,8 +14,16 @@ pub(crate) const CODEX_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex
 /// `Originator` header value required by the Codex endpoint.
 pub(crate) const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
-/// `User-Agent` header value required by the Codex endpoint.
-pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.147.0";
+/// CLI version the Codex upstream expects: it is required as the
+/// `client_version` query parameter on model discovery and is embedded in the
+/// `User-Agent` value below.
+pub(crate) const CODEX_CLIENT_VERSION: &str = "0.147.0";
+
+/// `User-Agent` header value required by the Codex endpoint, derived from
+/// [`CODEX_CLIENT_VERSION`].
+pub(crate) fn codex_user_agent() -> String {
+    format!("codex_cli_rs/{CODEX_CLIENT_VERSION}")
+}
 
 /// Base URL of the Antigravity Code Assist API.
 ///

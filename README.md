@@ -197,7 +197,8 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 - **Mandatory Request Invariants**:
   1. `store: false` must always be present.
   2. `stream: true` is strictly required by the upstream Codex endpoint. When a gateway client requests non-streaming mode (`"stream": false`), the gateway **must** request streaming upstream, buffer and aggregate the SSE chunks in memory, and return a single aggregated non-streaming JSON response.
-  3. Required headers:
+  3. `max_output_tokens` must never be rendered: the upstream Codex endpoint rejects the parameter as unsupported, and the model's own output bound applies instead of the client-requested cap (the cap is consumed by translation and dropped).
+  4. Required headers:
      ```text
      Authorization: Bearer <accessToken>
      chatgpt-account-id: <accountId>
@@ -206,7 +207,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
      Session-Id: <uuid>
      Accept: text/event-stream
      ```
-- **Model Discovery**: `GET https://chatgpt.com/backend-api/codex/models` with `Authorization: Bearer <accessToken>` and `chatgpt-account-id: <accountId>` headers. The response payload must contain an `items` or `models` array whose entries carry a `slug` string; each slug is one `upstream_name`. Any other shape fails discovery.
+- **Model Discovery**: `GET https://chatgpt.com/backend-api/codex/models?client_version=<client_version>` with `Authorization: Bearer <accessToken>` and `chatgpt-account-id: <accountId>` headers, where `<client_version>` is the CLI version pinned in the `User-Agent` (`0.147.0`). The response payload must contain an `items` or `models` array whose entries carry a `slug` string; each slug is one `upstream_name`. Any other shape fails discovery.
 
 ### 5.2 Google Antigravity OAuth (`antigravity_oauth`)
 - **OAuth Constants**: Installed-app client ID `1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com`, client secret `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`, loopback redirect `http://localhost:51121/oauth-callback`. No PKCE; the client secret authenticates the exchange.
@@ -236,6 +237,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   }
   ```
 - **Upstream Invariants**:
+  - Every Code Assist response — `:generateContent` JSON bodies and `alt=sse` SSE frames alike — wraps the GenerateContentResponse in a `response` envelope beside `traceId` and `metadata`; the gateway unwraps the envelope when present and equally accepts bare GenerateContentResponse payloads (as sent by Gemini-compatible upstreams).
   - `thoughtSignature` blobs returned by upstream must be preserved and reattached across turns.
   - No automatic model mapping or tiered rewriting is performed; upstream calls pass the exact discovered `upstream_name`.
 - **Model Discovery**: `POST https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels` with JSON body `{}`; the response payload's `models` object keys are the `upstream_name` values.
@@ -286,7 +288,7 @@ All incoming and outgoing payloads map through an internal Intermediate Represen
 - `Usage {input_tokens, output_tokens}` — token accounting.
 - `Done` — terminal event; always the last event of every event stream, regardless of upstream shape. Parsers never emit it; the gateway appends it when the upstream response is fully consumed.
 
-Every upstream response — SSE stream or JSON document — is parsed into an IR event stream; every client response — streamed or aggregated — is rendered from IR events. Non-streaming client responses are aggregated in memory from the same event stream (Text/Reasoning/ToolCall deltas → accumulated content, ToolCallDone → final calls, Finish, Usage; `MessageStart` contributes nothing — outward responses carry renderer-minted identifiers). When a tool-call done event carries no assembled arguments, the accumulated streamed deltas are used; a repeated ToolCallDone for an already-completed call index is ignored.
+Every upstream response — SSE stream or JSON document — is parsed into an IR event stream; every client response — streamed or aggregated — is rendered from IR events. The parser is chosen by the upstream streaming mode the gateway requested — always streaming for `openai_oauth` (§5.1), otherwise the client's requested mode (§6.3) — never by response headers: the Codex upstream serves its 200 SSE streams without a `Content-Type` header. Non-streaming client responses are aggregated in memory from the same event stream (Text/Reasoning/ToolCall deltas → accumulated content, ToolCallDone → final calls, Finish, Usage; `MessageStart` contributes nothing — outward responses carry renderer-minted identifiers). When a tool-call done event carries no assembled arguments, the accumulated streamed deltas are used; a repeated ToolCallDone for an already-completed call index is ignored.
 
 Upstream refusal text is delivered as assistant message text (`TextDelta`), so it reaches clients through the ordinary text channel: Chat Completions upstreams map `delta.refusal` and `message.refusal` (content text before refusal text when one delta carries both), and Responses upstreams map `response.refusal.delta` events and `refusal` message content parts exactly like `output_text` parts.
 

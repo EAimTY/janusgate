@@ -663,6 +663,32 @@ fn validate_input_item_fields(input: Option<&Value>) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Renders the Codex-flavored upstream Responses payload: streaming is
+/// forced on (README §5.1 invariant 2) and `max_output_tokens` is omitted —
+/// the ChatGPT Codex backend rejects it as an unsupported parameter, and the
+/// model's own output bound applies instead of the client's cap.
+///
+/// # Panics
+///
+/// Panics if the rendered Responses body is not a JSON object, which
+/// [`render_request`]'s construction makes impossible.
+pub(crate) fn render_codex_request(ir: &IrRequest) -> Value {
+    let mut body = render_request(ir, true);
+
+    // render_request always yields a JSON object, so the removal lands.
+    #[expect(
+        clippy::expect_used,
+        reason = "render_request always renders a JSON object body"
+    )]
+    let object = body
+        .as_object_mut()
+        .expect("the rendered Responses body should be a JSON object");
+
+    object.remove("max_output_tokens");
+
+    body
+}
+
 /// Renders an IR request into an upstream Responses payload.
 pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
     let mut input: Vec<Value> = Vec::new();
@@ -2120,7 +2146,10 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{SseRenderer, UpstreamParser, parse_request, render_json_response, render_request};
+    use super::{
+        SseRenderer, UpstreamParser, parse_request, render_codex_request, render_json_response,
+        render_request,
+    };
     use crate::{
         error::ApiError,
         format::{
@@ -4132,6 +4161,35 @@ mod tests {
 
             assert_eq!(body.get("stream"), Some(&Value::Bool(stream)));
         }
+    }
+
+    /// Verifies the Codex-flavored render forces streaming upstream and drops
+    /// `max_output_tokens`, which the ChatGPT Codex backend rejects as an
+    /// unsupported parameter — the model's own output bound applies (README
+    /// §5.1) — while the shared compatible render keeps the client's cap
+    /// (README §5.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn render_codex_request_forces_streaming_and_drops_max_output_tokens() {
+        let ir = IrRequest {
+            max_output_tokens: Some(16),
+            ..user_turn_request()
+        };
+
+        let body = render_codex_request(&ir);
+
+        assert_eq!(body.get("stream"), Some(&Value::Bool(true)));
+
+        assert_eq!(body.get("store"), Some(&Value::Bool(false)));
+
+        assert_eq!(body.get("max_output_tokens"), None);
+
+        let compatible = render_request(&ir, true);
+
+        assert_eq!(compatible.get("max_output_tokens"), Some(&Value::from(16)));
     }
 
     /// Verifies `reasoning.summary` strictness: only `"auto"` is accepted;
