@@ -2,6 +2,7 @@
 
 use super::{error_response, parse_body, provider_json, validate_identifier};
 use crate::{
+    context::Context,
     database::Database,
     error::{self, ApiError, log_api_error},
     format::UpstreamFormat,
@@ -57,8 +58,8 @@ struct DeleteProviderBody {
 }
 
 /// Handles `GET /list-providers`.
-pub(crate) async fn list(State(database): State<Database>) -> Response {
-    match storage::list_providers(&database).await {
+pub(crate) async fn list(State(context): State<Context>) -> Response {
+    match storage::list_providers(&context.database).await {
         Ok(providers) => {
             let rendered = providers.iter().map(provider_json).collect::<Vec<_>>();
 
@@ -74,8 +75,8 @@ pub(crate) async fn list(State(database): State<Database>) -> Response {
 }
 
 /// Handles `POST /save-provider`.
-pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Response {
-    let outcome = handle_save(&database, &body).await;
+pub(crate) async fn save(State(context): State<Context>, body: Bytes) -> Response {
+    let outcome = handle_save(&context.database, &body).await;
 
     match outcome {
         Ok(rendered) => error::json_response(200, serde_json::json!({ "provider": rendered })),
@@ -84,11 +85,11 @@ pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Respo
 }
 
 /// Handles `POST /delete-provider`.
-pub(crate) async fn delete(State(database): State<Database>, body: Bytes) -> Response {
+pub(crate) async fn delete(State(context): State<Context>, body: Bytes) -> Response {
     let outcome = async {
         let request: DeleteProviderBody = parse_body(&body, "delete-provider")?;
 
-        if !storage::delete_provider(&database, request.id).await? {
+        if !storage::delete_provider(&context.database, request.id).await? {
             return Err(ApiError::not_found(format!(
                 "Provider {} does not exist",
                 request.id

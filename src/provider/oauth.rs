@@ -82,6 +82,13 @@ const REFRESH_WAIT_INTERVAL: Duration = Duration::from_millis(250);
 // Compile-time guarantee that the wait limit outlives lease staleness.
 const _: () = assert!(REFRESH_WAIT_LIMIT.as_secs() > REFRESH_LEASE_STALE_AFTER.as_secs());
 
+// Compile-time guarantee that a stalled control-plane request aborts — and
+// its lease clears — before the lease is considered stale, so an in-flight
+// grant is never stolen from a live holder.
+const _: () = assert!(
+    crate::http_client::CONTROL_PLANE_TOTAL_TIMEOUT.as_secs() < REFRESH_LEASE_STALE_AFTER.as_secs()
+);
+
 /// Code Assist metadata identifying the Antigravity IDE.
 fn code_assist_metadata() -> serde_json::Value {
     serde_json::json!({
@@ -95,9 +102,10 @@ fn code_assist_metadata() -> serde_json::Value {
 const ONBOARD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Total wall-clock budget for the `onboardUser` long-running operation,
-/// checked before every attempt. A fixed attempt count alone bounds nothing:
-/// each attempt inherits the shared client's 300-second read timeout, so the
-/// poll must also respect a deadline inside one management request.
+/// checked before every attempt. Each attempt is bounded by the control-plane
+/// client's total request timeout, but a fixed attempt count alone bounds
+/// nothing, so the poll must also respect a deadline inside one management
+/// request.
 const ONBOARD_TOTAL_BUDGET: Duration = Duration::from_secs(60);
 
 /// A freshly begun OAuth authorization flow.

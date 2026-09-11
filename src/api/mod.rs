@@ -1,7 +1,7 @@
 //! Outward client API routing and handling.
 
 use crate::{
-    database::Database,
+    context::Context,
     error::{self, ApiError},
 };
 use axum::{
@@ -19,7 +19,7 @@ pub(crate) mod openai_v1;
 pub(crate) use crate::error::json_response;
 
 /// Constructs the outward client API router, configured with CORS middleware.
-pub(crate) fn router() -> Router<Database> {
+pub(crate) fn router() -> Router<Context> {
     Router::new()
         .nest("/openai-v1", openai_v1::router())
         .fallback(fallback)

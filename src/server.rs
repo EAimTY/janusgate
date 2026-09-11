@@ -1,6 +1,6 @@
 //! Plaintext HTTP server lifecycle and connection driving.
 
-use super::{api, database::Database, management_api};
+use super::{api, context, management_api};
 use axum::{
     Router,
     body::Body,
@@ -218,12 +218,12 @@ async fn read_request_prelude(stream: &mut TcpStream) -> RequestPrelude {
 /// # Panics
 ///
 /// Panics if the TCP listener fails to initialize.
-pub(crate) async fn run(database: Database) -> ! {
+pub(crate) async fn run(context: context::Context) -> ! {
     let (tcp_listener, socket_address) = init_tcp_listener();
 
     info!("listening on {socket_address}");
 
-    let router = router(database);
+    let router = router(context);
 
     let mut consecutive_failures: u32 = 0;
 
@@ -307,13 +307,14 @@ where
     }
 }
 
-/// Constructs the Axum root router configured with database state.
-fn router(database: Database) -> Router {
+/// Constructs the Axum root router configured with the shared request
+/// context.
+fn router(context: context::Context) -> Router {
     Router::new()
         .nest("/api", api::router())
         .nest("/management-api", management_api::router())
         .fallback(|| async { StatusCode::NOT_FOUND })
-        .with_state(database)
+        .with_state(context)
 }
 
 /// Initializes the Tokio TCP listener using the global application

@@ -1,20 +1,21 @@
 #![doc = include_str!("../README.md")]
 #![recursion_limit = "256"]
 
-use crate::{config::Config, database::Database};
+use crate::{config::Config, context::Context, database::Database};
 use deref_once_lock::OnceLock;
 use json_strip_comments::StripComments;
 use lexopt::{Arg as Argument, Parser as ArgumentsParser};
-use reqwest::Client;
-use std::{env, ffi::OsString, fs::File, panic, path::PathBuf, process, time::Duration};
+use std::{env, ffi::OsString, fs::File, panic, path::PathBuf, process};
 use tokio::main;
 
 mod api;
 mod config;
+mod context;
 mod database;
 mod error;
 mod format;
 mod gateway;
+mod http_client;
 mod ids;
 mod ir;
 mod logging;
@@ -23,30 +24,12 @@ mod provider;
 mod security;
 mod server;
 mod sse;
-
 mod unix_time;
 
 /// Global read-only application configuration, initialized once during process
 /// startup and accessible throughout the crate without synchronization
 /// overhead.
 static CONFIG: OnceLock<Config> = OnceLock::new();
-
-/// Global shared HTTP client used for every upstream request, initialized
-/// once during process startup.
-static HTTP: OnceLock<Client> = OnceLock::new();
-
-/// Maximum idle time between two consecutive reads of an upstream response.
-///
-/// reqwest resets this deadline after every successful read, so it never
-/// bounds a slow-but-flowing response; it only aborts a stalled upstream
-/// connection, which would otherwise park the request task forever.
-const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// Deadline for establishing an upstream connection.
-///
-/// Connection setup never carries data to reset a read deadline, so it is
-/// bounded separately from [`UPSTREAM_READ_TIMEOUT`].
-const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Application entry point.
 ///
@@ -73,22 +56,6 @@ async fn main() -> ! {
 
     #[expect(
         clippy::expect_used,
-        reason = "building the HTTP client at startup is fatal on failure"
-    )]
-    let http = Client::builder()
-        .connect_timeout(HTTP_CONNECT_TIMEOUT)
-        .read_timeout(UPSTREAM_READ_TIMEOUT)
-        .build()
-        .expect("failed to build HTTP client");
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "HTTP is initialized exactly once at application startup"
-    )]
-    HTTP.set(http).unwrap();
-
-    #[expect(
-        clippy::expect_used,
         reason = "opening database at startup is fatal on failure"
     )]
     let database = Database::open(
@@ -99,21 +66,13 @@ async fn main() -> ! {
     .await
     .expect("failed to open database");
 
-    server::run(database).await
-}
+    let context = Context {
+        database,
+        data_plane: http_client::data_plane(),
+        control_plane: http_client::control_plane(),
+    };
 
-/// Returns the global shared HTTP client.
-///
-/// # Panics
-///
-/// Panics when called before startup initialization, which only a startup
-/// ordering bug can cause.
-pub(crate) fn http() -> &'static Client {
-    #[expect(
-        clippy::expect_used,
-        reason = "HTTP is initialized exactly once at application startup"
-    )]
-    HTTP.get().expect("HTTP client is initialized at startup")
+    server::run(context).await
 }
 
 /// Parses command-line arguments, opens the designated configuration file,

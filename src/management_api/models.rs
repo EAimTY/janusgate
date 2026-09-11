@@ -2,6 +2,7 @@
 
 use super::{error_response, parse_body, validate_identifier};
 use crate::{
+    context::Context,
     database::Database,
     error::{self, ApiError, log_api_error},
     provider::{
@@ -11,6 +12,7 @@ use crate::{
 };
 use axum::{body::Bytes, extract::State, response::Response};
 use log::info;
+use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -48,8 +50,8 @@ struct SaveModelBody {
 }
 
 /// Handles `POST /discover-models`.
-pub(crate) async fn discover(State(database): State<Database>, body: Bytes) -> Response {
-    let outcome = handle_discover(&database, &body).await;
+pub(crate) async fn discover(State(context): State<Context>, body: Bytes) -> Response {
+    let outcome = handle_discover(&context.database, &context.control_plane, &body).await;
 
     match outcome {
         Ok(discovered) => {
@@ -60,9 +62,9 @@ pub(crate) async fn discover(State(database): State<Database>, body: Bytes) -> R
 }
 
 /// Handles `GET /list-models`.
-pub(crate) async fn list(State(database): State<Database>) -> Response {
+pub(crate) async fn list(State(context): State<Context>) -> Response {
     let outcome = async {
-        let entries = storage::list_model_entries(&database).await?;
+        let entries = storage::list_model_entries(&context.database).await?;
 
         let rendered = entries
             .iter()
@@ -84,8 +86,8 @@ pub(crate) async fn list(State(database): State<Database>) -> Response {
 }
 
 /// Handles `POST /save-model`.
-pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Response {
-    let outcome = handle_save(&database, &body).await;
+pub(crate) async fn save(State(context): State<Context>, body: Bytes) -> Response {
+    let outcome = handle_save(&context.database, &body).await;
 
     match outcome {
         Ok(rendered) => error::json_response(200, serde_json::json!({ "model": rendered })),
@@ -97,11 +99,18 @@ pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Respo
 /// by `upstream_id`. The outcome is logged: the discovered count at info
 /// level, every failure at the provider's response boundary.
 ///
+/// `control_plane` is the bounded client used for the token refresh and the
+/// upstream discovery calls.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] for an empty provider identifier, unknown providers,
 /// upstream failures, and public ID collisions.
-async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, ApiError> {
+async fn handle_discover(
+    database: &Database,
+    control_plane: &Client,
+    body: &Bytes,
+) -> Result<usize, ApiError> {
     let request: DiscoverModelsBody = parse_body(body, "discover-models")?;
 
     let outcome = async {
@@ -111,9 +120,9 @@ async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, Api
                 ApiError::not_found(format!("Provider {} does not exist", request.id))
             })?;
 
-        let fresh = oauth::ensure_fresh_token(database, crate::http(), &provider).await?;
+        let fresh = oauth::ensure_fresh_token(database, control_plane, &provider).await?;
 
-        let upstream_ids = discovery::discover_upstream_models(crate::http(), &fresh).await?;
+        let upstream_ids = discovery::discover_upstream_models(control_plane, &fresh).await?;
 
         // Discovery payloads can repeat an upstream identifier; keep the first
         // occurrence.

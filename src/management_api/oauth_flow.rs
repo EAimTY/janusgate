@@ -2,6 +2,7 @@
 
 use super::{error_response, parse_body, provider_json, validate_identifier};
 use crate::{
+    context::Context,
     database::Database,
     error::{self, ApiError, log_api_error},
     provider::{NewProvider, OAuthProviderType, oauth, storage},
@@ -9,6 +10,7 @@ use crate::{
 };
 use axum::{body::Bytes, extract::State, response::Response};
 use log::info;
+use reqwest::Client;
 use serde::Deserialize;
 
 /// Strictly parsed `start-provider-oauth` request.
@@ -44,8 +46,8 @@ struct CompleteOAuthBody {
 }
 
 /// Handles `POST /start-provider-oauth`.
-pub(crate) async fn start(State(database): State<Database>, body: Bytes) -> Response {
-    let outcome = handle_start(&database, &body).await;
+pub(crate) async fn start(State(context): State<Context>, body: Bytes) -> Response {
+    let outcome = handle_start(&context.database, &body).await;
 
     match outcome {
         Ok(flow) => error::json_response(
@@ -61,8 +63,8 @@ pub(crate) async fn start(State(database): State<Database>, body: Bytes) -> Resp
 }
 
 /// Handles `POST /complete-provider-oauth`.
-pub(crate) async fn complete(State(database): State<Database>, body: Bytes) -> Response {
-    let outcome = handle_complete(&database, &body).await;
+pub(crate) async fn complete(State(context): State<Context>, body: Bytes) -> Response {
+    let outcome = handle_complete(&context.database, &context.control_plane, &body).await;
 
     match outcome {
         Ok(rendered) => error::json_response(200, serde_json::json!({ "provider": rendered })),
@@ -135,13 +137,20 @@ enum Completion<'a> {
 /// provider. The outcome is logged: the created or re-authorized provider at
 /// info level, every failure at the completion's response boundary.
 ///
+/// `control_plane` is the bounded client used for the token exchange and the
+/// project resolution.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] for unknown, expired, or already-consumed states,
 /// mixed or incomplete completion forms, empty names, taken names, unknown
 /// ids, exchange failures, type mismatches, and a provider deleted
 /// concurrently after the completion's lookup.
-async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json::Value, ApiError> {
+async fn handle_complete(
+    database: &Database,
+    control_plane: &Client,
+    body: &Bytes,
+) -> Result<serde_json::Value, ApiError> {
     let request: CompleteOAuthBody = parse_body(body, "complete-provider-oauth")?;
 
     // The log context rides on whichever form the request names, computed
@@ -246,7 +255,7 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
             })?;
 
         let exchanged = oauth::exchange_code(
-            crate::http(),
+            control_plane,
             state.state_type,
             &request.code,
             &state.verifier,

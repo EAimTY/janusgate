@@ -1,7 +1,7 @@
 //! Administrative management API routing and handling.
 
 use crate::{
-    database::Database,
+    context::Context,
     error::{self, ApiError, log_api_error},
     format::UpstreamFormat,
     provider::Provider,
@@ -33,7 +33,7 @@ const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Constructs the administrative management API router with its own token
 /// authentication, 404 fallback, and CORS middleware.
-pub(crate) fn router() -> Router<Database> {
+pub(crate) fn router() -> Router<Context> {
     Router::new()
         .route("/list-providers", get(providers::list))
         .route("/save-provider", post(providers::save))

@@ -2,7 +2,7 @@
 
 use super::json_response;
 use crate::{
-    database::Database,
+    context::Context,
     error::{ApiError, log_api_error},
     format::{ClientFormat, ClientSseRenderer, openai_chat_completion, openai_response},
     gateway::{self, IrEventStream},
@@ -35,7 +35,7 @@ const SSE_CHANNEL_BUFFER: usize = 64;
 
 /// Constructs the format sub-router with OpenAI bearer authentication and its
 /// own 404 fallback.
-pub(crate) fn router() -> Router<Database> {
+pub(crate) fn router() -> Router<Context> {
     Router::new()
         .route("/chat/completions", post(chat_completions))
         .route("/responses", post(responses))
@@ -91,13 +91,13 @@ async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
 }
 
 /// Handles `POST /chat/completions`.
-async fn chat_completions(State(database): State<Database>, body: Bytes) -> Response {
-    outcome_response(handle_completion::<openai_chat_completion::Format>(&database, &body).await)
+async fn chat_completions(State(context): State<Context>, body: Bytes) -> Response {
+    outcome_response(handle_completion::<openai_chat_completion::Format>(&context, &body).await)
 }
 
 /// Handles `POST /responses`.
-async fn responses(State(database): State<Database>, body: Bytes) -> Response {
-    outcome_response(handle_completion::<openai_response::Format>(&database, &body).await)
+async fn responses(State(context): State<Context>, body: Bytes) -> Response {
+    outcome_response(handle_completion::<openai_response::Format>(&context, &body).await)
 }
 
 /// Renders a handler outcome, mapping failures to OpenAI error responses.
@@ -120,7 +120,7 @@ fn outcome_response(outcome: Result<Response, ApiError>) -> Response {
 /// # Errors
 ///
 /// Returns [`ApiError`] for request, routing, and upstream failures.
-async fn handle_completion<TFormat>(database: &Database, body: &[u8]) -> Result<Response, ApiError>
+async fn handle_completion<TFormat>(context: &Context, body: &[u8]) -> Result<Response, ApiError>
 where
     TFormat: ClientFormat,
 {
@@ -133,7 +133,7 @@ where
         }
     };
 
-    let routing = match gateway::resolve_routing(database, &parsed.ir.model).await {
+    let routing = match gateway::resolve_routing(&context.database, &parsed.ir.model).await {
         Ok(routing) => routing,
         Err(error) => {
             log_api_error(
@@ -157,8 +157,7 @@ where
     let should_include_usage = parsed.should_include_usage;
 
     let outcome = async {
-        let events =
-            gateway::execute(database, crate::http(), routing, parsed.ir, is_streaming).await?;
+        let events = gateway::execute(context, routing, parsed.ir, is_streaming).await?;
 
         if is_streaming {
             Ok(sse_response(
@@ -182,8 +181,8 @@ where
 }
 
 /// Handles `GET /models`.
-async fn models(State(database): State<Database>) -> Response {
-    match storage::list_enabled_models_with_owner(&database).await {
+async fn models(State(context): State<Context>) -> Response {
+    match storage::list_enabled_models_with_owner(&context.database).await {
         Ok(listed) => {
             let data = listed
                 .iter()

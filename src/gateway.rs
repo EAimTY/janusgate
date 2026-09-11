@@ -2,6 +2,7 @@
 //! dispatch, and translation into IR event streams.
 
 use crate::{
+    context::Context,
     database::Database,
     error::ApiError,
     format::{
@@ -55,8 +56,7 @@ pub(crate) async fn resolve_routing(
 /// Returns [`ApiError`] for routing, token, and upstream failures detected
 /// before the response stream starts.
 pub(crate) async fn execute(
-    database: &Database,
-    http: &Client,
+    context: &Context,
     routing: ModelRouting,
     mut ir: IrRequest,
     is_client_streaming: bool,
@@ -88,7 +88,11 @@ pub(crate) async fn execute(
         routing.provider.name, ir.model
     );
 
-    let provider = oauth::ensure_fresh_token(database, http, &routing.provider).await?;
+    // The token refresh is a control-plane round-trip, so it rides the
+    // bounded client even though the completion itself is data-plane traffic.
+    let provider =
+        oauth::ensure_fresh_token(&context.database, &context.control_plane, &routing.provider)
+            .await?;
 
     // The wire format is resolved once per request and shared by request
     // building and event parsing.
@@ -102,7 +106,7 @@ pub(crate) async fn execute(
     );
 
     let request_builder = build_upstream_request(
-        http,
+        &context.data_plane,
         upstream_format,
         &provider,
         &routing,
