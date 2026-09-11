@@ -1,14 +1,14 @@
 CREATE TABLE providers (
     id Integer PRIMARY KEY NOT NULL,
     name Text NOT NULL UNIQUE CHECK (name <> ''),
+    is_enabled Integer NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
     model_prefix Text NOT NULL,
     type Text NOT NULL CHECK (type IN ('openai_oauth', 'antigravity_oauth', 'openai_compatible')),
     protocol Text NULL,
     base_url Text NULL,
     credentials Text NOT NULL,
     expires_at Integer NULL,
-    refresh_started_at Integer NULL,
-    is_enabled Integer NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1))
+    refresh_started_at Integer NULL
 ) STRICT;
 
 -- A model is identified by its owning provider plus the upstream model identifier. Discovery-derived
@@ -17,16 +17,16 @@ CREATE TABLE models (
     provider_id Integer NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     upstream_id Text NOT NULL,
 
+    -- Whether this model serves traffic under its provider. Effective serving
+    -- requires both provider.is_enabled and model.is_enabled.
+    is_enabled Integer NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
+
     -- Public routing ID: id_override ?? (model_prefix + upstream_id),
     -- maintained at write time.
     id Text NOT NULL UNIQUE,
 
     -- Non-NULL explicitly sets the public routing ID directly, bypassing model_prefix.
     id_override Text NULL,
-
-    -- Whether this model serves traffic under its provider. Effective serving
-    -- requires both provider.is_enabled and model.is_enabled.
-    is_enabled Integer NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
 
     -- JSON array of canonical thinking levels; NULL means no filtering, pure passthrough.
     thinking_levels_override Text NULL,
