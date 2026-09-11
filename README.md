@@ -166,7 +166,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 2. **Plaintext Credential Storage**:
    - Upstream credentials and tokens are stored directly in plaintext JSON within the database. No encryption or decryption is performed.
 3. **Network Invariants**:
-   - Inbound endpoints do not use sessions, cookies, or CORS headers.
+   - Inbound endpoints do not use sessions or cookies. Cross-Origin Resource Sharing (CORS) is configurable independently on the outward API sub-router (`/api`) and the administrative management API sub-router (`/management-api`) via `cors` (`allowed_origin`, `allow_private_network`) in configuration. Preflight `OPTIONS` requests are handled and matching CORS response headers are attached, including Private Network Access headers when enabled.
    - Accepted inbound TCP connections enable `TCP_NODELAY` (best-effort: a failure is logged and the connection is still served), so small streaming frames — SSE events in particular — are written immediately instead of stalling against Nagle's algorithm and the peer's delayed ACK.
    - Inbound HTTP/1 connections that do not finish sending request headers within 30 seconds are closed.
    - Inbound connections presenting the HTTP/2 connection preface are closed: only plaintext HTTP/1 is spoken.
@@ -411,7 +411,7 @@ One strictness rule applies uniformly to every management request body: **names 
 
 ### Configuration File (`config.jsonc`)
 
-JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. The root schema is: `log_level` (level filter, see below), `listen`, `database` (`path`, `max_connections`, `pool_timeout`), `management_api` (`token`), and `api` (`key`). Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
+JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. The root schema is: `log_level` (level filter, see below), `listen`, `database` (`path`, `max_connections`, `pool_timeout`), `management_api` (`token`, `cors`), and `api` (`key`, `cors`). Each `cors` object configures `allowed_origin` and `allow_private_network`: `allowed_origin` specifies allowed origins as a single string (e.g. `"*"` or `"https://dashboard.example.com"`) or an array of strings (e.g. `["*"]`, `["https://dashboard.example.com"]`, or `[]` to disallow all cross-origin requests), and `allow_private_network` is a boolean controlling Private Network Access (PNA) preflight responses (`Access-Control-Allow-Private-Network`). Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
 
 ### Logging
 

@@ -17,12 +17,30 @@
     "management_api": {
         // Management token for /management-api/* (Authorization: <token>).
         // Placeholder values fail at startup; replace with a real secret.
-        "token": "CHANGE_ME_MANAGEMENT_TOKEN"
+        "token": "CHANGE_ME_MANAGEMENT_TOKEN",
+        "cors": {
+            // Origin(s) permitted for cross-origin requests. A single string
+            // (e.g. "*", "https://dashboard.example.com") or list of strings
+            // (e.g. ["*"], ["https://dashboard.example.com"]). Specifying "*"
+            // or ["*"] allows any origin; [] disallows all cross-origin requests.
+            "allowed_origin": "*",
+            // Whether to allow requests from private networks (Private Network Access).
+            "allow_private_network": false
+        }
     },
 
     "api": {
         // Shared API key for outward protocol endpoints (under /api/*).
         // Placeholder values fail at startup; replace with a real secret.
-        "key": "CHANGE_ME_API_KEY"
+        "key": "CHANGE_ME_API_KEY",
+        "cors": {
+            // Origin(s) permitted for cross-origin requests. A single string
+            // (e.g. "*", "https://chat.example.com") or list of strings
+            // (e.g. ["*"], ["https://chat.example.com"]). Specifying "*" or
+            // ["*"] allows any origin; [] disallows all cross-origin requests.
+            "allowed_origin": "*",
+            // Whether to allow requests from private networks (Private Network Access).
+            "allow_private_network": false
+        }
     }
 }

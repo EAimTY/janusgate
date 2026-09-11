@@ -18,6 +18,7 @@ use axum::{
 };
 use log::warn;
 use serde::de::DeserializeOwned;
+use tower_http::cors::CorsLayer;
 
 pub(crate) mod models;
 pub(crate) mod oauth_flow;
@@ -31,7 +32,7 @@ pub(crate) mod providers;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Constructs the administrative management API router with its own token
-/// authentication and 404 fallback.
+/// authentication, 404 fallback, and CORS middleware.
 pub(crate) fn router() -> Router<Database> {
     Router::new()
         .route("/list-providers", get(providers::list))
@@ -45,6 +46,13 @@ pub(crate) fn router() -> Router<Database> {
         .fallback(fallback)
         .layer(middleware::from_fn(authenticate))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(crate::CONFIG.management_api.cors.allowed_origin.clone())
+                .allow_private_network(crate::CONFIG.management_api.cors.allow_private_network)
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any),
+        )
 }
 
 /// Authenticates the request against the bearer-less management token.
@@ -470,6 +478,150 @@ mod tests {
         .await?;
 
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+
+        Ok(())
+    }
+
+    /// Sends a request through the router and returns the full HTTP response.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the in-memory oneshot serve fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the router.
+    async fn send_request(
+        router: axum::Router,
+        request: HttpRequest<Body>,
+    ) -> Result<axum::response::Response, Box<dyn StdError>> {
+        // SAFETY: not applicable; the in-memory oneshot serve is infallible,
+        // so the unreachable arm documents the invariant.
+        let response = match router.oneshot(request).await {
+            Ok(response) => response,
+            Err(error) => unreachable!("in-memory oneshot cannot fail: {error}"),
+        };
+
+        Ok(response)
+    }
+
+    /// Verifies that CORS preflight requests succeed without requiring
+    /// authentication and return the configured CORS headers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the router.
+    #[tokio::test]
+    async fn handles_cors_preflight_without_token() -> Result<(), Box<dyn StdError>> {
+        let (_, router, _guard) = test_router().await?;
+
+        #[expect(clippy::expect_used, reason = "a build failure fails the test")]
+        let request = HttpRequest::builder()
+            .method("OPTIONS")
+            .uri("/list-providers")
+            .header("origin", "https://dashboard.example.com")
+            .header("access-control-request-method", "GET")
+            .header("access-control-request-headers", "authorization")
+            .header("access-control-request-private-network", "true")
+            .body(Body::empty())
+            .expect("request should build");
+
+        let response = send_request(router, request).await?;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+
+        assert!(
+            response
+                .headers()
+                .contains_key("access-control-allow-methods")
+        );
+
+        assert!(
+            response
+                .headers()
+                .contains_key("access-control-allow-headers")
+        );
+
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-private-network")
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
+
+        Ok(())
+    }
+
+    /// Verifies that CORS headers are attached to both authenticated and
+    /// unauthorized responses when an origin is provided.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the router.
+    #[tokio::test]
+    async fn attaches_cors_headers_to_authenticated_and_unauthorized_responses()
+    -> Result<(), Box<dyn StdError>> {
+        let (_, router, _guard) = test_router().await?;
+
+        // Authenticated request:
+        #[expect(clippy::expect_used, reason = "a build failure fails the test")]
+        let authorized_request = HttpRequest::builder()
+            .method("GET")
+            .uri("/list-providers")
+            .header("origin", "https://dashboard.example.com")
+            .header("authorization", MANAGEMENT_TOKEN)
+            .body(Body::empty())
+            .expect("request should build");
+
+        let authorized_response = send_request(router.clone(), authorized_request).await?;
+
+        assert_eq!(authorized_response.status(), StatusCode::OK);
+
+        assert_eq!(
+            authorized_response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+
+        // Unauthorized request:
+        #[expect(clippy::expect_used, reason = "a build failure fails the test")]
+        let unauthorized_request = HttpRequest::builder()
+            .method("GET")
+            .uri("/list-providers")
+            .header("origin", "https://dashboard.example.com")
+            .body(Body::empty())
+            .expect("request should build");
+
+        let unauthorized_response = send_request(router, unauthorized_request).await?;
+
+        assert_eq!(unauthorized_response.status(), StatusCode::UNAUTHORIZED);
+
+        assert_eq!(
+            unauthorized_response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
 
         Ok(())
     }

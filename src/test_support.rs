@@ -188,8 +188,14 @@ pub(crate) fn init_config() {
                 "log_level": "info",
                 "listen": "127.0.0.1:1",
                 "database": {"path": "irrelevant.db", "max_connections": 1, "pool_timeout": 1},
-                "management_api": {"token": "test-mgmt"},
-                "api": {"key": "test-api-key"}
+                "management_api": {
+                    "token": "test-mgmt",
+                    "cors": {"allowed_origin": "*", "allow_private_network": true}
+                },
+                "api": {
+                    "key": "test-api-key",
+                    "cors": {"allowed_origin": "*", "allow_private_network": true}
+                }
             }"#,
         )
         .expect("config file should write");
