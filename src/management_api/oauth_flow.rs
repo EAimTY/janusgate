@@ -4,7 +4,7 @@ use super::{error_response, parse_body, provider_json, validate_identifier};
 use crate::{
     database::Database,
     error::{self, ApiError, log_api_error},
-    provider::{NewProvider, ProviderType, oauth, storage},
+    provider::{NewProvider, OAuthProviderType, oauth, storage},
     unix_time,
 };
 use axum::{body::Bytes, extract::State, response::Response};
@@ -81,14 +81,14 @@ async fn handle_start(database: &Database, body: &Bytes) -> Result<oauth::OAuthF
     let request: StartOAuthBody = parse_body(body, "start-provider-oauth")?;
 
     let outcome = async {
-        let provider_type = ProviderType::parse(&request.provider_type).ok_or_else(|| {
+        let provider_type = OAuthProviderType::parse(&request.provider_type).ok_or_else(|| {
             ApiError::invalid_parameter(
                 "type",
                 format!("Unknown provider type `{}`", request.provider_type),
             )
         })?;
 
-        let flow = oauth::begin_flow(provider_type)?;
+        let flow = oauth::begin_flow(provider_type);
 
         storage::delete_expired_oauth_states(database, unix_time::unix_now()).await?;
 
@@ -229,7 +229,7 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
         if let (Some(provider), Some(state_type)) = (
             &reauthorized,
             storage::find_oauth_state_type(database, &request.state, now).await?,
-        ) && state_type != provider.provider_type
+        ) && state_type.as_provider_type() != provider.provider_type
         {
             return Err(ApiError::conflict(format!(
                 "Provider `{}` has type `{}` and cannot be authorized as `{}`",
@@ -282,7 +282,7 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
                     &NewProvider {
                         name,
                         model_prefix,
-                        provider_type: state.state_type,
+                        provider_type: state.state_type.as_provider_type(),
                         protocol: None,
                         base_url: None,
                         credentials: &exchanged.credentials,

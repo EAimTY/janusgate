@@ -2,6 +2,7 @@
 //! discovery.
 
 use crate::{error::ApiError, format::UpstreamFormat};
+use turso::{Value, params::IntoValue};
 
 pub(crate) mod discovery;
 pub(crate) mod endpoints;
@@ -49,6 +50,101 @@ impl ProviderType {
             Self::AntigravityOauth => Some(UpstreamFormat::GeminiGenerateContent),
             Self::OpenAiCompatible => None,
         }
+    }
+}
+
+impl IntoValue for ProviderType {
+    fn into_value(self) -> Result<Value, turso::Error> {
+        Ok(Value::Text(self.as_str().to_string()))
+    }
+}
+
+impl TryFrom<&Value> for ProviderType {
+    type Error = ApiError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Text(text) => Self::parse(text)
+                .ok_or_else(|| ApiError::internal(format!("unknown provider type `{text}`"))),
+            _ => Err(ApiError::internal(
+                "provider type column must be a text value",
+            )),
+        }
+    }
+}
+
+impl TryFrom<Value> for ProviderType {
+    type Error = ApiError;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Self::try_from(&value)
+    }
+}
+
+/// Kinds of upstream provider accounts that use OAuth authorization flows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OAuthProviderType {
+    /// ChatGPT account speaking the Codex Responses protocol.
+    OpenAiOauth,
+
+    /// Google account speaking Gemini GenerateContent via Code Assist.
+    AntigravityOauth,
+}
+
+impl OAuthProviderType {
+    /// Converts this OAuth flow kind into its corresponding provider type.
+    #[must_use]
+    pub(crate) const fn as_provider_type(self) -> ProviderType {
+        match self {
+            Self::OpenAiOauth => ProviderType::OpenAiOauth,
+            Self::AntigravityOauth => ProviderType::AntigravityOauth,
+        }
+    }
+
+    /// Parses the canonical OAuth provider type name.
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "openai_oauth" => Some(Self::OpenAiOauth),
+            "antigravity_oauth" => Some(Self::AntigravityOauth),
+            _ => None,
+        }
+    }
+
+    /// Renders the canonical OAuth provider type name.
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiOauth => "openai_oauth",
+            Self::AntigravityOauth => "antigravity_oauth",
+        }
+    }
+}
+
+impl IntoValue for OAuthProviderType {
+    fn into_value(self) -> Result<Value, turso::Error> {
+        Ok(Value::Text(self.as_str().to_string()))
+    }
+}
+
+impl TryFrom<&Value> for OAuthProviderType {
+    type Error = ApiError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Text(text) => Self::parse(text)
+                .ok_or_else(|| ApiError::internal(format!("unknown OAuth provider type `{text}`"))),
+            _ => Err(ApiError::internal(
+                "OAuth state type column must be a text value",
+            )),
+        }
+    }
+}
+
+impl TryFrom<Value> for OAuthProviderType {
+    type Error = ApiError;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Self::try_from(&value)
     }
 }
 
@@ -437,5 +533,85 @@ mod tests {
         };
         assert!(!model_disabled.is_effectively_enabled(true));
         assert!(!model_disabled.is_effectively_enabled(false));
+    }
+
+    /// Verifies that `OAuthProviderType` accurately maps to `ProviderType`
+    /// without relying on an implicit `From` implementation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if provider type mapping assertions fail.
+    #[test]
+    fn maps_oauth_provider_type_to_provider_type() {
+        assert_eq!(
+            OAuthProviderType::OpenAiOauth.as_provider_type(),
+            ProviderType::OpenAiOauth
+        );
+        assert_eq!(
+            OAuthProviderType::AntigravityOauth.as_provider_type(),
+            ProviderType::AntigravityOauth
+        );
+    }
+
+    /// Verifies value conversions between database values and provider types.
+    ///
+    /// # Panics
+    ///
+    /// Panics if value serialization or deserialization fails.
+    #[test]
+    fn converts_provider_type_database_values() {
+        for provider_type in [
+            ProviderType::OpenAiOauth,
+            ProviderType::AntigravityOauth,
+            ProviderType::OpenAiCompatible,
+        ] {
+            #[expect(clippy::unwrap_used, reason = "into_value returns Ok for ProviderType")]
+            let value = provider_type.into_value().unwrap();
+            assert_eq!(value, Value::Text(provider_type.as_str().to_string()));
+
+            #[expect(clippy::unwrap_used, reason = "try_from returns Ok for valid Text")]
+            let parsed = ProviderType::try_from(&value).unwrap();
+            assert_eq!(parsed, provider_type);
+        }
+
+        let invalid = Value::Text("unknown_type".to_string());
+        assert!(ProviderType::try_from(&invalid).is_err());
+
+        let non_text = Value::Integer(42);
+        assert!(ProviderType::try_from(&non_text).is_err());
+    }
+
+    /// Verifies value conversions between database values and OAuth provider
+    /// types.
+    ///
+    /// # Panics
+    ///
+    /// Panics if value serialization or deserialization fails.
+    #[test]
+    fn converts_oauth_provider_type_database_values() {
+        for oauth_type in [
+            OAuthProviderType::OpenAiOauth,
+            OAuthProviderType::AntigravityOauth,
+        ] {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "into_value returns Ok for OAuthProviderType"
+            )]
+            let value = oauth_type.into_value().unwrap();
+            assert_eq!(value, Value::Text(oauth_type.as_str().to_string()));
+
+            #[expect(clippy::unwrap_used, reason = "try_from returns Ok for valid Text")]
+            let parsed = OAuthProviderType::try_from(&value).unwrap();
+            assert_eq!(parsed, oauth_type);
+        }
+
+        let incompatible = Value::Text("openai_compatible".to_string());
+        assert!(OAuthProviderType::try_from(&incompatible).is_err());
+
+        let invalid = Value::Text("unknown_type".to_string());
+        assert!(OAuthProviderType::try_from(&invalid).is_err());
+
+        let non_text = Value::Integer(42);
+        assert!(OAuthProviderType::try_from(&non_text).is_err());
     }
 }

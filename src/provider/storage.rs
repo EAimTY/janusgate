@@ -1,6 +1,8 @@
 //! Provider, model, and OAuth state persistence.
 
-use super::{Credentials, Model, ModelRouting, NewProvider, Provider, ProviderType};
+use super::{
+    Credentials, Model, ModelRouting, NewProvider, OAuthProviderType, Provider, ProviderType,
+};
 use crate::{
     database::{Database, Row, Transaction, Value, params, params_from_iter},
     error::ApiError,
@@ -39,7 +41,7 @@ pub(crate) async fn insert_provider(
             params![
                 provider.name,
                 provider.model_prefix,
-                provider.provider_type.as_str(),
+                provider.provider_type,
                 provider.protocol.map(UpstreamFormat::as_str),
                 provider.base_url,
                 provider.credentials.to_json(),
@@ -953,7 +955,7 @@ async fn find_model_entry_in_transaction(
 /// Returns [`ApiError`] when the insert fails.
 pub(crate) async fn insert_oauth_state(
     database: &Database,
-    state_type: ProviderType,
+    state_type: OAuthProviderType,
     state: &str,
     verifier: &str,
     expires_at: i64,
@@ -961,7 +963,7 @@ pub(crate) async fn insert_oauth_state(
     database
         .execute(
             "INSERT INTO oauth_states (type, state, verifier, expires_at) VALUES (?1, ?2, ?3, ?4)",
-            params![state_type.as_str(), state, verifier, expires_at],
+            params![state_type, state, verifier, expires_at],
         )
         .await?;
 
@@ -972,7 +974,7 @@ pub(crate) async fn insert_oauth_state(
 #[derive(Debug, Clone)]
 pub(crate) struct OAuthState {
     /// Provider type the flow is for.
-    pub(crate) state_type: ProviderType,
+    pub(crate) state_type: OAuthProviderType,
 
     /// PKCE verifier, when the flow uses PKCE.
     pub(crate) verifier: String,
@@ -989,7 +991,7 @@ pub(crate) async fn find_oauth_state_type(
     database: &Database,
     state: &str,
     now: i64,
-) -> Result<Option<ProviderType>, ApiError> {
+) -> Result<Option<OAuthProviderType>, ApiError> {
     let rows = database
         .query(
             "SELECT type FROM oauth_states WHERE state = ?1 AND expires_at > ?2",
@@ -1001,13 +1003,7 @@ pub(crate) async fn find_oauth_state_type(
         return Ok(None);
     };
 
-    let type_name: String = row.get(0)?;
-
-    let state_type = ProviderType::parse(&type_name).ok_or_else(|| {
-        ApiError::internal(format!(
-            "stored OAuth state carries unknown provider type `{type_name}`"
-        ))
-    })?;
+    let state_type = OAuthProviderType::try_from(row.get_value(0)?)?;
 
     Ok(Some(state_type))
 }
@@ -1040,14 +1036,8 @@ pub(crate) async fn consume_oauth_state(
         return Ok(None);
     };
 
-    let type_name: String = row.get(0)?;
+    let state_type = OAuthProviderType::try_from(row.get_value(0)?)?;
     let verifier: String = row.get(1)?;
-
-    let state_type = ProviderType::parse(&type_name).ok_or_else(|| {
-        ApiError::internal(format!(
-            "stored OAuth state carries unknown provider type `{type_name}`"
-        ))
-    })?;
 
     Ok(Some(OAuthState {
         state_type,
@@ -1076,11 +1066,7 @@ pub(crate) async fn delete_expired_oauth_states(
 
 /// Parses a provider row in [`PROVIDER_COLUMNS`] order.
 fn provider_from_row(row: &Row) -> Result<Provider, ApiError> {
-    let type_name: String = row.get(3)?;
-
-    let provider_type = ProviderType::parse(&type_name).ok_or_else(|| {
-        ApiError::internal(format!("provider row carries unknown type `{type_name}`"))
-    })?;
+    let provider_type = ProviderType::try_from(row.get_value(3)?)?;
 
     let protocol = match row.get::<Option<String>>(4)? {
         None => None,
@@ -1164,7 +1150,9 @@ fn model_from_row(row: &Row) -> Result<Model, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{Credentials, NewProvider, ProviderType, UpstreamFormat};
+    use crate::provider::{
+        Credentials, NewProvider, OAuthProviderType, ProviderType, UpstreamFormat,
+    };
     use std::{num::NonZero, path::PathBuf, time::Duration};
 
     /// File guard cleaning up the temporary SQLite test database on drop.
@@ -1410,5 +1398,116 @@ mod tests {
         let enabled_models_after_provider_disable =
             list_enabled_models_with_owner(&database).await.unwrap();
         assert!(enabled_models_after_provider_disable.is_empty());
+    }
+
+    /// Verifies the OAuth state lifecycle and typed database roundtrips for
+    /// `OAuthProviderType` and `ProviderType`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn test_oauth_state_and_provider_type_database_lifecycle() {
+        let (database, _guard) = create_test_database().await;
+
+        let now = 1_000_000;
+        let expires_at = now + 600;
+
+        // 1. Insert OAuth states with OAuthProviderType
+        #[expect(clippy::unwrap_used, reason = "insert oauth state succeeds")]
+        insert_oauth_state(
+            &database,
+            OAuthProviderType::OpenAiOauth,
+            "openai-state-1",
+            "openai-verifier-1",
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "insert oauth state succeeds")]
+        insert_oauth_state(
+            &database,
+            OAuthProviderType::AntigravityOauth,
+            "antigravity-state-1",
+            "",
+            expires_at,
+        )
+        .await
+        .unwrap();
+
+        // 2. Query type without consuming
+        #[expect(clippy::unwrap_used, reason = "find oauth state type succeeds")]
+        let found_type = find_oauth_state_type(&database, "openai-state-1", now)
+            .await
+            .unwrap();
+        assert_eq!(found_type, Some(OAuthProviderType::OpenAiOauth));
+
+        #[expect(clippy::unwrap_used, reason = "find oauth state type succeeds")]
+        let found_ag = find_oauth_state_type(&database, "antigravity-state-1", now)
+            .await
+            .unwrap();
+        assert_eq!(found_ag, Some(OAuthProviderType::AntigravityOauth));
+
+        // 3. Atomically consume
+        #[expect(clippy::unwrap_used, reason = "consume oauth state succeeds")]
+        let consumed = consume_oauth_state(&database, "openai-state-1", now)
+            .await
+            .unwrap();
+        #[expect(clippy::unwrap_used, reason = "state is present")]
+        let consumed = consumed.unwrap();
+        assert_eq!(consumed.state_type, OAuthProviderType::OpenAiOauth);
+        assert_eq!(consumed.verifier, "openai-verifier-1");
+
+        // Second consume returns None
+        #[expect(clippy::unwrap_used, reason = "second consume succeeds")]
+        let second_consume = consume_oauth_state(&database, "openai-state-1", now)
+            .await
+            .unwrap();
+        assert!(second_consume.is_none());
+
+        // 4. Create provider from consumed state and verify typed read back
+        let credentials = Credentials::OpenAiOauth {
+            access_token: "test-token".to_string(),
+            refresh_token: "test-refresh".to_string(),
+            account_id: "test-account".to_string(),
+        };
+        #[expect(clippy::unwrap_used, reason = "insert provider succeeds")]
+        insert_provider(
+            &database,
+            &NewProvider {
+                name: "oauth-provider",
+                model_prefix: "openai/",
+                provider_type: consumed.state_type.as_provider_type(),
+                protocol: None,
+                base_url: None,
+                credentials: &credentials,
+                expires_at: Some(expires_at),
+                is_enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "list providers succeeds")]
+        let providers = list_providers(&database).await.unwrap();
+        #[expect(clippy::unwrap_used, reason = "provider was inserted")]
+        let provider = providers
+            .iter()
+            .find(|p| p.name == "oauth-provider")
+            .unwrap();
+        assert_eq!(provider.provider_type, ProviderType::OpenAiOauth);
+
+        // 5. Sweep expired states
+        #[expect(clippy::unwrap_used, reason = "delete expired states succeeds")]
+        delete_expired_oauth_states(&database, expires_at + 10)
+            .await
+            .unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "find expired state succeeds")]
+        let swept = find_oauth_state_type(&database, "antigravity-state-1", now)
+            .await
+            .unwrap();
+        assert!(swept.is_none());
     }
 }

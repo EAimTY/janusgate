@@ -4,7 +4,7 @@
 use crate::{
     database::{Database, Error as DatabaseError, Transaction},
     error::{self, ApiError},
-    provider::{Credentials, Provider, ProviderType, endpoints, http_body, storage},
+    provider::{Credentials, OAuthProviderType, Provider, endpoints, http_body, storage},
     unix_time,
 };
 use base64::{Engine as _, engine::general_purpose};
@@ -117,15 +117,14 @@ pub(crate) struct OAuthFlow {
 }
 
 /// Begins an OAuth authorization flow for the given provider type.
-///
-/// # Errors
-///
-/// Returns [`ApiError`] when the provider type does not support OAuth.
-pub(crate) fn begin_flow(provider_type: ProviderType) -> Result<OAuthFlow, ApiError> {
+/// Begins a pending OAuth authorization flow for the requested OAuth provider
+/// kind, generating a random state, optional PKCE verifier, and the provider's
+/// authorization URL.
+pub(crate) fn begin_flow(oauth_type: OAuthProviderType) -> OAuthFlow {
     let state = random_url_safe(32);
 
-    let (verifier, authorize_url) = match provider_type {
-        ProviderType::OpenAiOauth => {
+    let (verifier, authorize_url) = match oauth_type {
+        OAuthProviderType::OpenAiOauth => {
             let verifier = random_url_safe(64);
 
             let challenge =
@@ -141,7 +140,7 @@ pub(crate) fn begin_flow(provider_type: ProviderType) -> Result<OAuthFlow, ApiEr
             (verifier, authorize_url)
         }
 
-        ProviderType::AntigravityOauth => {
+        OAuthProviderType::AntigravityOauth => {
             let authorize_url = format!(
                 "{ANTIGRAVITY_AUTH_URL}?access_type=offline&client_id={ANTIGRAVITY_CLIENT_ID}\
                  &prompt=consent&redirect_uri={ANTIGRAVITY_REDIRECT_URI}&response_type=code\
@@ -151,21 +150,14 @@ pub(crate) fn begin_flow(provider_type: ProviderType) -> Result<OAuthFlow, ApiEr
 
             (String::new(), authorize_url)
         }
-
-        ProviderType::OpenAiCompatible => {
-            return Err(ApiError::invalid_parameter(
-                "type",
-                "openai_compatible providers do not use OAuth flows",
-            ));
-        }
     };
 
-    Ok(OAuthFlow {
+    OAuthFlow {
         state,
         verifier,
         authorize_url,
         expires_at: unix_time::unix_now() + OAUTH_STATE_TTL,
-    })
+    }
 }
 
 /// Tokens returned by an OAuth token endpoint.
@@ -202,12 +194,12 @@ pub(crate) struct ExchangedTokens {
 /// required fields.
 pub(crate) async fn exchange_code(
     http: &Client,
-    provider_type: ProviderType,
+    oauth_type: OAuthProviderType,
     code: &str,
     verifier: &str,
 ) -> Result<ExchangedTokens, ApiError> {
-    let (credentials, raw_response) = match provider_type {
-        ProviderType::OpenAiOauth => {
+    let (credentials, raw_response) = match oauth_type {
+        OAuthProviderType::OpenAiOauth => {
             let response: TokenResponse = post_form(
                 http,
                 &format!("{OPENAI_ISSUER}/oauth/token"),
@@ -252,7 +244,7 @@ pub(crate) async fn exchange_code(
             (credentials, response)
         }
 
-        ProviderType::AntigravityOauth => {
+        OAuthProviderType::AntigravityOauth => {
             let response: TokenResponse = post_form(
                 http,
                 ANTIGRAVITY_TOKEN_URL,
@@ -284,13 +276,6 @@ pub(crate) async fn exchange_code(
             };
 
             (credentials, response)
-        }
-
-        ProviderType::OpenAiCompatible => {
-            return Err(ApiError::invalid_parameter(
-                "type",
-                "openai_compatible providers do not use OAuth flows",
-            ));
         }
     };
 
@@ -329,11 +314,11 @@ pub(crate) struct RefreshedTokens {
 /// token.
 pub(crate) async fn refresh_tokens(
     http: &Client,
-    provider_type: ProviderType,
+    oauth_type: OAuthProviderType,
     refresh_token: &str,
 ) -> Result<RefreshedTokens, ApiError> {
-    let response: TokenResponse = match provider_type {
-        ProviderType::OpenAiOauth => {
+    let response: TokenResponse = match oauth_type {
+        OAuthProviderType::OpenAiOauth => {
             post_json(
                 http,
                 &format!("{OPENAI_ISSUER}/oauth/token"),
@@ -347,7 +332,7 @@ pub(crate) async fn refresh_tokens(
             .await?
         }
 
-        ProviderType::AntigravityOauth => {
+        OAuthProviderType::AntigravityOauth => {
             post_form(
                 http,
                 ANTIGRAVITY_TOKEN_URL,
@@ -360,12 +345,6 @@ pub(crate) async fn refresh_tokens(
                 "refresh token",
             )
             .await?
-        }
-
-        ProviderType::OpenAiCompatible => {
-            return Err(ApiError::internal(
-                "openai_compatible providers do not refresh tokens",
-            ));
         }
     };
 
@@ -725,11 +704,11 @@ async fn refresh_and_build_credentials(
 ) -> Result<(Credentials, i64), ApiError> {
     let refreshed = match &provider.credentials {
         Credentials::OpenAiOauth { refresh_token, .. } => {
-            refresh_tokens(http, ProviderType::OpenAiOauth, refresh_token).await?
+            refresh_tokens(http, OAuthProviderType::OpenAiOauth, refresh_token).await?
         }
 
         Credentials::AntigravityOauth { refresh_token, .. } => {
-            refresh_tokens(http, ProviderType::AntigravityOauth, refresh_token).await?
+            refresh_tokens(http, OAuthProviderType::AntigravityOauth, refresh_token).await?
         }
 
         Credentials::ApiKey(_) => {
