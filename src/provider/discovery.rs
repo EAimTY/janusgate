@@ -5,7 +5,7 @@ use crate::{error::ApiError, format::UpstreamFormat};
 use reqwest::Client;
 use serde_json::Value;
 
-/// Fetches the upstream model identifiers (`upstream_name` values) of a
+/// Fetches the upstream model identifiers (`upstream_id` values) of a
 /// provider.
 ///
 /// # Errors

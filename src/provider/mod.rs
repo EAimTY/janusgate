@@ -305,22 +305,23 @@ pub(crate) struct Model {
     pub(crate) provider_id: i64,
 
     /// Exact upstream model identifier.
-    pub(crate) upstream_name: String,
+    pub(crate) upstream_id: String,
 
-    /// Public routing name, maintained at write time.
-    pub(crate) name: String,
+    /// Public routing ID, maintained at write time.
+    pub(crate) id: String,
 
-    /// Non-`None` replaces the upstream name as the base of the public name.
-    pub(crate) name_override: Option<String>,
+    /// Non-`None` explicitly sets the public routing ID directly, bypassing
+    /// the provider's `model_prefix`.
+    pub(crate) id_override: Option<String>,
 
-    /// Non-`None` pins the serving state instead of the discovery default.
-    pub(crate) enabled_override: Option<bool>,
+    /// Whether the model is enabled to serve traffic under its provider.
+    pub(crate) is_enabled: bool,
 
     /// JSON array of canonical thinking levels, when filtering is configured.
     pub(crate) thinking_levels_override: Option<String>,
 }
 
-/// A provider row joined with the model row a public name resolved to.
+/// A provider row joined with the model row a public ID resolved to.
 #[derive(Debug, Clone)]
 pub(crate) struct ModelRouting {
     /// Owning provider.
@@ -335,27 +336,26 @@ pub(crate) struct ModelRouting {
 }
 
 impl Model {
-    /// The public routing name the model would carry under the given prefix.
-    pub(crate) fn public_name(
+    /// The public routing ID the model carries: an explicit override directly
+    /// replaces the ID without prefix, else `model_prefix + upstream_id`.
+    pub(crate) fn public_id(
         model_prefix: &str,
-        upstream_name: &str,
-        name_override: Option<&str>,
+        upstream_id: &str,
+        id_override: Option<&str>,
     ) -> String {
-        format!("{model_prefix}{}", name_override.unwrap_or(upstream_name))
+        match id_override {
+            Some(id) => id.to_string(),
+            None => format!("{model_prefix}{upstream_id}"),
+        }
     }
 
-    /// The model's effective serving status under its owning provider's
-    /// state: the override when present, else the provider's own state
-    /// (README §3).
+    /// The model's effective serving status: true if and only if both the
+    /// owning provider and the model itself are enabled (README §3).
     ///
-    /// This is the canonical Rust form of the effective-enabled rule. The
-    /// listing query in [`crate::provider::storage`] applies the equivalent
-    /// SQL predicate `COALESCE(m.enabled_override, p.enabled) != 0` instead
-    /// of filtering here, because pushing the predicate into the SQL keeps
-    /// disabled rows out of the result set entirely; the SQL is kept as the
-    /// documented derived form of this helper.
+    /// The provider's `enabled` flag serves as the master switch: disabling a
+    /// provider turns off all its models unconditionally.
     pub(crate) fn is_effectively_enabled(&self, is_provider_enabled: bool) -> bool {
-        self.enabled_override.unwrap_or(is_provider_enabled)
+        is_provider_enabled && self.is_enabled
     }
 }
 
@@ -383,4 +383,59 @@ fn ensure_exact_credential_fields(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that `Model::public_id` uses `model_prefix + upstream_id` when
+    /// unoverridden, and uses `id_override` directly without `model_prefix`
+    /// when an override is present.
+    ///
+    /// # Panics
+    ///
+    /// Panics if public ID composition assertions fail.
+    #[test]
+    fn composes_public_id() {
+        let default_id = Model::public_id("codex/", "gpt-4o", None);
+        assert_eq!(default_id, "codex/gpt-4o");
+
+        let overridden_id = Model::public_id("codex/", "gpt-4o", Some("custom-gpt-4o"));
+        assert_eq!(overridden_id, "custom-gpt-4o");
+
+        let empty_prefix_id = Model::public_id("", "gemini-pro", None);
+        assert_eq!(empty_prefix_id, "gemini-pro");
+    }
+
+    /// Verifies that `Model::is_effectively_enabled` requires both the provider
+    /// and the model to be enabled.
+    ///
+    /// # Panics
+    ///
+    /// Panics if effective enabled assertions fail.
+    #[test]
+    fn resolves_effective_enabled_status() {
+        let model_enabled = Model {
+            provider_id: 1,
+            upstream_id: "m1".to_string(),
+            id: "m1".to_string(),
+            id_override: None,
+            is_enabled: true,
+            thinking_levels_override: None,
+        };
+        assert!(model_enabled.is_effectively_enabled(true));
+        assert!(!model_enabled.is_effectively_enabled(false));
+
+        let model_disabled = Model {
+            provider_id: 1,
+            upstream_id: "m2".to_string(),
+            id: "m2".to_string(),
+            id_override: None,
+            is_enabled: false,
+            thinking_levels_override: None,
+        };
+        assert!(!model_disabled.is_effectively_enabled(true));
+        assert!(!model_disabled.is_effectively_enabled(false));
+    }
 }

@@ -33,15 +33,14 @@ struct SaveModelBody {
     provider_id: i64,
 
     /// Exact upstream model identifier; must be non-empty.
-    upstream_name: String,
+    upstream_id: String,
 
-    /// Public name override.
+    /// Public ID override.
     #[serde(default, with = "::serde_with::rust::double_option")]
-    name_override: Option<Option<String>>,
+    id_override: Option<Option<String>>,
 
-    /// Serving state override.
-    #[serde(default, with = "::serde_with::rust::double_option")]
-    enabled_override: Option<Option<bool>>,
+    /// Serving state.
+    is_enabled: Option<bool>,
 
     /// Canonical thinking levels override.
     #[serde(default, with = "::serde_with::rust::double_option")]
@@ -95,13 +94,13 @@ pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Respo
 }
 
 /// Refreshes one provider's model rows from upstream, carrying overrides over
-/// by `upstream_name`. The outcome is logged: the discovered count at info
+/// by `upstream_id`. The outcome is logged: the discovered count at info
 /// level, every failure at the provider's response boundary.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for an empty provider identifier, unknown providers,
-/// upstream failures, and public name collisions.
+/// upstream failures, and public ID collisions.
 async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, ApiError> {
     let request: DiscoverModelsBody = parse_body(body, "discover-models")?;
 
@@ -114,28 +113,25 @@ async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, Api
 
         let fresh = oauth::ensure_fresh_token(database, crate::http(), &provider).await?;
 
-        let upstream_names = discovery::discover_upstream_models(crate::http(), &fresh).await?;
+        let upstream_ids = discovery::discover_upstream_models(crate::http(), &fresh).await?;
 
-        // Discovery payloads can repeat an upstream name; keep the first
+        // Discovery payloads can repeat an upstream identifier; keep the first
         // occurrence.
-        let mut unique_names: Vec<String> = Vec::with_capacity(upstream_names.len());
+        let mut unique_ids: Vec<String> = Vec::with_capacity(upstream_ids.len());
 
-        for upstream_name in upstream_names {
-            if unique_names
-                .iter()
-                .any(|existing| existing == &upstream_name)
-            {
+        for upstream_id in upstream_ids {
+            if unique_ids.iter().any(|existing| existing == &upstream_id) {
                 continue;
             }
 
-            unique_names.push(upstream_name);
+            unique_ids.push(upstream_id);
         }
 
         // The replace re-reads the provider row inside its transaction, so the
-        // public names are composed from the provider's current prefix and
+        // public IDs are composed from the provider's current prefix and
         // checked for collisions atomically with the write (README
         // §7.1).
-        storage::replace_discovered_models(database, request.id, &unique_names).await
+        storage::replace_discovered_models(database, request.id, &unique_ids).await
     }
     .await;
 
@@ -155,19 +151,23 @@ async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, Api
     outcome
 }
 
-/// Writes one model's overrides and recomputes its public name. The outcome
+/// Writes one model's overrides and recomputes its public ID. The outcome
 /// is logged: the saved overrides at info level, every failure at the
 /// model's response boundary.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for empty identifiers, unknown rows, invalid thinking
-/// levels, and public name collisions.
+/// levels, and public ID collisions.
 async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiError> {
     let request: SaveModelBody = parse_body(body, "save-model")?;
 
     let outcome = async {
-        validate_identifier("upstream_name", &request.upstream_name)?;
+        validate_identifier("upstream_id", &request.upstream_id)?;
+
+        if let Some(Some(ref id_override)) = request.id_override {
+            validate_identifier("id_override", id_override)?;
+        }
 
         let thinking_levels_override = match &request.thinking_levels_override {
             None => None,
@@ -191,16 +191,16 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
         };
 
         // The checked update re-reads the provider and model rows inside its
-        // transaction, so the recomputed public name uses the provider's
+        // transaction, so the recomputed public ID uses the provider's
         // current prefix and the collision check applies atomically
         // with the write (README §7.1).
         storage::update_model_overrides_checked(
             database,
             storage::ModelOverrideUpdate {
                 provider_id: request.provider_id,
-                upstream_name: &request.upstream_name,
-                name_override: request.name_override.clone(),
-                enabled_override: request.enabled_override,
+                upstream_id: &request.upstream_id,
+                id_override: request.id_override.clone(),
+                is_enabled: request.is_enabled,
                 thinking_levels_override,
             },
         )
@@ -212,13 +212,13 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
     match &outcome {
         Ok(_) => info!(
             "saved the overrides of model `{}`/`{}`",
-            request.provider_id, request.upstream_name
+            request.provider_id, request.upstream_id
         ),
 
         Err(error) => log_api_error(
             &format!(
                 "save-model `{}`/`{}`",
-                request.provider_id, request.upstream_name
+                request.provider_id, request.upstream_id
             ),
             error,
         ),
@@ -235,17 +235,17 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
 fn model_entry_json(entry: &ModelEntry) -> Result<Value, ApiError> {
     let thinking_levels_override = thinking_levels_json(&entry.model.thinking_levels_override)?;
 
-    // The effective status comes from the canonical rule; the management wire
-    // name stays `enabled` (README §7.1). `provider_id` is the public
-    // identifier and `provider` the renameable label beside it.
+    // `is_enabled` is the model's configured switch; `is_effectively_enabled`
+    // is the canonical effective status (`provider.is_enabled &&
+    // model.is_enabled`).
     Ok(serde_json::json!({
         "provider_id": entry.provider_id,
         "provider": entry.provider_name,
-        "upstream_name": entry.model.upstream_name,
-        "name": entry.model.name,
-        "name_override": entry.model.name_override,
-        "enabled": entry.model.is_effectively_enabled(entry.is_provider_enabled),
-        "enabled_override": entry.model.enabled_override,
+        "upstream_id": entry.model.upstream_id,
+        "id": entry.model.id,
+        "id_override": entry.model.id_override,
+        "is_enabled": entry.model.is_enabled,
+        "is_effectively_enabled": entry.model.is_effectively_enabled(entry.is_provider_enabled),
         "thinking_levels_override": thinking_levels_override,
     }))
 }

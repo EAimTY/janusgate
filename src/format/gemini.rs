@@ -28,15 +28,15 @@ use serde_json::Value;
 pub(crate) fn render_antigravity_request(
     ir: &IrRequest,
     base_url: &str,
-    upstream_name: &str,
+    upstream_id: &str,
     project: &str,
     is_streaming: bool,
 ) -> Result<(String, Value), ApiError> {
-    let url = render_request_url(base_url, upstream_name, is_streaming, true);
+    let url = render_request_url(base_url, upstream_id, is_streaming, true);
 
     let envelope = serde_json::json!({
         "project": project,
-        "model": upstream_name,
+        "model": upstream_id,
         "request": render_generate_content_request(ir)?,
         "requestType": "agent",
         "userAgent": endpoints::ANTIGRAVITY_USER_AGENT,
@@ -55,10 +55,10 @@ pub(crate) fn render_antigravity_request(
 pub(crate) fn render_compatible_request(
     ir: &IrRequest,
     base_url: &str,
-    upstream_name: &str,
+    upstream_id: &str,
     is_streaming: bool,
 ) -> Result<(String, Value), ApiError> {
-    let url = render_request_url(base_url, upstream_name, is_streaming, false);
+    let url = render_request_url(base_url, upstream_id, is_streaming, false);
 
     Ok((url, render_generate_content_request(ir)?))
 }
@@ -66,10 +66,10 @@ pub(crate) fn render_compatible_request(
 /// Renders the GenerateContent URL for one call, the single place where the
 /// action segment (including its leading colon) is assembled: enveloped Code
 /// Assist upstreams take the action directly on the base URL, compatible
-/// upstreams insert `/models/<upstream_name>` before it.
+/// upstreams insert `/models/<upstream_id>` before it.
 fn render_request_url(
     base_url: &str,
-    upstream_name: &str,
+    upstream_id: &str,
     is_streaming: bool,
     is_enveloped: bool,
 ) -> String {
@@ -90,7 +90,7 @@ fn render_request_url(
     if is_enveloped {
         format!("{base_url}{action}")
     } else {
-        format!("{base_url}/models/{upstream_name}{action}")
+        format!("{base_url}/models/{upstream_id}{action}")
     }
 }
 

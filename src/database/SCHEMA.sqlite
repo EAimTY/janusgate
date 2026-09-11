@@ -8,29 +8,30 @@ CREATE TABLE providers (
     credentials Text NOT NULL,
     expires_at Integer NULL,
     refresh_started_at Integer NULL,
-    enabled Integer NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))
+    is_enabled Integer NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1))
 ) STRICT;
 
--- A model is identified by its owning provider plus the upstream model name. Discovery-derived
+-- A model is identified by its owning provider plus the upstream model identifier. Discovery-derived
 -- fields carry a nullable *_override twin: NULL keeps following discovery, non-NULL pins the value.
 CREATE TABLE models (
     provider_id Integer NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-    upstream_name Text NOT NULL,
+    upstream_id Text NOT NULL,
 
-    -- Public routing name: model_prefix + (name_override ?? upstream_name),
+    -- Public routing ID: id_override ?? (model_prefix + upstream_id),
     -- maintained at write time.
-    name Text NOT NULL UNIQUE,
+    id Text NOT NULL UNIQUE,
 
-    -- Non-NULL replaces the upstream name as the base of the public name.
-    name_override Text NULL,
+    -- Non-NULL explicitly sets the public routing ID directly, bypassing model_prefix.
+    id_override Text NULL,
 
-    -- Non-NULL pins the serving state instead of the discovery default (enabled).
-    enabled_override Integer NULL CHECK (enabled_override IN (0, 1)),
+    -- Whether this model serves traffic under its provider. Effective serving
+    -- requires both provider.is_enabled and model.is_enabled.
+    is_enabled Integer NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
 
     -- JSON array of canonical thinking levels; NULL means no filtering, pure passthrough.
     thinking_levels_override Text NULL,
 
-    PRIMARY KEY (provider_id, upstream_name)
+    PRIMARY KEY (provider_id, upstream_id)
 ) STRICT;
 
 -- A pending OAuth authorization flow. `verifier` is the PKCE code verifier for openai_oauth

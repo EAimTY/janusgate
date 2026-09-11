@@ -78,7 +78,7 @@ pub(crate) async fn execute(
         .transpose()?;
 
     ir.reasoning_effort = apply_thinking_levels(ir.reasoning_effort, thinking_levels.as_deref());
-    ir.model = routing.model.upstream_name.clone();
+    ir.model = routing.model.upstream_id.clone();
 
     // Names every mid-stream log record the pump tasks emit; the pump errors
     // surface to streaming clients as terminal error frames and never pass a
@@ -96,7 +96,7 @@ pub(crate) async fn execute(
 
     debug!(
         "dispatching public model `{}` via {upstream_label} ({}, streaming: {})",
-        routing.model.name,
+        routing.model.id,
         upstream_format.as_str(),
         is_client_streaming
     );
@@ -246,7 +246,7 @@ fn build_upstream_request(
             let (url, envelope) = gemini::render_antigravity_request(
                 ir,
                 endpoints::ANTIGRAVITY_BASE_URL,
-                &routing.model.upstream_name,
+                &routing.model.upstream_id,
                 project_id,
                 is_client_streaming,
             )?;
@@ -262,7 +262,7 @@ fn build_upstream_request(
             let (url, body) = gemini::render_compatible_request(
                 ir,
                 compatible_base_url(provider)?,
-                &routing.model.upstream_name,
+                &routing.model.upstream_id,
                 is_client_streaming,
             )?;
 

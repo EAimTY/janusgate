@@ -45,7 +45,7 @@ struct SaveProviderBody {
     credentials: Option<Value>,
 
     /// Serving state.
-    enabled: Option<bool>,
+    is_enabled: Option<bool>,
 }
 
 /// Strictly parsed `delete-provider` request.
@@ -221,7 +221,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
                     model_prefix: &request.model_prefix,
                     protocol,
                     base_url: request.base_url.as_deref(),
-                    is_enabled: request.enabled,
+                    is_enabled: request.is_enabled,
                     credentials: credentials.as_ref(),
                 },
             )
@@ -280,7 +280,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
                 base_url: Some(base_url),
                 credentials: &credentials,
                 expires_at: None,
-                is_enabled: request.enabled.unwrap_or(true),
+                is_enabled: request.is_enabled.unwrap_or(true),
             },
         )
         .await?;

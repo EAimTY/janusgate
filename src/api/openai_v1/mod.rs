@@ -147,10 +147,10 @@ where
 
     let operation = format!(
         "completion for model `{}` via provider `{}`",
-        routing.model.name, routing.provider.name
+        routing.model.id, routing.provider.name
     );
 
-    let public_name = routing.model.name.clone();
+    let public_id = routing.model.id.clone();
 
     let is_streaming = parsed.is_streaming;
 
@@ -163,11 +163,11 @@ where
         if is_streaming {
             Ok(sse_response(
                 events,
-                TFormat::sse_renderer(should_include_usage, public_name),
+                TFormat::sse_renderer(should_include_usage, public_id),
             ))
         } else {
             aggregated_response(events, |aggregation| {
-                TFormat::render_json_response(&public_name, aggregation)
+                TFormat::render_json_response(&public_id, aggregation)
             })
             .await
         }
@@ -187,9 +187,9 @@ async fn models(State(database): State<Database>) -> Response {
         Ok(listed) => {
             let data = listed
                 .iter()
-                .map(|(public_name, provider_name)| {
+                .map(|(public_id, provider_name)| {
                     serde_json::json!({
-                        "id": public_name,
+                        "id": public_id,
                         "object": "model",
                         "created": 0,
                         "owned_by": provider_name,

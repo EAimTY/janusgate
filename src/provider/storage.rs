@@ -10,17 +10,17 @@ use std::collections::HashMap;
 
 /// Column order of provider selects.
 const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, protocol, base_url, credentials, \
-     expires_at, enabled";
+     expires_at, is_enabled";
 
 /// Column order of model selects.
-const MODEL_COLUMNS: &str = "provider_id, upstream_name, name, name_override, enabled_override, \
+const MODEL_COLUMNS: &str = "provider_id, upstream_id, id, id_override, is_enabled, \
      thinking_levels_override";
 
 /// The combined column order of provider-model joins.
 const PROVIDER_MODEL_COLUMNS: &str = concat!(
     "p.id, p.name, p.model_prefix, p.type, p.protocol, p.base_url, p.credentials, ",
-    "p.expires_at, p.enabled, ",
-    "m.upstream_name, m.name, m.name_override, m.enabled_override, m.thinking_levels_override"
+    "p.expires_at, p.is_enabled, ",
+    "m.upstream_id, m.id, m.id_override, m.is_enabled, m.thinking_levels_override"
 );
 
 /// Inserts one provider row.
@@ -35,7 +35,7 @@ pub(crate) async fn insert_provider(
     database
         .execute(
             "INSERT INTO providers (name, model_prefix, type, protocol, base_url, credentials, \
-             expires_at, enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             expires_at, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 provider.name,
                 provider.model_prefix,
@@ -225,20 +225,20 @@ pub(crate) struct ProviderUpdate<'a> {
 /// The write owns the provider row — the supplied `name` included, so a
 /// different name renames the provider — an optional credentials replacement
 /// (which resets `expires_at` and clears any refresh lease), and — upholding
-/// the README §3 invariant — the public `name` of every model row, recomputed
-/// from the effective prefix through the shared composition rule
-/// [`Model::public_name`]. Nothing is written when the new name is already
-/// taken by another provider, when any recomputed public name would collide
+/// the README §3 invariant — the public `id` of unoverridden model rows,
+/// recomputed from the effective prefix through the shared composition rule
+/// [`Model::public_id`]. Nothing is written when the new name is already
+/// taken by another provider, when any recomputed public ID would collide
 /// with an existing model row of another provider, or when two of the
-/// provider's own models would converge on one public name; all rejections
+/// provider's own models would converge on one public ID; all rejections
 /// are 409 conflicts. Abandoning the transaction on any error discards every
-/// partial write, so the provider row and its model names can never drift
+/// partial write, so the provider row and its model IDs can never drift
 /// apart.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for an unknown provider, a failed statement, a taken
-/// name, or a recomputed public name collision.
+/// name, or a recomputed public ID collision.
 pub(crate) async fn update_provider(
     database: &Database,
     provider_id: i64,
@@ -288,29 +288,29 @@ pub(crate) async fn update_provider(
     let recomputed: Vec<(String, &Model)> = models
         .iter()
         .map(|model| {
-            let name = Model::public_name(
+            let id = Model::public_id(
                 model_prefix,
-                &model.upstream_name,
-                model.name_override.as_deref(),
+                &model.upstream_id,
+                model.id_override.as_deref(),
             );
 
-            (name, model)
+            (id, model)
         })
         .collect();
 
     let composed: Vec<(&str, &str)> = recomputed
         .iter()
-        .map(|(name, model)| (name.as_str(), model.upstream_name.as_str()))
+        .map(|(id, model)| (id.as_str(), model.upstream_id.as_str()))
         .collect();
 
-    ensure_names_pairwise_distinct(name, &composed)?;
+    ensure_ids_pairwise_distinct(name, &composed)?;
 
-    ensure_names_routable(&mut transaction, provider.id, &composed).await?;
+    ensure_ids_routable(&mut transaction, provider.id, &composed).await?;
 
     transaction
         .execute(
             "UPDATE providers SET name = ?1, model_prefix = ?2, protocol = ?3, base_url = ?4, \
-             enabled = ?5 WHERE id = ?6",
+             is_enabled = ?5 WHERE id = ?6",
             params![
                 name,
                 model_prefix,
@@ -332,15 +332,15 @@ pub(crate) async fn update_provider(
             .await?;
     }
 
-    for (new_name, model) in &recomputed {
-        if new_name == &model.name {
+    for (new_id, model) in &recomputed {
+        if new_id == &model.id {
             continue;
         }
 
         transaction
             .execute(
-                "UPDATE models SET name = ?1 WHERE provider_id = ?2 AND upstream_name = ?3",
-                params![new_name.as_str(), provider.id, model.upstream_name.as_str()],
+                "UPDATE models SET id = ?1 WHERE provider_id = ?2 AND upstream_id = ?3",
+                params![new_id.as_str(), provider.id, model.upstream_id.as_str()],
             )
             .await?;
     }
@@ -367,23 +367,21 @@ pub(crate) async fn update_provider(
     })
 }
 
-/// Rejects one provider's freshly composed public names when two of its rows
-/// would converge on one name. Healthy rows can never converge — distinct rows
-/// carry distinct `name_override ?? upstream_name` bases and share one prefix —
-/// so this guards the invariant even against drifted stored names.
+/// Rejects one provider's freshly composed public IDs when two of its rows
+/// would converge on one ID.
 ///
-/// `composed` carries `(public_name, upstream_name)` pairs.
-fn ensure_names_pairwise_distinct(
+/// `composed` carries `(public_id, upstream_id)` pairs.
+fn ensure_ids_pairwise_distinct(
     provider_name: &str,
     composed: &[(&str, &str)],
 ) -> Result<(), ApiError> {
     let mut seen: HashMap<&str, &str> = HashMap::with_capacity(composed.len());
 
-    for (new_name, upstream_name) in composed {
-        if let Some(first_upstream_name) = seen.insert(new_name, upstream_name) {
+    for (new_id, upstream_id) in composed {
+        if let Some(first_upstream_id) = seen.insert(new_id, upstream_id) {
             return Err(ApiError::conflict(format!(
-                "Public model name `{new_name}` collides between upstream models \
-                 `{first_upstream_name}` and `{upstream_name}` of provider `{provider_name}`"
+                "Public model ID `{new_id}` collides between upstream models \
+                 `{first_upstream_id}` and `{upstream_id}` of provider `{provider_name}`"
             )));
         }
     }
@@ -391,25 +389,25 @@ fn ensure_names_pairwise_distinct(
     Ok(())
 }
 
-/// Rejects freshly composed public names that are already routed by another
+/// Rejects freshly composed public IDs that are already routed by another
 /// model row — of any provider, including another model of the same provider.
-/// A name held by the very row being written is not a collision.
+/// An ID held by the very row being written is not a collision.
 ///
-/// `composed` carries `(public_name, upstream_name)` pairs of the provider
+/// `composed` carries `(public_id, upstream_id)` pairs of the provider
 /// identified by `provider_id`. Runs inside the caller's transaction, so the
 /// routed rows it observes cannot interleave with the caller's writes.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or a name collides.
-async fn ensure_names_routable(
+/// Returns [`ApiError`] when the query fails or an ID collides.
+async fn ensure_ids_routable(
     transaction: &mut Transaction,
     provider_id: i64,
     composed: &[(&str, &str)],
 ) -> Result<(), ApiError> {
     let routed_rows = transaction
         .query(
-            "SELECT m.name, m.provider_id, m.upstream_name, p.name \
+            "SELECT m.id, m.provider_id, m.upstream_id, p.name \
              FROM models m JOIN providers p ON p.id = m.provider_id",
             (),
         )
@@ -422,13 +420,13 @@ async fn ensure_names_routable(
         routed.insert(row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?));
     }
 
-    for (new_name, upstream_name) in composed {
-        if let Some((holder_provider_id, holder_upstream_name, holder_provider_name)) =
-            routed.get(*new_name)
-            && (*holder_provider_id != provider_id || holder_upstream_name != upstream_name)
+    for (new_id, upstream_id) in composed {
+        if let Some((holder_provider_id, holder_upstream_id, holder_provider_name)) =
+            routed.get(*new_id)
+            && (*holder_provider_id != provider_id || holder_upstream_id != upstream_id)
         {
             return Err(ApiError::conflict(format!(
-                "Public model name `{new_name}` is already routed by provider \
+                "Public model ID `{new_id}` is already routed by provider \
                  `{holder_provider_name}`"
             )));
         }
@@ -447,7 +445,7 @@ async fn find_models_in_transaction(
     provider_id: i64,
 ) -> Result<Vec<Model>, ApiError> {
     let sql =
-        format!("SELECT {MODEL_COLUMNS} FROM models WHERE provider_id = ?1 ORDER BY upstream_name");
+        format!("SELECT {MODEL_COLUMNS} FROM models WHERE provider_id = ?1 ORDER BY upstream_id");
 
     let rows = transaction.query(sql, params![provider_id]).await?;
 
@@ -543,21 +541,21 @@ pub(crate) async fn clear_refresh_lease(
     Ok(())
 }
 
-/// Resolves a public model name to its provider and model row.
+/// Resolves a public model ID to its provider and model row.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] when the query fails or a row is malformed.
 pub(crate) async fn find_routing(
     database: &Database,
-    public_name: &str,
+    public_id: &str,
 ) -> Result<Option<ModelRouting>, ApiError> {
     let sql = format!(
         "SELECT {PROVIDER_MODEL_COLUMNS} FROM models m \
-         JOIN providers p ON p.id = m.provider_id WHERE m.name = ?1"
+         JOIN providers p ON p.id = m.provider_id WHERE m.id = ?1"
     );
 
-    let rows = database.query(sql, params![public_name]).await?;
+    let rows = database.query(sql, params![public_id]).await?;
 
     rows.first()
         .map(|row| {
@@ -580,15 +578,15 @@ pub(crate) async fn find_routing(
 async fn find_model_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
-    upstream_name: &str,
+    upstream_id: &str,
 ) -> Result<Option<Model>, ApiError> {
     let rows = transaction
         .query(
             format!(
                 "SELECT {MODEL_COLUMNS} FROM models \
-                 WHERE provider_id = ?1 AND upstream_name = ?2"
+                 WHERE provider_id = ?1 AND upstream_id = ?2"
             ),
-            params![provider_id, upstream_name],
+            params![provider_id, upstream_id],
         )
         .await?;
 
@@ -619,10 +617,10 @@ pub(crate) struct ModelEntry {
 pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelEntry>, ApiError> {
     let rows = database
         .query(
-            "SELECT p.id, p.name AS provider_name, p.enabled AS provider_enabled, \
-             m.provider_id, m.upstream_name, m.name, m.name_override, m.enabled_override, \
+            "SELECT p.id, p.name AS provider_name, p.is_enabled AS provider_is_enabled, \
+             m.provider_id, m.upstream_id, m.id, m.id_override, m.is_enabled, \
              m.thinking_levels_override FROM models m JOIN providers p ON p.id = m.provider_id \
-             ORDER BY m.name",
+             ORDER BY m.id",
             (),
         )
         .await?;
@@ -641,14 +639,11 @@ pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelE
     Ok(entries)
 }
 
-/// Lists `(public_name, provider_name)` pairs for every effectively enabled
-/// model, ordered by public name.
+/// Lists `(public_id, provider_name)` pairs for every effectively enabled
+/// model, ordered by public ID.
 ///
-/// The `COALESCE(m.enabled_override, p.enabled) != 0` predicate is the SQL
-/// form of [`Model::is_effectively_enabled`], the canonical Rust rule. It is
-/// applied in SQL rather than Rust-side filtering on purpose: disabled rows
-/// never leave the engine, so the Rust side materializes only what the
-/// outward model listing serves.
+/// A model is effectively enabled if and only if both its owning provider and
+/// the model itself are enabled (`p.is_enabled != 0 AND m.is_enabled != 0`).
 ///
 /// # Errors
 ///
@@ -658,8 +653,8 @@ pub(crate) async fn list_enabled_models_with_owner(
 ) -> Result<Vec<(String, String)>, ApiError> {
     let rows = database
         .query(
-            "SELECT m.name, p.name FROM models m JOIN providers p ON p.id = m.provider_id \
-             WHERE COALESCE(m.enabled_override, p.enabled) != 0 ORDER BY m.name",
+            "SELECT m.id, p.name FROM models m JOIN providers p ON p.id = m.provider_id \
+             WHERE p.is_enabled != 0 AND m.is_enabled != 0 ORDER BY m.id",
             (),
         )
         .await?;
@@ -678,27 +673,27 @@ pub(crate) async fn list_enabled_models_with_owner(
 /// loudly instead of irreversibly wiping the provider's curated rows
 /// (README §7.1).
 ///
-/// The provider row is re-read inside the transaction, so the public names are
+/// The provider row is re-read inside the transaction, so the public IDs are
 /// composed from the provider's current prefix even when a concurrent
 /// `save-provider` changed it after the caller's outer read (README §7.1).
-/// Overrides carry over from the stored rows by `upstream_name`; discovered
+/// Overrides carry over from the stored rows by `upstream_id`; discovered
 /// models absent from the stored set vanish with their overrides.
 ///
-/// The composed public names undergo the same collision checks as
+/// The composed public IDs undergo the same collision checks as
 /// [`update_provider`]: pairwise distinctness within the provider and no
-/// routing collision with any other model row; both rejections are name-
+/// routing collision with any other model row; both rejections are ID-
 /// specific 409 conflicts that write nothing.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for an empty discovered set, an unknown provider,
-/// failed statements, or a composed public name collision.
+/// failed statements, or a composed public ID collision.
 pub(crate) async fn replace_discovered_models(
     database: &Database,
     provider_id: i64,
-    upstream_names: &[String],
+    upstream_ids: &[String],
 ) -> Result<usize, ApiError> {
-    if upstream_names.is_empty() {
+    if upstream_ids.is_empty() {
         return Err(ApiError::upstream_unavailable(
             "upstream reported no models; refusing to replace the provider's model rows",
         ));
@@ -717,28 +712,24 @@ pub(crate) async fn replace_discovered_models(
 
     let stored: HashMap<&str, &Model> = previous
         .iter()
-        .map(|model| (model.upstream_name.as_str(), model))
+        .map(|model| (model.upstream_id.as_str(), model))
         .collect();
 
-    let mut models: Vec<Model> = Vec::with_capacity(upstream_names.len());
+    let mut models: Vec<Model> = Vec::with_capacity(upstream_ids.len());
 
-    for upstream_name in upstream_names {
-        let prior = stored.get(upstream_name.as_str()).copied();
+    for upstream_id in upstream_ids {
+        let prior = stored.get(upstream_id.as_str()).copied();
 
-        let name_override = prior.and_then(|model| model.name_override.clone());
+        let id_override = prior.and_then(|model| model.id_override.clone());
 
-        let name = Model::public_name(
-            &provider.model_prefix,
-            upstream_name,
-            name_override.as_deref(),
-        );
+        let id = Model::public_id(&provider.model_prefix, upstream_id, id_override.as_deref());
 
         models.push(Model {
             provider_id: provider.id,
-            upstream_name: upstream_name.clone(),
-            name,
-            name_override,
-            enabled_override: prior.and_then(|model| model.enabled_override),
+            upstream_id: upstream_id.clone(),
+            id,
+            id_override,
+            is_enabled: prior.is_none_or(|model| model.is_enabled),
             thinking_levels_override: prior
                 .and_then(|model| model.thinking_levels_override.clone()),
         });
@@ -746,12 +737,12 @@ pub(crate) async fn replace_discovered_models(
 
     let composed: Vec<(&str, &str)> = models
         .iter()
-        .map(|model| (model.name.as_str(), model.upstream_name.as_str()))
+        .map(|model| (model.id.as_str(), model.upstream_id.as_str()))
         .collect();
 
-    ensure_names_pairwise_distinct(&provider.name, &composed)?;
+    ensure_ids_pairwise_distinct(&provider.name, &composed)?;
 
-    ensure_names_routable(&mut transaction, provider.id, &composed).await?;
+    ensure_ids_routable(&mut transaction, provider.id, &composed).await?;
 
     replace_provider_models(&mut transaction, provider.id, &models).await?;
 
@@ -782,14 +773,14 @@ async fn replace_provider_models(
     for model in models {
         transaction
             .execute(
-                "INSERT INTO models (provider_id, upstream_name, name, name_override, \
-                 enabled_override, thinking_levels_override) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO models (provider_id, upstream_id, id, id_override, \
+                 is_enabled, thinking_levels_override) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     model.provider_id,
-                    model.upstream_name.clone(),
-                    model.name.clone(),
-                    model.name_override.clone(),
-                    model.enabled_override.map(i64::from),
+                    model.upstream_id.clone(),
+                    model.id.clone(),
+                    model.id_override.clone(),
+                    i64::from(model.is_enabled),
                     model.thinking_levels_override.clone(),
                 ],
             )
@@ -799,39 +790,39 @@ async fn replace_provider_models(
     Ok(())
 }
 
-/// One `save-model` override update about to be applied transactionally.
+/// One `save-model` update about to be applied transactionally.
 pub(crate) struct ModelOverrideUpdate<'a> {
     /// Owning provider's id, the lookup key.
     pub(crate) provider_id: i64,
 
     /// Exact upstream model identifier.
-    pub(crate) upstream_name: &'a str,
+    pub(crate) upstream_id: &'a str,
 
-    /// Public name override; `None` leaves it unchanged, `Some` writes the
+    /// Public ID override; `None` leaves it unchanged, `Some` writes the
     /// inner value, clearing the column when the inner value is `None`.
-    pub(crate) name_override: Option<Option<String>>,
+    pub(crate) id_override: Option<Option<String>>,
 
-    /// Serving state override; same tri-state semantics.
-    pub(crate) enabled_override: Option<Option<bool>>,
+    /// Serving state; `None` leaves it unchanged, `Some` sets it.
+    pub(crate) is_enabled: Option<bool>,
 
     /// Canonical thinking levels override; same tri-state semantics.
     pub(crate) thinking_levels_override: Option<Option<String>>,
 }
 
-/// Writes one model's overrides and recomputes its public name inside a single
+/// Writes one model's overrides and recomputes its public ID inside a single
 /// transaction, returning the updated row with its provider facts.
 ///
 /// The provider row is re-read inside the transaction, so the recomputed
-/// public name uses the provider's current prefix even when a concurrent
+/// public ID uses the provider's current prefix even when a concurrent
 /// `save-provider` changed it after the caller's outer read; the stored model
-/// row and the routed-name collision check observe the same snapshot. The
-/// collision check matches [`update_provider`]'s quality tier: a name already
+/// row and the routed-ID collision check observe the same snapshot. The
+/// collision check matches [`update_provider`]'s quality tier: an ID already
 /// routed by another model row yields a 409 naming the holder, and nothing is
 /// written. Unknown providers or models yield 404.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for unknown rows, failed statements, or a public name
+/// Returns [`ApiError`] for unknown rows, failed statements, or a public ID
 /// collision.
 pub(crate) async fn update_model_overrides_checked(
     database: &Database,
@@ -849,29 +840,29 @@ pub(crate) async fn update_model_overrides_checked(
     };
 
     let Some(model) =
-        find_model_in_transaction(&mut transaction, provider.id, update.upstream_name).await?
+        find_model_in_transaction(&mut transaction, provider.id, update.upstream_id).await?
     else {
         return Err(ApiError::not_found(format!(
             "Model `{}` does not exist on provider `{}`",
-            update.upstream_name, provider.name
+            update.upstream_id, provider.name
         )));
     };
 
-    let new_name_override = update
-        .name_override
+    let new_id_override = update
+        .id_override
         .clone()
-        .unwrap_or_else(|| model.name_override.clone());
+        .unwrap_or_else(|| model.id_override.clone());
 
-    let new_name = Model::public_name(
+    let new_id = Model::public_id(
         &provider.model_prefix,
-        update.upstream_name,
-        new_name_override.as_deref(),
+        update.upstream_id,
+        new_id_override.as_deref(),
     );
 
-    ensure_names_routable(
+    ensure_ids_routable(
         &mut transaction,
         provider.id,
-        &[(new_name.as_str(), update.upstream_name)],
+        &[(new_id.as_str(), update.upstream_id)],
     )
     .await?;
 
@@ -879,16 +870,16 @@ pub(crate) async fn update_model_overrides_checked(
 
     let mut values: Vec<Value> = Vec::new();
 
-    if let Some(override_value) = update.name_override {
-        assignments.push("name_override = ?".to_string());
+    if let Some(override_value) = update.id_override {
+        assignments.push("id_override = ?".to_string());
 
         values.push(override_value.into());
     }
 
-    if let Some(override_value) = update.enabled_override {
-        assignments.push("enabled_override = ?".to_string());
+    if let Some(is_enabled) = update.is_enabled {
+        assignments.push("is_enabled = ?".to_string());
 
-        values.push(override_value.map(i64::from).into());
+        values.push(i64::from(is_enabled).into());
     }
 
     if let Some(override_value) = update.thinking_levels_override {
@@ -897,25 +888,24 @@ pub(crate) async fn update_model_overrides_checked(
         values.push(override_value.into());
     }
 
-    assignments.push("name = ?".to_string());
+    assignments.push("id = ?".to_string());
 
-    values.push(new_name.into());
+    values.push(new_id.into());
 
     values.push(provider.id.into());
 
-    values.push(update.upstream_name.into());
+    values.push(update.upstream_id.into());
 
     let sql = format!(
-        "UPDATE models SET {} WHERE provider_id = ? AND upstream_name = ?",
+        "UPDATE models SET {} WHERE provider_id = ? AND upstream_id = ?",
         assignments.join(", ")
     );
 
     transaction.execute(sql, params_from_iter(values)).await?;
 
-    let entry =
-        find_model_entry_in_transaction(&mut transaction, provider.id, update.upstream_name)
-            .await?
-            .ok_or_else(|| ApiError::internal("model vanished after override update"))?;
+    let entry = find_model_entry_in_transaction(&mut transaction, provider.id, update.upstream_id)
+        .await?
+        .ok_or_else(|| ApiError::internal("model vanished after override update"))?;
 
     transaction.commit().await.map_err(|error| {
         ApiError::internal(format!("failed to commit model override update: {error}"))
@@ -932,15 +922,15 @@ pub(crate) async fn update_model_overrides_checked(
 async fn find_model_entry_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
-    upstream_name: &str,
+    upstream_id: &str,
 ) -> Result<Option<ModelEntry>, ApiError> {
     let rows = transaction
         .query(
-            "SELECT p.id, p.name, p.enabled, m.provider_id, m.upstream_name, m.name, \
-             m.name_override, m.enabled_override, m.thinking_levels_override \
+            "SELECT p.id, p.name, p.is_enabled, m.provider_id, m.upstream_id, m.id, \
+             m.id_override, m.is_enabled, m.thinking_levels_override \
              FROM models m JOIN providers p ON p.id = m.provider_id \
-             WHERE m.provider_id = ?1 AND m.upstream_name = ?2",
-            params![provider_id, upstream_name],
+             WHERE m.provider_id = ?1 AND m.upstream_id = ?2",
+            params![provider_id, upstream_id],
         )
         .await?;
 
@@ -1144,10 +1134,10 @@ fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, ApiError> {
 
     let model = Model {
         provider_id: provider.id,
-        upstream_name: row.get(9)?,
-        name: row.get(10)?,
-        name_override: row.get(11)?,
-        enabled_override: row.get::<Option<i64>>(12)?.map(|value| value != 0),
+        upstream_id: row.get(9)?,
+        id: row.get(10)?,
+        id_override: row.get(11)?,
+        is_enabled: row.get::<i64>(12)? != 0,
         thinking_levels_override: row.get(13)?,
     };
 
@@ -1158,10 +1148,10 @@ fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, ApiError> {
 fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, ApiError> {
     Ok(Model {
         provider_id: row.get(offset)?,
-        upstream_name: row.get(offset + 1)?,
-        name: row.get(offset + 2)?,
-        name_override: row.get(offset + 3)?,
-        enabled_override: row.get::<Option<i64>>(offset + 4)?.map(|value| value != 0),
+        upstream_id: row.get(offset + 1)?,
+        id: row.get(offset + 2)?,
+        id_override: row.get(offset + 3)?,
+        is_enabled: row.get::<i64>(offset + 4)? != 0,
         thinking_levels_override: row.get(offset + 5)?,
     })
 }
@@ -1169,4 +1159,256 @@ fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, ApiError> {
 /// Parses a standalone model row in canonical column order.
 fn model_from_row(row: &Row) -> Result<Model, ApiError> {
     model_from_row_offset(row, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::{Credentials, NewProvider, ProviderType, UpstreamFormat};
+    use std::{num::NonZero, path::PathBuf, time::Duration};
+
+    /// File guard cleaning up the temporary SQLite test database on drop.
+    struct TempDbGuard(PathBuf);
+
+    impl Drop for TempDbGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// Creates an initialized temporary SQLite test database.
+    ///
+    /// # Panics
+    ///
+    /// Panics if opening the test database fails.
+    async fn create_test_database() -> (Database, TempDbGuard) {
+        let db_path =
+            std::env::temp_dir().join(format!("janusgate-test-{}.db", rand::random::<u64>()));
+        #[expect(clippy::unwrap_used, reason = "non-zero literal")]
+        let max_connections = NonZero::new(2).unwrap();
+        #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
+        let database = Database::open(&db_path, max_connections, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        (database, TempDbGuard(db_path))
+    }
+
+    /// Verifies the full model ID lifecycle: prefix composition on discovery,
+    /// direct replacement when overridden, invariant preservation on provider
+    /// prefix update, clearing overrides, and routing conflict rejection.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn test_model_id_override_and_prefix_behavior() {
+        let (database, _guard) = create_test_database().await;
+
+        let credentials = Credentials::ApiKey("test-secret".to_string());
+
+        #[expect(clippy::unwrap_used, reason = "provider inserts cleanly")]
+        insert_provider(
+            &database,
+            &NewProvider {
+                name: "provider-1",
+                model_prefix: "p1/",
+                provider_type: ProviderType::OpenAiCompatible,
+                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+                base_url: Some("http://localhost:8080"),
+                credentials: &credentials,
+                expires_at: None,
+                is_enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "provider list succeeds")]
+        let providers = list_providers(&database).await.unwrap();
+        #[expect(clippy::indexing_slicing, reason = "one provider was inserted")]
+        let provider_id = providers[0].id;
+
+        // 1. Discover models: "gpt-4" and "claude"
+        #[expect(clippy::unwrap_used, reason = "model discovery succeeds")]
+        let count = replace_discovered_models(
+            &database,
+            provider_id,
+            &["gpt-4".to_string(), "claude".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(count, 2);
+
+        #[expect(clippy::unwrap_used, reason = "list models succeeds")]
+        let entries = list_model_entries(&database).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        #[expect(clippy::unwrap_used, reason = "gpt-4 is in discovered entries")]
+        let gpt4 = entries
+            .iter()
+            .find(|e| e.model.upstream_id == "gpt-4")
+            .unwrap();
+        assert_eq!(gpt4.model.id, "p1/gpt-4");
+        assert_eq!(gpt4.model.id_override, None);
+        assert!(gpt4.model.is_enabled);
+        assert!(gpt4.model.is_effectively_enabled(gpt4.is_provider_enabled));
+
+        // 2. Set id_override on "gpt-4" to "top-gpt" (bypasses "p1/" prefix)
+        #[expect(clippy::unwrap_used, reason = "override update succeeds")]
+        let updated = update_model_overrides_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_id,
+                upstream_id: "gpt-4",
+                id_override: Some(Some("top-gpt".to_string())),
+                is_enabled: None,
+                thinking_levels_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.model.id, "top-gpt");
+        assert_eq!(updated.model.id_override.as_deref(), Some("top-gpt"));
+        assert!(updated.model.is_enabled);
+
+        // Routing lookup resolves "top-gpt" to this model
+        #[expect(clippy::unwrap_used, reason = "routing query succeeds")]
+        let routing = find_routing(&database, "top-gpt").await.unwrap();
+        assert!(routing.is_some());
+        #[expect(clippy::unwrap_used, reason = "routing row is present")]
+        let routing = routing.unwrap();
+        assert_eq!(routing.model.upstream_id, "gpt-4");
+        assert!(routing.is_enabled);
+
+        // Old prefixed ID "p1/gpt-4" no longer routes
+        #[expect(clippy::unwrap_used, reason = "routing query succeeds")]
+        let old_routing = find_routing(&database, "p1/gpt-4").await.unwrap();
+        assert!(old_routing.is_none());
+
+        // 3. Update provider's model_prefix to "new-p1/"
+        #[expect(clippy::unwrap_used, reason = "provider prefix update succeeds")]
+        update_provider(
+            &database,
+            provider_id,
+            ProviderUpdate {
+                name: "provider-1",
+                model_prefix: "new-p1/",
+                protocol: None,
+                base_url: None,
+                is_enabled: None,
+                credentials: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Check: "gpt-4" retains "top-gpt", while "claude" is recomputed as
+        // "new-p1/claude"
+        #[expect(clippy::unwrap_used, reason = "list models succeeds")]
+        let entries_after_prefix = list_model_entries(&database).await.unwrap();
+        #[expect(clippy::unwrap_used, reason = "gpt-4 is in entries")]
+        let gpt4_after = entries_after_prefix
+            .iter()
+            .find(|e| e.model.upstream_id == "gpt-4")
+            .unwrap();
+        assert_eq!(gpt4_after.model.id, "top-gpt");
+        #[expect(clippy::unwrap_used, reason = "claude is in entries")]
+        let claude_after = entries_after_prefix
+            .iter()
+            .find(|e| e.model.upstream_id == "claude")
+            .unwrap();
+        assert_eq!(claude_after.model.id, "new-p1/claude");
+
+        // 4. Clear id_override on "gpt-4": reverts to "new-p1/gpt-4"
+        #[expect(clippy::unwrap_used, reason = "clearing override succeeds")]
+        let cleared = update_model_overrides_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_id,
+                upstream_id: "gpt-4",
+                id_override: Some(None),
+                is_enabled: None,
+                thinking_levels_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(cleared.model.id, "new-p1/gpt-4");
+        assert_eq!(cleared.model.id_override, None);
+
+        // 5. Collision check: try to set claude's id_override to "new-p1/gpt-4"
+        let collision_result = update_model_overrides_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_id,
+                upstream_id: "claude",
+                id_override: Some(Some("new-p1/gpt-4".to_string())),
+                is_enabled: None,
+                thinking_levels_override: None,
+            },
+        )
+        .await;
+        assert!(collision_result.is_err());
+
+        // 6. Disable claude individually
+        #[expect(clippy::unwrap_used, reason = "disabling model succeeds")]
+        let disabled_claude = update_model_overrides_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_id,
+                upstream_id: "claude",
+                id_override: None,
+                is_enabled: Some(false),
+                thinking_levels_override: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!disabled_claude.model.is_enabled);
+        assert!(
+            !disabled_claude
+                .model
+                .is_effectively_enabled(disabled_claude.is_provider_enabled)
+        );
+
+        // Enabled models list includes gpt-4 but excludes claude
+        #[expect(clippy::unwrap_used, reason = "list enabled models succeeds")]
+        let enabled_models = list_enabled_models_with_owner(&database).await.unwrap();
+        assert_eq!(enabled_models.len(), 1);
+        #[expect(clippy::indexing_slicing, reason = "length 1 asserted above")]
+        let first_enabled = &enabled_models[0];
+        assert_eq!(first_enabled.0, "new-p1/gpt-4");
+
+        // 7. Master switch test: disable provider -> ALL models effectively
+        //    disabled
+        #[expect(clippy::unwrap_used, reason = "disabling provider succeeds")]
+        update_provider(
+            &database,
+            provider_id,
+            ProviderUpdate {
+                name: "provider-1",
+                model_prefix: "new-p1/",
+                protocol: None,
+                base_url: None,
+                is_enabled: Some(false),
+                credentials: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Routing lookup for gpt-4 reports is_enabled = false
+        #[expect(clippy::unwrap_used, reason = "routing query succeeds")]
+        let gpt4_routing = find_routing(&database, "new-p1/gpt-4").await.unwrap();
+        assert!(gpt4_routing.is_some());
+        #[expect(clippy::unwrap_used, reason = "routing is some")]
+        let gpt4_routing = gpt4_routing.unwrap();
+        assert!(!gpt4_routing.is_enabled);
+
+        // Enabled models list is now empty because provider is disabled
+        #[expect(clippy::unwrap_used, reason = "list enabled models succeeds")]
+        let enabled_models_after_provider_disable =
+            list_enabled_models_with_owner(&database).await.unwrap();
+        assert!(enabled_models_after_provider_disable.is_empty());
+    }
 }
