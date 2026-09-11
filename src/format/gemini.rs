@@ -385,7 +385,7 @@ impl UpstreamParser {
             });
         }
 
-        if let Some(candidate) = primary_candidate(&value) {
+        if let Some(candidate) = primary_candidate(value) {
             if let Some(parts) = candidate
                 .pointer("/content/parts")
                 .and_then(Value::as_array)

@@ -1,6 +1,6 @@
 //! Management endpoints discovering, listing, and overriding models.
 
-use super::{error_response, parse_body};
+use super::{error_response, parse_body, validate_identifier};
 use crate::{
     database::Database,
     error::{self, ApiError, log_api_error},
@@ -18,8 +18,8 @@ use serde_json::Value;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DiscoverModelsBody {
-    /// Provider identifier.
-    provider: String,
+    /// Provider row identifier.
+    id: i64,
 }
 
 /// Strictly parsed `save-model` request; each override field is tri-state:
@@ -29,10 +29,10 @@ struct DiscoverModelsBody {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SaveModelBody {
-    /// Provider identifier.
-    provider: String,
+    /// Owning provider row identifier.
+    provider_id: i64,
 
-    /// Exact upstream model identifier.
+    /// Exact upstream model identifier; must be non-empty.
     upstream_name: String,
 
     /// Public name override.
@@ -100,16 +100,16 @@ pub(crate) async fn save(State(database): State<Database>, body: Bytes) -> Respo
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for unknown providers, upstream failures, and public
-/// name collisions.
+/// Returns [`ApiError`] for an empty provider identifier, unknown providers,
+/// upstream failures, and public name collisions.
 async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, ApiError> {
     let request: DiscoverModelsBody = parse_body(body, "discover-models")?;
 
     let outcome = async {
-        let provider = storage::find_provider(database, &request.provider)
+        let provider = storage::find_provider_by_id(database, request.id)
             .await?
             .ok_or_else(|| {
-                ApiError::not_found(format!("Provider `{}` does not exist", request.provider))
+                ApiError::not_found(format!("Provider {} does not exist", request.id))
             })?;
 
         let fresh = oauth::ensure_fresh_token(database, crate::http(), &provider).await?;
@@ -135,21 +135,18 @@ async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, Api
         // public names are composed from the provider's current prefix and
         // checked for collisions atomically with the write (README
         // §7.1).
-        storage::replace_discovered_models(database, &request.provider, &unique_names).await
+        storage::replace_discovered_models(database, request.id, &unique_names).await
     }
     .await;
 
     match &outcome {
         Ok(discovered) => {
-            info!(
-                "discovered {discovered} models for provider `{}`",
-                request.provider
-            )
+            info!("discovered {discovered} models for provider {}", request.id)
         }
 
         Err(error) => {
             log_api_error(
-                &format!("model discovery for provider `{}`", request.provider),
+                &format!("model discovery for provider {}", request.id),
                 error,
             );
         }
@@ -164,12 +161,14 @@ async fn handle_discover(database: &Database, body: &Bytes) -> Result<usize, Api
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for unknown rows, invalid thinking levels, and public
-/// name collisions.
+/// Returns [`ApiError`] for empty identifiers, unknown rows, invalid thinking
+/// levels, and public name collisions.
 async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiError> {
     let request: SaveModelBody = parse_body(body, "save-model")?;
 
     let outcome = async {
+        validate_identifier("upstream_name", &request.upstream_name)?;
+
         let thinking_levels_override = match &request.thinking_levels_override {
             None => None,
 
@@ -198,7 +197,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
         storage::update_model_overrides_checked(
             database,
             storage::ModelOverrideUpdate {
-                provider_name: &request.provider,
+                provider_id: request.provider_id,
                 upstream_name: &request.upstream_name,
                 name_override: request.name_override.clone(),
                 enabled_override: request.enabled_override,
@@ -213,13 +212,13 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
     match &outcome {
         Ok(_) => info!(
             "saved the overrides of model `{}`/`{}`",
-            request.provider, request.upstream_name
+            request.provider_id, request.upstream_name
         ),
 
         Err(error) => log_api_error(
             &format!(
                 "save-model `{}`/`{}`",
-                request.provider, request.upstream_name
+                request.provider_id, request.upstream_name
             ),
             error,
         ),
@@ -237,8 +236,10 @@ fn model_entry_json(entry: &ModelEntry) -> Result<Value, ApiError> {
     let thinking_levels_override = thinking_levels_json(&entry.model.thinking_levels_override)?;
 
     // The effective status comes from the canonical rule; the management wire
-    // name stays `enabled` (README §7.1).
+    // name stays `enabled` (README §7.1). `provider_id` is the public
+    // identifier and `provider` the renameable label beside it.
     Ok(serde_json::json!({
+        "provider_id": entry.provider_id,
         "provider": entry.provider_name,
         "upstream_name": entry.model.upstream_name,
         "name": entry.model.name,
@@ -299,7 +300,7 @@ mod tests {
     async fn insert_compatible_model(
         database: &Database,
         thinking_levels_override: Option<&str>,
-    ) -> Result<(), Box<dyn StdError>> {
+    ) -> Result<i64, Box<dyn StdError>> {
         database
             .execute(
                 "INSERT INTO providers (name, model_prefix, type, protocol, base_url, credentials) \
@@ -309,15 +310,21 @@ mod tests {
             )
             .await?;
 
+        let rows = database
+            .query("SELECT id FROM providers WHERE name = 'alpha'", ())
+            .await?;
+
+        let provider_id: i64 = rows.first().ok_or("missing provider row")?.get(0)?;
+
         database
             .execute(
                 "INSERT INTO models (provider_id, upstream_name, name, thinking_levels_override) \
-                 VALUES ((SELECT id FROM providers WHERE name = 'alpha'), 'u1', 'u1', ?1)",
-                params![thinking_levels_override],
+                 VALUES (?1, 'u1', 'u1', ?2)",
+                params![provider_id, thinking_levels_override],
             )
             .await?;
 
-        Ok(())
+        Ok(provider_id)
     }
 
     /// Builds a JSON request body for `save-model`.
@@ -402,17 +409,17 @@ mod tests {
         let (database, _guard) =
             test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
-        insert_compatible_model(&database, None).await?;
+        let provider_id = insert_compatible_model(&database, None).await?;
 
         let error = handle_save(
             &database,
-            &body(
-                r#"{"provider":"alpha","upstream_name":"u1","thinking_levels_override":["turbo"]}"#,
-            ),
+            &body(r#"{"provider_id":1,"upstream_name":"u1","thinking_levels_override":["turbo"]}"#),
         )
         .await
         .err()
         .ok_or("an unknown thinking level must be rejected")?;
+
+        assert_eq!(provider_id, 1);
 
         assert_eq!(error.status, 400);
 
@@ -444,22 +451,24 @@ mod tests {
         let (database, _guard) =
             test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
-        insert_compatible_model(&database, None).await?;
+        let provider_id = insert_compatible_model(&database, None).await?;
 
         let router = crate::management_api::router().with_state(database.clone());
 
-        let set = concat!(
-            r#"{"provider":"alpha","upstream_name":"u1","name_override":"public","#,
-            r#""enabled_override":false,"thinking_levels_override":["low"]}"#,
+        let set = format!(
+            r#"{{"provider_id":{provider_id},"upstream_name":"u1","name_override":"public",
+                "enabled_override":false,"thinking_levels_override":["low"]}}"#,
         );
 
-        let (status, rendered) = save_model(&router, set).await?;
+        let (status, rendered) = save_model(&router, &set).await?;
 
         assert_eq!(status, StatusCode::OK);
 
         let model = rendered
             .get("model")
             .ok_or("the body must carry the model")?;
+
+        assert_eq!(model.get("provider_id"), Some(&Value::from(provider_id)));
 
         assert_eq!(
             model.get("name_override"),
@@ -474,8 +483,9 @@ mod tests {
         );
 
         // An absent field keeps every stored override.
-        let (status, rendered) =
-            save_model(&router, r#"{"provider":"alpha","upstream_name":"u1"}"#).await?;
+        let keep = format!(r#"{{"provider_id":{provider_id},"upstream_name":"u1"}}"#);
+
+        let (status, rendered) = save_model(&router, &keep).await?;
 
         assert_eq!(status, StatusCode::OK);
 
@@ -496,12 +506,12 @@ mod tests {
         );
 
         // An explicit JSON `null` clears every override.
-        let clear = concat!(
-            r#"{"provider":"alpha","upstream_name":"u1","name_override":null,"#,
-            r#""enabled_override":null,"thinking_levels_override":null}"#,
+        let clear = format!(
+            r#"{{"provider_id":{provider_id},"upstream_name":"u1","name_override":null,
+                "enabled_override":null,"thinking_levels_override":null}}"#,
         );
 
-        let (status, rendered) = save_model(&router, clear).await?;
+        let (status, rendered) = save_model(&router, &clear).await?;
 
         assert_eq!(status, StatusCode::OK);
 
@@ -537,6 +547,60 @@ mod tests {
         assert_eq!(enabled_override, None);
 
         assert_eq!(thinking_levels_override, None);
+
+        Ok(())
+    }
+
+    /// Verifies `discover-models` and `save-model` reject empty identifiers
+    /// with 400 naming the field instead of a 404 lookup miss: identifiers
+    /// are non-empty (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn model_endpoints_address_providers_by_id() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let unknown_discover = handle_discover(&database, &body(r#"{"id":999}"#))
+            .await
+            .err()
+            .ok_or("an unknown discover id must be rejected")?;
+
+        assert_eq!(unknown_discover.status, 404);
+
+        assert_eq!(unknown_discover.code.as_deref(), Some("not_found"));
+
+        insert_compatible_model(&database, None).await?;
+
+        let empty_upstream =
+            handle_save(&database, &body(r#"{"provider_id":1,"upstream_name":""}"#))
+                .await
+                .err()
+                .ok_or("an empty save-model upstream_name must be rejected")?;
+
+        assert_eq!(empty_upstream.status, 400);
+
+        assert_eq!(empty_upstream.param.as_deref(), Some("upstream_name"));
+
+        let unknown_provider = handle_save(
+            &database,
+            &body(r#"{"provider_id":999,"upstream_name":"u1"}"#),
+        )
+        .await
+        .err()
+        .ok_or("an unknown save-model provider id must be rejected")?;
+
+        assert_eq!(unknown_provider.status, 404);
+
+        // The row lookup precedes every other step, so an unknown id never
+        // reaches the upstream call.
+        assert_eq!(unknown_provider.message, "Provider 999 does not exist");
 
         Ok(())
     }

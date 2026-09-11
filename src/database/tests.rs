@@ -545,6 +545,32 @@ async fn provider_type_check_rejects_unknown_values() -> Result<(), Box<dyn StdE
     Ok(())
 }
 
+/// Verifies that the `providers.name` closed domain rejects the empty string
+/// at the storage layer: names are non-nullable and non-empty, so an empty
+/// identifier is a constraint violation and never a storable state (README
+/// §3).
+///
+/// # Panics
+///
+/// Panics if database initialization or an assertion fails.
+///
+/// # Errors
+///
+/// Returns any error encountered while executing the inserts.
+#[tokio::test]
+async fn provider_name_check_rejects_empty_name() -> Result<(), Box<dyn StdError>> {
+    let (database, _path_guard) =
+        TempArtifactGuard::open_database(TEST_POOL_SIZE, TEST_POOL_TIMEOUT).await?;
+
+    let rejected_insert = database
+        .execute(INSERT_PROVIDER, provider_params("", "prefix/"))
+        .await;
+
+    assert!(matches!(rejected_insert, Err(Error::Turso(_))));
+
+    Ok(())
+}
+
 /// Verifies that the `oauth_states.type` closed domain admits exactly the two
 /// OAuth flow types and rejects the API-key-only provider type, which is a
 /// valid `providers.type` but never an OAuth flow type.

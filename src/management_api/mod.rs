@@ -99,10 +99,31 @@ where
     })
 }
 
+/// Validates a management request identifier. Identifier content — its
+/// characters, case, and length — is the caller's choice; the backend
+/// enforces only structural non-emptiness (README §7.1).
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when the identifier is empty.
+pub(crate) fn validate_identifier(param: &str, value: &str) -> Result<(), ApiError> {
+    if value.is_empty() {
+        return Err(ApiError::invalid_parameter(
+            param,
+            format!("`{param}` must not be empty"),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Renders a provider row into its management JSON shape; credentials are
-/// never exposed.
+/// never exposed. `id` is the provider's public identifier — every management
+/// reference to an existing provider goes through it — while `name` is the
+/// unique, renameable label.
 pub(crate) fn provider_json(provider: &Provider) -> serde_json::Value {
     serde_json::json!({
+        "id": provider.id,
         "name": provider.name,
         "model_prefix": provider.model_prefix,
         "type": provider.provider_type.as_str(),
@@ -115,7 +136,7 @@ pub(crate) fn provider_json(provider: &Provider) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::router;
+    use super::{router, validate_identifier};
     use crate::{
         database::Database,
         provider::{ProviderType, storage},
@@ -212,6 +233,37 @@ mod tests {
             .get("error")
             .and_then(|error| error.get(field))
             .unwrap_or(&Value::Null)
+    }
+
+    /// Verifies identifier validation enforces only non-emptiness (README
+    /// §7.1): every non-empty content is the caller's choice and passes
+    /// through, an empty identifier is rejected with 400 naming the field,
+    /// and the message carries the parameter name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    #[test]
+    fn identifier_validation_enforces_only_non_emptiness() {
+        assert!(validate_identifier("name", "codex").is_ok());
+
+        assert!(validate_identifier("name", "My Provider! ä").is_ok());
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the empty-identifier rejection is the subject of the assertion"
+        )]
+        let error =
+            validate_identifier("provider", "").expect_err("an empty identifier must be rejected");
+
+        assert_eq!(error.status, 400);
+
+        assert_eq!(error.param.as_deref(), Some("provider"));
+
+        assert!(
+            error.message.contains("`provider` must not be empty"),
+            "the message must name the field: {error}"
+        );
     }
 
     /// Verifies the management router authenticates every request with the

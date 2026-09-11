@@ -65,15 +65,20 @@ pub(crate) async fn list_providers(database: &Database) -> Result<Vec<Provider>,
     rows.iter().map(provider_from_row).collect()
 }
 
-/// The `WHERE name = ?1` provider lookup, executed through both the pooled
-/// database ([`find_provider`]) and an open transaction
-/// ([`find_provider_in_transaction`]); the two executor types share no query
-/// trait, so the statement text is the shared part.
+/// The `WHERE name = ?1` provider lookup. Names are unique, so this is the
+/// name-taken check behind creation; all addressing of an existing provider
+/// goes through its id.
 fn find_provider_sql() -> String {
     format!("SELECT {PROVIDER_COLUMNS} FROM providers WHERE name = ?1")
 }
 
-/// Fetches one provider by name.
+/// The `WHERE id = ?1` provider lookup shared by the pooled and transactional
+/// executors, which share no query trait.
+fn find_provider_by_id_sql() -> String {
+    format!("SELECT {PROVIDER_COLUMNS} FROM providers WHERE id = ?1")
+}
+
+/// Fetches one provider by name, for creation-time name-taken checks.
 ///
 /// # Errors
 ///
@@ -87,24 +92,40 @@ pub(crate) async fn find_provider(
     rows.first().map(provider_from_row).transpose()
 }
 
-/// Fetches one provider by name inside a transaction, mirroring
-/// [`find_provider`] against the transactional executor.
+/// Fetches one provider by id.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] when the query fails or the row is malformed.
-pub(crate) async fn find_provider_in_transaction(
-    transaction: &mut Transaction,
-    name: &str,
+pub(crate) async fn find_provider_by_id(
+    database: &Database,
+    provider_id: i64,
 ) -> Result<Option<Provider>, ApiError> {
-    let rows = transaction
-        .query(find_provider_sql(), params![name])
+    let rows = database
+        .query(find_provider_by_id_sql(), params![provider_id])
         .await?;
 
     rows.first().map(provider_from_row).transpose()
 }
 
-/// Fetches one provider by name after a write, failing with an internal error
+/// Fetches one provider by id inside a transaction, mirroring
+/// [`find_provider_by_id`] against the transactional executor.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] when the query fails or the row is malformed.
+pub(crate) async fn find_provider_by_id_in_transaction(
+    transaction: &mut Transaction,
+    provider_id: i64,
+) -> Result<Option<Provider>, ApiError> {
+    let rows = transaction
+        .query(find_provider_by_id_sql(), params![provider_id])
+        .await?;
+
+    rows.first().map(provider_from_row).transpose()
+}
+
+/// Fetches one provider by id after a write, failing with an internal error
 /// when the row is gone: a vanished row after a successful write is storage
 /// drift — an invariant violation — and never a client fault.
 ///
@@ -113,22 +134,25 @@ pub(crate) async fn find_provider_in_transaction(
 /// Returns [`ApiError`] when the query fails or the provider does not exist.
 pub(crate) async fn reload_provider(
     database: &Database,
-    name: &str,
+    provider_id: i64,
     context: &str,
 ) -> Result<Provider, ApiError> {
-    find_provider(database, name)
+    find_provider_by_id(database, provider_id)
         .await?
         .ok_or_else(|| ApiError::internal(format!("provider vanished after {context}")))
 }
 
-/// Deletes one provider by name, returning whether a row was removed.
+/// Deletes one provider by id, returning whether a row was removed.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] when the delete fails.
-pub(crate) async fn delete_provider(database: &Database, name: &str) -> Result<bool, ApiError> {
+pub(crate) async fn delete_provider(
+    database: &Database,
+    provider_id: i64,
+) -> Result<bool, ApiError> {
     let changes = database
-        .execute("DELETE FROM providers WHERE name = ?1", params![name])
+        .execute("DELETE FROM providers WHERE id = ?1", params![provider_id])
         .await?;
 
     Ok(changes == 1)
@@ -162,13 +186,19 @@ pub(crate) async fn update_credentials(
     Ok(changes == 1)
 }
 
-/// The raw `save-provider` field changes for an existing provider. Every
-/// field is supplied-or-absent: `None` means the field is absent from the
-/// request and keeps the stored value, which is resolved against the row
-/// re-read inside the update transaction.
+/// The raw `save-provider` field changes for an existing provider. `name`
+/// and `model_prefix` are not optional: the caller states the naming on
+/// every request, and both are applied verbatim — supplying a different
+/// `name` is how a provider is renamed. The optional fields are
+/// supplied-or-absent: `None` means the field is absent from the request and
+/// keeps the stored value, which is resolved against the row re-read inside
+/// the update transaction.
 pub(crate) struct ProviderUpdate<'a> {
-    /// Prefix prepended to every public model name.
-    pub(crate) model_prefix: Option<&'a str>,
+    /// Unique provider name; may rename the provider.
+    pub(crate) name: &'a str,
+
+    /// Prefix prepended to every public model name; may be empty.
+    pub(crate) model_prefix: &'a str,
 
     /// Upstream wire format.
     pub(crate) protocol: Option<UpstreamFormat>,
@@ -192,40 +222,58 @@ pub(crate) struct ProviderUpdate<'a> {
 /// provider — including one deleted between the caller's outer read and this
 /// call — is rejected with 404 and nothing is written.
 ///
-/// The write owns the provider row, an optional credentials replacement
+/// The write owns the provider row — the supplied `name` included, so a
+/// different name renames the provider — an optional credentials replacement
 /// (which resets `expires_at` and clears any refresh lease), and — upholding
 /// the README §3 invariant — the public `name` of every model row, recomputed
 /// from the effective prefix through the shared composition rule
-/// [`Model::public_name`]. Nothing is written when any recomputed public name
-/// would collide with an existing model row of another provider, or when two
-/// of the provider's own models would converge on one public name; both
-/// rejections are 409 conflicts. Abandoning the transaction on any error
-/// discards every partial write, so the provider row and its model names can
-/// never drift apart.
+/// [`Model::public_name`]. Nothing is written when the new name is already
+/// taken by another provider, when any recomputed public name would collide
+/// with an existing model row of another provider, or when two of the
+/// provider's own models would converge on one public name; all rejections
+/// are 409 conflicts. Abandoning the transaction on any error discards every
+/// partial write, so the provider row and its model names can never drift
+/// apart.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for an unknown provider, a failed statement, or a
-/// recomputed public name collision.
+/// Returns [`ApiError`] for an unknown provider, a failed statement, a taken
+/// name, or a recomputed public name collision.
 pub(crate) async fn update_provider(
     database: &Database,
-    provider_name: &str,
+    provider_id: i64,
     update: ProviderUpdate<'_>,
 ) -> Result<Provider, ApiError> {
     let mut transaction = database.transaction().await?;
 
     // The merge reads the row inside the transaction, so absent fields keep
     // the newest stored values, never the caller's snapshot.
-    let Some(provider) = find_provider_in_transaction(&mut transaction, provider_name).await?
+    let Some(provider) = find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
     else {
         return Err(ApiError::not_found(format!(
-            "Provider `{provider_name}` does not exist"
+            "Provider {provider_id} does not exist"
         )));
     };
 
-    let model_prefix = update
-        .model_prefix
-        .unwrap_or(provider.model_prefix.as_str());
+    let name = update.name;
+
+    // A rename must not take a name another provider already holds; the
+    // provider's own row is excluded, so re-sending the unchanged name is
+    // never a conflict.
+    let name_holders = transaction
+        .query(
+            "SELECT id FROM providers WHERE name = ?1 AND id != ?2",
+            params![name, provider.id],
+        )
+        .await?;
+
+    if !name_holders.is_empty() {
+        return Err(ApiError::conflict(format!(
+            "Provider name `{name}` is already taken"
+        )));
+    }
+
+    let model_prefix = update.model_prefix;
 
     let protocol = update.protocol.or(provider.protocol);
 
@@ -255,15 +303,16 @@ pub(crate) async fn update_provider(
         .map(|(name, model)| (name.as_str(), model.upstream_name.as_str()))
         .collect();
 
-    ensure_names_pairwise_distinct(&provider.name, &composed)?;
+    ensure_names_pairwise_distinct(name, &composed)?;
 
     ensure_names_routable(&mut transaction, provider.id, &composed).await?;
 
     transaction
         .execute(
-            "UPDATE providers SET model_prefix = ?1, protocol = ?2, base_url = ?3, enabled = ?4 \
-             WHERE id = ?5",
+            "UPDATE providers SET name = ?1, model_prefix = ?2, protocol = ?3, base_url = ?4, \
+             enabled = ?5 WHERE id = ?6",
             params![
+                name,
                 model_prefix,
                 protocol.map(UpstreamFormat::as_str),
                 base_url,
@@ -303,7 +352,7 @@ pub(crate) async fn update_provider(
     // The returned row mirrors exactly what this transaction wrote.
     Ok(Provider {
         id: provider.id,
-        name: provider.name,
+        name: name.to_string(),
         model_prefix: model_prefix.to_string(),
         provider_type: provider.provider_type,
         protocol,
@@ -549,6 +598,9 @@ async fn find_model_in_transaction(
 /// One model row with the provider facts needed for listing.
 #[derive(Debug, Clone)]
 pub(crate) struct ModelEntry {
+    /// Owning provider row identifier.
+    pub(crate) provider_id: i64,
+
     /// Owning provider name.
     pub(crate) provider_name: String,
 
@@ -567,7 +619,7 @@ pub(crate) struct ModelEntry {
 pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelEntry>, ApiError> {
     let rows = database
         .query(
-            "SELECT p.name AS provider_name, p.enabled AS provider_enabled, \
+            "SELECT p.id, p.name AS provider_name, p.enabled AS provider_enabled, \
              m.provider_id, m.upstream_name, m.name, m.name_override, m.enabled_override, \
              m.thinking_levels_override FROM models m JOIN providers p ON p.id = m.provider_id \
              ORDER BY m.name",
@@ -579,9 +631,10 @@ pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelE
 
     for row in &rows {
         entries.push(ModelEntry {
-            provider_name: row.get(0).map_err(ApiError::from)?,
-            is_provider_enabled: row.get::<i64>(1).map_err(ApiError::from)? != 0,
-            model: model_from_row_offset(row, 2)?,
+            provider_id: row.get(0).map_err(ApiError::from)?,
+            provider_name: row.get(1).map_err(ApiError::from)?,
+            is_provider_enabled: row.get::<i64>(2).map_err(ApiError::from)? != 0,
+            model: model_from_row_offset(row, 3)?,
         });
     }
 
@@ -642,7 +695,7 @@ pub(crate) async fn list_enabled_models_with_owner(
 /// failed statements, or a composed public name collision.
 pub(crate) async fn replace_discovered_models(
     database: &Database,
-    provider_name: &str,
+    provider_id: i64,
     upstream_names: &[String],
 ) -> Result<usize, ApiError> {
     if upstream_names.is_empty() {
@@ -653,10 +706,10 @@ pub(crate) async fn replace_discovered_models(
 
     let mut transaction = database.transaction().await?;
 
-    let Some(provider) = find_provider_in_transaction(&mut transaction, provider_name).await?
+    let Some(provider) = find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
     else {
         return Err(ApiError::not_found(format!(
-            "Provider `{provider_name}` does not exist"
+            "Provider {provider_id} does not exist"
         )));
     };
 
@@ -748,8 +801,8 @@ async fn replace_provider_models(
 
 /// One `save-model` override update about to be applied transactionally.
 pub(crate) struct ModelOverrideUpdate<'a> {
-    /// Owning provider's identifier, the lookup key.
-    pub(crate) provider_name: &'a str,
+    /// Owning provider's id, the lookup key.
+    pub(crate) provider_id: i64,
 
     /// Exact upstream model identifier.
     pub(crate) upstream_name: &'a str,
@@ -787,11 +840,11 @@ pub(crate) async fn update_model_overrides_checked(
     let mut transaction = database.transaction().await?;
 
     let Some(provider) =
-        find_provider_in_transaction(&mut transaction, update.provider_name).await?
+        find_provider_by_id_in_transaction(&mut transaction, update.provider_id).await?
     else {
         return Err(ApiError::not_found(format!(
-            "Provider `{}` does not exist",
-            update.provider_name
+            "Provider {} does not exist",
+            update.provider_id
         )));
     };
 
@@ -883,9 +936,9 @@ async fn find_model_entry_in_transaction(
 ) -> Result<Option<ModelEntry>, ApiError> {
     let rows = transaction
         .query(
-            "SELECT p.name, p.enabled, m.provider_id, m.upstream_name, m.name, m.name_override, \
-             m.enabled_override, m.thinking_levels_override FROM models m \
-             JOIN providers p ON p.id = m.provider_id \
+            "SELECT p.id, p.name, p.enabled, m.provider_id, m.upstream_name, m.name, \
+             m.name_override, m.enabled_override, m.thinking_levels_override \
+             FROM models m JOIN providers p ON p.id = m.provider_id \
              WHERE m.provider_id = ?1 AND m.upstream_name = ?2",
             params![provider_id, upstream_name],
         )
@@ -894,9 +947,10 @@ async fn find_model_entry_in_transaction(
     rows.first()
         .map(|row| {
             Ok(ModelEntry {
-                provider_name: row.get(0)?,
-                is_provider_enabled: row.get::<i64>(1)? != 0,
-                model: model_from_row_offset(row, 2)?,
+                provider_id: row.get(0)?,
+                provider_name: row.get(1)?,
+                is_provider_enabled: row.get::<i64>(2)? != 0,
+                model: model_from_row_offset(row, 3)?,
             })
         })
         .transpose()
@@ -1315,11 +1369,11 @@ mod tests {
         // snapshot for both transactions.
         let mut winner = database.transaction().await?;
 
-        let _ = find_provider_in_transaction(&mut winner, "racer").await?;
+        let _ = find_provider_by_id_in_transaction(&mut winner, provider_id).await?;
 
         let mut loser = database.transaction().await?;
 
-        let _ = find_provider_in_transaction(&mut loser, "racer").await?;
+        let _ = find_provider_by_id_in_transaction(&mut loser, provider_id).await?;
 
         // The winner acquires the lease and commits, landing a write after
         // the loser's snapshot was taken.
@@ -1734,9 +1788,10 @@ mod tests {
 
         let stored = update_provider(
             &database,
-            "alpha",
+            provider_id,
             ProviderUpdate {
-                model_prefix: Some("svc/"),
+                name: "alpha",
+                model_prefix: "svc/",
                 protocol: Some(UpstreamFormat::OpenAiResponse),
                 base_url: Some("https://other.example"),
                 is_enabled: Some(false),
@@ -1801,9 +1856,10 @@ mod tests {
 
         let error = update_provider(
             &database,
-            "alpha",
+            alpha_id,
             ProviderUpdate {
-                model_prefix: Some(""),
+                name: "alpha",
+                model_prefix: "",
                 protocol: None,
                 base_url: None,
                 is_enabled: Some(false),
@@ -1859,9 +1915,10 @@ mod tests {
 
         let error = update_provider(
             &database,
-            "gamma",
+            provider_id,
             ProviderUpdate {
-                model_prefix: Some(""),
+                name: "gamma",
+                model_prefix: "",
                 protocol: None,
                 base_url: None,
                 is_enabled: Some(false),
@@ -1905,13 +1962,14 @@ mod tests {
             test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
                 .await?;
 
-        insert_prefix_provider(&database, "delta", "p-").await?;
+        let provider_id = insert_prefix_provider(&database, "delta", "p-").await?;
 
         update_provider(
             &database,
-            "delta",
+            provider_id,
             ProviderUpdate {
-                model_prefix: Some("q-"),
+                name: "delta",
+                model_prefix: "q-",
                 protocol: None,
                 base_url: None,
                 is_enabled: Some(false),
@@ -1924,6 +1982,48 @@ mod tests {
 
         assert_eq!(model_prefix, "q-");
         assert_eq!(enabled, 0);
+
+        Ok(())
+    }
+
+    /// Verifies an update applying an empty model prefix stores it verbatim:
+    /// the prefix is non-null but may be empty, so the empty string is a
+    /// legitimate value and never replaced by any fallback (README §3, §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn provider_update_applies_empty_prefix_verbatim() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
+                .await?;
+
+        let provider_id = insert_prefix_provider(&database, "alpha", "a-").await?;
+
+        let stored = update_provider(
+            &database,
+            provider_id,
+            ProviderUpdate {
+                name: "alpha",
+                model_prefix: "",
+                protocol: None,
+                base_url: None,
+                is_enabled: None,
+                credentials: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(stored.model_prefix, "");
+
+        let (model_prefix, _, _, _) = read_provider_row(&database, "alpha").await?;
+
+        assert_eq!(model_prefix, "");
 
         Ok(())
     }
@@ -1946,7 +2046,7 @@ mod tests {
             test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
                 .await?;
 
-        insert_prefix_provider(&database, "alpha", "a-").await?;
+        let alpha_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
         // The caller's outer read observes the provider enabled.
         let outer = find_provider(&database, "alpha")
@@ -1956,12 +2056,13 @@ mod tests {
         assert!(outer.is_enabled);
 
         // A concurrent save-provider disables the provider before the
-        // caller's update commits.
+        // caller's update commits, restating the stored prefix.
         update_provider(
             &database,
-            "alpha",
+            alpha_id,
             ProviderUpdate {
-                model_prefix: None,
+                name: "alpha",
+                model_prefix: "a-",
                 protocol: None,
                 base_url: None,
                 is_enabled: Some(false),
@@ -1970,12 +2071,13 @@ mod tests {
         )
         .await?;
 
-        // The caller commits an update supplying only the prefix.
+        // The caller commits an update supplying only the new prefix.
         let stored = update_provider(
             &database,
-            "alpha",
+            alpha_id,
             ProviderUpdate {
-                model_prefix: Some("b-"),
+                name: "alpha",
+                model_prefix: "b-",
                 protocol: None,
                 base_url: None,
                 is_enabled: None,
@@ -2017,18 +2119,19 @@ mod tests {
             test_support::TempDatabaseGuard::open_database(STATE_CONSUMERS, TEST_POOL_TIMEOUT)
                 .await?;
 
-        insert_prefix_provider(&database, "alpha", "a-").await?;
+        let alpha_id = insert_prefix_provider(&database, "alpha", "a-").await?;
 
         // The caller's outer read observes the row.
         let _outer = find_provider(&database, "alpha").await?;
 
-        delete_provider(&database, "alpha").await?;
+        delete_provider(&database, alpha_id).await?;
 
         let error = update_provider(
             &database,
-            "alpha",
+            alpha_id,
             ProviderUpdate {
-                model_prefix: None,
+                name: "alpha",
+                model_prefix: "a-",
                 protocol: None,
                 base_url: None,
                 is_enabled: Some(false),
@@ -2197,9 +2300,10 @@ mod tests {
         // The admin replaces the credentials, clearing the lease.
         update_provider(
             &database,
-            "replaced",
+            provider_id,
             ProviderUpdate {
-                model_prefix: Some(""),
+                name: "replaced",
+                model_prefix: "",
                 protocol: None,
                 base_url: None,
                 is_enabled: Some(true),
@@ -2257,7 +2361,7 @@ mod tests {
 
         assert_eq!(existing.id, provider_id);
 
-        delete_provider(&database, "deleted").await?;
+        delete_provider(&database, provider_id).await?;
 
         let is_updated = update_credentials(
             &database,
@@ -2376,9 +2480,12 @@ mod tests {
         insert_model_row(&database, provider_id, "u1", "a-custom", Some("custom")).await?;
         insert_model_row(&database, provider_id, "gone", "a-gone", None).await?;
 
-        let discovered =
-            replace_discovered_models(&database, "alpha", &["u1".to_string(), "u2".to_string()])
-                .await?;
+        let discovered = replace_discovered_models(
+            &database,
+            provider_id,
+            &["u1".to_string(), "u2".to_string()],
+        )
+        .await?;
 
         assert_eq!(discovered, 2);
 
@@ -2428,7 +2535,7 @@ mod tests {
 
         insert_model_row(&database, provider_id, "u1", "a-custom", Some("custom")).await?;
 
-        let error = replace_discovered_models(&database, "alpha", &[])
+        let error = replace_discovered_models(&database, provider_id, &[])
             .await
             .err()
             .ok_or("an empty discovered set must be rejected")?;
@@ -2475,7 +2582,7 @@ mod tests {
         insert_model_row(&database, beta_id, "m1", "m1", None).await?;
 
         let error =
-            replace_discovered_models(&database, "alpha", &["u1".to_string(), "m1".to_string()])
+            replace_discovered_models(&database, alpha_id, &["u1".to_string(), "m1".to_string()])
                 .await
                 .err()
                 .ok_or("the routed collision must be rejected")?;
@@ -2528,9 +2635,10 @@ mod tests {
         // A concurrent save-provider changes the prefix before the replace.
         update_provider(
             &database,
-            "alpha",
+            provider_id,
             ProviderUpdate {
-                model_prefix: Some("b-"),
+                name: "alpha",
+                model_prefix: "b-",
                 protocol: None,
                 base_url: None,
                 is_enabled: Some(true),
@@ -2539,7 +2647,7 @@ mod tests {
         )
         .await?;
 
-        replace_discovered_models(&database, "alpha", &["gpt-x".to_string()]).await?;
+        replace_discovered_models(&database, provider_id, &["gpt-x".to_string()]).await?;
 
         assert_eq!(
             read_model_name(&database, provider_id, "gpt-x").await?,
@@ -2574,11 +2682,14 @@ mod tests {
         insert_model_row(&database, provider_id, "u1", "x-u1", None).await?;
         insert_model_row(&database, provider_id, "u2", "x-keep", Some("u1")).await?;
 
-        let error =
-            replace_discovered_models(&database, "gamma", &["u1".to_string(), "u2".to_string()])
-                .await
-                .err()
-                .ok_or("the convergence must be rejected")?;
+        let error = replace_discovered_models(
+            &database,
+            provider_id,
+            &["u1".to_string(), "u2".to_string()],
+        )
+        .await
+        .err()
+        .ok_or("the convergence must be rejected")?;
 
         assert_eq!(error.status, 409);
         assert!(
@@ -2619,9 +2730,10 @@ mod tests {
         // the handler would have made.
         update_provider(
             &database,
-            "alpha",
+            provider_id,
             ProviderUpdate {
-                model_prefix: Some("b-"),
+                name: "alpha",
+                model_prefix: "b-",
                 protocol: None,
                 base_url: None,
                 is_enabled: Some(true),
@@ -2633,7 +2745,7 @@ mod tests {
         let entry = update_model_overrides_checked(
             &database,
             ModelOverrideUpdate {
-                provider_name: "alpha",
+                provider_id,
                 upstream_name: "u1",
                 name_override: Some(Some("hero".to_string())),
                 enabled_override: Some(Some(false)),
@@ -2684,7 +2796,7 @@ mod tests {
         let error = update_model_overrides_checked(
             &database,
             ModelOverrideUpdate {
-                provider_name: "alpha",
+                provider_id: alpha_id,
                 upstream_name: "u1",
                 name_override: Some(Some("m1".to_string())),
                 enabled_override: None,
@@ -2734,7 +2846,7 @@ mod tests {
         let entry = update_model_overrides_checked(
             &database,
             ModelOverrideUpdate {
-                provider_name: "alpha",
+                provider_id,
                 upstream_name: "u1",
                 name_override: Some(None),
                 enabled_override: None,
@@ -2772,7 +2884,7 @@ mod tests {
         let unknown_provider = update_model_overrides_checked(
             &database,
             ModelOverrideUpdate {
-                provider_name: "missing",
+                provider_id: 999_999,
                 upstream_name: "u1",
                 name_override: None,
                 enabled_override: None,
@@ -2788,7 +2900,7 @@ mod tests {
         let unknown_model = update_model_overrides_checked(
             &database,
             ModelOverrideUpdate {
-                provider_name: "alpha",
+                provider_id,
                 upstream_name: "missing",
                 name_override: None,
                 enabled_override: None,

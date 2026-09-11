@@ -1,46 +1,50 @@
 //! Management endpoints listing, saving, and deleting providers.
 
-use super::{error_response, parse_body, provider_json};
+use super::{error_response, parse_body, provider_json, validate_identifier};
 use crate::{
     database::Database,
     error::{self, ApiError, log_api_error},
     format::UpstreamFormat,
-    provider::{self, Credentials, NewProvider, ProviderType, storage},
+    provider::{Credentials, NewProvider, ProviderType, storage},
 };
 use axum::{body::Bytes, extract::State, response::Response};
 use log::info;
 use serde::Deserialize;
 use serde_json::Value;
 
-/// Strictly parsed `save-provider` request.
+/// Strictly parsed `save-provider` request. `id` selects the provider to
+/// update — its absence creates one. `name` and `model_prefix` are required
+/// non-nullable strings: every request states the naming, and their content
+/// is the caller's choice (README §7.1); supplying a different `name` for an
+/// existing provider renames it. The remaining fields are plain optional:
+/// absent keeps the stored value.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SaveProviderBody {
-    /// Provider identifier.
+    /// Provider row identifier; absent creates a new provider.
+    id: Option<i64>,
+
+    /// Unique provider name; must be non-empty. Renames the provider when it
+    /// differs from the stored name.
     name: String,
 
+    /// Public model name prefix; may be empty.
+    model_prefix: String,
+
     /// Account kind; required for creation.
-    #[serde(default, rename = "type")]
+    #[serde(rename = "type")]
     provider_type: Option<String>,
 
-    /// Public model name prefix.
-    #[serde(default)]
-    model_prefix: Option<String>,
-
     /// Upstream protocol.
-    #[serde(default)]
     protocol: Option<String>,
 
     /// Upstream base URL.
-    #[serde(default)]
     base_url: Option<String>,
 
     /// Plaintext credentials payload.
-    #[serde(default)]
     credentials: Option<Value>,
 
     /// Serving state.
-    #[serde(default)]
     enabled: Option<bool>,
 }
 
@@ -48,8 +52,8 @@ struct SaveProviderBody {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeleteProviderBody {
-    /// Provider identifier.
-    name: String,
+    /// Provider row identifier.
+    id: i64,
 }
 
 /// Handles `GET /list-providers`.
@@ -84,20 +88,20 @@ pub(crate) async fn delete(State(database): State<Database>, body: Bytes) -> Res
     let outcome = async {
         let request: DeleteProviderBody = parse_body(&body, "delete-provider")?;
 
-        if !storage::delete_provider(&database, &request.name).await? {
+        if !storage::delete_provider(&database, request.id).await? {
             return Err(ApiError::not_found(format!(
-                "Provider `{}` does not exist",
-                request.name
+                "Provider {} does not exist",
+                request.id
             )));
         }
 
-        Ok(request.name)
+        Ok(request.id)
     }
     .await;
 
     match outcome {
-        Ok(name) => {
-            info!("deleted provider `{name}`");
+        Ok(id) => {
+            info!("deleted provider {id}");
 
             error::json_response(200, serde_json::json!({"deleted": true}))
         }
@@ -109,25 +113,49 @@ pub(crate) async fn delete(State(database): State<Database>, body: Bytes) -> Res
     }
 }
 
-/// Creates or updates one provider per the management contract. The outcome
-/// is logged: every failure at the provider's response boundary, the
-/// successful creation or update at info level.
+/// Creates or updates one provider per the management contract. A request
+/// carrying `id` updates (and may rename) that provider; a request without
+/// `id` creates one. The outcome is logged: every failure at the provider's
+/// response boundary, the successful creation or update at info level.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for invalid names, unknown types, OAuth creation
-/// attempts, type mismatches, and public name collisions.
+/// Returns [`ApiError`] for empty names, unknown ids, unknown types, OAuth
+/// creation attempts, type mismatches, taken names, and public name
+/// collisions.
 async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Value, ApiError> {
     let request: SaveProviderBody = parse_body(body, "save-provider")?;
 
     let outcome = async {
-        provider::validate_provider_name(&request.name)?;
+        validate_identifier("name", &request.name)?;
 
         // The outer read only pins request validation: the stored type is
         // immutable, so it cannot drift before the transactional write. Absent
         // fields are merged from the row re-read inside `update_provider`'s
         // transaction, never from this snapshot (README §7.1).
-        let existing = storage::find_provider(database, &request.name).await?;
+        let existing = match request.id {
+            Some(id) => Some(
+                storage::find_provider_by_id(database, id)
+                    .await?
+                    .ok_or_else(|| ApiError::not_found(format!("Provider {id} does not exist")))?,
+            ),
+
+            // Creation checks name availability here for a clean 409; the
+            // database's UNIQUE constraint is the concurrent backstop.
+            None => {
+                if storage::find_provider(database, &request.name)
+                    .await?
+                    .is_some()
+                {
+                    return Err(ApiError::conflict(format!(
+                        "Provider name `{}` is already taken",
+                        request.name
+                    )));
+                }
+
+                None
+            }
+        };
 
         // The stored row pins the account kind: an omitted `type` defaults to
         // it on update, and an explicit mismatching `type` is an
@@ -179,16 +207,18 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
             }
         };
 
-        if existing.is_some() {
-            // One transactional write owns the provider row, any credentials
-            // replacement, and the recomputed public model names; absent fields
-            // merge from the in-transaction row, and a prefix change that would
-            // collide is rejected with 409 before anything is written.
+        if let Some(id) = request.id {
+            // One transactional write owns the provider row — the supplied
+            // `name` included, so a different name renames the provider —
+            // any credentials replacement, and the recomputed public model
+            // names; a taken name or a prefix change that would collide is
+            // rejected with 409 before anything is written.
             let stored = storage::update_provider(
                 database,
-                &request.name,
+                id,
                 storage::ProviderUpdate {
-                    model_prefix: request.model_prefix.as_deref(),
+                    name: &request.name,
+                    model_prefix: &request.model_prefix,
                     protocol,
                     base_url: request.base_url.as_deref(),
                     is_enabled: request.enabled,
@@ -226,7 +256,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
             )
         })?;
 
-        let base_url = request.base_url.clone().ok_or_else(|| {
+        let base_url = request.base_url.as_deref().ok_or_else(|| {
             ApiError::invalid_parameter(
                 "base_url",
                 "base_url is required for openai_compatible providers",
@@ -244,10 +274,10 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
             database,
             &NewProvider {
                 name: &request.name,
-                model_prefix: request.model_prefix.as_deref().unwrap_or_default(),
+                model_prefix: &request.model_prefix,
                 provider_type,
                 protocol: Some(protocol),
-                base_url: Some(&base_url),
+                base_url: Some(base_url),
                 credentials: &credentials,
                 expires_at: None,
                 is_enabled: request.enabled.unwrap_or(true),
@@ -255,7 +285,9 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
         )
         .await?;
 
-        let stored = storage::reload_provider(database, &request.name, "save").await?;
+        let stored = storage::find_provider(database, &request.name)
+            .await?
+            .ok_or_else(|| ApiError::internal("provider vanished after save"))?;
 
         info!("created provider `{}`", request.name);
 
@@ -308,11 +340,15 @@ mod tests {
         let (database, _guard) =
             test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
-        test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
+        let provider_id =
+            test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
 
         let rendered = handle_save(
             &database,
-            &test_support::body(r#"{"name":"alpha","credentials":{"apiKey":"new-key"}}"#),
+            &test_support::body(&format!(
+                r#"{{"id":{provider_id},"name":"alpha","model_prefix":"",
+                    "credentials":{{"apiKey":"new-key"}}}}"#
+            )),
         )
         .await?;
 
@@ -350,13 +386,15 @@ mod tests {
         let (database, _guard) =
             test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
-        test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
+        let provider_id =
+            test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
 
         handle_save(
             &database,
-            &test_support::body(
-                r#"{"name":"alpha","type":"openai_compatible","credentials":{"apiKey":"key-2"}}"#,
-            ),
+            &test_support::body(&format!(
+                r#"{{"id":{provider_id},"name":"alpha","model_prefix":"","type":"openai_compatible",
+                    "credentials":{{"apiKey":"key-2"}}}}"#
+            )),
         )
         .await?;
 
@@ -385,11 +423,14 @@ mod tests {
         let (database, _guard) =
             test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
-        test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
+        let provider_id =
+            test_support::seed_compatible_provider(&database, "alpha", "old-key").await?;
 
         let error = handle_save(
             &database,
-            &test_support::body(r#"{"name":"alpha","type":"openai_oauth"}"#),
+            &test_support::body(&format!(
+                r#"{{"id":{provider_id},"name":"alpha","model_prefix":"","type":"openai_oauth"}}"#
+            )),
         )
         .await
         .err()
@@ -422,8 +463,9 @@ mod tests {
             ("fresh-oai", "openai_oauth"),
             ("fresh-agy", "antigravity_oauth"),
         ] {
-            let body =
-                test_support::body(&format!(r#"{{"name":"{name}","type":"{provider_type}"}}"#));
+            let body = test_support::body(&format!(
+                r#"{{"name":"{name}","model_prefix":"","type":"{provider_type}"}}"#
+            ));
 
             let error = handle_save(&database, &body)
                 .await
@@ -465,7 +507,7 @@ mod tests {
             test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         let missing_protocol = test_support::body(
-            r#"{"name":"no-protocol","type":"openai_compatible",
+            r#"{"name":"no-protocol","model_prefix":"","type":"openai_compatible",
                 "base_url":"https://upstream.example","credentials":{"apiKey":"k"}}"#,
         );
 
@@ -479,7 +521,7 @@ mod tests {
         assert_eq!(error.param.as_deref(), Some("protocol"));
 
         let missing_base_url = test_support::body(
-            r#"{"name":"no-base-url","type":"openai_compatible",
+            r#"{"name":"no-base-url","model_prefix":"","type":"openai_compatible",
                 "protocol":"openai_chat_completion","credentials":{"apiKey":"k"}}"#,
         );
 
@@ -512,7 +554,9 @@ mod tests {
         let (database, _guard) =
             test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
-        let body = test_support::body(r#"{"name":"typeless","credentials":{"apiKey":"k"}}"#);
+        let body = test_support::body(
+            r#"{"name":"typeless","model_prefix":"","credentials":{"apiKey":"k"}}"#,
+        );
 
         let error = handle_save(&database, &body)
             .await
@@ -533,6 +577,331 @@ mod tests {
                 .await?
                 .is_none(),
             "a rejected creation must write no row"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies `model_prefix` is required on every `save-provider` request —
+    /// creation and update alike — with no default: an omitted prefix fails
+    /// strict parsing with 400 naming the field (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_provider_requires_model_prefix_on_every_request() -> Result<(), Box<dyn StdError>>
+    {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let creation = handle_save(
+            &database,
+            &test_support::body(
+                r#"{"name":"prefixless","type":"openai_compatible",
+                    "protocol":"openai_chat_completion","base_url":"https://upstream.example",
+                    "credentials":{"apiKey":"k"}}"#,
+            ),
+        )
+        .await
+        .err()
+        .ok_or("creation without model_prefix must be rejected")?;
+
+        assert_eq!(creation.status, 400);
+
+        assert!(
+            creation.message.contains("model_prefix"),
+            "the parse failure must name the missing field: {creation}"
+        );
+
+        assert!(
+            storage::find_provider(&database, "prefixless")
+                .await?
+                .is_none(),
+            "a rejected creation must write no row"
+        );
+
+        let provider_id =
+            test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
+
+        let update = handle_save(
+            &database,
+            &test_support::body(&format!(
+                r#"{{"id":{provider_id},"name":"alpha","enabled":false}}"#
+            )),
+        )
+        .await
+        .err()
+        .ok_or("an update without model_prefix must be rejected")?;
+
+        assert_eq!(update.status, 400);
+
+        assert!(
+            update.message.contains("model_prefix"),
+            "the parse failure must name the missing field: {update}"
+        );
+
+        let stored = storage::find_provider_by_id(&database, provider_id)
+            .await?
+            .ok_or("missing provider row")?;
+
+        assert!(
+            stored.is_enabled,
+            "the rejected update must not have touched the row"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies the naming contract on creation: the prefix may be the empty
+    /// string, and the name's content is the caller's choice accepted
+    /// verbatim — the backend enforces only non-emptiness (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_provider_keeps_empty_prefix_and_verbatim_name() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let name = "My Provider! ä";
+
+        let body = test_support::body(&format!(
+            r#"{{"name":"{name}","model_prefix":"","type":"openai_compatible",
+                "protocol":"openai_chat_completion","base_url":"https://upstream.example",
+                "credentials":{{"apiKey":"k"}}}}"#
+        ));
+
+        handle_save(&database, &body).await?;
+
+        let stored = storage::find_provider(&database, name)
+            .await?
+            .ok_or("the created provider row must exist")?;
+
+        assert_eq!(stored.name, name);
+
+        assert_eq!(stored.model_prefix, "");
+
+        Ok(())
+    }
+
+    /// Verifies an empty provider name is rejected with 400 naming `name`
+    /// and writes no row: names are non-nullable and non-empty, with no
+    /// fallback (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_provider_rejects_empty_name() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let body = test_support::body(
+            r#"{"name":"","model_prefix":"","type":"openai_compatible",
+                "protocol":"openai_chat_completion","base_url":"https://upstream.example",
+                "credentials":{"apiKey":"k"}}"#,
+        );
+
+        let error = handle_save(&database, &body)
+            .await
+            .err()
+            .ok_or("an empty provider name must be rejected")?;
+
+        assert_eq!(error.status, 400);
+
+        assert_eq!(error.param.as_deref(), Some("name"));
+
+        let providers = storage::list_providers(&database).await?;
+
+        assert!(
+            providers.is_empty(),
+            "a rejected creation must write no row"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies `delete-provider` addresses providers by id and rejects an
+    /// unknown id with 404 (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn delete_provider_rejects_unknown_id() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let provider_id =
+            test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
+
+        let response = delete(State(database.clone()), test_support::body(r#"{"id":999}"#)).await;
+
+        assert_eq!(response.status(), 404);
+
+        let stored = storage::find_provider_by_id(&database, provider_id)
+            .await?
+            .ok_or("missing provider row")?;
+
+        assert_eq!(stored.id, provider_id);
+
+        Ok(())
+    }
+
+    /// Verifies a `save-provider` update carrying a different `name` renames
+    /// the provider in place: the id is stable, the models follow, and the
+    /// new name passes through verbatim (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_provider_renames_provider_by_id() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let provider_id =
+            test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
+
+        let rendered = handle_save(
+            &database,
+            &test_support::body(&format!(
+                r#"{{"id":{provider_id},"name":"My Renamed Provider","model_prefix":""}}"#
+            )),
+        )
+        .await?;
+
+        // handle_save renders the bare provider object; the route handler
+        // adds the `{"provider": ...}` wrapper. Macro-invocation attributes
+        // do not cover desugared index expressions, so the rendered fields
+        // are read through annotated bindings first.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "provider_json always renders nested objects, so string keys never panic"
+        )]
+        let rendered_id = rendered["id"].clone();
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "provider_json always renders nested objects, so string keys never panic"
+        )]
+        let rendered_name = rendered["name"].clone();
+
+        assert_eq!(rendered_id, provider_id);
+
+        assert_eq!(rendered_name, "My Renamed Provider");
+
+        let stored = storage::find_provider_by_id(&database, provider_id)
+            .await?
+            .ok_or("missing provider row")?;
+
+        assert_eq!(stored.name, "My Renamed Provider");
+
+        Ok(())
+    }
+
+    /// Verifies renaming a provider onto a name another provider already
+    /// holds is rejected with 409 and leaves both rows untouched (README
+    /// §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_provider_rejects_taken_name_on_rename() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let alpha_id =
+            test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
+
+        test_support::seed_compatible_provider(&database, "beta", "test-key").await?;
+
+        let error = handle_save(
+            &database,
+            &test_support::body(&format!(
+                r#"{{"id":{alpha_id},"name":"beta","model_prefix":""}}"#
+            )),
+        )
+        .await
+        .err()
+        .ok_or("a rename onto a taken name must be rejected")?;
+
+        assert_eq!(error.status, 409);
+
+        assert!(
+            error.message.contains("already taken"),
+            "the error must state the taken name: {error}"
+        );
+
+        let stored = storage::find_provider_by_id(&database, alpha_id)
+            .await?
+            .ok_or("missing provider row")?;
+
+        assert_eq!(stored.name, "alpha");
+
+        Ok(())
+    }
+
+    /// Verifies creating a provider with a name that is already taken is
+    /// rejected with 409 (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn save_provider_rejects_taken_name_on_creation() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
+
+        let body = test_support::body(
+            r#"{"name":"alpha","model_prefix":"","type":"openai_compatible",
+                "protocol":"openai_chat_completion","base_url":"https://upstream.example",
+                "credentials":{"apiKey":"k"}}"#,
+        );
+
+        let error = handle_save(&database, &body)
+            .await
+            .err()
+            .ok_or("creation with a taken name must be rejected")?;
+
+        assert_eq!(error.status, 409);
+
+        assert!(
+            error.message.contains("already taken"),
+            "the error must state the taken name: {error}"
         );
 
         Ok(())

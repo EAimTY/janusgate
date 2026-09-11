@@ -1,6 +1,6 @@
 //! Management endpoints beginning and completing OAuth authorization flows.
 
-use super::{error_response, parse_body, provider_json};
+use super::{error_response, parse_body, provider_json, validate_identifier};
 use crate::{
     database::Database,
     error::{self, ApiError, log_api_error},
@@ -20,7 +20,10 @@ struct StartOAuthBody {
     provider_type: String,
 }
 
-/// Strictly parsed `complete-provider-oauth` request.
+/// Strictly parsed `complete-provider-oauth` request. A completion takes
+/// exactly one form: `id` re-authorizes an existing provider, while `name`
+/// plus `model_prefix` create a new one; mixing the forms is an invalid
+/// request.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompleteOAuthBody {
@@ -30,11 +33,13 @@ struct CompleteOAuthBody {
     /// Authorization code from the provider callback.
     code: String,
 
-    /// Provider identifier to create or refresh.
-    name: String,
+    /// Provider row identifier to re-authorize; absent creates a provider.
+    id: Option<i64>,
 
-    /// Public model name prefix, only accepted for a provider being created.
-    #[serde(default)]
+    /// Provider name for a provider being created; must be non-empty.
+    name: Option<String>,
+
+    /// Public model name prefix for a provider being created; may be empty.
     model_prefix: Option<String>,
 }
 
@@ -109,52 +114,127 @@ async fn handle_start(database: &Database, body: &Bytes) -> Result<oauth::OAuthF
     outcome
 }
 
-/// Exchanges the authorization code and creates or refreshes the provider.
-/// The outcome is logged: the created or refreshed provider at info level,
-/// every failure at the completion's response boundary.
+/// The form a completion takes: re-authorizing an existing provider by id,
+/// or creating a new one carrying a name and model prefix.
+enum Completion<'a> {
+    /// Replaces the credentials of an existing provider identified by its
+    /// integer primary key.
+    Reauthorization(i64),
+
+    /// Creates a new provider with the given name and model prefix.
+    Creation {
+        /// Unique, non-empty label for the new provider.
+        name: &'a str,
+
+        /// String prefixed to model names.
+        model_prefix: &'a str,
+    },
+}
+
+/// Exchanges the authorization code and creates or re-authorizes the
+/// provider. The outcome is logged: the created or re-authorized provider at
+/// info level, every failure at the completion's response boundary.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] for unknown, expired, or already-consumed states,
-/// exchange failures, type mismatches, and a provider deleted concurrently
-/// after the completion's lookup.
+/// mixed or incomplete completion forms, empty names, taken names, unknown
+/// ids, exchange failures, type mismatches, and a provider deleted
+/// concurrently after the completion's lookup.
 async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json::Value, ApiError> {
     let request: CompleteOAuthBody = parse_body(body, "complete-provider-oauth")?;
 
+    // The log context rides on whichever form the request names, computed
+    // from the raw request so it survives the moved fields below.
+    let log_context = match (request.id, request.name.as_deref()) {
+        (Some(provider_id), _) => format!("provider {provider_id}"),
+
+        (None, Some(name)) => format!("provider `{name}`"),
+
+        (None, None) => "provider creation".to_string(),
+    };
+
     let outcome = async {
-        crate::provider::validate_provider_name(&request.name)?;
+        // A completion takes exactly one form. Every form rejection fires
+        // before the state is consumed, so a malformed request cannot burn
+        // the pending flow.
+        let completion = match (request.id, &request.name, &request.model_prefix) {
+            (Some(provider_id), None, None) => Completion::Reauthorization(provider_id),
 
-        let existing = storage::find_provider(database, &request.name).await?;
+            (Some(_), Some(_), _) => {
+                return Err(ApiError::invalid_parameter(
+                    "name",
+                    "name cannot be supplied together with id",
+                ));
+            }
 
-        // A `model_prefix` only names a provider being created; applying one to
-        // an existing provider would silently rename its models. The
-        // rejection fires before the state is consumed, so a malformed
-        // request cannot burn the pending flow.
-        if existing.is_some() && request.model_prefix.is_some() {
-            return Err(ApiError::invalid_parameter(
-                "model_prefix",
-                format!(
-                    "Provider `{}` already exists; model_prefix cannot be supplied for it",
-                    request.name
-                ),
-            ));
-        }
+            (Some(_), None, Some(_)) => {
+                return Err(ApiError::invalid_parameter(
+                    "model_prefix",
+                    "model_prefix cannot be supplied together with id",
+                ));
+            }
+
+            (None, None, _) => {
+                return Err(ApiError::invalid_parameter(
+                    "name",
+                    "name is required when creating a provider",
+                ));
+            }
+
+            (None, Some(_), None) => {
+                return Err(ApiError::invalid_parameter(
+                    "model_prefix",
+                    "model_prefix is required when creating a provider",
+                ));
+            }
+
+            (None, Some(name), Some(model_prefix)) => Completion::Creation { name, model_prefix },
+        };
 
         let now = unix_time::unix_now();
+
+        // Pre-consume validations, computed from the still-unconsumed state
+        // so the pending flow survives every rejection.
+        let reauthorized = match &completion {
+            Completion::Reauthorization(provider_id) => {
+                let provider = storage::find_provider_by_id(database, *provider_id)
+                    .await?
+                    .ok_or_else(|| {
+                        ApiError::not_found(format!("Provider {provider_id} does not exist"))
+                    })?;
+
+                Some(provider)
+            }
+
+            Completion::Creation { name, .. } => {
+                validate_identifier("name", name)?;
+
+                // The database's UNIQUE constraint is the concurrent backstop
+                // for a name taken after this check.
+                if storage::find_provider(database, name).await?.is_some() {
+                    return Err(ApiError::conflict(format!(
+                        "Provider name `{name}` is already taken"
+                    )));
+                }
+
+                None
+            }
+        };
 
         // State rows are immutable, so a provider-type mismatch is computable
         // before the atomic consume: the rejection must not burn the pending
         // flow or spend the token exchange. An unknown or expired state
         // is left to the consume below, which yields the 404.
-        if let (Some(existing), Some(state_type)) = (
-            &existing,
+        if let (Some(provider), Some(state_type)) = (
+            &reauthorized,
             storage::find_oauth_state_type(database, &request.state, now).await?,
-        ) && state_type != existing.provider_type
+        ) && state_type != provider.provider_type
         {
             return Err(ApiError::conflict(format!(
                 "Provider `{}` has type `{}` and cannot be authorized as `{}`",
-                existing.name,
-                existing.provider_type.as_str(),
+                provider.name,
+                provider.provider_type.as_str(),
                 state_type.as_str()
             )));
         }
@@ -173,11 +253,11 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
         )
         .await?;
 
-        match existing {
-            Some(existing) => {
+        match completion {
+            Completion::Reauthorization(provider_id) => {
                 let is_updated = storage::update_credentials(
                     database,
-                    existing.id,
+                    provider_id,
                     &exchanged.credentials,
                     Some(exchanged.expires_at),
                 )
@@ -193,15 +273,15 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
                     ));
                 }
 
-                info!("refreshed the credentials of provider `{}`", request.name);
+                info!("refreshed the credentials of provider {provider_id}");
             }
 
-            None => {
+            Completion::Creation { name, model_prefix } => {
                 storage::insert_provider(
                     database,
                     &NewProvider {
-                        name: &request.name,
-                        model_prefix: request.model_prefix.as_deref().unwrap_or_default(),
+                        name,
+                        model_prefix,
                         provider_type: state.state_type,
                         protocol: None,
                         base_url: None,
@@ -212,24 +292,26 @@ async fn handle_complete(database: &Database, body: &Bytes) -> Result<serde_json
                 )
                 .await?;
 
-                info!(
-                    "created provider `{}` from an OAuth completion",
-                    request.name
-                );
+                info!("created provider `{name}` from an OAuth completion");
             }
         }
 
-        storage::reload_provider(database, &request.name, "OAuth completion")
-            .await
-            .map(|stored| provider_json(&stored))
+        let stored = match completion {
+            Completion::Reauthorization(provider_id) => {
+                storage::reload_provider(database, provider_id, "OAuth completion").await?
+            }
+
+            Completion::Creation { name, .. } => storage::find_provider(database, name)
+                .await?
+                .ok_or_else(|| ApiError::internal("provider vanished after OAuth completion"))?,
+        };
+
+        Ok(provider_json(&stored))
     }
     .await;
 
     if let Err(error) = &outcome {
-        log_api_error(
-            &format!("complete-provider-oauth for provider `{}`", request.name),
-            error,
-        );
+        log_api_error(&format!("complete-provider-oauth for {log_context}"), error);
     }
 
     outcome
@@ -241,9 +323,10 @@ mod tests {
     use crate::test_support;
     use std::{error::Error as StdError, time::Duration};
 
-    /// Verifies supplying `model_prefix` for an existing provider is rejected
-    /// with 400 naming the field, and that the rejection fires before the
-    /// state is consumed.
+    /// Verifies mixing the two completion forms is rejected with 400 naming
+    /// the offending field: a re-authorization carries only `id`, a creation
+    /// only `name` and `model_prefix`, and both rejections fire before the
+    /// state is consumed (README §7.1).
     ///
     /// # Panics
     ///
@@ -253,37 +336,168 @@ mod tests {
     ///
     /// Returns any error encountered while driving the database.
     #[tokio::test]
-    async fn complete_rejects_model_prefix_for_existing_provider() -> Result<(), Box<dyn StdError>>
-    {
+    async fn complete_rejects_mixed_completion_forms() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let provider_id =
+            test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
+
+        let now = crate::unix_time::unix_now();
+
+        storage::insert_oauth_state(
+            &database,
+            ProviderType::OpenAiOauth,
+            "state-mixed",
+            "verifier",
+            now + 60,
+        )
+        .await?;
+
+        let with_name = test_support::body(&format!(
+            r#"{{"state":"state-mixed","code":"c","id":{provider_id},"name":"alpha"}}"#
+        ));
+
+        let error = handle_complete(&database, &with_name)
+            .await
+            .err()
+            .ok_or("id together with name must be rejected")?;
+
+        assert_eq!(error.status, 400);
+        assert_eq!(error.param.as_deref(), Some("name"));
+
+        let with_prefix = test_support::body(&format!(
+            r#"{{"state":"state-mixed","code":"c","id":{provider_id},"model_prefix":""}}"#
+        ));
+
+        let error = handle_complete(&database, &with_prefix)
+            .await
+            .err()
+            .ok_or("id together with model_prefix must be rejected")?;
+
+        assert_eq!(error.status, 400);
+        assert_eq!(error.param.as_deref(), Some("model_prefix"));
+
+        // Neither rejection consumed the pending state.
+        let consumed = storage::consume_oauth_state(&database, "state-mixed", now).await?;
+
+        assert!(
+            consumed.is_some(),
+            "the rejected completions must not burn the state"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies creating a provider whose name is already taken is rejected
+    /// with 409 before the state is consumed (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn complete_rejects_creation_with_taken_name() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) =
             test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
         test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
 
+        let now = crate::unix_time::unix_now();
+
+        storage::insert_oauth_state(
+            &database,
+            ProviderType::OpenAiOauth,
+            "state-taken",
+            "verifier",
+            now + 60,
+        )
+        .await?;
+
         let body = test_support::body(
-            r#"{"state":"unused-state","code":"unused-code","name":"alpha","model_prefix":"p-"}"#,
+            r#"{"state":"state-taken","code":"c","name":"alpha","model_prefix":""}"#,
         );
 
         let error = handle_complete(&database, &body)
             .await
             .err()
-            .ok_or("model_prefix on an existing provider must be rejected")?;
+            .ok_or("a creation with a taken name must be rejected")?;
 
-        assert_eq!(error.status, 400);
-        assert_eq!(error.param.as_deref(), Some("model_prefix"));
+        assert_eq!(error.status, 409);
 
-        // The rejection fired before state consumption: an unknown state is
-        // the only reason a retry without model_prefix can still fail.
-        let retry =
-            test_support::body(r#"{"state":"unused-state","code":"unused-code","name":"alpha"}"#);
+        assert!(
+            error.message.contains("already taken"),
+            "the error must state the taken name: {error}"
+        );
 
-        let error = handle_complete(&database, &retry)
-            .await
-            .err()
-            .ok_or("an unknown state must be rejected")?;
+        let consumed = storage::consume_oauth_state(&database, "state-taken", now).await?;
 
-        assert_eq!(error.status, 404);
-        assert!(error.message.contains("already consumed"));
+        assert!(
+            consumed.is_some(),
+            "the rejected creation must not burn the state"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies creating a provider through an OAuth completion requires an
+    /// explicit `model_prefix` — absent or `null` is rejected with 400 naming
+    /// the field, before the state is consumed, so the pending flow survives
+    /// for a well-formed completion (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an assertion fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error encountered while driving the database.
+    #[tokio::test]
+    async fn complete_requires_model_prefix_when_creating() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) =
+            test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
+
+        let now = crate::unix_time::unix_now();
+
+        storage::insert_oauth_state(
+            &database,
+            ProviderType::OpenAiOauth,
+            "state-create",
+            "verifier",
+            now + 60,
+        )
+        .await?;
+
+        for model_prefix in ["", r#","model_prefix":null"#] {
+            let body = test_support::body(&format!(
+                r#"{{"state":"state-create","code":"unused-code","name":"fresh"{model_prefix}}}"#
+            ));
+
+            let error = handle_complete(&database, &body)
+                .await
+                .err()
+                .ok_or("creating without model_prefix must be rejected")?;
+
+            assert_eq!(error.status, 400);
+            assert_eq!(error.param.as_deref(), Some("model_prefix"));
+
+            assert!(
+                error.message.contains("required when creating"),
+                "the error must state the missing prefix: {error}"
+            );
+        }
+
+        // Neither rejection consumed the pending state, so the flow is still
+        // available to a well-formed completion.
+        let consumed = storage::consume_oauth_state(&database, "state-create", now).await?;
+
+        assert!(
+            consumed.is_some(),
+            "the rejected creations must not burn the state"
+        );
 
         Ok(())
     }
@@ -305,7 +519,8 @@ mod tests {
         let (database, _guard) =
             test_support::TempDatabaseGuard::open_database(2, Duration::from_secs(5)).await?;
 
-        test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
+        let provider_id =
+            test_support::seed_compatible_provider(&database, "alpha", "test-key").await?;
 
         let now = crate::unix_time::unix_now();
 
@@ -318,8 +533,9 @@ mod tests {
         )
         .await?;
 
-        let body =
-            test_support::body(r#"{"state":"state-mismatch","code":"unused-code","name":"alpha"}"#);
+        let body = test_support::body(&format!(
+            r#"{{"state":"state-mismatch","code":"unused-code","id":{provider_id}}}"#
+        ));
 
         let error = handle_complete(&database, &body)
             .await

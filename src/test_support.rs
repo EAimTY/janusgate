@@ -83,7 +83,7 @@ pub(crate) async fn open_test_database_at(
 
 /// Inserts one enabled `openai_compatible` provider row through the storage
 /// layer, carrying the chat-completion protocol, an example upstream base
-/// URL, and the given API key credentials.
+/// URL, and the given API key credentials, returning its row identifier.
 ///
 /// # Errors
 ///
@@ -92,7 +92,7 @@ pub(crate) async fn seed_compatible_provider(
     database: &Database,
     name: &str,
     api_key: &str,
-) -> Result<(), Box<dyn StdError>> {
+) -> Result<i64, Box<dyn StdError>> {
     storage::insert_provider(
         database,
         &NewProvider {
@@ -108,7 +108,11 @@ pub(crate) async fn seed_compatible_provider(
     )
     .await?;
 
-    Ok(())
+    let rows = database
+        .query("SELECT id FROM providers WHERE name = ?1", params![name])
+        .await?;
+
+    Ok(rows.first().ok_or("missing provider row")?.get(0)?)
 }
 
 /// Inserts one enabled `openai_compatible` provider row carrying only its

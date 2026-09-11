@@ -543,6 +543,10 @@ mod tests {
 
         assert_eq!(models, vec!["gpt-5.1".to_string(), "gpt-5".to_string()]);
 
+        #[expect(
+            clippy::expect_used,
+            reason = "a test-server join failure fails the test"
+        )]
         let request = String::from_utf8(
             server
                 .join()

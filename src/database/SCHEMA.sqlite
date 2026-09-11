@@ -1,7 +1,7 @@
 CREATE TABLE providers (
     id Integer PRIMARY KEY NOT NULL,
-    name Text NOT NULL UNIQUE,
-    model_prefix Text NOT NULL DEFAULT '',
+    name Text NOT NULL UNIQUE CHECK (name <> ''),
+    model_prefix Text NOT NULL,
     type Text NOT NULL CHECK (type IN ('openai_oauth', 'antigravity_oauth', 'openai_compatible')),
     protocol Text NULL,
     base_url Text NULL,

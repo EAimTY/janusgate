@@ -359,29 +359,6 @@ impl Model {
     }
 }
 
-/// Validates a provider identifier against `[a-z0-9_-]{1,64}`.
-///
-/// # Errors
-///
-/// Returns [`ApiError`] when the name is invalid.
-pub(crate) fn validate_provider_name(name: &str) -> Result<(), ApiError> {
-    let is_valid = (1..=64).contains(&name.len())
-        && name.chars().all(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || matches!(character, '_' | '-')
-        });
-
-    if is_valid {
-        Ok(())
-    } else {
-        Err(ApiError::invalid_parameter(
-            "name",
-            "Provider names must match [a-z0-9_-]{1,64}",
-        ))
-    }
-}
-
 /// Rejects a credentials payload carrying fields outside the provider type's
 /// exact field set. Non-object payloads are accepted here; they fail the
 /// required-field checks that follow.
@@ -601,39 +578,5 @@ mod tests {
         assert!(!model_with_override(None).is_effectively_enabled(false));
 
         assert!(model_with_override(None).is_effectively_enabled(true));
-    }
-
-    /// Verifies provider name validation against the documented pattern
-    /// `[a-z0-9_-]{1,64}` (README §7.1): the boundaries of length, character
-    /// set, and case are each pinned.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails.
-    #[test]
-    fn provider_name_validation_matches_documented_pattern() {
-        let boundary_64 = "a".repeat(64);
-
-        for name in ["a", "codex", "a-b_c9", boundary_64.as_str()] {
-            assert!(
-                validate_provider_name(name).is_ok(),
-                "{name:?} must validate"
-            );
-        }
-
-        let boundary_65 = "a".repeat(65);
-
-        for name in ["", "A", "a b", "a.b", "ä", "a/b", boundary_65.as_str()] {
-            #[expect(
-                clippy::expect_used,
-                reason = "every rejection is the subject of the assertion"
-            )]
-            let error = validate_provider_name(name)
-                .expect_err("an out-of-pattern provider name must be rejected");
-
-            assert_eq!(error.status, 400, "{name:?} must reject as invalid");
-
-            assert_eq!(error.param.as_deref(), Some("name"), "{name:?}");
-        }
     }
 }

@@ -533,7 +533,7 @@ pub(crate) async fn ensure_fresh_token(
         })?;
 
         let Some(current) =
-            storage::find_provider_in_transaction(&mut transaction, &provider.name).await?
+            storage::find_provider_by_id_in_transaction(&mut transaction, provider.id).await?
         else {
             transaction
                 .rollback()
@@ -716,7 +716,7 @@ async fn refresh_and_store(
             provider.name
         );
 
-        let renewed = storage::reload_provider(database, &provider.name, "token refresh").await?;
+        let renewed = storage::reload_provider(database, provider.id, "token refresh").await?;
 
         Ok(RefreshOutcome::Renewed(renewed))
     }
