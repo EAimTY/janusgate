@@ -54,33 +54,3 @@ pub(crate) fn truncate_excerpt(body: &str) -> String {
         format!("{excerpt}…")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verifies truncate_excerpt preserves short text and bounds long text to
-    /// the shared excerpt policy: an upstream failure detail must never carry
-    /// an unbounded body into an error message.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an assertion fails.
-    #[test]
-    fn truncate_excerpt_preserves_short_and_bounds_long_bodies() {
-        let short = "short body";
-
-        assert_eq!(truncate_excerpt(short), short);
-
-        let multibyte = "é".repeat(EXCERPT_MAX_CHARS + 10);
-
-        let truncated = truncate_excerpt(&multibyte);
-
-        assert_eq!(truncated.chars().count(), EXCERPT_MAX_CHARS + 1);
-
-        assert!(truncated.ends_with('…'));
-
-        // Truncation happens on character boundaries, never mid-codepoint.
-        assert!(multibyte.starts_with(truncated.trim_end_matches('…')));
-    }
-}

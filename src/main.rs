@@ -24,9 +24,6 @@ mod security;
 mod server;
 mod sse;
 
-#[cfg(test)]
-mod test_support;
-
 mod unix_time;
 
 /// Global read-only application configuration, initialized once during process
@@ -203,14 +200,6 @@ fn set_panic_hook() {
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsString, path::PathBuf};
-
-    /// Replaces the global configuration for router-level tests; only the
-    /// first call per process succeeds and later calls are ignored.
-    pub(crate) fn set_config_for_tests(config: crate::config::Config) {
-        let _ = crate::CONFIG.set(config);
-    }
-
     /// Verifies that `config.example.jsonc` parses successfully into a valid
     /// [`Config`](crate::config::Config).
     ///
@@ -219,14 +208,10 @@ mod tests {
     /// Panics if parsing or validation of `config.example.jsonc` fails.
     #[test]
     fn parses_example_configuration() {
-        let example_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config.example.jsonc");
-
-        let arguments: [OsString; 3] = [
-            "janusgate".into(),
-            "-c".into(),
-            example_path.into_os_string(),
-        ];
-
-        let _config = super::parse_config(arguments);
+        let _config = super::parse_config([
+            "janusgate",
+            "-c",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/config.example.jsonc"),
+        ]);
     }
 }
