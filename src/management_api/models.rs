@@ -1,12 +1,10 @@
 //! Management endpoints discovering, listing, and overriding models.
 
-use super::{
-    error::{ManagementApiError, json_response, log_error},
-    parse_body, validate_identifier,
-};
+use super::error::{self, ManagementApiError};
 use crate::{
     context::Context,
     database::Database,
+    ir,
     provider::{
         discovery, oauth,
         storage::{self, ModelEntry},
@@ -56,7 +54,7 @@ pub(super) async fn discover(State(context): State<Context>, body: Bytes) -> Res
     let outcome = handle_discover(&context.database, &context.control_plane, &body).await;
 
     match outcome {
-        Ok(discovered) => json_response(
+        Ok(discovered) => error::json_response(
             StatusCode::OK,
             serde_json::json!({ "discovered": discovered }),
         ),
@@ -79,9 +77,9 @@ pub(super) async fn list(State(context): State<Context>) -> Response {
     .await;
 
     match outcome {
-        Ok(rendered) => json_response(StatusCode::OK, rendered),
+        Ok(rendered) => error::json_response(StatusCode::OK, rendered),
         Err(error) => {
-            log_error("list-models", &error);
+            error::log_error("list-models", &error);
 
             error.into_response()
         }
@@ -93,7 +91,9 @@ pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Respons
     let outcome = handle_save(&context.database, &body).await;
 
     match outcome {
-        Ok(rendered) => json_response(StatusCode::OK, serde_json::json!({ "model": rendered })),
+        Ok(rendered) => {
+            error::json_response(StatusCode::OK, serde_json::json!({ "model": rendered }))
+        }
         Err(error) => error.into_response(),
     }
 }
@@ -115,7 +115,7 @@ async fn handle_discover(
     control_plane: &Client,
     body: &Bytes,
 ) -> Result<usize, ManagementApiError> {
-    let request: DiscoverModelsBody = parse_body(body, "discover-models")?;
+    let request: DiscoverModelsBody = super::parse_body(body, "discover-models")?;
 
     let outcome = async {
         let provider = storage::find_provider_by_id(database, request.id)
@@ -164,7 +164,7 @@ async fn handle_discover(
         }
 
         Err(error) => {
-            log_error(
+            error::log_error(
                 &format!("model discovery for provider {}", request.id),
                 error,
             );
@@ -183,13 +183,13 @@ async fn handle_discover(
 /// Returns [`ManagementApiError`] for empty identifiers, unknown rows, invalid
 /// thinking levels, and public ID collisions.
 async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ManagementApiError> {
-    let request: SaveModelBody = parse_body(body, "save-model")?;
+    let request: SaveModelBody = super::parse_body(body, "save-model")?;
 
     let outcome = async {
-        validate_identifier("upstream_id", &request.upstream_id)?;
+        super::validate_identifier("upstream_id", &request.upstream_id)?;
 
         if let Some(Some(ref id_override)) = request.id_override {
-            validate_identifier("id_override", id_override)?;
+            super::validate_identifier("id_override", id_override)?;
         }
 
         let thinking_levels_override = match &request.thinking_levels_override {
@@ -200,7 +200,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, Managem
             Some(Some(levels)) => {
                 // The shared parser keeps save-model validation byte-identical
                 // with the stored-override contract (README §7.1).
-                let parsed = crate::ir::parse_thinking_levels(levels, "thinking_levels_override")?;
+                let parsed = ir::parse_thinking_levels(levels, "thinking_levels_override")?;
 
                 let canonical: Vec<&str> =
                     parsed.iter().map(|level| level.to_canonical()).collect();
@@ -240,7 +240,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, Managem
             request.provider_id, request.upstream_id
         ),
 
-        Err(error) => log_error(
+        Err(error) => error::log_error(
             &format!(
                 "save-model `{}`/`{}`",
                 request.provider_id, request.upstream_id
@@ -289,7 +289,7 @@ fn thinking_levels_json(stored: &Option<String>) -> Result<Value, ManagementApiE
         return Ok(Value::Null);
     };
 
-    let levels = crate::ir::parse_thinking_levels_override(json).map_err(|error| {
+    let levels = ir::parse_thinking_levels_override(json).map_err(|error| {
         ManagementApiError::internal(format!(
             "stored thinking_levels_override is invalid: {error}"
         ))

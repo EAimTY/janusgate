@@ -1,11 +1,7 @@
 //! Model row persistence: routing resolution, listing, discovery
 //! replacement, and override updates.
 
-use super::{
-    Error, MODEL_COLUMNS, PROVIDER_MODEL_COLUMNS, ensure_ids_pairwise_distinct,
-    ensure_ids_routable, model_from_row, model_from_row_offset, provider_model_from_row,
-    providers::find_provider_by_id_in_transaction,
-};
+use super::Error;
 use crate::{
     database::{Database, Transaction, Value, params, params_from_iter},
     provider::{Model, ModelRouting},
@@ -22,15 +18,16 @@ pub(crate) async fn find_routing(
     public_id: &str,
 ) -> Result<Option<ModelRouting>, Error> {
     let sql = format!(
-        "SELECT {PROVIDER_MODEL_COLUMNS} FROM models m \
-         JOIN providers p ON p.id = m.provider_id WHERE m.id = ?1"
+        "SELECT {} FROM models m \
+         JOIN providers p ON p.id = m.provider_id WHERE m.id = ?1",
+        super::PROVIDER_MODEL_COLUMNS
     );
 
     let rows = database.query(sql, params![public_id]).await?;
 
     rows.first()
         .map(|row| {
-            provider_model_from_row(row).map(|joined| ModelRouting {
+            super::provider_model_from_row(row).map(|joined| ModelRouting {
                 is_effectively_enabled: joined
                     .model
                     .is_effectively_enabled(joined.provider.is_enabled),
@@ -50,12 +47,14 @@ pub(super) async fn find_models_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
 ) -> Result<Vec<Model>, Error> {
-    let sql =
-        format!("SELECT {MODEL_COLUMNS} FROM models WHERE provider_id = ?1 ORDER BY upstream_id");
+    let sql = format!(
+        "SELECT {} FROM models WHERE provider_id = ?1 ORDER BY upstream_id",
+        super::MODEL_COLUMNS
+    );
 
     let rows = transaction.query(sql, params![provider_id]).await?;
 
-    rows.iter().map(model_from_row).collect()
+    rows.iter().map(super::model_from_row).collect()
 }
 
 /// Fetches one model row of a provider inside a transaction.
@@ -71,14 +70,15 @@ async fn find_model_in_transaction(
     let rows = transaction
         .query(
             format!(
-                "SELECT {MODEL_COLUMNS} FROM models \
-                 WHERE provider_id = ?1 AND upstream_id = ?2"
+                "SELECT {} FROM models \
+                 WHERE provider_id = ?1 AND upstream_id = ?2",
+                super::MODEL_COLUMNS
             ),
             params![provider_id, upstream_id],
         )
         .await?;
 
-    rows.first().map(model_from_row).transpose()
+    rows.first().map(super::model_from_row).transpose()
 }
 
 /// One model row with the provider facts needed for listing.
@@ -116,12 +116,7 @@ pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelE
     let mut entries = Vec::with_capacity(rows.len());
 
     for row in &rows {
-        entries.push(ModelEntry {
-            provider_id: row.get(0).map_err(Error::from)?,
-            provider_name: row.get(1).map_err(Error::from)?,
-            is_provider_enabled: row.get::<i64>(2).map_err(Error::from)? != 0,
-            model: model_from_row_offset(row, 3)?,
-        });
+        entries.push(super::model_entry_from_row(row)?);
     }
 
     Ok(entries)
@@ -183,7 +178,8 @@ pub(crate) async fn replace_discovered_models(
 ) -> Result<usize, Error> {
     let mut transaction = database.transaction().await?;
 
-    let Some(provider) = find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
+    let Some(provider) =
+        super::find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
     else {
         return Err(Error::NotFound {
             message: format!("Provider {provider_id} does not exist"),
@@ -222,15 +218,13 @@ pub(crate) async fn replace_discovered_models(
         .map(|model| (model.id.as_str(), model.upstream_id.as_str()))
         .collect();
 
-    ensure_ids_pairwise_distinct(&provider.name, &composed)?;
+    super::ensure_ids_pairwise_distinct(&provider.name, &composed)?;
 
-    ensure_ids_routable(&mut transaction, provider.id, &composed).await?;
+    super::ensure_ids_routable(&mut transaction, provider.id, &composed).await?;
 
     replace_provider_models(&mut transaction, provider.id, &models).await?;
 
-    transaction.commit().await.map_err(|error| Error::Drift {
-        message: format!("failed to commit discovered models: {error}"),
-    })?;
+    transaction.commit().await?;
 
     Ok(models.len())
 }
@@ -313,7 +307,7 @@ pub(crate) async fn update_model_overrides_checked(
     let mut transaction = database.transaction().await?;
 
     let Some(provider) =
-        find_provider_by_id_in_transaction(&mut transaction, update.provider_id).await?
+        super::find_provider_by_id_in_transaction(&mut transaction, update.provider_id).await?
     else {
         return Err(Error::NotFound {
             message: format!("Provider {} does not exist", update.provider_id),
@@ -342,7 +336,7 @@ pub(crate) async fn update_model_overrides_checked(
         new_id_override.as_deref(),
     );
 
-    ensure_ids_routable(
+    super::ensure_ids_routable(
         &mut transaction,
         provider.id,
         &[(new_id.as_str(), update.upstream_id)],
@@ -392,9 +386,7 @@ pub(crate) async fn update_model_overrides_checked(
             message: "model vanished after override update".to_string(),
         })?;
 
-    transaction.commit().await.map_err(|error| Error::Drift {
-        message: format!("failed to commit model override update: {error}"),
-    })?;
+    transaction.commit().await?;
 
     Ok(entry)
 }
@@ -419,14 +411,5 @@ async fn find_model_entry_in_transaction(
         )
         .await?;
 
-    rows.first()
-        .map(|row| {
-            Ok(ModelEntry {
-                provider_id: row.get(0)?,
-                provider_name: row.get(1)?,
-                is_provider_enabled: row.get::<i64>(2)? != 0,
-                model: model_from_row_offset(row, 3)?,
-            })
-        })
-        .transpose()
+    rows.first().map(super::model_entry_from_row).transpose()
 }

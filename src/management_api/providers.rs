@@ -1,9 +1,6 @@
 //! Management endpoints listing, saving, and deleting providers.
 
-use super::{
-    error::{ManagementApiError, json_response, log_error},
-    parse_body, provider_json, validate_identifier,
-};
+use super::error::{self, ManagementApiError};
 use crate::{
     context::Context,
     database::Database,
@@ -63,15 +60,18 @@ struct DeleteProviderBody {
 pub(super) async fn list(State(context): State<Context>) -> Response {
     match storage::list_providers(&context.database).await {
         Ok(providers) => {
-            let rendered = providers.iter().map(provider_json).collect::<Vec<_>>();
+            let rendered = providers
+                .iter()
+                .map(super::provider_json)
+                .collect::<Vec<_>>();
 
-            json_response(StatusCode::OK, serde_json::json!({ "providers": rendered }))
+            error::json_response(StatusCode::OK, serde_json::json!({ "providers": rendered }))
         }
 
         Err(error) => {
             let error = ManagementApiError::from(error);
 
-            log_error("list-providers", &error);
+            error::log_error("list-providers", &error);
 
             error.into_response()
         }
@@ -83,7 +83,9 @@ pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Respons
     let outcome = handle_save(&context.database, &body).await;
 
     match outcome {
-        Ok(rendered) => json_response(StatusCode::OK, serde_json::json!({ "provider": rendered })),
+        Ok(rendered) => {
+            error::json_response(StatusCode::OK, serde_json::json!({ "provider": rendered }))
+        }
         Err(error) => error.into_response(),
     }
 }
@@ -91,7 +93,7 @@ pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Respons
 /// Handles `POST /delete-provider`.
 pub(super) async fn delete(State(context): State<Context>, body: Bytes) -> Response {
     let outcome = async {
-        let request: DeleteProviderBody = parse_body(&body, "delete-provider")?;
+        let request: DeleteProviderBody = super::parse_body(&body, "delete-provider")?;
 
         if !storage::delete_provider(&context.database, request.id).await? {
             return Err(ManagementApiError::not_found(format!(
@@ -108,10 +110,10 @@ pub(super) async fn delete(State(context): State<Context>, body: Bytes) -> Respo
         Ok(id) => {
             info!("deleted provider {id}");
 
-            json_response(StatusCode::OK, serde_json::json!({"deleted": true}))
+            error::json_response(StatusCode::OK, serde_json::json!({"deleted": true}))
         }
         Err(error) => {
-            log_error("delete-provider", &error);
+            error::log_error("delete-provider", &error);
 
             error.into_response()
         }
@@ -132,10 +134,10 @@ async fn handle_save(
     database: &Database,
     body: &Bytes,
 ) -> Result<serde_json::Value, ManagementApiError> {
-    let request: SaveProviderBody = parse_body(body, "save-provider")?;
+    let request: SaveProviderBody = super::parse_body(body, "save-provider")?;
 
     let outcome = async {
-        validate_identifier("name", &request.name)?;
+        super::validate_identifier("name", &request.name)?;
 
         // The outer read only pins request validation: the stored type is
         // immutable, so it cannot drift before the transactional write. Absent
@@ -234,7 +236,7 @@ async fn handle_save(
 
             info!("updated provider `{}`", request.name);
 
-            return Ok(provider_json(&stored));
+            return Ok(super::provider_json(&stored));
         }
 
         let Some(provider_type) = provider_type else {
@@ -287,12 +289,12 @@ async fn handle_save(
 
         info!("created provider `{}`", request.name);
 
-        Ok(provider_json(&stored))
+        Ok(super::provider_json(&stored))
     }
     .await;
 
     if let Err(error) = &outcome {
-        log_error(&format!("save-provider `{}`", request.name), error);
+        error::log_error(&format!("save-provider `{}`", request.name), error);
     }
 
     outcome

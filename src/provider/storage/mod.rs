@@ -3,6 +3,13 @@
 //! statements, while this module owns the shared error domain, the Turso
 //! value conversions of the provider domain types, the row codecs, and the
 //! public model ID collision checks.
+//!
+//! The entity split interlocks deliberately, mirroring the README §7.1
+//! transaction contracts: `save-provider` recomputes its models' public IDs
+//! from the fresh prefix, so [`providers`] reads model rows through
+//! [`models::find_models_in_transaction`], while `save-model` and model
+//! discovery re-read the provider row inside their transactions through
+//! [`providers::find_provider_by_id_in_transaction`].
 
 mod models;
 mod oauth_states;
@@ -278,6 +285,17 @@ fn model_from_row(row: &Row) -> Result<Model, Error> {
     model_from_row_offset(row, 0)
 }
 
+/// Parses a model entry row in the shared entry join order: the provider id,
+/// name, and enabled flag, then the model columns at offset 3.
+fn model_entry_from_row(row: &Row) -> Result<ModelEntry, Error> {
+    Ok(ModelEntry {
+        provider_id: row.get(0)?,
+        provider_name: row.get(1)?,
+        is_provider_enabled: row.get::<i64>(2)? != 0,
+        model: model_from_row_offset(row, 3)?,
+    })
+}
+
 /// Rejects one provider's freshly composed public IDs when two of its rows
 /// would converge on one ID.
 ///
@@ -355,7 +373,8 @@ mod tests {
     use super::*;
     use crate::{
         database::Database,
-        provider::{Credentials, NewProvider, OAuthProviderType, ProviderType, UpstreamFormat},
+        format::UpstreamFormat,
+        provider::{Credentials, NewProvider, OAuthProviderType, ProviderType},
     };
     use std::{num::NonZero, path::PathBuf, time::Duration};
 

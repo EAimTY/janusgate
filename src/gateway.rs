@@ -8,10 +8,8 @@ use crate::{
         PayloadError, UpstreamEventParser, UpstreamFormat, gemini, openai_chat_completion,
         openai_response,
     },
-    ids::new_uuid,
-    ir::{
-        InvalidRequest, IrEvent, IrRequest, apply_thinking_levels, parse_thinking_levels_override,
-    },
+    ids,
+    ir::{self, InvalidRequest, IrEvent, IrRequest},
     provider::{
         Credentials, ModelRouting, Provider, ProviderType, endpoints, http_body, oauth, storage,
     },
@@ -138,13 +136,14 @@ pub(crate) async fn execute(
         .thinking_levels_override
         .as_deref()
         .map(|json| {
-            parse_thinking_levels_override(json).map_err(|error| Error::Internal {
+            ir::parse_thinking_levels_override(json).map_err(|error| Error::Internal {
                 message: format!("stored thinking_levels_override is invalid: {error}"),
             })
         })
         .transpose()?;
 
-    ir.reasoning_effort = apply_thinking_levels(ir.reasoning_effort, thinking_levels.as_deref());
+    ir.reasoning_effort =
+        ir::apply_thinking_levels(ir.reasoning_effort, thinking_levels.as_deref());
     ir.model = routing.model.upstream_id.clone();
 
     // Names every mid-stream log record the pump tasks emit; the pump errors
@@ -281,7 +280,7 @@ fn build_upstream_request(
                 .header("chatgpt-account-id", account_id)
                 .header("Originator", endpoints::CODEX_ORIGINATOR)
                 .header("User-Agent", endpoints::codex_user_agent())
-                .header("Session-Id", new_uuid())
+                .header("Session-Id", ids::new_uuid())
                 .header("Accept", "text/event-stream")
                 .json(&body))
         }
@@ -325,6 +324,7 @@ fn build_upstream_request(
             let (url, envelope) = gemini::render_antigravity_request(
                 ir,
                 endpoints::ANTIGRAVITY_BASE_URL,
+                endpoints::ANTIGRAVITY_USER_AGENT,
                 &routing.model.upstream_id,
                 project_id,
                 is_client_streaming,

@@ -4,7 +4,7 @@
 /// rejects the stream as malformed. Upstream payloads are JSON documents, so
 /// this bound is far above any legitimate frame while preventing unbounded
 /// buffer growth from a hostile stream.
-pub(crate) const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// The UTF-8 byte-order mark the SSE decoder must strip from the head of the
 /// stream.

@@ -2,11 +2,10 @@
 //! events as Chat Completions SSE frames or an aggregated non-streaming body.
 
 use crate::{
-    format::{ClientSseRenderer, finish_reason_to_openai, json_insert},
-    ids::new_uuid,
+    format::{self, ClientSseRenderer},
+    ids,
     ir::{IrAggregation, IrEvent, IrUsage},
-    sse::format_data_frame,
-    unix_time,
+    sse, unix_time,
 };
 use serde_json::Value;
 
@@ -43,7 +42,7 @@ impl SseRenderer {
     /// Creates a renderer for one streamed completion.
     pub(crate) fn new(model: String, should_include_usage: bool) -> Self {
         Self {
-            id: format!("chatcmpl-{}", new_uuid()),
+            id: format!("chatcmpl-{}", ids::new_uuid()),
             model,
             created: unix_time::unix_now(),
             is_role_sent: false,
@@ -67,7 +66,7 @@ impl SseRenderer {
             }],
         });
 
-        format_data_frame(&chunk.to_string())
+        sse::format_data_frame(&chunk.to_string())
     }
 
     /// Formats the terminal usage-only chunk carrying an empty choices
@@ -86,7 +85,7 @@ impl SseRenderer {
             },
         });
 
-        format_data_frame(&chunk.to_string())
+        sse::format_data_frame(&chunk.to_string())
     }
 }
 
@@ -180,7 +179,7 @@ impl ClientSseRenderer for SseRenderer {
                     });
 
                     if let Some(signature) = thought_signature {
-                        json_insert(
+                        format::json_insert(
                             &mut tool_call,
                             "thought_signature",
                             Value::String(signature.clone()),
@@ -205,7 +204,7 @@ impl ClientSseRenderer for SseRenderer {
             IrEvent::Finish(reason) => {
                 vec![self.chunk_frame(
                     serde_json::json!({}),
-                    Some(finish_reason_to_openai(*reason)),
+                    Some(format::finish_reason_to_openai(*reason)),
                 )]
             }
 
@@ -227,7 +226,7 @@ impl ClientSseRenderer for SseRenderer {
                     frames.push(self.usage_frame(usage));
                 }
 
-                frames.push(format_data_frame("[DONE]"));
+                frames.push(sse::format_data_frame("[DONE]"));
 
                 frames
             }
@@ -236,7 +235,7 @@ impl ClientSseRenderer for SseRenderer {
 
     /// Renders a mid-stream error as a terminal SSE frame.
     fn error_frame(&mut self, error: &serde_json::Value) -> String {
-        format_data_frame(&error.to_string())
+        sse::format_data_frame(&error.to_string())
     }
 }
 
@@ -257,7 +256,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
             });
 
             if let Some(signature) = &tool_call.thought_signature {
-                json_insert(
+                format::json_insert(
                     &mut tool_call_json,
                     "thought_signature",
                     Value::String(signature.clone()),
@@ -276,10 +275,10 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
         Value::String(aggregation.text.clone())
     };
 
-    json_insert(&mut message, "content", content);
+    format::json_insert(&mut message, "content", content);
 
     if !aggregation.reasoning.is_empty() {
-        json_insert(
+        format::json_insert(
             &mut message,
             "reasoning_content",
             Value::String(aggregation.reasoning.clone()),
@@ -287,18 +286,18 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
     }
 
     if !tool_calls.is_empty() {
-        json_insert(&mut message, "tool_calls", Value::Array(tool_calls));
+        format::json_insert(&mut message, "tool_calls", Value::Array(tool_calls));
     }
 
     let finish_reason = aggregation
         .finish
-        .map(finish_reason_to_openai)
+        .map(format::finish_reason_to_openai)
         .unwrap_or("stop");
 
     let usage = aggregation.usage.unwrap_or_default();
 
     serde_json::json!({
-        "id": format!("chatcmpl-{}", new_uuid()),
+        "id": format!("chatcmpl-{}", ids::new_uuid()),
         "object": "chat.completion",
         "created": unix_time::unix_now(),
         "model": model,

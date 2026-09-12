@@ -2,11 +2,7 @@
 //! `POST /chat/completions` body deserialized into the IR request.
 
 use crate::{
-    format::{
-        ParsedRequest, allowed_fields, arguments_as_object, parse_tool_choice_mode,
-        reject_non_function_type, reject_tool_choice_without_tools, reject_unknown_fields,
-        validate_content_part_fields, validate_sampling_ranges,
-    },
+    format::{self, ParsedRequest},
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningEffort, IrRequest, IrResponseFormat,
         IrRole, IrTool, IrToolChoice,
@@ -39,6 +35,10 @@ const CONTENT_PART_FIELDS: &[(&str, &[&str])] = &[
     ("text", &["type", "text"]),
     ("image_url", &["type", "image_url"]),
 ];
+
+/// Roles whose array `content` may carry only `{"type": "text"}` parts,
+/// matching the official wire schema for those roles.
+const TEXT_ONLY_CONTENT_ROLES: &[&str] = &["system", "developer", "tool"];
 
 /// Strictly parsed Chat Completions request body.
 #[derive(Debug, Deserialize)]
@@ -97,14 +97,14 @@ struct RequestBody {
 enum MessageIn {
     /// System instruction.
     System {
-        /// Instruction text.
-        content: String,
+        /// Instruction text: a plain string or an array of text parts.
+        content: TextContentIn,
     },
 
     /// Developer instruction.
     Developer {
-        /// Instruction text.
-        content: String,
+        /// Instruction text: a plain string or an array of text parts.
+        content: TextContentIn,
     },
 
     /// User turn.
@@ -120,7 +120,7 @@ enum MessageIn {
     Assistant {
         /// Text content, when any.
         #[serde(default)]
-        content: Option<AssistantContentIn>,
+        content: Option<TextContentIn>,
 
         /// Tool invocations made during the turn.
         #[serde(default)]
@@ -129,8 +129,8 @@ enum MessageIn {
 
     /// Tool result.
     Tool {
-        /// Result content.
-        content: String,
+        /// Result content: a plain string or an array of text parts.
+        content: TextContentIn,
 
         /// Identifier of the invocation being answered.
         tool_call_id: String,
@@ -146,6 +146,30 @@ enum UserContentIn {
 
     /// Typed parts.
     Parts(Vec<UserPartIn>),
+}
+
+/// Text-only message content: a plain string or typed text parts. The
+/// system, developer, assistant, and tool roles all share this wire shape;
+/// only user content carries image parts.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TextContentIn {
+    /// Plain text.
+    Text(String),
+
+    /// Typed parts.
+    Parts(Vec<TextPartIn>),
+}
+
+/// Text content part, tagged by `type`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TextPartIn {
+    /// Text segment.
+    Text {
+        /// The text content.
+        text: String,
+    },
 }
 
 /// User content part, tagged by `type`.
@@ -171,28 +195,6 @@ enum UserPartIn {
 struct ImageUrlIn {
     /// Data URL (`data:<mime>;base64,<data>`) or remote HTTP(S) URL.
     url: String,
-}
-
-/// Assistant message content: plain string or text parts.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum AssistantContentIn {
-    /// Plain text.
-    Text(String),
-
-    /// Typed parts.
-    Parts(Vec<AssistantPartIn>),
-}
-
-/// Assistant content part, tagged by `type`.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum AssistantPartIn {
-    /// Text segment.
-    Text {
-        /// The text content.
-        text: String,
-    },
 }
 
 /// Tool invocation within an assistant message.
@@ -349,7 +351,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     for message in &request.messages {
         match message {
             MessageIn::System { content } | MessageIn::Developer { content } => {
-                instructions_parts.push(content.clone());
+                instructions_parts.push(flatten_text_content(content));
             }
 
             MessageIn::User { content } => {
@@ -385,12 +387,12 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
                 if let Some(content) = content {
                     match content {
-                        AssistantContentIn::Text(text) => {
+                        TextContentIn::Text(text) => {
                             parts.push(IrPart::Text { text: text.clone() })
                         }
-                        AssistantContentIn::Parts(parts_in) => {
+                        TextContentIn::Parts(parts_in) => {
                             for part in parts_in {
-                                let AssistantPartIn::Text { text } = part;
+                                let TextPartIn::Text { text } = part;
 
                                 parts.push(IrPart::Text { text: text.clone() });
                             }
@@ -411,7 +413,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                         // arguments must encode a JSON object, so malformed
                         // replays fail here instead of at upstream render
                         // time.
-                        arguments_as_object(&tool_call.function.arguments)?;
+                        format::arguments_as_object(&tool_call.function.arguments)?;
 
                         parts.push(IrPart::ToolCall {
                             call_id: tool_call.id.clone(),
@@ -436,7 +438,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                     role: IrRole::Tool,
                     parts: vec![IrPart::ToolOutput {
                         call_id: tool_call_id.clone(),
-                        content: content.clone(),
+                        content: flatten_text_content(content),
                     }],
                 });
             }
@@ -447,7 +449,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     if let Some(tools_in) = &request.tools {
         for tool in tools_in {
-            reject_non_function_type(&tool.tool_type, "tool")?;
+            format::reject_non_function_type(&tool.tool_type, "tool")?;
 
             tools.push(IrTool {
                 name: tool.function.name.clone(),
@@ -460,16 +462,16 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     let tool_choice = match &request.tool_choice {
         None => None,
         Some(choice) => {
-            reject_tool_choice_without_tools(tools.is_empty())?;
+            format::reject_tool_choice_without_tools(tools.is_empty())?;
 
             Some(match choice {
-                ToolChoiceIn::Mode(mode) => parse_tool_choice_mode(mode)?,
+                ToolChoiceIn::Mode(mode) => format::parse_tool_choice_mode(mode)?,
 
                 ToolChoiceIn::Function {
                     tool_type,
                     function,
                 } => {
-                    reject_non_function_type(tool_type, "tool_choice")?;
+                    format::reject_non_function_type(tool_type, "tool_choice")?;
 
                     IrToolChoice::Function {
                         name: function.name.clone(),
@@ -479,7 +481,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         }
     };
 
-    validate_sampling_ranges(request.temperature, request.top_p)?;
+    format::validate_sampling_ranges(request.temperature, request.top_p)?;
 
     if request.max_tokens.is_some() && request.max_completion_tokens.is_some() {
         return Err(InvalidRequest::field(
@@ -533,12 +535,31 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     })
 }
 
+/// Flattens string-or-text-parts content into a single string. Parts join
+/// with the same blank-line separator used to concatenate system/developer
+/// messages into IR instructions, so the array form flattens to exactly what
+/// the equivalent plain-string form carries.
+fn flatten_text_content(content: &TextContentIn) -> String {
+    match content {
+        TextContentIn::Text(text) => text.clone(),
+
+        TextContentIn::Parts(parts) => parts
+            .iter()
+            .map(|TextPartIn::Text { text }| text.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    }
+}
+
 /// Rejects unknown fields on chat message objects; internally tagged serde
-/// enums cannot enforce this themselves.
+/// enums cannot enforce this themselves. Also rejects non-text part types in
+/// the array content of the text-only roles, where the official wire schema
+/// admits only `{"type": "text"}` parts.
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] naming the first unknown field.
+/// Returns [`InvalidRequest`] naming the first unknown field or the first
+/// unsupported content part type.
 fn validate_message_fields(messages: Option<&Value>) -> Result<(), InvalidRequest> {
     let Some(messages) = messages.and_then(Value::as_array) else {
         return Ok(());
@@ -554,14 +575,36 @@ fn validate_message_fields(messages: Option<&Value>) -> Result<(), InvalidReques
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        let Some(allowed_fields) = allowed_fields(MESSAGE_FIELDS_BY_ROLE, role) else {
+        let Some(allowed_fields) = format::allowed_fields(MESSAGE_FIELDS_BY_ROLE, role) else {
             continue;
         };
 
-        reject_unknown_fields(object, allowed_fields, &format!("`{role}` message"))?;
+        format::reject_unknown_fields(object, allowed_fields, &format!("`{role}` message"))?;
 
         if let Some(parts) = object.get("content").and_then(Value::as_array) {
-            validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
+            format::validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
+
+            // A recognizable non-text part on a text-only role is rejected
+            // here, naming the part type, instead of surfacing as an
+            // untagged-enum serde failure; malformed parts without a `type`
+            // string are left to serde's rejection.
+            if TEXT_ONLY_CONTENT_ROLES.contains(&role) {
+                for part in parts {
+                    let Some(part_type) = part.get("type").and_then(Value::as_str) else {
+                        continue;
+                    };
+
+                    if part_type != "text" {
+                        return Err(InvalidRequest::field(
+                            "content",
+                            format!(
+                                "{role} message content parts must be text; \
+                                 `{part_type}` is not supported"
+                            ),
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -585,5 +628,144 @@ fn validate_response_format_fields(response_format: Option<&Value>) -> Result<()
         _ => &["type"],
     };
 
-    reject_unknown_fields(object, permitted_fields, "response_format")
+    format::reject_unknown_fields(object, permitted_fields, "response_format")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parses one request body given as JSON.
+    fn parse(body: Value) -> Result<ParsedRequest, InvalidRequest> {
+        parse_request(body.to_string().as_bytes())
+    }
+
+    /// Plain-string content keeps parsing on the text-only roles: system and
+    /// developer strings concatenate into instructions in encounter order,
+    /// and a tool string becomes the tool output verbatim (README §6.6).
+    #[test]
+    fn string_content_parses_on_text_only_roles() {
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "be terse"},
+                {"role": "developer", "content": "no markdown"},
+                {"role": "user", "content": "hi"},
+                {"role": "tool", "tool_call_id": "call_1", "content": "{\"ok\": true}"},
+            ],
+        }))
+        .expect("string content must parse on every text-only role");
+
+        assert_eq!(
+            parsed.ir.instructions.as_deref(),
+            Some("be terse\n\nno markdown"),
+        );
+
+        let tool_message = parsed
+            .ir
+            .messages
+            .last()
+            .expect("the tool message must be present");
+
+        assert_eq!(tool_message.role, IrRole::Tool);
+
+        assert_eq!(
+            tool_message.parts,
+            vec![IrPart::ToolOutput {
+                call_id: "call_1".to_string(),
+                content: "{\"ok\": true}".to_string(),
+            }],
+        );
+    }
+
+    /// A text-parts array flattens to exactly the plain-string form's
+    /// content: parts join with the blank-line separator, and the flattened
+    /// system/developer texts concatenate into instructions unchanged, so
+    /// both wire forms produce identical IR (README §6.6).
+    #[test]
+    fn text_part_arrays_flatten_to_the_string_form() {
+        let string_form = parse(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "a\n\nb"},
+                {"role": "developer", "content": "c"},
+                {"role": "user", "content": "hi"},
+                {"role": "tool", "tool_call_id": "call_1", "content": "x\n\ny"},
+            ],
+        }))
+        .expect("string content must parse");
+
+        let parts_form = parse(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": [
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": "b"},
+                ]},
+                {"role": "developer", "content": [{"type": "text", "text": "c"}]},
+                {"role": "user", "content": "hi"},
+                {"role": "tool", "tool_call_id": "call_1", "content": [
+                    {"type": "text", "text": "x"},
+                    {"type": "text", "text": "y"},
+                ]},
+            ],
+        }))
+        .expect("text-parts content must parse on every text-only role");
+
+        assert_eq!(parts_form.ir.instructions, string_form.ir.instructions);
+
+        assert_eq!(parts_form.ir.instructions.as_deref(), Some("a\n\nb\n\nc"));
+
+        assert_eq!(parts_form.ir.messages, string_form.ir.messages);
+
+        let tool_message = parts_form
+            .ir
+            .messages
+            .last()
+            .expect("the tool message must be present");
+
+        assert_eq!(
+            tool_message.parts,
+            vec![IrPart::ToolOutput {
+                call_id: "call_1".to_string(),
+                content: "x\n\ny".to_string(),
+            }],
+        );
+    }
+
+    /// Only `{"type": "text"}` parts are valid inside a text-only role's
+    /// content array per the official schema; any other part type is
+    /// rejected naming it (README §6.6).
+    #[test]
+    fn non_text_parts_on_text_only_roles_are_rejected() {
+        for role in ["system", "developer", "tool"] {
+            let content = serde_json::json!([
+                {"type": "text", "text": "before"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/i.png"}},
+            ]);
+
+            let message = if role == "tool" {
+                serde_json::json!({
+                    "role": role,
+                    "content": content,
+                    "tool_call_id": "call_1",
+                })
+            } else {
+                serde_json::json!({"role": role, "content": content})
+            };
+
+            let error = parse(serde_json::json!({
+                "model": "m",
+                "messages": [message],
+            }))
+            .expect_err("a non-text part must be rejected on a text-only role");
+
+            assert_eq!(error.param.as_deref(), Some("content"));
+
+            assert_eq!(
+                error.to_string(),
+                format!("{role} message content parts must be text; `image_url` is not supported"),
+            );
+        }
+    }
 }

@@ -1,9 +1,6 @@
 //! Management endpoints beginning and completing OAuth authorization flows.
 
-use super::{
-    error::{ManagementApiError, json_response, log_error},
-    parse_body, provider_json, validate_identifier,
-};
+use super::error::{self, ManagementApiError};
 use crate::{
     context::Context,
     database::Database,
@@ -52,7 +49,7 @@ pub(super) async fn start(State(context): State<Context>, body: Bytes) -> Respon
     let outcome = handle_start(&context.database, &body).await;
 
     match outcome {
-        Ok(flow) => json_response(
+        Ok(flow) => error::json_response(
             StatusCode::OK,
             serde_json::json!({
                 "authorize_url": flow.authorize_url,
@@ -69,7 +66,9 @@ pub(super) async fn complete(State(context): State<Context>, body: Bytes) -> Res
     let outcome = handle_complete(&context.database, &context.control_plane, &body).await;
 
     match outcome {
-        Ok(rendered) => json_response(StatusCode::OK, serde_json::json!({ "provider": rendered })),
+        Ok(rendered) => {
+            error::json_response(StatusCode::OK, serde_json::json!({ "provider": rendered }))
+        }
         Err(error) => error.into_response(),
     }
 }
@@ -86,7 +85,7 @@ async fn handle_start(
     database: &Database,
     body: &Bytes,
 ) -> Result<oauth::OAuthFlow, ManagementApiError> {
-    let request: StartOAuthBody = parse_body(body, "start-provider-oauth")?;
+    let request: StartOAuthBody = super::parse_body(body, "start-provider-oauth")?;
 
     let outcome = async {
         let provider_type = OAuthProviderType::parse(&request.provider_type).ok_or_else(|| {
@@ -116,7 +115,7 @@ async fn handle_start(
     match &outcome {
         Ok(_) => info!("started a `{}` OAuth flow", request.provider_type),
 
-        Err(error) => log_error("start-provider-oauth", error),
+        Err(error) => error::log_error("start-provider-oauth", error),
     }
 
     outcome
@@ -157,7 +156,7 @@ async fn handle_complete(
     control_plane: &Client,
     body: &Bytes,
 ) -> Result<serde_json::Value, ManagementApiError> {
-    let request: CompleteOAuthBody = parse_body(body, "complete-provider-oauth")?;
+    let request: CompleteOAuthBody = super::parse_body(body, "complete-provider-oauth")?;
 
     // The log context rides on whichever form the request names, computed
     // from the raw request so it survives the moved fields below.
@@ -221,7 +220,7 @@ async fn handle_complete(
             }
 
             Completion::Creation { name, .. } => {
-                validate_identifier("name", name)?;
+                super::validate_identifier("name", name)?;
 
                 // The database's UNIQUE constraint is the concurrent backstop
                 // for a name taken after this check.
@@ -323,12 +322,12 @@ async fn handle_complete(
                 })?,
         };
 
-        Ok(provider_json(&stored))
+        Ok(super::provider_json(&stored))
     }
     .await;
 
     if let Err(error) = &outcome {
-        log_error(&format!("complete-provider-oauth for {log_context}"), error);
+        error::log_error(&format!("complete-provider-oauth for {log_context}"), error);
     }
 
     outcome

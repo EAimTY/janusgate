@@ -163,7 +163,7 @@ impl UpstreamFormat {
 /// Maps an OpenAI `finish_reason` string to the canonical reason; unknown
 /// values degrade to [`IrFinishReason::Stop`] rather than failing a healthy
 /// stream.
-pub(crate) fn finish_reason_from_openai(value: &str) -> IrFinishReason {
+pub(in crate::format) fn finish_reason_from_openai(value: &str) -> IrFinishReason {
     match value {
         "length" => IrFinishReason::Length,
         "tool_calls" | "function_call" => IrFinishReason::ToolCall,
@@ -173,7 +173,7 @@ pub(crate) fn finish_reason_from_openai(value: &str) -> IrFinishReason {
 }
 
 /// Renders the canonical reason as an OpenAI `finish_reason` string.
-pub(crate) fn finish_reason_to_openai(reason: IrFinishReason) -> &'static str {
+pub(in crate::format) fn finish_reason_to_openai(reason: IrFinishReason) -> &'static str {
     match reason {
         IrFinishReason::Stop => "stop",
         IrFinishReason::Length => "length",
@@ -187,7 +187,7 @@ pub(crate) fn finish_reason_to_openai(reason: IrFinishReason) -> &'static str {
 /// Internally tagged serde enums cannot reject unknown fields themselves, so
 /// request parsers keep an allowlist per variant and match it against the raw
 /// JSON; variants absent from the table are left to serde to reject.
-pub(crate) fn allowed_fields<'a>(
+pub(in crate::format) fn allowed_fields<'a>(
     table: &'a [(&'a str, &'a [&'a str])],
     tag: &str,
 ) -> Option<&'a [&'a str]> {
@@ -203,7 +203,7 @@ pub(crate) fn allowed_fields<'a>(
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming the first unknown field.
-pub(crate) fn reject_unknown_fields(
+pub(in crate::format) fn reject_unknown_fields(
     object: &serde_json::Map<String, serde_json::Value>,
     allowed: &[&str],
     context: &str,
@@ -226,7 +226,7 @@ pub(crate) fn reject_unknown_fields(
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming the first unknown field.
-pub(crate) fn validate_content_part_fields(
+pub(in crate::format) fn validate_content_part_fields(
     parts: &[serde_json::Value],
     table: &[(&str, &[&str])],
 ) -> Result<(), InvalidRequest> {
@@ -256,7 +256,7 @@ pub(crate) fn validate_content_part_fields(
 /// # Errors
 ///
 /// Returns an error when the arguments are not a JSON object.
-pub(crate) fn arguments_as_object(
+pub(in crate::format) fn arguments_as_object(
     arguments: &str,
 ) -> Result<serde_json::Map<String, serde_json::Value>, InvalidRequest> {
     if arguments.trim().is_empty() {
@@ -279,6 +279,31 @@ pub(crate) fn arguments_as_object(
     }
 }
 
+/// Placeholder for a missing JSON object field, so read-only upstream parse
+/// walks can borrow instead of deep-cloning the subtrees they inspect.
+const MISSING: Value = Value::Null;
+
+/// Parses the JSON payload of an upstream SSE frame; the single home of the
+/// malformed-frame rejection shared by every codec's `ingest_frame`.
+///
+/// # Errors
+///
+/// Returns [`PayloadError`] when the frame data is not valid JSON.
+pub(crate) fn parse_frame_json(frame: &SseFrame) -> Result<Value, PayloadError> {
+    serde_json::from_str(&frame.data)
+        .map_err(|_| PayloadError::new("malformed JSON in upstream SSE frame"))
+}
+
+/// Reads a string field of an upstream JSON object, defaulting to the empty
+/// string.
+pub(crate) fn string_field(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// Rejects an upstream body carrying a top-level error object; shared by the
 /// OpenAI-family codecs, whose upstreams embed the error beside the protocol
 /// fields.
@@ -296,7 +321,7 @@ pub(crate) fn arguments_as_object(
 /// # Errors
 ///
 /// Returns [`PayloadError`] carrying the upstream error text and code.
-pub(crate) fn reject_upstream_error(value: &Value) -> Result<(), PayloadError> {
+pub(in crate::format) fn reject_upstream_error(value: &Value) -> Result<(), PayloadError> {
     let Some(error) = value.get("error").filter(|error| !error.is_null()) else {
         return Ok(());
     };
@@ -325,7 +350,9 @@ pub(crate) fn reject_upstream_error(value: &Value) -> Result<(), PayloadError> {
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming `tool_choice` for unknown modes.
-pub(crate) fn parse_tool_choice_mode(mode: &str) -> Result<IrToolChoice, InvalidRequest> {
+pub(in crate::format) fn parse_tool_choice_mode(
+    mode: &str,
+) -> Result<IrToolChoice, InvalidRequest> {
     match mode {
         "auto" => Ok(IrToolChoice::Auto),
         "none" => Ok(IrToolChoice::None),
@@ -345,7 +372,7 @@ pub(crate) fn parse_tool_choice_mode(mode: &str) -> Result<IrToolChoice, Invalid
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming `type` for any non-function tag.
-pub(crate) fn reject_non_function_type(
+pub(in crate::format) fn reject_non_function_type(
     tool_type: &str,
     context: &str,
 ) -> Result<(), InvalidRequest> {
@@ -364,7 +391,9 @@ pub(crate) fn reject_non_function_type(
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming `tool_choice`.
-pub(crate) fn reject_tool_choice_without_tools(is_tools_empty: bool) -> Result<(), InvalidRequest> {
+pub(in crate::format) fn reject_tool_choice_without_tools(
+    is_tools_empty: bool,
+) -> Result<(), InvalidRequest> {
     if is_tools_empty {
         return Err(InvalidRequest::field(
             "tool_choice",
@@ -381,7 +410,7 @@ pub(crate) fn reject_tool_choice_without_tools(is_tools_empty: bool) -> Result<(
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming the offending parameter.
-pub(crate) fn validate_sampling_ranges(
+pub(in crate::format) fn validate_sampling_ranges(
     temperature: Option<f64>,
     top_p: Option<f64>,
 ) -> Result<(), InvalidRequest> {
@@ -411,7 +440,11 @@ pub(crate) fn validate_sampling_ranges(
 ///
 /// Panics when the base value is not a JSON object, violating the stated
 /// invariant.
-pub(crate) fn json_insert(base: &mut serde_json::Value, key: &str, value: serde_json::Value) {
+pub(in crate::format) fn json_insert(
+    base: &mut serde_json::Value,
+    key: &str,
+    value: serde_json::Value,
+) {
     #[expect(
         clippy::expect_used,
         reason = "every base is a `json!` object literal created by the caller"

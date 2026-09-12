@@ -3,6 +3,7 @@
 //! Serves the outward `POST /responses` endpoint and speaks the
 //! `openai_response` upstream protocol (including the Codex backend).
 
+use self::client_render::SseRenderer;
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest},
     ir::{InvalidRequest, IrAggregation},
@@ -15,7 +16,6 @@ mod upstream_parse;
 mod upstream_render;
 
 pub(crate) use self::{
-    client_render::{SseRenderer, render_json_response},
     upstream_parse::UpstreamParser,
     upstream_render::{render_codex_request, render_request},
 };
@@ -37,6 +37,6 @@ impl ClientFormat for Format {
     }
 
     fn render_json_response(public_name: &str, aggregation: &IrAggregation) -> Value {
-        render_json_response(public_name, aggregation)
+        client_render::render_json_response(public_name, aggregation)
     }
 }

@@ -2,7 +2,7 @@
 //! into the `openai_response` upstream payload.
 
 use crate::{
-    format::json_insert,
+    format,
     ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
 };
 use serde_json::Value;
@@ -91,7 +91,7 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
                             });
 
                             if let Some(signature) = thought_signature {
-                                json_insert(
+                                format::json_insert(
                                     &mut item,
                                     "thought_signature",
                                     Value::String(signature.clone()),
@@ -128,7 +128,7 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
     });
 
     if let Some(instructions) = &ir.instructions {
-        json_insert(
+        format::json_insert(
             &mut body,
             "instructions",
             Value::String(instructions.clone()),
@@ -149,7 +149,7 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
             })
             .collect();
 
-        json_insert(&mut body, "tools", Value::Array(tools));
+        format::json_insert(&mut body, "tools", Value::Array(tools));
     }
 
     if let Some(tool_choice) = &ir.tool_choice {
@@ -162,19 +162,19 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
             }
         };
 
-        json_insert(&mut body, "tool_choice", choice);
+        format::json_insert(&mut body, "tool_choice", choice);
     }
 
     if let Some(temperature) = ir.temperature {
-        json_insert(&mut body, "temperature", Value::from(temperature));
+        format::json_insert(&mut body, "temperature", Value::from(temperature));
     }
 
     if let Some(top_p) = ir.top_p {
-        json_insert(&mut body, "top_p", Value::from(top_p));
+        format::json_insert(&mut body, "top_p", Value::from(top_p));
     }
 
     if let Some(max_output_tokens) = ir.max_output_tokens {
-        json_insert(
+        format::json_insert(
             &mut body,
             "max_output_tokens",
             Value::from(max_output_tokens),
@@ -190,11 +190,11 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
             }
         };
 
-        json_insert(&mut body, "text", serde_json::json!({"format": format}));
+        format::json_insert(&mut body, "text", serde_json::json!({"format": format}));
     }
 
     if let Some(effort) = ir.reasoning_effort {
-        json_insert(
+        format::json_insert(
             &mut body,
             "reasoning",
             serde_json::json!({"effort": effort.to_openai()}),

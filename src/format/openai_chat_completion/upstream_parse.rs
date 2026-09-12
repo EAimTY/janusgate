@@ -2,15 +2,11 @@
 //! chunks or a complete JSON body into IR events.
 
 use crate::{
-    format::{PayloadError, UpstreamEventParser, finish_reason_from_openai, reject_upstream_error},
+    format::{self, PayloadError, UpstreamEventParser},
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
 use serde_json::Value;
-
-/// Placeholder for a missing JSON object field, so the read-only walks below
-/// borrow instead of deep-cloning the subtrees they inspect.
-const MISSING: Value = Value::Null;
 
 /// Parses upstream Chat Completions responses — streamed chunks or a full
 /// JSON body — into IR events.
@@ -59,7 +55,7 @@ impl UpstreamParser {
 
     /// Ingests one streaming chunk object.
     fn ingest_chunk(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        reject_upstream_error(&value)?;
+        format::reject_upstream_error(&value)?;
 
         let mut events = self.message_start_events(&value);
 
@@ -97,7 +93,9 @@ impl UpstreamParser {
 
                 self.is_finished = true;
 
-                events.push(IrEvent::Finish(finish_reason_from_openai(finish_reason)));
+                events.push(IrEvent::Finish(format::finish_reason_from_openai(
+                    finish_reason,
+                )));
             }
         }
 
@@ -125,7 +123,7 @@ impl UpstreamParser {
             .and_then(Value::as_u64)
             .unwrap_or_default();
 
-        let function = tool_call.get("function").unwrap_or(&MISSING);
+        let function = tool_call.get("function").unwrap_or(&format::MISSING);
 
         let call_id = tool_call.get("id").and_then(Value::as_str);
         let name = function.get("name").and_then(Value::as_str);
@@ -216,16 +214,8 @@ impl UpstreamParser {
         self.is_started = true;
 
         vec![IrEvent::MessageStart {
-            id: value
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            model: value
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            id: format::string_field(value, "id"),
+            model: format::string_field(value, "model"),
         }]
     }
 }
@@ -241,8 +231,7 @@ impl UpstreamEventParser for UpstreamParser {
             return Ok(self.flush_pending_calls());
         }
 
-        let value: Value = serde_json::from_str(&frame.data)
-            .map_err(|_| PayloadError::new("malformed JSON in upstream SSE frame"))?;
+        let value = format::parse_frame_json(frame)?;
 
         self.ingest_chunk(value)
     }
@@ -254,7 +243,7 @@ impl UpstreamEventParser for UpstreamParser {
     /// Returns [`PayloadError`] for upstream error payloads and malformed
     /// bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        reject_upstream_error(&value)?;
+        format::reject_upstream_error(&value)?;
 
         let mut events = self.message_start_events(&value);
 
@@ -265,7 +254,7 @@ impl UpstreamEventParser for UpstreamParser {
         let finish_reason = first_choice(&value)
             .and_then(|choice| choice.get("finish_reason"))
             .and_then(Value::as_str)
-            .map(finish_reason_from_openai)
+            .map(format::finish_reason_from_openai)
             .unwrap_or(IrFinishReason::Stop);
 
         self.is_finished = true;
@@ -372,25 +361,11 @@ fn message_events_from_full(message: &Value) -> Vec<IrEvent> {
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
         for (index, tool_call) in tool_calls.iter().enumerate() {
-            let function = tool_call.get("function").unwrap_or(&MISSING);
+            let function = tool_call.get("function").unwrap_or(&format::MISSING);
 
-            let call_id = tool_call
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-
-            let name = function
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-
-            let arguments = function
-                .get("arguments")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+            let call_id = format::string_field(tool_call, "id");
+            let name = format::string_field(function, "name");
+            let arguments = format::string_field(function, "arguments");
 
             events.push(IrEvent::ToolCallDelta {
                 index,

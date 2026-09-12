@@ -3,10 +3,8 @@
 
 mod error;
 
-use self::error::{ManagementApiError, log_error};
-use crate::{
-    context::Context, format::UpstreamFormat, provider::Provider, security::constant_time_eq,
-};
+use self::error::ManagementApiError;
+use crate::{context::Context, format::UpstreamFormat, provider::Provider, security};
 use axum::{
     Router,
     body::Bytes,
@@ -61,7 +59,9 @@ async fn authenticate(request: Request, next: Next) -> Response {
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|token| constant_time_eq(token, &crate::CONFIG.management_api.token));
+        .is_some_and(|token| {
+            security::constant_time_eq(token, &crate::CONFIG.management_api.token)
+        });
 
     if !is_authorized {
         warn!("rejected an unauthorized management request");
@@ -94,7 +94,7 @@ where
         let management_error =
             ManagementApiError::invalid_request(format!("Invalid JSON body: {error}"));
 
-        log_error(&format!("{operation} request"), &management_error);
+        error::log_error(&format!("{operation} request"), &management_error);
 
         management_error
     })

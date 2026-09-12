@@ -6,21 +6,20 @@
 
 use super::{PayloadError, UpstreamEventParser};
 use crate::{
-    format::{arguments_as_object, json_insert},
-    ids::new_uuid,
+    ids,
     ir::{
         InvalidRequest, IrEvent, IrFinishReason, IrImage, IrPart, IrRequest, IrResponseFormat,
         IrRole, IrToolChoice, IrUsage,
     },
-    provider::endpoints,
     sse::SseFrame,
 };
 use serde_json::Value;
 
 /// Renders the upstream request URL and payload for an Antigravity provider.
 ///
-/// `base_url` is the provider's Code Assist endpoint; the provider layer owns
-/// endpoint knowledge, so it is threaded in rather than owned by the codec.
+/// `base_url` and `user_agent` are the provider's Code Assist endpoint and
+/// the `User-Agent` value it requires; the provider layer owns endpoint
+/// knowledge, so both are threaded in rather than owned by the codec.
 ///
 /// # Errors
 ///
@@ -28,6 +27,7 @@ use serde_json::Value;
 pub(crate) fn render_antigravity_request(
     ir: &IrRequest,
     base_url: &str,
+    user_agent: &str,
     upstream_id: &str,
     project: &str,
     is_streaming: bool,
@@ -39,8 +39,8 @@ pub(crate) fn render_antigravity_request(
         "model": upstream_id,
         "request": render_generate_content_request(ir)?,
         "requestType": "agent",
-        "userAgent": endpoints::ANTIGRAVITY_USER_AGENT,
-        "requestId": format!("agent-{}", new_uuid()),
+        "userAgent": user_agent,
+        "requestId": format!("agent-{}", ids::new_uuid()),
     });
 
     Ok((url, envelope))
@@ -101,7 +101,7 @@ fn render_request_url(
 ///
 /// Returns [`InvalidRequest`] for tool call arguments that are not JSON objects
 /// and tool outputs whose invocation cannot be resolved.
-pub(crate) fn render_generate_content_request(ir: &IrRequest) -> Result<Value, InvalidRequest> {
+fn render_generate_content_request(ir: &IrRequest) -> Result<Value, InvalidRequest> {
     let mut contents: Vec<Value> = Vec::new();
 
     for message in &ir.messages {
@@ -129,7 +129,7 @@ pub(crate) fn render_generate_content_request(ir: &IrRequest) -> Result<Value, I
     let mut request = serde_json::json!({"contents": contents});
 
     if let Some(instructions) = &ir.instructions {
-        json_insert(
+        super::json_insert(
             &mut request,
             "systemInstruction",
             serde_json::json!({"parts": [{"text": instructions}]}),
@@ -149,7 +149,7 @@ pub(crate) fn render_generate_content_request(ir: &IrRequest) -> Result<Value, I
             })
             .collect();
 
-        json_insert(
+        super::json_insert(
             &mut request,
             "tools",
             serde_json::json!([{"functionDeclarations": declarations}]),
@@ -166,7 +166,7 @@ pub(crate) fn render_generate_content_request(ir: &IrRequest) -> Result<Value, I
             }
         };
 
-        json_insert(
+        super::json_insert(
             &mut request,
             "toolConfig",
             serde_json::json!({"functionCallingConfig": config}),
@@ -218,7 +218,7 @@ pub(crate) fn render_generate_content_request(ir: &IrRequest) -> Result<Value, I
     }
 
     if !generation_config.is_empty() {
-        json_insert(
+        super::json_insert(
             &mut request,
             "generationConfig",
             Value::Object(generation_config),
@@ -282,11 +282,11 @@ fn render_part(part: &IrPart, ir: &IrRequest) -> Result<Vec<Value>, InvalidReque
             ..
         } => {
             let mut gemini_part = serde_json::json!({
-                "functionCall": {"name": name, "args": arguments_as_object(arguments)?},
+                "functionCall": {"name": name, "args": super::arguments_as_object(arguments)?},
             });
 
             if let Some(signature) = thought_signature {
-                json_insert(
+                super::json_insert(
                     &mut gemini_part,
                     "thoughtSignature",
                     Value::String(signature.clone()),
@@ -341,22 +341,11 @@ impl UpstreamParser {
 
     /// Ingests one GenerateContentResponse object.
     fn ingest_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        if let Some(error) = value.get("error").filter(|error| error.is_object()) {
-            // An error object inside a 2xx body is a malformed upstream
-            // payload (README §6.7), so the embedded `code` is never mirrored
-            // as the outward status; it rides in the message instead.
-            let message = error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("upstream error");
-
-            let detail = match error.get("code") {
-                Some(code) => format!("{message} (upstream error code: {code})"),
-                None => message.to_string(),
-            };
-
-            return Err(PayloadError::new(detail));
-        }
+        // An error object inside a 2xx body is a malformed upstream payload
+        // (README §6.7); the check sits beside the protocol fields, before
+        // the `response` envelope below is unwrapped, shared with the
+        // OpenAI-family codecs.
+        super::reject_upstream_error(&value)?;
 
         // The Cloud Code Assist API wraps every GenerateContentResponse —
         // `:generateContent` JSON bodies and `alt=sse` frames alike — in a
@@ -377,12 +366,8 @@ impl UpstreamParser {
                 id: value
                     .get("responseId")
                     .and_then(Value::as_str)
-                    .map_or_else(|| format!("gen-{}", new_uuid()), str::to_string),
-                model: value
-                    .get("modelVersion")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                    .map_or_else(|| format!("gen-{}", ids::new_uuid()), str::to_string),
+                model: super::string_field(value, "modelVersion"),
             });
         }
 
@@ -406,11 +391,24 @@ impl UpstreamParser {
             }
         }
 
+        // A prompt-level block carries `promptFeedback.blockReason` and no
+        // candidates, so no `finishReason` ever arrives and the clean end of
+        // stream would degrade the block into a successful `Stop`. Upstream
+        // sends `promptFeedback` only when no candidate was generated, so a
+        // candidate finish above always wins.
+        if !self.is_finished
+            && value
+                .pointer("/promptFeedback/blockReason")
+                .and_then(Value::as_str)
+                .is_some()
+        {
+            self.is_finished = true;
+
+            events.push(IrEvent::Finish(IrFinishReason::ContentFilter));
+        }
+
         if let Some(usage) = value.get("usageMetadata").filter(|usage| usage.is_object()) {
-            let reasoning_tokens = usage
-                .get("thoughtsTokenCount")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            let reasoning_tokens = usage.get("thoughtsTokenCount").and_then(Value::as_u64);
 
             events.push(IrEvent::Usage(IrUsage {
                 input_tokens: usage
@@ -421,10 +419,11 @@ impl UpstreamParser {
                     .get("candidatesTokenCount")
                     .and_then(Value::as_u64)
                     .unwrap_or(0)
-                    + reasoning_tokens,
-                // Gemini carries no Responses-style token breakdown; the
-                // outward Responses rendering zero-fills it.
-                ..IrUsage::default()
+                    + reasoning_tokens.unwrap_or(0),
+                cached_tokens: usage.get("cachedContentTokenCount").and_then(Value::as_u64),
+                // Gemini reports no cache-write accounting.
+                cache_write_tokens: None,
+                reasoning_tokens,
             }));
         }
 
@@ -457,11 +456,7 @@ impl UpstreamParser {
 
         self.is_call_delivered = true;
 
-        let name = function_call
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let name = super::string_field(function_call, "name");
 
         // The arguments serialize straight from the borrowed map — no deep
         // copy — with a missing or non-object `args` rendering an empty JSON
@@ -479,7 +474,7 @@ impl UpstreamParser {
             None => "{}".to_string(),
         };
 
-        let call_id = format!("call_{}", new_uuid());
+        let call_id = format!("call_{}", ids::new_uuid());
 
         events.push(IrEvent::ToolCallDelta {
             index: self.call_counter,
@@ -510,8 +505,7 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for malformed JSON and upstream error objects.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
-        let value: Value = serde_json::from_str(&frame.data)
-            .map_err(|_| PayloadError::new("malformed JSON in upstream SSE frame"))?;
+        let value = super::parse_frame_json(frame)?;
 
         self.ingest_response(value)
     }
@@ -651,5 +645,135 @@ mod tests {
             .expect("a MAX_TOKENS turn parses");
 
         assert!(events.contains(&IrEvent::Finish(IrFinishReason::Length)));
+    }
+
+    /// A prompt-level block carries `promptFeedback.blockReason` and no
+    /// candidates, so no `finishReason` ever arrives and the clean end of
+    /// stream must not degrade the block into a successful `Stop` finish:
+    /// both the aggregated body and the streaming path report the canonical
+    /// content-filter finish.
+    #[test]
+    fn prompt_block_finishes_as_content_filter() {
+        let body = serde_json::json!({"promptFeedback": {"blockReason": "SAFETY"}});
+
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .parse_json_response(body.clone())
+            .expect("a prompt-blocked body parses");
+
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+        assert!(parser.finish().is_empty(), "no spurious Stop may follow");
+
+        let frame = SseFrame {
+            event: None,
+            data: body.to_string(),
+        };
+
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .ingest_frame(&frame)
+            .expect("a prompt-blocked frame parses");
+
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+    }
+
+    /// Upstream sends `promptFeedback` only when no candidate was generated,
+    /// so a response that also carried a finishing candidate keeps that
+    /// candidate's finish reason instead of being overridden by the feedback.
+    #[test]
+    fn candidate_finish_wins_over_prompt_feedback() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "ok"}]},
+                "finishReason": "STOP",
+            }],
+            "promptFeedback": {"blockReason": "SAFETY"},
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .parse_json_response(body)
+            .expect("a finishing candidate parses");
+
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+        assert!(!events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+    }
+
+    /// The `usageMetadata` breakdown fields flow into the IR usage detail:
+    /// `cachedContentTokenCount` becomes the cached input count and
+    /// `thoughtsTokenCount` the reasoning output count, while the output
+    /// total keeps including the reasoning tokens and the absent
+    /// cache-write count stays [`None`].
+    #[test]
+    fn usage_breakdown_reports_cache_and_reasoning_tokens() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "hi"}]},
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "candidatesTokenCount": 20,
+                "thoughtsTokenCount": 8,
+                "cachedContentTokenCount": 60,
+            },
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .parse_json_response(body)
+            .expect("a usage-bearing body parses");
+
+        let usage = events.iter().find_map(|event| match event {
+            IrEvent::Usage(usage) => Some(*usage),
+            _ => None,
+        });
+
+        assert_eq!(
+            usage,
+            Some(IrUsage {
+                input_tokens: 100,
+                output_tokens: 28,
+                cached_tokens: Some(60),
+                cache_write_tokens: None,
+                reasoning_tokens: Some(8),
+            })
+        );
+    }
+
+    /// An error object inside a 2xx body is rejected through the shared
+    /// OpenAI-family rejection, wording included; the shared classification
+    /// also rejects the non-object error values the retired inline copy
+    /// silently ignored (README §6.7 malformed-payload handling).
+    #[test]
+    fn embedded_error_object_uses_shared_rejection() {
+        let body = serde_json::json!({
+            "error": {"code": 400, "message": "API key not valid"},
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        let error = parser
+            .parse_json_response(body)
+            .expect_err("an embedded error object must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "API key not valid (upstream error code: 400)"
+        );
+
+        let body = serde_json::json!({"error": "quota exhausted"});
+
+        let mut parser = UpstreamParser::new();
+
+        let error = parser
+            .parse_json_response(body)
+            .expect_err("a non-object error value must fail");
+
+        assert_eq!(error.to_string(), "quota exhausted");
     }
 }

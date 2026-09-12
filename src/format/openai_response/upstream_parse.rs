@@ -2,15 +2,11 @@
 //! or a complete JSON body into IR events.
 
 use crate::{
-    format::{PayloadError, UpstreamEventParser, reject_upstream_error},
+    format::{self, PayloadError, UpstreamEventParser},
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
 use serde_json::Value;
-
-/// Placeholder for a missing JSON object field, so the read-only walks below
-/// borrow instead of deep-cloning the subtrees they inspect.
-const MISSING: Value = Value::Null;
 
 /// Parses upstream Responses payloads — SSE events or a full JSON body — into
 /// IR events.
@@ -19,13 +15,23 @@ pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
     is_started: bool,
 
-    /// Whether live deltas already delivered the message text, marking done
-    /// and terminal items as exhausted sources for it.
+    /// Whether live delta events already delivered the message text; live
+    /// delivery exhausts every fallback source for the kind.
     is_text_delivered: bool,
 
-    /// Whether live deltas already delivered the reasoning text, marking
-    /// done and terminal items as exhausted sources for it.
+    /// Output indices whose message text a fallback source — a streamed
+    /// `output_item.done` item or a terminal output-array item — already
+    /// delivered, so the same item never delivers twice across sources while
+    /// distinct items each deliver exactly once.
+    recovered_text_indices: Vec<usize>,
+
+    /// Whether live delta events already delivered the reasoning text; live
+    /// delivery exhausts every fallback source for the kind.
     is_reasoning_delivered: bool,
+
+    /// Output indices whose reasoning text a fallback source already
+    /// delivered; same contract as `recovered_text_indices`.
+    recovered_reasoning_indices: Vec<usize>,
 
     /// Whether a live event already delivered a tool call, marking the
     /// terminal output array as an exhausted source for them.
@@ -66,7 +72,7 @@ impl UpstreamParser {
         // recognized event type or not; without this check such a frame
         // would fall through to the unknown-type arm and parse as an empty
         // success (README §6.7).
-        reject_upstream_error(&value)?;
+        format::reject_upstream_error(&value)?;
 
         let event_type = value
             .get("type")
@@ -150,18 +156,22 @@ impl UpstreamParser {
             }
 
             "response.completed" | "response.incomplete" => {
-                let response = value.get("response").unwrap_or(&MISSING);
+                let response = value.get("response").unwrap_or(&format::MISSING);
 
                 let mut events = Vec::new();
 
                 // A third-party `openai_compatible` upstream may carry items
                 // only in the terminal response object; when no live event
                 // delivered a kind, recover it from the output array exactly
-                // as from a JSON response body. The call recovery decision is
-                // snapshotted before the walk: the walk must consult the
-                // pre-walk state for every item, so a terminal output array
-                // carrying several function_call items delivers each of them
-                // instead of only the first.
+                // as from a JSON response body. Text and reasoning recovery
+                // is decided per item inside `ingest_output_item` against
+                // the live-delivery flags and the per-index recovery
+                // records, so several message or reasoning items of the
+                // array each deliver exactly once. The call recovery
+                // decision is snapshotted before the walk: the walk must
+                // consult the pre-walk state for every item, so a terminal
+                // output array carrying several function_call items
+                // delivers each of them instead of only the first.
                 let is_call_recoverable = !self.is_call_delivered;
 
                 // Whether the walk actually recovered calls: the delivery
@@ -236,7 +246,11 @@ impl UpstreamParser {
     /// sources consulted only when no live event delivered that kind of item
     /// — third-party `openai_compatible` upstreams may stream complete items
     /// without deltas, and their items must still reach the client exactly
-    /// once.
+    /// once. Fallback recovery of text and reasoning is keyed by the item's
+    /// output index: a recovery delivery for one index never silences
+    /// another item of the same kind, and one index is never delivered
+    /// twice, so the terminal array's copy of an item already delivered as a
+    /// streamed done event is recognized by the shared index.
     fn ingest_output_item(
         &mut self,
         item: &Value,
@@ -248,8 +262,8 @@ impl UpstreamParser {
                 let should_extract = match origin {
                     OutputItemOrigin::Json(_) => true,
 
-                    OutputItemOrigin::StreamDone(_) | OutputItemOrigin::Terminal(_) => {
-                        !self.is_text_delivered
+                    OutputItemOrigin::StreamDone(index) | OutputItemOrigin::Terminal(index) => {
+                        self.can_recover_text(index)
                     }
                 };
 
@@ -268,11 +282,15 @@ impl UpstreamParser {
                         };
 
                         if let Some(text) = text {
-                            // The delivery flag is set only when a delta was
-                            // actually pushed, so a text-less item does not
-                            // exhaust the source for a later item that
-                            // carries the text.
-                            self.is_text_delivered = true;
+                            // The recovery record is written only when a text
+                            // part was actually pushed, so a text-less item
+                            // does not exhaust its output index for a later
+                            // item that carries the text.
+                            if let OutputItemOrigin::StreamDone(index)
+                            | OutputItemOrigin::Terminal(index) = origin
+                            {
+                                self.record_text_recovery(index);
+                            }
 
                             events.push(IrEvent::TextDelta(text.to_string()));
                         }
@@ -286,8 +304,8 @@ impl UpstreamParser {
                 let should_extract = match origin {
                     OutputItemOrigin::Json(_) => true,
 
-                    OutputItemOrigin::StreamDone(_) | OutputItemOrigin::Terminal(_) => {
-                        !self.is_reasoning_delivered
+                    OutputItemOrigin::StreamDone(index) | OutputItemOrigin::Terminal(index) => {
+                        self.can_recover_reasoning(index)
                     }
                 };
 
@@ -297,8 +315,13 @@ impl UpstreamParser {
                     for part in summary {
                         if let Some(text) = part.get("text").and_then(Value::as_str) {
                             // Same per-extraction rule as the message arm: a
-                            // summary-less item does not exhaust the source.
-                            self.is_reasoning_delivered = true;
+                            // summary-less item does not exhaust its output
+                            // index.
+                            if let OutputItemOrigin::StreamDone(index)
+                            | OutputItemOrigin::Terminal(index) = origin
+                            {
+                                self.record_reasoning_recovery(index);
+                            }
 
                             events.push(IrEvent::ReasoningDelta(text.to_string()));
                         }
@@ -317,9 +340,9 @@ impl UpstreamParser {
                     OutputItemOrigin::Json(index) => {
                         self.is_call_delivered = true;
 
-                        let call_id = string_field(item, "call_id");
-                        let name = string_field(item, "name");
-                        let arguments = string_field(item, "arguments");
+                        let call_id = format::string_field(item, "call_id");
+                        let name = format::string_field(item, "name");
+                        let arguments = format::string_field(item, "arguments");
 
                         events.push(IrEvent::ToolCallDelta {
                             index,
@@ -369,13 +392,43 @@ impl UpstreamParser {
         }
     }
 
+    /// Whether a fallback source may recover message text for the output
+    /// item at `index`: live deltas exhaust every fallback source for the
+    /// kind, and a fallback delivery for `index` exhausts further sources
+    /// for the same item.
+    fn can_recover_text(&self, index: usize) -> bool {
+        !self.is_text_delivered && !self.recovered_text_indices.contains(&index)
+    }
+
+    /// Records that a fallback source recovered message text for `index`;
+    /// repeats for further text parts of the same item are ignored.
+    fn record_text_recovery(&mut self, index: usize) {
+        if !self.recovered_text_indices.contains(&index) {
+            self.recovered_text_indices.push(index);
+        }
+    }
+
+    /// Whether a fallback source may recover reasoning text for the output
+    /// item at `index`; same contract as [`Self::can_recover_text`].
+    fn can_recover_reasoning(&self, index: usize) -> bool {
+        !self.is_reasoning_delivered && !self.recovered_reasoning_indices.contains(&index)
+    }
+
+    /// Records that a fallback source recovered reasoning text for `index`;
+    /// same contract as [`Self::record_text_recovery`].
+    fn record_reasoning_recovery(&mut self, index: usize) {
+        if !self.recovered_reasoning_indices.contains(&index) {
+            self.recovered_reasoning_indices.push(index);
+        }
+    }
+
     /// Emits the opening delta for a function call item revealed by
     /// `output_item.added`.
     fn open_function_call(&self, item: &Value, output_index: usize) -> IrEvent {
         IrEvent::ToolCallDelta {
             index: output_index,
-            call_id: Some(string_field(item, "call_id")),
-            name: Some(string_field(item, "name")),
+            call_id: Some(format::string_field(item, "call_id")),
+            name: Some(format::string_field(item, "name")),
             arguments_delta: String::new(),
         }
     }
@@ -385,9 +438,9 @@ impl UpstreamParser {
     fn complete_function_call(&self, item: &Value, index: usize) -> IrEvent {
         IrEvent::ToolCallDone {
             index,
-            call_id: string_field(item, "call_id"),
-            name: string_field(item, "name"),
-            arguments: string_field(item, "arguments"),
+            call_id: format::string_field(item, "call_id"),
+            name: format::string_field(item, "name"),
+            arguments: format::string_field(item, "arguments"),
             thought_signature: item
                 .get("thought_signature")
                 .and_then(Value::as_str)
@@ -439,8 +492,7 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for malformed JSON and upstream failure events.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
-        let value: Value = serde_json::from_str(&frame.data)
-            .map_err(|_| PayloadError::new("malformed JSON in upstream SSE frame"))?;
+        let value = format::parse_frame_json(frame)?;
 
         self.ingest_event(value)
     }
@@ -455,7 +507,7 @@ impl UpstreamEventParser for UpstreamParser {
         // A 2xx body carrying a top-level error object is an upstream
         // failure (README §6.7), not an empty success; the failed-status
         // fallback below still covers a failure without an error object.
-        reject_upstream_error(&value)?;
+        format::reject_upstream_error(&value)?;
 
         let mut events = self.message_start_events(&value);
 
@@ -512,16 +564,6 @@ fn event_output_index(value: &Value) -> usize {
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or_default() as usize
-}
-
-/// Reads a string field of an upstream JSON object, defaulting to the empty
-/// string.
-fn string_field(value: &Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
 }
 
 /// Finish reason for a response object already known not to be failed.
@@ -740,5 +782,184 @@ mod tests {
             output_tokens: 4,
             ..IrUsage::default()
         })));
+    }
+
+    /// Builds an `output_item.done` frame for a complete message item.
+    fn message_done_frame(output_index: usize, text: &str) -> SseFrame {
+        SseFrame {
+            event: None,
+            data: serde_json::json!({
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text}],
+                },
+            })
+            .to_string(),
+        }
+    }
+
+    /// Builds a terminal `response.completed` frame carrying `output`.
+    fn completed_frame(output: Value) -> SseFrame {
+        SseFrame {
+            event: None,
+            data: serde_json::json!({
+                "type": "response.completed",
+                "response": {"status": "completed", "output": output},
+            })
+            .to_string(),
+        }
+    }
+
+    /// The exactly-once recovery contract (README §6.3): a terminal output
+    /// array carrying several `message` items — the shape of an upstream
+    /// that streams no live deltas — delivers every item's text exactly
+    /// once, not only the first item's.
+    #[test]
+    fn terminal_output_array_delivers_every_message_item_once() {
+        let mut parser = UpstreamParser::new();
+
+        let output = serde_json::json!([
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "first"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "second"}],
+            },
+        ]);
+
+        let events = parser
+            .ingest_frame(&completed_frame(output))
+            .expect("a completed frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::TextDelta("first".to_string()),
+                IrEvent::TextDelta("second".to_string()),
+                IrEvent::Finish(IrFinishReason::Stop),
+            ],
+        );
+    }
+
+    /// Reasoning recovery is independent per index: a terminal array of
+    /// reasoning + message + reasoning delivers both reasonings and the
+    /// message text exactly once.
+    #[test]
+    fn terminal_output_array_delivers_interleaved_reasoning_items() {
+        let mut parser = UpstreamParser::new();
+
+        let output = serde_json::json!([
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "think one"}]},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "answer"}],
+            },
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "think two"}]},
+        ]);
+
+        let events = parser
+            .ingest_frame(&completed_frame(output))
+            .expect("a completed frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::ReasoningDelta("think one".to_string()),
+                IrEvent::TextDelta("answer".to_string()),
+                IrEvent::ReasoningDelta("think two".to_string()),
+                IrEvent::Finish(IrFinishReason::Stop),
+            ],
+        );
+    }
+
+    /// Successive streamed `output_item.done` message items — the no-delta
+    /// streaming shape — each deliver their text exactly once, and the
+    /// terminal array's copy of the same items (shared output indices) is
+    /// not re-delivered.
+    #[test]
+    fn streamed_done_items_deliver_each_message_item_once() {
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .ingest_frame(&message_done_frame(0, "first"))
+            .expect("a done frame parses");
+
+        assert_eq!(events, vec![IrEvent::TextDelta("first".to_string())]);
+
+        let events = parser
+            .ingest_frame(&message_done_frame(1, "second"))
+            .expect("a done frame parses");
+
+        assert_eq!(events, vec![IrEvent::TextDelta("second".to_string())]);
+
+        let output = serde_json::json!([
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "first"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "second"}],
+            },
+        ]);
+
+        let events = parser
+            .ingest_frame(&completed_frame(output))
+            .expect("a completed frame parses");
+
+        assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::Stop)]);
+    }
+
+    /// Live deltas keep precedence: text the deltas already delivered is
+    /// not re-delivered by the streamed done item or by any terminal-array
+    /// item of the same kind (README §6.3: fallbacks deliver only what live
+    /// deltas did not).
+    #[test]
+    fn live_deltas_silence_fallback_recovery() {
+        let mut parser = UpstreamParser::new();
+
+        let delta_frame = SseFrame {
+            event: None,
+            data: serde_json::json!({
+                "type": "response.output_text.delta",
+                "delta": "live",
+            })
+            .to_string(),
+        };
+
+        let events = parser.ingest_frame(&delta_frame).expect("a delta parses");
+
+        assert_eq!(events, vec![IrEvent::TextDelta("live".to_string())]);
+
+        let events = parser
+            .ingest_frame(&message_done_frame(0, "live"))
+            .expect("a done frame parses");
+
+        assert!(events.is_empty());
+
+        let output = serde_json::json!([
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "live"}],
+            },
+        ]);
+
+        let events = parser
+            .ingest_frame(&completed_frame(output))
+            .expect("a completed frame parses");
+
+        assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::Stop)]);
     }
 }

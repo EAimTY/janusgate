@@ -2,7 +2,7 @@
 //! request into the `openai_chat_completion` upstream payload.
 
 use crate::{
-    format::json_insert,
+    format,
     ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
 };
 use serde_json::Value;
@@ -70,7 +70,7 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
                             });
 
                             if let Some(signature) = thought_signature {
-                                json_insert(
+                                format::json_insert(
                                     &mut tool_call,
                                     "thought_signature",
                                     Value::String(signature.clone()),
@@ -103,7 +103,7 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
                 let mut message_json = serde_json::json!({"role": "assistant", "content": content});
 
                 if !tool_calls.is_empty() {
-                    json_insert(&mut message_json, "tool_calls", Value::Array(tool_calls));
+                    format::json_insert(&mut message_json, "tool_calls", Value::Array(tool_calls));
                 }
 
                 messages.push(message_json);
@@ -130,7 +130,7 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
     });
 
     if is_streaming {
-        json_insert(
+        format::json_insert(
             &mut body,
             "stream_options",
             serde_json::json!({"include_usage": true}),
@@ -153,7 +153,7 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
             })
             .collect();
 
-        json_insert(&mut body, "tools", Value::Array(tools));
+        format::json_insert(&mut body, "tools", Value::Array(tools));
     }
 
     if let Some(tool_choice) = &ir.tool_choice {
@@ -166,19 +166,19 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
             }
         };
 
-        json_insert(&mut body, "tool_choice", choice);
+        format::json_insert(&mut body, "tool_choice", choice);
     }
 
     if let Some(temperature) = ir.temperature {
-        json_insert(&mut body, "temperature", Value::from(temperature));
+        format::json_insert(&mut body, "temperature", Value::from(temperature));
     }
 
     if let Some(top_p) = ir.top_p {
-        json_insert(&mut body, "top_p", Value::from(top_p));
+        format::json_insert(&mut body, "top_p", Value::from(top_p));
     }
 
     if let Some(max_output_tokens) = ir.max_output_tokens {
-        json_insert(
+        format::json_insert(
             &mut body,
             "max_completion_tokens",
             Value::from(max_output_tokens),
@@ -196,11 +196,11 @@ pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
             }
         };
 
-        json_insert(&mut body, "response_format", rendered_format);
+        format::json_insert(&mut body, "response_format", rendered_format);
     }
 
     if let Some(effort) = ir.reasoning_effort {
-        json_insert(
+        format::json_insert(
             &mut body,
             "reasoning_effort",
             Value::String(effort.to_openai().to_string()),

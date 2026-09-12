@@ -2,13 +2,14 @@
 
 mod error;
 
+use self::error::Error;
 use crate::{
     context::Context,
     format::{ClientFormat, ClientSseRenderer, openai_chat_completion, openai_response},
     gateway::{self, IrEventStream},
     ir::{Aggregator, IrAggregation},
     provider::storage,
-    security::constant_time_eq,
+    security,
 };
 use axum::{
     Router,
@@ -19,7 +20,6 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
-use error::{Error, json_response, log_error};
 use log::debug;
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 
@@ -54,7 +54,7 @@ async fn authenticate(request: Request, next: Next) -> Response {
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(bearer_token)
-        .is_some_and(|key| constant_time_eq(key, &crate::CONFIG.api.key));
+        .is_some_and(|key| security::constant_time_eq(key, &crate::CONFIG.api.key));
 
     if !is_authorized {
         debug!("rejected an unauthorized API request");
@@ -129,7 +129,7 @@ where
         Err(error) => {
             let error = Error::from(error);
 
-            log_error("completion request", &error);
+            error::log_error("completion request", &error);
 
             return Err(error);
         }
@@ -140,7 +140,7 @@ where
         Err(error) => {
             let error = Error::from(error);
 
-            log_error(
+            error::log_error(
                 &format!("completion for model `{}`", parsed.ir.model),
                 &error,
             );
@@ -180,7 +180,7 @@ where
     let outcome = outcome.map_err(Error::from);
 
     if let Err(error) = &outcome {
-        log_error(&operation, error);
+        error::log_error(&operation, error);
     }
 
     outcome
@@ -202,13 +202,13 @@ async fn models(State(context): State<Context>) -> Response {
                 })
                 .collect::<Vec<_>>();
 
-            json_response(200, serde_json::json!({"object": "list", "data": data}))
+            error::json_response(200, serde_json::json!({"object": "list", "data": data}))
         }
 
         Err(error) => {
             let error = Error::from(error);
 
-            log_error("model listing", &error);
+            error::log_error("model listing", &error);
 
             error.into_response()
         }
@@ -280,5 +280,8 @@ async fn aggregated_response(
         }
     }
 
-    Ok(json_response(200, render_json_fn(&aggregator.finish())))
+    Ok(error::json_response(
+        200,
+        render_json_fn(&aggregator.finish()),
+    ))
 }

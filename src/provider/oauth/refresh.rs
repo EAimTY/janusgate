@@ -2,11 +2,7 @@
 //! refresh lease, the refresh grant, and the lease-conditioned persist, so
 //! concurrent requests never overwrite newer credentials (README §3).
 
-use super::{
-    Error,
-    flow::refresh_tokens,
-    token::{jwt_claim, token_expiry_from},
-};
+use super::{Error, flow, token};
 use crate::{
     database::{Database, Error as DatabaseError, Transaction},
     provider::{Credentials, OAuthProviderType, Provider, storage},
@@ -305,11 +301,11 @@ async fn refresh_and_build_credentials(
 ) -> Result<(Credentials, i64), Error> {
     let refreshed = match &provider.credentials {
         Credentials::OpenAiOauth { refresh_token, .. } => {
-            refresh_tokens(http, OAuthProviderType::OpenAiOauth, refresh_token).await?
+            flow::refresh_tokens(http, OAuthProviderType::OpenAiOauth, refresh_token).await?
         }
 
         Credentials::AntigravityOauth { refresh_token, .. } => {
-            refresh_tokens(http, OAuthProviderType::AntigravityOauth, refresh_token).await?
+            flow::refresh_tokens(http, OAuthProviderType::AntigravityOauth, refresh_token).await?
         }
 
         Credentials::ApiKey(_) => {
@@ -322,7 +318,7 @@ async fn refresh_and_build_credentials(
     let access_token = refreshed.access_token.clone();
 
     // Computed before `access_token` is moved into the credentials.
-    let expires_at = token_expiry_from(refreshed.expires_in, Some(&access_token))?;
+    let expires_at = token::token_expiry_from(refreshed.expires_in, Some(&access_token))?;
 
     let credentials = match &provider.credentials {
         Credentials::OpenAiOauth {
@@ -334,7 +330,7 @@ async fn refresh_and_build_credentials(
                 .id_token
                 .as_deref()
                 .and_then(|id_token| {
-                    jwt_claim(
+                    token::jwt_claim(
                         id_token,
                         &["https://api.openai.com/auth", "chatgpt_account_id"],
                     )

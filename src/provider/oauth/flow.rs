@@ -1,11 +1,7 @@
 //! The OAuth protocol: authorization begin, authorization code exchange, and
 //! the refresh grant, over the OpenAI Codex and Google Antigravity clients.
 
-use super::{
-    Error,
-    project::resolve_project_id,
-    token::{jwt_claim, token_expiry_from},
-};
+use super::{Error, project, token};
 use crate::{
     provider::{Credentials, OAuthProviderType, endpoints, http_body, http_body::ExchangeFailure},
     unix_time,
@@ -179,7 +175,7 @@ pub(crate) async fn exchange_code(
                     detail: "token exchange response lacks an id token".to_string(),
                 })?;
 
-            let account_id = jwt_claim(
+            let account_id = token::jwt_claim(
                 &id_token,
                 &["https://api.openai.com/auth", "chatgpt_account_id"],
             )
@@ -231,7 +227,7 @@ pub(crate) async fn exchange_code(
                         detail: "token exchange response lacks a refresh token".to_string(),
                     })?;
 
-            let project_id = resolve_project_id(http, &access_token).await?;
+            let project_id = project::resolve_project_id(http, &access_token).await?;
 
             let credentials = Credentials::AntigravityOauth {
                 access_token,
@@ -243,7 +239,7 @@ pub(crate) async fn exchange_code(
         }
     };
 
-    let expires_at = token_expiry_from(
+    let expires_at = token::token_expiry_from(
         raw_response.expires_in,
         raw_response.access_token.as_deref(),
     )?;

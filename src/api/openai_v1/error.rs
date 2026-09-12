@@ -125,27 +125,24 @@ impl Error {
                     code: Some("upstream_error".to_string()),
                 },
 
-                GatewayError::OAuth(oauth_error) => match oauth_error {
-                    oauth::Error::NotFound { .. } => Row {
-                        status: 404,
-                        error_type: "invalid_request_error",
-                        param: None,
-                        code: Some("not_found".to_string()),
-                    },
-
-                    _ => Row {
-                        status: UPSTREAM_UNAVAILABLE_STATUS,
-                        error_type: "api_error",
-                        param: None,
-                        code: Some("upstream_error".to_string()),
-                    },
-                },
-
-                GatewayError::Storage(_) | GatewayError::Internal { .. } => Row {
+                // A provider vanishing between routing resolution and the
+                // lease-guarded token refresh is a gateway-side concurrency
+                // condition with no row of its own in README §6.7, so it
+                // renders like any other internal failure.
+                GatewayError::OAuth(oauth::Error::NotFound { .. })
+                | GatewayError::Storage(_)
+                | GatewayError::Internal { .. } => Row {
                     status: 500,
                     error_type: "api_error",
                     param: None,
                     code: Some("internal".to_string()),
+                },
+
+                GatewayError::OAuth(_) => Row {
+                    status: UPSTREAM_UNAVAILABLE_STATUS,
+                    error_type: "api_error",
+                    param: None,
+                    code: Some("upstream_error".to_string()),
                 },
             },
 
@@ -167,9 +164,7 @@ impl Error {
 
             Self::Gateway(error) => matches!(
                 error,
-                GatewayError::InvalidRequest(_)
-                    | GatewayError::ModelNotFound { .. }
-                    | GatewayError::OAuth(oauth::Error::NotFound { .. })
+                GatewayError::InvalidRequest(_) | GatewayError::ModelNotFound { .. }
             ),
 
             _ => false,
@@ -329,12 +324,12 @@ mod tests {
                 Error::from(GatewayError::OAuth(oauth::Error::NotFound {
                     message: "provider vanished during token refresh".to_string(),
                 })),
-                404,
+                500,
                 serde_json::json!({
                     "message": "provider vanished during token refresh",
-                    "type": "invalid_request_error",
+                    "type": "api_error",
                     "param": serde_json::Value::Null,
-                    "code": "not_found",
+                    "code": "internal",
                 }),
             ),
             (
@@ -395,9 +390,6 @@ mod tests {
             Error::from(GatewayError::ModelNotFound {
                 model: "gpt-4o".to_string(),
             }),
-            Error::from(GatewayError::OAuth(oauth::Error::NotFound {
-                message: "vanished".to_string(),
-            })),
         ];
 
         for error in client_faults {
@@ -415,6 +407,9 @@ mod tests {
             Error::from(GatewayError::OAuth(oauth::Error::Rejected {
                 status: 429,
                 detail: "rate limited".to_string(),
+            })),
+            Error::from(GatewayError::OAuth(oauth::Error::NotFound {
+                message: "provider vanished during token refresh".to_string(),
             })),
             Error::from(GatewayError::Internal {
                 message: "storage drift".to_string(),

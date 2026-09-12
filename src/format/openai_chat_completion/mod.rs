@@ -3,6 +3,7 @@
 //! Serves the outward `POST /chat/completions` endpoint and speaks the
 //! `openai_chat_completion` upstream protocol.
 
+use self::client_render::SseRenderer;
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest},
     ir::{InvalidRequest, IrAggregation},
@@ -14,11 +15,7 @@ mod request_parse;
 mod upstream_parse;
 mod upstream_render;
 
-pub(crate) use self::{
-    client_render::{SseRenderer, render_json_response},
-    upstream_parse::UpstreamParser,
-    upstream_render::render_request,
-};
+pub(crate) use self::{upstream_parse::UpstreamParser, upstream_render::render_request};
 
 /// Marker of the outward Chat Completions client format.
 #[derive(Debug)]
@@ -37,6 +34,6 @@ impl ClientFormat for Format {
     }
 
     fn render_json_response(public_name: &str, aggregation: &IrAggregation) -> Value {
-        render_json_response(public_name, aggregation)
+        client_render::render_json_response(public_name, aggregation)
     }
 }

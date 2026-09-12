@@ -2,11 +2,7 @@
 //! `POST /responses` body deserialized into the IR request.
 
 use crate::{
-    format::{
-        ParsedRequest, allowed_fields, arguments_as_object, parse_tool_choice_mode,
-        reject_non_function_type, reject_tool_choice_without_tools, reject_unknown_fields,
-        validate_content_part_fields, validate_sampling_ranges,
-    },
+    format::{self, ParsedRequest},
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningEffort, IrRequest, IrResponseFormat,
         IrRole, IrTool, IrToolChoice,
@@ -19,11 +15,15 @@ use serde_json::Value;
 /// fields are rejected because internally tagged serde enums cannot enforce
 /// this.
 ///
-/// `message` items accept and ignore `id` and `phase`: codex replays parsed
-/// output items verbatim each turn, and the gateway itself stamps `id` values
-/// onto rendered output items, so rejecting them would break history replay.
+/// `message` items accept and ignore `id`, `phase`, and `status`: codex
+/// replays parsed output items verbatim each turn, and the gateway itself
+/// stamps `id` and `status` onto its rendered assistant `message` items, so
+/// rejecting them would break history replay.
 const INPUT_ITEM_FIELDS: &[(&str, &[&str])] = &[
-    ("message", &["type", "id", "role", "content", "phase"]),
+    (
+        "message",
+        &["type", "id", "role", "content", "phase", "status"],
+    ),
     (
         "function_call",
         &[
@@ -314,7 +314,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         ));
     }
 
-    validate_sampling_ranges(request.temperature, request.top_p)?;
+    format::validate_sampling_ranges(request.temperature, request.top_p)?;
 
     let mut instruction_parts: Vec<String> = Vec::new();
     let mut messages: Vec<IrMessage> = Vec::new();
@@ -359,7 +359,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                 arguments,
                 thought_signature,
             } => {
-                arguments_as_object(&arguments)?;
+                format::arguments_as_object(&arguments)?;
 
                 messages.push(IrMessage {
                     role: IrRole::Assistant,
@@ -392,7 +392,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     if let Some(tools_in) = &request.tools {
         for tool in tools_in {
-            reject_non_function_type(&tool.tool_type, "tool")?;
+            format::reject_non_function_type(&tool.tool_type, "tool")?;
 
             tools.push(IrTool {
                 name: tool.name.clone(),
@@ -405,13 +405,13 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     let tool_choice = match &request.tool_choice {
         None => None,
         Some(choice) => {
-            reject_tool_choice_without_tools(tools.is_empty())?;
+            format::reject_tool_choice_without_tools(tools.is_empty())?;
 
             Some(match choice {
-                ToolChoiceIn::Mode(mode) => parse_tool_choice_mode(mode)?,
+                ToolChoiceIn::Mode(mode) => format::parse_tool_choice_mode(mode)?,
 
                 ToolChoiceIn::Function { tool_type, name } => {
-                    reject_non_function_type(tool_type, "tool_choice")?;
+                    format::reject_non_function_type(tool_type, "tool_choice")?;
 
                     IrToolChoice::Function { name: name.clone() }
                 }
@@ -577,20 +577,71 @@ fn validate_input_item_fields(input: Option<&Value>) -> Result<(), InvalidReques
             continue;
         }
 
-        let Some(permitted_fields) = allowed_fields(INPUT_ITEM_FIELDS, item_type) else {
+        let Some(permitted_fields) = format::allowed_fields(INPUT_ITEM_FIELDS, item_type) else {
             continue;
         };
 
-        reject_unknown_fields(
+        format::reject_unknown_fields(
             object,
             permitted_fields,
             &format!("`{item_type}` input item"),
         )?;
 
         if let Some(parts) = object.get("content").and_then(Value::as_array) {
-            validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
+            format::validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parses one request body given as JSON.
+    fn parse(body: Value) -> Result<ParsedRequest, InvalidRequest> {
+        parse_request(body.to_string().as_bytes())
+    }
+
+    /// A `message` input item carrying the gateway-rendered `id` and `status`
+    /// fields parses: the gateway's own assistant message output items carry
+    /// both, so replaying a response verbatim as the next request's input —
+    /// the codex replay loop — must parse (README §6.6 history-replay
+    /// carve-outs).
+    #[test]
+    fn message_input_item_with_status_parses() {
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "hello",
+                            "annotations": [],
+                            "logprobs": [],
+                        },
+                    ],
+                },
+            ],
+        }))
+        .expect("a replayed assistant message output item must parse");
+
+        assert_eq!(parsed.ir.messages.len(), 2);
+
+        assert_eq!(parsed.ir.messages[1].role, IrRole::Assistant);
+
+        assert_eq!(
+            parsed.ir.messages[1].parts,
+            vec![IrPart::Text {
+                text: "hello".to_string(),
+            }],
+        );
+    }
 }

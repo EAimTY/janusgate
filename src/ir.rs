@@ -8,9 +8,10 @@
 /// unsupported value, or names an unknown field.
 ///
 /// One type shared by every request validator — the format codecs, the IR
-/// parsing helpers, and the management identifier validation — so each HTTP
-/// surface renders it in its own contract. It never carries a status or wire
-/// code: those belong to the surfaces.
+/// parsing helpers, and the management surface's thinking-levels validation
+/// through [`parse_thinking_levels`] — so each HTTP surface renders it in its
+/// own contract. It never carries a status or wire code: those belong to the
+/// surfaces.
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 pub(crate) struct InvalidRequest {

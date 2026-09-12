@@ -2,11 +2,10 @@
 //! Responses SSE events or an aggregated non-streaming body.
 
 use crate::{
-    format::{ClientSseRenderer, json_insert},
-    ids::new_uuid,
+    format::{self, ClientSseRenderer},
+    ids,
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
-    sse::format_frame,
-    unix_time,
+    sse, unix_time,
 };
 use serde_json::Value;
 
@@ -36,10 +35,10 @@ pub(crate) struct SseRenderer {
     message: Option<(String, usize, String)>,
 
     /// Open function call items keyed by IR tool call index.
-    calls: Vec<(usize, OpenOutputItem)>,
+    calls: Vec<(usize, OutputItem)>,
 
     /// Completed output items for the final response object.
-    completed_items: Vec<OpenOutputItem>,
+    completed_items: Vec<OutputItem>,
 
     /// Next output index to assign.
     next_output_index: usize,
@@ -54,7 +53,7 @@ pub(crate) struct SseRenderer {
 
 /// One output item tracked by the client-side SSE renderer.
 #[derive(Debug)]
-struct OpenOutputItem {
+struct OutputItem {
     /// Position of the item within the output array.
     output_index: usize,
 
@@ -67,7 +66,7 @@ impl SseRenderer {
     pub(crate) fn new(model: String) -> Self {
         Self {
             sequence: 0,
-            id: format!("resp_{}", new_uuid()),
+            id: format!("resp_{}", ids::new_uuid()),
             model,
             created_at: unix_time::unix_now(),
             is_created: false,
@@ -119,7 +118,7 @@ impl SseRenderer {
                 frames.push(self.event_frame(event_name, payload));
             }
 
-            self.completed_items.push(OpenOutputItem {
+            self.completed_items.push(OutputItem {
                 output_index,
                 item: serde_json::json!({
                     "id": item_id,
@@ -176,7 +175,7 @@ impl SseRenderer {
                 frames.push(self.event_frame(event_name, payload));
             }
 
-            self.completed_items.push(OpenOutputItem {
+            self.completed_items.push(OutputItem {
                 output_index,
                 item: completed_item,
             });
@@ -214,13 +213,13 @@ impl SseRenderer {
     /// `ResponseStreamEvent` union and openai/codex's serde type-tagged enum —
     /// discriminate events on the JSON payload, not the `event:` line.
     fn event_frame(&mut self, event_name: &str, mut payload: Value) -> String {
-        json_insert(&mut payload, "type", Value::String(event_name.to_string()));
+        format::json_insert(&mut payload, "type", Value::String(event_name.to_string()));
 
-        json_insert(&mut payload, "sequence_number", Value::from(self.sequence));
+        format::json_insert(&mut payload, "sequence_number", Value::from(self.sequence));
 
         self.sequence += 1;
 
-        format_frame(Some(event_name), &payload.to_string())
+        sse::format_frame(Some(event_name), &payload.to_string())
     }
 }
 
@@ -256,7 +255,7 @@ impl ClientSseRenderer for SseRenderer {
                     }
 
                     None => {
-                        let item_id = format!("rs_{}", new_uuid());
+                        let item_id = format!("rs_{}", ids::new_uuid());
                         let output_index = self.next_output_index;
 
                         self.next_output_index += 1;
@@ -308,7 +307,7 @@ impl ClientSseRenderer for SseRenderer {
                     }
 
                     None => {
-                        let item_id = format!("msg_{}", new_uuid());
+                        let item_id = format!("msg_{}", ids::new_uuid());
                         let output_index = self.next_output_index;
 
                         self.next_output_index += 1;
@@ -393,7 +392,7 @@ impl ClientSseRenderer for SseRenderer {
                     }
 
                     None => {
-                        let item_id = format!("fc_{}", new_uuid());
+                        let item_id = format!("fc_{}", ids::new_uuid());
                         let output_index = self.next_output_index;
 
                         self.next_output_index += 1;
@@ -407,7 +406,11 @@ impl ClientSseRenderer for SseRenderer {
                         });
 
                         if let Some(call_id) = call_id {
-                            json_insert(&mut item, "call_id", Value::String(call_id.clone()));
+                            format::json_insert(
+                                &mut item,
+                                "call_id",
+                                Value::String(call_id.clone()),
+                            );
                         }
 
                         frames.push(self.event_frame(
@@ -415,8 +418,7 @@ impl ClientSseRenderer for SseRenderer {
                             serde_json::json!({"output_index": output_index, "item": item.clone()}),
                         ));
 
-                        self.calls
-                            .push((*index, OpenOutputItem { output_index, item }));
+                        self.calls.push((*index, OutputItem { output_index, item }));
 
                         (item_id, output_index)
                     }
@@ -460,7 +462,7 @@ impl ClientSseRenderer for SseRenderer {
                         // here exactly as a live delta would have opened it;
                         // dropping it would lose the call only on the
                         // streaming path, while aggregation keeps it.
-                        let item_id = format!("fc_{}", new_uuid());
+                        let item_id = format!("fc_{}", ids::new_uuid());
                         let output_index = self.next_output_index;
 
                         self.next_output_index += 1;
@@ -481,7 +483,7 @@ impl ClientSseRenderer for SseRenderer {
                         )];
 
                         (
-                            OpenOutputItem {
+                            OutputItem {
                                 output_index,
                                 item: serde_json::json!({
                                     "id": item_id,
@@ -493,21 +495,21 @@ impl ClientSseRenderer for SseRenderer {
                     }
                 };
 
-                json_insert(
+                format::json_insert(
                     &mut open.item,
                     "status",
                     Value::String("completed".to_string()),
                 );
-                json_insert(&mut open.item, "call_id", Value::String(call_id.clone()));
-                json_insert(&mut open.item, "name", Value::String(name.clone()));
-                json_insert(
+                format::json_insert(&mut open.item, "call_id", Value::String(call_id.clone()));
+                format::json_insert(&mut open.item, "name", Value::String(name.clone()));
+                format::json_insert(
                     &mut open.item,
                     "arguments",
                     Value::String(arguments.clone()),
                 );
 
                 if let Some(signature) = thought_signature {
-                    json_insert(
+                    format::json_insert(
                         &mut open.item,
                         "thought_signature",
                         Value::String(signature.clone()),
@@ -536,7 +538,7 @@ impl ClientSseRenderer for SseRenderer {
                     serde_json::json!({"output_index": output_index, "item": open.item.clone()}),
                 ));
 
-                self.completed_items.push(OpenOutputItem {
+                self.completed_items.push(OutputItem {
                     output_index,
                     item: open.item,
                 });
@@ -587,10 +589,10 @@ impl ClientSseRenderer for SseRenderer {
                     Value::Array(output),
                 );
 
-                json_insert(&mut shell, "usage", usage_json(usage));
+                format::json_insert(&mut shell, "usage", usage_json(usage));
 
                 if let Some(reason) = incomplete_reason {
-                    json_insert(
+                    format::json_insert(
                         &mut shell,
                         "incomplete_details",
                         serde_json::json!({"reason": reason}),
@@ -623,7 +625,7 @@ impl ClientSseRenderer for SseRenderer {
         // id/status/error subset.
         let mut shell = self.response_shell("failed", Value::Array(Vec::new()));
 
-        json_insert(&mut shell, "error", error_payload);
+        format::json_insert(&mut shell, "error", error_payload);
 
         self.event_frame(
             "response.failed",
@@ -640,7 +642,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 
     if !aggregation.reasoning.is_empty() {
         output.push(serde_json::json!({
-            "id": format!("rs_{}", new_uuid()),
+            "id": format!("rs_{}", ids::new_uuid()),
             "type": "reasoning",
             "summary": [{"type": "summary_text", "text": aggregation.reasoning}],
         }));
@@ -648,7 +650,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 
     if !aggregation.text.is_empty() {
         output.push(serde_json::json!({
-            "id": format!("msg_{}", new_uuid()),
+            "id": format!("msg_{}", ids::new_uuid()),
             "type": "message",
             "role": "assistant",
             "status": "completed",
@@ -663,7 +665,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 
     for tool_call in &aggregation.tool_calls {
         let mut item = serde_json::json!({
-            "id": format!("fc_{}", new_uuid()),
+            "id": format!("fc_{}", ids::new_uuid()),
             "type": "function_call",
             "status": "completed",
             "call_id": tool_call.call_id,
@@ -672,7 +674,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
         });
 
         if let Some(signature) = &tool_call.thought_signature {
-            json_insert(
+            format::json_insert(
                 &mut item,
                 "thought_signature",
                 Value::String(signature.clone()),
@@ -687,7 +689,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
     let incomplete_reason = aggregation.finish.and_then(incomplete_details_reason);
 
     let mut body = serde_json::json!({
-        "id": format!("resp_{}", new_uuid()),
+        "id": format!("resp_{}", ids::new_uuid()),
         "object": "response",
         "created_at": unix_time::unix_now(),
         "status": if incomplete_reason.is_some() {
@@ -707,7 +709,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
     });
 
     if let Some(reason) = incomplete_reason {
-        json_insert(
+        format::json_insert(
             &mut body,
             "incomplete_details",
             serde_json::json!({"reason": reason}),

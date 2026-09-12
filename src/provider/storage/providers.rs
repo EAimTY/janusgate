@@ -1,10 +1,7 @@
 //! Provider row persistence: CRUD, credential replacement, and the token
 //! refresh lease.
 
-use super::{
-    Error, PROVIDER_COLUMNS, ensure_ids_pairwise_distinct, ensure_ids_routable,
-    models::find_models_in_transaction, provider_from_row, provider_name_taken_message,
-};
+use super::{Error, models};
 use crate::{
     database::{Database, Transaction, params},
     format::UpstreamFormat,
@@ -46,24 +43,33 @@ pub(crate) async fn insert_provider(
 ///
 /// Returns [`Error`] when the query fails or a row is malformed.
 pub(crate) async fn list_providers(database: &Database) -> Result<Vec<Provider>, Error> {
-    let sql = format!("SELECT {PROVIDER_COLUMNS} FROM providers ORDER BY name");
+    let sql = format!(
+        "SELECT {} FROM providers ORDER BY name",
+        super::PROVIDER_COLUMNS
+    );
 
     let rows = database.query(sql, ()).await?;
 
-    rows.iter().map(provider_from_row).collect()
+    rows.iter().map(super::provider_from_row).collect()
 }
 
 /// The `WHERE name = ?1` provider lookup. Names are unique, so this is the
 /// name-taken check behind creation; all addressing of an existing provider
 /// goes through its id.
 fn find_provider_sql() -> String {
-    format!("SELECT {PROVIDER_COLUMNS} FROM providers WHERE name = ?1")
+    format!(
+        "SELECT {} FROM providers WHERE name = ?1",
+        super::PROVIDER_COLUMNS
+    )
 }
 
 /// The `WHERE id = ?1` provider lookup shared by the pooled and transactional
 /// executors, which share no query trait.
 fn find_provider_by_id_sql() -> String {
-    format!("SELECT {PROVIDER_COLUMNS} FROM providers WHERE id = ?1")
+    format!(
+        "SELECT {} FROM providers WHERE id = ?1",
+        super::PROVIDER_COLUMNS
+    )
 }
 
 /// Fetches one provider by name, for creation-time name-taken checks.
@@ -77,7 +83,7 @@ pub(crate) async fn find_provider(
 ) -> Result<Option<Provider>, Error> {
     let rows = database.query(find_provider_sql(), params![name]).await?;
 
-    rows.first().map(provider_from_row).transpose()
+    rows.first().map(super::provider_from_row).transpose()
 }
 
 /// Fetches one provider by id.
@@ -93,7 +99,7 @@ pub(crate) async fn find_provider_by_id(
         .query(find_provider_by_id_sql(), params![provider_id])
         .await?;
 
-    rows.first().map(provider_from_row).transpose()
+    rows.first().map(super::provider_from_row).transpose()
 }
 
 /// Fetches one provider by id inside a transaction, mirroring
@@ -110,7 +116,7 @@ pub(crate) async fn find_provider_by_id_in_transaction(
         .query(find_provider_by_id_sql(), params![provider_id])
         .await?;
 
-    rows.first().map(provider_from_row).transpose()
+    rows.first().map(super::provider_from_row).transpose()
 }
 
 /// Fetches one provider by id after a write, failing with an internal error
@@ -256,7 +262,7 @@ pub(crate) async fn update_provider(
 
     if !name_holders.is_empty() {
         return Err(Error::Conflict {
-            message: provider_name_taken_message(name),
+            message: super::provider_name_taken_message(name),
         });
     }
 
@@ -270,7 +276,7 @@ pub(crate) async fn update_provider(
 
     let is_credentials_replaced = update.credentials.is_some();
 
-    let models = find_models_in_transaction(&mut transaction, provider.id).await?;
+    let models = models::find_models_in_transaction(&mut transaction, provider.id).await?;
 
     let recomputed: Vec<(String, &Model)> = models
         .iter()
@@ -290,9 +296,9 @@ pub(crate) async fn update_provider(
         .map(|(id, model)| (id.as_str(), model.upstream_id.as_str()))
         .collect();
 
-    ensure_ids_pairwise_distinct(name, &composed)?;
+    super::ensure_ids_pairwise_distinct(name, &composed)?;
 
-    ensure_ids_routable(&mut transaction, provider.id, &composed).await?;
+    super::ensure_ids_routable(&mut transaction, provider.id, &composed).await?;
 
     transaction
         .execute(
@@ -332,9 +338,7 @@ pub(crate) async fn update_provider(
             .await?;
     }
 
-    transaction.commit().await.map_err(|error| Error::Drift {
-        message: format!("failed to commit provider update: {error}"),
-    })?;
+    transaction.commit().await?;
 
     // The returned row mirrors exactly what this transaction wrote.
     Ok(Provider {
