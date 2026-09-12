@@ -4,7 +4,7 @@ use crate::context::Context;
 use axum::Router;
 use tower_http::cors::CorsLayer;
 
-pub(crate) mod openai_v1;
+mod openai_v1;
 
 /// Constructs the outward client API router, configured with CORS middleware.
 ///

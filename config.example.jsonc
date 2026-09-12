@@ -16,7 +16,8 @@
 
     "management_api": {
         // Management token for /management-api/* (Authorization: <token>).
-        // Placeholder values fail at startup; replace with a real secret.
+        // Placeholder value that MUST be replaced with a real secret before
+        // deployment; the gateway performs no placeholder detection.
         "token": "CHANGE_ME_MANAGEMENT_TOKEN",
         "cors": {
             // Origin(s) permitted for cross-origin requests. A single string
@@ -31,7 +32,8 @@
 
     "api": {
         // Shared API key for outward protocol endpoints (under /api/*).
-        // Placeholder values fail at startup; replace with a real secret.
+        // Placeholder value that MUST be replaced with a real secret before
+        // deployment; the gateway performs no placeholder detection.
         "key": "CHANGE_ME_API_KEY",
         "cors": {
             // Origin(s) permitted for cross-origin requests. A single string

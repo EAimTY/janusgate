@@ -48,7 +48,7 @@ struct CompleteOAuthBody {
 }
 
 /// Handles `POST /start-provider-oauth`.
-pub(crate) async fn start(State(context): State<Context>, body: Bytes) -> Response {
+pub(super) async fn start(State(context): State<Context>, body: Bytes) -> Response {
     let outcome = handle_start(&context.database, &body).await;
 
     match outcome {
@@ -65,7 +65,7 @@ pub(crate) async fn start(State(context): State<Context>, body: Bytes) -> Respon
 }
 
 /// Handles `POST /complete-provider-oauth`.
-pub(crate) async fn complete(State(context): State<Context>, body: Bytes) -> Response {
+pub(super) async fn complete(State(context): State<Context>, body: Bytes) -> Response {
     let outcome = handle_complete(&context.database, &context.control_plane, &body).await;
 
     match outcome {
@@ -226,9 +226,9 @@ async fn handle_complete(
                 // The database's UNIQUE constraint is the concurrent backstop
                 // for a name taken after this check.
                 if storage::find_provider(database, name).await?.is_some() {
-                    return Err(ManagementApiError::conflict(format!(
-                        "Provider name `{name}` is already taken"
-                    )));
+                    return Err(ManagementApiError::conflict(
+                        storage::provider_name_taken_message(name),
+                    ));
                 }
 
                 None

@@ -430,13 +430,7 @@ pub(crate) enum IrEvent {
     Finish(IrFinishReason),
 
     /// Token accounting.
-    Usage {
-        /// Tokens consumed by the input.
-        input_tokens: u64,
-
-        /// Tokens produced by the output.
-        output_tokens: u64,
-    },
+    Usage(IrUsage),
 
     /// Terminal marker; always appended by the gateway after the upstream
     /// response is fully consumed, never by parsers.
@@ -444,6 +438,13 @@ pub(crate) enum IrEvent {
 }
 
 /// Token accounting of a completion.
+///
+/// The breakdown values mirror the official Responses usage detail objects:
+/// `cached_tokens` and `cache_write_tokens` detail the input, and
+/// `reasoning_tokens` details the output. They are [`None`] when the upstream
+/// reports no breakdown — every cross-format upstream and any Responses
+/// upstream that reports totals only — so the outward Responses rendering can
+/// zero-fill the SDK-required detail fields.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct IrUsage {
     /// Tokens consumed by the input.
@@ -451,6 +452,15 @@ pub(crate) struct IrUsage {
 
     /// Tokens produced by the output.
     pub(crate) output_tokens: u64,
+
+    /// Input tokens served from the upstream prompt cache.
+    pub(crate) cached_tokens: Option<u64>,
+
+    /// Input tokens written to the upstream prompt cache.
+    pub(crate) cache_write_tokens: Option<u64>,
+
+    /// Output tokens spent on model reasoning.
+    pub(crate) reasoning_tokens: Option<u64>,
 }
 
 /// One completed tool call produced by aggregation.
@@ -571,15 +581,7 @@ impl Aggregator {
 
             IrEvent::Finish(reason) => self.aggregation.finish = Some(*reason),
 
-            IrEvent::Usage {
-                input_tokens,
-                output_tokens,
-            } => {
-                self.aggregation.usage = Some(IrUsage {
-                    input_tokens: *input_tokens,
-                    output_tokens: *output_tokens,
-                });
-            }
+            IrEvent::Usage(usage) => self.aggregation.usage = Some(*usage),
         }
     }
 

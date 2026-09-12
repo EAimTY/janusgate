@@ -36,7 +36,7 @@ const SSE_CHANNEL_BUFFER: usize = 64;
 
 /// Constructs the format sub-router with OpenAI bearer authentication and its
 /// own 404 fallback.
-pub(crate) fn router() -> Router<Context> {
+pub(super) fn router() -> Router<Context> {
     Router::new()
         .route("/chat/completions", post(chat_completions))
         .route("/responses", post(responses))
@@ -267,7 +267,7 @@ fn sse_response(
 /// Returns the stream's failure when it carries one.
 async fn aggregated_response(
     events: IrEventStream,
-    render: impl Fn(&IrAggregation) -> serde_json::Value,
+    render_json_fn: impl Fn(&IrAggregation) -> serde_json::Value,
 ) -> Result<Response, gateway::Error> {
     let mut aggregator = Aggregator::default();
 
@@ -280,5 +280,5 @@ async fn aggregated_response(
         }
     }
 
-    Ok(json_response(200, render(&aggregator.finish())))
+    Ok(json_response(200, render_json_fn(&aggregator.finish())))
 }

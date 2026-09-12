@@ -12,9 +12,10 @@
 //! client format.
 
 use crate::{
-    ir::{InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrRequest},
+    ir::{InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrRequest, IrToolChoice},
     sse::SseFrame,
 };
+use serde_json::Value;
 
 pub(crate) mod gemini;
 pub(crate) mod openai_chat_completion;
@@ -276,6 +277,129 @@ pub(crate) fn arguments_as_object(
             "Tool call arguments must encode a JSON object",
         )),
     }
+}
+
+/// Rejects an upstream body carrying a top-level error object; shared by the
+/// OpenAI-family codecs, whose upstreams embed the error beside the protocol
+/// fields.
+///
+/// An error body inside a 2xx response is a malformed upstream payload
+/// (README §6.7), so the embedded `code` is never mirrored as the outward
+/// status — a 2xx code would otherwise render a success status carrying an
+/// error body. The embedded code and text ride in the message instead.
+///
+/// A present-but-null `error` is success, not failure: the non-streaming
+/// Responses body is the Response object, whose shape carries
+/// `"error": null` on every success, and Chat Completions success bodies
+/// never carry the key at all.
+///
+/// # Errors
+///
+/// Returns [`PayloadError`] carrying the upstream error text and code.
+pub(crate) fn reject_upstream_error(value: &Value) -> Result<(), PayloadError> {
+    let Some(error) = value.get("error").filter(|error| !error.is_null()) else {
+        return Ok(());
+    };
+
+    let text = error
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| {
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| error.to_string());
+
+    let detail = match error.get("code") {
+        Some(code) => format!("{text} (upstream error code: {code})"),
+        None => text,
+    };
+
+    Err(PayloadError::new(detail))
+}
+
+/// Parses an OpenAI-family `tool_choice` mode name; shared by both codecs.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming `tool_choice` for unknown modes.
+pub(crate) fn parse_tool_choice_mode(mode: &str) -> Result<IrToolChoice, InvalidRequest> {
+    match mode {
+        "auto" => Ok(IrToolChoice::Auto),
+        "none" => Ok(IrToolChoice::None),
+        "required" => Ok(IrToolChoice::Required),
+        other => Err(InvalidRequest::field(
+            "tool_choice",
+            format!("Unknown tool_choice `{other}`"),
+        )),
+    }
+}
+
+/// Rejects an OpenAI-family tool payload whose `type` tag is not `function`.
+///
+/// `context` names the payload's role and renders into the rejection message
+/// (`tool` for advertised tools, `tool_choice` for forced functions).
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming `type` for any non-function tag.
+pub(crate) fn reject_non_function_type(
+    tool_type: &str,
+    context: &str,
+) -> Result<(), InvalidRequest> {
+    if tool_type == "function" {
+        return Ok(());
+    }
+
+    Err(InvalidRequest::field(
+        "type",
+        format!("Unsupported {context} type `{tool_type}`"),
+    ))
+}
+
+/// Rejects a `tool_choice` present on a request that declared no tools.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming `tool_choice`.
+pub(crate) fn reject_tool_choice_without_tools(is_tools_empty: bool) -> Result<(), InvalidRequest> {
+    if is_tools_empty {
+        return Err(InvalidRequest::field(
+            "tool_choice",
+            "tool_choice requires at least one tool",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validates the OpenAI-family sampling parameter ranges; shared by both
+/// codecs.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming the offending parameter.
+pub(crate) fn validate_sampling_ranges(
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+) -> Result<(), InvalidRequest> {
+    if temperature.is_some_and(|temperature| !(0.0..=2.0).contains(&temperature)) {
+        return Err(InvalidRequest::field(
+            "temperature",
+            "temperature must be between 0 and 2",
+        ));
+    }
+
+    if top_p.is_some_and(|top_p| !(0.0..=1.0).contains(&top_p)) {
+        return Err(InvalidRequest::field(
+            "top_p",
+            "top_p must be between 0 and 1",
+        ));
+    }
+
+    Ok(())
 }
 
 /// Inserts `value` under `key` into a JSON object literal.

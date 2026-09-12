@@ -1,6 +1,6 @@
 //! Upstream model discovery per provider type.
 
-use super::{Provider, ProviderType, endpoints, http_body, oauth, oauth::Error as OAuthError};
+use super::{Provider, ProviderType, endpoints, http_body, http_body::ExchangeFailure, oauth};
 use crate::format::UpstreamFormat;
 use reqwest::Client;
 use serde_json::Value;
@@ -37,14 +37,18 @@ pub(crate) enum Error {
     },
 }
 
-impl From<OAuthError> for Error {
-    fn from(error: OAuthError) -> Self {
-        match error {
-            OAuthError::Rejected { status, detail } => Self::Rejected { status, detail },
-            OAuthError::Unavailable { detail } => Self::Unavailable { detail },
-            other => Self::Internal {
-                message: other.to_string(),
+/// Converts the shared upstream exchange failure into the discovery error
+/// domain: the rejection detail is the body excerpt under the one truncation
+/// policy ([`http_body::truncate_excerpt`]).
+impl From<ExchangeFailure> for Error {
+    fn from(failure: ExchangeFailure) -> Self {
+        match failure {
+            ExchangeFailure::Rejected { status, body } => Self::Rejected {
+                status,
+                detail: http_body::truncate_excerpt(&body),
             },
+
+            ExchangeFailure::Unavailable { detail } => Self::Unavailable { detail },
         }
     }
 }
@@ -95,18 +99,13 @@ async fn discover_codex(
         }
     };
 
-    let response = http
+    let request = http
         .get(models_url)
         .query(&[("client_version", endpoints::CODEX_CLIENT_VERSION)])
         .bearer_auth(access_token)
-        .header("chatgpt-account-id", account_id)
-        .send()
-        .await
-        .map_err(|error| Error::Unavailable {
-            detail: format!("upstream unreachable: {error}"),
-        })?;
+        .header("chatgpt-account-id", account_id);
 
-    let value = parse_success_body(response).await?;
+    let value: Value = http_body::send_and_parse_json(request, "upstream").await?;
 
     let entries = value
         .get("items")
@@ -170,21 +169,17 @@ async fn discover_compatible(
 
     let base_url = base_url.trim_end_matches('/');
 
-    let mut request = http.get(format!("{base_url}/models"));
+    let request = match protocol {
+        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => http
+            .get(format!("{base_url}/models"))
+            .bearer_auth(access_token),
 
-    request = match protocol {
-        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
-            request.bearer_auth(access_token)
-        }
-
-        UpstreamFormat::GeminiGenerateContent => request.header("x-goog-api-key", access_token),
+        UpstreamFormat::GeminiGenerateContent => http
+            .get(format!("{base_url}/models"))
+            .header("x-goog-api-key", access_token),
     };
 
-    let response = request.send().await.map_err(|error| Error::Unavailable {
-        detail: format!("upstream unreachable: {error}"),
-    })?;
-
-    let value = parse_success_body(response).await?;
+    let value: Value = http_body::send_and_parse_json(request, "upstream").await?;
 
     match protocol {
         UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
@@ -232,33 +227,4 @@ async fn discover_compatible(
                 .collect()
         }
     }
-}
-
-/// Verifies a successful status and parses the JSON body.
-///
-/// Only the error path is read through the bounded error-body read: a success
-/// body is legitimate discovery JSON of unbounded size and is read in full.
-///
-/// # Errors
-///
-/// Returns [`Error`] for non-success statuses and malformed bodies.
-async fn parse_success_body(response: reqwest::Response) -> Result<Value, Error> {
-    let status = response.status();
-
-    if !status.is_success() {
-        let body = http_body::read_error_body(response).await;
-
-        return Err(Error::Rejected {
-            status: status.as_u16(),
-            detail: http_body::truncate_excerpt(&body),
-        });
-    }
-
-    let body = response.text().await.map_err(|error| Error::Unavailable {
-        detail: format!("upstream read failed: {error}"),
-    })?;
-
-    serde_json::from_str(&body).map_err(|error| Error::Unavailable {
-        detail: format!("malformed upstream response: {error}"),
-    })
 }

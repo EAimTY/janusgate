@@ -20,9 +20,9 @@ use log::warn;
 use serde::de::DeserializeOwned;
 use tower_http::cors::CorsLayer;
 
-pub(crate) mod models;
-pub(crate) mod oauth_flow;
-pub(crate) mod providers;
+mod models;
+mod oauth_flow;
+mod providers;
 
 /// Maximum accepted request body size for the management API.
 ///
@@ -86,7 +86,7 @@ async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
 /// # Errors
 ///
 /// Returns [`ManagementApiError`] for malformed JSON and unknown fields.
-pub(crate) fn parse_body<T>(body: &Bytes, operation: &str) -> Result<T, ManagementApiError>
+fn parse_body<T>(body: &Bytes, operation: &str) -> Result<T, ManagementApiError>
 where
     T: DeserializeOwned,
 {
@@ -107,7 +107,7 @@ where
 /// # Errors
 ///
 /// Returns [`ManagementApiError`] when the identifier is empty.
-pub(crate) fn validate_identifier(param: &str, value: &str) -> Result<(), ManagementApiError> {
+fn validate_identifier(param: &str, value: &str) -> Result<(), ManagementApiError> {
     if value.is_empty() {
         return Err(ManagementApiError::invalid_request(format!(
             "`{param}` must not be empty"
@@ -121,7 +121,7 @@ pub(crate) fn validate_identifier(param: &str, value: &str) -> Result<(), Manage
 /// never exposed. `id` is the provider's public identifier — every management
 /// reference to an existing provider goes through it — while `name` is the
 /// unique, renameable label.
-pub(crate) fn provider_json(provider: &Provider) -> serde_json::Value {
+fn provider_json(provider: &Provider) -> serde_json::Value {
     serde_json::json!({
         "id": provider.id,
         "name": provider.name,

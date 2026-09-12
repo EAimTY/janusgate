@@ -1,0 +1,596 @@
+//! Client-request parsing for the Responses codec: the outward
+//! `POST /responses` body deserialized into the IR request.
+
+use crate::{
+    format::{
+        ParsedRequest, allowed_fields, arguments_as_object, parse_tool_choice_mode,
+        reject_non_function_type, reject_tool_choice_without_tools, reject_unknown_fields,
+        validate_content_part_fields, validate_sampling_ranges,
+    },
+    ir::{
+        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningEffort, IrRequest, IrResponseFormat,
+        IrRole, IrTool, IrToolChoice,
+    },
+};
+use serde::Deserialize;
+use serde_json::Value;
+
+/// Fields allowed on each Responses input item, keyed by item type. Unknown
+/// fields are rejected because internally tagged serde enums cannot enforce
+/// this.
+///
+/// `message` items accept and ignore `id` and `phase`: codex replays parsed
+/// output items verbatim each turn, and the gateway itself stamps `id` values
+/// onto rendered output items, so rejecting them would break history replay.
+const INPUT_ITEM_FIELDS: &[(&str, &[&str])] = &[
+    ("message", &["type", "id", "role", "content", "phase"]),
+    (
+        "function_call",
+        &[
+            "type",
+            "id",
+            "call_id",
+            "name",
+            "arguments",
+            "status",
+            "thought_signature",
+        ],
+    ),
+    (
+        "function_call_output",
+        &["type", "id", "call_id", "output", "status"],
+    ),
+];
+
+/// Fields allowed on each Responses content part, keyed by part type.
+///
+/// `output_text` accepts and ignores `annotations` and `logprobs`: the
+/// gateway's own rendered `output_text` parts carry both fields, so
+/// replaying an aggregated response verbatim must parse.
+const CONTENT_PART_FIELDS: &[(&str, &[&str])] = &[
+    ("input_text", &["type", "text"]),
+    ("output_text", &["type", "text", "annotations", "logprobs"]),
+    ("input_image", &["type", "image_url"]),
+];
+
+/// Strictly parsed Responses request body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestBody {
+    /// Public model name to route to.
+    model: String,
+
+    /// Conversation input.
+    input: InputIn,
+
+    /// System instructions.
+    #[serde(default)]
+    instructions: Option<String>,
+
+    /// Function tools advertised to the model.
+    #[serde(default)]
+    tools: Option<Vec<ToolIn>>,
+
+    /// Tool selection restriction.
+    #[serde(default)]
+    tool_choice: Option<ToolChoiceIn>,
+
+    /// Sampling temperature.
+    #[serde(default)]
+    temperature: Option<f64>,
+
+    /// Nucleus sampling threshold.
+    #[serde(default)]
+    top_p: Option<f64>,
+
+    /// Output token budget.
+    #[serde(default)]
+    max_output_tokens: Option<u64>,
+
+    /// Reasoning configuration.
+    #[serde(default)]
+    reasoning: Option<ReasoningIn>,
+
+    /// Whether the client wants a streamed response.
+    #[serde(default)]
+    stream: Option<bool>,
+
+    /// Storage request; the gateway is stateless, so only `false` is legal.
+    #[serde(default)]
+    store: Option<bool>,
+
+    /// Text output configuration.
+    #[serde(default)]
+    text: Option<TextIn>,
+}
+
+/// Conversation input: plain string or item array.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum InputIn {
+    /// Single user text turn.
+    Text(String),
+
+    /// Ordered input items.
+    Items(Vec<ItemIn>),
+}
+
+/// Input item, tagged by `type`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ItemIn {
+    /// Conversation message.
+    Message {
+        /// Authoring role.
+        role: String,
+
+        /// Text or typed content.
+        content: MessageContentIn,
+    },
+
+    /// A past tool invocation.
+    FunctionCall {
+        /// Invocation identifier.
+        call_id: String,
+
+        /// Function name.
+        name: String,
+
+        /// JSON-encoded arguments.
+        #[serde(default)]
+        arguments: String,
+
+        /// Thought signature to reattach across turns.
+        #[serde(default)]
+        thought_signature: Option<String>,
+    },
+
+    /// A tool result.
+    FunctionCallOutput {
+        /// Identifier of the invocation being answered.
+        call_id: String,
+
+        /// Result content.
+        output: String,
+    },
+
+    /// Reasoning items carry no replayable state and are accepted but ignored.
+    Reasoning {},
+}
+
+/// Message content: plain string or typed parts.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum MessageContentIn {
+    /// Plain text.
+    Text(String),
+
+    /// Typed parts.
+    Parts(Vec<PartIn>),
+}
+
+/// Content part, tagged by `type`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PartIn {
+    /// Text segment on the input side.
+    InputText {
+        /// The text content.
+        text: String,
+    },
+
+    /// Text segment on the assistant side.
+    OutputText {
+        /// The text content.
+        text: String,
+    },
+
+    /// Image segment.
+    InputImage {
+        /// Remote or data URL of the image.
+        image_url: String,
+    },
+}
+
+/// Advertised function tool.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolIn {
+    /// Tool kind; only `function` is supported.
+    #[serde(rename = "type")]
+    tool_type: String,
+
+    /// Function name.
+    name: String,
+
+    /// Human-readable description.
+    #[serde(default)]
+    description: Option<String>,
+
+    /// JSON Schema of accepted arguments.
+    #[serde(default)]
+    parameters: Option<Value>,
+
+    /// OpenAI strictness flag; accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    strict: Option<bool>,
+}
+
+/// Tool choice: a named mode or a forced function.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ToolChoiceIn {
+    /// Named mode (`auto`, `none`, `required`).
+    Mode(String),
+
+    /// Forced function.
+    Function {
+        /// Tool kind; must be `function`.
+        #[serde(rename = "type")]
+        tool_type: String,
+
+        /// Required function name.
+        name: String,
+    },
+}
+
+/// Reasoning configuration.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReasoningIn {
+    /// OpenAI reasoning effort.
+    #[serde(default)]
+    effort: Option<String>,
+
+    /// Summary verbosity; only `auto` is accepted.
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+/// Text output configuration.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextIn {
+    /// Response format restriction.
+    #[serde(default)]
+    format: Option<FormatIn>,
+}
+
+/// Response format, tagged by `type`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum FormatIn {
+    /// Free-form text.
+    Text,
+
+    /// Any valid JSON value.
+    JsonObject,
+
+    /// JSON conforming to a named schema.
+    JsonSchema {
+        /// Schema name.
+        name: String,
+
+        /// The JSON Schema itself.
+        schema: Value,
+
+        /// OpenAI strictness flag; accepted and ignored.
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        strict: Option<bool>,
+    },
+}
+
+/// Parses a Responses request body into IR.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] for malformed JSON, unknown or unsupported
+/// fields, invalid parameter ranges, and invalid image references.
+pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
+    let raw: Value = serde_json::from_slice(body).map_err(InvalidRequest::from_json)?;
+
+    // Raw-field validation runs before deserialization so `raw` can be
+    // consumed directly instead of cloned.
+    validate_input_item_fields(raw.get("input"))?;
+
+    let request: RequestBody = serde_json::from_value(raw).map_err(InvalidRequest::from_json)?;
+
+    if request.store == Some(true) {
+        return Err(InvalidRequest::field(
+            "store",
+            "The gateway is stateless; store must be false",
+        ));
+    }
+
+    if let Some(reasoning) = &request.reasoning
+        && let Some(summary) = &reasoning.summary
+        && summary != "auto"
+    {
+        return Err(InvalidRequest::field(
+            "summary",
+            format!("Unsupported reasoning summary `{summary}`"),
+        ));
+    }
+
+    validate_sampling_ranges(request.temperature, request.top_p)?;
+
+    let mut instruction_parts: Vec<String> = Vec::new();
+    let mut messages: Vec<IrMessage> = Vec::new();
+
+    let input_items: Vec<ItemIn> = match request.input {
+        InputIn::Text(text) => vec![ItemIn::Message {
+            role: "user".to_string(),
+            content: MessageContentIn::Text(text),
+        }],
+
+        InputIn::Items(items) => items,
+    };
+
+    for item in input_items {
+        match item {
+            ItemIn::Message { role, content } => match role.as_str() {
+                "system" | "developer" => {
+                    instruction_parts.push(message_content_text(&content)?);
+                }
+
+                "user" => messages.push(IrMessage {
+                    role: IrRole::User,
+                    parts: message_content_parts(&content)?,
+                }),
+
+                "assistant" => messages.push(IrMessage {
+                    role: IrRole::Assistant,
+                    parts: message_content_parts(&content)?,
+                }),
+
+                other => {
+                    return Err(InvalidRequest::field(
+                        "role",
+                        format!("Unknown input message role `{other}`"),
+                    ));
+                }
+            },
+
+            ItemIn::FunctionCall {
+                call_id,
+                name,
+                arguments,
+                thought_signature,
+            } => {
+                arguments_as_object(&arguments)?;
+
+                messages.push(IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![IrPart::ToolCall {
+                        call_id,
+                        name,
+                        arguments,
+                        thought_signature,
+                    }],
+                });
+            }
+
+            ItemIn::FunctionCallOutput { call_id, output } => {
+                messages.push(IrMessage {
+                    role: IrRole::Tool,
+                    parts: vec![IrPart::ToolOutput {
+                        call_id,
+                        content: output,
+                    }],
+                });
+            }
+
+            ItemIn::Reasoning {} => {}
+        }
+    }
+
+    let instructions = build_instructions(request.instructions, instruction_parts);
+
+    let mut tools: Vec<IrTool> = Vec::new();
+
+    if let Some(tools_in) = &request.tools {
+        for tool in tools_in {
+            reject_non_function_type(&tool.tool_type, "tool")?;
+
+            tools.push(IrTool {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: tool.parameters.clone(),
+            });
+        }
+    }
+
+    let tool_choice = match &request.tool_choice {
+        None => None,
+        Some(choice) => {
+            reject_tool_choice_without_tools(tools.is_empty())?;
+
+            Some(match choice {
+                ToolChoiceIn::Mode(mode) => parse_tool_choice_mode(mode)?,
+
+                ToolChoiceIn::Function { tool_type, name } => {
+                    reject_non_function_type(tool_type, "tool_choice")?;
+
+                    IrToolChoice::Function { name: name.clone() }
+                }
+            })
+        }
+    };
+
+    let response_format = match request.text.as_ref().and_then(|text| text.format.as_ref()) {
+        None => None,
+        Some(FormatIn::Text) => Some(IrResponseFormat::Text),
+        Some(FormatIn::JsonObject) => Some(IrResponseFormat::Json),
+        Some(FormatIn::JsonSchema {
+            name,
+            schema,
+            strict: _,
+        }) => Some(IrResponseFormat::JsonSchema {
+            name: name.clone(),
+            schema: schema.clone(),
+        }),
+    };
+
+    let reasoning_effort = match request
+        .reasoning
+        .as_ref()
+        .and_then(|reasoning| reasoning.effort.as_ref())
+    {
+        None => None,
+        Some(effort) => Some(IrReasoningEffort::parse_openai(effort).ok_or_else(|| {
+            InvalidRequest::field("effort", format!("Unknown reasoning effort `{effort}`"))
+        })?),
+    };
+
+    Ok(ParsedRequest {
+        ir: IrRequest {
+            model: request.model,
+            instructions,
+            messages,
+            tools,
+            tool_choice,
+            temperature: request.temperature,
+            top_p: request.top_p,
+            max_output_tokens: request.max_output_tokens,
+            response_format,
+            reasoning_effort,
+        },
+        is_streaming: request.stream.unwrap_or(false),
+        should_include_usage: false,
+    })
+}
+
+/// Combines the `instructions` field with system/developer message texts in
+/// encounter order.
+fn build_instructions(direct: Option<String>, pushed: Vec<String>) -> Option<String> {
+    let mut combined = Vec::with_capacity(pushed.len() + 1);
+
+    if let Some(direct) = direct {
+        combined.push(direct);
+    }
+
+    combined.extend(pushed);
+
+    if combined.is_empty() {
+        None
+    } else {
+        Some(combined.join("\n\n"))
+    }
+}
+
+/// Extracts plain text from system/developer message content.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming the offending content part when the
+/// message carries non-text parts: instructions have no image channel, so
+/// silently dropping parts would lose request content.
+fn message_content_text(content: &MessageContentIn) -> Result<String, InvalidRequest> {
+    match content {
+        MessageContentIn::Text(text) => Ok(text.clone()),
+
+        MessageContentIn::Parts(parts) => {
+            let mut combined = String::new();
+
+            for part in parts {
+                match part {
+                    PartIn::InputText { text } | PartIn::OutputText { text } => {
+                        if !combined.is_empty() {
+                            combined.push_str("\n\n");
+                        }
+
+                        combined.push_str(text);
+                    }
+
+                    PartIn::InputImage { .. } => {
+                        return Err(InvalidRequest::field(
+                            "content",
+                            "System and developer message content parts must be text; \
+                             `input_image` is not supported",
+                        ));
+                    }
+                }
+            }
+
+            Ok(combined)
+        }
+    }
+}
+
+/// Converts message content into IR parts.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] for malformed image references.
+fn message_content_parts(content: &MessageContentIn) -> Result<Vec<IrPart>, InvalidRequest> {
+    match content {
+        MessageContentIn::Text(text) => Ok(vec![IrPart::Text { text: text.clone() }]),
+
+        MessageContentIn::Parts(parts) => {
+            let mut converted = Vec::with_capacity(parts.len());
+
+            for part in parts {
+                converted.push(match part {
+                    PartIn::InputText { text } | PartIn::OutputText { text } => {
+                        IrPart::Text { text: text.clone() }
+                    }
+
+                    PartIn::InputImage { image_url } => IrPart::Image {
+                        image: IrImage::from_url(image_url)?,
+                    },
+                });
+            }
+
+            Ok(converted)
+        }
+    }
+}
+
+/// Rejects unknown fields on Responses input items; internally tagged serde
+/// enums cannot enforce this themselves.
+///
+/// Reasoning items are skipped wholesale: they are accepted and ignored, so
+/// their payload is not validated.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming the first unknown field.
+fn validate_input_item_fields(input: Option<&Value>) -> Result<(), InvalidRequest> {
+    let items = match input {
+        Some(Value::Array(items)) => items,
+        _ => return Ok(()),
+    };
+
+    for item in items {
+        let Some(object) = item.as_object() else {
+            continue;
+        };
+
+        let item_type = object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        if item_type == "reasoning" {
+            continue;
+        }
+
+        let Some(permitted_fields) = allowed_fields(INPUT_ITEM_FIELDS, item_type) else {
+            continue;
+        };
+
+        reject_unknown_fields(
+            object,
+            permitted_fields,
+            &format!("`{item_type}` input item"),
+        )?;
+
+        if let Some(parts) = object.get("content").and_then(Value::as_array) {
+            validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
+        }
+    }
+
+    Ok(())
+}

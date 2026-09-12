@@ -1,5 +1,5 @@
-//! Bounded upstream error-body reads and the shared excerpt policy for error
-//! messages.
+//! Bounded upstream error-body reads, the shared excerpt policy for error
+//! messages, and the shared upstream JSON exchange.
 //!
 //! Every upstream failure the gateway renders — gateway error mirroring, OAuth
 //! token endpoint rejections, and model discovery rejections — reads its body
@@ -53,4 +53,69 @@ pub(crate) fn truncate_excerpt(body: &str) -> String {
 
         format!("{excerpt}…")
     }
+}
+
+/// Failure of the shared upstream JSON exchange, classified by the caller
+/// into its own error domain: a non-2xx response, or an exchange that never
+/// produced a usable success body. The rejection carries the full bounded
+/// error body — not the excerpt — because the rejection policy is the
+/// caller's: the token-grant path inspects the body for RFC 6749 §5.2 error
+/// names before any truncation, while every other path takes the excerpt.
+#[derive(Debug)]
+pub(in crate::provider) enum ExchangeFailure {
+    /// The upstream answered a non-2xx status.
+    Rejected {
+        /// Upstream status code.
+        status: u16,
+
+        /// The full bounded error body, not yet truncated into an excerpt.
+        body: String,
+    },
+
+    /// The request could not be sent, or the success body could not be read
+    /// or parsed.
+    Unavailable {
+        /// Human-readable failure detail naming the failing stage.
+        detail: String,
+    },
+}
+
+/// Sends the request and parses the 2xx body as JSON. A non-2xx body is read
+/// through [`read_error_body`] and returned untruncated in
+/// [`ExchangeFailure::Rejected`]; a success body is legitimate JSON of
+/// unbounded size and is read in full. `label` names the upstream in the
+/// [`ExchangeFailure::Unavailable`] details.
+pub(in crate::provider) async fn send_and_parse_json<T>(
+    request: reqwest::RequestBuilder,
+    label: &str,
+) -> Result<T, ExchangeFailure>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let response = request
+        .send()
+        .await
+        .map_err(|error| ExchangeFailure::Unavailable {
+            detail: format!("{label} unreachable: {error}"),
+        })?;
+
+    let status = response.status();
+
+    if !status.is_success() {
+        return Err(ExchangeFailure::Rejected {
+            status: status.as_u16(),
+            body: read_error_body(response).await,
+        });
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|error| ExchangeFailure::Unavailable {
+            detail: format!("{label} read failed: {error}"),
+        })?;
+
+    serde_json::from_str(&body).map_err(|error| ExchangeFailure::Unavailable {
+        detail: format!("malformed {label} response: {error}"),
+    })
 }

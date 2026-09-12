@@ -15,7 +15,7 @@ use crate::{
     provider::{
         Credentials, ModelRouting, Provider, ProviderType, endpoints, http_body, oauth, storage,
     },
-    sse::SseParser,
+    sse::{SseFrame, SseParser},
 };
 use futures::Stream;
 use log::{debug, error};
@@ -107,7 +107,7 @@ pub(crate) async fn resolve_routing(
     public_name: &str,
 ) -> Result<ModelRouting, Error> {
     match storage::find_routing(database, public_name).await? {
-        Some(routing) if routing.is_enabled => Ok(routing),
+        Some(routing) if routing.is_effectively_enabled => Ok(routing),
         _ => Err(Error::ModelNotFound {
             model: public_name.to_string(),
         }),
@@ -376,6 +376,80 @@ fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventPars
     }
 }
 
+/// Logs an upstream stream failure and delivers its terminal error frame,
+/// marking the stream aborted so no events follow the error frame. The send
+/// is best-effort: a consumer that already went away must not fail or block
+/// the abort.
+async fn abort_stream(
+    is_aborted: &mut bool,
+    sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
+    upstream_label: &str,
+    error: Error,
+) {
+    *is_aborted = true;
+
+    error!("{upstream_label}: {error}");
+
+    let _ = sender.send(Err(error)).await;
+}
+
+/// Forwards parsed IR events to the consumer, reporting whether the consumer
+/// is still listening. A closed channel ends the forwarding without an error
+/// frame: the consumer left, so nobody is left to receive one.
+async fn forward_events(
+    sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
+    events: Vec<IrEvent>,
+) -> bool {
+    for event in events {
+        if sender.send(Ok(event)).await.is_err() {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Feeds a batch of SSE frames through the upstream parser and forwards the
+/// produced events, reporting whether the stream is still live. A parser
+/// failure aborts the stream through [`abort_stream`]; a departed consumer
+/// stops the forwarding without touching the abort flag, so the caller's
+/// trailing flush still runs exactly as it does for a consumer that leaves
+/// anywhere else mid-stream.
+async fn forward_frames(
+    is_aborted: &mut bool,
+    parser: &mut Box<dyn UpstreamEventParser + Send>,
+    frames: Vec<SseFrame>,
+    sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
+    upstream_label: &str,
+) -> bool {
+    for frame in frames {
+        match parser.ingest_frame(&frame) {
+            Ok(events) => {
+                if !forward_events(sender, events).await {
+                    return false;
+                }
+            }
+
+            // A malformed frame aborts the stream with an error exactly like
+            // any other upstream failure; the caller's final `Done` still
+            // terminates the event stream.
+            Err(parser_error) => {
+                abort_stream(
+                    is_aborted,
+                    sender,
+                    upstream_label,
+                    Error::from(parser_error),
+                )
+                .await;
+
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 /// Relays an upstream SSE stream into the IR event channel, always
 /// terminating with [`IrEvent::Done`].
 ///
@@ -399,15 +473,15 @@ async fn pump_sse(
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(error) => {
-                is_aborted = true;
-
-                let error = Error::Unavailable {
-                    detail: format!("upstream stream failed: {error}"),
-                };
-
-                error!("{upstream_label}: {error}");
-
-                let _ = sender.send(Err(error)).await;
+                abort_stream(
+                    &mut is_aborted,
+                    &sender,
+                    &upstream_label,
+                    Error::Unavailable {
+                        detail: format!("upstream stream failed: {error}"),
+                    },
+                )
+                .await;
 
                 break 'stream;
             }
@@ -416,42 +490,31 @@ async fn pump_sse(
         let frames = match sse_parser.ingest(&chunk) {
             Ok(frames) => frames,
             Err(_) => {
-                is_aborted = true;
-
-                let error = Error::Unavailable {
-                    detail: "oversized SSE frame".to_string(),
-                };
-
-                error!("{upstream_label}: {error}");
-
-                let _ = sender.send(Err(error)).await;
+                abort_stream(
+                    &mut is_aborted,
+                    &sender,
+                    &upstream_label,
+                    Error::Unavailable {
+                        detail: "oversized SSE frame".to_string(),
+                    },
+                )
+                .await;
 
                 break 'stream;
             }
         };
 
-        for frame in frames {
-            match parser.ingest_frame(&frame) {
-                Ok(events) => {
-                    for event in events {
-                        if sender.send(Ok(event)).await.is_err() {
-                            break 'stream;
-                        }
-                    }
-                }
+        let is_stream_live = forward_frames(
+            &mut is_aborted,
+            &mut parser,
+            frames,
+            &sender,
+            &upstream_label,
+        )
+        .await;
 
-                Err(parser_error) => {
-                    is_aborted = true;
-
-                    let error = Error::from(parser_error);
-
-                    error!("{upstream_label}: {error}");
-
-                    let _ = sender.send(Err(error)).await;
-
-                    break 'stream;
-                }
-            }
+        if !is_stream_live {
+            break 'stream;
         }
     }
 
@@ -462,33 +525,14 @@ async fn pump_sse(
     if !is_aborted {
         match sse_parser.finish() {
             Ok(frames) => {
-                for frame in frames {
-                    match parser.ingest_frame(&frame) {
-                        Ok(events) => {
-                            for event in events {
-                                if sender.send(Ok(event)).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-
-                        // A malformed trailing frame aborts the stream with an
-                        // error exactly like a malformed frame in the main
-                        // loop; the final `Done` below still terminates the
-                        // event stream.
-                        Err(parser_error) => {
-                            is_aborted = true;
-
-                            let error = Error::from(parser_error);
-
-                            error!("{upstream_label}: {error}");
-
-                            let _ = sender.send(Err(error)).await;
-
-                            break;
-                        }
-                    }
-                }
+                forward_frames(
+                    &mut is_aborted,
+                    &mut parser,
+                    frames,
+                    &sender,
+                    &upstream_label,
+                )
+                .await;
             }
 
             // A trailing frame the framing layer rejects at flush time aborts
@@ -497,25 +541,21 @@ async fn pump_sse(
             // frame on the floor. The final `Done` below still terminates the
             // event stream.
             Err(_) => {
-                is_aborted = true;
-
-                let error = Error::Unavailable {
-                    detail: "oversized SSE frame".to_string(),
-                };
-
-                error!("{upstream_label}: {error}");
-
-                let _ = sender.send(Err(error)).await;
+                abort_stream(
+                    &mut is_aborted,
+                    &sender,
+                    &upstream_label,
+                    Error::Unavailable {
+                        detail: "oversized SSE frame".to_string(),
+                    },
+                )
+                .await;
             }
         }
     }
 
     if !is_aborted {
-        for event in parser.finish() {
-            if sender.send(Ok(event)).await.is_err() {
-                break;
-            }
-        }
+        forward_events(&sender, parser.finish()).await;
     }
 
     let _ = sender.send(Ok(IrEvent::Done)).await;
@@ -548,11 +588,7 @@ async fn pump_json(
 
     match outcome {
         Ok(events) => {
-            for event in events {
-                if sender.send(Ok(event)).await.is_err() {
-                    break;
-                }
-            }
+            forward_events(&sender, events).await;
         }
 
         Err(error) => {

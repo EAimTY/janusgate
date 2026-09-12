@@ -52,7 +52,7 @@ struct SaveModelBody {
 }
 
 /// Handles `POST /discover-models`.
-pub(crate) async fn discover(State(context): State<Context>, body: Bytes) -> Response {
+pub(super) async fn discover(State(context): State<Context>, body: Bytes) -> Response {
     let outcome = handle_discover(&context.database, &context.control_plane, &body).await;
 
     match outcome {
@@ -65,7 +65,7 @@ pub(crate) async fn discover(State(context): State<Context>, body: Bytes) -> Res
 }
 
 /// Handles `GET /list-models`.
-pub(crate) async fn list(State(context): State<Context>) -> Response {
+pub(super) async fn list(State(context): State<Context>) -> Response {
     let outcome = async {
         let entries = storage::list_model_entries(&context.database).await?;
 
@@ -89,7 +89,7 @@ pub(crate) async fn list(State(context): State<Context>) -> Response {
 }
 
 /// Handles `POST /save-model`.
-pub(crate) async fn save(State(context): State<Context>, body: Bytes) -> Response {
+pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Response {
     let outcome = handle_save(&context.database, &body).await;
 
     match outcome {

@@ -60,7 +60,7 @@ struct DeleteProviderBody {
 }
 
 /// Handles `GET /list-providers`.
-pub(crate) async fn list(State(context): State<Context>) -> Response {
+pub(super) async fn list(State(context): State<Context>) -> Response {
     match storage::list_providers(&context.database).await {
         Ok(providers) => {
             let rendered = providers.iter().map(provider_json).collect::<Vec<_>>();
@@ -79,7 +79,7 @@ pub(crate) async fn list(State(context): State<Context>) -> Response {
 }
 
 /// Handles `POST /save-provider`.
-pub(crate) async fn save(State(context): State<Context>, body: Bytes) -> Response {
+pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Response {
     let outcome = handle_save(&context.database, &body).await;
 
     match outcome {
@@ -89,7 +89,7 @@ pub(crate) async fn save(State(context): State<Context>, body: Bytes) -> Respons
 }
 
 /// Handles `POST /delete-provider`.
-pub(crate) async fn delete(State(context): State<Context>, body: Bytes) -> Response {
+pub(super) async fn delete(State(context): State<Context>, body: Bytes) -> Response {
     let outcome = async {
         let request: DeleteProviderBody = parse_body(&body, "delete-provider")?;
 
@@ -157,10 +157,9 @@ async fn handle_save(
                     .await?
                     .is_some()
                 {
-                    return Err(ManagementApiError::conflict(format!(
-                        "Provider name `{}` is already taken",
-                        request.name
-                    )));
+                    return Err(ManagementApiError::conflict(
+                        storage::provider_name_taken_message(&request.name),
+                    ));
                 }
 
                 None

@@ -23,7 +23,7 @@ const UPSTREAM_UNAVAILABLE_STATUS: u16 = 502;
 
 /// An error surfaced to an outward API client.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
+pub(super) enum Error {
     /// The request carried a missing or invalid API key.
     #[error("Incorrect API key provided.")]
     InvalidApiKey,
@@ -161,7 +161,7 @@ impl Error {
     /// Whether the error is the calling client's own fault — a malformed or
     /// unsupported request, a failed authentication, or an unknown model —
     /// as opposed to a gateway or upstream failure.
-    pub(crate) fn is_client_fault(&self) -> bool {
+    fn is_client_fault(&self) -> bool {
         match self {
             Self::InvalidApiKey | Self::InvalidUrl { .. } | Self::InvalidRequest(_) => true,
 
@@ -177,7 +177,7 @@ impl Error {
     }
 
     /// Renders the OpenAI JSON error structure.
-    pub(crate) fn to_openai_json(&self) -> serde_json::Value {
+    pub(super) fn to_openai_json(&self) -> serde_json::Value {
         let row = self.row();
 
         serde_json::json!({
@@ -191,7 +191,7 @@ impl Error {
     }
 
     /// Renders the error into an HTTP response.
-    pub(crate) fn into_response(self) -> Response {
+    pub(super) fn into_response(self) -> Response {
         json_response(self.row().status, self.to_openai_json())
     }
 }
@@ -204,7 +204,7 @@ impl Error {
 /// # Panics
 ///
 /// Panics if the static response parts fail to build, which cannot occur.
-pub(crate) fn json_response(status: u16, body: serde_json::Value) -> Response {
+pub(super) fn json_response(status: u16, body: serde_json::Value) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
@@ -221,7 +221,7 @@ pub(crate) fn json_response(status: u16, body: serde_json::Value) -> Response {
 /// is recorded at error level. `operation` names the request the error
 /// belongs to, with whatever identifying context the boundary holds (such as
 /// the model or provider name).
-pub(crate) fn log_error(operation: &str, error: &Error) {
+pub(super) fn log_error(operation: &str, error: &Error) {
     if error.is_client_fault() {
         debug!("{operation} rejected: {error}");
     } else {
@@ -368,7 +368,11 @@ mod tests {
 
             let rendered = error.to_openai_json();
 
-            assert_eq!(rendered["error"], body, "row mismatch for {rendered}");
+            assert_eq!(
+                rendered.get("error"),
+                Some(&body),
+                "row mismatch for {rendered}"
+            );
         }
     }
 

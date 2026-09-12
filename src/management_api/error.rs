@@ -25,7 +25,7 @@ use log::{debug, error};
 /// [`AsStatusCode`] implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AsStatusCode)]
 #[repr(u16)]
-pub(crate) enum ErrorCode {
+enum ErrorCode {
     /// The request itself is malformed or unsupported.
     #[as_status_code(StatusCode::BAD_REQUEST)]
     InvalidRequest = 1,
@@ -57,12 +57,12 @@ pub(crate) enum ErrorCode {
 /// to render the management error body.
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
-pub(crate) struct ManagementApiError {
+pub(super) struct ManagementApiError {
     /// Coarse error category; the discriminant is the rendered `errno`.
-    pub(crate) code: ErrorCode,
+    code: ErrorCode,
 
     /// Human-readable error message.
-    pub(crate) message: String,
+    message: String,
 }
 
 impl ManagementApiError {
@@ -75,40 +75,40 @@ impl ManagementApiError {
     }
 
     /// Builds a 400 invalid request error.
-    pub(crate) fn invalid_request(message: impl Into<String>) -> Self {
+    pub(super) fn invalid_request(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidRequest, message)
     }
 
     /// Builds a 401 authentication error.
-    pub(crate) fn authentication(message: impl Into<String>) -> Self {
+    pub(super) fn authentication(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Unauthorized, message)
     }
 
     /// Builds a 404 error for an unknown resource.
-    pub(crate) fn not_found(message: impl Into<String>) -> Self {
+    pub(super) fn not_found(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotFound, message)
     }
 
     /// Builds a 409 conflict error.
-    pub(crate) fn conflict(message: impl Into<String>) -> Self {
+    pub(super) fn conflict(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Conflict, message)
     }
 
     /// Builds a 500 internal error.
-    pub(crate) fn internal(message: impl Into<String>) -> Self {
+    pub(super) fn internal(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Internal, message)
     }
 
     /// Builds a 502 upstream error with the complete human message the
     /// domain failure already carries.
-    pub(crate) fn upstream(message: impl Into<String>) -> Self {
+    pub(super) fn upstream(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::UpstreamError, message)
     }
 
     /// Whether the error is the calling client's own fault — a malformed or
     /// unsupported request or a failed authentication — as opposed to a
     /// gateway or upstream failure.
-    pub(crate) fn is_client_fault(&self) -> bool {
+    fn is_client_fault(&self) -> bool {
         matches!(
             self.code,
             ErrorCode::InvalidRequest | ErrorCode::Unauthorized
@@ -117,7 +117,7 @@ impl ManagementApiError {
 
     /// Renders the management JSON error structure: the numeric `errno`
     /// discriminant alongside the human-readable message.
-    pub(crate) fn to_json(&self) -> serde_json::Value {
+    fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "error": {
                 "code": self.code as u16,
@@ -128,7 +128,7 @@ impl ManagementApiError {
 
     /// Renders the error into an HTTP response, taking the status code from
     /// the category's derived status.
-    pub(crate) fn into_response(self) -> Response {
+    pub(super) fn into_response(self) -> Response {
         json_response(self.code.as_status_code(), self.to_json())
     }
 }
@@ -208,7 +208,7 @@ impl From<ParseError> for ManagementApiError {
 /// # Panics
 ///
 /// Panics if the static response parts fail to build, which cannot occur.
-pub(crate) fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
+pub(super) fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
     #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
     Response::builder()
         .status(status)
@@ -223,7 +223,7 @@ pub(crate) fn json_response(status: StatusCode, body: serde_json::Value) -> Resp
 /// upstream failure is recorded at error level. `operation` names the request
 /// the error belongs to, with whatever identifying context the boundary holds
 /// (such as the provider name or identifier).
-pub(crate) fn log_error(operation: &str, error: &ManagementApiError) {
+pub(super) fn log_error(operation: &str, error: &ManagementApiError) {
     if error.is_client_fault() {
         debug!("{operation} rejected: {error}");
     } else {
