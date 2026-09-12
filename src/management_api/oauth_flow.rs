@@ -1,14 +1,16 @@
 //! Management endpoints beginning and completing OAuth authorization flows.
 
-use super::{error_response, parse_body, provider_json, validate_identifier};
+use super::{
+    error::{ManagementApiError, json_response, log_error},
+    parse_body, provider_json, validate_identifier,
+};
 use crate::{
     context::Context,
     database::Database,
-    error::{self, ApiError, log_api_error},
     provider::{NewProvider, OAuthProviderType, oauth, storage},
     unix_time,
 };
-use axum::{body::Bytes, extract::State, response::Response};
+use axum::{body::Bytes, extract::State, http::StatusCode, response::Response};
 use log::info;
 use reqwest::Client;
 use serde::Deserialize;
@@ -50,15 +52,15 @@ pub(crate) async fn start(State(context): State<Context>, body: Bytes) -> Respon
     let outcome = handle_start(&context.database, &body).await;
 
     match outcome {
-        Ok(flow) => error::json_response(
-            200,
+        Ok(flow) => json_response(
+            StatusCode::OK,
             serde_json::json!({
                 "authorize_url": flow.authorize_url,
                 "state": flow.state,
                 "expires_at": flow.expires_at,
             }),
         ),
-        Err(error) => error_response(error),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -67,8 +69,8 @@ pub(crate) async fn complete(State(context): State<Context>, body: Bytes) -> Res
     let outcome = handle_complete(&context.database, &context.control_plane, &body).await;
 
     match outcome {
-        Ok(rendered) => error::json_response(200, serde_json::json!({ "provider": rendered })),
-        Err(error) => error_response(error),
+        Ok(rendered) => json_response(StatusCode::OK, serde_json::json!({ "provider": rendered })),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -78,16 +80,20 @@ pub(crate) async fn complete(State(context): State<Context>, body: Bytes) -> Res
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for unknown provider types and storage failures.
-async fn handle_start(database: &Database, body: &Bytes) -> Result<oauth::OAuthFlow, ApiError> {
+/// Returns [`ManagementApiError`] for unknown provider types and storage
+/// failures.
+async fn handle_start(
+    database: &Database,
+    body: &Bytes,
+) -> Result<oauth::OAuthFlow, ManagementApiError> {
     let request: StartOAuthBody = parse_body(body, "start-provider-oauth")?;
 
     let outcome = async {
         let provider_type = OAuthProviderType::parse(&request.provider_type).ok_or_else(|| {
-            ApiError::invalid_parameter(
-                "type",
-                format!("Unknown provider type `{}`", request.provider_type),
-            )
+            ManagementApiError::invalid_request(format!(
+                "Unknown provider type `{}`",
+                request.provider_type
+            ))
         })?;
 
         let flow = oauth::begin_flow(provider_type);
@@ -110,7 +116,7 @@ async fn handle_start(database: &Database, body: &Bytes) -> Result<oauth::OAuthF
     match &outcome {
         Ok(_) => info!("started a `{}` OAuth flow", request.provider_type),
 
-        Err(error) => log_api_error("start-provider-oauth", error),
+        Err(error) => log_error("start-provider-oauth", error),
     }
 
     outcome
@@ -142,15 +148,15 @@ enum Completion<'a> {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for unknown, expired, or already-consumed states,
-/// mixed or incomplete completion forms, empty names, taken names, unknown
-/// ids, exchange failures, type mismatches, and a provider deleted
+/// Returns [`ManagementApiError`] for unknown, expired, or already-consumed
+/// states, mixed or incomplete completion forms, empty names, taken names,
+/// unknown ids, exchange failures, type mismatches, and a provider deleted
 /// concurrently after the completion's lookup.
 async fn handle_complete(
     database: &Database,
     control_plane: &Client,
     body: &Bytes,
-) -> Result<serde_json::Value, ApiError> {
+) -> Result<serde_json::Value, ManagementApiError> {
     let request: CompleteOAuthBody = parse_body(body, "complete-provider-oauth")?;
 
     // The log context rides on whichever form the request names, computed
@@ -171,29 +177,25 @@ async fn handle_complete(
             (Some(provider_id), None, None) => Completion::Reauthorization(provider_id),
 
             (Some(_), Some(_), _) => {
-                return Err(ApiError::invalid_parameter(
-                    "name",
+                return Err(ManagementApiError::invalid_request(
                     "name cannot be supplied together with id",
                 ));
             }
 
             (Some(_), None, Some(_)) => {
-                return Err(ApiError::invalid_parameter(
-                    "model_prefix",
+                return Err(ManagementApiError::invalid_request(
                     "model_prefix cannot be supplied together with id",
                 ));
             }
 
             (None, None, _) => {
-                return Err(ApiError::invalid_parameter(
-                    "name",
+                return Err(ManagementApiError::invalid_request(
                     "name is required when creating a provider",
                 ));
             }
 
             (None, Some(_), None) => {
-                return Err(ApiError::invalid_parameter(
-                    "model_prefix",
+                return Err(ManagementApiError::invalid_request(
                     "model_prefix is required when creating a provider",
                 ));
             }
@@ -210,7 +212,9 @@ async fn handle_complete(
                 let provider = storage::find_provider_by_id(database, *provider_id)
                     .await?
                     .ok_or_else(|| {
-                        ApiError::not_found(format!("Provider {provider_id} does not exist"))
+                        ManagementApiError::not_found(format!(
+                            "Provider {provider_id} does not exist"
+                        ))
                     })?;
 
                 Some(provider)
@@ -222,7 +226,7 @@ async fn handle_complete(
                 // The database's UNIQUE constraint is the concurrent backstop
                 // for a name taken after this check.
                 if storage::find_provider(database, name).await?.is_some() {
-                    return Err(ApiError::conflict(format!(
+                    return Err(ManagementApiError::conflict(format!(
                         "Provider name `{name}` is already taken"
                     )));
                 }
@@ -240,7 +244,7 @@ async fn handle_complete(
             storage::find_oauth_state_type(database, &request.state, now).await?,
         ) && state_type.as_provider_type() != provider.provider_type
         {
-            return Err(ApiError::conflict(format!(
+            return Err(ManagementApiError::conflict(format!(
                 "Provider `{}` has type `{}` and cannot be authorized as `{}`",
                 provider.name,
                 provider.provider_type.as_str(),
@@ -251,7 +255,9 @@ async fn handle_complete(
         let state = storage::consume_oauth_state(database, &request.state, now)
             .await?
             .ok_or_else(|| {
-                ApiError::not_found("OAuth state is unknown, expired, or already consumed")
+                ManagementApiError::not_found(
+                    "OAuth state is unknown, expired, or already consumed",
+                )
             })?;
 
         let exchanged = oauth::exchange_code(
@@ -277,7 +283,7 @@ async fn handle_complete(
                 // vanished provider is a 404, not a storage-drift 500 from the
                 // reload below.
                 if !is_updated {
-                    return Err(ApiError::not_found(
+                    return Err(ManagementApiError::not_found(
                         "provider vanished during OAuth completion",
                     ));
                 }
@@ -312,7 +318,9 @@ async fn handle_complete(
 
             Completion::Creation { name, .. } => storage::find_provider(database, name)
                 .await?
-                .ok_or_else(|| ApiError::internal("provider vanished after OAuth completion"))?,
+                .ok_or_else(|| {
+                    ManagementApiError::internal("provider vanished after OAuth completion")
+                })?,
         };
 
         Ok(provider_json(&stored))
@@ -320,7 +328,7 @@ async fn handle_complete(
     .await;
 
     if let Err(error) = &outcome {
-        log_api_error(&format!("complete-provider-oauth for {log_context}"), error);
+        log_error(&format!("complete-provider-oauth for {log_context}"), error);
     }
 
     outcome

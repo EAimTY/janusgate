@@ -3,17 +3,16 @@
 //! Serves the outward `POST /chat/completions` endpoint and speaks the
 //! `openai_chat_completion` upstream protocol.
 
-use super::{ClientFormat, ClientSseRenderer, ParsedRequest, UpstreamEventParser};
+use super::{ClientFormat, ClientSseRenderer, ParsedRequest, PayloadError, UpstreamEventParser};
 use crate::{
-    error::{ApiError, invalid_request_from_json},
     format::{
         allowed_fields, arguments_as_object, finish_reason_from_openai, finish_reason_to_openai,
         json_insert, reject_unknown_fields, validate_content_part_fields,
     },
     ids::new_uuid,
     ir::{
-        IrAggregation, IrEvent, IrFinishReason, IrImage, IrMessage, IrPart, IrReasoningEffort,
-        IrRequest, IrResponseFormat, IrRole, IrTool, IrToolChoice, IrUsage,
+        InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrImage, IrMessage, IrPart,
+        IrReasoningEffort, IrRequest, IrResponseFormat, IrRole, IrTool, IrToolChoice, IrUsage,
     },
     sse::{SseFrame, format_data_frame},
     unix_time,
@@ -337,7 +336,7 @@ struct StreamOptionsIn {
 pub(crate) struct Format;
 
 impl ClientFormat for Format {
-    fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
+    fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
         parse_request(body)
     }
 
@@ -357,10 +356,10 @@ impl ClientFormat for Format {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for malformed JSON, unknown or unsupported fields,
-/// invalid parameter ranges, and invalid image references.
-fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
-    let raw: Value = serde_json::from_slice(body).map_err(invalid_request_from_json)?;
+/// Returns [`InvalidRequest`] for malformed JSON, unknown or unsupported
+/// fields, invalid parameter ranges, and invalid image references.
+fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
+    let raw: Value = serde_json::from_slice(body).map_err(InvalidRequest::from_json)?;
 
     // Raw-field validation runs before deserialization so `raw` can be
     // consumed directly instead of cloned; deserializing a body with inline
@@ -368,7 +367,7 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
     validate_message_fields(raw.get("messages"))?;
     validate_response_format_fields(raw.get("response_format"))?;
 
-    let request: RequestBody = serde_json::from_value(raw).map_err(invalid_request_from_json)?;
+    let request: RequestBody = serde_json::from_value(raw).map_err(InvalidRequest::from_json)?;
 
     let mut instructions_parts: Vec<String> = Vec::new();
     let mut messages: Vec<IrMessage> = Vec::new();
@@ -428,7 +427,7 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
                 if let Some(tool_calls) = tool_calls {
                     for tool_call in tool_calls {
                         if tool_call.tool_type != "function" {
-                            return Err(ApiError::invalid_parameter(
+                            return Err(InvalidRequest::field(
                                 "type",
                                 format!("Unsupported tool call type `{}`", tool_call.tool_type),
                             ));
@@ -475,7 +474,7 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
     if let Some(tools_in) = &request.tools {
         for tool in tools_in {
             if tool.tool_type != "function" {
-                return Err(ApiError::invalid_parameter(
+                return Err(InvalidRequest::field(
                     "type",
                     format!("Unsupported tool type `{}`", tool.tool_type),
                 ));
@@ -492,7 +491,7 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
     let tool_choice = match (&request.tool_choice, tools.is_empty()) {
         (None, _) => None,
         (Some(_), true) => {
-            return Err(ApiError::invalid_parameter(
+            return Err(InvalidRequest::field(
                 "tool_choice",
                 "tool_choice requires at least one tool",
             ));
@@ -504,7 +503,7 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
                 "none" => IrToolChoice::None,
                 "required" => IrToolChoice::Required,
                 other => {
-                    return Err(ApiError::invalid_parameter(
+                    return Err(InvalidRequest::field(
                         "tool_choice",
                         format!("Unknown tool_choice `{other}`"),
                     ));
@@ -516,7 +515,7 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
                 function,
             } => {
                 if tool_type != "function" {
-                    return Err(ApiError::invalid_parameter(
+                    return Err(InvalidRequest::field(
                         "type",
                         format!("Unsupported tool_choice type `{tool_type}`"),
                     ));
@@ -533,7 +532,7 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
         .temperature
         .is_some_and(|temperature| !(0.0..=2.0).contains(&temperature))
     {
-        return Err(ApiError::invalid_parameter(
+        return Err(InvalidRequest::field(
             "temperature",
             "temperature must be between 0 and 2",
         ));
@@ -543,14 +542,14 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
         .top_p
         .is_some_and(|top_p| !(0.0..=1.0).contains(&top_p))
     {
-        return Err(ApiError::invalid_parameter(
+        return Err(InvalidRequest::field(
             "top_p",
             "top_p must be between 0 and 1",
         ));
     }
 
     if request.max_tokens.is_some() && request.max_completion_tokens.is_some() {
-        return Err(ApiError::invalid_parameter(
+        return Err(InvalidRequest::field(
             "max_tokens",
             "max_tokens and max_completion_tokens are mutually exclusive",
         ));
@@ -569,7 +568,7 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
     let reasoning_effort = match &request.reasoning_effort {
         None => None,
         Some(effort) => Some(IrReasoningEffort::parse_openai(effort).ok_or_else(|| {
-            ApiError::invalid_parameter(
+            InvalidRequest::field(
                 "reasoning_effort",
                 format!("Unknown reasoning_effort `{effort}`"),
             )
@@ -606,8 +605,8 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError> {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] naming the first unknown field.
-fn validate_message_fields(messages: Option<&Value>) -> Result<(), ApiError> {
+/// Returns [`InvalidRequest`] naming the first unknown field.
+fn validate_message_fields(messages: Option<&Value>) -> Result<(), InvalidRequest> {
     let Some(messages) = messages.and_then(Value::as_array) else {
         return Ok(());
     };
@@ -638,7 +637,7 @@ fn validate_message_fields(messages: Option<&Value>) -> Result<(), ApiError> {
 
 /// Rejects unknown fields on the `response_format` envelope around its
 /// internally tagged variants.
-fn validate_response_format_fields(response_format: Option<&Value>) -> Result<(), ApiError> {
+fn validate_response_format_fields(response_format: Option<&Value>) -> Result<(), InvalidRequest> {
     let Some(object) = response_format.and_then(Value::as_object) else {
         return Ok(());
     };
@@ -905,7 +904,7 @@ impl UpstreamParser {
     }
 
     /// Ingests one streaming chunk object.
-    fn ingest_chunk(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
+    fn ingest_chunk(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
         reject_upstream_error(&value)?;
 
         let mut events = self.message_start_events(&value);
@@ -966,7 +965,7 @@ impl UpstreamParser {
         &mut self,
         tool_call: &Value,
         events: &mut Vec<IrEvent>,
-    ) -> Result<(), ApiError> {
+    ) -> Result<(), PayloadError> {
         let index = tool_call
             .get("index")
             .and_then(Value::as_u64)
@@ -1082,14 +1081,14 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError`] for malformed JSON and upstream error payloads.
-    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
+    /// Returns [`PayloadError`] for malformed JSON and upstream error payloads.
+    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
         if frame.data.trim() == "[DONE]" {
             return Ok(self.flush_pending_calls());
         }
 
         let value: Value = serde_json::from_str(&frame.data)
-            .map_err(|_| ApiError::upstream_unavailable("malformed JSON in upstream SSE frame"))?;
+            .map_err(|_| PayloadError::new("malformed JSON in upstream SSE frame"))?;
 
         self.ingest_chunk(value)
     }
@@ -1098,8 +1097,9 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError`] for upstream error payloads and malformed bodies.
-    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
+    /// Returns [`PayloadError`] for upstream error payloads and malformed
+    /// bodies.
+    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
         reject_upstream_error(&value)?;
 
         let mut events = self.message_start_events(&value);
@@ -1263,7 +1263,7 @@ fn message_events_from_full(message: &Value) -> Vec<IrEvent> {
 /// (README §6.7), so the embedded `code` is never mirrored as the outward
 /// status — a 2xx code would otherwise render a success status carrying an
 /// error body. The embedded code and text ride in the message instead.
-fn reject_upstream_error(value: &Value) -> Result<(), ApiError> {
+fn reject_upstream_error(value: &Value) -> Result<(), PayloadError> {
     let Some(error) = value.get("error") else {
         return Ok(());
     };
@@ -1284,7 +1284,7 @@ fn reject_upstream_error(value: &Value) -> Result<(), ApiError> {
         None => text,
     };
 
-    Err(ApiError::upstream_unavailable(detail))
+    Err(PayloadError::new(detail))
 }
 
 /// Streaming client response renderer producing Chat Completions SSE frames.
@@ -1518,8 +1518,8 @@ impl ClientSseRenderer for SseRenderer {
     }
 
     /// Renders a mid-stream error as a terminal SSE frame.
-    fn error_frame(&mut self, error: &ApiError) -> String {
-        format_data_frame(&error.to_openai_json().to_string())
+    fn error_frame(&mut self, error: &serde_json::Value) -> String {
+        format_data_frame(&error.to_string())
     }
 }
 

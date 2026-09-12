@@ -57,21 +57,23 @@
                │ (invokes Router as tower::Service)
                ▼
       ┌─────────────────┐
-      │   Root Router   │  (Fallback: generic 404 handler)
+      │   Root Router   │  (Fallback: empty 404)
       └───┬─────────┬───┘
           │         │
           │         └──────────────────────────────────┐
           ▼                                            ▼
 ┌───────────────────┐                        ┌───────────────────┐
 │ Management API Rtr│ (/management-api/*)    │    API Router     │ (/api/*)
-│ (Management Auth) │                        │ (Fallback: 404)   │
-│ (Fallback: 404)   │                        └─────────┬─────────┘
+│ (Management Auth) │                        │ (No fallback)     │
+│ (Fallback: 404    │                        └─────────┬─────────┘
+│   errno JSON)     │                                  │
 └───────────────────┘                                  │
                                                        ▼
                                              ┌───────────────────┐
                                              │ Format Sub-router │ (/openai-v1/*)
                                              │ (Format Auth)     │
-                                             │ (Fallback: 404)   │
+                                             │ (Fallback: OpenAI │
+                                             │   404 JSON)       │
                                              └───────────────────┘
 ```
 
@@ -84,7 +86,7 @@ The server architecture separates low-level connection driving from hierarchical
    - **Root Router**:
      - Holds the `Database` value directly as its router state (there is no `AppState` wrapper type) and propagates it to sub-routers.
      - Nests `/management-api` and `/api` sub-routers.
-     - Maintains its own top-level fallback route returning an HTTP 404 response for any unmapped root paths.
+     - Maintains its own top-level fallback route returning an empty HTTP 404 response for any unmapped root paths.
    - **Management API Sub-router (`/management-api`)**:
      - Scoped to management endpoints (`/list-providers`, `/save-provider`, etc.).
      - Wrapped with management authentication middleware (`Authorization: <token>`).
@@ -92,16 +94,16 @@ The server architecture separates low-level connection driving from hierarchical
    - **API Sub-router (`/api`)**:
      - Parent router for all external gateway protocols.
      - Nests isolated format sub-routers (e.g. `/openai-v1`).
-     - Maintains its own fallback route returning an API-scoped 404 response for unmapped paths under `/api`.
+     - Defines no fallback of its own: unmapped paths under `/api` propagate upward to the root router's empty 404.
    - **Format-Specific Sub-routers (e.g. `/openai-v1`)**:
      - Scoped to that protocol's endpoints (`/chat/completions`, `/responses`, `/models`).
      - Wrapped with format-specific authentication middleware (e.g. `Authorization: Bearer <key>`).
      - Maintains its own fallback route returning format-compliant 404 error payloads (e.g. OpenAI JSON error structure: `{"error": {"message": "Invalid URL", "type": "invalid_request_error", "code": null}}`).
 3. **Independent 404 Fallback Routes**:
-   - Every router at every level (root router, management API sub-router, API sub-router, and each format sub-router) defines its own dedicated fallback route returning an appropriately structured 404 response matching its respective domain.
+   - Exactly three fallback handlers exist, one per routing domain: the root router answers unmapped paths with an empty 404, the management API sub-router answers with its errno error JSON (§7), and the `/openai-v1` format sub-router answers with the OpenAI error JSON. The `/api` parent router defines none, delegating its unmatched paths to the root router.
 4. **Method Mismatch on Routed Paths**:
    - A request whose method is not registered on an otherwise-matching routed path (e.g. `GET /api/openai-v1/chat/completions`) never reaches the 404 fallbacks: axum's method routing answers HTTP 405 with an empty body and an `Allow` header listing the registered methods.
-   - This 405 is distinct from the JSON 404 fallbacks above, which serve only unmapped paths; the router-level authentication middleware still applies, so an unauthorized request is rejected with 401 before the 405 is produced.
+   - This 405 is distinct from the 404 fallbacks above, which serve only unmapped paths; the router-level authentication middleware still applies, so an unauthorized request is rejected with 401 before the 405 is produced.
 
 **Fail-fast panics are contractual**: the process installs a panic hook before any other startup operation that prints the panic diagnostic to stderr and terminates the process with exit code 1, so a panic in any spawned task — accepted-connection or request-pipeline — kills the whole gateway by design instead of leaving a partially operational server behind.
 
@@ -133,7 +135,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   - `model_prefix`: Non-null string prefixed to model names (e.g. `codex/` or `agy-`); may be the empty string. Stored verbatim with no default: every write states the prefix explicitly.
   - `type`: `openai_oauth`, `antigravity_oauth`, or `openai_compatible`.
   - `credentials`: Plaintext JSON payload (`{accessToken, refreshToken, accountId/projectId}` or `{apiKey}`) stored directly in the database without encryption.
-  - `expires_at`: Unix timestamp when the OAuth access token expires. Credentials replaced through `save-provider` are stored with no expiry, which the gateway treats as not-fresh: the first inference request then performs one lease-guarded refresh (see `refresh_started_at`) using the stored refresh token. A token response reporting a zero or negative `expires_in` is rejected as malformed (502), and a refresh grant rejected with the terminal `invalid_grant` error (RFC 6749 §5.2) fails with 502 whose message states the refresh token was rejected and the provider needs re-authorization — only user re-authorization recovers a revoked or expired grant, so re-attempting it is futile; the machine-readable code remains `upstream_error` in both cases.
+  - `expires_at`: Unix timestamp when the OAuth access token expires. Credentials replaced through `save-provider` are stored with no expiry, which the gateway treats as not-fresh: the first inference request then performs one lease-guarded refresh (see `refresh_started_at`) using the stored refresh token. A token response reporting a zero or negative `expires_in` is rejected as malformed (502), and a refresh grant rejected with the terminal `invalid_grant` error (RFC 6749 §5.2) fails with 502 whose message states the refresh token was rejected and the provider needs re-authorization — only user re-authorization recovers a revoked or expired grant, so re-attempting it is futile; the management errno remains the upstream-error category (502, §7) in both cases.
   - `refresh_started_at`: Lease timestamp to prevent concurrent token refresh races. When the token is expired, a request wins the lease by writing `refresh_started_at = now` inside a transaction conditional on the lease being absent or stale (older than 90 seconds); the winner refreshes the token and clears the lease. Concurrent requests poll up to 100 seconds — deliberately longer than the 90-second staleness window, so a lease abandoned by a crashed refresher is always reacquired rather than waited out — until the token is renewed, then re-read it; when the poll window elapses the request fails with 502. The lease acquire is a read-then-write transaction: when a concurrent commit invalidates its read snapshot, the engine refuses the write upgrade with the stale-snapshot busy error, which is classified as "lease not acquired" and joins the same poll loop, so a burst of simultaneous acquirers on one expired token waits its turn instead of failing. Any refresh failure — the grant or its persistence — clears the lease before the original error is returned, so waiters can acquire it instead of burning their whole wait behind a refresh that already failed; a failed lease clear never replaces that original error. The renewed credentials persist only while the refresher still owns the lease it acquired (`refresh_started_at` still equals the acquired stamp): a credentials replacement or stale-lease reacquisition that lands while the grant is in flight wins the row, the in-flight result — derived from superseded credentials — is discarded without touching the newer state, and the loser re-enters the lease competition.
   - `is_enabled`: Stored serving switch (`0` or `1`, default `1`). Master switch for all models of this provider.
 - **Model**:
@@ -163,8 +165,8 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
    - All token comparisons use constant-time byte comparison. Mismatch yields HTTP 401.
    - Error response bodies are router-domain specific:
      - Root router: plain HTTP 404 with an empty body.
-     - Management API: `{"error": {"message": <human-readable message>, "code": <machine-readable code>}}`; an unauthorized request carries `code: "unauthorized"`, an unknown path `code: "not_found"` (HTTP 404).
-     - Outward API (both `/api` fallback and `/openai-v1` format fallback): OpenAI JSON error structure `{"error": {"message": ..., "type": ..., "param": null, "code": ...}}`; the `/openai-v1` fallback returns `type: "invalid_request_error"`, `code: null` and `message: "Invalid URL (<METHOD> <path>)"` with HTTP 404.
+     - Management API: `{"error": {"code": <numeric errno>, "message": <human-readable message>}}`; the closed errno taxonomy and each errno's pinned HTTP status are defined in §7.
+     - Outward API (`/openai-v1` format fallback): OpenAI JSON error structure `{"error": {"message": ..., "type": ..., "param": null, "code": ...}}`; the fallback returns `type: "invalid_request_error"`, `code: null` and `message: "Invalid URL (<METHOD> <path>)"` with HTTP 404.
 2. **Plaintext Credential Storage**:
    - Upstream credentials and tokens are stored directly in plaintext JSON within the database. No encryption or decryption is performed.
 3. **Network Invariants**:
@@ -366,7 +368,18 @@ Error payloads for the `/responses` endpoint use the same OpenAI error JSON stru
 
 All management routes are registered under the `/management-api` sub-router with its own 404 fallback handler and require authorization via `Authorization: <token>` (without any `Bearer` prefix).
 
-Responses are JSON. Success responses use HTTP 200; errors use the structure from §4 with codes `unauthorized` (401), `invalid_request` (400), `not_found` (404), `conflict` (409), `upstream_error` (502), and `internal` (500). Upstream failures on management endpoints always render HTTP 502 with `upstream_error` and the upstream status embedded in the message; a foreign upstream status is never forwarded verbatim.
+Responses are JSON. Success responses use HTTP 200; errors use the structure from §4: `{"error": {"code": <errno>, "message": <human-readable message>}}`. The `code` is a numeric errno from a closed taxonomy, and each errno pins exactly one HTTP status — the two can never drift apart:
+
+| errno | Category | HTTP Status |
+| :--- | :--- | :--- |
+| 1 | `invalid_request` — the request is malformed or unsupported | 400 |
+| 2 | `unauthorized` — missing or invalid management token | 401 |
+| 3 | `not_found` — unknown resource or path | 404 |
+| 4 | `conflict` — the request collides with existing state | 409 |
+| 5 | `upstream_error` — upstream provider failed or was unreachable | 502 |
+| 6 | `internal` — gateway failure | 500 |
+
+The rest of this document names management errors by category and HTTP status (e.g. 404 `not_found`). Upstream failures on management endpoints always render errno 5 with HTTP 502 and the upstream status embedded in the message; a foreign upstream status is never forwarded verbatim. The outward OpenAI error taxonomy (§6.7) is an entirely separate error domain, with its own error type, and is never rendered on a management route.
 
 One strictness rule applies uniformly to every management request body: **names are non-empty**. Every request field naming an entity — the `name` a provider is created with, `upstream_id`, and `id_override` when present — must be a non-empty string; an empty name is rejected with 400 naming the field instead of falling through to a 404 lookup miss. Name content is the caller's choice and is never validated further. `providers.name` additionally carries a `CHECK (name <> '')` constraint, so the empty string is a storage-level violation (§3). Existing providers are addressed exclusively by their `id`; an unknown id is rejected with 404.
 

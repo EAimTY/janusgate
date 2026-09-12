@@ -4,11 +4,97 @@ use super::{
     Credentials, Model, ModelRouting, NewProvider, OAuthProviderType, Provider, ProviderType,
 };
 use crate::{
-    database::{Database, Row, Transaction, Value, params, params_from_iter},
-    error::ApiError,
+    database::{
+        Database, Error as DatabaseError, Row, Transaction, Value, params, params_from_iter,
+    },
     format::UpstreamFormat,
 };
 use std::collections::HashMap;
+use turso::Error as TursoError;
+
+/// Provider, model, and OAuth state persistence failures.
+///
+/// Semantic outcomes the checked operations promise — a missing row, a
+/// conflicting write — are their own variants, while every engine failure is
+/// classified once here so the HTTP surfaces never inspect the database
+/// error domain themselves.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum Error {
+    /// A checked lookup or precondition failed: the addressed row does not
+    /// exist.
+    #[error("{message}")]
+    NotFound {
+        /// Human-readable failure message.
+        message: String,
+    },
+
+    /// The write collides with existing state.
+    #[error("{message}")]
+    Conflict {
+        /// Human-readable failure message.
+        message: String,
+    },
+
+    /// The engine rejected a write with a constraint violation — the
+    /// concurrent backstop behind a checked conflict.
+    #[error("database constraint violated: {detail}")]
+    Constraint {
+        /// Engine-provided violation detail.
+        detail: String,
+    },
+
+    /// Database contention: the file lock was busy or a read-then-write
+    /// upgrade was refused with a stale snapshot.
+    #[error("database is busy: {detail}")]
+    Busy {
+        /// Underlying engine failure, retained so lease callers can
+        /// distinguish the stale-snapshot refusal from plain contention.
+        source: DatabaseError,
+
+        /// Engine-provided contention detail.
+        detail: String,
+    },
+
+    /// Stored data violated an invariant written by the validated management
+    /// path — database drift.
+    #[error("{message}")]
+    Drift {
+        /// Human-readable failure message.
+        message: String,
+    },
+
+    /// The database engine failed.
+    #[error("database error: {0}")]
+    Database(DatabaseError),
+}
+
+impl From<TursoError> for Error {
+    fn from(error: TursoError) -> Self {
+        Self::Database(DatabaseError::Turso(error))
+    }
+}
+
+impl From<DatabaseError> for Error {
+    fn from(error: DatabaseError) -> Self {
+        match error {
+            DatabaseError::Turso(TursoError::Constraint(detail)) => Self::Constraint { detail },
+
+            DatabaseError::Turso(inner @ (TursoError::Busy(_) | TursoError::BusySnapshot(_))) => {
+                let detail = match &inner {
+                    TursoError::Busy(detail) | TursoError::BusySnapshot(detail) => detail.clone(),
+                    other => other.to_string(),
+                };
+
+                Self::Busy {
+                    source: DatabaseError::Turso(inner),
+                    detail,
+                }
+            }
+
+            error => Self::Database(error),
+        }
+    }
+}
 
 /// Column order of provider selects.
 const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, protocol, base_url, credentials, \
@@ -29,11 +115,11 @@ const PROVIDER_MODEL_COLUMNS: &str = concat!(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the insert fails.
+/// Returns [`Error`] when the insert fails.
 pub(crate) async fn insert_provider(
     database: &Database,
     provider: &NewProvider<'_>,
-) -> Result<(), ApiError> {
+) -> Result<(), Error> {
     database
         .execute(
             "INSERT INTO providers (name, model_prefix, type, protocol, base_url, credentials, \
@@ -58,8 +144,8 @@ pub(crate) async fn insert_provider(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or a row is malformed.
-pub(crate) async fn list_providers(database: &Database) -> Result<Vec<Provider>, ApiError> {
+/// Returns [`Error`] when the query fails or a row is malformed.
+pub(crate) async fn list_providers(database: &Database) -> Result<Vec<Provider>, Error> {
     let sql = format!("SELECT {PROVIDER_COLUMNS} FROM providers ORDER BY name");
 
     let rows = database.query(sql, ()).await?;
@@ -84,11 +170,11 @@ fn find_provider_by_id_sql() -> String {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or the row is malformed.
+/// Returns [`Error`] when the query fails or the row is malformed.
 pub(crate) async fn find_provider(
     database: &Database,
     name: &str,
-) -> Result<Option<Provider>, ApiError> {
+) -> Result<Option<Provider>, Error> {
     let rows = database.query(find_provider_sql(), params![name]).await?;
 
     rows.first().map(provider_from_row).transpose()
@@ -98,11 +184,11 @@ pub(crate) async fn find_provider(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or the row is malformed.
+/// Returns [`Error`] when the query fails or the row is malformed.
 pub(crate) async fn find_provider_by_id(
     database: &Database,
     provider_id: i64,
-) -> Result<Option<Provider>, ApiError> {
+) -> Result<Option<Provider>, Error> {
     let rows = database
         .query(find_provider_by_id_sql(), params![provider_id])
         .await?;
@@ -115,11 +201,11 @@ pub(crate) async fn find_provider_by_id(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or the row is malformed.
+/// Returns [`Error`] when the query fails or the row is malformed.
 pub(crate) async fn find_provider_by_id_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
-) -> Result<Option<Provider>, ApiError> {
+) -> Result<Option<Provider>, Error> {
     let rows = transaction
         .query(find_provider_by_id_sql(), params![provider_id])
         .await?;
@@ -133,26 +219,25 @@ pub(crate) async fn find_provider_by_id_in_transaction(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or the provider does not exist.
+/// Returns [`Error`] when the query fails or the provider does not exist.
 pub(crate) async fn reload_provider(
     database: &Database,
     provider_id: i64,
     context: &str,
-) -> Result<Provider, ApiError> {
+) -> Result<Provider, Error> {
     find_provider_by_id(database, provider_id)
         .await?
-        .ok_or_else(|| ApiError::internal(format!("provider vanished after {context}")))
+        .ok_or_else(|| Error::Drift {
+            message: format!("provider vanished after {context}"),
+        })
 }
 
 /// Deletes one provider by id, returning whether a row was removed.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the delete fails.
-pub(crate) async fn delete_provider(
-    database: &Database,
-    provider_id: i64,
-) -> Result<bool, ApiError> {
+/// Returns [`Error`] when the delete fails.
+pub(crate) async fn delete_provider(database: &Database, provider_id: i64) -> Result<bool, Error> {
     let changes = database
         .execute("DELETE FROM providers WHERE id = ?1", params![provider_id])
         .await?;
@@ -170,13 +255,13 @@ pub(crate) async fn delete_provider(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the update fails.
+/// Returns [`Error`] when the update fails.
 pub(crate) async fn update_credentials(
     database: &Database,
     provider_id: i64,
     credentials: &Credentials,
     expires_at: Option<i64>,
-) -> Result<bool, ApiError> {
+) -> Result<bool, Error> {
     let changes = database
         .execute(
             "UPDATE providers SET credentials = ?1, expires_at = ?2, refresh_started_at = NULL \
@@ -239,22 +324,22 @@ pub(crate) struct ProviderUpdate<'a> {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for an unknown provider, a failed statement, a taken
+/// Returns [`Error`] for an unknown provider, a failed statement, a taken
 /// name, or a recomputed public ID collision.
 pub(crate) async fn update_provider(
     database: &Database,
     provider_id: i64,
     update: ProviderUpdate<'_>,
-) -> Result<Provider, ApiError> {
+) -> Result<Provider, Error> {
     let mut transaction = database.transaction().await?;
 
     // The merge reads the row inside the transaction, so absent fields keep
     // the newest stored values, never the caller's snapshot.
     let Some(provider) = find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
     else {
-        return Err(ApiError::not_found(format!(
-            "Provider {provider_id} does not exist"
-        )));
+        return Err(Error::NotFound {
+            message: format!("Provider {provider_id} does not exist"),
+        });
     };
 
     let name = update.name;
@@ -270,9 +355,9 @@ pub(crate) async fn update_provider(
         .await?;
 
     if !name_holders.is_empty() {
-        return Err(ApiError::conflict(format!(
-            "Provider name `{name}` is already taken"
-        )));
+        return Err(Error::Conflict {
+            message: format!("Provider name `{name}` is already taken"),
+        });
     }
 
     let model_prefix = update.model_prefix;
@@ -347,8 +432,8 @@ pub(crate) async fn update_provider(
             .await?;
     }
 
-    transaction.commit().await.map_err(|error| {
-        ApiError::internal(format!("failed to commit provider update: {error}"))
+    transaction.commit().await.map_err(|error| Error::Drift {
+        message: format!("failed to commit provider update: {error}"),
     })?;
 
     // The returned row mirrors exactly what this transaction wrote.
@@ -376,15 +461,17 @@ pub(crate) async fn update_provider(
 fn ensure_ids_pairwise_distinct(
     provider_name: &str,
     composed: &[(&str, &str)],
-) -> Result<(), ApiError> {
+) -> Result<(), Error> {
     let mut seen: HashMap<&str, &str> = HashMap::with_capacity(composed.len());
 
     for (new_id, upstream_id) in composed {
         if let Some(first_upstream_id) = seen.insert(new_id, upstream_id) {
-            return Err(ApiError::conflict(format!(
-                "Public model ID `{new_id}` collides between upstream models \
-                 `{first_upstream_id}` and `{upstream_id}` of provider `{provider_name}`"
-            )));
+            return Err(Error::Conflict {
+                message: format!(
+                    "Public model ID `{new_id}` collides between upstream models \
+                     `{first_upstream_id}` and `{upstream_id}` of provider `{provider_name}`"
+                ),
+            });
         }
     }
 
@@ -401,12 +488,12 @@ fn ensure_ids_pairwise_distinct(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or an ID collides.
+/// Returns [`Error`] when the query fails or an ID collides.
 async fn ensure_ids_routable(
     transaction: &mut Transaction,
     provider_id: i64,
     composed: &[(&str, &str)],
-) -> Result<(), ApiError> {
+) -> Result<(), Error> {
     let routed_rows = transaction
         .query(
             "SELECT m.id, m.provider_id, m.upstream_id, p.name \
@@ -427,10 +514,12 @@ async fn ensure_ids_routable(
             routed.get(*new_id)
             && (*holder_provider_id != provider_id || holder_upstream_id != upstream_id)
         {
-            return Err(ApiError::conflict(format!(
-                "Public model ID `{new_id}` is already routed by provider \
-                 `{holder_provider_name}`"
-            )));
+            return Err(Error::Conflict {
+                message: format!(
+                    "Public model ID `{new_id}` is already routed by provider \
+                     `{holder_provider_name}`"
+                ),
+            });
         }
     }
 
@@ -441,11 +530,11 @@ async fn ensure_ids_routable(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or a row is malformed.
+/// Returns [`Error`] when the query fails or a row is malformed.
 async fn find_models_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
-) -> Result<Vec<Model>, ApiError> {
+) -> Result<Vec<Model>, Error> {
     let sql =
         format!("SELECT {MODEL_COLUMNS} FROM models WHERE provider_id = ?1 ORDER BY upstream_id");
 
@@ -461,7 +550,7 @@ async fn find_models_in_transaction(
 /// lease acquired after `lease_stale_before`. Returns the acquired lease
 /// stamp, or `None` when another holder owns a live lease.
 ///
-/// The raw [`crate::database::Error`] is returned instead of an [`ApiError`]
+/// The raw [`crate::database::Error`] is returned instead of an [`Error`]
 /// because the caller must classify a stale-snapshot busy failure — a
 /// concurrent commit invalidating the read-then-write upgrade — as "not
 /// acquired" and retry through its poll loop, rather than render it as a
@@ -500,14 +589,14 @@ pub(crate) async fn try_acquire_refresh_lease(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the update fails.
+/// Returns [`Error`] when the update fails.
 pub(crate) async fn update_credentials_for_lease(
     database: &Database,
     provider_id: i64,
     lease_started_at: i64,
     credentials: &Credentials,
     expires_at: Option<i64>,
-) -> Result<bool, ApiError> {
+) -> Result<bool, Error> {
     let changes = database
         .execute(
             "UPDATE providers SET credentials = ?1, expires_at = ?2, refresh_started_at = NULL \
@@ -528,11 +617,11 @@ pub(crate) async fn update_credentials_for_lease(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the update fails.
+/// Returns [`Error`] when the update fails.
 pub(crate) async fn clear_refresh_lease(
     database: &Database,
     provider_id: i64,
-) -> Result<(), ApiError> {
+) -> Result<(), Error> {
     database
         .execute(
             "UPDATE providers SET refresh_started_at = NULL WHERE id = ?1",
@@ -547,11 +636,11 @@ pub(crate) async fn clear_refresh_lease(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or a row is malformed.
+/// Returns [`Error`] when the query fails or a row is malformed.
 pub(crate) async fn find_routing(
     database: &Database,
     public_id: &str,
-) -> Result<Option<ModelRouting>, ApiError> {
+) -> Result<Option<ModelRouting>, Error> {
     let sql = format!(
         "SELECT {PROVIDER_MODEL_COLUMNS} FROM models m \
          JOIN providers p ON p.id = m.provider_id WHERE m.id = ?1"
@@ -576,12 +665,12 @@ pub(crate) async fn find_routing(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or a row is malformed.
+/// Returns [`Error`] when the query fails or a row is malformed.
 async fn find_model_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
     upstream_id: &str,
-) -> Result<Option<Model>, ApiError> {
+) -> Result<Option<Model>, Error> {
     let rows = transaction
         .query(
             format!(
@@ -615,8 +704,8 @@ pub(crate) struct ModelEntry {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or a row is malformed.
-pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelEntry>, ApiError> {
+/// Returns [`Error`] when the query fails or a row is malformed.
+pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelEntry>, Error> {
     let rows = database
         .query(
             "SELECT p.id, p.name AS provider_name, p.is_enabled AS provider_is_enabled, \
@@ -631,9 +720,9 @@ pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelE
 
     for row in &rows {
         entries.push(ModelEntry {
-            provider_id: row.get(0).map_err(ApiError::from)?,
-            provider_name: row.get(1).map_err(ApiError::from)?,
-            is_provider_enabled: row.get::<i64>(2).map_err(ApiError::from)? != 0,
+            provider_id: row.get(0).map_err(Error::from)?,
+            provider_name: row.get(1).map_err(Error::from)?,
+            is_provider_enabled: row.get::<i64>(2).map_err(Error::from)? != 0,
             model: model_from_row_offset(row, 3)?,
         });
     }
@@ -649,10 +738,10 @@ pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelE
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails.
+/// Returns [`Error`] when the query fails.
 pub(crate) async fn list_enabled_models_with_owner(
     database: &Database,
-) -> Result<Vec<(String, String)>, ApiError> {
+) -> Result<Vec<(String, String)>, Error> {
     let rows = database
         .query(
             "SELECT m.id, p.name FROM models m JOIN providers p ON p.id = m.provider_id \
@@ -688,26 +777,20 @@ pub(crate) async fn list_enabled_models_with_owner(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for an empty discovered set, an unknown provider,
+/// Returns [`Error`] for an empty discovered set, an unknown provider,
 /// failed statements, or a composed public ID collision.
 pub(crate) async fn replace_discovered_models(
     database: &Database,
     provider_id: i64,
     upstream_ids: &[String],
-) -> Result<usize, ApiError> {
-    if upstream_ids.is_empty() {
-        return Err(ApiError::upstream_unavailable(
-            "upstream reported no models; refusing to replace the provider's model rows",
-        ));
-    }
-
+) -> Result<usize, Error> {
     let mut transaction = database.transaction().await?;
 
     let Some(provider) = find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
     else {
-        return Err(ApiError::not_found(format!(
-            "Provider {provider_id} does not exist"
-        )));
+        return Err(Error::NotFound {
+            message: format!("Provider {provider_id} does not exist"),
+        });
     };
 
     let previous = find_models_in_transaction(&mut transaction, provider.id).await?;
@@ -748,8 +831,8 @@ pub(crate) async fn replace_discovered_models(
 
     replace_provider_models(&mut transaction, provider.id, &models).await?;
 
-    transaction.commit().await.map_err(|error| {
-        ApiError::internal(format!("failed to commit discovered models: {error}"))
+    transaction.commit().await.map_err(|error| Error::Drift {
+        message: format!("failed to commit discovered models: {error}"),
     })?;
 
     Ok(models.len())
@@ -759,12 +842,12 @@ pub(crate) async fn replace_discovered_models(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when any statement fails.
+/// Returns [`Error`] when any statement fails.
 async fn replace_provider_models(
     transaction: &mut Transaction,
     provider_id: i64,
     models: &[Model],
-) -> Result<(), ApiError> {
+) -> Result<(), Error> {
     transaction
         .execute(
             "DELETE FROM models WHERE provider_id = ?1",
@@ -824,30 +907,31 @@ pub(crate) struct ModelOverrideUpdate<'a> {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for unknown rows, failed statements, or a public ID
+/// Returns [`Error`] for unknown rows, failed statements, or a public ID
 /// collision.
 pub(crate) async fn update_model_overrides_checked(
     database: &Database,
     update: ModelOverrideUpdate<'_>,
-) -> Result<ModelEntry, ApiError> {
+) -> Result<ModelEntry, Error> {
     let mut transaction = database.transaction().await?;
 
     let Some(provider) =
         find_provider_by_id_in_transaction(&mut transaction, update.provider_id).await?
     else {
-        return Err(ApiError::not_found(format!(
-            "Provider {} does not exist",
-            update.provider_id
-        )));
+        return Err(Error::NotFound {
+            message: format!("Provider {} does not exist", update.provider_id),
+        });
     };
 
     let Some(model) =
         find_model_in_transaction(&mut transaction, provider.id, update.upstream_id).await?
     else {
-        return Err(ApiError::not_found(format!(
-            "Model `{}` does not exist on provider `{}`",
-            update.upstream_id, provider.name
-        )));
+        return Err(Error::NotFound {
+            message: format!(
+                "Model `{}` does not exist on provider `{}`",
+                update.upstream_id, provider.name
+            ),
+        });
     };
 
     let new_id_override = update
@@ -907,10 +991,12 @@ pub(crate) async fn update_model_overrides_checked(
 
     let entry = find_model_entry_in_transaction(&mut transaction, provider.id, update.upstream_id)
         .await?
-        .ok_or_else(|| ApiError::internal("model vanished after override update"))?;
+        .ok_or_else(|| Error::Drift {
+            message: "model vanished after override update".to_string(),
+        })?;
 
-    transaction.commit().await.map_err(|error| {
-        ApiError::internal(format!("failed to commit model override update: {error}"))
+    transaction.commit().await.map_err(|error| Error::Drift {
+        message: format!("failed to commit model override update: {error}"),
     })?;
 
     Ok(entry)
@@ -920,12 +1006,12 @@ pub(crate) async fn update_model_overrides_checked(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or a row is malformed.
+/// Returns [`Error`] when the query fails or a row is malformed.
 async fn find_model_entry_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
     upstream_id: &str,
-) -> Result<Option<ModelEntry>, ApiError> {
+) -> Result<Option<ModelEntry>, Error> {
     let rows = transaction
         .query(
             "SELECT p.id, p.name, p.is_enabled, m.provider_id, m.upstream_id, m.id, \
@@ -952,14 +1038,14 @@ async fn find_model_entry_in_transaction(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the insert fails.
+/// Returns [`Error`] when the insert fails.
 pub(crate) async fn insert_oauth_state(
     database: &Database,
     state_type: OAuthProviderType,
     state: &str,
     verifier: &str,
     expires_at: i64,
-) -> Result<(), ApiError> {
+) -> Result<(), Error> {
     database
         .execute(
             "INSERT INTO oauth_states (type, state, verifier, expires_at) VALUES (?1, ?2, ?3, ?4)",
@@ -986,12 +1072,12 @@ pub(crate) struct OAuthState {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the query fails or the stored type is unknown.
+/// Returns [`Error`] when the query fails or the stored type is unknown.
 pub(crate) async fn find_oauth_state_type(
     database: &Database,
     state: &str,
     now: i64,
-) -> Result<Option<OAuthProviderType>, ApiError> {
+) -> Result<Option<OAuthProviderType>, Error> {
     let rows = database
         .query(
             "SELECT type FROM oauth_states WHERE state = ?1 AND expires_at > ?2",
@@ -1018,12 +1104,12 @@ pub(crate) async fn find_oauth_state_type(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the statement fails.
+/// Returns [`Error`] when the statement fails.
 pub(crate) async fn consume_oauth_state(
     database: &Database,
     state: &str,
     now: i64,
-) -> Result<Option<OAuthState>, ApiError> {
+) -> Result<Option<OAuthState>, Error> {
     let rows = database
         .query(
             "DELETE FROM oauth_states WHERE state = ?1 AND expires_at > ?2 \
@@ -1049,11 +1135,11 @@ pub(crate) async fn consume_oauth_state(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the delete fails.
+/// Returns [`Error`] when the delete fails.
 pub(crate) async fn delete_expired_oauth_states(
     database: &Database,
     now: i64,
-) -> Result<(), ApiError> {
+) -> Result<(), Error> {
     database
         .execute(
             "DELETE FROM oauth_states WHERE expires_at <= ?1",
@@ -1065,17 +1151,18 @@ pub(crate) async fn delete_expired_oauth_states(
 }
 
 /// Parses a provider row in [`PROVIDER_COLUMNS`] order.
-fn provider_from_row(row: &Row) -> Result<Provider, ApiError> {
+fn provider_from_row(row: &Row) -> Result<Provider, Error> {
     let provider_type = ProviderType::try_from(row.get_value(3)?)?;
 
-    let protocol = match row.get::<Option<String>>(4)? {
-        None => None,
-        Some(protocol_name) => Some(UpstreamFormat::parse(&protocol_name).ok_or_else(|| {
-            ApiError::internal(format!(
-                "provider row carries unknown protocol `{protocol_name}`"
-            ))
-        })?),
-    };
+    let protocol =
+        match row.get::<Option<String>>(4)? {
+            None => None,
+            Some(protocol_name) => Some(UpstreamFormat::parse(&protocol_name).ok_or_else(
+                || Error::Drift {
+                    message: format!("provider row carries unknown protocol `{protocol_name}`"),
+                },
+            )?),
+        };
 
     let name: String = row.get(1)?;
     let credentials_json: String = row.get(6)?;
@@ -1083,11 +1170,10 @@ fn provider_from_row(row: &Row) -> Result<Provider, ApiError> {
     // The typed parse failure is wrapped exactly once as internal storage
     // drift: the row was written only through the validated management path,
     // so a payload failing here is never the requesting client's fault.
-    let credentials = Credentials::parse(provider_type, &credentials_json).map_err(|error| {
-        ApiError::internal(format!(
-            "provider `{name}` has malformed credentials: {error}"
-        ))
-    })?;
+    let credentials =
+        Credentials::parse(provider_type, &credentials_json).map_err(|error| Error::Drift {
+            message: format!("provider `{name}` has malformed credentials: {error}"),
+        })?;
 
     Ok(Provider {
         id: row.get(0)?,
@@ -1115,7 +1201,7 @@ struct ProviderModelJoin {
 ///
 /// The join projects the provider columns first and the model columns second,
 /// without `models.provider_id`, which is taken from the provider row.
-fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, ApiError> {
+fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, Error> {
     let provider = provider_from_row(row)?;
 
     let model = Model {
@@ -1131,7 +1217,7 @@ fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, ApiError> {
 }
 
 /// Parses a model row starting at the given column offset.
-fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, ApiError> {
+fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, Error> {
     Ok(Model {
         provider_id: row.get(offset)?,
         upstream_id: row.get(offset + 1)?,
@@ -1143,7 +1229,7 @@ fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, ApiError> {
 }
 
 /// Parses a standalone model row in canonical column order.
-fn model_from_row(row: &Row) -> Result<Model, ApiError> {
+fn model_from_row(row: &Row) -> Result<Model, Error> {
     model_from_row_offset(row, 0)
 }
 

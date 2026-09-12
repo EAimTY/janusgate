@@ -1,14 +1,16 @@
 //! Management endpoints listing, saving, and deleting providers.
 
-use super::{error_response, parse_body, provider_json, validate_identifier};
+use super::{
+    error::{ManagementApiError, json_response, log_error},
+    parse_body, provider_json, validate_identifier,
+};
 use crate::{
     context::Context,
     database::Database,
-    error::{self, ApiError, log_api_error},
     format::UpstreamFormat,
     provider::{Credentials, NewProvider, ProviderType, storage},
 };
-use axum::{body::Bytes, extract::State, response::Response};
+use axum::{body::Bytes, extract::State, http::StatusCode, response::Response};
 use log::info;
 use serde::Deserialize;
 use serde_json::Value;
@@ -63,13 +65,15 @@ pub(crate) async fn list(State(context): State<Context>) -> Response {
         Ok(providers) => {
             let rendered = providers.iter().map(provider_json).collect::<Vec<_>>();
 
-            error::json_response(200, serde_json::json!({ "providers": rendered }))
+            json_response(StatusCode::OK, serde_json::json!({ "providers": rendered }))
         }
 
         Err(error) => {
-            log_api_error("list-providers", &error);
+            let error = ManagementApiError::from(error);
 
-            error_response(error)
+            log_error("list-providers", &error);
+
+            error.into_response()
         }
     }
 }
@@ -79,8 +83,8 @@ pub(crate) async fn save(State(context): State<Context>, body: Bytes) -> Respons
     let outcome = handle_save(&context.database, &body).await;
 
     match outcome {
-        Ok(rendered) => error::json_response(200, serde_json::json!({ "provider": rendered })),
-        Err(error) => error_response(error),
+        Ok(rendered) => json_response(StatusCode::OK, serde_json::json!({ "provider": rendered })),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -90,7 +94,7 @@ pub(crate) async fn delete(State(context): State<Context>, body: Bytes) -> Respo
         let request: DeleteProviderBody = parse_body(&body, "delete-provider")?;
 
         if !storage::delete_provider(&context.database, request.id).await? {
-            return Err(ApiError::not_found(format!(
+            return Err(ManagementApiError::not_found(format!(
                 "Provider {} does not exist",
                 request.id
             )));
@@ -104,12 +108,12 @@ pub(crate) async fn delete(State(context): State<Context>, body: Bytes) -> Respo
         Ok(id) => {
             info!("deleted provider {id}");
 
-            error::json_response(200, serde_json::json!({"deleted": true}))
+            json_response(StatusCode::OK, serde_json::json!({"deleted": true}))
         }
         Err(error) => {
-            log_api_error("delete-provider", &error);
+            log_error("delete-provider", &error);
 
-            error_response(error)
+            error.into_response()
         }
     }
 }
@@ -121,10 +125,13 @@ pub(crate) async fn delete(State(context): State<Context>, body: Bytes) -> Respo
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for empty names, unknown ids, unknown types, OAuth
-/// creation attempts, type mismatches, taken names, and public name
+/// Returns [`ManagementApiError`] for empty names, unknown ids, unknown types,
+/// OAuth creation attempts, type mismatches, taken names, and public name
 /// collisions.
-async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Value, ApiError> {
+async fn handle_save(
+    database: &Database,
+    body: &Bytes,
+) -> Result<serde_json::Value, ManagementApiError> {
     let request: SaveProviderBody = parse_body(body, "save-provider")?;
 
     let outcome = async {
@@ -138,7 +145,9 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
             Some(id) => Some(
                 storage::find_provider_by_id(database, id)
                     .await?
-                    .ok_or_else(|| ApiError::not_found(format!("Provider {id} does not exist")))?,
+                    .ok_or_else(|| {
+                        ManagementApiError::not_found(format!("Provider {id} does not exist"))
+                    })?,
             ),
 
             // Creation checks name availability here for a clean 409; the
@@ -148,7 +157,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
                     .await?
                     .is_some()
                 {
-                    return Err(ApiError::conflict(format!(
+                    return Err(ManagementApiError::conflict(format!(
                         "Provider name `{}` is already taken",
                         request.name
                     )));
@@ -165,21 +174,18 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
         let provider_type = match request.provider_type.as_deref() {
             Some(raw) => {
                 let provider_type = ProviderType::parse(raw).ok_or_else(|| {
-                    ApiError::invalid_parameter("type", format!("Unknown provider type `{raw}`"))
+                    ManagementApiError::invalid_request(format!("Unknown provider type `{raw}`"))
                 })?;
 
                 if let Some(existing) = &existing
                     && provider_type != existing.provider_type
                 {
-                    return Err(ApiError::invalid_parameter(
-                        "type",
-                        format!(
-                            "Provider `{}` has type `{}` and cannot become `{}`",
-                            existing.name,
-                            existing.provider_type.as_str(),
-                            provider_type.as_str()
-                        ),
-                    ));
+                    return Err(ManagementApiError::invalid_request(format!(
+                        "Provider `{}` has type `{}` and cannot become `{}`",
+                        existing.name,
+                        existing.provider_type.as_str(),
+                        provider_type.as_str()
+                    )));
                 }
 
                 Some(provider_type)
@@ -191,7 +197,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
         let protocol = match request.protocol.as_deref() {
             None => None,
             Some(raw) => Some(UpstreamFormat::parse(raw).ok_or_else(|| {
-                ApiError::invalid_parameter("protocol", format!("Unknown protocol `{raw}`"))
+                ManagementApiError::invalid_request(format!("Unknown protocol `{raw}`"))
             })?),
         };
 
@@ -201,8 +207,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
             (Some(value), Some(kind)) => Some(Credentials::parse(kind, &value.to_string())?),
 
             (Some(_), None) => {
-                return Err(ApiError::invalid_parameter(
-                    "type",
+                return Err(ManagementApiError::invalid_request(
                     "credentials require a `type` in the same request",
                 ));
             }
@@ -234,41 +239,32 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
         }
 
         let Some(provider_type) = provider_type else {
-            return Err(ApiError::invalid_parameter(
-                "type",
+            return Err(ManagementApiError::invalid_request(
                 "type is required when creating a provider",
             ));
         };
 
         if provider_type != ProviderType::OpenAiCompatible {
-            return Err(ApiError::invalid_parameter(
-                "type",
-                format!(
-                    "`{}` providers are created by completing an OAuth flow",
-                    provider_type.as_str()
-                ),
-            ));
+            return Err(ManagementApiError::invalid_request(format!(
+                "`{}` providers are created by completing an OAuth flow",
+                provider_type.as_str()
+            )));
         }
 
         let protocol = protocol.ok_or_else(|| {
-            ApiError::invalid_parameter(
-                "protocol",
+            ManagementApiError::invalid_request(
                 "protocol is required for openai_compatible providers",
             )
         })?;
 
         let base_url = request.base_url.as_deref().ok_or_else(|| {
-            ApiError::invalid_parameter(
-                "base_url",
+            ManagementApiError::invalid_request(
                 "base_url is required for openai_compatible providers",
             )
         })?;
 
         let credentials = credentials.ok_or_else(|| {
-            ApiError::invalid_parameter(
-                "credentials",
-                "credentials are required when creating a provider",
-            )
+            ManagementApiError::invalid_request("credentials are required when creating a provider")
         })?;
 
         storage::insert_provider(
@@ -288,7 +284,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
 
         let stored = storage::find_provider(database, &request.name)
             .await?
-            .ok_or_else(|| ApiError::internal("provider vanished after save"))?;
+            .ok_or_else(|| ManagementApiError::internal("provider vanished after save"))?;
 
         info!("created provider `{}`", request.name);
 
@@ -297,7 +293,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<serde_json::Va
     .await;
 
     if let Err(error) = &outcome {
-        log_api_error(&format!("save-provider `{}`", request.name), error);
+        log_error(&format!("save-provider `{}`", request.name), error);
     }
 
     outcome

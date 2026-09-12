@@ -56,6 +56,20 @@ pub(crate) enum Error {
     PoolTimeout,
 }
 
+impl Error {
+    /// Whether this failure is the engine's stale-snapshot busy error: a
+    /// read-then-write transaction attempted its first write after a
+    /// concurrent commit invalidated its read snapshot, and the engine
+    /// refused the upgrade ("database snapshot is stale, rollback and
+    /// retry"; busy timeouts never help). The transaction must be rolled
+    /// back and the attempt retried, and the retry re-reads the newer state
+    /// — so a read-then-write lease such as the token-refresh acquire
+    /// classifies it as "not acquired" rather than as failed work.
+    pub(crate) fn is_stale_snapshot(&self) -> bool {
+        matches!(self, Self::Turso(TursoError::BusySnapshot(_)))
+    }
+}
+
 /// In-process SQLite-compatible database client managing a pool of connections.
 #[derive(Clone, Debug)]
 pub(crate) struct Database {

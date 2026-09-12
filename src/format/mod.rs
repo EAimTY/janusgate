@@ -12,8 +12,7 @@
 //! client format.
 
 use crate::{
-    error::ApiError,
-    ir::{IrAggregation, IrEvent, IrFinishReason, IrRequest},
+    ir::{InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrRequest},
     sse::SseFrame,
 };
 
@@ -32,6 +31,26 @@ pub(crate) enum UpstreamFormat {
 
     /// Gemini GenerateContent protocol.
     GeminiGenerateContent,
+}
+
+/// An upstream payload the codec could not parse: malformed JSON, a missing
+/// required field, or an upstream-reported failure event. The wire failure
+/// wording ("Upstream request failed: ...") is composed by the consuming
+/// surface; this type carries only the cause detail.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub(crate) struct PayloadError {
+    /// Human-readable failure detail.
+    pub(crate) message: String,
+}
+
+impl PayloadError {
+    /// Builds a payload parse failure from its detail.
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
 }
 
 /// A client request parsed into IR with its endpoint options.
@@ -56,15 +75,18 @@ pub(crate) trait UpstreamEventParser {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError`] for malformed upstream payloads.
-    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError>;
+    /// Returns [`PayloadError`] for malformed upstream payloads.
+    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError>;
 
     /// Parses one complete upstream JSON response.
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError`] for malformed upstream payloads.
-    fn parse_json_response(&mut self, value: serde_json::Value) -> Result<Vec<IrEvent>, ApiError>;
+    /// Returns [`PayloadError`] for malformed upstream payloads.
+    fn parse_json_response(
+        &mut self,
+        value: serde_json::Value,
+    ) -> Result<Vec<IrEvent>, PayloadError>;
 
     /// Ends a cleanly terminated upstream stream, flushing state buffered
     /// across frames into final IR events.
@@ -84,8 +106,9 @@ pub(crate) trait ClientSseRenderer {
     /// Renders one IR event into zero or more SSE frames.
     fn render(&mut self, event: &IrEvent) -> Vec<String>;
 
-    /// Renders a mid-stream error as a terminal frame.
-    fn error_frame(&mut self, error: &ApiError) -> String;
+    /// Renders a mid-stream error as a terminal frame. `error` is the
+    /// surface's rendered OpenAI error envelope (`{"error": {...}}`).
+    fn error_frame(&mut self, error: &serde_json::Value) -> String;
 }
 
 /// An outward client format: parses client requests into IR and renders IR
@@ -95,8 +118,8 @@ pub(crate) trait ClientFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError`] for malformed or unsupported requests.
-    fn parse_request(body: &[u8]) -> Result<ParsedRequest, ApiError>
+    /// Returns [`InvalidRequest`] for malformed or unsupported requests.
+    fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest>
     where
         Self: Sized;
 
@@ -178,15 +201,15 @@ pub(crate) fn allowed_fields<'a>(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] naming the first unknown field.
+/// Returns [`InvalidRequest`] naming the first unknown field.
 pub(crate) fn reject_unknown_fields(
     object: &serde_json::Map<String, serde_json::Value>,
     allowed: &[&str],
     context: &str,
-) -> Result<(), ApiError> {
+) -> Result<(), InvalidRequest> {
     for field in object.keys() {
         if !allowed.contains(&field.as_str()) {
-            return Err(ApiError::invalid_parameter(
+            return Err(InvalidRequest::field(
                 field,
                 format!("Unsupported field `{field}` in {context}"),
             ));
@@ -201,11 +224,11 @@ pub(crate) fn reject_unknown_fields(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] naming the first unknown field.
+/// Returns [`InvalidRequest`] naming the first unknown field.
 pub(crate) fn validate_content_part_fields(
     parts: &[serde_json::Value],
     table: &[(&str, &[&str])],
-) -> Result<(), ApiError> {
+) -> Result<(), InvalidRequest> {
     for part in parts {
         let Some(object) = part.as_object() else {
             continue;
@@ -234,13 +257,13 @@ pub(crate) fn validate_content_part_fields(
 /// Returns an error when the arguments are not a JSON object.
 pub(crate) fn arguments_as_object(
     arguments: &str,
-) -> Result<serde_json::Map<String, serde_json::Value>, ApiError> {
+) -> Result<serde_json::Map<String, serde_json::Value>, InvalidRequest> {
     if arguments.trim().is_empty() {
         return Ok(serde_json::Map::new());
     }
 
     let value: serde_json::Value = serde_json::from_str(arguments).map_err(|error| {
-        ApiError::invalid_parameter(
+        InvalidRequest::field(
             "arguments",
             format!("Tool call arguments are not valid JSON: {error}"),
         )
@@ -248,7 +271,7 @@ pub(crate) fn arguments_as_object(
 
     match value {
         serde_json::Value::Object(map) => Ok(map),
-        _ => Err(ApiError::invalid_parameter(
+        _ => Err(InvalidRequest::field(
             "arguments",
             "Tool call arguments must encode a JSON object",
         )),

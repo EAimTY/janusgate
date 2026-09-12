@@ -4,13 +4,13 @@
 //! Antigravity Code Assist envelope (§5.2) and as a bare OpenAI-compatible
 //! upstream protocol (§5.3).
 
-use super::UpstreamEventParser;
+use super::{PayloadError, UpstreamEventParser};
 use crate::{
-    error::ApiError,
     format::{arguments_as_object, json_insert},
     ids::new_uuid,
     ir::{
-        IrEvent, IrFinishReason, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice,
+        InvalidRequest, IrEvent, IrFinishReason, IrImage, IrPart, IrRequest, IrResponseFormat,
+        IrRole, IrToolChoice,
     },
     provider::endpoints,
     sse::SseFrame,
@@ -24,14 +24,14 @@ use serde_json::Value;
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the request cannot be rendered.
+/// Returns [`InvalidRequest`] when the request cannot be rendered.
 pub(crate) fn render_antigravity_request(
     ir: &IrRequest,
     base_url: &str,
     upstream_id: &str,
     project: &str,
     is_streaming: bool,
-) -> Result<(String, Value), ApiError> {
+) -> Result<(String, Value), InvalidRequest> {
     let url = render_request_url(base_url, upstream_id, is_streaming, true);
 
     let envelope = serde_json::json!({
@@ -51,13 +51,13 @@ pub(crate) fn render_antigravity_request(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the request cannot be rendered.
+/// Returns [`InvalidRequest`] when the request cannot be rendered.
 pub(crate) fn render_compatible_request(
     ir: &IrRequest,
     base_url: &str,
     upstream_id: &str,
     is_streaming: bool,
-) -> Result<(String, Value), ApiError> {
+) -> Result<(String, Value), InvalidRequest> {
     let url = render_request_url(base_url, upstream_id, is_streaming, false);
 
     Ok((url, render_generate_content_request(ir)?))
@@ -99,9 +99,9 @@ fn render_request_url(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for tool call arguments that are not JSON objects and
-/// tool outputs whose invocation cannot be resolved.
-pub(crate) fn render_generate_content_request(ir: &IrRequest) -> Result<Value, ApiError> {
+/// Returns [`InvalidRequest`] for tool call arguments that are not JSON objects
+/// and tool outputs whose invocation cannot be resolved.
+pub(crate) fn render_generate_content_request(ir: &IrRequest) -> Result<Value, InvalidRequest> {
     let mut contents: Vec<Value> = Vec::new();
 
     for message in &ir.messages {
@@ -233,8 +233,9 @@ pub(crate) fn render_generate_content_request(ir: &IrRequest) -> Result<Value, A
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when no matching tool call exists in the conversation.
-fn resolve_tool_output_name(call_id: &str, ir: &IrRequest) -> Result<String, ApiError> {
+/// Returns [`InvalidRequest`] when no matching tool call exists in the
+/// conversation.
+fn resolve_tool_output_name(call_id: &str, ir: &IrRequest) -> Result<String, InvalidRequest> {
     for message in &ir.messages {
         for part in &message.parts {
             if let IrPart::ToolCall {
@@ -249,7 +250,7 @@ fn resolve_tool_output_name(call_id: &str, ir: &IrRequest) -> Result<String, Api
         }
     }
 
-    Err(ApiError::invalid_parameter(
+    Err(InvalidRequest::field(
         "messages",
         format!("Tool output references unknown call_id `{call_id}`"),
     ))
@@ -259,9 +260,9 @@ fn resolve_tool_output_name(call_id: &str, ir: &IrRequest) -> Result<String, Api
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] per [`resolve_tool_output_name`] and for non-object
-/// tool call arguments.
-fn render_part(part: &IrPart, ir: &IrRequest) -> Result<Vec<Value>, ApiError> {
+/// Returns [`InvalidRequest`] per [`resolve_tool_output_name`] and for
+/// non-object tool call arguments.
+fn render_part(part: &IrPart, ir: &IrRequest) -> Result<Vec<Value>, InvalidRequest> {
     match part {
         IrPart::Text { text } => Ok(vec![serde_json::json!({"text": text})]),
 
@@ -339,7 +340,7 @@ impl UpstreamParser {
     }
 
     /// Ingests one GenerateContentResponse object.
-    fn ingest_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
+    fn ingest_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
         if let Some(error) = value.get("error").filter(|error| error.is_object()) {
             // An error object inside a 2xx body is a malformed upstream
             // payload (README §6.7), so the embedded `code` is never mirrored
@@ -354,7 +355,7 @@ impl UpstreamParser {
                 None => message.to_string(),
             };
 
-            return Err(ApiError::upstream_unavailable(detail));
+            return Err(PayloadError::new(detail));
         }
 
         // The Cloud Code Assist API wraps every GenerateContentResponse —
@@ -489,10 +490,10 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError`] for malformed JSON and upstream error objects.
-    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, ApiError> {
+    /// Returns [`PayloadError`] for malformed JSON and upstream error objects.
+    fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
         let value: Value = serde_json::from_str(&frame.data)
-            .map_err(|_| ApiError::upstream_unavailable("malformed JSON in upstream SSE frame"))?;
+            .map_err(|_| PayloadError::new("malformed JSON in upstream SSE frame"))?;
 
         self.ingest_response(value)
     }
@@ -501,8 +502,9 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError`] for upstream error objects and malformed bodies.
-    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, ApiError> {
+    /// Returns [`PayloadError`] for upstream error objects and malformed
+    /// bodies.
+    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
         self.ingest_response(value)
     }
 

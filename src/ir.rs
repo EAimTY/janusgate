@@ -4,7 +4,45 @@
 //! streamed or buffered — parses into a sequence of [`IrEvent`] values; every
 //! client response renders from IR.
 
-use crate::error::ApiError;
+/// A client request failed validation: the request is malformed, carries an
+/// unsupported value, or names an unknown field.
+///
+/// One type shared by every request validator — the format codecs, the IR
+/// parsing helpers, and the management identifier validation — so each HTTP
+/// surface renders it in its own contract. It never carries a status or wire
+/// code: those belong to the surfaces.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub(crate) struct InvalidRequest {
+    /// Offending request parameter, when the rejection names one.
+    pub(crate) param: Option<String>,
+
+    /// Human-readable rejection message.
+    pub(crate) message: String,
+}
+
+impl InvalidRequest {
+    /// Builds a rejection of the request as a whole.
+    pub(crate) fn request(message: impl Into<String>) -> Self {
+        Self {
+            param: None,
+            message: message.into(),
+        }
+    }
+
+    /// Builds a rejection naming the offending parameter.
+    pub(crate) fn field(param: &str, message: impl Into<String>) -> Self {
+        Self {
+            param: Some(param.to_string()),
+            message: message.into(),
+        }
+    }
+
+    /// Builds a rejection from a body that is not valid JSON.
+    pub(crate) fn from_json(error: serde_json::Error) -> Self {
+        Self::request(format!("Invalid JSON body: {error}"))
+    }
+}
 
 /// Canonical thinking levels, ordered by increasing reasoning strength.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -157,19 +195,16 @@ impl IrImage {
     ///
     /// # Errors
     ///
-    /// Returns [`ApiError`] for schemes other than `data:`, `http:`, and
+    /// Returns [`InvalidRequest`] for schemes other than `data:`, `http:`, and
     /// `https:`, and for malformed data URLs.
-    pub(crate) fn from_url(url: &str) -> Result<Self, ApiError> {
+    pub(crate) fn from_url(url: &str) -> Result<Self, InvalidRequest> {
         if let Some(rest) = url.strip_prefix("data:") {
             let (metadata, data) = rest.split_once(',').ok_or_else(|| {
-                ApiError::invalid_parameter("image_url", "Data URL is missing its payload")
+                InvalidRequest::field("image_url", "Data URL is missing its payload")
             })?;
 
             let mime_type = metadata.strip_suffix(";base64").ok_or_else(|| {
-                ApiError::invalid_parameter(
-                    "image_url",
-                    "Only base64-encoded data URLs are supported",
-                )
+                InvalidRequest::field("image_url", "Only base64-encoded data URLs are supported")
             })?;
 
             return Ok(Self::Inline {
@@ -182,7 +217,7 @@ impl IrImage {
             return Ok(Self::Url(url.to_string()));
         }
 
-        Err(ApiError::invalid_parameter(
+        Err(InvalidRequest::field(
             "image_url",
             "Image URLs must use the data:, http:, or https: schemes",
         ))
@@ -604,23 +639,23 @@ pub(crate) fn apply_thinking_levels(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] naming `param` for any violation.
+/// Returns [`InvalidRequest`] naming `param` for any violation.
 pub(crate) fn parse_thinking_levels(
     values: &[String],
     param: &str,
-) -> Result<Vec<IrReasoningEffort>, ApiError> {
+) -> Result<Vec<IrReasoningEffort>, InvalidRequest> {
     let mut levels = Vec::with_capacity(values.len());
 
     for value in values {
         let level = IrReasoningEffort::parse_canonical(value).ok_or_else(|| {
-            ApiError::invalid_parameter(
+            InvalidRequest::field(
                 param,
                 format!("Unknown thinking level `{value}`; expected one of off, low, medium, high"),
             )
         })?;
 
         if levels.contains(&level) {
-            return Err(ApiError::invalid_parameter(
+            return Err(InvalidRequest::field(
                 param,
                 format!("Duplicate thinking level `{value}`"),
             ));
@@ -630,7 +665,7 @@ pub(crate) fn parse_thinking_levels(
     }
 
     if levels.is_empty() {
-        return Err(ApiError::invalid_parameter(
+        return Err(InvalidRequest::field(
             param,
             format!("{param} must be a non-empty array"),
         ));
@@ -643,9 +678,8 @@ pub(crate) fn parse_thinking_levels(
 /// rejecting malformed JSON, empty arrays, unknown names, and duplicates.
 pub(crate) fn parse_thinking_levels_override(
     json: &str,
-) -> Result<Vec<IrReasoningEffort>, ApiError> {
-    let values: Vec<String> = serde_json::from_str(json)
-        .map_err(|error| ApiError::invalid_request(format!("Invalid thinking levels: {error}")))?;
+) -> Result<Vec<IrReasoningEffort>, InvalidRequest> {
+    let values: Vec<String> = serde_json::from_str(json).map_err(InvalidRequest::from_json)?;
 
     parse_thinking_levels(&values, "thinking_levels_override")
 }

@@ -4,12 +4,14 @@
 use crate::{
     context::Context,
     database::Database,
-    error::ApiError,
     format::{
-        UpstreamEventParser, UpstreamFormat, gemini, openai_chat_completion, openai_response,
+        PayloadError, UpstreamEventParser, UpstreamFormat, gemini, openai_chat_completion,
+        openai_response,
     },
     ids::new_uuid,
-    ir::{IrEvent, IrRequest, apply_thinking_levels, parse_thinking_levels_override},
+    ir::{
+        InvalidRequest, IrEvent, IrRequest, apply_thinking_levels, parse_thinking_levels_override,
+    },
     provider::{
         Credentials, ModelRouting, Provider, ProviderType, endpoints, http_body, oauth, storage,
     },
@@ -25,23 +27,90 @@ use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 /// response stream.
 const EVENT_CHANNEL_BUFFER: usize = 64;
 
+/// Outward completion pipeline failures, from routing resolution through
+/// upstream dispatch. The client request can fail validation here too — the
+/// upstream renderers reject requests the chosen upstream cannot carry — so
+/// client faults travel in the same type and the surface classifies them.
+///
+/// The Displays carry the complete human message the outward surface
+/// renders; the surface only maps each variant onto its status, `type`,
+/// `code`, and `param`.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum Error {
+    /// The client's request was rejected while preparing the upstream call.
+    #[error(transparent)]
+    InvalidRequest(#[from] InvalidRequest),
+
+    /// The requested model is unknown or disabled.
+    #[error("The model `{model}` does not exist or you do not have access to it.")]
+    ModelNotFound {
+        /// Public model identifier the client requested.
+        model: String,
+    },
+
+    /// The upstream answered a non-2xx status, which the outward surface
+    /// mirrors verbatim.
+    #[error("Upstream request failed: {detail}")]
+    Upstream {
+        /// Upstream status code, mirrored by the surface.
+        status: u16,
+
+        /// Truncated upstream body excerpt.
+        detail: String,
+    },
+
+    /// The upstream failed without a usable HTTP response: a transport
+    /// failure, an oversized frame, or a malformed payload.
+    #[error("Upstream request failed: {detail}")]
+    Unavailable {
+        /// Human-readable failure detail.
+        detail: String,
+    },
+
+    /// Token acquisition failed (the lease-guarded refresh).
+    #[error(transparent)]
+    OAuth(#[from] oauth::Error),
+
+    /// Storage failed under the pipeline: routing lookup, lease driving, or
+    /// credentials persistence.
+    #[error(transparent)]
+    Storage(#[from] storage::Error),
+
+    /// The gateway violated an invariant — stored configuration drift, never
+    /// a fault of the requesting client.
+    #[error("{message}")]
+    Internal {
+        /// Human-readable failure message.
+        message: String,
+    },
+}
+
+impl From<PayloadError> for Error {
+    fn from(error: PayloadError) -> Self {
+        Self::Unavailable {
+            detail: error.to_string(),
+        }
+    }
+}
+
 /// A stream of translated IR events; always terminates with
 /// [`IrEvent::Done`].
-pub(crate) type IrEventStream = Pin<Box<dyn Stream<Item = Result<IrEvent, ApiError>> + Send>>;
+pub(crate) type IrEventStream = Pin<Box<dyn Stream<Item = Result<IrEvent, Error>> + Send>>;
 
 /// Resolves a public model name to its enabled routing row.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] with `model_not_found` for unknown or disabled
-/// models.
+/// Returns [`Error::ModelNotFound`] for unknown or disabled models.
 pub(crate) async fn resolve_routing(
     database: &Database,
     public_name: &str,
-) -> Result<ModelRouting, ApiError> {
+) -> Result<ModelRouting, Error> {
     match storage::find_routing(database, public_name).await? {
         Some(routing) if routing.is_enabled => Ok(routing),
-        _ => Err(ApiError::model_not_found(public_name)),
+        _ => Err(Error::ModelNotFound {
+            model: public_name.to_string(),
+        }),
     }
 }
 
@@ -53,14 +122,14 @@ pub(crate) async fn resolve_routing(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for routing, token, and upstream failures detected
+/// Returns [`Error`] for routing, token, and upstream failures detected
 /// before the response stream starts.
 pub(crate) async fn execute(
     context: &Context,
     routing: ModelRouting,
     mut ir: IrRequest,
     is_client_streaming: bool,
-) -> Result<IrEventStream, ApiError> {
+) -> Result<IrEventStream, Error> {
     // Creation validates `thinking_levels_override` at the management API, so
     // a malformed stored value is drift inside the database — an invariant
     // violation — and never a fault of the requesting client.
@@ -69,10 +138,8 @@ pub(crate) async fn execute(
         .thinking_levels_override
         .as_deref()
         .map(|json| {
-            parse_thinking_levels_override(json).map_err(|error| {
-                ApiError::internal(format!(
-                    "stored thinking_levels_override is invalid: {error}"
-                ))
+            parse_thinking_levels_override(json).map_err(|error| Error::Internal {
+                message: format!("stored thinking_levels_override is invalid: {error}"),
             })
         })
         .transpose()?;
@@ -96,7 +163,12 @@ pub(crate) async fn execute(
 
     // The wire format is resolved once per request and shared by request
     // building and event parsing.
-    let upstream_format = provider.upstream_format()?;
+    let upstream_format = provider.upstream_format().ok_or_else(|| Error::Internal {
+        message: format!(
+            "provider `{}` has no upstream protocol configured",
+            routing.provider.name
+        ),
+    })?;
 
     debug!(
         "dispatching public model `{}` via {upstream_label} ({}, streaming: {})",
@@ -114,9 +186,12 @@ pub(crate) async fn execute(
         is_client_streaming,
     )?;
 
-    let response = request_builder.send().await.map_err(|error| {
-        ApiError::upstream_unavailable(format!("upstream unreachable: {error}"))
-    })?;
+    let response = request_builder
+        .send()
+        .await
+        .map_err(|error| Error::Unavailable {
+            detail: format!("upstream unreachable: {error}"),
+        })?;
 
     let status = response.status();
 
@@ -136,7 +211,7 @@ pub(crate) async fn execute(
         is_upstream_streaming(upstream_format, provider.provider_type, is_client_streaming);
 
     let (sender, receiver) =
-        tokio::sync::mpsc::channel::<Result<IrEvent, ApiError>>(EVENT_CHANNEL_BUFFER);
+        tokio::sync::mpsc::channel::<Result<IrEvent, Error>>(EVENT_CHANNEL_BUFFER);
 
     let parser = upstream_parser(upstream_format);
 
@@ -175,7 +250,7 @@ fn is_upstream_streaming(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the provider configuration cannot render a
+/// Returns [`Error`] when the provider configuration cannot render a
 /// request.
 fn build_upstream_request(
     http: &Client,
@@ -184,7 +259,7 @@ fn build_upstream_request(
     routing: &ModelRouting,
     ir: &IrRequest,
     is_client_streaming: bool,
-) -> Result<reqwest::RequestBuilder, ApiError> {
+) -> Result<reqwest::RequestBuilder, Error> {
     match (upstream_format, provider.provider_type) {
         (UpstreamFormat::OpenAiResponse, ProviderType::OpenAiOauth) => {
             let Credentials::OpenAiOauth {
@@ -193,9 +268,9 @@ fn build_upstream_request(
                 ..
             } = &provider.credentials
             else {
-                return Err(ApiError::internal(
-                    "codex provider lacks OpenAI OAuth credentials",
-                ));
+                return Err(Error::Internal {
+                    message: "codex provider lacks OpenAI OAuth credentials".to_string(),
+                });
             };
 
             let body = openai_response::render_codex_request(ir);
@@ -242,9 +317,9 @@ fn build_upstream_request(
                 ..
             } = &provider.credentials
             else {
-                return Err(ApiError::internal(
-                    "antigravity provider lacks Google OAuth credentials",
-                ));
+                return Err(Error::Internal {
+                    message: "antigravity provider lacks Google OAuth credentials".to_string(),
+                });
             };
 
             let (url, envelope) = gemini::render_antigravity_request(
@@ -284,11 +359,10 @@ fn build_upstream_request(
 /// validates `base_url` at the management API, so a missing value is stored
 /// drift — an invariant violation — and never a fault of the requesting
 /// client.
-fn compatible_base_url(provider: &Provider) -> Result<&str, ApiError> {
-    provider
-        .base_url
-        .as_deref()
-        .ok_or_else(|| ApiError::internal("compatible provider lacks a stored base_url"))
+fn compatible_base_url(provider: &Provider) -> Result<&str, Error> {
+    provider.base_url.as_deref().ok_or_else(|| Error::Internal {
+        message: "compatible provider lacks a stored base_url".to_string(),
+    })
 }
 
 /// Boxes the upstream event parser for the given wire format.
@@ -312,7 +386,7 @@ async fn pump_sse(
     response: reqwest::Response,
     mut parser: Box<dyn UpstreamEventParser + Send>,
     mut sse_parser: SseParser,
-    sender: tokio::sync::mpsc::Sender<Result<IrEvent, ApiError>>,
+    sender: tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
     upstream_label: String,
 ) {
     let mut body = response.bytes_stream();
@@ -327,8 +401,9 @@ async fn pump_sse(
             Err(error) => {
                 is_aborted = true;
 
-                let error =
-                    ApiError::upstream_unavailable(format!("upstream stream failed: {error}"));
+                let error = Error::Unavailable {
+                    detail: format!("upstream stream failed: {error}"),
+                };
 
                 error!("{upstream_label}: {error}");
 
@@ -343,7 +418,9 @@ async fn pump_sse(
             Err(_) => {
                 is_aborted = true;
 
-                let error = ApiError::upstream_unavailable("oversized SSE frame");
+                let error = Error::Unavailable {
+                    detail: "oversized SSE frame".to_string(),
+                };
 
                 error!("{upstream_label}: {error}");
 
@@ -363,8 +440,10 @@ async fn pump_sse(
                     }
                 }
 
-                Err(error) => {
+                Err(parser_error) => {
                     is_aborted = true;
+
+                    let error = Error::from(parser_error);
 
                     error!("{upstream_label}: {error}");
 
@@ -397,8 +476,10 @@ async fn pump_sse(
                         // error exactly like a malformed frame in the main
                         // loop; the final `Done` below still terminates the
                         // event stream.
-                        Err(error) => {
+                        Err(parser_error) => {
                             is_aborted = true;
+
+                            let error = Error::from(parser_error);
 
                             error!("{upstream_label}: {error}");
 
@@ -418,7 +499,9 @@ async fn pump_sse(
             Err(_) => {
                 is_aborted = true;
 
-                let error = ApiError::upstream_unavailable("oversized SSE frame");
+                let error = Error::Unavailable {
+                    detail: "oversized SSE frame".to_string(),
+                };
 
                 error!("{upstream_label}: {error}");
 
@@ -447,19 +530,19 @@ async fn pump_sse(
 async fn pump_json(
     response: reqwest::Response,
     mut parser: Box<dyn UpstreamEventParser + Send>,
-    sender: tokio::sync::mpsc::Sender<Result<IrEvent, ApiError>>,
+    sender: tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
     upstream_label: String,
 ) {
     let outcome = async {
-        let bytes = response.bytes().await.map_err(|error| {
-            ApiError::upstream_unavailable(format!("upstream read failed: {error}"))
+        let bytes = response.bytes().await.map_err(|error| Error::Unavailable {
+            detail: format!("upstream read failed: {error}"),
         })?;
 
-        let value = serde_json::from_slice(&bytes).map_err(|error| {
-            ApiError::upstream_unavailable(format!("malformed upstream response: {error}"))
+        let value = serde_json::from_slice(&bytes).map_err(|error| Error::Unavailable {
+            detail: format!("malformed upstream response: {error}"),
         })?;
 
-        parser.parse_json_response(value)
+        parser.parse_json_response(value).map_err(Error::from)
     }
     .await;
 
@@ -487,10 +570,13 @@ async fn pump_json(
 /// excerpt policy ([`http_body::truncate_excerpt`]): the full body is never
 /// buffered, because a hostile upstream must not be able to stream unbounded
 /// bytes into gateway memory just to shape an error message.
-async fn upstream_error_of(response: reqwest::Response) -> ApiError {
+async fn upstream_error_of(response: reqwest::Response) -> Error {
     let status = response.status();
 
     let body = http_body::read_error_body(response).await;
 
-    ApiError::upstream(status.as_u16(), http_body::truncate_excerpt(&body))
+    Error::Upstream {
+        status: status.as_u16(),
+        detail: http_body::truncate_excerpt(&body),
+    }
 }

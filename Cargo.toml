@@ -16,6 +16,7 @@ opt-level = 3
 debug = false
 
 [dependencies]
+as_http_status_code = { version = "0.1.0", default-features = false }
 axum = { version = "0.8.9", default-features = false, features = ["original-uri"] }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 deadpool = { version = "0.13.1", default-features = false, features = ["managed", "rt_tokio_1"] }

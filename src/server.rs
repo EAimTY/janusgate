@@ -313,8 +313,18 @@ fn router(context: context::Context) -> Router {
     Router::new()
         .nest("/api", api::router())
         .nest("/management-api", management_api::router())
-        .fallback(|| async { StatusCode::NOT_FOUND })
+        .fallback(fallback)
         .with_state(context)
+}
+
+/// Answers unmapped root paths with an empty 404 response.
+///
+/// Each nested sub-router owns the JSON-shaped fallback for its own domain —
+/// management errors under `/management-api`, OpenAI errors under
+/// `/api/openai-v1`. The `/api` parent router defines no fallback, so its
+/// unmapped paths propagate up to this empty 404.
+async fn fallback() -> StatusCode {
+    StatusCode::NOT_FOUND
 }
 
 /// Initializes the Tokio TCP listener using the global application

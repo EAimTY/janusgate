@@ -12,7 +12,6 @@ mod api;
 mod config;
 mod context;
 mod database;
-mod error;
 mod format;
 mod gateway;
 mod http_client;

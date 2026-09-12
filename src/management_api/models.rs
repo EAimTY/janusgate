@@ -1,16 +1,18 @@
 //! Management endpoints discovering, listing, and overriding models.
 
-use super::{error_response, parse_body, validate_identifier};
+use super::{
+    error::{ManagementApiError, json_response, log_error},
+    parse_body, validate_identifier,
+};
 use crate::{
     context::Context,
     database::Database,
-    error::{self, ApiError, log_api_error},
     provider::{
         discovery, oauth,
         storage::{self, ModelEntry},
     },
 };
-use axum::{body::Bytes, extract::State, response::Response};
+use axum::{body::Bytes, extract::State, http::StatusCode, response::Response};
 use log::info;
 use reqwest::Client;
 use serde::Deserialize;
@@ -54,10 +56,11 @@ pub(crate) async fn discover(State(context): State<Context>, body: Bytes) -> Res
     let outcome = handle_discover(&context.database, &context.control_plane, &body).await;
 
     match outcome {
-        Ok(discovered) => {
-            error::json_response(200, serde_json::json!({ "discovered": discovered }))
-        }
-        Err(error) => error_response(error),
+        Ok(discovered) => json_response(
+            StatusCode::OK,
+            serde_json::json!({ "discovered": discovered }),
+        ),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -76,11 +79,11 @@ pub(crate) async fn list(State(context): State<Context>) -> Response {
     .await;
 
     match outcome {
-        Ok(rendered) => error::json_response(200, rendered),
+        Ok(rendered) => json_response(StatusCode::OK, rendered),
         Err(error) => {
-            log_api_error("list-models", &error);
+            log_error("list-models", &error);
 
-            error_response(error)
+            error.into_response()
         }
     }
 }
@@ -90,8 +93,8 @@ pub(crate) async fn save(State(context): State<Context>, body: Bytes) -> Respons
     let outcome = handle_save(&context.database, &body).await;
 
     match outcome {
-        Ok(rendered) => error::json_response(200, serde_json::json!({ "model": rendered })),
-        Err(error) => error_response(error),
+        Ok(rendered) => json_response(StatusCode::OK, serde_json::json!({ "model": rendered })),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -104,20 +107,21 @@ pub(crate) async fn save(State(context): State<Context>, body: Bytes) -> Respons
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for an empty provider identifier, unknown providers,
-/// upstream failures, and public ID collisions.
+/// Returns [`ManagementApiError`] for an empty provider identifier, unknown
+/// providers, upstream failures (including an upstream that reports no
+/// models), and public ID collisions.
 async fn handle_discover(
     database: &Database,
     control_plane: &Client,
     body: &Bytes,
-) -> Result<usize, ApiError> {
+) -> Result<usize, ManagementApiError> {
     let request: DiscoverModelsBody = parse_body(body, "discover-models")?;
 
     let outcome = async {
         let provider = storage::find_provider_by_id(database, request.id)
             .await?
             .ok_or_else(|| {
-                ApiError::not_found(format!("Provider {} does not exist", request.id))
+                ManagementApiError::not_found(format!("Provider {} does not exist", request.id))
             })?;
 
         let fresh = oauth::ensure_fresh_token(database, control_plane, &provider).await?;
@@ -136,11 +140,21 @@ async fn handle_discover(
             unique_ids.push(upstream_id);
         }
 
+        // An upstream reporting no models must not wipe curated rows, so the
+        // empty replacement is refused before the replace is attempted
+        // (README §7.1).
+        if unique_ids.is_empty() {
+            return Err(ManagementApiError::upstream(concat!(
+                "Upstream request failed: upstream reported no models; ",
+                "refusing to replace the provider's model rows",
+            )));
+        }
+
         // The replace re-reads the provider row inside its transaction, so the
         // public IDs are composed from the provider's current prefix and
         // checked for collisions atomically with the write (README
         // §7.1).
-        storage::replace_discovered_models(database, request.id, &unique_ids).await
+        Ok(storage::replace_discovered_models(database, request.id, &unique_ids).await?)
     }
     .await;
 
@@ -150,7 +164,7 @@ async fn handle_discover(
         }
 
         Err(error) => {
-            log_api_error(
+            log_error(
                 &format!("model discovery for provider {}", request.id),
                 error,
             );
@@ -166,9 +180,9 @@ async fn handle_discover(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for empty identifiers, unknown rows, invalid thinking
-/// levels, and public ID collisions.
-async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiError> {
+/// Returns [`ManagementApiError`] for empty identifiers, unknown rows, invalid
+/// thinking levels, and public ID collisions.
+async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ManagementApiError> {
     let request: SaveModelBody = parse_body(body, "save-model")?;
 
     let outcome = async {
@@ -193,7 +207,9 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
 
                 Some(Some(serde_json::to_string(&canonical).map_err(
                     |error| {
-                        ApiError::internal(format!("failed to encode thinking levels: {error}"))
+                        ManagementApiError::internal(format!(
+                            "failed to encode thinking levels: {error}"
+                        ))
                     },
                 )?))
             }
@@ -203,7 +219,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
         // transaction, so the recomputed public ID uses the provider's
         // current prefix and the collision check applies atomically
         // with the write (README §7.1).
-        storage::update_model_overrides_checked(
+        Ok(storage::update_model_overrides_checked(
             database,
             storage::ModelOverrideUpdate {
                 provider_id: request.provider_id,
@@ -213,7 +229,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
                 thinking_levels_override,
             },
         )
-        .await
+        .await?)
     }
     .await
     .and_then(|entry| model_entry_json(&entry));
@@ -224,7 +240,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
             request.provider_id, request.upstream_id
         ),
 
-        Err(error) => log_api_error(
+        Err(error) => log_error(
             &format!(
                 "save-model `{}`/`{}`",
                 request.provider_id, request.upstream_id
@@ -240,8 +256,9 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ApiErro
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the stored thinking-level override is corrupt.
-fn model_entry_json(entry: &ModelEntry) -> Result<Value, ApiError> {
+/// Returns [`ManagementApiError`] when the stored thinking-level override is
+/// corrupt.
+fn model_entry_json(entry: &ModelEntry) -> Result<Value, ManagementApiError> {
     let thinking_levels_override = thinking_levels_json(&entry.model.thinking_levels_override)?;
 
     // `is_enabled` is the model's configured switch; `is_effectively_enabled`
@@ -266,20 +283,21 @@ fn model_entry_json(entry: &ModelEntry) -> Result<Value, ApiError> {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the stored override is corrupt.
-fn thinking_levels_json(stored: &Option<String>) -> Result<Value, ApiError> {
+/// Returns [`ManagementApiError`] when the stored override is corrupt.
+fn thinking_levels_json(stored: &Option<String>) -> Result<Value, ManagementApiError> {
     let Some(json) = stored else {
         return Ok(Value::Null);
     };
 
     let levels = crate::ir::parse_thinking_levels_override(json).map_err(|error| {
-        ApiError::internal(format!(
+        ManagementApiError::internal(format!(
             "stored thinking_levels_override is invalid: {error}"
         ))
     })?;
 
     let canonical: Vec<&str> = levels.iter().map(|level| level.to_canonical()).collect();
 
-    serde_json::to_value(canonical)
-        .map_err(|error| ApiError::internal(format!("failed to encode thinking levels: {error}")))
+    serde_json::to_value(canonical).map_err(|error| {
+        ManagementApiError::internal(format!("failed to encode thinking levels: {error}"))
+    })
 }

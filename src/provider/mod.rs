@@ -1,7 +1,8 @@
 //! Provider entities, credentials, upstream storage, OAuth flows, and model
 //! discovery.
 
-use crate::{error::ApiError, format::UpstreamFormat};
+use self::storage::Error as StorageError;
+use crate::format::UpstreamFormat;
 use turso::{Value, params::IntoValue};
 
 pub(crate) mod discovery;
@@ -60,21 +61,22 @@ impl IntoValue for ProviderType {
 }
 
 impl TryFrom<&Value> for ProviderType {
-    type Error = ApiError;
+    type Error = StorageError;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         match value {
-            Value::Text(text) => Self::parse(text)
-                .ok_or_else(|| ApiError::internal(format!("unknown provider type `{text}`"))),
-            _ => Err(ApiError::internal(
-                "provider type column must be a text value",
-            )),
+            Value::Text(text) => Self::parse(text).ok_or_else(|| StorageError::Drift {
+                message: format!("unknown provider type `{text}`"),
+            }),
+            _ => Err(StorageError::Drift {
+                message: "provider type column must be a text value".to_string(),
+            }),
         }
     }
 }
 
 impl TryFrom<Value> for ProviderType {
-    type Error = ApiError;
+    type Error = StorageError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         Self::try_from(&value)
@@ -127,21 +129,22 @@ impl IntoValue for OAuthProviderType {
 }
 
 impl TryFrom<&Value> for OAuthProviderType {
-    type Error = ApiError;
+    type Error = StorageError;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         match value {
-            Value::Text(text) => Self::parse(text)
-                .ok_or_else(|| ApiError::internal(format!("unknown OAuth provider type `{text}`"))),
-            _ => Err(ApiError::internal(
-                "OAuth state type column must be a text value",
-            )),
+            Value::Text(text) => Self::parse(text).ok_or_else(|| StorageError::Drift {
+                message: format!("unknown OAuth provider type `{text}`"),
+            }),
+            _ => Err(StorageError::Drift {
+                message: "OAuth state type column must be a text value".to_string(),
+            }),
         }
     }
 }
 
 impl TryFrom<Value> for OAuthProviderType {
-    type Error = ApiError;
+    type Error = StorageError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         Self::try_from(&value)
@@ -304,16 +307,6 @@ impl Credentials {
     }
 }
 
-/// Maps a credentials parse failure onto the management error domain: a 400
-/// invalid request naming `credentials`, preserving the exact message wording
-/// the management contract documents. Storage decoding never travels through
-/// here; it wraps the typed error as an internal one instead.
-impl From<ParseError> for ApiError {
-    fn from(error: ParseError) -> Self {
-        ApiError::invalid_parameter("credentials", error.to_string())
-    }
-}
-
 /// The fields of a provider about to be inserted.
 #[derive(Debug, Clone)]
 pub(crate) struct NewProvider<'a> {
@@ -376,20 +369,13 @@ pub(crate) struct Provider {
 impl Provider {
     /// The upstream wire format the provider speaks: the type-fixed format
     /// when the account kind pins one, otherwise the configured `protocol`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApiError`] when an `openai_compatible` provider carries no
-    /// protocol, which is a configuration invariant violation.
-    pub(crate) fn upstream_format(&self) -> Result<UpstreamFormat, ApiError> {
+    /// `None` means an `openai_compatible` provider carries no protocol,
+    /// which is a configuration invariant violation the caller fails fast
+    /// on.
+    pub(crate) fn upstream_format(&self) -> Option<UpstreamFormat> {
         match self.provider_type.upstream_format() {
-            Some(format) => Ok(format),
-            None => self.protocol.ok_or_else(|| {
-                ApiError::internal(format!(
-                    "provider `{}` has no upstream protocol configured",
-                    self.name
-                ))
-            }),
+            Some(format) => Some(format),
+            None => self.protocol,
         }
     }
 }

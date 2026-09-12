@@ -1,9 +1,9 @@
 //! Outward OpenAI-compatible format sub-router (`/api/openai-v1`).
 
-use super::json_response;
+mod error;
+
 use crate::{
     context::Context,
-    error::{ApiError, log_api_error},
     format::{ClientFormat, ClientSseRenderer, openai_chat_completion, openai_response},
     gateway::{self, IrEventStream},
     ir::{Aggregator, IrAggregation},
@@ -19,6 +19,7 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
+use error::{Error, json_response, log_error};
 use log::debug;
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 
@@ -58,7 +59,7 @@ async fn authenticate(request: Request, next: Next) -> Response {
     if !is_authorized {
         debug!("rejected an unauthorized API request");
 
-        return json_response(401, ApiError::invalid_api_key().to_openai_json());
+        return Error::InvalidApiKey.into_response();
     }
 
     next.run(request).await
@@ -82,12 +83,11 @@ fn bearer_token(authorization: &str) -> Option<&str> {
 
 /// Handles unmapped format paths with an OpenAI-shaped 404.
 async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
-    let mut error =
-        ApiError::invalid_request(format!("Invalid URL ({} {})", request.method(), uri.path()));
-
-    error.status = StatusCode::NOT_FOUND.as_u16();
-
-    json_response(error.status, error.to_openai_json())
+    Error::InvalidUrl {
+        method: request.method().as_str().to_string(),
+        path: uri.path().to_string(),
+    }
+    .into_response()
 }
 
 /// Handles `POST /chat/completions`.
@@ -101,10 +101,10 @@ async fn responses(State(context): State<Context>, body: Bytes) -> Response {
 }
 
 /// Renders a handler outcome, mapping failures to OpenAI error responses.
-fn outcome_response(outcome: Result<Response, ApiError>) -> Response {
+fn outcome_response(outcome: Result<Response, Error>) -> Response {
     match outcome {
         Ok(response) => response,
-        Err(error) => json_response(error.status, error.to_openai_json()),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -119,15 +119,17 @@ fn outcome_response(outcome: Result<Response, ApiError>) -> Response {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for request, routing, and upstream failures.
-async fn handle_completion<TFormat>(context: &Context, body: &[u8]) -> Result<Response, ApiError>
+/// Returns [`Error`] for request, routing, and upstream failures.
+async fn handle_completion<TFormat>(context: &Context, body: &[u8]) -> Result<Response, Error>
 where
     TFormat: ClientFormat,
 {
     let parsed = match TFormat::parse_request(body) {
         Ok(parsed) => parsed,
         Err(error) => {
-            log_api_error("completion request", &error);
+            let error = Error::from(error);
+
+            log_error("completion request", &error);
 
             return Err(error);
         }
@@ -136,7 +138,9 @@ where
     let routing = match gateway::resolve_routing(&context.database, &parsed.ir.model).await {
         Ok(routing) => routing,
         Err(error) => {
-            log_api_error(
+            let error = Error::from(error);
+
+            log_error(
                 &format!("completion for model `{}`", parsed.ir.model),
                 &error,
             );
@@ -173,8 +177,10 @@ where
     }
     .await;
 
+    let outcome = outcome.map_err(Error::from);
+
     if let Err(error) = &outcome {
-        log_api_error(&operation, error);
+        log_error(&operation, error);
     }
 
     outcome
@@ -200,9 +206,11 @@ async fn models(State(context): State<Context>) -> Response {
         }
 
         Err(error) => {
-            log_api_error("model listing", &error);
+            let error = Error::from(error);
 
-            json_response(error.status, error.to_openai_json())
+            log_error("model listing", &error);
+
+            error.into_response()
         }
     }
 }
@@ -232,8 +240,10 @@ fn sse_response(
                     }
                 }
 
-                Err(error) => {
-                    let _ = sender.send(Ok(renderer.error_frame(&error).into())).await;
+                Err(gateway_error) => {
+                    let payload = Error::from(gateway_error).to_openai_json();
+
+                    let _ = sender.send(Ok(renderer.error_frame(&payload).into())).await;
 
                     return;
                 }
@@ -254,11 +264,11 @@ fn sse_response(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the stream carries a failure.
+/// Returns the stream's failure when it carries one.
 async fn aggregated_response(
     events: IrEventStream,
     render: impl Fn(&IrAggregation) -> serde_json::Value,
-) -> Result<Response, ApiError> {
+) -> Result<Response, gateway::Error> {
     let mut aggregator = Aggregator::default();
 
     let mut events = events;

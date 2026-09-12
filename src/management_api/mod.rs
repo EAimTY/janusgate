@@ -1,11 +1,11 @@
-//! Administrative management API routing and handling.
+//! Administrative management API routing, its self-contained error domain,
+//! and handling.
 
+mod error;
+
+use self::error::{ManagementApiError, log_error};
 use crate::{
-    context::Context,
-    error::{self, ApiError, log_api_error},
-    format::UpstreamFormat,
-    provider::Provider,
-    security::constant_time_eq,
+    context::Context, format::UpstreamFormat, provider::Provider, security::constant_time_eq,
 };
 use axum::{
     Router,
@@ -66,10 +66,8 @@ async fn authenticate(request: Request, next: Next) -> Response {
     if !is_authorized {
         warn!("rejected an unauthorized management request");
 
-        return error::json_response(
-            401,
-            ApiError::authentication("Missing or invalid management token").to_management_json(),
-        );
+        return ManagementApiError::authentication("Missing or invalid management token")
+            .into_response();
     }
 
     next.run(request).await
@@ -77,14 +75,8 @@ async fn authenticate(request: Request, next: Next) -> Response {
 
 /// Handles unmapped management paths with a management-shaped 404.
 async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
-    let error = ApiError::not_found(format!("Invalid URL ({} {})", request.method(), uri.path()));
-
-    error::json_response(error.status, error.to_management_json())
-}
-
-/// Renders an error outcome into a management error response.
-pub(crate) fn error_response(error: ApiError) -> Response {
-    error::json_response(error.status, error.to_management_json())
+    ManagementApiError::not_found(format!("Invalid URL ({} {})", request.method(), uri.path()))
+        .into_response()
 }
 
 /// Deserializes a strictly typed request body, logging a malformed body at
@@ -93,17 +85,18 @@ pub(crate) fn error_response(error: ApiError) -> Response {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for malformed JSON and unknown fields.
-pub(crate) fn parse_body<T>(body: &Bytes, operation: &str) -> Result<T, ApiError>
+/// Returns [`ManagementApiError`] for malformed JSON and unknown fields.
+pub(crate) fn parse_body<T>(body: &Bytes, operation: &str) -> Result<T, ManagementApiError>
 where
     T: DeserializeOwned,
 {
     serde_json::from_slice(body).map_err(|error| {
-        let api_error = error::invalid_request_from_json(error);
+        let management_error =
+            ManagementApiError::invalid_request(format!("Invalid JSON body: {error}"));
 
-        log_api_error(&format!("{operation} request"), &api_error);
+        log_error(&format!("{operation} request"), &management_error);
 
-        api_error
+        management_error
     })
 }
 
@@ -113,13 +106,12 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the identifier is empty.
-pub(crate) fn validate_identifier(param: &str, value: &str) -> Result<(), ApiError> {
+/// Returns [`ManagementApiError`] when the identifier is empty.
+pub(crate) fn validate_identifier(param: &str, value: &str) -> Result<(), ManagementApiError> {
     if value.is_empty() {
-        return Err(ApiError::invalid_parameter(
-            param,
-            format!("`{param}` must not be empty"),
-        ));
+        return Err(ManagementApiError::invalid_request(format!(
+            "`{param}` must not be empty"
+        )));
     }
 
     Ok(())

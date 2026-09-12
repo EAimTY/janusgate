@@ -3,10 +3,69 @@
 
 use crate::{
     database::{Database, Error as DatabaseError, Transaction},
-    error::{self, ApiError},
     provider::{Credentials, OAuthProviderType, Provider, endpoints, http_body, storage},
     unix_time,
 };
+
+/// OAuth token acquisition failures: authorization code exchange, refresh
+/// grants, Google Code Assist project resolution, and the lease-guarded
+/// refresh loop over them.
+///
+/// Every upstream-facing variant renders the complete human message both
+/// HTTP surfaces display; the surfaces only decide the status and the
+/// machine-readable code. Upstream rejections on these paths always pin 502,
+/// so the foreign status rides in the message and the variant payload.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum Error {
+    /// The upstream endpoint answered a non-2xx status. These paths never
+    /// forward foreign statuses, so the status rides in the message.
+    #[error("Upstream request failed with status {status}: {detail}")]
+    Rejected {
+        /// Upstream status code, embedded in the message.
+        status: u16,
+
+        /// Truncated upstream body excerpt.
+        detail: String,
+    },
+
+    /// The upstream endpoint failed without a usable HTTP response: a
+    /// transport failure, a malformed body, or a missing required field.
+    #[error("Upstream request failed: {detail}")]
+    Unavailable {
+        /// Human-readable failure detail.
+        detail: String,
+    },
+
+    /// The addressed provider row vanished mid-refresh.
+    #[error("{message}")]
+    NotFound {
+        /// Human-readable failure message.
+        message: String,
+    },
+
+    /// Token acquisition failed on JanusGate's side: a lease transaction
+    /// could not be driven, or storage reported drift.
+    #[error("{message}")]
+    Internal {
+        /// Human-readable failure message.
+        message: String,
+    },
+}
+
+impl From<storage::Error> for Error {
+    fn from(error: storage::Error) -> Self {
+        match error {
+            storage::Error::NotFound { message } => Self::NotFound { message },
+
+            // Constraint and busy contention cannot arise from the refresh
+            // path's unconditional writes; the surfaces render them as
+            // gateway-internal failures.
+            other => Self::Internal {
+                message: other.to_string(),
+            },
+        }
+    }
+}
 use base64::{Engine as _, engine::general_purpose};
 use log::{debug, info, warn};
 use reqwest::Client;
@@ -198,14 +257,14 @@ pub(crate) struct ExchangedTokens {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the token endpoint fails or the response omits
+/// Returns [`Error`] when the token endpoint fails or the response omits
 /// required fields.
 pub(crate) async fn exchange_code(
     http: &Client,
     oauth_type: OAuthProviderType,
     code: &str,
     verifier: &str,
-) -> Result<ExchangedTokens, ApiError> {
+) -> Result<ExchangedTokens, Error> {
     let (credentials, raw_response) = match oauth_type {
         OAuthProviderType::OpenAiOauth => {
             let response: TokenResponse = post_form(
@@ -222,26 +281,36 @@ pub(crate) async fn exchange_code(
             )
             .await?;
 
-            let access_token = response.access_token.clone().ok_or_else(|| {
-                ApiError::upstream_unavailable("token exchange response lacks an access token")
-            })?;
+            let access_token = response
+                .access_token
+                .clone()
+                .ok_or_else(|| Error::Unavailable {
+                    detail: "token exchange response lacks an access token".to_string(),
+                })?;
 
-            let id_token = response.id_token.clone().ok_or_else(|| {
-                ApiError::upstream_unavailable("token exchange response lacks an id token")
-            })?;
+            let id_token = response
+                .id_token
+                .clone()
+                .ok_or_else(|| Error::Unavailable {
+                    detail: "token exchange response lacks an id token".to_string(),
+                })?;
 
             let account_id = jwt_claim(
                 &id_token,
                 &["https://api.openai.com/auth", "chatgpt_account_id"],
             )
             .and_then(|claim| claim.as_str().map(str::to_string))
-            .ok_or_else(|| {
-                ApiError::upstream_unavailable("id token lacks a ChatGPT account claim")
+            .ok_or_else(|| Error::Unavailable {
+                detail: "id token lacks a ChatGPT account claim".to_string(),
             })?;
 
-            let refresh_token = response.refresh_token.clone().ok_or_else(|| {
-                ApiError::upstream_unavailable("token exchange response lacks a refresh token")
-            })?;
+            let refresh_token =
+                response
+                    .refresh_token
+                    .clone()
+                    .ok_or_else(|| Error::Unavailable {
+                        detail: "token exchange response lacks a refresh token".to_string(),
+                    })?;
 
             let credentials = Credentials::OpenAiOauth {
                 access_token,
@@ -267,13 +336,20 @@ pub(crate) async fn exchange_code(
             )
             .await?;
 
-            let access_token = response.access_token.clone().ok_or_else(|| {
-                ApiError::upstream_unavailable("token exchange response lacks an access token")
-            })?;
+            let access_token = response
+                .access_token
+                .clone()
+                .ok_or_else(|| Error::Unavailable {
+                    detail: "token exchange response lacks an access token".to_string(),
+                })?;
 
-            let refresh_token = response.refresh_token.clone().ok_or_else(|| {
-                ApiError::upstream_unavailable("token exchange response lacks a refresh token")
-            })?;
+            let refresh_token =
+                response
+                    .refresh_token
+                    .clone()
+                    .ok_or_else(|| Error::Unavailable {
+                        detail: "token exchange response lacks a refresh token".to_string(),
+                    })?;
 
             let project_id = resolve_project_id(http, &access_token).await?;
 
@@ -318,13 +394,13 @@ pub(crate) struct RefreshedTokens {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the token endpoint fails or omits an access
+/// Returns [`Error`] when the token endpoint fails or omits an access
 /// token.
 pub(crate) async fn refresh_tokens(
     http: &Client,
     oauth_type: OAuthProviderType,
     refresh_token: &str,
-) -> Result<RefreshedTokens, ApiError> {
+) -> Result<RefreshedTokens, Error> {
     let response: TokenResponse = match oauth_type {
         OAuthProviderType::OpenAiOauth => {
             post_json(
@@ -356,8 +432,8 @@ pub(crate) async fn refresh_tokens(
         }
     };
 
-    let access_token = response.access_token.ok_or_else(|| {
-        ApiError::upstream_unavailable("token refresh response lacks an access token")
+    let access_token = response.access_token.ok_or_else(|| Error::Unavailable {
+        detail: "token refresh response lacks an access token".to_string(),
     })?;
 
     Ok(RefreshedTokens {
@@ -374,12 +450,9 @@ pub(crate) async fn refresh_tokens(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when neither call yields a project, the operation
+/// Returns [`Error`] when neither call yields a project, the operation
 /// reports a terminal failure, or the poll budget elapses.
-pub(crate) async fn resolve_project_id(
-    http: &Client,
-    access_token: &str,
-) -> Result<String, ApiError> {
+pub(crate) async fn resolve_project_id(http: &Client, access_token: &str) -> Result<String, Error> {
     let load_response: serde_json::Value = post_code_assist(
         http,
         endpoints::ANTIGRAVITY_LOAD_CODE_ASSIST_ACTION,
@@ -410,9 +483,9 @@ pub(crate) async fn resolve_project_id(
 
     loop {
         if std::time::Instant::now() >= onboard_deadline {
-            return Err(ApiError::upstream_unavailable(
-                "project onboarding did not complete in time",
-            ));
+            return Err(Error::Unavailable {
+                detail: "project onboarding did not complete in time".to_string(),
+            });
         }
 
         let response: serde_json::Value = post_code_assist(
@@ -428,8 +501,8 @@ pub(crate) async fn resolve_project_id(
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
-            return onboard_operation_project(&response)?.ok_or_else(|| {
-                ApiError::upstream_unavailable("onboardUser completed without a project ID")
+            return onboard_operation_project(&response)?.ok_or_else(|| Error::Unavailable {
+                detail: "onboardUser completed without a project ID".to_string(),
             });
         }
 
@@ -443,7 +516,7 @@ pub(crate) async fn resolve_project_id(
 /// an `error` payload (`{code, message, status}`), which is propagated into
 /// the upstream error detail instead of collapsing into a generic
 /// missing-project failure.
-fn onboard_operation_project(operation: &serde_json::Value) -> Result<Option<String>, ApiError> {
+fn onboard_operation_project(operation: &serde_json::Value) -> Result<Option<String>, Error> {
     if let Some(error) = operation.get("error") {
         let status = error
             .get("status")
@@ -455,9 +528,9 @@ fn onboard_operation_project(operation: &serde_json::Value) -> Result<Option<Str
             .and_then(serde_json::Value::as_str)
             .unwrap_or("no message");
 
-        return Err(ApiError::upstream_unavailable(format!(
-            "onboardUser failed upstream: {status}: {message}"
-        )));
+        return Err(Error::Unavailable {
+            detail: format!("onboardUser failed upstream: {status}: {message}"),
+        });
     }
 
     Ok(operation
@@ -493,13 +566,13 @@ enum RefreshOutcome {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the provider vanished, the refresh fails, or a
+/// Returns [`Error`] when the provider vanished, the refresh fails, or a
 /// concurrent refresh does not finish in time.
 pub(crate) async fn ensure_fresh_token(
     database: &Database,
     http: &Client,
     provider: &Provider,
-) -> Result<Provider, ApiError> {
+) -> Result<Provider, Error> {
     if matches!(provider.credentials, Credentials::ApiKey(_)) || is_token_fresh(provider) {
         return Ok(provider.clone());
     }
@@ -509,11 +582,12 @@ pub(crate) async fn ensure_fresh_token(
     loop {
         let now = unix_time::unix_now();
 
-        let mut transaction = database.transaction().await.map_err(|error| {
-            ApiError::internal(format!(
-                "failed to begin token refresh transaction: {error}"
-            ))
-        })?;
+        let mut transaction = database
+            .transaction()
+            .await
+            .map_err(|error| Error::Internal {
+                message: format!("failed to begin token refresh transaction: {error}"),
+            })?;
 
         let Some(current) =
             storage::find_provider_by_id_in_transaction(&mut transaction, provider.id).await?
@@ -521,52 +595,62 @@ pub(crate) async fn ensure_fresh_token(
             transaction
                 .rollback()
                 .await
-                .map_err(|error| ApiError::internal(format!("failed to roll back: {error}")))?;
+                .map_err(|error| Error::Internal {
+                    message: format!("failed to roll back: {error}"),
+                })?;
 
-            return Err(ApiError::not_found(
-                "provider vanished during token refresh",
-            ));
+            return Err(Error::NotFound {
+                message: "provider vanished during token refresh".to_string(),
+            });
         };
 
         if is_token_fresh(&current) {
             transaction
                 .rollback()
                 .await
-                .map_err(|error| ApiError::internal(format!("failed to roll back: {error}")))?;
+                .map_err(|error| Error::Internal {
+                    message: format!("failed to roll back: {error}"),
+                })?;
 
             return Ok(current);
         }
 
-        let lease_started_at =
-            match acquire_refresh_lease(&mut transaction, current.id, now).await {
-                Ok(lease_started_at) => lease_started_at,
+        let lease_started_at = match acquire_refresh_lease(&mut transaction, current.id, now).await
+        {
+            Ok(lease_started_at) => lease_started_at,
 
-                // The acquire is a read-then-write transaction: the SELECT fixed
-                // the read snapshot and the lease UPDATE upgrades it to a write.
-                // A commit that landed in between invalidates the snapshot, and
-                // the engine refuses the upgrade — that is the lease burst this
-                // loop exists to absorb, not a failed request. The engine
-                // requires a rollback before retrying, and the next iteration is
-                // the retry: it re-reads the newer state and either finds the
-                // token fresh or waits its turn.
-                Err(lease_error) if error::is_stale_snapshot(&lease_error) => {
-                    transaction.rollback().await.map_err(|error| {
-                        ApiError::internal(format!("failed to roll back: {error}"))
+            // The acquire is a read-then-write transaction: the SELECT fixed
+            // the read snapshot and the lease UPDATE upgrades it to a write.
+            // A commit that landed in between invalidates the snapshot, and
+            // the engine refuses the upgrade — that is the lease burst this
+            // loop exists to absorb, not a failed request. The engine
+            // requires a rollback before retrying, and the next iteration is
+            // the retry: it re-reads the newer state and either finds the
+            // token fresh or waits its turn.
+            Err(lease_error) if lease_error.is_stale_snapshot() => {
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(|error| Error::Internal {
+                        message: format!("failed to roll back: {error}"),
                     })?;
 
-                    tokio::time::sleep(REFRESH_WAIT_INTERVAL).await;
+                tokio::time::sleep(REFRESH_WAIT_INTERVAL).await;
 
-                    wait_or_fail(wait_deadline)?;
+                wait_or_fail(wait_deadline)?;
 
-                    continue;
-                }
+                continue;
+            }
 
-                Err(lease_error) => return Err(lease_error.into()),
-            };
+            Err(lease_error) => return Err(storage::Error::from(lease_error).into()),
+        };
 
-        transaction.commit().await.map_err(|error| {
-            ApiError::internal(format!("failed to commit refresh lease: {error}"))
-        })?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| Error::Internal {
+                message: format!("failed to commit refresh lease: {error}"),
+            })?;
 
         if let Some(lease_started_at) = lease_started_at {
             // Grant failures return directly; losing the lease falls through
@@ -616,11 +700,11 @@ async fn acquire_refresh_lease(
 
 /// Fails the request once the poll window for a concurrent token refresh has
 /// elapsed (README §3); otherwise the caller re-enters the poll loop.
-fn wait_or_fail(wait_deadline: std::time::Instant) -> Result<(), ApiError> {
+fn wait_or_fail(wait_deadline: std::time::Instant) -> Result<(), Error> {
     if std::time::Instant::now() >= wait_deadline {
-        return Err(ApiError::upstream_unavailable(
-            "timed out waiting for a concurrent token refresh",
-        ));
+        return Err(Error::Unavailable {
+            detail: "timed out waiting for a concurrent token refresh".to_string(),
+        });
     }
 
     Ok(())
@@ -639,13 +723,13 @@ fn wait_or_fail(wait_deadline: std::time::Instant) -> Result<(), ApiError> {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the refresh or the persistence fails.
+/// Returns [`Error`] when the refresh or the persistence fails.
 async fn refresh_and_store(
     database: &Database,
     http: &Client,
     provider: &Provider,
     lease_started_at: i64,
-) -> Result<RefreshOutcome, ApiError> {
+) -> Result<RefreshOutcome, Error> {
     let outcome = async {
         let (credentials, expires_at) = refresh_and_build_credentials(http, provider).await?;
 
@@ -705,11 +789,11 @@ async fn refresh_and_store(
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the refresh grant fails.
+/// Returns [`Error`] when the refresh grant fails.
 async fn refresh_and_build_credentials(
     http: &Client,
     provider: &Provider,
-) -> Result<(Credentials, i64), ApiError> {
+) -> Result<(Credentials, i64), Error> {
     let refreshed = match &provider.credentials {
         Credentials::OpenAiOauth { refresh_token, .. } => {
             refresh_tokens(http, OAuthProviderType::OpenAiOauth, refresh_token).await?
@@ -720,7 +804,9 @@ async fn refresh_and_build_credentials(
         }
 
         Credentials::ApiKey(_) => {
-            return Err(ApiError::internal("API key credentials never refresh"));
+            return Err(Error::Internal {
+                message: "API key credentials never refresh".to_string(),
+            });
         }
     };
 
@@ -765,7 +851,9 @@ async fn refresh_and_build_credentials(
         },
 
         Credentials::ApiKey(_) => {
-            return Err(ApiError::internal("API key credentials never refresh"));
+            return Err(Error::Internal {
+                message: "API key credentials never refresh".to_string(),
+            });
         }
     };
 
@@ -794,14 +882,16 @@ fn is_token_fresh(provider: &Provider) -> bool {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] when the reported `expires_in` is zero or negative.
-fn token_expiry_from(expires_in: Option<i64>, access_token: Option<&str>) -> Result<i64, ApiError> {
+/// Returns [`Error`] when the reported `expires_in` is zero or negative.
+fn token_expiry_from(expires_in: Option<i64>, access_token: Option<&str>) -> Result<i64, Error> {
     if let Some(lifetime) = expires_in
         && lifetime <= 0
     {
-        return Err(ApiError::upstream_unavailable(format!(
-            "malformed token response: `expires_in` must be positive, got {lifetime}"
-        )));
+        return Err(Error::Unavailable {
+            detail: format!(
+                "malformed token response: `expires_in` must be positive, got {lifetime}"
+            ),
+        });
     }
 
     let now = unix_time::unix_now();
@@ -853,7 +943,7 @@ fn random_url_safe(byte_count: usize) -> String {
 /// re-authorization recovers — is diagnosed in the message so the doomed
 /// grant is not re-attempted as if it were transient, while any other
 /// rejection keeps the generic upstream rendering with the status embedded.
-fn token_grant_rejection(status: u16, body: &str, grant: &str) -> ApiError {
+fn token_grant_rejection(status: u16, body: &str, grant: &str) -> Error {
     let error_name = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|value| {
@@ -864,13 +954,18 @@ fn token_grant_rejection(status: u16, body: &str, grant: &str) -> ApiError {
         });
 
     if error_name.as_deref() == Some("invalid_grant") {
-        return ApiError::upstream_unavailable(format!(
-            "the token endpoint rejected the {grant} with `invalid_grant` (RFC 6749 §5.2): \
+        return Error::Unavailable {
+            detail: format!(
+                "the token endpoint rejected the {grant} with `invalid_grant` (RFC 6749 §5.2): \
              the grant is revoked or expired and the provider needs re-authorization"
-        ));
+            ),
+        };
     }
 
-    ApiError::upstream_rejected(status, http_body::truncate_excerpt(body))
+    Error::Rejected {
+        status,
+        detail: http_body::truncate_excerpt(body),
+    }
 }
 
 /// POSTs a form-encoded body and deserializes the JSON response, classifying
@@ -882,20 +977,25 @@ fn token_grant_rejection(status: u16, body: &str, grant: &str) -> ApiError {
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for transport failures, non-success statuses, and
+/// Returns [`Error`] for transport failures, non-success statuses, and
 /// malformed response bodies.
 async fn post_form<T>(
     http: &Client,
     url: &str,
     form: &[(&str, &str)],
     grant: &str,
-) -> Result<T, ApiError>
+) -> Result<T, Error>
 where
     T: serde::de::DeserializeOwned,
 {
-    let response = http.post(url).form(form).send().await.map_err(|error| {
-        ApiError::upstream_unavailable(format!("token endpoint unreachable: {error}"))
-    })?;
+    let response = http
+        .post(url)
+        .form(form)
+        .send()
+        .await
+        .map_err(|error| Error::Unavailable {
+            detail: format!("token endpoint unreachable: {error}"),
+        })?;
 
     let status = response.status();
 
@@ -905,12 +1005,12 @@ where
         return Err(token_grant_rejection(status.as_u16(), &body, grant));
     }
 
-    let body = response.text().await.map_err(|error| {
-        ApiError::upstream_unavailable(format!("token endpoint read failed: {error}"))
+    let body = response.text().await.map_err(|error| Error::Unavailable {
+        detail: format!("token endpoint read failed: {error}"),
     })?;
 
-    serde_json::from_str(&body).map_err(|error| {
-        ApiError::upstream_unavailable(format!("malformed token endpoint response: {error}"))
+    serde_json::from_str(&body).map_err(|error| Error::Unavailable {
+        detail: format!("malformed token endpoint response: {error}"),
     })
 }
 
@@ -925,14 +1025,14 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for transport failures, non-success statuses, and
+/// Returns [`Error`] for transport failures, non-success statuses, and
 /// malformed response bodies.
 pub(super) async fn post_code_assist<T>(
     http: &Client,
     action: &str,
     access_token: &str,
     body: &serde_json::Value,
-) -> Result<T, ApiError>
+) -> Result<T, Error>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -948,8 +1048,8 @@ where
         .json(body)
         .send()
         .await
-        .map_err(|error| {
-            ApiError::upstream_unavailable(format!("upstream unreachable: {error}"))
+        .map_err(|error| Error::Unavailable {
+            detail: format!("upstream unreachable: {error}"),
         })?;
 
     let status = response.status();
@@ -957,18 +1057,18 @@ where
     if !status.is_success() {
         let text = http_body::read_error_body(response).await;
 
-        return Err(ApiError::upstream_rejected(
-            status.as_u16(),
-            http_body::truncate_excerpt(&text),
-        ));
+        return Err(Error::Rejected {
+            status: status.as_u16(),
+            detail: http_body::truncate_excerpt(&text),
+        });
     }
 
-    let text = response.text().await.map_err(|error| {
-        ApiError::upstream_unavailable(format!("upstream read failed: {error}"))
+    let text = response.text().await.map_err(|error| Error::Unavailable {
+        detail: format!("upstream read failed: {error}"),
     })?;
 
-    serde_json::from_str(&text).map_err(|error| {
-        ApiError::upstream_unavailable(format!("malformed upstream response: {error}"))
+    serde_json::from_str(&text).map_err(|error| Error::Unavailable {
+        detail: format!("malformed upstream response: {error}"),
     })
 }
 
@@ -981,20 +1081,25 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] for transport failures, non-success statuses, and
+/// Returns [`Error`] for transport failures, non-success statuses, and
 /// malformed response bodies.
 async fn post_json<T>(
     http: &Client,
     url: &str,
     body: &serde_json::Value,
     grant: &str,
-) -> Result<T, ApiError>
+) -> Result<T, Error>
 where
     T: serde::de::DeserializeOwned,
 {
-    let response = http.post(url).json(body).send().await.map_err(|error| {
-        ApiError::upstream_unavailable(format!("upstream unreachable: {error}"))
-    })?;
+    let response = http
+        .post(url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| Error::Unavailable {
+            detail: format!("upstream unreachable: {error}"),
+        })?;
 
     let status = response.status();
 
@@ -1004,11 +1109,11 @@ where
         return Err(token_grant_rejection(status.as_u16(), &text, grant));
     }
 
-    let text = response.text().await.map_err(|error| {
-        ApiError::upstream_unavailable(format!("upstream read failed: {error}"))
+    let text = response.text().await.map_err(|error| Error::Unavailable {
+        detail: format!("upstream read failed: {error}"),
     })?;
 
-    serde_json::from_str(&text).map_err(|error| {
-        ApiError::upstream_unavailable(format!("malformed upstream response: {error}"))
+    serde_json::from_str(&text).map_err(|error| Error::Unavailable {
+        detail: format!("malformed upstream response: {error}"),
     })
 }
