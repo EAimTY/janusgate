@@ -43,7 +43,7 @@ impl ProviderType {
     }
 
     /// The upstream wire format the provider type always speaks, when fixed.
-    pub(crate) fn upstream_format(self) -> Option<UpstreamFormat> {
+    fn upstream_format(self) -> Option<UpstreamFormat> {
         match self {
             Self::OpenAiOauth => Some(UpstreamFormat::OpenAiResponse),
             Self::AntigravityOauth => Some(UpstreamFormat::GeminiGenerateContent),
