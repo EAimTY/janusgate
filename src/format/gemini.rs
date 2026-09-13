@@ -301,14 +301,22 @@ fn render_part(part: &IrPart, ir: &IrRequest) -> Result<Vec<Value>, InvalidReque
         }]),
 
         IrPart::ToolCall {
+            call_id,
             name,
             arguments,
             thought_signature,
-            ..
         } => {
-            let mut gemini_part = serde_json::json!({
-                "functionCall": {"name": name, "args": super::arguments_as_object(arguments)?},
+            // The id is client-populated on replay — exactly what the
+            // upstream's `FunctionResponse.id` is defined to match — so
+            // parallel calls to one function name stay resolvable.
+            let mut function_call = serde_json::json!({
+                "name": name,
+                "args": super::arguments_as_object(arguments)?,
             });
+
+            super::json_insert(&mut function_call, "id", Value::String(call_id.clone()));
+
+            let mut gemini_part = serde_json::json!({"functionCall": function_call});
 
             if let Some(signature) = thought_signature {
                 super::json_insert(
@@ -330,9 +338,16 @@ fn render_part(part: &IrPart, ir: &IrRequest) -> Result<Vec<Value>, InvalidReque
                 Err(_) => serde_json::json!({"result": content}),
             };
 
-            Ok(vec![serde_json::json!({
-                "functionResponse": {"name": name, "response": response},
-            })])
+            // The response carries the answered call's id: the IR's shared
+            // `call_id` plus the resolution above prove the pairing, so a
+            // same-name parallel call resolves by id rather than by name.
+            let mut function_response = serde_json::json!({"name": name, "response": response});
+
+            super::json_insert(&mut function_response, "id", Value::String(call_id.clone()));
+
+            Ok(vec![
+                serde_json::json!({"functionResponse": function_response}),
+            ])
         }
     }
 }
@@ -499,7 +514,15 @@ impl UpstreamParser {
             None => "{}".to_string(),
         };
 
-        let call_id = format!("call_{}", ids::new_uuid());
+        // A populated upstream `functionCall.id` is the cross-turn matching
+        // channel: the replayed `functionResponse.id` must answer it, and
+        // without it two same-name calls in one turn are unresolvable. An
+        // id-less call mints one so the pairing channel always exists; the
+        // minted id also rides outward as the client-facing tool-call id.
+        let call_id = match super::string_field(function_call, "id") {
+            id if id.is_empty() => format!("call_{}", ids::new_uuid()),
+            id => id,
+        };
 
         events.push(IrEvent::ToolCallDelta {
             index: self.call_counter,
@@ -805,7 +828,8 @@ mod tests {
     /// and `model`, so the two `functionResponse` parts of one tool turn —
     /// separate `IrRole::Tool` messages inbound — must land in a single `user`
     /// content instead of rendering consecutive `user` entries the upstream
-    /// rejects with 400 INVALID_ARGUMENT.
+    /// rejects with 400 INVALID_ARGUMENT. Every call and response part also
+    /// carries its call id, the pairing channel the upstream matches on.
     #[test]
     fn parallel_tool_results_land_in_one_user_content() {
         let ir = IrRequest {
@@ -858,12 +882,234 @@ mod tests {
             serde_json::json!([
                 {"role": "user", "parts": [{"text": "Run both checks"}]},
                 {"role": "model", "parts": [
-                    {"functionCall": {"name": "lint", "args": {}}},
-                    {"functionCall": {"name": "test", "args": {}}},
+                    {"functionCall": {"id": "call_a", "name": "lint", "args": {}}},
+                    {"functionCall": {"id": "call_b", "name": "test", "args": {}}},
                 ]},
                 {"role": "user", "parts": [
-                    {"functionResponse": {"name": "lint", "response": {"passed": true}}},
-                    {"functionResponse": {"name": "test", "response": {"result": "all green"}}},
+                    {"functionResponse": {
+                        "id": "call_a", "name": "lint", "response": {"passed": true},
+                    }},
+                    {"functionResponse": {
+                        "id": "call_b", "name": "test", "response": {"result": "all green"},
+                    }},
+                ]},
+            ]),
+        );
+    }
+
+    /// A populated upstream `functionCall.id` is the cross-turn matching
+    /// channel: the parse must seed the IR call id with it — on both the
+    /// delta and the done event, since the delta is what reveals the id to
+    /// the client — and the replayed history must carry it on the
+    /// `functionCall` part and the matching `functionResponse` part alike.
+    #[test]
+    fn upstream_call_id_seeds_the_ir_and_replays_on_call_and_response() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{
+                    "functionCall": {"id": "fc-777", "name": "weather", "args": {"city": "Oslo"}},
+                }]},
+                "finishReason": "STOP",
+            }],
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .parse_json_response(body)
+            .expect("an id-bearing function call parses");
+
+        let delta_id = events.iter().find_map(|event| match event {
+            IrEvent::ToolCallDelta { call_id, .. } => call_id.clone(),
+            _ => None,
+        });
+
+        let done = events.iter().find_map(|event| match event {
+            IrEvent::ToolCallDone { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        });
+
+        assert_eq!(delta_id.as_deref(), Some("fc-777"));
+        assert_eq!(done.as_deref(), Some("fc-777"));
+
+        let call_id = done.expect("the done event carries the upstream call id");
+
+        let ir = IrRequest {
+            messages: vec![
+                IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![IrPart::ToolCall {
+                        call_id: call_id.clone(),
+                        name: "weather".to_string(),
+                        arguments: r#"{"city":"Oslo"}"#.to_string(),
+                        thought_signature: None,
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::Tool,
+                    parts: vec![IrPart::ToolOutput {
+                        call_id,
+                        content: r#"{"temp": 4}"#.to_string(),
+                    }],
+                },
+            ],
+            ..IrRequest::default()
+        };
+
+        let request = render_generate_content_request(&ir).expect("a tool history renders");
+
+        assert_eq!(
+            request["contents"],
+            serde_json::json!([
+                {"role": "model", "parts": [{
+                    "functionCall": {"id": "fc-777", "name": "weather", "args": {"city": "Oslo"}},
+                }]},
+                {"role": "user", "parts": [{
+                    "functionResponse": {
+                        "id": "fc-777",
+                        "name": "weather",
+                        "response": {"temp": 4},
+                    },
+                }]},
+            ]),
+        );
+    }
+
+    /// An id-less upstream call mints one id — identical on the delta and
+    /// the done event — and the replayed history pairs the call and its
+    /// response under that same minted id, so the matching channel exists
+    /// even when the upstream declined to name the call.
+    #[test]
+    fn id_less_call_mints_one_id_shared_by_call_and_response() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{
+                    "functionCall": {"name": "weather", "args": {}},
+                }]},
+                "finishReason": "STOP",
+            }],
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .parse_json_response(body)
+            .expect("an id-less function call parses");
+
+        let delta_id = events.iter().find_map(|event| match event {
+            IrEvent::ToolCallDelta { call_id, .. } => call_id.clone(),
+            _ => None,
+        });
+
+        let done = events.iter().find_map(|event| match event {
+            IrEvent::ToolCallDone {
+                call_id,
+                name,
+                arguments,
+                ..
+            } => Some((call_id.clone(), name.clone(), arguments.clone())),
+            _ => None,
+        });
+
+        let (call_id, name, arguments) = done.expect("the done event carries the minted call id");
+
+        assert_eq!(delta_id.as_deref(), Some(call_id.as_str()));
+        assert_eq!(name, "weather");
+        assert_eq!(arguments, "{}");
+
+        let ir = IrRequest {
+            messages: vec![
+                IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![IrPart::ToolCall {
+                        call_id: call_id.clone(),
+                        name,
+                        arguments,
+                        thought_signature: None,
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::Tool,
+                    parts: vec![IrPart::ToolOutput {
+                        call_id,
+                        content: r#"{"temp": 21}"#.to_string(),
+                    }],
+                },
+            ],
+            ..IrRequest::default()
+        };
+
+        let request = render_generate_content_request(&ir).expect("a tool history renders");
+
+        let call = &request["contents"][0]["parts"][0]["functionCall"];
+        let response = &request["contents"][1]["parts"][0]["functionResponse"];
+
+        assert_eq!(call["id"], response["id"]);
+        assert_eq!(
+            call["id"],
+            delta_id.expect("the delta revealed the minted id")
+        );
+    }
+
+    /// Two same-name calls with distinct upstream ids replay with distinct
+    /// response ids paired per call — the exact ambiguity the id field
+    /// exists to resolve. The outputs arrive in reverse order to prove the
+    /// pairing follows each part's id, not positional correspondence.
+    #[test]
+    fn same_name_calls_pair_distinct_response_ids() {
+        let ir = IrRequest {
+            messages: vec![
+                IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![
+                        IrPart::ToolCall {
+                            call_id: "up-1".to_string(),
+                            name: "lookup".to_string(),
+                            arguments: r#"{"key":"a"}"#.to_string(),
+                            thought_signature: None,
+                        },
+                        IrPart::ToolCall {
+                            call_id: "up-2".to_string(),
+                            name: "lookup".to_string(),
+                            arguments: r#"{"key":"b"}"#.to_string(),
+                            thought_signature: None,
+                        },
+                    ],
+                },
+                IrMessage {
+                    role: IrRole::Tool,
+                    parts: vec![IrPart::ToolOutput {
+                        call_id: "up-2".to_string(),
+                        content: r#"{"found": "b"}"#.to_string(),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::Tool,
+                    parts: vec![IrPart::ToolOutput {
+                        call_id: "up-1".to_string(),
+                        content: r#"{"found": "a"}"#.to_string(),
+                    }],
+                },
+            ],
+            ..IrRequest::default()
+        };
+
+        let request = render_generate_content_request(&ir).expect("a tool history renders");
+
+        assert_eq!(
+            request["contents"],
+            serde_json::json!([
+                {"role": "model", "parts": [
+                    {"functionCall": {"id": "up-1", "name": "lookup", "args": {"key": "a"}}},
+                    {"functionCall": {"id": "up-2", "name": "lookup", "args": {"key": "b"}}},
+                ]},
+                {"role": "user", "parts": [
+                    {"functionResponse": {
+                        "id": "up-2", "name": "lookup", "response": {"found": "b"},
+                    }},
+                    {"functionResponse": {
+                        "id": "up-1", "name": "lookup", "response": {"found": "a"},
+                    }},
                 ]},
             ]),
         );

@@ -461,3 +461,16 @@ pub(in crate::format) fn json_insert(
 
     object.insert(key.to_string(), value);
 }
+
+/// Attaches the gateway `thought_signature` extension (README §6.6) to a
+/// rendered tool-call object at its wire position; `None` attaches nothing.
+/// The extension key is defined exactly once, here.
+pub(in crate::format) fn insert_thought_signature(target: &mut Value, signature: &Option<String>) {
+    if let Some(signature) = signature {
+        json_insert(
+            target,
+            "thought_signature",
+            Value::String(signature.clone()),
+        );
+    }
+}

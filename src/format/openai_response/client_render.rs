@@ -503,13 +503,7 @@ impl ClientSseRenderer for SseRenderer {
                     Value::String(arguments.clone()),
                 );
 
-                if let Some(signature) = thought_signature {
-                    format::json_insert(
-                        &mut open.item,
-                        "thought_signature",
-                        Value::String(signature.clone()),
-                    );
-                }
+                format::insert_thought_signature(&mut open.item, thought_signature);
 
                 let output_index = open.output_index;
                 let item_id = open
@@ -692,13 +686,7 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
             "arguments": tool_call.arguments,
         });
 
-        if let Some(signature) = &tool_call.thought_signature {
-            format::json_insert(
-                &mut item,
-                "thought_signature",
-                Value::String(signature.clone()),
-            );
-        }
+        format::insert_thought_signature(&mut item, &tool_call.thought_signature);
 
         output.push(item);
     }

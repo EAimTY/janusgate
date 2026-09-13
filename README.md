@@ -246,6 +246,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 - **Upstream Invariants**:
   - Every Code Assist response — `:generateContent` JSON bodies and `alt=sse` SSE frames alike — wraps the GenerateContentResponse in a `response` envelope beside `traceId` and `metadata`; the gateway unwraps the envelope when present and equally accepts bare GenerateContentResponse payloads (as sent by Gemini-compatible upstreams).
   - `thoughtSignature` blobs on function-call parts must be preserved and reattached across turns; text-part signatures are not carried — the outward OpenAI surfaces have no wire slot for them — and are dropped at parse time.
+  - `functionCall.id` values are preserved across turns like `thoughtSignature`: a populated upstream call id seeds the IR `call_id` (an id-less call mints `call_<uuid>`, the same id the outward OpenAI surfaces expose as the tool-call id), and the replayed history emits it as the `FunctionCall.id` of the call and the matching `FunctionResponse.id` of its tool result, so parallel calls to one function name resolve by id rather than by name.
   - No automatic model mapping or tiered rewriting is performed; upstream calls pass the exact discovered `upstream_id`.
 - **Model Discovery**: `POST https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels` with JSON body `{}`; the response payload's `models` object keys are the `upstream_id` values.
 

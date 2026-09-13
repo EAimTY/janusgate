@@ -106,13 +106,7 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> Value {
                                 "arguments": arguments,
                             });
 
-                            if let Some(signature) = thought_signature {
-                                format::json_insert(
-                                    &mut item,
-                                    "thought_signature",
-                                    Value::String(signature.clone()),
-                                );
-                            }
+                            format::insert_thought_signature(&mut item, thought_signature);
 
                             input.push(item);
                         }

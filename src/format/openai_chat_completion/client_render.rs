@@ -193,13 +193,7 @@ impl ClientSseRenderer for SseRenderer {
                             "function": {"name": name, "arguments": arguments},
                         });
 
-                        if let Some(signature) = thought_signature {
-                            format::json_insert(
-                                &mut tool_call,
-                                "thought_signature",
-                                Value::String(signature.clone()),
-                            );
-                        }
+                        format::insert_thought_signature(&mut tool_call, thought_signature);
 
                         vec![self.chunk_frame(serde_json::json!({"tool_calls": [tool_call]}), None)]
                     }
@@ -313,13 +307,7 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
                 },
             });
 
-            if let Some(signature) = &tool_call.thought_signature {
-                format::json_insert(
-                    &mut tool_call_json,
-                    "thought_signature",
-                    Value::String(signature.clone()),
-                );
-            }
+            format::insert_thought_signature(&mut tool_call_json, &tool_call.thought_signature);
 
             tool_call_json
         })

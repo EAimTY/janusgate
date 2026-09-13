@@ -61,25 +61,7 @@ impl UpstreamParser {
 
         if let Some(choice) = first_choice(&value) {
             if let Some(delta) = choice.get("delta") {
-                if let Some(reasoning) = reasoning_field(delta)
-                    && !reasoning.is_empty()
-                {
-                    events.push(IrEvent::ReasoningDelta(reasoning.to_string()));
-                }
-
-                if let Some(content) = delta.get("content").and_then(Value::as_str)
-                    && !content.is_empty()
-                {
-                    events.push(IrEvent::TextDelta(content.to_string()));
-                }
-
-                // Refusal text rides the ordinary text channel, after any
-                // content text of the same delta (README §6.2).
-                if let Some(refusal) = delta.get("refusal").and_then(Value::as_str)
-                    && !refusal.is_empty()
-                {
-                    events.push(IrEvent::TextDelta(refusal.to_string()));
-                }
+                push_text_events(delta, &mut events);
 
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                     for tool_call in tool_calls {
@@ -299,6 +281,31 @@ fn reasoning_field(value: &Value) -> Option<&str> {
         .or_else(|| value.get("reasoning_content").and_then(Value::as_str))
 }
 
+/// Emits the text-bearing events of one upstream delta or complete message
+/// object into `events`: reasoning first, then the object's content text,
+/// then its refusal text. Refusal text rides the ordinary text channel
+/// after any content text of the same object (README §6.2); this helper is
+/// the single home of that ordering contract.
+fn push_text_events(value: &Value, events: &mut Vec<IrEvent>) {
+    if let Some(reasoning) = reasoning_field(value)
+        && !reasoning.is_empty()
+    {
+        events.push(IrEvent::ReasoningDelta(reasoning.to_string()));
+    }
+
+    if let Some(content) = value.get("content").and_then(Value::as_str)
+        && !content.is_empty()
+    {
+        events.push(IrEvent::TextDelta(content.to_string()));
+    }
+
+    if let Some(refusal) = value.get("refusal").and_then(Value::as_str)
+        && !refusal.is_empty()
+    {
+        events.push(IrEvent::TextDelta(refusal.to_string()));
+    }
+}
+
 /// Extracts the primary choice, preferring `index == 0`; parallel choices are
 /// not supported and the remainder is ignored.
 fn first_choice(value: &Value) -> Option<&Value> {
@@ -339,25 +346,7 @@ fn parse_usage(usage: Option<&Value>) -> Option<IrEvent> {
 fn message_events_from_full(message: &Value) -> Vec<IrEvent> {
     let mut events = Vec::new();
 
-    if let Some(reasoning) = reasoning_field(message)
-        && !reasoning.is_empty()
-    {
-        events.push(IrEvent::ReasoningDelta(reasoning.to_string()));
-    }
-
-    if let Some(content) = message.get("content").and_then(Value::as_str)
-        && !content.is_empty()
-    {
-        events.push(IrEvent::TextDelta(content.to_string()));
-    }
-
-    // Refusal text rides the ordinary text channel, after the message's
-    // content text (README §6.2).
-    if let Some(refusal) = message.get("refusal").and_then(Value::as_str)
-        && !refusal.is_empty()
-    {
-        events.push(IrEvent::TextDelta(refusal.to_string()));
-    }
+    push_text_events(message, &mut events);
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
         for (index, tool_call) in tool_calls.iter().enumerate() {
