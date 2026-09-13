@@ -411,7 +411,7 @@ impl UpstreamParser {
             });
         }
 
-        if let Some(candidate) = primary_candidate(value) {
+        if let Some(candidate) = super::primary_indexed(value, "candidates") {
             if let Some(parts) = candidate
                 .pointer("/content/parts")
                 .and_then(Value::as_array)
@@ -581,17 +581,6 @@ impl UpstreamEventParser for UpstreamParser {
 
         Vec::new()
     }
-}
-
-/// Extracts the primary candidate, preferring `index == 0`; parallel
-/// candidates are not supported and the remainder is ignored.
-fn primary_candidate(value: &Value) -> Option<&Value> {
-    let candidates = value.get("candidates")?.as_array()?;
-
-    candidates
-        .iter()
-        .find(|candidate| candidate.get("index").and_then(Value::as_u64) == Some(0))
-        .or_else(|| candidates.first())
 }
 
 /// Maps a Gemini `finishReason` to the canonical reason.

@@ -310,6 +310,22 @@ pub(in crate::format) fn string_field(value: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// Selects the primary entry of the array under `container_key`: the entry
+/// whose `index` is 0, tolerating index-less upstreams by taking the first
+/// entry instead. Parallel entries beyond the primary are not supported and
+/// the remainder is ignored.
+pub(in crate::format) fn primary_indexed<'a>(
+    value: &'a Value,
+    container_key: &str,
+) -> Option<&'a Value> {
+    let entries = value.get(container_key)?.as_array()?;
+
+    entries
+        .iter()
+        .find(|entry| entry.get("index").and_then(Value::as_u64) == Some(0))
+        .or_else(|| entries.first())
+}
+
 /// Rejects an upstream body carrying a top-level error object; shared by the
 /// OpenAI-family codecs, whose upstreams embed the error beside the protocol
 /// fields.

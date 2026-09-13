@@ -59,7 +59,7 @@ impl UpstreamParser {
 
         let mut events = self.message_start_events(&value);
 
-        if let Some(choice) = first_choice(&value) {
+        if let Some(choice) = format::primary_indexed(&value, "choices") {
             if let Some(delta) = choice.get("delta") {
                 push_text_events(delta, &mut events);
 
@@ -229,11 +229,13 @@ impl UpstreamEventParser for UpstreamParser {
 
         let mut events = self.message_start_events(&value);
 
-        if let Some(message) = first_choice(&value).and_then(|choice| choice.get("message")) {
+        if let Some(message) =
+            format::primary_indexed(&value, "choices").and_then(|choice| choice.get("message"))
+        {
             events.append(&mut message_events_from_full(message));
         }
 
-        let finish_reason = first_choice(&value)
+        let finish_reason = format::primary_indexed(&value, "choices")
             .and_then(|choice| choice.get("finish_reason"))
             .and_then(Value::as_str)
             .map(format::finish_reason_from_openai)
@@ -304,17 +306,6 @@ fn push_text_events(value: &Value, events: &mut Vec<IrEvent>) {
     {
         events.push(IrEvent::TextDelta(refusal.to_string()));
     }
-}
-
-/// Extracts the primary choice, preferring `index == 0`; parallel choices are
-/// not supported and the remainder is ignored.
-fn first_choice(value: &Value) -> Option<&Value> {
-    let choices = value.get("choices")?.as_array()?;
-
-    choices
-        .iter()
-        .find(|choice| choice.get("index").and_then(Value::as_u64) == Some(0))
-        .or_else(|| choices.first())
 }
 
 /// Converts an upstream usage object into an [`IrEvent::Usage`], if present.
