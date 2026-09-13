@@ -18,7 +18,7 @@ use crate::{
 };
 use futures::Stream;
 use log::{debug, error};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use std::pin::Pin;
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 
@@ -48,11 +48,13 @@ pub(crate) enum Error {
     },
 
     /// The upstream answered a non-2xx status, which the outward surface
-    /// mirrors verbatim.
+    /// mirrors verbatim. The status is carried as a [`StatusCode`] taken
+    /// verbatim from the upstream response, so an invalid status is
+    /// unrepresentable and the mirror needs no conversion.
     #[error("Upstream request failed: {detail}")]
     Upstream {
         /// Upstream status code, mirrored by the surface.
-        status: u16,
+        status: StatusCode,
 
         /// Truncated upstream body excerpt.
         detail: String,
@@ -96,19 +98,19 @@ impl From<PayloadError> for Error {
 /// [`IrEvent::Done`].
 pub(crate) type IrEventStream = Pin<Box<dyn Stream<Item = Result<IrEvent, Error>> + Send>>;
 
-/// Resolves a public model name to its enabled routing row.
+/// Resolves a public routing ID (README §3) to its enabled routing row.
 ///
 /// # Errors
 ///
 /// Returns [`Error::ModelNotFound`] for unknown or disabled models.
 pub(crate) async fn resolve_routing(
     database: &Database,
-    public_name: &str,
+    public_id: &str,
 ) -> Result<ModelRouting, Error> {
-    match storage::find_routing(database, public_name).await? {
+    match storage::find_routing(database, public_id).await? {
         Some(routing) if routing.is_effectively_enabled => Ok(routing),
         _ => Err(Error::ModelNotFound {
-            model: public_name.to_string(),
+            model: public_id.to_string(),
         }),
     }
 }
@@ -618,7 +620,7 @@ async fn upstream_error_of(response: reqwest::Response) -> Error {
     let body = http_body::read_error_body(response).await;
 
     Error::Upstream {
-        status: status.as_u16(),
+        status,
         detail: http_body::truncate_excerpt(&body),
     }
 }

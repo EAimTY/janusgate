@@ -36,6 +36,11 @@ pub(crate) async fn read_error_body(response: reqwest::Response) -> String {
         }
     }
 
+    // The loop condition checks the budget only before each extend, so one
+    // chunk larger than the cap overshoots it; the bound is enforced here,
+    // after accumulation.
+    bytes.truncate(MAX_ERROR_BODY_BYTES);
+
     // A chunk boundary can split a multi-byte character; the excerpt is
     // human-facing, so a replacement character is acceptable.
     String::from_utf8_lossy(&bytes).into_owned()

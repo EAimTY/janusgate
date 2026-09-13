@@ -123,6 +123,14 @@ pub(crate) fn provider_name_taken_message(name: &str) -> String {
     format!("Provider name `{name}` is already taken")
 }
 
+/// The wire wording for an unknown provider id (README §7 404 `not_found`),
+/// owned once here so the transactional writes that re-read the row and the
+/// management lookups that pre-check it render a missing provider
+/// identically.
+pub(crate) fn provider_not_found_message(id: i64) -> String {
+    format!("Provider {id} does not exist")
+}
+
 /// Column order of provider selects.
 const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, protocol, base_url, credentials, \
      expires_at, is_enabled";

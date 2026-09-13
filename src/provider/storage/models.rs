@@ -181,7 +181,7 @@ pub(crate) async fn replace_discovered_models(
         super::find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
     else {
         return Err(Error::NotFound {
-            message: format!("Provider {provider_id} does not exist"),
+            message: super::provider_not_found_message(provider_id),
         });
     };
 
@@ -309,7 +309,7 @@ pub(crate) async fn update_model_overrides_checked(
         super::find_provider_by_id_in_transaction(&mut transaction, update.provider_id).await?
     else {
         return Err(Error::NotFound {
-            message: format!("Provider {} does not exist", update.provider_id),
+            message: super::provider_not_found_message(update.provider_id),
         });
     };
 

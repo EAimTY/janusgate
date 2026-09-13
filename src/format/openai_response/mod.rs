@@ -31,12 +31,12 @@ impl ClientFormat for Format {
 
     fn sse_renderer(
         _should_include_usage: bool,
-        public_name: String,
+        public_id: String,
     ) -> Box<dyn ClientSseRenderer + Send> {
-        Box::new(SseRenderer::new(public_name))
+        Box::new(SseRenderer::new(public_id))
     }
 
-    fn render_json_response(public_name: &str, aggregation: &IrAggregation) -> Value {
-        client_render::render_json_response(public_name, aggregation)
+    fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Value {
+        client_render::render_json_response(public_id, aggregation)
     }
 }

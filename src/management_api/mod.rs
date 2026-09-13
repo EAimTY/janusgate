@@ -66,10 +66,15 @@ async fn authenticate(request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
-/// Handles unmapped management paths with a management-shaped 404.
+/// Handles unmapped management paths with a management-shaped 404, logging
+/// the rendered error once at this response boundary.
 async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
-    ManagementApiError::not_found(format!("Invalid URL ({} {})", request.method(), uri.path()))
-        .into_response()
+    let error =
+        ManagementApiError::not_found(format!("Invalid URL ({} {})", request.method(), uri.path()));
+
+    error::log_error("request", &error);
+
+    error.into_response()
 }
 
 /// Deserializes a strictly typed request body, logging a malformed body at

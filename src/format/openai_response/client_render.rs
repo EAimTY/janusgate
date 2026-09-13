@@ -86,6 +86,12 @@ impl SseRenderer {
         let mut frames = Vec::new();
 
         if let Some((item_id, output_index, text)) = self.reasoning.take() {
+            let completed_item = serde_json::json!({
+                "id": item_id,
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": text}],
+            });
+
             for (event_name, payload) in [
                 (
                     "response.reasoning_summary_text.done",
@@ -109,9 +115,7 @@ impl SseRenderer {
                     "response.output_item.done",
                     serde_json::json!({
                         "output_index": output_index,
-                        "item": {"id": item_id, "type": "reasoning", "summary": [
-                            {"type": "summary_text", "text": text}
-                        ]},
+                        "item": completed_item.clone(),
                     }),
                 ),
             ] {
@@ -120,11 +124,7 @@ impl SseRenderer {
 
             self.completed_items.push(OutputItem {
                 output_index,
-                item: serde_json::json!({
-                    "id": item_id,
-                    "type": "reasoning",
-                    "summary": [{"type": "summary_text", "text": text}],
-                }),
+                item: completed_item,
             });
         }
 
@@ -397,21 +397,27 @@ impl ClientSseRenderer for SseRenderer {
 
                         self.next_output_index += 1;
 
-                        let mut item = serde_json::json!({
+                        // A delta may open the item without revealing its
+                        // identity: a bare
+                        // `response.function_call_arguments.delta`
+                        // with no preceding `output_item.added`, or a Chat
+                        // Completions delta whose first tool-call entry
+                        // carries only arguments, arrives exactly so. Every
+                        // field of the official function_call item is a
+                        // required string (openai-python's
+                        // `ResponseFunctionToolCallItem` has no field
+                        // defaults), so unknown identity renders as empty
+                        // strings — the same defaults the done path's
+                        // recovery branch opens with — until the done event
+                        // stamps the real `call_id`, `name`, and `arguments`.
+                        let item = serde_json::json!({
                             "id": item_id,
                             "type": "function_call",
                             "status": "in_progress",
-                            "name": name,
+                            "call_id": call_id.as_deref().unwrap_or_default(),
+                            "name": name.as_deref().unwrap_or_default(),
                             "arguments": "",
                         });
-
-                        if let Some(call_id) = call_id {
-                            format::json_insert(
-                                &mut item,
-                                "call_id",
-                                Value::String(call_id.clone()),
-                            );
-                        }
 
                         frames.push(self.event_frame(
                             "response.output_item.added",
@@ -772,6 +778,72 @@ mod tests {
             .1;
 
         serde_json::from_str(data.trim_end()).expect("frame data is rendered JSON")
+    }
+
+    /// Parses the JSON payload of the first rendered frame carrying
+    /// `event_name`.
+    #[expect(
+        clippy::expect_used,
+        reason = "the rendered frames are under test; a missing frame is the failure"
+    )]
+    fn frame_payload(frames: &[String], event_name: &str) -> Value {
+        let data = frames
+            .iter()
+            .find(|frame| frame.starts_with(&format!("event: {event_name}\n")))
+            .expect("the searched-for frame is rendered")
+            .split_once("\ndata: ")
+            .expect("every frame carries a data line")
+            .1;
+
+        serde_json::from_str(data.trim_end()).expect("frame data is rendered JSON")
+    }
+
+    /// A tool-call delta opening a never-announced item — the recovery shape
+    /// a bare `response.function_call_arguments.delta` upstream event or a
+    /// Chat Completions delta carrying only arguments renders — emits an
+    /// `output_item.added` function_call whose `call_id` and `name` are
+    /// strings, empty when unknown: openai-python's
+    /// `ResponseFunctionToolCallItem` requires both as strings with no
+    /// defaults, so a `null` or missing field would fail a strict typed
+    /// client on the transient item before the done event repairs it.
+    #[test]
+    fn opening_tool_call_delta_renders_required_identity_strings() {
+        let mut renderer = SseRenderer::new("m".to_string());
+
+        let frames = renderer.render(&IrEvent::ToolCallDelta {
+            index: 0,
+            call_id: None,
+            name: None,
+            arguments_delta: "{\"".to_string(),
+        });
+
+        let item = frame_payload(&frames, "response.output_item.added")
+            .get("item")
+            .expect("the added frame carries the item")
+            .clone();
+
+        assert_eq!(item.get("call_id"), Some(&Value::String(String::new())));
+
+        assert_eq!(item.get("name"), Some(&Value::String(String::new())));
+
+        assert_eq!(
+            item.get("type"),
+            Some(&Value::String("function_call".to_string()))
+        );
+
+        assert_eq!(
+            item.get("status"),
+            Some(&Value::String("in_progress".to_string()))
+        );
+
+        assert_eq!(item.get("arguments"), Some(&Value::String(String::new())));
+
+        let arguments = frame_payload(&frames, "response.function_call_arguments.delta");
+
+        assert_eq!(
+            arguments.get("delta"),
+            Some(&Value::String("{\"".to_string()))
+        );
     }
 
     /// The streaming terminal event renders the full official usage shape:

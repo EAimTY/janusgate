@@ -111,6 +111,56 @@ struct RequestBody {
     /// Text output configuration.
     #[serde(default)]
     text: Option<TextIn>,
+
+    // The remaining fields are stateless-idempotent envelope controls that
+    // typed clients — the codex CLI serializes every one of them on each
+    // request — always carry, but that a stateless gateway can never honor
+    // downstream; each is accepted and ignored, like the item-level
+    // carve-outs above (README §6.6).
+    //
+    // `stream_options` has no Responses-specific schema, and `client_metadata`
+    // and `access_programs` are client-declared free-form values, so the
+    // three are ignored in whatever JSON shape they arrive.
+    /// Parallel tool-call switch; the downstream provider decides
+    /// parallelism, so it is accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    parallel_tool_calls: Option<bool>,
+
+    /// Extra output content the client asks to have included (codex asks for
+    /// `reasoning.encrypted_content`); the gateway renders its own output
+    /// shapes, so it is accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    include: Option<Vec<String>>,
+
+    /// Upstream prompt-cache placement key; cache placement is a downstream
+    /// concern, so it is accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    prompt_cache_key: Option<String>,
+
+    /// Streaming options; usage is always included, so it is accepted and
+    /// ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    stream_options: Option<Value>,
+
+    /// Requested service tier; the gateway has no tier control, so it is
+    /// accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    service_tier: Option<String>,
+
+    /// Free-form client metadata; accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    client_metadata: Option<Value>,
+
+    /// Client-declared access programs; accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    access_programs: Option<Value>,
 }
 
 /// Conversation input: plain string or item array.
@@ -294,6 +344,12 @@ struct TextIn {
     /// Response format restriction.
     #[serde(default)]
     format: Option<FormatIn>,
+
+    /// Output verbosity hint (codex `TextControls`); the IR has no verbosity
+    /// channel, so it is accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    verbosity: Option<String>,
 }
 
 /// Response format, tagged by `type`.
@@ -800,6 +856,76 @@ mod tests {
                 content: "x\n\ny".to_string(),
             }],
         );
+    }
+
+    /// The full codex CLI request envelope parses: with `wire_api =
+    /// "responses"` the CLI always serializes `parallel_tool_calls`,
+    /// `include`, `prompt_cache_key`, `text.verbosity`, `service_tier`,
+    /// `client_metadata`, and `access_programs` beside the supported fields,
+    /// and rejecting any of them would 400 the client's first request before
+    /// the item-level carve-outs are ever reached (README §6.6). The
+    /// supported fields inside the envelope — streaming, reasoning effort,
+    /// and `text.format` — keep their semantics.
+    #[test]
+    fn codex_envelope_parses() {
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "instructions": "be terse",
+            "input": [{"type": "message", "role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "name": "shell"}],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {"effort": "high", "summary": "auto"},
+            "store": false,
+            "stream": true,
+            "include": ["reasoning.encrypted_content"],
+            "prompt_cache_key": "cache-key",
+            "text": {"format": {"type": "text"}, "verbosity": "medium"},
+            "service_tier": "auto",
+            "client_metadata": {"originator": "codex_cli_rs"},
+            "access_programs": ["codex"],
+            "stream_options": {"include_usage": true},
+        }))
+        .expect("the codex CLI request envelope must parse");
+
+        assert!(parsed.is_streaming);
+
+        assert_eq!(parsed.ir.reasoning_effort, Some(IrReasoningEffort::High));
+
+        assert_eq!(parsed.ir.response_format, Some(IrResponseFormat::Text));
+    }
+
+    /// The envelope control fields are accepted and ignored: the same request
+    /// with and without them parses to identical IR, so their presence never
+    /// changes routing or the upstream render (README §6.6).
+    #[test]
+    fn envelope_control_fields_are_accepted_and_ignored() {
+        let plain = parse(serde_json::json!({
+            "model": "m",
+            "input": "hi",
+            "text": {"format": {"type": "json_object"}},
+        }))
+        .expect("the plain request must parse");
+
+        let decorated = parse(serde_json::json!({
+            "model": "m",
+            "input": "hi",
+            "parallel_tool_calls": false,
+            "include": ["reasoning.encrypted_content"],
+            "prompt_cache_key": "cache-key",
+            "stream_options": {"include_usage": true},
+            "service_tier": "default",
+            "client_metadata": {"originator": "test"},
+            "access_programs": ["codex"],
+            "text": {"format": {"type": "json_object"}, "verbosity": "low"},
+        }))
+        .expect("the decorated request must parse");
+
+        assert_eq!(decorated.ir.messages, plain.ir.messages);
+
+        assert_eq!(decorated.ir.response_format, plain.ir.response_format);
+
+        assert_eq!(decorated.is_streaming, plain.is_streaming);
     }
 
     /// A non-text part in a `function_call_output` output array is rejected

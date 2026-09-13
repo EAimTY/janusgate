@@ -211,8 +211,8 @@ async fn handle_complete(
                 let provider = storage::find_provider_by_id(database, *provider_id)
                     .await?
                     .ok_or_else(|| {
-                        ManagementApiError::not_found(format!(
-                            "Provider {provider_id} does not exist"
+                        ManagementApiError::not_found(storage::provider_not_found_message(
+                            *provider_id,
                         ))
                     })?;
 

@@ -121,7 +121,7 @@ async fn handle_discover(
         let provider = storage::find_provider_by_id(database, request.id)
             .await?
             .ok_or_else(|| {
-                ManagementApiError::not_found(format!("Provider {} does not exist", request.id))
+                ManagementApiError::not_found(storage::provider_not_found_message(request.id))
             })?;
 
         let fresh = oauth::ensure_fresh_token(database, control_plane, &provider).await?;

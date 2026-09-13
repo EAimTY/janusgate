@@ -84,11 +84,7 @@ impl SseRenderer {
             "created": self.created,
             "model": self.model,
             "choices": [],
-            "usage": {
-                "prompt_tokens": usage.input_tokens,
-                "completion_tokens": usage.output_tokens,
-                "total_tokens": usage.input_tokens + usage.output_tokens,
-            },
+            "usage": usage_json(usage),
         });
 
         sse::format_data_frame(&chunk.to_string())
@@ -290,6 +286,17 @@ impl ClientSseRenderer for SseRenderer {
     }
 }
 
+/// Renders the usage object shared by the streamed terminal usage chunk and
+/// the aggregated response body, so streamed and non-streamed clients observe
+/// byte-identical token accounting (README §6.3).
+fn usage_json(usage: IrUsage) -> Value {
+    serde_json::json!({
+        "prompt_tokens": usage.input_tokens,
+        "completion_tokens": usage.output_tokens,
+        "total_tokens": usage.input_tokens + usage.output_tokens,
+    })
+}
+
 /// Renders an aggregated completion as a non-streaming Chat Completions
 /// response.
 pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> Value {
@@ -357,11 +364,7 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
             "message": message,
             "finish_reason": finish_reason,
         }],
-        "usage": {
-            "prompt_tokens": usage.input_tokens,
-            "completion_tokens": usage.output_tokens,
-            "total_tokens": usage.input_tokens + usage.output_tokens,
-        },
+        "usage": usage_json(usage),
     })
 }
 

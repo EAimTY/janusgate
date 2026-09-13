@@ -129,16 +129,19 @@ pub(crate) trait ClientFormat {
 
     /// Boxes the streaming renderer for one parsed request.
     /// `should_include_usage` is the trailing usage-chunk option; formats
-    /// that always include usage ignore it.
+    /// that always include usage ignore it. `public_id` is the public
+    /// routing ID (README §3) the client addressed.
     fn sse_renderer(
         should_include_usage: bool,
-        public_name: String,
+        public_id: String,
     ) -> Box<dyn ClientSseRenderer + Send>
     where
         Self: Sized;
 
     /// Renders an aggregated completion as a non-streaming response body.
-    fn render_json_response(public_name: &str, aggregation: &IrAggregation) -> serde_json::Value;
+    /// `public_id` is the public routing ID (README §3) the client
+    /// addressed.
+    fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> serde_json::Value;
 }
 
 impl UpstreamFormat {

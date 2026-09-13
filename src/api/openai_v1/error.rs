@@ -11,11 +11,11 @@ use crate::{
     ir::InvalidRequest,
     provider::{oauth::Error as OAuthError, storage::Error as StorageError},
 };
-use axum::response::Response;
+use axum::{http::StatusCode, response::Response};
 use log::{debug, error};
 
 /// Status for the upstream failures whose foreign status is never mirrored.
-const UPSTREAM_UNAVAILABLE_STATUS: u16 = 502;
+const UPSTREAM_UNAVAILABLE_STATUS: StatusCode = StatusCode::BAD_GATEWAY;
 
 /// An error surfaced to an outward API client.
 #[derive(Debug, thiserror::Error)]
@@ -52,7 +52,7 @@ pub(super) enum Error {
 /// error body need besides the message.
 struct Row {
     /// HTTP status the surface answers with.
-    status: u16,
+    status: StatusCode,
 
     /// OpenAI `type` field.
     error_type: &'static str,
@@ -72,21 +72,21 @@ impl Error {
     fn row(&self) -> Row {
         match self {
             Self::InvalidApiKey => Row {
-                status: 401,
+                status: StatusCode::UNAUTHORIZED,
                 error_type: "invalid_request_error",
                 param: None,
                 code: Some("invalid_api_key".to_string()),
             },
 
             Self::InvalidUrl { .. } => Row {
-                status: 404,
+                status: StatusCode::NOT_FOUND,
                 error_type: "invalid_request_error",
                 param: None,
                 code: None,
             },
 
             Self::InvalidRequest(error) => Row {
-                status: 400,
+                status: StatusCode::BAD_REQUEST,
                 error_type: "invalid_request_error",
                 param: error.param.clone(),
                 code: None,
@@ -94,14 +94,14 @@ impl Error {
 
             Self::Gateway(error) => match error {
                 GatewayError::InvalidRequest(error) => Row {
-                    status: 400,
+                    status: StatusCode::BAD_REQUEST,
                     error_type: "invalid_request_error",
                     param: error.param.clone(),
                     code: None,
                 },
 
                 GatewayError::ModelNotFound { .. } => Row {
-                    status: 404,
+                    status: StatusCode::NOT_FOUND,
                     error_type: "invalid_request_error",
                     param: Some("model".to_string()),
                     code: Some("model_not_found".to_string()),
@@ -128,7 +128,7 @@ impl Error {
                 GatewayError::OAuth(OAuthError::NotFound { .. })
                 | GatewayError::Storage(_)
                 | GatewayError::Internal { .. } => Row {
-                    status: 500,
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
                     error_type: "api_error",
                     param: None,
                     code: Some("internal".to_string()),
@@ -143,7 +143,7 @@ impl Error {
             },
 
             Self::Storage(_) => Row {
-                status: 500,
+                status: StatusCode::INTERNAL_SERVER_ERROR,
                 error_type: "api_error",
                 param: None,
                 code: Some("internal".to_string()),
@@ -218,7 +218,7 @@ mod tests {
         let cases = [
             (
                 Error::InvalidApiKey,
-                401,
+                StatusCode::UNAUTHORIZED,
                 serde_json::json!({
                     "message": "Incorrect API key provided.",
                     "type": "invalid_request_error",
@@ -231,7 +231,7 @@ mod tests {
                     method: "GET".to_string(),
                     path: "/nope".to_string(),
                 },
-                404,
+                StatusCode::NOT_FOUND,
                 serde_json::json!({
                     "message": "Invalid URL (GET /nope)",
                     "type": "invalid_request_error",
@@ -241,7 +241,7 @@ mod tests {
             ),
             (
                 Error::from(InvalidRequest::field("model", "bad model")),
-                400,
+                StatusCode::BAD_REQUEST,
                 serde_json::json!({
                     "message": "bad model",
                     "type": "invalid_request_error",
@@ -253,7 +253,7 @@ mod tests {
                 Error::from(GatewayError::ModelNotFound {
                     model: "gpt-4o".to_string(),
                 }),
-                404,
+                StatusCode::NOT_FOUND,
                 serde_json::json!({
                     "message": "The model `gpt-4o` does not exist or you do not have access to it.",
                     "type": "invalid_request_error",
@@ -263,10 +263,10 @@ mod tests {
             ),
             (
                 Error::from(GatewayError::Upstream {
-                    status: 429,
+                    status: StatusCode::TOO_MANY_REQUESTS,
                     detail: "rate limited".to_string(),
                 }),
-                429,
+                StatusCode::TOO_MANY_REQUESTS,
                 serde_json::json!({
                     "message": "Upstream request failed: rate limited",
                     "type": "api_error",
@@ -301,7 +301,7 @@ mod tests {
                 Error::from(GatewayError::OAuth(OAuthError::NotFound {
                     message: "provider vanished during token refresh".to_string(),
                 })),
-                500,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::json!({
                     "message": "provider vanished during token refresh",
                     "type": "api_error",
@@ -313,7 +313,7 @@ mod tests {
                 Error::from(GatewayError::Internal {
                     message: "storage drift".to_string(),
                 }),
-                500,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::json!({
                     "message": "storage drift",
                     "type": "api_error",
@@ -325,7 +325,7 @@ mod tests {
                 Error::from(StorageError::Drift {
                     message: "drift".to_string(),
                 }),
-                500,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::json!({
                     "message": "drift",
                     "type": "api_error",
@@ -375,7 +375,7 @@ mod tests {
 
         let other_faults = [
             Error::from(GatewayError::Upstream {
-                status: 429,
+                status: StatusCode::TOO_MANY_REQUESTS,
                 detail: "rate limited".to_string(),
             }),
             Error::from(GatewayError::Unavailable {

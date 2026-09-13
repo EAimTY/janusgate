@@ -120,10 +120,9 @@ async fn handle_delete(database: &Database, body: &Bytes) -> Result<i64, Managem
 
     let outcome = async {
         if !storage::delete_provider(database, request.id).await? {
-            return Err(ManagementApiError::not_found(format!(
-                "Provider {} does not exist",
-                request.id
-            )));
+            return Err(ManagementApiError::not_found(
+                storage::provider_not_found_message(request.id),
+            ));
         }
 
         Ok(request.id)
@@ -165,7 +164,7 @@ async fn handle_save(
                 storage::find_provider_by_id(database, id)
                     .await?
                     .ok_or_else(|| {
-                        ManagementApiError::not_found(format!("Provider {id} does not exist"))
+                        ManagementApiError::not_found(storage::provider_not_found_message(id))
                     })?,
             ),
 

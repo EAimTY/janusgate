@@ -81,13 +81,17 @@ fn bearer_token(authorization: &str) -> Option<&str> {
     }
 }
 
-/// Handles unmapped format paths with an OpenAI-shaped 404.
+/// Handles unmapped format paths with an OpenAI-shaped 404, logging the
+/// rendered error once at this response boundary.
 async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
-    Error::InvalidUrl {
+    let error = Error::InvalidUrl {
         method: request.method().as_str().to_string(),
         path: uri.path().to_string(),
-    }
-    .into_response()
+    };
+
+    error::log_error("request", &error);
+
+    error.into_response()
 }
 
 /// Handles `POST /chat/completions`.
@@ -202,7 +206,10 @@ async fn models(State(context): State<Context>) -> Response {
                 })
                 .collect::<Vec<_>>();
 
-            json_response(200, serde_json::json!({"object": "list", "data": data}))
+            json_response(
+                StatusCode::OK,
+                serde_json::json!({"object": "list", "data": data}),
+            )
         }
 
         Err(error) => {
@@ -280,7 +287,10 @@ async fn aggregated_response(
         }
     }
 
-    Ok(json_response(200, render_json_fn(&aggregator.finish())))
+    Ok(json_response(
+        StatusCode::OK,
+        render_json_fn(&aggregator.finish()),
+    ))
 }
 
 /// Builds a JSON response with the given status code.
@@ -292,9 +302,7 @@ async fn aggregated_response(
 /// # Panics
 ///
 /// Panics if the static response parts fail to build, which cannot occur.
-fn json_response(status: u16, body: serde_json::Value) -> Response {
-    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-
+fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
     #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
     Response::builder()
         .status(status)

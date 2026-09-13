@@ -106,12 +106,18 @@ impl ManagementApiError {
     }
 
     /// Whether the error is the calling client's own fault — a malformed or
-    /// unsupported request or a failed authentication — as opposed to a
-    /// gateway or upstream failure.
+    /// unsupported request, a failed authentication, a missing addressed
+    /// resource, or a collision with existing state — as opposed to a
+    /// gateway or upstream failure. README §8's severity policy records
+    /// client-fault rejections at debug level and gateway or upstream
+    /// failures at error level.
     fn is_client_fault(&self) -> bool {
         matches!(
             self.code,
-            ErrorCode::InvalidRequest | ErrorCode::Unauthorized
+            ErrorCode::InvalidRequest
+                | ErrorCode::Unauthorized
+                | ErrorCode::NotFound
+                | ErrorCode::Conflict
         )
     }
 
@@ -378,6 +384,35 @@ mod tests {
 
         for (error, code) in cases {
             assert_eq!(error.code, code, "code mismatch for {error}");
+        }
+    }
+
+    /// Verifies that the client-fault classification partitions the taxonomy
+    /// exactly as README §8's severity policy prescribes: client-fault
+    /// rejections — malformed bodies, failed authentication, missing
+    /// resources, and conflicts — are logged at debug level, while gateway
+    /// and upstream failures are logged at error level.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a category's classification diverges from the policy.
+    #[test]
+    fn classifies_client_faults() {
+        let cases = [
+            (ManagementApiError::invalid_request("malformed"), true),
+            (ManagementApiError::authentication("bad token"), true),
+            (ManagementApiError::not_found("missing"), true),
+            (ManagementApiError::conflict("taken"), true),
+            (ManagementApiError::upstream("unreachable"), false),
+            (ManagementApiError::internal("drift"), false),
+        ];
+
+        for (error, is_client_fault) in cases {
+            assert_eq!(
+                error.is_client_fault(),
+                is_client_fault,
+                "classification mismatch for {error}"
+            );
         }
     }
 
