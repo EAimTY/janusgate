@@ -71,12 +71,14 @@ pub(crate) enum Error {
 
     /// Database contention: the file lock was busy or a read-then-write
     /// upgrade was refused with a stale snapshot.
+    ///
+    /// The lease caller that must tell the stale-snapshot refusal apart from
+    /// plain contention classifies the raw [`DatabaseError`] through
+    /// [`DatabaseError::is_stale_snapshot`] before this conversion flattens
+    /// the distinction away; every rendered surface treats `Busy` as an
+    /// internal failure.
     #[error("database is busy: {detail}")]
     Busy {
-        /// Underlying engine failure, retained so lease callers can
-        /// distinguish the stale-snapshot refusal from plain contention.
-        source: DatabaseError,
-
         /// Engine-provided contention detail.
         detail: String,
     },
@@ -105,16 +107,8 @@ impl From<DatabaseError> for Error {
         match error {
             DatabaseError::Turso(TursoError::Constraint(detail)) => Self::Constraint { detail },
 
-            DatabaseError::Turso(inner @ (TursoError::Busy(_) | TursoError::BusySnapshot(_))) => {
-                let detail = match &inner {
-                    TursoError::Busy(detail) | TursoError::BusySnapshot(detail) => detail.clone(),
-                    other => other.to_string(),
-                };
-
-                Self::Busy {
-                    source: DatabaseError::Turso(inner),
-                    detail,
-                }
+            DatabaseError::Turso(TursoError::Busy(detail) | TursoError::BusySnapshot(detail)) => {
+                Self::Busy { detail }
             }
 
             error => Self::Database(error),
@@ -732,6 +726,37 @@ mod tests {
             .await
             .unwrap();
         assert!(swept.is_none());
+    }
+
+    /// Verifies that the schema itself enforces the `providers.protocol`
+    /// closed domain: a drifted value is rejected at write time and classifies
+    /// as a storage constraint error, instead of surviving until the read-side
+    /// protocol parse turns every dispatch for the provider into drift.
+    /// First-party write paths validate the protocol before inserting, so the
+    /// probe uses a raw statement.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the drifted insert unexpectedly succeeds.
+    #[tokio::test]
+    async fn rejects_unknown_provider_protocol_at_write_time() {
+        let (database, _guard) = create_test_database().await;
+
+        let outcome = database
+            .execute(
+                "INSERT INTO providers (name, model_prefix, type, protocol, credentials) \
+                 VALUES ('drifted', 'd/', 'openai_compatible', 'responses_api', '{}')",
+                (),
+            )
+            .await;
+
+        #[expect(clippy::expect_used, reason = "the schema CHECK rejects the drift")]
+        let error = outcome.expect_err("drifted protocol must violate the schema CHECK");
+
+        assert!(
+            matches!(Error::from(error), Error::Constraint { .. }),
+            "a schema CHECK violation must classify as a storage constraint error"
+        );
     }
 
     /// Verifies value conversions between database values and provider types.

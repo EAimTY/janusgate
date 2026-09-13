@@ -96,12 +96,7 @@ pub(crate) async fn ensure_fresh_token(
         let Some(current) =
             storage::find_provider_by_id_in_transaction(&mut transaction, provider.id).await?
         else {
-            transaction
-                .rollback()
-                .await
-                .map_err(|error| Error::Internal {
-                    message: format!("failed to roll back: {error}"),
-                })?;
+            rollback(transaction).await?;
 
             return Err(Error::NotFound {
                 message: "provider vanished during token refresh".to_string(),
@@ -109,12 +104,7 @@ pub(crate) async fn ensure_fresh_token(
         };
 
         if is_token_fresh(&current) {
-            transaction
-                .rollback()
-                .await
-                .map_err(|error| Error::Internal {
-                    message: format!("failed to roll back: {error}"),
-                })?;
+            rollback(transaction).await?;
 
             return Ok(current);
         }
@@ -132,12 +122,7 @@ pub(crate) async fn ensure_fresh_token(
             // the retry: it re-reads the newer state and either finds the
             // token fresh or waits its turn.
             Err(lease_error) if lease_error.is_stale_snapshot() => {
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|error| Error::Internal {
-                        message: format!("failed to roll back: {error}"),
-                    })?;
+                rollback(transaction).await?;
 
                 tokio::time::sleep(REFRESH_WAIT_INTERVAL).await;
 
@@ -170,6 +155,21 @@ pub(crate) async fn ensure_fresh_token(
 
         wait_or_fail(wait_deadline)?;
     }
+}
+
+/// Rolls back the loop's open transaction, consuming the handle. A failed
+/// rollback is classified like every other failed transaction step.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the rollback fails.
+async fn rollback(transaction: Transaction) -> Result<(), Error> {
+    transaction
+        .rollback()
+        .await
+        .map_err(|error| Error::Internal {
+            message: format!("failed to roll back: {error}"),
+        })
 }
 
 /// Attempts to acquire the token refresh lease inside the loop's open

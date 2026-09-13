@@ -7,22 +7,25 @@ use crate::{
 };
 use serde_json::Value;
 
-/// Renders the Codex-flavored upstream Responses payload: streaming is
+/// Renders the Codex-flavored upstream request URL and payload: streaming is
 /// forced on (README §5.1 invariant 2) and `max_output_tokens` is omitted —
 /// the ChatGPT Codex backend rejects it as an unsupported parameter, and the
 /// model's own output bound applies instead of the client's cap.
 ///
+/// `url` is the fixed Codex inference endpoint; the provider layer owns
+/// endpoint knowledge, so it is threaded in rather than owned by the codec.
+///
 /// # Panics
 ///
 /// Panics if the rendered Responses body is not a JSON object, which
-/// [`render_request`]'s construction makes impossible.
-pub(crate) fn render_codex_request(ir: &IrRequest) -> Value {
-    let mut body = render_request(ir, true);
+/// [`render_request_body`]'s construction makes impossible.
+pub(crate) fn render_codex_request(ir: &IrRequest, url: &str) -> (String, Value) {
+    let mut body = render_request_body(ir, true);
 
-    // render_request always yields a JSON object, so the removal lands.
+    // render_request_body always yields a JSON object, so the removal lands.
     #[expect(
         clippy::expect_used,
-        reason = "render_request always renders a JSON object body"
+        reason = "render_request_body always renders a JSON object body"
     )]
     let object = body
         .as_object_mut()
@@ -30,11 +33,24 @@ pub(crate) fn render_codex_request(ir: &IrRequest) -> Value {
 
     object.remove("max_output_tokens");
 
-    body
+    (url.to_string(), body)
 }
 
-/// Renders an IR request into an upstream Responses payload.
-pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
+/// Renders the upstream request URL and payload for an OpenAI-compatible
+/// Responses upstream: `POST <base_url>/responses` (README §5.3).
+pub(crate) fn render_request(
+    ir: &IrRequest,
+    base_url: &str,
+    is_streaming: bool,
+) -> (String, Value) {
+    let url = format!("{}/responses", base_url.trim_end_matches('/'));
+
+    (url, render_request_body(ir, is_streaming))
+}
+
+/// Renders an IR request into the upstream Responses payload shared by the
+/// Codex and compatible entry points.
+fn render_request_body(ir: &IrRequest, is_streaming: bool) -> Value {
     let mut input: Vec<Value> = Vec::new();
 
     for message in &ir.messages {

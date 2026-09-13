@@ -43,3 +43,8 @@ pub(crate) const ANTIGRAVITY_FETCH_AVAILABLE_MODELS_ACTION: &str = ":fetchAvaila
 
 /// `User-Agent` header value required by the Antigravity Code Assist endpoint.
 pub(crate) const ANTIGRAVITY_USER_AGENT: &str = "antigravity";
+
+/// Header name carrying the API key of a compatible Gemini upstream (README
+/// §5.3); the OpenAI-family compatible upstreams authenticate through
+/// `Authorization: Bearer` instead.
+pub(crate) const GEMINI_API_KEY_HEADER: &str = "x-goog-api-key";

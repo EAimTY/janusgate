@@ -4,7 +4,7 @@ CREATE TABLE providers (
     is_enabled Integer NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
     model_prefix Text NOT NULL,
     type Text NOT NULL CHECK (type IN ('openai_oauth', 'antigravity_oauth', 'openai_compatible')),
-    protocol Text NULL,
+    protocol Text NULL CHECK (protocol IS NULL OR protocol IN ('openai_response', 'openai_chat_completion', 'gemini_generate_content')),
     base_url Text NULL,
     credentials Text NOT NULL,
     expires_at Integer NULL,

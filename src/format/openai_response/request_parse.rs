@@ -50,7 +50,16 @@ const INPUT_ITEM_FIELDS: &[(&str, &[&str])] = &[
 const CONTENT_PART_FIELDS: &[(&str, &[&str])] = &[
     ("input_text", &["type", "text"]),
     ("output_text", &["type", "text", "annotations", "logprobs"]),
-    ("input_image", &["type", "image_url"]),
+    ("input_image", &["type", "image_url", "detail"]),
+];
+
+/// Fields allowed on each `function_call_output` `output` content part,
+/// keyed by part type. Image and file parts are recognized here so the
+/// part-type rejection names them instead of an unknown-field error.
+const OUTPUT_PART_FIELDS: &[(&str, &[&str])] = &[
+    ("input_text", &["type", "text"]),
+    ("input_image", &["type", "image_url", "detail"]),
+    ("input_file", &["type", "file_id", "file_data", "filename"]),
 ];
 
 /// Strictly parsed Responses request body.
@@ -150,8 +159,8 @@ enum ItemIn {
         /// Identifier of the invocation being answered.
         call_id: String,
 
-        /// Result content.
-        output: String,
+        /// Result content: a plain string or an array of text parts.
+        output: OutputIn,
     },
 
     /// Reasoning items carry no replayable state and are accepted but ignored.
@@ -189,6 +198,36 @@ enum PartIn {
     InputImage {
         /// Remote or data URL of the image.
         image_url: String,
+
+        /// OpenAI image detail hint; accepted and ignored.
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        detail: Option<String>,
+    },
+}
+
+/// Tool result output: a plain string or content parts, the two official
+/// forms of a `function_call_output` item's `output`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OutputIn {
+    /// Plain text.
+    Text(String),
+
+    /// Typed parts.
+    Parts(Vec<OutputPartIn>),
+}
+
+/// Content part of a `function_call_output` output array, tagged by `type`.
+/// Only `input_text` is supported: the IR tool output has no media channel,
+/// and raw validation rejects image and file parts before deserialization.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OutputPartIn {
+    /// Text segment.
+    InputText {
+        /// The text content.
+        text: String,
     },
 }
 
@@ -377,7 +416,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                     role: IrRole::Tool,
                     parts: vec![IrPart::ToolOutput {
                         call_id,
-                        content: output,
+                        content: tool_output_text(&output),
                     }],
                 });
             }
@@ -537,7 +576,7 @@ fn message_content_parts(content: &MessageContentIn) -> Result<Vec<IrPart>, Inva
                         IrPart::Text { text: text.clone() }
                     }
 
-                    PartIn::InputImage { image_url } => IrPart::Image {
+                    PartIn::InputImage { image_url, .. } => IrPart::Image {
                         image: IrImage::from_url(image_url)?,
                     },
                 });
@@ -545,6 +584,22 @@ fn message_content_parts(content: &MessageContentIn) -> Result<Vec<IrPart>, Inva
 
             Ok(converted)
         }
+    }
+}
+
+/// Extracts plain text from a `function_call_output` item's `output`. Text
+/// parts join with the same blank-line separator the Chat Completions codec
+/// uses for its text-parts content, so the array form flattens to exactly
+/// what the equivalent plain-string form carries.
+fn tool_output_text(output: &OutputIn) -> String {
+    match output {
+        OutputIn::Text(text) => text.clone(),
+
+        OutputIn::Parts(parts) => parts
+            .iter()
+            .map(|OutputPartIn::InputText { text }| text.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
     }
 }
 
@@ -589,6 +644,36 @@ fn validate_input_item_fields(input: Option<&Value>) -> Result<(), InvalidReques
 
         if let Some(parts) = object.get("content").and_then(Value::as_array) {
             format::validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
+        }
+
+        // A `function_call_output` item's `output` may be an array of
+        // content parts, which get the same raw validation as `content`
+        // arrays.
+        if item_type == "function_call_output"
+            && let Some(parts) = object.get("output").and_then(Value::as_array)
+        {
+            format::validate_content_part_fields(parts, OUTPUT_PART_FIELDS)?;
+
+            // A recognizable non-text part is rejected here, naming the part
+            // type, instead of surfacing as an untagged-enum serde failure:
+            // the IR tool output has no media channel, so image and file
+            // parts cannot be carried. Malformed parts without a `type`
+            // string are left to serde's rejection.
+            for part in parts {
+                let Some(part_type) = part.get("type").and_then(Value::as_str) else {
+                    continue;
+                };
+
+                if part_type != "input_text" {
+                    return Err(InvalidRequest::field(
+                        "output",
+                        format!(
+                            "function_call_output output parts must be text; \
+                             `{part_type}` is not supported"
+                        ),
+                    ));
+                }
+            }
         }
     }
 
@@ -643,5 +728,118 @@ mod tests {
                 text: "hello".to_string(),
             }],
         );
+    }
+
+    /// An `input_image` part carrying the official `detail` hint parses to
+    /// the same IR as the part without it: typed SDK clients send `detail`
+    /// on every `input_image`, and the gateway cannot honor it downstream,
+    /// so it is accepted and ignored like `strict` (README §6.6).
+    #[test]
+    fn input_image_detail_is_accepted_and_ignored() {
+        let plain = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": "https://example.com/i.png",
+                    },
+                ]},
+            ],
+        }))
+        .expect("a plain input_image part must parse");
+
+        let detailed = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": "https://example.com/i.png",
+                        "detail": "high",
+                    },
+                ]},
+            ],
+        }))
+        .expect("an input_image part carrying `detail` must parse");
+
+        assert_eq!(detailed.ir.messages, plain.ir.messages);
+    }
+
+    /// A `function_call_output` item accepts the official plain-string form
+    /// and the content-parts array form, and the text-parts array flattens
+    /// to exactly the string form's tool output with the blank-line
+    /// separator (README §6.6).
+    #[test]
+    fn function_call_output_string_and_text_parts_agree() {
+        let string_form = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "function_call_output", "call_id": "call_1", "output": "x\n\ny"},
+            ],
+        }))
+        .expect("a string output must parse");
+
+        let parts_form = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "function_call_output", "call_id": "call_1", "output": [
+                    {"type": "input_text", "text": "x"},
+                    {"type": "input_text", "text": "y"},
+                ]},
+            ],
+        }))
+        .expect("a text-parts output must parse");
+
+        assert_eq!(parts_form.ir.messages, string_form.ir.messages);
+
+        assert_eq!(
+            parts_form.ir.messages[0].parts,
+            vec![IrPart::ToolOutput {
+                call_id: "call_1".to_string(),
+                content: "x\n\ny".to_string(),
+            }],
+        );
+    }
+
+    /// A non-text part in a `function_call_output` output array is rejected
+    /// naming `output`: the IR tool output has no media channel, so image
+    /// and file parts cannot be carried (README §6.6).
+    #[test]
+    fn function_call_output_non_text_parts_are_rejected() {
+        for part_type in ["input_image", "input_file"] {
+            let part = if part_type == "input_image" {
+                serde_json::json!({
+                    "type": "input_image",
+                    "image_url": "https://example.com/i.png",
+                })
+            } else {
+                serde_json::json!({
+                    "type": "input_file",
+                    "file_id": "file_1",
+                })
+            };
+
+            let error = parse(serde_json::json!({
+                "model": "m",
+                "input": [
+                    {"type": "function_call_output", "call_id": "call_1", "output": [
+                        {"type": "input_text", "text": "before"},
+                        part,
+                    ]},
+                ],
+            }))
+            .expect_err("a non-text part in a function_call_output output must be rejected");
+
+            assert_eq!(error.param.as_deref(), Some("output"));
+
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "function_call_output output parts must be text; \
+                     `{part_type}` is not supported"
+                ),
+            );
+        }
     }
 }

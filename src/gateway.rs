@@ -11,7 +11,8 @@ use crate::{
     ids,
     ir::{self, InvalidRequest, IrEvent, IrRequest},
     provider::{
-        Credentials, ModelRouting, Provider, ProviderType, endpoints, http_body, oauth, storage,
+        Credentials, ModelRouting, Provider, ProviderType, endpoints, http_body, oauth,
+        oauth::Error as OAuthError, storage, storage::Error as StorageError,
     },
     sse::{SseFrame, SseParser},
 };
@@ -67,12 +68,12 @@ pub(crate) enum Error {
 
     /// Token acquisition failed (the lease-guarded refresh).
     #[error(transparent)]
-    OAuth(#[from] oauth::Error),
+    OAuth(#[from] OAuthError),
 
     /// Storage failed under the pipeline: routing lookup, lease driving, or
     /// credentials persistence.
     #[error(transparent)]
-    Storage(#[from] storage::Error),
+    Storage(#[from] StorageError),
 
     /// The gateway violated an invariant — stored configuration drift, never
     /// a fault of the requesting client.
@@ -136,9 +137,8 @@ pub(crate) async fn execute(
         .thinking_levels_override
         .as_deref()
         .map(|json| {
-            ir::parse_thinking_levels_override(json).map_err(|error| Error::Internal {
-                message: format!("stored thinking_levels_override is invalid: {error}"),
-            })
+            ir::parse_stored_thinking_levels_override(json)
+                .map_err(|message| Error::Internal { message })
         })
         .transpose()?;
 
@@ -272,10 +272,11 @@ fn build_upstream_request(
                 });
             };
 
-            let body = openai_response::render_codex_request(ir);
+            let (url, body) =
+                openai_response::render_codex_request(ir, endpoints::CODEX_INFERENCE_URL);
 
             Ok(http
-                .post(endpoints::CODEX_INFERENCE_URL)
+                .post(url)
                 .bearer_auth(access_token)
                 .header("chatgpt-account-id", account_id)
                 .header("Originator", endpoints::CODEX_ORIGINATOR)
@@ -286,27 +287,29 @@ fn build_upstream_request(
         }
 
         (UpstreamFormat::OpenAiResponse, _) => {
-            let base_url = compatible_base_url(provider)?;
+            let (url, body) = openai_response::render_request(
+                ir,
+                compatible_base_url(provider)?,
+                is_client_streaming,
+            );
 
             Ok(http
-                .post(format!("{}/responses", base_url.trim_end_matches('/')))
+                .post(url)
                 .bearer_auth(provider.credentials.secret())
-                .json(&openai_response::render_request(ir, is_client_streaming)))
+                .json(&body))
         }
 
         (UpstreamFormat::OpenAiChatCompletion, _) => {
-            let base_url = compatible_base_url(provider)?;
+            let (url, body) = openai_chat_completion::render_request(
+                ir,
+                compatible_base_url(provider)?,
+                is_client_streaming,
+            );
 
             Ok(http
-                .post(format!(
-                    "{}/chat/completions",
-                    base_url.trim_end_matches('/')
-                ))
+                .post(url)
                 .bearer_auth(provider.credentials.secret())
-                .json(&openai_chat_completion::render_request(
-                    ir,
-                    is_client_streaming,
-                )))
+                .json(&body))
         }
 
         (UpstreamFormat::GeminiGenerateContent, ProviderType::AntigravityOauth) => {
@@ -347,7 +350,10 @@ fn build_upstream_request(
 
             Ok(http
                 .post(url)
-                .header("x-goog-api-key", provider.credentials.secret())
+                .header(
+                    endpoints::GEMINI_API_KEY_HEADER,
+                    provider.credentials.secret(),
+                )
                 .json(&body))
         }
     }

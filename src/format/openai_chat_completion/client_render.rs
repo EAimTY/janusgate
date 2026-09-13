@@ -24,10 +24,17 @@ pub(crate) struct SseRenderer {
     /// Whether the leading role chunk was emitted.
     is_role_sent: bool,
 
-    /// Tool call indexes opened by a delta chunk; a done for an index outside
-    /// this set carries the complete call of an upstream that never streamed
-    /// deltas, so it renders as one full tool_calls delta chunk.
-    opened_tool_call_indexes: Vec<usize>,
+    /// Argument bytes already streamed, per opened tool-call index. An
+    /// index's presence marks its call as opened by a delta chunk; a done
+    /// for an index outside this map carries the complete call of an
+    /// upstream that never streamed deltas, so it renders as one full
+    /// tool_calls delta chunk. The counts let a conformant done render
+    /// exactly the argument suffix the live deltas did not deliver — a
+    /// done carries the complete arguments while an opening delta may
+    /// carry none of them (README §6.3) — and guard the suffix read
+    /// against divergent done payloads that are not a superstring of the
+    /// streamed bytes.
+    streamed_argument_bytes: Vec<(usize, usize)>,
 
     /// Whether the trailing usage chunk is wanted.
     should_include_usage: bool,
@@ -46,7 +53,7 @@ impl SseRenderer {
             model,
             created: unix_time::unix_now(),
             is_role_sent: false,
-            opened_tool_call_indexes: Vec::new(),
+            streamed_argument_bytes: Vec::new(),
             should_include_usage,
             usage: None,
         }
@@ -124,8 +131,16 @@ impl ClientSseRenderer for SseRenderer {
                 name,
                 arguments_delta,
             } => {
-                if !self.opened_tool_call_indexes.contains(index) {
-                    self.opened_tool_call_indexes.push(*index);
+                match self
+                    .streamed_argument_bytes
+                    .iter_mut()
+                    .find(|(opened_index, _)| opened_index == index)
+                {
+                    Some((_, streamed_bytes)) => *streamed_bytes += arguments_delta.len(),
+
+                    None => self
+                        .streamed_argument_bytes
+                        .push((*index, arguments_delta.len())),
                 }
 
                 let mut function = serde_json::Map::new();
@@ -163,41 +178,75 @@ impl ClientSseRenderer for SseRenderer {
                 arguments,
                 thought_signature,
             } => {
-                let is_opened = self.opened_tool_call_indexes.contains(index);
+                let streamed_bytes = self
+                    .streamed_argument_bytes
+                    .iter()
+                    .find(|(opened_index, _)| opened_index == index)
+                    .map(|(_, bytes)| *bytes);
 
-                if !is_opened {
-                    // The upstream never streamed a delta for this index
-                    // (README §6.3 recovery class), so the done payload
-                    // carries the complete call and renders as one full
-                    // tool_calls delta chunk, exactly the shape a delta
-                    // would have produced.
-                    let mut tool_call = serde_json::json!({
-                        "index": index,
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": name, "arguments": arguments},
-                    });
+                match streamed_bytes {
+                    None => {
+                        // The upstream never streamed a delta for this index
+                        // (README §6.3 recovery class), so the done payload
+                        // carries the complete call and renders as one full
+                        // tool_calls delta chunk, exactly the shape a delta
+                        // would have produced.
+                        let mut tool_call = serde_json::json!({
+                            "index": index,
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        });
 
-                    if let Some(signature) = thought_signature {
-                        format::json_insert(
-                            &mut tool_call,
-                            "thought_signature",
-                            Value::String(signature.clone()),
-                        );
+                        if let Some(signature) = thought_signature {
+                            format::json_insert(
+                                &mut tool_call,
+                                "thought_signature",
+                                Value::String(signature.clone()),
+                            );
+                        }
+
+                        vec![self.chunk_frame(serde_json::json!({"tool_calls": [tool_call]}), None)]
                     }
 
-                    vec![self.chunk_frame(serde_json::json!({"tool_calls": [tool_call]}), None)]
-                } else if let Some(signature) = thought_signature {
-                    vec![self.chunk_frame(
-                        serde_json::json!({"tool_calls": [{
-                            "index": index,
-                            "thought_signature": signature,
-                        }]}),
-                        None,
-                    )]
-                } else {
-                    // The call was fully assembled by its deltas.
-                    Vec::new()
+                    Some(streamed_bytes) => {
+                        let mut frames = Vec::new();
+
+                        // The live deltas may have streamed only a prefix
+                        // of the done's complete arguments — an opening
+                        // delta alone carries none — so the done renders
+                        // exactly the un-streamed suffix; a done whose
+                        // arguments the deltas already streamed in full
+                        // renders no argument chunk. Third-party bytes can
+                        // diverge from that shape, so `get` declines an
+                        // offset that is out of bounds or mid-character and
+                        // such a done silently skips its argument frame
+                        // rather than panicking the gateway task (README
+                        // §2.2).
+                        if arguments.len() > streamed_bytes
+                            && let Some(unstreamed) = arguments.get(streamed_bytes..)
+                        {
+                            frames.push(self.chunk_frame(
+                                serde_json::json!({"tool_calls": [{
+                                    "index": index,
+                                    "function": {"arguments": unstreamed},
+                                }]}),
+                                None,
+                            ));
+                        }
+
+                        if let Some(signature) = thought_signature {
+                            frames.push(self.chunk_frame(
+                                serde_json::json!({"tool_calls": [{
+                                    "index": index,
+                                    "thought_signature": signature,
+                                }]}),
+                                None,
+                            ));
+                        }
+
+                        frames
+                    }
                 }
             }
 
@@ -312,4 +361,217 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
             "total_tokens": usage.input_tokens + usage.output_tokens,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parses the JSON payload of every rendered SSE frame.
+    #[expect(
+        clippy::expect_used,
+        reason = "the rendered frames are under test; a missing or malformed frame is the failure"
+    )]
+    fn frame_payloads(frames: &[String]) -> Vec<Value> {
+        frames
+            .iter()
+            .map(|frame| {
+                serde_json::from_str(
+                    frame
+                        .strip_prefix("data: ")
+                        .expect("every frame carries a data line")
+                        .trim_end(),
+                )
+                .expect("frame data is rendered JSON")
+            })
+            .collect()
+    }
+
+    /// Joins the tool-call argument fragments a rendered frame set delivers,
+    /// exactly as a client assembling the stream would.
+    #[expect(
+        clippy::expect_used,
+        reason = "the rendered frames are under test; a missing or malformed frame is the failure"
+    )]
+    fn assembled_arguments(frames: &[String]) -> String {
+        frame_payloads(frames)
+            .iter()
+            .map(|payload| {
+                payload
+                    .pointer("/choices/0/delta/tool_calls/0/function/arguments")
+                    .expect("every rendered chunk carries one tool call")
+                    .as_str()
+                    .expect("tool-call arguments render as a JSON string")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Parses the JSON payload of the only rendered SSE frame.
+    #[expect(
+        clippy::expect_used,
+        reason = "the rendered frames are under test; a missing or malformed frame is the failure"
+    )]
+    fn lone_frame_payload(frames: &[String]) -> Value {
+        let mut payloads = frame_payloads(frames);
+
+        let payload = payloads.pop().expect("the event renders a frame");
+
+        assert!(payloads.is_empty(), "the event renders exactly one frame");
+
+        payload
+    }
+
+    /// A call opened by an empty delta — the Responses upstream opens every
+    /// function call with a zero-byte `output_item.added` delta — receives
+    /// its full arguments from the done event exactly once, because a
+    /// streamed done always carries the authoritative complete arguments
+    /// (README §6.3).
+    #[test]
+    fn done_renders_arguments_the_opening_delta_never_streamed() {
+        let mut renderer = SseRenderer::new("m".to_string(), false);
+
+        let opened = renderer.render(&IrEvent::ToolCallDelta {
+            index: 0,
+            call_id: Some("call_1".to_string()),
+            name: Some("get_weather".to_string()),
+            arguments_delta: String::new(),
+        });
+
+        let done = renderer.render(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            arguments: r#"{"city":"Paris","unit":"c"}"#.to_string(),
+            thought_signature: None,
+        });
+
+        assert_eq!(assembled_arguments(&opened), "");
+
+        assert_eq!(assembled_arguments(&done), r#"{"city":"Paris","unit":"c"}"#);
+    }
+
+    /// Live deltas that already streamed the full arguments — the Gemini
+    /// upstream delivers every call this way — are not repeated by the done
+    /// event, so the client assembles the arguments exactly once.
+    #[test]
+    fn done_repeats_no_arguments_the_live_deltas_already_streamed() {
+        let mut renderer = SseRenderer::new("m".to_string(), false);
+
+        let opened = renderer.render(&IrEvent::ToolCallDelta {
+            index: 0,
+            call_id: Some("call_1".to_string()),
+            name: Some("get_weather".to_string()),
+            arguments_delta: r#"{"city":"Paris"}"#.to_string(),
+        });
+
+        let done = renderer.render(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            arguments: r#"{"city":"Paris"}"#.to_string(),
+            thought_signature: None,
+        });
+
+        assert_eq!(assembled_arguments(&opened), r#"{"city":"Paris"}"#);
+
+        assert_eq!(assembled_arguments(&done), "");
+
+        assert!(done.is_empty());
+    }
+
+    /// A divergent upstream whose done arguments are not a superstring of
+    /// the streamed bytes — an out-of-bounds or mid-character residual
+    /// offset — loses its residual arguments silently: the done skips its
+    /// argument frame instead of panicking the renderer task, while its
+    /// other content still renders.
+    #[test]
+    fn done_with_arguments_divergent_from_the_streamed_bytes_skips_the_argument_frame() {
+        let mut renderer = SseRenderer::new("m".to_string(), false);
+
+        let opened = renderer.render(&IrEvent::ToolCallDelta {
+            index: 0,
+            call_id: Some("call_1".to_string()),
+            name: Some("get_weather".to_string()),
+            arguments_delta: r#"{"city":"Paris"}"#.to_string(),
+        });
+
+        // The done is shorter than the streamed bytes, so the residual
+        // offset is out of bounds.
+        let out_of_bounds = renderer.render(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: None,
+        });
+
+        let reopened = renderer.render(&IrEvent::ToolCallDelta {
+            index: 1,
+            call_id: Some("call_2".to_string()),
+            name: Some("get_weather".to_string()),
+            arguments_delta: "é".to_string(),
+        });
+
+        // One byte past the two-byte streamed prefix lands inside the
+        // done's own multi-byte character, so the offset is not a char
+        // boundary — the read the unguarded slice used to panic on.
+        let mid_character = renderer.render(&IrEvent::ToolCallDone {
+            index: 1,
+            call_id: "call_2".to_string(),
+            name: "get_weather".to_string(),
+            arguments: "xé".to_string(),
+            thought_signature: Some("sig".to_string()),
+        });
+
+        assert_eq!(assembled_arguments(&opened), r#"{"city":"Paris"}"#);
+
+        assert!(out_of_bounds.is_empty());
+
+        assert_eq!(assembled_arguments(&reopened), "é");
+
+        let payload = lone_frame_payload(&mid_character);
+
+        assert_eq!(
+            payload.pointer("/choices/0/delta/tool_calls/0/thought_signature"),
+            Some(&serde_json::json!("sig"))
+        );
+
+        assert!(
+            payload
+                .pointer("/choices/0/delta/tool_calls/0/function")
+                .is_none()
+        );
+    }
+
+    /// A done for an index no delta ever opened — the recovery class of
+    /// README §6.3 — renders the complete call as one full tool_calls delta
+    /// chunk, exactly the shape a delta would have produced.
+    #[test]
+    fn done_without_a_prior_delta_renders_the_complete_call() {
+        let mut renderer = SseRenderer::new("m".to_string(), false);
+
+        let done = renderer.render(&IrEvent::ToolCallDone {
+            index: 2,
+            call_id: "call_3".to_string(),
+            name: "get_weather".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: Some("sig".to_string()),
+        });
+
+        assert_eq!(
+            lone_frame_payload(&done).get("choices"),
+            Some(&serde_json::json!([{
+                "index": 0,
+                "delta": {"tool_calls": [{
+                    "index": 2,
+                    "id": "call_3",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"},
+                    "thought_signature": "sig",
+                }]},
+                "finish_reason": null,
+            }]))
+        );
+    }
 }

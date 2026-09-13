@@ -679,10 +679,84 @@ pub(crate) fn parse_thinking_levels(
 
 /// Parses a `thinking_levels_override` JSON array into canonical levels,
 /// rejecting malformed JSON, empty arrays, unknown names, and duplicates.
-pub(crate) fn parse_thinking_levels_override(
-    json: &str,
-) -> Result<Vec<IrReasoningEffort>, InvalidRequest> {
+fn parse_thinking_levels_override(json: &str) -> Result<Vec<IrReasoningEffort>, InvalidRequest> {
     let values: Vec<String> = serde_json::from_str(json).map_err(InvalidRequest::from_json)?;
 
     parse_thinking_levels(&values, "thinking_levels_override")
+}
+
+/// Parses a stored `thinking_levels_override` database column through
+/// [`parse_thinking_levels_override`], rejecting a corrupt value with the
+/// drift message both consuming surfaces render verbatim: the gateway
+/// fail-fast maps it onto its internal variant and the management listing
+/// onto its own, so the wording is defined once and can never drift between
+/// the two error domains (README §7.1).
+///
+/// # Errors
+///
+/// Returns `stored thinking_levels_override is invalid: {error}` for any
+/// stored-value violation.
+pub(crate) fn parse_stored_thinking_levels_override(
+    json: &str,
+) -> Result<Vec<IrReasoningEffort>, String> {
+    parse_thinking_levels_override(json)
+        .map_err(|error| format!("stored thinking_levels_override is invalid: {error}"))
+}
+
+/// Renders canonical thinking levels into their canonical JSON array: the
+/// exact wire form stored in the `thinking_levels_override` column and
+/// rendered by the management listing, so a saved override always round-trips
+/// through [`parse_stored_thinking_levels_override`]. Serializing a string
+/// array cannot fail, so the render is total.
+pub(crate) fn render_thinking_levels(levels: &[IrReasoningEffort]) -> serde_json::Value {
+    serde_json::Value::Array(
+        levels
+            .iter()
+            .map(|level| serde_json::Value::String(level.to_canonical().to_string()))
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that a corrupt stored override fails with the exact drift
+    /// wording both surfaces render verbatim (README §7.1), so the wire
+    /// message is pinned at its single definition site.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered drift message diverges from the contract.
+    #[test]
+    fn renders_the_stored_override_drift_wording() {
+        let message = parse_stored_thinking_levels_override(r#"["bogus"]"#)
+            .expect_err("a corrupt stored override must fail");
+
+        assert!(
+            message.starts_with("stored thinking_levels_override is invalid: "),
+            "unexpected drift message: {message}"
+        );
+    }
+
+    /// Verifies that the canonical render is the stored form: rendering
+    /// levels and parsing them back through the stored-override parser
+    /// reproduces the input, so a saved override can never fail its own
+    /// revalidation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered form diverges from the stored contract.
+    #[test]
+    fn rendered_levels_round_trip_through_the_stored_parser() {
+        let levels = [IrReasoningEffort::Low, IrReasoningEffort::High];
+
+        let stored = render_thinking_levels(&levels).to_string();
+
+        assert_eq!(stored, r#"["low","high"]"#);
+        assert_eq!(
+            parse_stored_thinking_levels_override(&stored),
+            Ok(levels.to_vec())
+        );
+    }
 }

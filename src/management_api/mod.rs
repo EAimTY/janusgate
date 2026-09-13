@@ -7,9 +7,9 @@ use self::error::ManagementApiError;
 use crate::{context::Context, format::UpstreamFormat, provider::Provider, security};
 use axum::{
     Router,
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, OriginalUri, Request},
-    http::header,
+    http::{StatusCode, header},
     middleware::{self, Next},
     response::Response,
     routing::{get, post},
@@ -132,4 +132,22 @@ fn provider_json(provider: &Provider) -> serde_json::Value {
         "expires_at": provider.expires_at,
         "is_enabled": provider.is_enabled,
     })
+}
+
+/// Builds a JSON response with the given status code.
+///
+/// The management surface's universal response builder, defined at the
+/// surface root and kept separate from the outward one so each router owns
+/// its rendering.
+///
+/// # Panics
+///
+/// Panics if the static response parts fail to build, which cannot occur.
+fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
+    #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("static response parts are always valid")
 }

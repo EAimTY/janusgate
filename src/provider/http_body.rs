@@ -109,13 +109,13 @@ where
     }
 
     let body = response
-        .text()
+        .bytes()
         .await
         .map_err(|error| ExchangeFailure::Unavailable {
             detail: format!("{label} read failed: {error}"),
         })?;
 
-    serde_json::from_str(&body).map_err(|error| ExchangeFailure::Unavailable {
+    serde_json::from_slice(&body).map_err(|error| ExchangeFailure::Unavailable {
         detail: format!("malformed {label} response: {error}"),
     })
 }

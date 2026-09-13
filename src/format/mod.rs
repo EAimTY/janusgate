@@ -6,7 +6,10 @@
 //! function behind the same trait). Every upstream format implements
 //! [`UpstreamEventParser`]. Upstream payload rendering has no shared
 //! contract — the payloads are provider-coupled — so each codec exposes
-//! free `render_request` functions that the gateway invokes directly. The
+//! free `render_request` functions that the gateway invokes directly; each
+//! returns the upstream URL beside the payload, so every protocol's path
+//! shape lives in the codec that owns it while the provider layer threads
+//! the endpoint base in. The
 //! Gemini codec is upstream-only (README §6.3): it implements
 //! [`UpstreamEventParser`] plus its request renderers, but no outward
 //! client format.

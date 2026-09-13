@@ -9,13 +9,9 @@
 use crate::{
     gateway::Error as GatewayError,
     ir::InvalidRequest,
-    provider::{oauth, storage},
+    provider::{oauth::Error as OAuthError, storage::Error as StorageError},
 };
-use axum::{
-    body::Body,
-    http::{StatusCode, header},
-    response::Response,
-};
+use axum::response::Response;
 use log::{debug, error};
 
 /// Status for the upstream failures whose foreign status is never mirrored.
@@ -49,7 +45,7 @@ pub(super) enum Error {
 
     /// Storage failed outside the pipeline (model listing).
     #[error(transparent)]
-    Storage(#[from] storage::Error),
+    Storage(#[from] StorageError),
 }
 
 /// One rendered contract row: everything the HTTP status and the OpenAI
@@ -129,7 +125,7 @@ impl Error {
                 // lease-guarded token refresh is a gateway-side concurrency
                 // condition with no row of its own in README §6.7, so it
                 // renders like any other internal failure.
-                GatewayError::OAuth(oauth::Error::NotFound { .. })
+                GatewayError::OAuth(OAuthError::NotFound { .. })
                 | GatewayError::Storage(_)
                 | GatewayError::Internal { .. } => Row {
                     status: 500,
@@ -187,27 +183,8 @@ impl Error {
 
     /// Renders the error into an HTTP response.
     pub(super) fn into_response(self) -> Response {
-        json_response(self.row().status, self.to_openai_json())
+        super::json_response(self.row().status, self.to_openai_json())
     }
-}
-
-/// Builds a JSON response with the given status code.
-///
-/// The outward surface's own response builder, kept separate from the
-/// management one so each router owns its rendering.
-///
-/// # Panics
-///
-/// Panics if the static response parts fail to build, which cannot occur.
-pub(super) fn json_response(status: u16, body: serde_json::Value) -> Response {
-    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-
-    #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string()))
-        .expect("static response parts are always valid")
 }
 
 /// Logs one [`Error`] exactly once, at the response boundary about to render
@@ -227,7 +204,7 @@ pub(super) fn log_error(operation: &str, error: &Error) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{format::PayloadError, provider::storage::Error as StorageError};
+    use crate::format::PayloadError;
 
     /// Verifies that every domain failure classifies onto its row of the
     /// outward error table (README §6.7 and §4): the derived status, the
@@ -308,7 +285,7 @@ mod tests {
                 }),
             ),
             (
-                Error::from(GatewayError::OAuth(oauth::Error::Rejected {
+                Error::from(GatewayError::OAuth(OAuthError::Rejected {
                     status: 429,
                     detail: "rate limited".to_string(),
                 })),
@@ -321,7 +298,7 @@ mod tests {
                 }),
             ),
             (
-                Error::from(GatewayError::OAuth(oauth::Error::NotFound {
+                Error::from(GatewayError::OAuth(OAuthError::NotFound {
                     message: "provider vanished during token refresh".to_string(),
                 })),
                 500,
@@ -404,11 +381,11 @@ mod tests {
             Error::from(GatewayError::Unavailable {
                 detail: "connection refused".to_string(),
             }),
-            Error::from(GatewayError::OAuth(oauth::Error::Rejected {
+            Error::from(GatewayError::OAuth(OAuthError::Rejected {
                 status: 429,
                 detail: "rate limited".to_string(),
             })),
-            Error::from(GatewayError::OAuth(oauth::Error::NotFound {
+            Error::from(GatewayError::OAuth(OAuthError::NotFound {
                 message: "provider vanished during token refresh".to_string(),
             })),
             Error::from(GatewayError::Internal {

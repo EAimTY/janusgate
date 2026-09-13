@@ -471,16 +471,8 @@ impl UpstreamParser {
         let response = value.get("response").unwrap_or(value);
 
         vec![IrEvent::MessageStart {
-            id: response
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            model: response
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            id: format::string_field(response, "id"),
+            model: format::string_field(response, "model"),
         }]
     }
 }
@@ -678,7 +670,6 @@ mod tests {
         let mut parser = UpstreamParser::new();
 
         let frame = SseFrame {
-            event: None,
             data: serde_json::json!({
                 "type": "response.custom_failure",
                 "error": {"message": "backend exploded"},
@@ -695,7 +686,6 @@ mod tests {
         let mut parser = UpstreamParser::new();
 
         let frame = SseFrame {
-            event: None,
             data: serde_json::json!({"error": "hard failure"}).to_string(),
         };
 
@@ -713,7 +703,6 @@ mod tests {
         let mut parser = UpstreamParser::new();
 
         let frame = SseFrame {
-            event: None,
             data: serde_json::json!({
                 "type": "response.heartbeat",
                 "sequence_number": 7,
@@ -787,7 +776,6 @@ mod tests {
     /// Builds an `output_item.done` frame for a complete message item.
     fn message_done_frame(output_index: usize, text: &str) -> SseFrame {
         SseFrame {
-            event: None,
             data: serde_json::json!({
                 "type": "response.output_item.done",
                 "output_index": output_index,
@@ -805,7 +793,6 @@ mod tests {
     /// Builds a terminal `response.completed` frame carrying `output`.
     fn completed_frame(output: Value) -> SseFrame {
         SseFrame {
-            event: None,
             data: serde_json::json!({
                 "type": "response.completed",
                 "response": {"status": "completed", "output": output},
@@ -930,7 +917,6 @@ mod tests {
         let mut parser = UpstreamParser::new();
 
         let delta_frame = SseFrame {
-            event: None,
             data: serde_json::json!({
                 "type": "response.output_text.delta",
                 "delta": "live",

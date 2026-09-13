@@ -70,9 +70,7 @@ pub(crate) async fn discover_upstream_models(
     let secret = provider.credentials.secret();
 
     match provider.provider_type {
-        ProviderType::OpenAiOauth => {
-            discover_codex(http, endpoints::CODEX_MODELS_URL, provider, secret).await
-        }
+        ProviderType::OpenAiOauth => discover_codex(http, provider, secret).await,
 
         ProviderType::AntigravityOauth => discover_antigravity(http, secret).await,
 
@@ -86,9 +84,8 @@ pub(crate) async fn discover_upstream_models(
 /// a `slug` string.
 async fn discover_codex(
     http: &Client,
-    models_url: &str,
     provider: &Provider,
-    access_token: &str,
+    secret: &str,
 ) -> Result<Vec<String>, Error> {
     let account_id = match &provider.credentials {
         super::Credentials::OpenAiOauth { account_id, .. } => account_id.clone(),
@@ -100,9 +97,9 @@ async fn discover_codex(
     };
 
     let request = http
-        .get(models_url)
+        .get(endpoints::CODEX_MODELS_URL)
         .query(&[("client_version", endpoints::CODEX_CLIENT_VERSION)])
-        .bearer_auth(access_token)
+        .bearer_auth(secret)
         .header("chatgpt-account-id", account_id);
 
     let value: Value = http_body::send_and_parse_json(request, "upstream").await?;
@@ -130,11 +127,11 @@ async fn discover_codex(
 }
 
 /// Discovers Antigravity models from Cloud Code Assist.
-async fn discover_antigravity(http: &Client, access_token: &str) -> Result<Vec<String>, Error> {
+async fn discover_antigravity(http: &Client, secret: &str) -> Result<Vec<String>, Error> {
     let value: Value = oauth::post_code_assist(
         http,
         endpoints::ANTIGRAVITY_FETCH_AVAILABLE_MODELS_ACTION,
-        access_token,
+        secret,
         &serde_json::json!({}),
     )
     .await?;
@@ -154,7 +151,7 @@ async fn discover_antigravity(http: &Client, access_token: &str) -> Result<Vec<S
 async fn discover_compatible(
     http: &Client,
     provider: &Provider,
-    access_token: &str,
+    secret: &str,
 ) -> Result<Vec<String>, Error> {
     let protocol = provider.protocol.ok_or_else(|| Error::Internal {
         message: "openai_compatible provider lacks an upstream protocol".to_string(),
@@ -170,13 +167,13 @@ async fn discover_compatible(
     let base_url = base_url.trim_end_matches('/');
 
     let request = match protocol {
-        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => http
-            .get(format!("{base_url}/models"))
-            .bearer_auth(access_token),
+        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
+            http.get(format!("{base_url}/models")).bearer_auth(secret)
+        }
 
         UpstreamFormat::GeminiGenerateContent => http
             .get(format!("{base_url}/models"))
-            .header("x-goog-api-key", access_token),
+            .header(endpoints::GEMINI_API_KEY_HEADER, secret),
     };
 
     let value: Value = http_body::send_and_parse_json(request, "upstream").await?;

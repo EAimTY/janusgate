@@ -13,9 +13,6 @@ const UTF8_BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
 /// One complete Server-Sent Events frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SseFrame {
-    /// Optional `event:` field of the frame.
-    pub(crate) event: Option<String>,
-
     /// Concatenated `data:` lines of the frame, joined with newlines.
     pub(crate) data: String,
 }
@@ -23,12 +20,13 @@ pub(crate) struct SseFrame {
 /// Incremental Server-Sent Events parser fed with raw byte chunks.
 ///
 /// Implements the field subset of the SSE specification used by all upstream
-/// protocols: `event:` and `data:` fields, `:` comment lines, optional field
-/// value prefixes, and line terminators of `\n`, `\r\n`, or `\r`. Unknown
-/// fields (`id`, `retry`) are ignored. A frame is dispatched on an empty line
-/// only when at least one `data:` line was seen, so heartbeat comments and
-/// eventless keep-alive frames never surface. One leading UTF-8 BOM is
-/// stripped as the specification's decoding step requires.
+/// protocols: `data:` fields, `:` comment lines, optional field value
+/// prefixes, and line terminators of `\n`, `\r\n`, or `\r`. The other fields
+/// the specification defines (`event`, `id`, `retry`) are tolerated and
+/// ignored. A frame is dispatched on an empty line only when at least one
+/// `data:` line was seen, so heartbeat comments and eventless keep-alive
+/// frames never surface. One leading UTF-8 BOM is stripped as the
+/// specification's decoding step requires.
 #[derive(Debug, Default)]
 pub(crate) struct SseParser {
     /// Bytes received but not yet consumed as complete lines.
@@ -40,9 +38,6 @@ pub(crate) struct SseParser {
     /// Whether the leading byte-order mark has been resolved (present and
     /// stripped, or found absent).
     is_bom_resolved: bool,
-
-    /// `event:` field of the frame being assembled across chunk boundaries.
-    pending_event: Option<String>,
 
     /// `data:` lines of the frame being assembled across chunk boundaries.
     pending_data_lines: Vec<String>,
@@ -135,15 +130,12 @@ impl SseParser {
             if line.is_empty() {
                 if !self.pending_data_lines.is_empty() {
                     frames.push(SseFrame {
-                        event: self.pending_event.take(),
                         data: self.pending_data_lines.join("\n"),
                     });
 
                     self.pending_data_lines = Vec::new();
                     self.pending_frame_bytes = 0;
                 }
-
-                self.pending_event = None;
 
                 continue;
             }
@@ -153,23 +145,22 @@ impl SseParser {
                 None => (line.as_str(), ""),
             };
 
-            match field {
-                "event" => self.pending_event = Some(value.to_string()),
-                "data" => {
-                    // One separator byte per line upper-bounds the line's
-                    // eventual contribution to the dispatch-time `join`, so
-                    // the cap is enforced before the line is materialized.
-                    self.pending_frame_bytes += value.len() + 1;
+            // Only `data` fields are parsed; every other field — including
+            // the tolerated-and-ignored `event`, `id`, and `retry` — falls
+            // through.
+            if field == "data" {
+                // One separator byte per line upper-bounds the line's
+                // eventual contribution to the dispatch-time `join`, so
+                // the cap is enforced before the line is materialized.
+                self.pending_frame_bytes += value.len() + 1;
 
-                    if self.pending_frame_bytes > MAX_FRAME_BYTES {
-                        self.is_oversized = true;
+                if self.pending_frame_bytes > MAX_FRAME_BYTES {
+                    self.is_oversized = true;
 
-                        return Err(SseParseError::FrameTooLarge);
-                    }
-
-                    self.pending_data_lines.push(value.to_string());
+                    return Err(SseParseError::FrameTooLarge);
                 }
-                _ => {}
+
+                self.pending_data_lines.push(value.to_string());
             }
         }
 

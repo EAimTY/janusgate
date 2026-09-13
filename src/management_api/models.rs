@@ -54,7 +54,7 @@ pub(super) async fn discover(State(context): State<Context>, body: Bytes) -> Res
     let outcome = handle_discover(&context.database, &context.control_plane, &body).await;
 
     match outcome {
-        Ok(discovered) => error::json_response(
+        Ok(discovered) => super::json_response(
             StatusCode::OK,
             serde_json::json!({ "discovered": discovered }),
         ),
@@ -77,7 +77,7 @@ pub(super) async fn list(State(context): State<Context>) -> Response {
     .await;
 
     match outcome {
-        Ok(rendered) => error::json_response(StatusCode::OK, rendered),
+        Ok(rendered) => super::json_response(StatusCode::OK, rendered),
         Err(error) => {
             error::log_error("list-models", &error);
 
@@ -92,7 +92,7 @@ pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Respons
 
     match outcome {
         Ok(rendered) => {
-            error::json_response(StatusCode::OK, serde_json::json!({ "model": rendered }))
+            super::json_response(StatusCode::OK, serde_json::json!({ "model": rendered }))
         }
         Err(error) => error.into_response(),
     }
@@ -202,16 +202,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, Managem
                 // with the stored-override contract (README §7.1).
                 let parsed = ir::parse_thinking_levels(levels, "thinking_levels_override")?;
 
-                let canonical: Vec<&str> =
-                    parsed.iter().map(|level| level.to_canonical()).collect();
-
-                Some(Some(serde_json::to_string(&canonical).map_err(
-                    |error| {
-                        ManagementApiError::internal(format!(
-                            "failed to encode thinking levels: {error}"
-                        ))
-                    },
-                )?))
+                Some(Some(ir::render_thinking_levels(&parsed).to_string()))
             }
         };
 
@@ -277,9 +268,9 @@ fn model_entry_json(entry: &ModelEntry) -> Result<Value, ManagementApiError> {
 }
 
 /// Renders the stored thinking-level override for listing, validating it
-/// through the shared parser: a corrupt stored value is drift inside the
-/// database — an invariant violation, symmetric with the gateway's fail-fast
-/// — and is never masked as an absent override.
+/// through the shared stored-override parser: a corrupt stored value is
+/// drift inside the database — an invariant violation, symmetric with the
+/// gateway's fail-fast — and is never masked as an absent override.
 ///
 /// # Errors
 ///
@@ -289,15 +280,8 @@ fn thinking_levels_json(stored: &Option<String>) -> Result<Value, ManagementApiE
         return Ok(Value::Null);
     };
 
-    let levels = ir::parse_thinking_levels_override(json).map_err(|error| {
-        ManagementApiError::internal(format!(
-            "stored thinking_levels_override is invalid: {error}"
-        ))
-    })?;
+    let levels =
+        ir::parse_stored_thinking_levels_override(json).map_err(ManagementApiError::internal)?;
 
-    let canonical: Vec<&str> = levels.iter().map(|level| level.to_canonical()).collect();
-
-    serde_json::to_value(canonical).map_err(|error| {
-        ManagementApiError::internal(format!("failed to encode thinking levels: {error}"))
-    })
+    Ok(ir::render_thinking_levels(&levels))
 }

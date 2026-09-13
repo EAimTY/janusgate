@@ -150,11 +150,13 @@ pub(crate) async fn list_enabled_models_with_owner(
 /// Replaces the model rows of one provider with a freshly discovered set
 /// inside a single transaction, returning the number of stored rows.
 ///
-/// An empty discovered set is rejected with 502 before anything is written:
-/// an upstream that legitimately reports no models — a fresh pre-onboarded
-/// account, or an outage answering 200 with an empty payload — must fail
-/// loudly instead of irreversibly wiping the provider's curated rows
-/// (README §7.1).
+/// `upstream_ids` must be non-empty: rejecting an empty discovered set is the
+/// caller's precondition, enforced by the management surface with a 502
+/// before this function is reached (README §7.1). This function performs no
+/// emptiness check — an empty set would irreversibly wipe the provider's
+/// curated rows and return `Ok(0)` — because an upstream that legitimately
+/// reports no models, a fresh pre-onboarded account, or an outage answering
+/// 200 with an empty payload must fail loudly instead.
 ///
 /// The provider row is re-read inside the transaction, so the public IDs are
 /// composed from the provider's current prefix even when a concurrent
@@ -169,8 +171,8 @@ pub(crate) async fn list_enabled_models_with_owner(
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for an empty discovered set, an unknown provider,
-/// failed statements, or a composed public ID collision.
+/// Returns [`Error`] for an unknown provider, failed statements, or a
+/// composed public ID collision.
 pub(crate) async fn replace_discovered_models(
     database: &Database,
     provider_id: i64,

@@ -7,8 +7,21 @@ use crate::{
 };
 use serde_json::Value;
 
-/// Renders an IR request into an upstream Chat Completions payload.
-pub(crate) fn render_request(ir: &IrRequest, is_streaming: bool) -> Value {
+/// Renders the upstream request URL and payload for an OpenAI-compatible
+/// Chat Completions upstream: `POST <base_url>/chat/completions`
+/// (README §5.3).
+pub(crate) fn render_request(
+    ir: &IrRequest,
+    base_url: &str,
+    is_streaming: bool,
+) -> (String, Value) {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+    (url, render_request_body(ir, is_streaming))
+}
+
+/// Renders an IR request into the upstream Chat Completions payload.
+fn render_request_body(ir: &IrRequest, is_streaming: bool) -> Value {
     let mut messages: Vec<Value> = Vec::new();
 
     if let Some(instructions) = &ir.instructions {

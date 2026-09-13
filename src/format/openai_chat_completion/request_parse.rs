@@ -33,7 +33,7 @@ const MESSAGE_FIELDS_BY_ROLE: &[(&str, &[&str])] = &[
 /// Fields allowed on each chat content part, keyed by part type.
 const CONTENT_PART_FIELDS: &[(&str, &[&str])] = &[
     ("text", &["type", "text"]),
-    ("image_url", &["type", "image_url"]),
+    ("image_url", &["type", "image_url", "detail"]),
 ];
 
 /// Roles whose array `content` may carry only `{"type": "text"}` parts,
@@ -195,6 +195,11 @@ enum UserPartIn {
 struct ImageUrlIn {
     /// Data URL (`data:<mime>;base64,<data>`) or remote HTTP(S) URL.
     url: String,
+
+    /// OpenAI image detail hint; accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    detail: Option<String>,
 }
 
 /// Tool invocation within an assistant message.
@@ -731,6 +736,44 @@ mod tests {
                 content: "x\n\ny".to_string(),
             }],
         );
+    }
+
+    /// An image part carrying the official `detail` hint parses to the same
+    /// IR as the part without it: typed SDK clients send `detail` on every
+    /// image part, and the gateway cannot honor it downstream, so it is
+    /// accepted and ignored like `strict` (README §6.6).
+    #[test]
+    fn image_url_detail_is_accepted_and_ignored() {
+        let plain = parse(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/i.png"},
+                    },
+                ]},
+            ],
+        }))
+        .expect("a plain image part must parse");
+
+        let detailed = parse(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "https://example.com/i.png",
+                            "detail": "high",
+                        },
+                    },
+                ]},
+            ],
+        }))
+        .expect("an image part carrying `detail` must parse");
+
+        assert_eq!(detailed.ir.messages, plain.ir.messages);
     }
 
     /// Only `{"type": "text"}` parts are valid inside a text-only role's

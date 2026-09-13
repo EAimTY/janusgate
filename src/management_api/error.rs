@@ -15,7 +15,7 @@ use crate::{
     },
 };
 use as_http_status_code::{AsStatusCode, StatusCode};
-use axum::{body::Body, http::header, response::Response};
+use axum::response::Response;
 use log::{debug, error};
 
 /// Machine-readable management error taxonomy.
@@ -129,7 +129,7 @@ impl ManagementApiError {
     /// Renders the error into an HTTP response, taking the status code from
     /// the category's derived status.
     pub(super) fn into_response(self) -> Response {
-        json_response(self.code.as_status_code(), self.to_json())
+        super::json_response(self.code.as_status_code(), self.to_json())
     }
 }
 
@@ -198,23 +198,6 @@ impl From<ParseError> for ManagementApiError {
     fn from(error: ParseError) -> Self {
         Self::new(ErrorCode::InvalidRequest, error.to_string())
     }
-}
-
-/// Builds a JSON response with the given status code.
-///
-/// The management surface's own response builder, kept separate from the
-/// outward one so each router owns its rendering.
-///
-/// # Panics
-///
-/// Panics if the static response parts fail to build, which cannot occur.
-pub(super) fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
-    #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string()))
-        .expect("static response parts are always valid")
 }
 
 /// Logs one [`ManagementApiError`] exactly once, at the response boundary about
@@ -304,7 +287,6 @@ mod tests {
     #[test]
     fn maps_domain_errors_by_category() {
         let database_busy = StorageError::Busy {
-            source: crate::database::Error::PoolClosed,
             detail: "locked".to_string(),
         };
 

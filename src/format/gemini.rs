@@ -612,7 +612,6 @@ mod tests {
         );
 
         let frame = SseFrame {
-            event: None,
             data: serde_json::json!({"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL"}]})
                 .to_string(),
         };
@@ -666,7 +665,6 @@ mod tests {
         assert!(parser.finish().is_empty(), "no spurious Stop may follow");
 
         let frame = SseFrame {
-            event: None,
             data: body.to_string(),
         };
 

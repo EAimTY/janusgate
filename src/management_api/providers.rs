@@ -65,7 +65,7 @@ pub(super) async fn list(State(context): State<Context>) -> Response {
                 .map(super::provider_json)
                 .collect::<Vec<_>>();
 
-            error::json_response(StatusCode::OK, serde_json::json!({ "providers": rendered }))
+            super::json_response(StatusCode::OK, serde_json::json!({ "providers": rendered }))
         }
 
         Err(error) => {
@@ -84,7 +84,7 @@ pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Respons
 
     match outcome {
         Ok(rendered) => {
-            error::json_response(StatusCode::OK, serde_json::json!({ "provider": rendered }))
+            super::json_response(StatusCode::OK, serde_json::json!({ "provider": rendered }))
         }
         Err(error) => error.into_response(),
     }
@@ -92,10 +92,34 @@ pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Respons
 
 /// Handles `POST /delete-provider`.
 pub(super) async fn delete(State(context): State<Context>, body: Bytes) -> Response {
-    let outcome = async {
-        let request: DeleteProviderBody = super::parse_body(&body, "delete-provider")?;
+    let outcome = handle_delete(&context.database, &body).await;
 
-        if !storage::delete_provider(&context.database, request.id).await? {
+    match outcome {
+        Ok(id) => {
+            info!("deleted provider {id}");
+
+            super::json_response(StatusCode::OK, serde_json::json!({"deleted": true}))
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+/// Deletes one provider by row identifier. `parse_body` runs before the
+/// logged work block and logs a malformed body itself, so its early `?`
+/// return bypasses the work-block logging tail; every other failure — a
+/// storage failure or an unknown id — logs exactly once at that tail, and
+/// the wrapper renders the response without logging (README §8 logs every
+/// rendered API error exactly once).
+///
+/// # Errors
+///
+/// Returns [`ManagementApiError`] for a malformed body, storage failures,
+/// and an unknown id.
+async fn handle_delete(database: &Database, body: &Bytes) -> Result<i64, ManagementApiError> {
+    let request: DeleteProviderBody = super::parse_body(body, "delete-provider")?;
+
+    let outcome = async {
+        if !storage::delete_provider(database, request.id).await? {
             return Err(ManagementApiError::not_found(format!(
                 "Provider {} does not exist",
                 request.id
@@ -106,18 +130,11 @@ pub(super) async fn delete(State(context): State<Context>, body: Bytes) -> Respo
     }
     .await;
 
-    match outcome {
-        Ok(id) => {
-            info!("deleted provider {id}");
-
-            error::json_response(StatusCode::OK, serde_json::json!({"deleted": true}))
-        }
-        Err(error) => {
-            error::log_error("delete-provider", &error);
-
-            error.into_response()
-        }
+    if let Err(error) = &outcome {
+        error::log_error("delete-provider", error);
     }
+
+    outcome
 }
 
 /// Creates or updates one provider per the management contract. A request

@@ -202,7 +202,7 @@ async fn models(State(context): State<Context>) -> Response {
                 })
                 .collect::<Vec<_>>();
 
-            error::json_response(200, serde_json::json!({"object": "list", "data": data}))
+            json_response(200, serde_json::json!({"object": "list", "data": data}))
         }
 
         Err(error) => {
@@ -280,8 +280,25 @@ async fn aggregated_response(
         }
     }
 
-    Ok(error::json_response(
-        200,
-        render_json_fn(&aggregator.finish()),
-    ))
+    Ok(json_response(200, render_json_fn(&aggregator.finish())))
+}
+
+/// Builds a JSON response with the given status code.
+///
+/// The outward surface's universal response builder, defined at the surface
+/// root and kept separate from the management one so each router owns its
+/// rendering.
+///
+/// # Panics
+///
+/// Panics if the static response parts fail to build, which cannot occur.
+fn json_response(status: u16, body: serde_json::Value) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+    #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("static response parts are always valid")
 }

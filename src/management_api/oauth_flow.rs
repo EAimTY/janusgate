@@ -49,7 +49,7 @@ pub(super) async fn start(State(context): State<Context>, body: Bytes) -> Respon
     let outcome = handle_start(&context.database, &body).await;
 
     match outcome {
-        Ok(flow) => error::json_response(
+        Ok(flow) => super::json_response(
             StatusCode::OK,
             serde_json::json!({
                 "authorize_url": flow.authorize_url,
@@ -67,7 +67,7 @@ pub(super) async fn complete(State(context): State<Context>, body: Bytes) -> Res
 
     match outcome {
         Ok(rendered) => {
-            error::json_response(StatusCode::OK, serde_json::json!({ "provider": rendered }))
+            super::json_response(StatusCode::OK, serde_json::json!({ "provider": rendered }))
         }
         Err(error) => error.into_response(),
     }
