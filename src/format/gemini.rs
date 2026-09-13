@@ -97,12 +97,25 @@ fn render_request_url(
 /// Renders the bare GenerateContentRequest carried in the envelope `request`
 /// field or sent directly to a compatible upstream.
 ///
+/// The Gemini API requires `contents` roles to alternate between `user` and
+/// `model`, so each run of consecutive same-role messages coalesces into one
+/// content entry whose parts concatenate in order — the several tool results
+/// of one turn then ride as multiple `functionResponse` parts of a single
+/// `user` content, the canonical shape. An already-alternating history renders
+/// one content per message, exactly the 1:1 shape.
+///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] for tool call arguments that are not JSON objects
 /// and tool outputs whose invocation cannot be resolved.
 fn render_generate_content_request(ir: &IrRequest) -> Result<Value, InvalidRequest> {
     let mut contents: Vec<Value> = Vec::new();
+
+    // The open run's role and accumulated parts; a message whose parts render
+    // to nothing is transparent — it contributes nothing and cannot split a
+    // run, since it produces no content entry to alternate against.
+    let mut run_role: Option<&'static str> = None;
+    let mut run_parts: Vec<Value> = Vec::new();
 
     for message in &ir.messages {
         let role = match message.role {
@@ -123,7 +136,19 @@ fn render_generate_content_request(ir: &IrRequest) -> Result<Value, InvalidReque
             continue;
         }
 
-        contents.push(serde_json::json!({"role": role, "parts": parts}));
+        if run_role != Some(role)
+            && let Some(previous_role) = run_role.replace(role)
+        {
+            contents.push(serde_json::json!({"role": previous_role, "parts": run_parts}));
+
+            run_parts = Vec::new();
+        }
+
+        run_parts.extend(parts);
+    }
+
+    if let Some(previous_role) = run_role {
+        contents.push(serde_json::json!({"role": previous_role, "parts": run_parts}));
     }
 
     let mut request = serde_json::json!({"contents": contents});
@@ -585,6 +610,7 @@ fn finish_reason_from_gemini(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::IrMessage;
 
     /// A turn whose upstream reported `MALFORMED_FUNCTION_CALL` is a failed
     /// generation, not a successful completion: both the JSON body and the
@@ -773,5 +799,165 @@ mod tests {
             .expect_err("a non-object error value must fail");
 
         assert_eq!(error.to_string(), "quota exhausted");
+    }
+
+    /// The Gemini API requires `contents` roles to alternate between `user`
+    /// and `model`, so the two `functionResponse` parts of one tool turn —
+    /// separate `IrRole::Tool` messages inbound — must land in a single `user`
+    /// content instead of rendering consecutive `user` entries the upstream
+    /// rejects with 400 INVALID_ARGUMENT.
+    #[test]
+    fn parallel_tool_results_land_in_one_user_content() {
+        let ir = IrRequest {
+            messages: vec![
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: "Run both checks".to_string(),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![
+                        IrPart::ToolCall {
+                            call_id: "call_a".to_string(),
+                            name: "lint".to_string(),
+                            arguments: "{}".to_string(),
+                            thought_signature: None,
+                        },
+                        IrPart::ToolCall {
+                            call_id: "call_b".to_string(),
+                            name: "test".to_string(),
+                            arguments: "{}".to_string(),
+                            thought_signature: None,
+                        },
+                    ],
+                },
+                IrMessage {
+                    role: IrRole::Tool,
+                    parts: vec![IrPart::ToolOutput {
+                        call_id: "call_a".to_string(),
+                        content: r#"{"passed": true}"#.to_string(),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::Tool,
+                    parts: vec![IrPart::ToolOutput {
+                        call_id: "call_b".to_string(),
+                        content: "all green".to_string(),
+                    }],
+                },
+            ],
+            ..IrRequest::default()
+        };
+
+        let request = render_generate_content_request(&ir).expect("a tool-call history renders");
+
+        assert_eq!(
+            request["contents"],
+            serde_json::json!([
+                {"role": "user", "parts": [{"text": "Run both checks"}]},
+                {"role": "model", "parts": [
+                    {"functionCall": {"name": "lint", "args": {}}},
+                    {"functionCall": {"name": "test", "args": {}}},
+                ]},
+                {"role": "user", "parts": [
+                    {"functionResponse": {"name": "lint", "response": {"passed": true}}},
+                    {"functionResponse": {"name": "test", "response": {"result": "all green"}}},
+                ]},
+            ]),
+        );
+    }
+
+    /// Consecutive user messages — legal and common in OpenAI clients, which
+    /// have no alternation requirement — coalesce into one `user` content
+    /// whose parts keep the messages' encounter order.
+    #[test]
+    fn consecutive_user_messages_coalesce_in_part_order() {
+        let ir = IrRequest {
+            messages: vec![
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: "first question".to_string(),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![
+                        IrPart::Text {
+                            text: "look at this".to_string(),
+                        },
+                        IrPart::Image {
+                            image: IrImage::Url("https://example.com/cat.png".to_string()),
+                        },
+                    ],
+                },
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: "now answer".to_string(),
+                    }],
+                },
+            ],
+            ..IrRequest::default()
+        };
+
+        let request = render_generate_content_request(&ir).expect("a user-run history renders");
+
+        assert_eq!(
+            request["contents"],
+            serde_json::json!([{"role": "user", "parts": [
+                {"text": "first question"},
+                {"text": "look at this"},
+                {"fileData": {"fileUri": "https://example.com/cat.png"}},
+                {"text": "now answer"},
+            ]}]),
+        );
+    }
+
+    /// An already-alternating history must render byte-identically to the
+    /// pre-change output, which mapped every message 1:1 onto one content
+    /// entry: the pin below fixes those exact serialized bytes.
+    #[test]
+    fn alternating_history_renders_the_pinned_wire_shape() {
+        let ir = IrRequest {
+            messages: vec![
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: "hello".to_string(),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![IrPart::Text {
+                        text: "hi there".to_string(),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: "one more question".to_string(),
+                    }],
+                },
+            ],
+            ..IrRequest::default()
+        };
+
+        let request = render_generate_content_request(&ir).expect("an alternating history renders");
+
+        // serde_json object keys serialize in sorted order ("parts" before
+        // "role"), so the pin below is the stable byte rendering.
+        assert_eq!(
+            serde_json::to_string(&request["contents"])
+                .expect("rendered contents always serialize"),
+            concat!(
+                r#"[{"parts":[{"text":"hello"}],"role":"user"},"#,
+                r#"{"parts":[{"text":"hi there"}],"role":"model"},"#,
+                r#"{"parts":[{"text":"one more question"}],"role":"user"}"#,
+                r#"]"#,
+            ),
+        );
     }
 }

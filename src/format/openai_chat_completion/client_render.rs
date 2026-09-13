@@ -24,17 +24,16 @@ pub(crate) struct SseRenderer {
     /// Whether the leading role chunk was emitted.
     is_role_sent: bool,
 
-    /// Argument bytes already streamed, per opened tool-call index. An
-    /// index's presence marks its call as opened by a delta chunk; a done
-    /// for an index outside this map carries the complete call of an
-    /// upstream that never streamed deltas, so it renders as one full
-    /// tool_calls delta chunk. The counts let a conformant done render
+    /// Arguments already streamed, per opened tool-call index. An index's
+    /// presence marks its call as opened by a delta chunk; a done for an
+    /// index outside this map carries the complete call of an upstream
+    /// that never streamed deltas, so it renders as one full tool_calls
+    /// delta chunk. The accumulated prefixes let a conformant done render
     /// exactly the argument suffix the live deltas did not deliver — a
     /// done carries the complete arguments while an opening delta may
-    /// carry none of them (README §6.3) — and guard the suffix read
-    /// against divergent done payloads that are not a superstring of the
-    /// streamed bytes.
-    streamed_argument_bytes: Vec<(usize, usize)>,
+    /// carry none of them — and let the renderer recognize a done whose
+    /// arguments the streamed bytes are not a prefix of (README §6.2).
+    streamed_arguments: Vec<(usize, String)>,
 
     /// Whether the trailing usage chunk is wanted.
     should_include_usage: bool,
@@ -53,7 +52,7 @@ impl SseRenderer {
             model,
             created: unix_time::unix_now(),
             is_role_sent: false,
-            streamed_argument_bytes: Vec::new(),
+            streamed_arguments: Vec::new(),
             should_include_usage,
             usage: None,
         }
@@ -132,15 +131,15 @@ impl ClientSseRenderer for SseRenderer {
                 arguments_delta,
             } => {
                 match self
-                    .streamed_argument_bytes
+                    .streamed_arguments
                     .iter_mut()
                     .find(|(opened_index, _)| opened_index == index)
                 {
-                    Some((_, streamed_bytes)) => *streamed_bytes += arguments_delta.len(),
+                    Some((_, streamed)) => streamed.push_str(arguments_delta),
 
                     None => self
-                        .streamed_argument_bytes
-                        .push((*index, arguments_delta.len())),
+                        .streamed_arguments
+                        .push((*index, arguments_delta.clone())),
                 }
 
                 let mut function = serde_json::Map::new();
@@ -178,16 +177,16 @@ impl ClientSseRenderer for SseRenderer {
                 arguments,
                 thought_signature,
             } => {
-                let streamed_bytes = self
-                    .streamed_argument_bytes
+                let streamed = self
+                    .streamed_arguments
                     .iter()
                     .find(|(opened_index, _)| opened_index == index)
-                    .map(|(_, bytes)| *bytes);
+                    .map(|(_, streamed)| streamed);
 
-                match streamed_bytes {
+                match streamed {
                     None => {
                         // The upstream never streamed a delta for this index
-                        // (README §6.3 recovery class), so the done payload
+                        // (README §6.2 recovery class), so the done payload
                         // carries the complete call and renders as one full
                         // tool_calls delta chunk, exactly the shape a delta
                         // would have produced.
@@ -209,7 +208,7 @@ impl ClientSseRenderer for SseRenderer {
                         vec![self.chunk_frame(serde_json::json!({"tool_calls": [tool_call]}), None)]
                     }
 
-                    Some(streamed_bytes) => {
+                    Some(streamed) => {
                         let mut frames = Vec::new();
 
                         // The live deltas may have streamed only a prefix
@@ -218,13 +217,16 @@ impl ClientSseRenderer for SseRenderer {
                         // exactly the un-streamed suffix; a done whose
                         // arguments the deltas already streamed in full
                         // renders no argument chunk. Third-party bytes can
-                        // diverge from that shape, so `get` declines an
-                        // offset that is out of bounds or mid-character and
-                        // such a done silently skips its argument frame
-                        // rather than panicking the gateway task (README
-                        // §2.2).
-                        if arguments.len() > streamed_bytes
-                            && let Some(unstreamed) = arguments.get(streamed_bytes..)
+                        // diverge from that shape, and a residual cut from
+                        // a non-prefix offset would splice onto the
+                        // streamed prefix into arguments matching neither
+                        // the deltas nor the done, so `strip_prefix`
+                        // silently skips the residual argument frame of a
+                        // done whose arguments are not a superstring of
+                        // the streamed bytes (README §6.2); the skipped
+                        // done's other content still renders.
+                        if let Some(unstreamed) = arguments.strip_prefix(streamed.as_str())
+                            && !unstreamed.is_empty()
                         {
                             frames.push(self.chunk_frame(
                                 serde_json::json!({"tool_calls": [{
@@ -426,7 +428,7 @@ mod tests {
     /// function call with a zero-byte `output_item.added` delta — receives
     /// its full arguments from the done event exactly once, because a
     /// streamed done always carries the authoritative complete arguments
-    /// (README §6.3).
+    /// (README §6.2).
     #[test]
     fn done_renders_arguments_the_opening_delta_never_streamed() {
         let mut renderer = SseRenderer::new("m".to_string(), false);
@@ -481,10 +483,10 @@ mod tests {
     }
 
     /// A divergent upstream whose done arguments are not a superstring of
-    /// the streamed bytes — an out-of-bounds or mid-character residual
-    /// offset — loses its residual arguments silently: the done skips its
-    /// argument frame instead of panicking the renderer task, while its
-    /// other content still renders.
+    /// the streamed bytes — shorter than the streamed bytes, or diverging
+    /// from them at a byte the deltas did not stream — loses its residual
+    /// arguments silently: the done skips its argument frame (README
+    /// §6.2), while its other content still renders.
     #[test]
     fn done_with_arguments_divergent_from_the_streamed_bytes_skips_the_argument_frame() {
         let mut renderer = SseRenderer::new("m".to_string(), false);
@@ -496,9 +498,9 @@ mod tests {
             arguments_delta: r#"{"city":"Paris"}"#.to_string(),
         });
 
-        // The done is shorter than the streamed bytes, so the residual
-        // offset is out of bounds.
-        let out_of_bounds = renderer.render(&IrEvent::ToolCallDone {
+        // The done is shorter than the streamed bytes, so the streamed
+        // bytes are not a prefix of its arguments.
+        let shorter = renderer.render(&IrEvent::ToolCallDone {
             index: 0,
             call_id: "call_1".to_string(),
             name: "get_weather".to_string(),
@@ -513,10 +515,10 @@ mod tests {
             arguments_delta: "é".to_string(),
         });
 
-        // One byte past the two-byte streamed prefix lands inside the
-        // done's own multi-byte character, so the offset is not a char
-        // boundary — the read the unguarded slice used to panic on.
-        let mid_character = renderer.render(&IrEvent::ToolCallDone {
+        // The streamed bytes "é" are not a byte-prefix of the done's
+        // "xé" — it diverges at the first byte — so the residual argument
+        // frame is skipped; the done's thought signature still renders.
+        let divergent = renderer.render(&IrEvent::ToolCallDone {
             index: 1,
             call_id: "call_2".to_string(),
             name: "get_weather".to_string(),
@@ -526,11 +528,11 @@ mod tests {
 
         assert_eq!(assembled_arguments(&opened), r#"{"city":"Paris"}"#);
 
-        assert!(out_of_bounds.is_empty());
+        assert!(shorter.is_empty());
 
         assert_eq!(assembled_arguments(&reopened), "é");
 
-        let payload = lone_frame_payload(&mid_character);
+        let payload = lone_frame_payload(&divergent);
 
         assert_eq!(
             payload.pointer("/choices/0/delta/tool_calls/0/thought_signature"),
@@ -544,8 +546,37 @@ mod tests {
         );
     }
 
+    /// A done that is longer than, but divergent from, the streamed bytes
+    /// renders no residual: a suffix cut past a non-prefix offset would
+    /// splice onto the streamed prefix into arguments matching neither the
+    /// deltas nor the done, so the divergent done silently skips its
+    /// argument frame (README §6.2).
+    #[test]
+    fn done_longer_but_divergent_from_the_streamed_bytes_skips_the_argument_frame() {
+        let mut renderer = SseRenderer::new("m".to_string(), false);
+
+        let opened = renderer.render(&IrEvent::ToolCallDelta {
+            index: 0,
+            call_id: Some("call_1".to_string()),
+            name: Some("get_weather".to_string()),
+            arguments_delta: "abc".to_string(),
+        });
+
+        let done = renderer.render(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            arguments: "xbcd".to_string(),
+            thought_signature: None,
+        });
+
+        assert_eq!(assembled_arguments(&opened), "abc");
+
+        assert!(done.is_empty());
+    }
+
     /// A done for an index no delta ever opened — the recovery class of
-    /// README §6.3 — renders the complete call as one full tool_calls delta
+    /// README §6.2 — renders the complete call as one full tool_calls delta
     /// chunk, exactly the shape a delta would have produced.
     #[test]
     fn done_without_a_prior_delta_renders_the_complete_call() {

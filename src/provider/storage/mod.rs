@@ -138,6 +138,15 @@ const PROVIDER_MODEL_COLUMNS: &str = concat!(
     "m.upstream_id, m.id, m.id_override, m.is_enabled, m.thinking_levels_override"
 );
 
+/// The combined column order of the model-entry join, consumed positionally by
+/// [`model_entry_from_row`]: the provider id, name, and enabled flag, then the
+/// model columns.
+const MODEL_ENTRY_COLUMNS: &str = concat!(
+    "p.id, p.name, p.is_enabled, ",
+    "m.provider_id, m.upstream_id, m.id, m.id_override, m.is_enabled, \
+     m.thinking_levels_override"
+);
+
 impl IntoValue for ProviderType {
     fn into_value(self) -> Result<Value, TursoError> {
         Ok(Value::Text(self.as_str().to_string()))
@@ -279,8 +288,8 @@ fn model_from_row(row: &Row) -> Result<Model, Error> {
     model_from_row_offset(row, 0)
 }
 
-/// Parses a model entry row in the shared entry join order: the provider id,
-/// name, and enabled flag, then the model columns at offset 3.
+/// Parses a model entry row in [`MODEL_ENTRY_COLUMNS`] order: the provider
+/// id, name, and enabled flag, then the model columns at offset 3.
 fn model_entry_from_row(row: &Row) -> Result<ModelEntry, Error> {
     Ok(ModelEntry {
         provider_id: row.get(0)?,

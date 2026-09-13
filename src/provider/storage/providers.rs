@@ -8,7 +8,10 @@ use crate::{
     provider::{Credentials, Model, NewProvider, Provider},
 };
 
-/// Inserts one provider row.
+/// Inserts one provider row and returns the stored row constructed from the
+/// supplied fields, mirroring [`update_provider`]'s contract: the returned
+/// row is exactly what the statement wrote, so callers never re-read after
+/// creation.
 ///
 /// # Errors
 ///
@@ -16,11 +19,11 @@ use crate::{
 pub(crate) async fn insert_provider(
     database: &Database,
     provider: &NewProvider<'_>,
-) -> Result<(), Error> {
-    database
-        .execute(
+) -> Result<Provider, Error> {
+    let rows = database
+        .query(
             "INSERT INTO providers (name, model_prefix, type, protocol, base_url, credentials, \
-             expires_at, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             expires_at, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id",
             params![
                 provider.name,
                 provider.model_prefix,
@@ -34,7 +37,23 @@ pub(crate) async fn insert_provider(
         )
         .await?;
 
-    Ok(())
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a single-row INSERT RETURNING yields exactly the inserted row, or errors"
+    )]
+    let id: i64 = rows[0].get(0)?;
+
+    Ok(Provider {
+        id,
+        name: provider.name.to_string(),
+        model_prefix: provider.model_prefix.to_string(),
+        provider_type: provider.provider_type,
+        protocol: provider.protocol,
+        base_url: provider.base_url.map(str::to_string),
+        credentials: provider.credentials.clone(),
+        expires_at: provider.expires_at,
+        is_enabled: provider.is_enabled,
+    })
 }
 
 /// Lists every stored provider.

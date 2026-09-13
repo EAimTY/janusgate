@@ -38,7 +38,7 @@
 | **Language** | Rust (2024 edition) | Strict types, memory safety, zero-cost abstractions |
 | **HTTP Server** | `hserver` + `socket2` | The gateway's `server` module owns the TCP listener (`socket2`) and the accept loop; `hserver` drives the per-connection Hyper HTTP/1 lifecycle (plaintext HTTP, no TLS for now) |
 | **Routing & Handlers** | `axum` (Router & utils) | Hierarchical routing (implements `tower::Service`), request extractors, and response helpers; `axum::serve` is strictly unused |
-| **Middleware** | `tower` | Service abstraction, middleware composition, and layer stacking |
+| **Middleware** | `tower` + `tower-http` | Service abstraction, middleware composition, and layer stacking; `tower-http` (cors feature) provides the CORS layer (§4) and the `AllowOrigin` type of the configuration schema (§8) |
 | **Database** | `turso` | In-process SQLite-compatible SQL database (`tursodatabase/turso`) |
 | **HTTP Client** | `reqwest` | Connection pooling and streaming |
 | **Serialization** | `serde` + `serde_json` | Strongly typed parsing and serialization |
@@ -330,7 +330,7 @@ Upstream refusal text is delivered as assistant message text (`TextDelta`), so i
 
 - Canonical thinking levels are `off`, `low`, `medium`, `high`, ordered by increasing reasoning strength.
 - Client requests carry an effort in their native format: Chat Completions `reasoning_effort` and Responses `reasoning.effort` accept `minimal | low | medium | high`; `minimal` maps to the canonical level `off`. Gemini has no inbound notion — antigravity-compatible upstreams are Gemini only, so this applies to outbound only.
-- Outbound mapping: OpenAI-family upstreams receive `minimal | low | medium | high` (`off` → `minimal`); Gemini upstreams receive `generationConfig.thinkingConfig.thinkingBudget` with `off` → `0`, `low` → `1024`, `medium` → `8192`, `high` → `24576`.
+- Outbound mapping: OpenAI-family upstreams receive `minimal | low | medium | high` (`off` → `minimal`); Gemini upstreams receive `generationConfig.thinkingConfig.thinkingBudget` with `off` → `0`, `low` → `1024`, `medium` → `8192`, `high` → `24576`. The `off` → `0` mapping follows the official Gemini API for models that support disabling thinking; models that cannot disable it (e.g. Gemini 2.5 Pro — `0` is valid only for 2.5 Flash/Flash-Lite) reject it upstream with `400 INVALID_ARGUMENT`. The gateway renders the mapping model-agnostically, maintaining no model-capability table, so such an upstream 400 is mirrored per §6.7.
 - `models.thinking_levels_override` filters the requested level: the requested canonical level is lowered to the nearest allowed level at or below it, or raised to the lowest allowed level when none is at or below it. When the client requests no level and an override is configured, the highest allowed level is used. A `NULL` override is pure passthrough: the client's request is forwarded verbatim, or no reasoning configuration is emitted when the client requested none.
 
 ### 6.5 Model Routing

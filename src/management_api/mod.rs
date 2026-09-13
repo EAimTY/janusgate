@@ -16,7 +16,6 @@ use axum::{
 };
 use log::warn;
 use serde::de::DeserializeOwned;
-use tower_http::cors::CorsLayer;
 
 mod models;
 mod oauth_flow;
@@ -44,13 +43,7 @@ pub(crate) fn router() -> Router<Context> {
         .fallback(fallback)
         .layer(middleware::from_fn(authenticate))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(crate::CONFIG.management_api.cors.allowed_origin.clone())
-                .allow_private_network(crate::CONFIG.management_api.cors.allow_private_network)
-                .allow_methods(tower_http::cors::Any)
-                .allow_headers(tower_http::cors::Any),
-        )
+        .layer(crate::CONFIG.management_api.cors.cors_layer())
 }
 
 /// Authenticates the request against the bearer-less management token.

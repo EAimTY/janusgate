@@ -285,7 +285,7 @@ async fn handle_save(
             ManagementApiError::invalid_request("credentials are required when creating a provider")
         })?;
 
-        storage::insert_provider(
+        let stored = storage::insert_provider(
             database,
             &NewProvider {
                 name: &request.name,
@@ -299,10 +299,6 @@ async fn handle_save(
             },
         )
         .await?;
-
-        let stored = storage::find_provider(database, &request.name)
-            .await?
-            .ok_or_else(|| ManagementApiError::internal("provider vanished after save"))?;
 
         info!("created provider `{}`", request.name);
 

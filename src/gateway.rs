@@ -278,7 +278,7 @@ fn build_upstream_request(
             Ok(http
                 .post(url)
                 .bearer_auth(access_token)
-                .header("chatgpt-account-id", account_id)
+                .header(endpoints::CODEX_ACCOUNT_ID_HEADER, account_id)
                 .header("Originator", endpoints::CODEX_ORIGINATOR)
                 .header("User-Agent", endpoints::codex_user_agent())
                 .header("Session-Id", ids::new_uuid())

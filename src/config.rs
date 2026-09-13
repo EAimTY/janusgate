@@ -6,7 +6,7 @@ use nestify::nest;
 use serde::Deserialize;
 use serde_with::{As, DurationMilliSeconds};
 use std::{num::NonZero, path::PathBuf, time::Duration};
-use tower_http::cors::AllowOrigin;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 nest! {
     #[derive(Debug, Deserialize)]*
@@ -78,6 +78,19 @@ nest! {
                 /// Cross-Origin Resource Sharing (CORS) configuration for `/api/*`.
                 pub(crate) cors: CorsConfig,
             },
+    }
+}
+
+impl CorsConfig {
+    /// Renders this configuration into the tower-http CORS layer both HTTP
+    /// sub-routers apply: the configured origins and Private Network Access
+    /// policy, with every request method and header allowed.
+    pub(crate) fn cors_layer(&self) -> CorsLayer {
+        CorsLayer::new()
+            .allow_origin(self.allowed_origin.clone())
+            .allow_private_network(self.allow_private_network)
+            .allow_methods(Any)
+            .allow_headers(Any)
     }
 }
 

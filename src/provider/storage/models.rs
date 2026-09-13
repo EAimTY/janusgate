@@ -103,15 +103,12 @@ pub(crate) struct ModelEntry {
 ///
 /// Returns [`Error`] when the query fails or a row is malformed.
 pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelEntry>, Error> {
-    let rows = database
-        .query(
-            "SELECT p.id, p.name AS provider_name, p.is_enabled AS provider_is_enabled, \
-             m.provider_id, m.upstream_id, m.id, m.id_override, m.is_enabled, \
-             m.thinking_levels_override FROM models m JOIN providers p ON p.id = m.provider_id \
-             ORDER BY m.id",
-            (),
-        )
-        .await?;
+    let sql = format!(
+        "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id ORDER BY m.id",
+        super::MODEL_ENTRY_COLUMNS
+    );
+
+    let rows = database.query(sql, ()).await?;
 
     let mut entries = Vec::with_capacity(rows.len());
 
@@ -405,10 +402,11 @@ async fn find_model_entry_in_transaction(
 ) -> Result<Option<ModelEntry>, Error> {
     let rows = transaction
         .query(
-            "SELECT p.id, p.name, p.is_enabled, m.provider_id, m.upstream_id, m.id, \
-             m.id_override, m.is_enabled, m.thinking_levels_override \
-             FROM models m JOIN providers p ON p.id = m.provider_id \
-             WHERE m.provider_id = ?1 AND m.upstream_id = ?2",
+            format!(
+                "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
+                 WHERE m.provider_id = ?1 AND m.upstream_id = ?2",
+                super::MODEL_ENTRY_COLUMNS
+            ),
             params![provider_id, upstream_id],
         )
         .await?;

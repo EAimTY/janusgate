@@ -15,23 +15,14 @@ pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
     is_started: bool,
 
-    /// Whether live delta events already delivered the message text; live
-    /// delivery exhausts every fallback source for the kind.
-    is_text_delivered: bool,
+    /// Message-text fallback-recovery state: live delta delivery exhausts
+    /// every fallback source for the kind, and per-index records keep each
+    /// item from delivering twice.
+    text_recovery: FallbackRecovery,
 
-    /// Output indices whose message text a fallback source — a streamed
-    /// `output_item.done` item or a terminal output-array item — already
-    /// delivered, so the same item never delivers twice across sources while
-    /// distinct items each deliver exactly once.
-    recovered_text_indices: Vec<usize>,
-
-    /// Whether live delta events already delivered the reasoning text; live
-    /// delivery exhausts every fallback source for the kind.
-    is_reasoning_delivered: bool,
-
-    /// Output indices whose reasoning text a fallback source already
-    /// delivered; same contract as `recovered_text_indices`.
-    recovered_reasoning_indices: Vec<usize>,
+    /// Reasoning-text fallback-recovery state; same contract as
+    /// `text_recovery`.
+    reasoning_recovery: FallbackRecovery,
 
     /// Whether a live event already delivered a tool call, marking the
     /// terminal output array as an exhausted source for them.
@@ -41,6 +32,38 @@ pub(crate) struct UpstreamParser {
     /// without one degrades to [`IrFinishReason::Stop`] in the parser's
     /// finish hook, matching the aggregated rendering default.
     is_finished: bool,
+}
+
+/// Exactly-once fallback-recovery state for one output kind: whether live
+/// delta events already delivered the kind — exhausting every fallback
+/// source for it — and the output indices whose item a fallback source, a
+/// streamed `output_item.done` item or a terminal output-array item,
+/// already delivered, so the same item never delivers twice across sources
+/// while distinct items each deliver exactly once.
+#[derive(Debug, Default)]
+struct FallbackRecovery {
+    /// Whether live delta events already delivered the kind.
+    is_delivered: bool,
+
+    /// Output indices whose item a fallback source already delivered.
+    recovered_indices: Vec<usize>,
+}
+
+impl FallbackRecovery {
+    /// Whether a fallback source may recover the item at `index`: live
+    /// deltas exhaust every fallback source for the kind, and a fallback
+    /// delivery for `index` exhausts further sources for the same item.
+    fn can_recover(&self, index: usize) -> bool {
+        !self.is_delivered && !self.recovered_indices.contains(&index)
+    }
+
+    /// Records that a fallback source recovered the item at `index`;
+    /// repeats for further parts of the same item are ignored.
+    fn record(&mut self, index: usize) {
+        if !self.recovered_indices.contains(&index) {
+            self.recovered_indices.push(index);
+        }
+    }
 }
 
 /// Origin of an upstream output item, deciding how it maps to IR events.
@@ -99,29 +122,39 @@ impl UpstreamParser {
             }
 
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                let events = self.delta_event(&value, IrEvent::ReasoningDelta);
+                let mut events = self.message_start_events(&value);
+
+                let deltas = self.delta_event(&value, IrEvent::ReasoningDelta);
 
                 // Only an event that actually carried a delta exhausts the
                 // fallback sources; a delta-typed event without a payload
                 // delivered nothing.
-                if !events.is_empty() {
-                    self.is_reasoning_delivered = true;
+                if !deltas.is_empty() {
+                    self.reasoning_recovery.is_delivered = true;
                 }
+
+                events.extend(deltas);
 
                 Ok(events)
             }
 
             "response.output_text.delta" | "response.refusal.delta" => {
-                let events = self.delta_event(&value, IrEvent::TextDelta);
+                let mut events = self.message_start_events(&value);
 
-                if !events.is_empty() {
-                    self.is_text_delivered = true;
+                let deltas = self.delta_event(&value, IrEvent::TextDelta);
+
+                if !deltas.is_empty() {
+                    self.text_recovery.is_delivered = true;
                 }
+
+                events.extend(deltas);
 
                 Ok(events)
             }
 
             "response.function_call_arguments.delta" => {
+                let mut events = self.message_start_events(&value);
+
                 let output_index = event_output_index(&value);
 
                 let delta = value
@@ -131,16 +164,18 @@ impl UpstreamParser {
 
                 self.is_call_delivered = true;
 
-                Ok(vec![IrEvent::ToolCallDelta {
+                events.push(IrEvent::ToolCallDelta {
                     index: output_index,
                     call_id: None,
                     name: None,
                     arguments_delta: delta.to_string(),
-                }])
+                });
+
+                Ok(events)
             }
 
             "response.output_item.done" => {
-                let mut events = Vec::new();
+                let mut events = self.message_start_events(&value);
 
                 if let Some(item) = value.get("item") {
                     let output_index = event_output_index(&value);
@@ -158,7 +193,7 @@ impl UpstreamParser {
             "response.completed" | "response.incomplete" => {
                 let response = value.get("response").unwrap_or(&format::MISSING);
 
-                let mut events = Vec::new();
+                let mut events = self.message_start_events(&value);
 
                 // A third-party `openai_compatible` upstream may carry items
                 // only in the terminal response object; when no live event
@@ -181,7 +216,9 @@ impl UpstreamParser {
                 // must not mark the turn as a tool-call turn.
                 let mut is_call_recovered = false;
 
-                if (!self.is_text_delivered || !self.is_reasoning_delivered || is_call_recoverable)
+                if (!self.text_recovery.is_delivered
+                    || !self.reasoning_recovery.is_delivered
+                    || is_call_recoverable)
                     && let Some(output) = response.get("output").and_then(Value::as_array)
                 {
                     for (position, item) in output.iter().enumerate() {
@@ -263,7 +300,7 @@ impl UpstreamParser {
                     OutputItemOrigin::Json(_) => true,
 
                     OutputItemOrigin::StreamDone(index) | OutputItemOrigin::Terminal(index) => {
-                        self.can_recover_text(index)
+                        self.text_recovery.can_recover(index)
                     }
                 };
 
@@ -289,7 +326,7 @@ impl UpstreamParser {
                             if let OutputItemOrigin::StreamDone(index)
                             | OutputItemOrigin::Terminal(index) = origin
                             {
-                                self.record_text_recovery(index);
+                                self.text_recovery.record(index);
                             }
 
                             events.push(IrEvent::TextDelta(text.to_string()));
@@ -305,7 +342,7 @@ impl UpstreamParser {
                     OutputItemOrigin::Json(_) => true,
 
                     OutputItemOrigin::StreamDone(index) | OutputItemOrigin::Terminal(index) => {
-                        self.can_recover_reasoning(index)
+                        self.reasoning_recovery.can_recover(index)
                     }
                 };
 
@@ -320,7 +357,7 @@ impl UpstreamParser {
                             if let OutputItemOrigin::StreamDone(index)
                             | OutputItemOrigin::Terminal(index) = origin
                             {
-                                self.record_reasoning_recovery(index);
+                                self.reasoning_recovery.record(index);
                             }
 
                             events.push(IrEvent::ReasoningDelta(text.to_string()));
@@ -392,36 +429,6 @@ impl UpstreamParser {
         }
     }
 
-    /// Whether a fallback source may recover message text for the output
-    /// item at `index`: live deltas exhaust every fallback source for the
-    /// kind, and a fallback delivery for `index` exhausts further sources
-    /// for the same item.
-    fn can_recover_text(&self, index: usize) -> bool {
-        !self.is_text_delivered && !self.recovered_text_indices.contains(&index)
-    }
-
-    /// Records that a fallback source recovered message text for `index`;
-    /// repeats for further text parts of the same item are ignored.
-    fn record_text_recovery(&mut self, index: usize) {
-        if !self.recovered_text_indices.contains(&index) {
-            self.recovered_text_indices.push(index);
-        }
-    }
-
-    /// Whether a fallback source may recover reasoning text for the output
-    /// item at `index`; same contract as [`Self::can_recover_text`].
-    fn can_recover_reasoning(&self, index: usize) -> bool {
-        !self.is_reasoning_delivered && !self.recovered_reasoning_indices.contains(&index)
-    }
-
-    /// Records that a fallback source recovered reasoning text for `index`;
-    /// same contract as [`Self::record_text_recovery`].
-    fn record_reasoning_recovery(&mut self, index: usize) {
-        if !self.recovered_reasoning_indices.contains(&index) {
-            self.recovered_reasoning_indices.push(index);
-        }
-    }
-
     /// Emits the opening delta for a function call item revealed by
     /// `output_item.added`.
     fn open_function_call(&self, item: &Value, output_index: usize) -> IrEvent {
@@ -460,7 +467,11 @@ impl UpstreamParser {
         }
     }
 
-    /// Emits [`IrEvent::MessageStart`] once per response.
+    /// Emits [`IrEvent::MessageStart`] exactly once, first (README §6.2):
+    /// every ingest arm opens with this call, so recovery paths that never
+    /// see the live `response.created`/`response.in_progress` events —
+    /// no-live-delta upstreams per README §6.3 — still open their event
+    /// stream with it, and the once-only guard turns repeats into no-ops.
     fn message_start_events(&mut self, value: &Value) -> Vec<IrEvent> {
         if self.is_started {
             return Vec::new();
@@ -801,10 +812,20 @@ mod tests {
         }
     }
 
+    /// The MessageStart a recovery path emits: the recovery frames carry no
+    /// response identity, so the event's fields are empty.
+    fn bare_message_start() -> IrEvent {
+        IrEvent::MessageStart {
+            id: String::new(),
+            model: String::new(),
+        }
+    }
+
     /// The exactly-once recovery contract (README §6.3): a terminal output
     /// array carrying several `message` items — the shape of an upstream
-    /// that streams no live deltas — delivers every item's text exactly
-    /// once, not only the first item's.
+    /// that streams no live events — delivers every item's text exactly
+    /// once, and the recovery stream still opens with MessageStart, first
+    /// (README §6.2).
     #[test]
     fn terminal_output_array_delivers_every_message_item_once() {
         let mut parser = UpstreamParser::new();
@@ -829,6 +850,7 @@ mod tests {
         assert_eq!(
             events,
             vec![
+                bare_message_start(),
                 IrEvent::TextDelta("first".to_string()),
                 IrEvent::TextDelta("second".to_string()),
                 IrEvent::Finish(IrFinishReason::Stop),
@@ -860,6 +882,7 @@ mod tests {
         assert_eq!(
             events,
             vec![
+                bare_message_start(),
                 IrEvent::ReasoningDelta("think one".to_string()),
                 IrEvent::TextDelta("answer".to_string()),
                 IrEvent::ReasoningDelta("think two".to_string()),
@@ -871,7 +894,8 @@ mod tests {
     /// Successive streamed `output_item.done` message items — the no-delta
     /// streaming shape — each deliver their text exactly once, and the
     /// terminal array's copy of the same items (shared output indices) is
-    /// not re-delivered.
+    /// not re-delivered. The done-only stream still opens with MessageStart,
+    /// ahead of the first item's text (README §6.2).
     #[test]
     fn streamed_done_items_deliver_each_message_item_once() {
         let mut parser = UpstreamParser::new();
@@ -880,7 +904,13 @@ mod tests {
             .ingest_frame(&message_done_frame(0, "first"))
             .expect("a done frame parses");
 
-        assert_eq!(events, vec![IrEvent::TextDelta("first".to_string())]);
+        assert_eq!(
+            events,
+            vec![
+                bare_message_start(),
+                IrEvent::TextDelta("first".to_string()),
+            ],
+        );
 
         let events = parser
             .ingest_frame(&message_done_frame(1, "second"))
@@ -926,7 +956,10 @@ mod tests {
 
         let events = parser.ingest_frame(&delta_frame).expect("a delta parses");
 
-        assert_eq!(events, vec![IrEvent::TextDelta("live".to_string())]);
+        assert_eq!(
+            events,
+            vec![bare_message_start(), IrEvent::TextDelta("live".to_string()),],
+        );
 
         let events = parser
             .ingest_frame(&message_done_frame(0, "live"))
@@ -947,5 +980,39 @@ mod tests {
             .expect("a completed frame parses");
 
         assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::Stop)]);
+    }
+
+    /// A bare function-call arguments delta as a stream's first event — an
+    /// upstream that skipped `response.created`, `response.in_progress`,
+    /// and `response.output_item.added` — still opens the IR stream with
+    /// MessageStart, ahead of the delta it precedes (README §6.2:
+    /// MessageStart is emitted exactly once, first).
+    #[test]
+    fn first_event_being_a_bare_call_delta_still_opens_with_message_start() {
+        let mut parser = UpstreamParser::new();
+
+        let frame = SseFrame {
+            data: serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "output_index": 2,
+                "delta": "{\"a\"",
+            })
+            .to_string(),
+        };
+
+        let events = parser.ingest_frame(&frame).expect("a delta frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                bare_message_start(),
+                IrEvent::ToolCallDelta {
+                    index: 2,
+                    call_id: None,
+                    name: None,
+                    arguments_delta: "{\"a\"".to_string(),
+                },
+            ],
+        );
     }
 }

@@ -267,7 +267,7 @@ async fn handle_complete(
         )
         .await?;
 
-        match completion {
+        let stored = match completion {
             Completion::Reauthorization(provider_id) => {
                 let is_updated = storage::update_credentials(
                     database,
@@ -280,7 +280,7 @@ async fn handle_complete(
                 // A concurrent `delete-provider` between the outer lookup and
                 // this write affects zero rows; like the refresh path, the
                 // vanished provider is a 404, not a storage-drift 500 from the
-                // reload below.
+                // reload.
                 if !is_updated {
                     return Err(ManagementApiError::not_found(
                         "provider vanished during OAuth completion",
@@ -288,10 +288,12 @@ async fn handle_complete(
                 }
 
                 info!("refreshed the credentials of provider {provider_id}");
+
+                storage::reload_provider(database, provider_id, "OAuth completion").await?
             }
 
             Completion::Creation { name, model_prefix } => {
-                storage::insert_provider(
+                let stored = storage::insert_provider(
                     database,
                     &NewProvider {
                         name,
@@ -307,19 +309,9 @@ async fn handle_complete(
                 .await?;
 
                 info!("created provider `{name}` from an OAuth completion");
-            }
-        }
 
-        let stored = match completion {
-            Completion::Reauthorization(provider_id) => {
-                storage::reload_provider(database, provider_id, "OAuth completion").await?
+                stored
             }
-
-            Completion::Creation { name, .. } => storage::find_provider(database, name)
-                .await?
-                .ok_or_else(|| {
-                    ManagementApiError::internal("provider vanished after OAuth completion")
-                })?,
         };
 
         Ok(super::provider_json(&stored))

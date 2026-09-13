@@ -100,7 +100,7 @@ async fn discover_codex(
         .get(endpoints::CODEX_MODELS_URL)
         .query(&[("client_version", endpoints::CODEX_CLIENT_VERSION)])
         .bearer_auth(secret)
-        .header("chatgpt-account-id", account_id);
+        .header(endpoints::CODEX_ACCOUNT_ID_HEADER, account_id);
 
     let value: Value = http_body::send_and_parse_json(request, "upstream").await?;
 

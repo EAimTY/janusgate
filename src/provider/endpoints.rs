@@ -14,6 +14,10 @@ pub(crate) const CODEX_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex
 /// `Originator` header value required by the Codex endpoint.
 pub(crate) const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
+/// `chatgpt-account-id` header name required by the Codex endpoint, carrying
+/// the ChatGPT account ID of the OAuth credentials.
+pub(crate) const CODEX_ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
+
 /// CLI version the Codex upstream expects: it is required as the
 /// `client_version` query parameter on model discovery and is embedded in the
 /// `User-Agent` value below.
