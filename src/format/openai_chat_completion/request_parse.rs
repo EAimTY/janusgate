@@ -811,4 +811,32 @@ mod tests {
             );
         }
     }
+
+    /// The official `none` effort — the OpenAI vocabulary's explicit
+    /// no-reasoning value — parses to the canonical `off` level, the same
+    /// level `minimal` maps to, and the closed vocabulary still rejects
+    /// `xhigh`: the canonical set has no target for it that would not
+    /// silently downgrade an explicit client request (README §6.4).
+    #[test]
+    fn reasoning_effort_none_parses_to_off_and_xhigh_is_rejected() {
+        let none = parse(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "none",
+        }))
+        .expect("`reasoning_effort: \"none\"` must parse");
+
+        assert_eq!(none.ir.reasoning_effort, Some(IrReasoningEffort::Off));
+
+        let error = parse(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "xhigh",
+        }))
+        .expect_err("`reasoning_effort: \"xhigh\"` must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("reasoning_effort"));
+
+        assert_eq!(error.to_string(), "Unknown reasoning_effort `xhigh`");
+    }
 }

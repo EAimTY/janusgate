@@ -62,11 +62,14 @@ pub(crate) enum IrReasoningEffort {
 }
 
 impl IrReasoningEffort {
-    /// Parses a client-supplied OpenAI effort string; `minimal` maps to
-    /// [`IrReasoningEffort::Off`].
+    /// Parses a client-supplied OpenAI effort string from the closed
+    /// vocabulary `none | minimal | low | medium | high`; `none` and
+    /// `minimal` both map to [`IrReasoningEffort::Off`], the canonical
+    /// no-reasoning level. `xhigh` has no canonical target that would not
+    /// silently downgrade an explicit request, so it stays rejected.
     pub(crate) fn parse_openai(value: &str) -> Option<Self> {
         match value {
-            "minimal" => Some(Self::Off),
+            "none" | "minimal" => Some(Self::Off),
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
@@ -443,7 +446,7 @@ pub(crate) enum IrEvent {
 /// The breakdown values mirror the official Responses usage detail objects:
 /// `cached_tokens` and `cache_write_tokens` detail the input, and
 /// `reasoning_tokens` details the output. They are [`None`] when the upstream
-/// reports no breakdown — every cross-format upstream and any Responses
+/// reports no breakdown — every Chat Completions upstream, and any Responses
 /// upstream that reports totals only — so the outward Responses rendering can
 /// zero-fill the SDK-required detail fields.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

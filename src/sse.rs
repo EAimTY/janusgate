@@ -232,7 +232,17 @@ impl SseParser {
 /// without a line terminator.
 fn next_line(buffer: &[u8]) -> Result<Option<(String, usize)>, SseParseError> {
     let newline_position = buffer.iter().position(|byte| *byte == b'\n');
-    let carriage_position = buffer.iter().position(|byte| *byte == b'\r');
+
+    // Only a `\r` before the newline can influence the terminator choice: a
+    // `\r` at or after the newline selects the same arm as an absent one. The
+    // carriage scan is therefore bounded to the bytes before the newline
+    // position (the whole window when no newline exists), keeping the
+    // extraction of many lines from one window linear in the window size
+    // instead of quadratic in the line count.
+    let carriage_position = buffer
+        .iter()
+        .take(newline_position.unwrap_or(buffer.len()))
+        .position(|byte| *byte == b'\r');
 
     // A `\r` as the final buffered byte may pair with a `\n` arriving in the
     // next chunk, so its fate is deliberately left undecided here.
