@@ -19,7 +19,7 @@ pub(crate) struct InvalidRequest {
     pub(crate) param: Option<String>,
 
     /// Human-readable rejection message.
-    pub(crate) message: String,
+    message: String,
 }
 
 impl InvalidRequest {

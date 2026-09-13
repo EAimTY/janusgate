@@ -124,45 +124,72 @@ impl SseParser {
 
         let mut frames = Vec::new();
 
-        while let Some((line, consumed)) = next_line(&self.buffer)? {
-            self.buffer.drain(..consumed);
+        // Lines are extracted from the cursor window `buffer[offset..]` and
+        // the cursor is collapsed into a single front drain when scanning
+        // ends, on every exit path. Draining per line instead would shift
+        // every not-yet-consumed byte to the buffer front once per line,
+        // making one chunk dense in lines quadratic to ingest even while the
+        // frame cap bounds the buffer's memory.
+        let mut offset = 0;
 
-            if line.is_empty() {
-                if !self.pending_data_lines.is_empty() {
-                    frames.push(SseFrame {
-                        data: self.pending_data_lines.join("\n"),
-                    });
+        let scan: Result<(), SseParseError> = loop {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "offset accumulates only `consumed` values that fit the scanned window"
+            )]
+            let next = next_line(&self.buffer[offset..]);
 
-                    self.pending_data_lines = Vec::new();
-                    self.pending_frame_bytes = 0;
+            match next {
+                Ok(Some((line, consumed))) => {
+                    offset += consumed;
+
+                    if line.is_empty() {
+                        if !self.pending_data_lines.is_empty() {
+                            frames.push(SseFrame {
+                                data: self.pending_data_lines.join("\n"),
+                            });
+
+                            self.pending_data_lines = Vec::new();
+                            self.pending_frame_bytes = 0;
+                        }
+
+                        continue;
+                    }
+
+                    let (field, value) = match line.split_once(':') {
+                        Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
+                        None => (line.as_str(), ""),
+                    };
+
+                    // Only `data` fields are parsed; every other field —
+                    // including the tolerated-and-ignored
+                    // `event`, `id`, and `retry` — falls
+                    // through.
+                    if field == "data" {
+                        // One separator byte per line upper-bounds the line's
+                        // eventual contribution to the dispatch-time `join`, so
+                        // the cap is enforced before the line is materialized.
+                        self.pending_frame_bytes += value.len() + 1;
+
+                        if self.pending_frame_bytes > MAX_FRAME_BYTES {
+                            self.is_oversized = true;
+
+                            break Err(SseParseError::FrameTooLarge);
+                        }
+
+                        self.pending_data_lines.push(value.to_string());
+                    }
                 }
 
-                continue;
+                Ok(None) => break Ok(()),
+
+                Err(error) => break Err(error),
             }
+        };
 
-            let (field, value) = match line.split_once(':') {
-                Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
-                None => (line.as_str(), ""),
-            };
+        self.buffer.drain(..offset);
 
-            // Only `data` fields are parsed; every other field — including
-            // the tolerated-and-ignored `event`, `id`, and `retry` — falls
-            // through.
-            if field == "data" {
-                // One separator byte per line upper-bounds the line's
-                // eventual contribution to the dispatch-time `join`, so
-                // the cap is enforced before the line is materialized.
-                self.pending_frame_bytes += value.len() + 1;
-
-                if self.pending_frame_bytes > MAX_FRAME_BYTES {
-                    self.is_oversized = true;
-
-                    return Err(SseParseError::FrameTooLarge);
-                }
-
-                self.pending_data_lines.push(value.to_string());
-            }
-        }
+        scan?;
 
         Ok(frames)
     }

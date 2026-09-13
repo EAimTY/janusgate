@@ -18,7 +18,10 @@ const DEFAULT_TOKEN_TTL: i64 = 86_400;
 /// before `now` would mark the token permanently stale and drive a refresh
 /// grant against the endpoint on every request, while substituting the
 /// default lifetime would present an already-expired access token to the
-/// endpoint.
+/// endpoint. The mirror extreme is the same malformed response: a lifetime so
+/// large that the stamp `now + lifetime` leaves `i64` would wrap to a hugely
+/// negative expiry in a release build — the permanently stale token again —
+/// and panic in a debug one.
 ///
 /// Google access tokens are opaque (`ya29…`) and carry no `exp` claim, so a
 /// Google refresh response without `expires_in` has no better signal than the
@@ -27,8 +30,9 @@ const DEFAULT_TOKEN_TTL: i64 = 86_400;
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the reported `expires_in` is zero or negative, or
-/// when the access token's `exp` claim is not in the future.
+/// Returns [`Error`] when the reported `expires_in` is zero or negative or
+/// overflows the token expiry stamp, or when the access token's `exp` claim
+/// is not in the future.
 pub(super) fn token_expiry_from(
     expires_in: Option<i64>,
     access_token: Option<&str>,
@@ -54,17 +58,33 @@ pub(super) fn token_expiry_from(
             .unwrap_or(DEFAULT_TOKEN_TTL),
     };
 
-    Ok(now + lifetime)
+    // The plain add would wrap a hostile `expires_in` near `i64::MAX` to a
+    // hugely negative expiry in a release build. Only a reported `expires_in`
+    // can reach that bound — the `exp`-claim fallback leaves at most
+    // `i64::MAX - now` of remaining lifetime — so the error names it.
+    now.checked_add(lifetime).ok_or_else(|| Error::Unavailable {
+        detail: format!("malformed token response: `expires_in` overflow, got {lifetime}"),
+    })
 }
 
 /// Remaining lifetime of an access token according to its `exp` claim, or
-/// `None` when the token carries no decodable `exp` claim.
+/// `None` when the token carries no decodable `exp` claim. A claim not in the
+/// future — including one so far in the past that `exp - now` leaves `i64` —
+/// is a malformed token response.
 fn access_token_expires_in(access_token: &str) -> Result<Option<i64>, Error> {
     let Some(exp) = jwt_claim(access_token, &["exp"]).and_then(|exp| exp.as_i64()) else {
         return Ok(None);
     };
 
-    let lifetime = exp - unix_time::unix_now();
+    let now = unix_time::unix_now();
+
+    // The claim is upstream-controlled; the checked subtraction rejects a
+    // value so negative that the remaining lifetime leaves `i64`, which would
+    // otherwise wrap to a huge positive lifetime in a release build and slip
+    // past the non-future guard below.
+    let lifetime = exp.checked_sub(now).ok_or_else(|| Error::Unavailable {
+        detail: format!("malformed token response: `exp` claim must be in the future, got {exp}"),
+    })?;
 
     if lifetime <= 0 {
         return Err(Error::Unavailable {
@@ -93,14 +113,19 @@ pub(super) fn jwt_claim(jwt: &str, path: &[&str]) -> Option<serde_json::Value> {
 mod tests {
     use super::*;
 
-    /// Encodes a JWT whose payload carries `exp` at `now + remaining`, so the
-    /// `exp` fallback of [`token_expiry_from`] can be exercised without a
+    /// Encodes a JWT whose payload carries the absolute `exp` claim `exp`, so
+    /// the `exp` fallback of [`token_expiry_from`] can be exercised without a
     /// token endpoint.
-    fn jwt_with_exp(remaining: i64) -> String {
-        let payload = general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::json!({"exp": unix_time::unix_now() + remaining}).to_string());
+    fn jwt_with_exp_claim(exp: i64) -> String {
+        let payload =
+            general_purpose::URL_SAFE_NO_PAD.encode(serde_json::json!({"exp": exp}).to_string());
 
         format!("header.{payload}.signature")
+    }
+
+    /// Encodes a JWT whose payload carries `exp` at `now + remaining`.
+    fn jwt_with_exp(remaining: i64) -> String {
+        jwt_with_exp_claim(unix_time::unix_now() + remaining)
     }
 
     /// An `exp` claim already in the past is malformed exactly like a
@@ -131,5 +156,40 @@ mod tests {
         let expiry = token_expiry_from(None, Some("ya29-opaque-token")).unwrap();
 
         assert!((86_399..=86_400).contains(&(expiry - unix_time::unix_now())));
+    }
+
+    /// An `expires_in` large enough that the stamp `now + expires_in` leaves
+    /// `i64` is malformed exactly like a non-positive one: a release build
+    /// would wrap the add to a hugely negative expiry — the permanently stale
+    /// token that drives a refresh grant on every request — and a debug build
+    /// would panic. Both bounds overflow for any current timestamp, so the
+    /// rejection is deterministic.
+    #[test]
+    fn rejects_overflowing_expires_in_as_malformed() {
+        for expires_in in [i64::MAX, i64::MAX - DEFAULT_TOKEN_TTL] {
+            let error = token_expiry_from(Some(expires_in), None).unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("malformed token response: `expires_in` overflow")
+            );
+        }
+    }
+
+    /// An `exp` claim so far in the past that the remaining lifetime
+    /// `exp - now` leaves `i64` would wrap to a huge positive lifetime in a
+    /// release build and slip past the non-future guard, so the subtraction is
+    /// checked and the claim is rejected as malformed like an ordinary past
+    /// claim.
+    #[test]
+    fn rejects_underflowing_exp_claim_as_malformed() {
+        let error = token_expiry_from(None, Some(&jwt_with_exp_claim(i64::MIN))).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("malformed token response: `exp` claim must be in the future")
+        );
     }
 }

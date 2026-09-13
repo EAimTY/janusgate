@@ -11,7 +11,7 @@ use serde_json::Value;
 
 /// Streaming client response renderer producing Chat Completions SSE frames.
 #[derive(Debug)]
-pub(crate) struct SseRenderer {
+pub(super) struct SseRenderer {
     /// Gateway-issued completion identifier.
     id: String,
 
@@ -46,7 +46,7 @@ pub(crate) struct SseRenderer {
 
 impl SseRenderer {
     /// Creates a renderer for one streamed completion.
-    pub(crate) fn new(model: String, should_include_usage: bool) -> Self {
+    pub(super) fn new(model: String, should_include_usage: bool) -> Self {
         Self {
             id: format!("chatcmpl-{}", ids::new_uuid()),
             model,
@@ -299,7 +299,7 @@ fn usage_json(usage: IrUsage) -> Value {
 
 /// Renders an aggregated completion as a non-streaming Chat Completions
 /// response.
-pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> Value {
+pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> Value {
     let tool_calls: Vec<Value> = aggregation
         .tool_calls
         .iter()

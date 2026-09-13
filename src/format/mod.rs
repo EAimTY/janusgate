@@ -45,7 +45,7 @@ pub(crate) enum UpstreamFormat {
 #[error("{message}")]
 pub(crate) struct PayloadError {
     /// Human-readable failure detail.
-    pub(crate) message: String,
+    message: String,
 }
 
 impl PayloadError {

@@ -11,7 +11,7 @@ use serde_json::Value;
 
 /// Streaming client response renderer producing Responses SSE events.
 #[derive(Debug)]
-pub(crate) struct SseRenderer {
+pub(super) struct SseRenderer {
     /// Monotonic sequence number of the next event.
     sequence: u64,
 
@@ -63,7 +63,7 @@ struct OutputItem {
 
 impl SseRenderer {
     /// Creates a renderer for one streamed response.
-    pub(crate) fn new(model: String) -> Self {
+    pub(super) fn new(model: String) -> Self {
         Self {
             sequence: 0,
             id: format!("resp_{}", ids::new_uuid()),
@@ -186,24 +186,13 @@ impl SseRenderer {
 
     /// Builds the response object shell shared by all events.
     fn response_shell(&self, status: &str, output: Value) -> Value {
-        serde_json::json!({
-            "id": self.id,
-            "object": "response",
-            "created_at": self.created_at,
-            "status": status,
-            "model": self.model,
-            "output": output,
-            // `parallel_tool_calls`, `tool_choice`, and `tools` are required
-            // fields of the official Response shape (openai-python `Response`
-            // types them without defaults), so the shell always carries the
-            // statics describing the gateway itself: it advertises no
-            // parallel tool-call control, tool calls happen whenever the
-            // model decides (`auto`), and no tool definitions are echoed
-            // back to the client.
-            "parallel_tool_calls": false,
-            "tool_choice": "auto",
-            "tools": [],
-        })
+        response_shell(
+            self.id.clone(),
+            self.created_at,
+            &self.model,
+            status,
+            output,
+        )
     }
 
     /// Formats one SSE frame with the given event name and payload, assigning
@@ -642,8 +631,32 @@ impl ClientSseRenderer for SseRenderer {
     }
 }
 
+/// Builds the official Response object shell shared by every rendered
+/// response, streaming and non-streaming.
+///
+/// `parallel_tool_calls`, `tool_choice`, and `tools` are required fields of
+/// the official Response shape (openai-python `Response` types them without
+/// defaults), so the shell always carries the statics describing the gateway
+/// itself: it advertises no parallel tool-call control, tool calls happen
+/// whenever the model decides (`auto`), and no tool definitions are echoed
+/// back to the client. Callers attach `usage` and, where applicable,
+/// `incomplete_details` or `error` after construction.
+fn response_shell(id: String, created_at: i64, model: &str, status: &str, output: Value) -> Value {
+    serde_json::json!({
+        "id": id,
+        "object": "response",
+        "created_at": created_at,
+        "status": status,
+        "model": model,
+        "output": output,
+        "parallel_tool_calls": false,
+        "tool_choice": "auto",
+        "tools": [],
+    })
+}
+
 /// Renders an aggregated completion as a non-streaming Responses API response.
-pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> Value {
+pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> Value {
     let mut output: Vec<Value> = Vec::new();
 
     if !aggregation.reasoning.is_empty() {
@@ -694,25 +707,19 @@ pub(crate) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
 
     let incomplete_reason = aggregation.finish.and_then(incomplete_details_reason);
 
-    let mut body = serde_json::json!({
-        "id": format!("resp_{}", ids::new_uuid()),
-        "object": "response",
-        "created_at": unix_time::unix_now(),
-        "status": if incomplete_reason.is_some() {
+    let mut body = response_shell(
+        format!("resp_{}", ids::new_uuid()),
+        unix_time::unix_now(),
+        model,
+        if incomplete_reason.is_some() {
             "incomplete"
         } else {
             "completed"
         },
-        "model": model,
-        "output": output,
-        // Same required-field statics as the streaming shells: the gateway
-        // advertises no parallel tool-call control, the model decides when
-        // to call tools, and no tool definitions are echoed back.
-        "parallel_tool_calls": false,
-        "tool_choice": "auto",
-        "tools": [],
-        "usage": usage_json(usage),
-    });
+        Value::Array(output),
+    );
+
+    format::json_insert(&mut body, "usage", usage_json(usage));
 
     if let Some(reason) = incomplete_reason {
         format::json_insert(
