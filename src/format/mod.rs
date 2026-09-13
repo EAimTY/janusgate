@@ -295,14 +295,14 @@ const MISSING: Value = Value::Null;
 /// # Errors
 ///
 /// Returns [`PayloadError`] when the frame data is not valid JSON.
-pub(crate) fn parse_frame_json(frame: &SseFrame) -> Result<Value, PayloadError> {
+pub(in crate::format) fn parse_frame_json(frame: &SseFrame) -> Result<Value, PayloadError> {
     serde_json::from_str(&frame.data)
         .map_err(|_| PayloadError::new("malformed JSON in upstream SSE frame"))
 }
 
 /// Reads a string field of an upstream JSON object, defaulting to the empty
 /// string.
-pub(crate) fn string_field(value: &Value, key: &str) -> String {
+pub(in crate::format) fn string_field(value: &Value, key: &str) -> String {
     value
         .get(key)
         .and_then(Value::as_str)
