@@ -615,7 +615,11 @@ fn finish_reason_from_gemini(
     match value {
         "MAX_TOKENS" => Ok(IrFinishReason::Length),
 
-        "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" => {
+        // The official `FinishReason` vocabulary flags filtered content with
+        // these six reasons — `LANGUAGE` ("the candidate content was flagged
+        // for using an unsupported language") grouped with its safety
+        // siblings — so each is a filtered turn, never a clean stop.
+        "LANGUAGE" | "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" => {
             Ok(IrFinishReason::ContentFilter)
         }
 
@@ -722,6 +726,42 @@ mod tests {
         let events = parser
             .ingest_frame(&frame)
             .expect("a prompt-blocked frame parses");
+
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+    }
+
+    /// A turn the upstream flagged for an unsupported language (`LANGUAGE`)
+    /// belongs to the same flagged-content class as the safety siblings: both
+    /// the aggregated body and the streaming path report the canonical
+    /// content-filter finish instead of a clean `Stop` that would hide the
+    /// filtering from clients branching on it.
+    #[test]
+    fn language_finish_reason_maps_to_content_filter() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "partial"}]},
+                "finishReason": "LANGUAGE",
+            }],
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .parse_json_response(body.clone())
+            .expect("a LANGUAGE-flagged body parses");
+
+        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+        assert!(parser.finish().is_empty(), "no spurious Stop may follow");
+
+        let frame = SseFrame {
+            data: body.to_string(),
+        };
+
+        let mut parser = UpstreamParser::new();
+
+        let events = parser
+            .ingest_frame(&frame)
+            .expect("a LANGUAGE-flagged frame parses");
 
         assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
     }

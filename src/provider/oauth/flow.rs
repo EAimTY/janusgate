@@ -149,25 +149,43 @@ pub(crate) async fn exchange_code(
     code: &str,
     verifier: &str,
 ) -> Result<ExchangedTokens, Error> {
-    let (credentials, raw_response) = match oauth_type {
+    let request = match oauth_type {
         OAuthProviderType::OpenAiOauth => {
-            let request = http.post(format!("{OPENAI_ISSUER}/oauth/token")).form(&[
+            http.post(format!("{OPENAI_ISSUER}/oauth/token")).form(&[
                 ("grant_type", "authorization_code"),
                 ("code", code),
                 ("redirect_uri", OPENAI_REDIRECT_URI),
                 ("client_id", OPENAI_CLIENT_ID),
                 ("code_verifier", verifier),
-            ]);
+            ])
+        }
 
-            let response: TokenResponse = post_token_request(request, "authorization code").await?;
+        OAuthProviderType::AntigravityOauth => http.post(ANTIGRAVITY_TOKEN_URL).form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("client_id", ANTIGRAVITY_CLIENT_ID),
+            ("client_secret", ANTIGRAVITY_CLIENT_SECRET),
+            ("redirect_uri", ANTIGRAVITY_REDIRECT_URI),
+        ]),
+    };
 
-            let access_token = response
-                .access_token
-                .clone()
-                .ok_or_else(|| Error::Unavailable {
-                    detail: "token exchange response lacks an access token".to_string(),
-                })?;
+    let response: TokenResponse = post_token_request(request, "authorization code").await?;
 
+    // Cloned rather than moved because the raw response still feeds the
+    // `token_expiry_from` fallback below.
+    let access_token = response
+        .access_token
+        .clone()
+        .ok_or_else(|| Error::Unavailable {
+            detail: "token exchange response lacks an access token".to_string(),
+        })?;
+
+    let refresh_token = response.refresh_token.ok_or_else(|| Error::Unavailable {
+        detail: "token exchange response lacks a refresh token".to_string(),
+    })?;
+
+    let credentials = match oauth_type {
+        OAuthProviderType::OpenAiOauth => {
             let id_token = response
                 .id_token
                 .clone()
@@ -184,65 +202,26 @@ pub(crate) async fn exchange_code(
                 detail: "id token lacks a ChatGPT account claim".to_string(),
             })?;
 
-            let refresh_token =
-                response
-                    .refresh_token
-                    .clone()
-                    .ok_or_else(|| Error::Unavailable {
-                        detail: "token exchange response lacks a refresh token".to_string(),
-                    })?;
-
-            let credentials = Credentials::OpenAiOauth {
+            Credentials::OpenAiOauth {
                 access_token,
                 refresh_token,
                 account_id,
-            };
-
-            (credentials, response)
+            }
         }
 
         OAuthProviderType::AntigravityOauth => {
-            let request = http.post(ANTIGRAVITY_TOKEN_URL).form(&[
-                ("grant_type", "authorization_code"),
-                ("code", code),
-                ("client_id", ANTIGRAVITY_CLIENT_ID),
-                ("client_secret", ANTIGRAVITY_CLIENT_SECRET),
-                ("redirect_uri", ANTIGRAVITY_REDIRECT_URI),
-            ]);
-
-            let response: TokenResponse = post_token_request(request, "authorization code").await?;
-
-            let access_token = response
-                .access_token
-                .clone()
-                .ok_or_else(|| Error::Unavailable {
-                    detail: "token exchange response lacks an access token".to_string(),
-                })?;
-
-            let refresh_token =
-                response
-                    .refresh_token
-                    .clone()
-                    .ok_or_else(|| Error::Unavailable {
-                        detail: "token exchange response lacks a refresh token".to_string(),
-                    })?;
-
             let project_id = project::resolve_project_id(http, &access_token).await?;
 
-            let credentials = Credentials::AntigravityOauth {
+            Credentials::AntigravityOauth {
                 access_token,
                 refresh_token,
                 project_id,
-            };
-
-            (credentials, response)
+            }
         }
     };
 
-    let expires_at = token::token_expiry_from(
-        raw_response.expires_in,
-        raw_response.access_token.as_deref(),
-    )?;
+    let expires_at =
+        token::token_expiry_from(response.expires_in, response.access_token.as_deref())?;
 
     Ok(ExchangedTokens {
         credentials,
