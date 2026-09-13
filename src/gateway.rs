@@ -16,11 +16,10 @@ use crate::{
     },
     sse::{SseFrame, SseParser},
 };
-use futures::Stream;
 use log::{debug, error};
 use reqwest::{Client, StatusCode};
 use std::pin::Pin;
-use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
+use tokio_stream::{Stream, StreamExt as _, wrappers::ReceiverStream};
 
 /// Number of IR events buffered between the upstream pump task and the
 /// response stream.
