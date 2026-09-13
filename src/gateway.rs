@@ -148,9 +148,15 @@ pub(crate) async fn execute(
         ir::apply_thinking_levels(ir.reasoning_effort, thinking_levels.as_deref());
     ir.model = routing.model.upstream_id.clone();
 
-    // Names every mid-stream log record the pump tasks emit; the pump errors
-    // surface to streaming clients as terminal error frames and never pass a
-    // response boundary, so the pump is the only place they are logged.
+    // Names the upstream in every error-level record the pump tasks emit.
+    // Which single site logs such a record is partitioned by the client's
+    // streaming mode (README §8): for a streaming client the failure becomes
+    // a terminal mid-stream error frame that never passes a response
+    // boundary, so the detecting pump logs it; for a non-streaming client it
+    // becomes the aggregated HTTP error response, so the response boundary
+    // rendering it logs it and the pumps stay silent. The client's mode is
+    // distinct from the upstream's: the Codex upstream always streams while
+    // its client may not (README §5.1).
     let upstream_label = format!(
         "provider `{}` upstream model `{}`",
         routing.provider.name, ir.model
@@ -223,9 +229,16 @@ pub(crate) async fn execute(
             SseParser::new(),
             sender,
             upstream_label,
+            is_client_streaming,
         ));
     } else {
-        tokio::spawn(pump_json(response, parser, sender, upstream_label));
+        tokio::spawn(pump_json(
+            response,
+            parser,
+            sender,
+            upstream_label,
+            is_client_streaming,
+        ));
     }
 
     Ok(Box::pin(ReceiverStream::new(receiver)))
@@ -384,19 +397,26 @@ fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventPars
     }
 }
 
-/// Logs an upstream stream failure and delivers its terminal error frame,
-/// marking the stream aborted so no events follow the error frame. The send
-/// is best-effort: a consumer that already went away must not fail or block
-/// the abort.
+/// Delivers an upstream stream failure as the stream's terminal error frame,
+/// marking the stream aborted so no events follow the error frame, and logs
+/// it only when the client is streaming: then the failure renders as a
+/// mid-stream error frame that never passes a response boundary, so the
+/// detecting pump is its single logger (README §8); a non-streaming client
+/// instead renders it as the aggregated HTTP error response, which the
+/// response boundary logs. The send is best-effort: a consumer that already
+/// went away must not fail or block the abort.
 async fn abort_stream(
     is_aborted: &mut bool,
     sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
     upstream_label: &str,
+    is_client_streaming: bool,
     error: Error,
 ) {
     *is_aborted = true;
 
-    error!("{upstream_label}: {error}");
+    if is_client_streaming {
+        error!("{upstream_label}: {error}");
+    }
 
     let _ = sender.send(Err(error)).await;
 }
@@ -429,6 +449,7 @@ async fn forward_frames(
     frames: Vec<SseFrame>,
     sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
     upstream_label: &str,
+    is_client_streaming: bool,
 ) -> bool {
     for frame in frames {
         match parser.ingest_frame(&frame) {
@@ -446,6 +467,7 @@ async fn forward_frames(
                     is_aborted,
                     sender,
                     upstream_label,
+                    is_client_streaming,
                     Error::from(parser_error),
                 )
                 .await;
@@ -461,15 +483,18 @@ async fn forward_frames(
 /// Relays an upstream SSE stream into the IR event channel, always
 /// terminating with [`IrEvent::Done`].
 ///
-/// `upstream_label` names the upstream in every error the pump logs; these
-/// failures become terminal error frames for streaming clients and never
-/// reach a response boundary, so this is the only place they are logged.
+/// `upstream_label` names the upstream in the pump's error records. The pump
+/// logs a failure only for a streaming client, whose terminal error frame
+/// never reaches a response boundary, making the pump the failure's single
+/// logger (README §8); a non-streaming client receives the failure as the
+/// aggregated HTTP error response, which the response boundary logs.
 async fn pump_sse(
     response: reqwest::Response,
     mut parser: Box<dyn UpstreamEventParser + Send>,
     mut sse_parser: SseParser,
     sender: tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
     upstream_label: String,
+    is_client_streaming: bool,
 ) {
     let mut body = response.bytes_stream();
 
@@ -485,6 +510,7 @@ async fn pump_sse(
                     &mut is_aborted,
                     &sender,
                     &upstream_label,
+                    is_client_streaming,
                     Error::Unavailable {
                         detail: format!("upstream stream failed: {error}"),
                     },
@@ -502,6 +528,7 @@ async fn pump_sse(
                     &mut is_aborted,
                     &sender,
                     &upstream_label,
+                    is_client_streaming,
                     Error::Unavailable {
                         detail: "oversized SSE frame".to_string(),
                     },
@@ -518,6 +545,7 @@ async fn pump_sse(
             frames,
             &sender,
             &upstream_label,
+            is_client_streaming,
         )
         .await;
 
@@ -539,6 +567,7 @@ async fn pump_sse(
                     frames,
                     &sender,
                     &upstream_label,
+                    is_client_streaming,
                 )
                 .await;
             }
@@ -553,6 +582,7 @@ async fn pump_sse(
                     &mut is_aborted,
                     &sender,
                     &upstream_label,
+                    is_client_streaming,
                     Error::Unavailable {
                         detail: "oversized SSE frame".to_string(),
                     },
@@ -572,14 +602,17 @@ async fn pump_sse(
 /// Relays an upstream JSON response into the IR event channel, always
 /// terminating with [`IrEvent::Done`].
 ///
-/// `upstream_label` names the upstream in every error the pump logs; for a
-/// streaming client these failures become terminal error frames and never
-/// reach a response boundary, so the pump is the only place they are logged.
+/// `upstream_label` names the upstream in the pump's error records. The pump
+/// logs a failure only for a streaming client, whose terminal error frame
+/// never reaches a response boundary, making the pump the failure's single
+/// logger (README §8); a non-streaming client receives the failure as the
+/// aggregated HTTP error response, which the response boundary logs.
 async fn pump_json(
     response: reqwest::Response,
     mut parser: Box<dyn UpstreamEventParser + Send>,
     sender: tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
     upstream_label: String,
+    is_client_streaming: bool,
 ) {
     let outcome = async {
         let bytes = response.bytes().await.map_err(|error| Error::Unavailable {
@@ -600,7 +633,9 @@ async fn pump_json(
         }
 
         Err(error) => {
-            error!("{upstream_label}: {error}");
+            if is_client_streaming {
+                error!("{upstream_label}: {error}");
+            }
 
             let _ = sender.send(Err(error)).await;
         }
