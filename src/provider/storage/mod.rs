@@ -601,8 +601,7 @@ mod tests {
         let first_enabled = &enabled_models[0];
         assert_eq!(first_enabled.0, "new-p1/gpt-4");
 
-        // 7. Master switch test: disable provider -> ALL models effectively
-        //    disabled
+        // 7. Master switch test: disable provider -> ALL models effectively disabled
         #[expect(clippy::unwrap_used, reason = "disabling provider succeeds")]
         update_provider(
             &database,

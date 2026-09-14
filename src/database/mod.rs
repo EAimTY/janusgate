@@ -158,11 +158,13 @@ impl Database {
             .build()
         {
             Ok(pool) => pool,
+            #[expect(
+                clippy::unreachable,
+                reason = "Deadpool requires a runtime only when timeouts are configured, and the \
+                          wait timeout is always paired with the explicit Tokio runtime above"
+            )]
             Err(BuildError::NoRuntimeSpecified) => {
-                // SAFETY: Deadpool requires a runtime only when timeouts are
-                // configured, and the wait timeout is always paired with the
-                // explicit Tokio runtime above.
-                unreachable!("deadpool wait timeout is always paired with a runtime");
+                unreachable!("deadpool wait timeout is always paired with a runtime")
             }
         };
 
@@ -381,10 +383,13 @@ impl From<PoolError<TursoError>> for Error {
             PoolError::Backend(error) => Self::Turso(error),
             PoolError::Closed => Self::PoolClosed,
             PoolError::Timeout(_) => Self::PoolTimeout,
+            #[expect(
+                clippy::unreachable,
+                reason = "the pool attaches a Tokio runtime and installs no hooks, making these \
+                          error variants unreachable"
+            )]
             PoolError::NoRuntimeSpecified | PoolError::PostCreateHook(_) => {
-                // SAFETY: The pool attaches a Tokio runtime and installs no
-                // hooks, making these error variants unreachable.
-                unreachable!("deadpool runtime is attached and no hooks are installed");
+                unreachable!("deadpool runtime is attached and no hooks are installed")
             }
         }
     }
