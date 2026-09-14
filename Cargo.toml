@@ -23,7 +23,7 @@ deadpool = { version = "0.13.1", default-features = false, features = ["managed"
 deref-once-lock = { version = "0.1.0", default-features = false }
 env_logger = { version = "0.11.11", default-features = false, features = ["humantime"] }
 host-port-pair = { version = "0.2.3", default-features = false, features = ["serde"] }
-hserver = { version = "0.1.1", default-features = false, features = ["http1"] }
+hserver = { version = "0.2.1", default-features = false, features = ["http1"] }
 hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"] }
 json-strip-comments = { version = "3.1.2", default-features = false }
 lexopt = { version = "0.3.2", default-features = false }
@@ -41,13 +41,13 @@ thiserror = { version = "2.0.20", default-features = false, features = ["std"] }
 tokio = { version = "1.53.1", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { version = "0.1.19", default-features = false }
 tower = { version = "0.5.3", default-features = false }
-tower-http = { version = "0.6.11", default-features = false, features = ["cors"] }
-turso = { version = "0.8.0-pre.9", default-features = false }
+tower-http = { version = "0.7.1", default-features = false, features = ["cors"] }
+turso = { version = "0.8.0-pre.11", default-features = false }
 uuid = { version = "1.26.1", default-features = false, features = ["v4"] }
 
 [build-dependencies]
 blake3 = { version = "1.8.7", default-features = false }
-syntaqlite = { version = "0.9.0", default-features = false, features = ["fmt", "sqlite"] }
+syntaqlite = { version = "0.10.0", default-features = false, features = ["fmt", "sqlite"] }
 
 [lints.rust]
 missing_docs = "deny"
