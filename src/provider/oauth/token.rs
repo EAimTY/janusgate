@@ -4,10 +4,58 @@
 use super::Error;
 use crate::unix_time;
 use base64::{Engine as _, engine::general_purpose};
+use serde::{Deserialize, de::DeserializeOwned};
 
 /// Default token lifetime when a provider reports neither `expires_in` nor a
 /// usable `exp` claim.
 const DEFAULT_TOKEN_TTL: i64 = 86_400;
+
+/// The `exp` lifetime claim of an access token JWT. The claims set is
+/// upstream-owned, so only the claim the gateway reads is modeled and unknown
+/// claims are ignored.
+#[derive(Debug, Deserialize)]
+struct ExpClaim {
+    /// Unix timestamp the token expires at.
+    exp: Option<i64>,
+}
+
+/// The claims of the OpenAI identity token that the gateway reads (README
+/// §5.1). The claims set is upstream-owned, so only the claim the gateway
+/// reads is modeled and unknown claims are ignored.
+#[derive(Debug, Deserialize)]
+struct OpenAiIdTokenClaims {
+    /// The OpenAI authorization claim object carrying the ChatGPT account
+    /// identifier.
+    #[serde(rename = "https://api.openai.com/auth")]
+    authorization: Option<OpenAiAuthorizationClaim>,
+}
+
+/// The OpenAI authorization claim object of an identity token.
+#[derive(Debug, Deserialize)]
+struct OpenAiAuthorizationClaim {
+    /// ChatGPT account ID the credentials authenticate as.
+    chatgpt_account_id: Option<String>,
+}
+
+/// Reads the ChatGPT account claim of an OpenAI identity token (README §5.1).
+/// `None` means the token is not a decodable JWT or carries no usable account
+/// claim.
+pub(super) fn openai_account_claim(id_token: &str) -> Option<String> {
+    jwt_claims::<OpenAiIdTokenClaims>(id_token)?
+        .authorization?
+        .chatgpt_account_id
+}
+
+/// Decodes the claims a JWT payload carries, or `None` when the token is not a
+/// decodable JWT or its payload does not carry the modeled claims.
+fn jwt_claims<TClaims>(jwt: &str) -> Option<TClaims>
+where
+    TClaims: DeserializeOwned,
+{
+    let payload = jwt.split('.').nth(1)?;
+
+    serde_json::from_slice(&general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?).ok()
+}
 
 /// Computes the expiry of a token set: a reported `expires_in` when present,
 /// else the remaining lifetime of the access token's `exp` claim, else the
@@ -72,7 +120,7 @@ pub(super) fn token_expiry_from(
 /// future — including one so far in the past that `exp - now` leaves `i64` —
 /// is a malformed token response.
 fn access_token_expires_in(access_token: &str) -> Result<Option<i64>, Error> {
-    let Some(exp) = jwt_claim(access_token, &["exp"]).and_then(|exp| exp.as_i64()) else {
+    let Some(exp) = jwt_claims::<ExpClaim>(access_token).and_then(|claims| claims.exp) else {
         return Ok(None);
     };
 
@@ -98,17 +146,6 @@ fn access_token_expires_in(access_token: &str) -> Result<Option<i64>, Error> {
     Ok(Some(lifetime))
 }
 
-/// Reads a nested claim out of a JWT payload.
-pub(super) fn jwt_claim(jwt: &str, path: &[&str]) -> Option<serde_json::Value> {
-    let payload = jwt.split('.').nth(1)?;
-
-    let claims: serde_json::Value =
-        serde_json::from_slice(&general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
-
-    path.iter()
-        .try_fold(claims, |claims, segment| claims.get(segment).cloned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,9 +153,21 @@ mod tests {
     /// Encodes a JWT whose payload carries the absolute `exp` claim `exp`, so
     /// the `exp` fallback of [`token_expiry_from`] can be exercised without a
     /// token endpoint.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test claim does not serialize.
     fn jwt_with_exp_claim(exp: i64) -> String {
-        let payload =
-            general_purpose::URL_SAFE_NO_PAD.encode(serde_json::json!({"exp": exp}).to_string());
+        /// The projected expiry a test token carries.
+        #[derive(serde::Serialize)]
+        struct TestExpClaim {
+            /// Unix timestamp the token expires at.
+            exp: i64,
+        }
+
+        let claims = serde_json::to_string(&TestExpClaim { exp }).unwrap();
+
+        let payload = general_purpose::URL_SAFE_NO_PAD.encode(claims);
 
         format!("header.{payload}.signature")
     }
@@ -126,6 +175,49 @@ mod tests {
     /// Encodes a JWT whose payload carries `exp` at `now + remaining`.
     fn jwt_with_exp(remaining: i64) -> String {
         jwt_with_exp_claim(unix_time::unix_now() + remaining)
+    }
+
+    /// The ChatGPT account claim is read from the nested
+    /// `https://api.openai.com/auth` claim of an identity token (README §5.1);
+    /// a token that is not a decodable JWT resolves no account instead of
+    /// failing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test identity token does not serialize.
+    #[test]
+    fn reads_openai_account_claim() {
+        /// The claims a test identity token carries.
+        #[derive(serde::Serialize)]
+        struct TestIdTokenClaims {
+            /// The OpenAI authorization claim object.
+            #[serde(rename = "https://api.openai.com/auth")]
+            authorization: TestAuthorizationClaim,
+        }
+
+        /// The OpenAI authorization claim object a test identity token
+        /// carries.
+        #[derive(serde::Serialize)]
+        struct TestAuthorizationClaim {
+            /// ChatGPT account ID the token authenticates as.
+            chatgpt_account_id: String,
+        }
+
+        let claims = serde_json::to_string(&TestIdTokenClaims {
+            authorization: TestAuthorizationClaim {
+                chatgpt_account_id: "account-1".to_string(),
+            },
+        })
+        .unwrap();
+
+        let payload = general_purpose::URL_SAFE_NO_PAD.encode(claims);
+
+        assert_eq!(
+            openai_account_claim(&format!("header.{payload}.signature")).as_deref(),
+            Some("account-1")
+        );
+
+        assert_eq!(openai_account_claim("not-a-jwt"), None);
     }
 
     /// An `exp` claim already in the past is malformed exactly like a

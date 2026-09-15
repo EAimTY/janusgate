@@ -21,6 +21,7 @@ use axum::{
     routing::{get, post},
 };
 use log::debug;
+use serde::Serialize;
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 
 /// Maximum accepted request body size, large enough for inline image data.
@@ -196,19 +197,20 @@ async fn models(State(context): State<Context>) -> Response {
         Ok(listed) => {
             let data = listed
                 .iter()
-                .map(|(public_id, provider_name)| {
-                    serde_json::json!({
-                        "id": public_id,
-                        "object": "model",
-                        "created": 0,
-                        "owned_by": provider_name,
-                    })
+                .map(|(public_id, provider_name)| ModelObject {
+                    id: public_id,
+                    object: "model",
+                    created: 0,
+                    owned_by: provider_name,
                 })
-                .collect::<Vec<_>>();
+                .collect();
 
             json_response(
                 StatusCode::OK,
-                serde_json::json!({"object": "list", "data": data}),
+                &ModelList {
+                    object: "list",
+                    data,
+                },
             )
         }
 
@@ -220,6 +222,33 @@ async fn models(State(context): State<Context>) -> Response {
             error.into_response()
         }
     }
+}
+
+/// The `GET /models` success body (the official OpenAI list shape).
+#[derive(Debug, Serialize)]
+struct ModelList<'a> {
+    /// Always `list`.
+    object: &'static str,
+
+    /// One entry per served model, ordered by public ID.
+    data: Vec<ModelObject<'a>>,
+}
+
+/// One served model in the official OpenAI model shape.
+#[derive(Debug, Serialize)]
+struct ModelObject<'a> {
+    /// Public routing ID (README §3).
+    id: &'a str,
+
+    /// Always `model`.
+    object: &'static str,
+
+    /// The official shape requires `created`; the gateway serves no model
+    /// creation timestamps, so it renders the epoch.
+    created: u64,
+
+    /// Name of the provider serving the model.
+    owned_by: &'a str,
 }
 
 /// Wraps an IR event stream into a live `text/event-stream` response.
@@ -248,7 +277,7 @@ fn sse_response(
                 }
 
                 Err(gateway_error) => {
-                    let payload = Error::from(gateway_error).to_openai_json();
+                    let payload = Error::from(gateway_error).body();
 
                     let _ = sender.send(Ok(renderer.error_frame(&payload).into())).await;
 
@@ -272,10 +301,13 @@ fn sse_response(
 /// # Errors
 ///
 /// Returns the stream's failure when it carries one.
-async fn aggregated_response(
+async fn aggregated_response<TBody>(
     events: IrEventStream,
-    render_json_fn: impl Fn(&IrAggregation) -> serde_json::Value,
-) -> Result<Response, gateway::Error> {
+    render_json_fn: impl Fn(&IrAggregation) -> TBody,
+) -> Result<Response, gateway::Error>
+where
+    TBody: Serialize,
+{
     let mut aggregator = Aggregator::default();
 
     let mut events = events;
@@ -289,7 +321,7 @@ async fn aggregated_response(
 
     Ok(json_response(
         StatusCode::OK,
-        render_json_fn(&aggregator.finish()),
+        &render_json_fn(&aggregator.finish()),
     ))
 }
 
@@ -297,16 +329,26 @@ async fn aggregated_response(
 ///
 /// The outward surface's universal response builder, defined at the surface
 /// root and kept separate from the management one so each router owns its
-/// rendering.
+/// rendering. The body is a typed payload, so serialization is total.
 ///
 /// # Panics
 ///
-/// Panics if the static response parts fail to build, which cannot occur.
-fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
+/// Panics if the rendered body fails to serialize or the static response
+/// parts fail to build, neither of which can occur.
+fn json_response<T>(status: StatusCode, body: &T) -> Response
+where
+    T: Serialize,
+{
+    #[expect(
+        clippy::expect_used,
+        reason = "every outward body is a typed payload whose serialization is total"
+    )]
+    let rendered = serde_json::to_string(body).expect("outward response bodies serialize");
+
     #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string()))
+        .body(Body::from(rendered))
         .expect("static response parts are always valid")
 }

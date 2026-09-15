@@ -1,12 +1,16 @@
 //! Upstream-event parsing for the Chat Completions codec: parses upstream SSE
 //! chunks or a complete JSON body into IR events.
+//!
+//! Upstream payloads are third-party, so the models below carry exactly the
+//! fields the codec reads, ignore every field it does not, and default what
+//! upstreams legitimately omit.
 
 use crate::{
-    format::{self, PayloadError, UpstreamEventParser},
+    format::{self, PayloadError, UpstreamError, UpstreamEventParser},
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
-use serde_json::Value;
+use serde::Deserialize;
 
 /// Parses upstream Chat Completions responses — streamed chunks or a full
 /// JSON body — into IR events.
@@ -47,6 +51,126 @@ struct PendingToolCall {
     thought_signature: Option<String>,
 }
 
+/// One upstream Chat Completions chunk, or a complete non-streaming body: the
+/// two share this shape, a chunk carrying `choices[].delta` where a body
+/// carries `choices[].message`.
+#[derive(Debug, Default, Deserialize)]
+struct UpstreamResponse {
+    /// Upstream response identifier, empty when the upstream omits it.
+    #[serde(default)]
+    id: String,
+
+    /// Upstream model name, empty when the upstream omits it.
+    #[serde(default)]
+    model: String,
+
+    /// Per-choice payloads; the gateway reads the primary choice.
+    #[serde(default)]
+    choices: Vec<Choice>,
+
+    /// Token accounting, carried by a complete body and by the terminal
+    /// chunk of a stream.
+    #[serde(default)]
+    usage: Option<UpstreamUsage>,
+
+    /// Failure an upstream may embed in a 2xx body (README §6.7).
+    #[serde(default)]
+    error: Option<UpstreamError>,
+}
+
+/// One upstream choice.
+#[derive(Debug, Default, Deserialize)]
+struct Choice {
+    /// Upstream-assigned index; absent on upstreams that omit it.
+    #[serde(default)]
+    index: Option<u64>,
+
+    /// The incremental payload of a streaming chunk.
+    #[serde(default)]
+    delta: Option<MessageFields>,
+
+    /// The complete payload of a non-streaming response.
+    #[serde(default)]
+    message: Option<MessageFields>,
+
+    /// Canonical finish reason string, present on the turn's final payload.
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+/// The text-bearing fields shared by a streaming delta and a complete
+/// message, beside the tool calls they carry.
+#[derive(Debug, Default, Deserialize)]
+struct MessageFields {
+    /// Assistant text.
+    #[serde(default)]
+    content: Option<String>,
+
+    /// Reasoning text under the OpenRouter/vLLM key.
+    #[serde(default)]
+    reasoning: Option<String>,
+
+    /// Reasoning text under the DeepSeek de-facto key.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+
+    /// Refusal text.
+    #[serde(default)]
+    refusal: Option<String>,
+
+    /// Tool call entries: argument fragments in a delta, complete calls in a
+    /// message.
+    #[serde(default)]
+    tool_calls: Vec<ToolCallEntry>,
+}
+
+/// One tool call entry, as a delta fragment or as a complete call.
+#[derive(Debug, Default, Deserialize)]
+struct ToolCallEntry {
+    /// Upstream-assigned index, carried by delta fragments only.
+    #[serde(default)]
+    index: Option<u64>,
+
+    /// Invocation identifier, revealed by the opening fragment.
+    #[serde(default)]
+    id: Option<String>,
+
+    /// The function name and arguments.
+    #[serde(default)]
+    function: Option<FunctionFields>,
+
+    /// Upstream thought signature the gateway extension carries (README
+    /// §5.2).
+    #[serde(default)]
+    thought_signature: Option<String>,
+}
+
+/// The function fields of a tool call entry.
+#[derive(Debug, Default, Deserialize)]
+struct FunctionFields {
+    /// Invoked function name.
+    #[serde(default)]
+    name: Option<String>,
+
+    /// JSON-encoded arguments text, complete or incremental.
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+/// Upstream token accounting. Only the totals ride the IR: the outward Chat
+/// Completions surface renders nothing else, and the Responses surface
+/// zero-fills an absent breakdown.
+#[derive(Debug, Deserialize)]
+struct UpstreamUsage {
+    /// Tokens consumed by the input.
+    #[serde(default)]
+    prompt_tokens: u64,
+
+    /// Tokens produced by the output.
+    #[serde(default)]
+    completion_tokens: u64,
+}
+
 impl UpstreamParser {
     /// Creates an empty parser.
     pub(crate) fn new() -> Self {
@@ -54,23 +178,25 @@ impl UpstreamParser {
     }
 
     /// Ingests one streaming chunk object.
-    fn ingest_chunk(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        format::reject_upstream_error(&value)?;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PayloadError`] when the chunk embeds an upstream error.
+    fn ingest_chunk(&mut self, response: UpstreamResponse) -> Result<Vec<IrEvent>, PayloadError> {
+        Self::reject_embedded_error(&response)?;
 
-        let mut events = self.message_start_events(&value);
+        let mut events = self.message_start_events(&response);
 
-        if let Some(choice) = format::primary_indexed(&value, "choices") {
-            if let Some(delta) = choice.get("delta") {
+        if let Some(choice) = primary_choice(&response.choices) {
+            if let Some(delta) = &choice.delta {
                 push_text_events(delta, &mut events);
 
-                if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                    for tool_call in tool_calls {
-                        self.ingest_tool_call_delta(tool_call, &mut events)?;
-                    }
+                for tool_call in &delta.tool_calls {
+                    self.ingest_tool_call_delta(tool_call, &mut events);
                 }
             }
 
-            if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            if let Some(finish_reason) = &choice.finish_reason {
                 events.append(&mut self.flush_pending_calls());
 
                 self.is_finished = true;
@@ -81,11 +207,23 @@ impl UpstreamParser {
             }
         }
 
-        if let Some(usage) = parse_usage(value.get("usage")) {
-            events.push(usage);
+        if let Some(usage) = &response.usage {
+            events.push(usage_event(usage));
         }
 
         Ok(events)
+    }
+
+    /// Rejects a body carrying a non-null embedded `error` (README §6.7).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PayloadError`] carrying the upstream error text and code.
+    fn reject_embedded_error(response: &UpstreamResponse) -> Result<(), PayloadError> {
+        match &response.error {
+            Some(error) => Err(error.failure()),
+            None => Ok(()),
+        }
     }
 
     /// Ingests one `delta.tool_calls` entry, buffering arguments until the
@@ -95,44 +233,36 @@ impl UpstreamParser {
     ///
     /// Panics when a newly started tool call cannot be buffered, violating
     /// the push-then-read invariant.
-    fn ingest_tool_call_delta(
-        &mut self,
-        tool_call: &Value,
-        events: &mut Vec<IrEvent>,
-    ) -> Result<(), PayloadError> {
-        let index = tool_call
-            .get("index")
-            .and_then(Value::as_u64)
+    fn ingest_tool_call_delta(&mut self, tool_call: &ToolCallEntry, events: &mut Vec<IrEvent>) {
+        let index = tool_call.index.unwrap_or_default() as usize;
+
+        let call_id = tool_call.id.as_deref();
+        let name = tool_call
+            .function
+            .as_ref()
+            .and_then(|function| function.name.as_deref());
+        let arguments_delta = tool_call
+            .function
+            .as_ref()
+            .and_then(|function| function.arguments.as_deref())
             .unwrap_or_default();
-
-        let function = tool_call.get("function").unwrap_or(&format::MISSING);
-
-        let call_id = tool_call.get("id").and_then(Value::as_str);
-        let name = function.get("name").and_then(Value::as_str);
-        let arguments_delta = function
-            .get("arguments")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        let thought_signature = tool_call
-            .get("thought_signature")
-            .and_then(Value::as_str)
-            .map(str::to_string);
 
         let pending = match self
             .pending_tool_calls
             .iter_mut()
-            .find(|pending| pending.index as u64 == index)
+            .find(|pending| pending.index == index)
         {
             Some(pending) => pending,
+
             None => {
                 self.pending_tool_calls.push(PendingToolCall {
-                    index: index as usize,
+                    index,
                     call_id: call_id.unwrap_or_default().to_string(),
                     name: name.unwrap_or_default().to_string(),
                     arguments: String::new(),
                     thought_signature: None,
                 });
+
                 #[expect(clippy::expect_used, reason = "the entry was just pushed above")]
                 self.pending_tool_calls
                     .last_mut()
@@ -150,20 +280,18 @@ impl UpstreamParser {
 
         // The last delta entry carrying a signature wins; upstreams repeat it
         // on the entry that completes the call.
-        if thought_signature.is_some() {
-            pending.thought_signature = thought_signature;
+        if tool_call.thought_signature.is_some() {
+            pending.thought_signature = tool_call.thought_signature.clone();
         }
 
         pending.arguments.push_str(arguments_delta);
 
         events.push(IrEvent::ToolCallDelta {
-            index: index as usize,
+            index,
             call_id: call_id.map(str::to_string),
             name: name.map(str::to_string),
             arguments_delta: arguments_delta.to_string(),
         });
-
-        Ok(())
     }
 
     /// Emits [`IrEvent::ToolCallDone`] for every pending call, marking them
@@ -188,7 +316,7 @@ impl UpstreamParser {
     }
 
     /// Emits [`IrEvent::MessageStart`] once per response.
-    fn message_start_events(&mut self, value: &Value) -> Vec<IrEvent> {
+    fn message_start_events(&mut self, response: &UpstreamResponse) -> Vec<IrEvent> {
         if self.is_started {
             return Vec::new();
         }
@@ -196,8 +324,8 @@ impl UpstreamParser {
         self.is_started = true;
 
         vec![IrEvent::MessageStart {
-            id: format::string_field(value, "id"),
-            model: format::string_field(value, "model"),
+            id: response.id.clone(),
+            model: response.model.clone(),
         }]
     }
 }
@@ -213,9 +341,9 @@ impl UpstreamEventParser for UpstreamParser {
             return Ok(self.flush_pending_calls());
         }
 
-        let value = format::parse_frame_json(frame)?;
+        let response = format::parse_frame::<UpstreamResponse>(frame)?;
 
-        self.ingest_chunk(value)
+        self.ingest_chunk(response)
     }
 
     /// Parses a complete upstream non-streaming JSON response.
@@ -224,20 +352,24 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for upstream error payloads and malformed
     /// bodies.
-    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        format::reject_upstream_error(&value)?;
+    fn parse_json_response(
+        &mut self,
+        value: serde_json::Value,
+    ) -> Result<Vec<IrEvent>, PayloadError> {
+        let response = format::parse_body::<UpstreamResponse>(value)?;
 
-        let mut events = self.message_start_events(&value);
+        Self::reject_embedded_error(&response)?;
+
+        let mut events = self.message_start_events(&response);
 
         if let Some(message) =
-            format::primary_indexed(&value, "choices").and_then(|choice| choice.get("message"))
+            primary_choice(&response.choices).and_then(|choice| choice.message.as_ref())
         {
             events.append(&mut message_events_from_full(message));
         }
 
-        let finish_reason = format::primary_indexed(&value, "choices")
-            .and_then(|choice| choice.get("finish_reason"))
-            .and_then(Value::as_str)
+        let finish_reason = primary_choice(&response.choices)
+            .and_then(|choice| choice.finish_reason.as_deref())
             .map(format::finish_reason_from_openai)
             .unwrap_or(IrFinishReason::Stop);
 
@@ -245,8 +377,8 @@ impl UpstreamEventParser for UpstreamParser {
 
         events.push(IrEvent::Finish(finish_reason));
 
-        if let Some(usage) = parse_usage(value.get("usage")) {
-            events.push(usage);
+        if let Some(usage) = &response.usage {
+            events.push(usage_event(usage));
         }
 
         Ok(events)
@@ -271,16 +403,24 @@ impl UpstreamEventParser for UpstreamParser {
     }
 }
 
-/// Reads the reasoning text of an upstream delta or message object.
-///
-/// Both `reasoning` (OpenRouter, vLLM) and `reasoning_content` (the DeepSeek
-/// de-facto standard for OpenAI-compatible reasoners) are accepted; when both
-/// keys are present, `reasoning` wins.
-fn reasoning_field(value: &Value) -> Option<&str> {
-    value
-        .get("reasoning")
-        .and_then(Value::as_str)
-        .or_else(|| value.get("reasoning_content").and_then(Value::as_str))
+/// Selects the primary entry of an upstream `choices` array: the entry whose
+/// `index` is 0, tolerating index-less upstreams by taking the first entry
+/// instead. Parallel entries beyond the primary are not supported and the
+/// remainder is ignored.
+fn primary_choice(choices: &[Choice]) -> Option<&Choice> {
+    choices
+        .iter()
+        .find(|choice| choice.index == Some(0))
+        .or_else(|| choices.first())
+}
+
+/// Renders one upstream usage observation as an IR event.
+fn usage_event(usage: &UpstreamUsage) -> IrEvent {
+    IrEvent::Usage(IrUsage {
+        input_tokens: usage.prompt_tokens,
+        output_tokens: usage.completion_tokens,
+        ..IrUsage::default()
+    })
 }
 
 /// Emits the text-bearing events of one upstream delta or complete message
@@ -288,83 +428,70 @@ fn reasoning_field(value: &Value) -> Option<&str> {
 /// then its refusal text. Refusal text rides the ordinary text channel
 /// after any content text of the same object (README §6.2); this helper is
 /// the single home of that ordering contract.
-fn push_text_events(value: &Value, events: &mut Vec<IrEvent>) {
-    if let Some(reasoning) = reasoning_field(value)
+fn push_text_events(fields: &MessageFields, events: &mut Vec<IrEvent>) {
+    // Both `reasoning` (OpenRouter, vLLM) and `reasoning_content` (the
+    // DeepSeek de-facto standard for OpenAI-compatible reasoners) are
+    // accepted; when both keys are present, `reasoning` wins.
+    if let Some(reasoning) = fields
+        .reasoning
+        .as_deref()
+        .or(fields.reasoning_content.as_deref())
         && !reasoning.is_empty()
     {
         events.push(IrEvent::ReasoningDelta(reasoning.to_string()));
     }
 
-    if let Some(content) = value.get("content").and_then(Value::as_str)
+    if let Some(content) = fields.content.as_deref()
         && !content.is_empty()
     {
         events.push(IrEvent::TextDelta(content.to_string()));
     }
 
-    if let Some(refusal) = value.get("refusal").and_then(Value::as_str)
+    if let Some(refusal) = fields.refusal.as_deref()
         && !refusal.is_empty()
     {
         events.push(IrEvent::TextDelta(refusal.to_string()));
     }
 }
 
-/// Converts an upstream usage object into an [`IrEvent::Usage`], if present.
-fn parse_usage(usage: Option<&Value>) -> Option<IrEvent> {
-    let usage = usage?;
-
-    if !usage.is_object() {
-        return None;
-    }
-
-    Some(IrEvent::Usage(IrUsage {
-        input_tokens: usage
-            .get("prompt_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        output_tokens: usage
-            .get("completion_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        // The outward Chat Completions surface renders only the totals, and
-        // the Responses surface zero-fills an absent breakdown; the native
-        // chat detail objects are not carried across formats.
-        ..IrUsage::default()
-    }))
-}
-
 /// Extracts message text (including refusal text), reasoning, and complete
-/// tool calls from a full upstream message object into IR events.
-fn message_events_from_full(message: &Value) -> Vec<IrEvent> {
+/// tool calls from a full upstream message object into IR events. A complete
+/// call carries no index of its own, so its position in the array is its
+/// index.
+fn message_events_from_full(message: &MessageFields) -> Vec<IrEvent> {
     let mut events = Vec::new();
 
     push_text_events(message, &mut events);
 
-    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
-        for (index, tool_call) in tool_calls.iter().enumerate() {
-            let function = tool_call.get("function").unwrap_or(&format::MISSING);
+    for (index, tool_call) in message.tool_calls.iter().enumerate() {
+        let call_id = tool_call.id.clone().unwrap_or_default();
 
-            let call_id = format::string_field(tool_call, "id");
-            let name = format::string_field(function, "name");
-            let arguments = format::string_field(function, "arguments");
+        let name = tool_call
+            .function
+            .as_ref()
+            .and_then(|function| function.name.clone())
+            .unwrap_or_default();
 
-            events.push(IrEvent::ToolCallDelta {
-                index,
-                call_id: Some(call_id.clone()),
-                name: Some(name.clone()),
-                arguments_delta: arguments.clone(),
-            });
+        let arguments = tool_call
+            .function
+            .as_ref()
+            .and_then(|function| function.arguments.clone())
+            .unwrap_or_default();
 
-            events.push(IrEvent::ToolCallDone {
-                index,
-                call_id,
-                name,
-                arguments,
-                thought_signature: tool_call
-                    .get("thought_signature")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            });
-        }
+        events.push(IrEvent::ToolCallDelta {
+            index,
+            call_id: Some(call_id.clone()),
+            name: Some(name.clone()),
+            arguments_delta: arguments.clone(),
+        });
+
+        events.push(IrEvent::ToolCallDone {
+            index,
+            call_id,
+            name,
+            arguments,
+            thought_signature: tool_call.thought_signature.clone(),
+        });
     }
 
     events

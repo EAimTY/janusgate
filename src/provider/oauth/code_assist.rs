@@ -2,6 +2,7 @@
 
 use crate::provider::{endpoints, http_body};
 use reqwest::Client;
+use serde::{Serialize, de::DeserializeOwned};
 
 /// POSTs a JSON body to a Cloud Code Assist action of the Antigravity base
 /// URL, authenticated with the given access token.
@@ -15,10 +16,10 @@ pub(in crate::provider) async fn post_code_assist<T>(
     http: &Client,
     action: &str,
     access_token: &str,
-    body: &serde_json::Value,
+    body: &impl Serialize,
 ) -> Result<T, http_body::ExchangeFailure>
 where
-    T: serde::de::DeserializeOwned,
+    T: DeserializeOwned,
 {
     let request = http
         .post(format!("{}{action}", endpoints::ANTIGRAVITY_BASE_URL))

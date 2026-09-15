@@ -17,6 +17,7 @@ use crate::{
 use as_http_status_code::{AsStatusCode, StatusCode};
 use axum::response::Response;
 use log::{debug, error};
+use serde::Serialize;
 
 /// Machine-readable management error taxonomy.
 ///
@@ -63,6 +64,25 @@ pub(super) struct ManagementApiError {
 
     /// Human-readable error message.
     message: String,
+}
+
+/// The management error envelope rendered on every failed management request
+/// (README §7).
+#[derive(Debug, Serialize)]
+struct ErrorResponse<'a> {
+    /// The single error object.
+    error: ErrorDetail<'a>,
+}
+
+/// One management error: the numeric errno discriminant and the
+/// human-readable message.
+#[derive(Debug, Serialize)]
+struct ErrorDetail<'a> {
+    /// Numeric `errno` discriminant of the [`ErrorCode`] category.
+    code: u16,
+
+    /// Human-readable error message.
+    message: &'a str,
 }
 
 impl ManagementApiError {
@@ -121,21 +141,21 @@ impl ManagementApiError {
         )
     }
 
-    /// Renders the management JSON error structure: the numeric `errno`
+    /// Renders the management error structure: the numeric `errno`
     /// discriminant alongside the human-readable message.
-    fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "error": {
-                "code": self.code as u16,
-                "message": self.message,
-            }
-        })
+    fn body(&self) -> ErrorResponse<'_> {
+        ErrorResponse {
+            error: ErrorDetail {
+                code: self.code as u16,
+                message: &self.message,
+            },
+        }
     }
 
     /// Renders the error into an HTTP response, taking the status code from
     /// the category's derived status.
     pub(super) fn into_response(self) -> Response {
-        super::json_response(self.code.as_status_code(), self.to_json())
+        super::json_response(self.code.as_status_code(), &self.body())
     }
 }
 
@@ -249,23 +269,20 @@ mod tests {
     }
 
     /// Verifies that the rendered management body carries the numeric errno
-    /// and the verbatim message.
+    /// and the verbatim message, pinned at the wire level: the serialized key
+    /// names and nesting are the contract README §7 documents.
     ///
     /// # Panics
     ///
-    /// Panics if the rendered JSON diverges from the management shape.
+    /// Panics if the rendered JSON diverges from the management shape or
+    /// fails to serialize.
     #[test]
     fn renders_errno_json() {
         let error = ManagementApiError::not_found("Provider 7 does not exist");
 
         assert_eq!(
-            error.to_json(),
-            serde_json::json!({
-                "error": {
-                    "code": 3,
-                    "message": "Provider 7 does not exist",
-                }
-            })
+            serde_json::to_string(&error.body()).expect("the error body serializes"),
+            r#"{"error":{"code":3,"message":"Provider 7 does not exist"}}"#
         );
     }
 

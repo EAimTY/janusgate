@@ -5,8 +5,8 @@
 //! (authorization begin, code exchange, refresh grant), [`project`] is the
 //! Google Code Assist project onboarding, [`refresh`] is the lease-guarded
 //! refresh loop, [`code_assist`] is the shared Antigravity Code Assist
-//! transport, and [`token`] holds the token-lifetime helpers shared by the
-//! flow and refresh paths.
+//! transport, and [`token`] holds the JWT claim and token-lifetime helpers
+//! shared by the flow and refresh paths.
 
 use crate::provider::{http_body, storage};
 

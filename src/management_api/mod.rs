@@ -15,7 +15,7 @@ use axum::{
     routing::{get, post},
 };
 use log::warn;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 
 mod models;
 mod oauth_flow;
@@ -115,37 +115,130 @@ fn validate_identifier(param: &str, value: &str) -> Result<(), ManagementApiErro
     Ok(())
 }
 
-/// Renders a provider row into its management JSON shape; credentials are
+/// A provider row in its management wire shape (README §7.1); credentials are
 /// never exposed. `id` is the provider's public identifier — every management
 /// reference to an existing provider goes through it — while `name` is the
 /// unique, renameable label.
-fn provider_json(provider: &Provider) -> serde_json::Value {
-    serde_json::json!({
-        "id": provider.id,
-        "name": provider.name,
-        "model_prefix": provider.model_prefix,
-        "type": provider.provider_type.as_str(),
-        "protocol": provider.protocol.map(UpstreamFormat::as_str),
-        "base_url": provider.base_url,
-        "expires_at": provider.expires_at,
-        "is_enabled": provider.is_enabled,
-    })
+#[derive(Debug, Serialize)]
+struct ProviderResponse<'a> {
+    /// Provider row identifier.
+    id: i64,
+
+    /// Unique, renameable label.
+    name: &'a str,
+
+    /// Prefix prepended to every public model name.
+    model_prefix: &'a str,
+
+    /// Account kind.
+    #[serde(rename = "type")]
+    provider_type: &'static str,
+
+    /// Upstream wire format; `null` when the account kind pins it.
+    protocol: Option<&'static str>,
+
+    /// Upstream base URL; `null` for OAuth accounts.
+    base_url: Option<&'a str>,
+
+    /// Unix timestamp when the OAuth access token expires.
+    expires_at: Option<i64>,
+
+    /// Whether the provider serves traffic.
+    is_enabled: bool,
+}
+
+impl<'a> ProviderResponse<'a> {
+    /// Renders one provider row; credentials are never read.
+    fn from_provider(provider: &'a Provider) -> Self {
+        Self {
+            id: provider.id,
+            name: &provider.name,
+            model_prefix: &provider.model_prefix,
+            provider_type: provider.provider_type.as_str(),
+            protocol: provider.protocol.map(UpstreamFormat::as_str),
+            base_url: provider.base_url.as_deref(),
+            expires_at: provider.expires_at,
+            is_enabled: provider.is_enabled,
+        }
+    }
+}
+
+/// The `save-provider` and `complete-provider-oauth` success body
+/// (README §7.1); the envelope every provider-returning endpoint renders.
+#[derive(Debug, Serialize)]
+struct ProviderEnvelope<'a> {
+    /// The created or updated provider row.
+    provider: ProviderResponse<'a>,
 }
 
 /// Builds a JSON response with the given status code.
 ///
 /// The management surface's universal response builder, defined at the
 /// surface root and kept separate from the outward one so each router owns
-/// its rendering.
+/// its rendering. The body is a typed payload, so serialization is total.
 ///
 /// # Panics
 ///
-/// Panics if the static response parts fail to build, which cannot occur.
-fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
+/// Panics if the rendered body fails to serialize or the static response
+/// parts fail to build, neither of which can occur.
+fn json_response<T>(status: StatusCode, body: &T) -> Response
+where
+    T: Serialize,
+{
+    #[expect(
+        clippy::expect_used,
+        reason = "every management body is a typed payload whose serialization is total"
+    )]
+    let rendered = serde_json::to_string(body).expect("management response bodies serialize");
+
     #[expect(clippy::expect_used, reason = "JSON responses have known-valid parts")]
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string()))
+        .body(Body::from(rendered))
         .expect("static response parts are always valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::{Credentials, ProviderType};
+
+    /// Verifies that a rendered provider carries the exact management wire
+    /// shape README §7.1 documents: the renamed `type` key, the snake_case
+    /// keys, `null` for absent optional columns, and no credentials. Pinned as
+    /// a rendered string, so a renamed field, a leaked credential, or a
+    /// null/omission change fails here rather than at a client.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered provider diverges from the documented shape.
+    #[test]
+    fn renders_the_documented_provider_shape() {
+        let provider = Provider {
+            id: 7,
+            name: "acme".to_string(),
+            model_prefix: "acme/".to_string(),
+            provider_type: ProviderType::OpenAiCompatible,
+            protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+            base_url: Some("https://upstream.example".to_string()),
+            credentials: Credentials::ApiKey("sk-secret".to_string()),
+            expires_at: None,
+            is_enabled: true,
+        };
+
+        let rendered = serde_json::to_string(&ProviderEnvelope {
+            provider: ProviderResponse::from_provider(&provider),
+        })
+        .expect("the provider body serializes");
+
+        assert_eq!(
+            rendered,
+            concat!(
+                r#"{"provider":{"id":7,"name":"acme","model_prefix":"acme/","#,
+                r#""type":"openai_compatible","protocol":"openai_chat_completion","#,
+                r#""base_url":"https://upstream.example","expires_at":null,"is_enabled":true}}"#,
+            )
+        );
+    }
 }

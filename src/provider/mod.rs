@@ -2,6 +2,12 @@
 //! discovery.
 
 use crate::format::UpstreamFormat;
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{IgnoredAny, MapAccess, Visitor},
+};
+use serde_json::Error as JsonError;
+use std::fmt;
 
 pub(crate) mod discovery;
 pub(crate) mod endpoints;
@@ -124,6 +130,259 @@ pub(crate) enum Credentials {
     ApiKey(String),
 }
 
+/// The plaintext storage form of `openai_oauth` credentials (README §3):
+/// `{"accessToken", "refreshToken", "accountId"}` and nothing else, so a
+/// stored payload can never drift from the documented shape.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredOpenAiOauthCredentials<'a> {
+    /// OAuth access token.
+    access_token: &'a str,
+
+    /// OAuth refresh token.
+    refresh_token: &'a str,
+
+    /// ChatGPT account ID from the `id_token`.
+    account_id: &'a str,
+}
+
+/// The plaintext storage form of `antigravity_oauth` credentials (README §3):
+/// `{"accessToken", "refreshToken", "projectId"}` and nothing else.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredAntigravityOauthCredentials<'a> {
+    /// OAuth access token.
+    access_token: &'a str,
+
+    /// OAuth refresh token.
+    refresh_token: &'a str,
+
+    /// Cloud Code Assist project ID.
+    project_id: &'a str,
+}
+
+/// The plaintext storage form of `openai_compatible` credentials (README §3):
+/// `{"apiKey"}` and nothing else.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredApiKeyCredentials<'a> {
+    /// Static API key.
+    api_key: &'a str,
+}
+
+/// The exact key of one field of the plaintext credentials storage form
+/// (README §3): the single home of the stored key names, shared by the
+/// write path and the read path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoredField {
+    /// The `accessToken` field.
+    AccessToken,
+
+    /// The `refreshToken` field.
+    RefreshToken,
+
+    /// The `accountId` field.
+    AccountId,
+
+    /// The `projectId` field.
+    ProjectId,
+
+    /// The `apiKey` field.
+    ApiKey,
+}
+
+impl StoredField {
+    /// Parses an exact stored key name; any other name is no stored field.
+    fn parse(key: &str) -> Option<Self> {
+        match key {
+            "accessToken" => Some(Self::AccessToken),
+            "refreshToken" => Some(Self::RefreshToken),
+            "accountId" => Some(Self::AccountId),
+            "projectId" => Some(Self::ProjectId),
+            "apiKey" => Some(Self::ApiKey),
+            _ => None,
+        }
+    }
+
+    /// Renders the exact stored key name.
+    fn key(self) -> &'static str {
+        match self {
+            Self::AccessToken => "accessToken",
+            Self::RefreshToken => "refreshToken",
+            Self::AccountId => "accountId",
+            Self::ProjectId => "projectId",
+            Self::ApiKey => "apiKey",
+        }
+    }
+}
+
+/// A stored credentials value: the string it carries, or any other JSON value,
+/// which carries no string. [`Credentials::parse`] rejects a field carrying a
+/// non-string value exactly like a field the payload omits, so both read as no
+/// string.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StoredFieldValue {
+    /// The field carries a JSON string.
+    Text(String),
+
+    /// The field carries any other JSON value — `null`, a number, a boolean,
+    /// an array, or an object — and therefore no string.
+    NonString(IgnoredAny),
+}
+
+impl StoredFieldValue {
+    /// The string the value carries, when it carries one.
+    fn into_string(self) -> Option<String> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::NonString(_) => None,
+        }
+    }
+}
+
+/// The fields a stored credentials object carries: every key it holds, in
+/// payload order, and the string value of every stored field.
+///
+/// Reading is deliberately lenient — an unknown key, a missing field, and a
+/// field carrying a non-string value are all collected instead of rejected —
+/// so [`Credentials::parse`] renders the typed [`ParseError`] itself: a serde
+/// rejection cannot report an unexpected key by name, cannot distinguish an
+/// unknown field from a missing one, and cannot read a non-string value as an
+/// absent field.
+#[derive(Debug, Default)]
+struct StoredCredentialFields {
+    /// Every key the payload carried, in payload order.
+    keys: Vec<String>,
+
+    /// `accessToken` string value, when the payload carries one.
+    access_token: Option<String>,
+
+    /// `refreshToken` string value, when the payload carries one.
+    refresh_token: Option<String>,
+
+    /// `accountId` string value, when the payload carries one.
+    account_id: Option<String>,
+
+    /// `projectId` string value, when the payload carries one.
+    project_id: Option<String>,
+
+    /// `apiKey` string value, when the payload carries one.
+    api_key: Option<String>,
+}
+
+impl StoredCredentialFields {
+    /// Rejects the first key outside the given exact field set, naming the
+    /// allowed keys in the rejection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::UnknownField`] for the first key the field set
+    /// does not carry.
+    fn reject_unexpected_field(&self, allowed_fields: &[StoredField]) -> Result<(), ParseError> {
+        let Some(key) = self.keys.iter().find(|key| {
+            !allowed_fields
+                .iter()
+                .any(|field| field.key() == key.as_str())
+        }) else {
+            return Ok(());
+        };
+
+        let allowed = allowed_fields
+            .iter()
+            .map(|field| field.key())
+            .collect::<Vec<_>>()
+            .join("`, `");
+
+        Err(ParseError::UnknownField(key.clone(), allowed))
+    }
+
+    /// Stores the string value read for one stored field.
+    fn set(&mut self, field: StoredField, value: Option<String>) {
+        match field {
+            StoredField::AccessToken => self.access_token = value,
+            StoredField::RefreshToken => self.refresh_token = value,
+            StoredField::AccountId => self.account_id = value,
+            StoredField::ProjectId => self.project_id = value,
+            StoredField::ApiKey => self.api_key = value,
+        }
+    }
+
+    /// Takes the string value of a required stored field.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::MissingField`] naming the field when the payload
+    /// omitted it or carried a non-string value for it.
+    fn take(&mut self, field: StoredField) -> Result<String, ParseError> {
+        let value = match field {
+            StoredField::AccessToken => self.access_token.take(),
+            StoredField::RefreshToken => self.refresh_token.take(),
+            StoredField::AccountId => self.account_id.take(),
+            StoredField::ProjectId => self.project_id.take(),
+            StoredField::ApiKey => self.api_key.take(),
+        };
+
+        value.ok_or_else(|| ParseError::MissingField(field.key().to_string()))
+    }
+}
+
+/// Reads a credentials object into its collected fields. Every read is
+/// lenient, so the visitor never rejects anything and the typed rejections
+/// stay in [`Credentials::parse`].
+struct StoredCredentialFieldsVisitor;
+
+impl<'de> Visitor<'de> for StoredCredentialFieldsVisitor {
+    type Value = StoredCredentialFields;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a credentials object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut fields = Self::Value::default();
+
+        while let Some(key) = map.next_key::<String>()? {
+            // The value is read before the key is classified, so the value of
+            // a key outside the field set is consumed either way.
+            let value = map.next_value::<StoredFieldValue>()?.into_string();
+
+            if let Some(field) = StoredField::parse(&key) {
+                fields.set(field, value);
+            }
+
+            fields.keys.push(key);
+        }
+
+        Ok(fields)
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredCredentialFields {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(StoredCredentialFieldsVisitor)
+    }
+}
+
+/// A stored credentials payload (README §3): the plaintext JSON object a
+/// provider kind stores, or any other JSON value, which carries no credential
+/// fields and fails the required-field check exactly like an empty object.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StoredCredentialsPayload {
+    /// The stored credentials object.
+    Object(StoredCredentialFields),
+
+    /// Any JSON value that is not an object.
+    NonObject(IgnoredAny),
+}
+
 /// A credentials parse failure, typed so each boundary renders its own error
 /// domain: management input validation maps it to a 400 invalid request
 /// naming `credentials`, while storage row decoding wraps it once as a 500
@@ -134,7 +393,7 @@ pub(crate) enum Credentials {
 pub(crate) enum ParseError {
     /// The payload is not valid JSON.
     #[error("Credentials are not valid JSON: {0}")]
-    Json(serde_json::Error),
+    Json(JsonError),
 
     /// A required field is absent or not a string.
     #[error("Credentials must carry a string `{0}` field")]
@@ -149,57 +408,58 @@ pub(crate) enum ParseError {
 impl Credentials {
     /// Parses credentials JSON for the given provider type.
     ///
-    /// Every arm enforces its exact field set: an unknown field is rejected
-    /// naming it, because a tolerated extra field — such as an admin-pasted
-    /// `expiresAt` — would be silently dropped on storage and change the
-    /// credentials' semantics without notice.
+    /// The payload is first read into [`StoredCredentialFields`], which
+    /// collects every key and every stored field's string value without
+    /// rejecting anything; each arm then enforces its exact field set: an
+    /// unknown field is rejected naming it, because a tolerated extra field —
+    /// such as an admin-pasted `expiresAt` — would be silently dropped on
+    /// storage and change the credentials' semantics without notice.
     ///
     /// # Errors
     ///
     /// Returns [`ParseError`] when the payload does not match the shape
     /// required by the provider type.
     pub(crate) fn parse(provider_type: ProviderType, json: &str) -> Result<Self, ParseError> {
-        let value: serde_json::Value = serde_json::from_str(json).map_err(ParseError::Json)?;
-
-        let field = |name: &str| -> Result<String, ParseError> {
-            value
-                .get(name)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| ParseError::MissingField(name.to_string()))
+        let mut fields = match serde_json::from_str::<StoredCredentialsPayload>(json)
+            .map_err(ParseError::Json)?
+        {
+            StoredCredentialsPayload::Object(fields) => fields,
+            StoredCredentialsPayload::NonObject(_) => StoredCredentialFields::default(),
         };
 
         match provider_type {
             ProviderType::OpenAiOauth => {
-                ensure_exact_credential_fields(
-                    &value,
-                    &["accessToken", "refreshToken", "accountId"],
-                )?;
+                fields.reject_unexpected_field(&[
+                    StoredField::AccessToken,
+                    StoredField::RefreshToken,
+                    StoredField::AccountId,
+                ])?;
 
                 Ok(Self::OpenAiOauth {
-                    access_token: field("accessToken")?,
-                    refresh_token: field("refreshToken")?,
-                    account_id: field("accountId")?,
+                    access_token: fields.take(StoredField::AccessToken)?,
+                    refresh_token: fields.take(StoredField::RefreshToken)?,
+                    account_id: fields.take(StoredField::AccountId)?,
                 })
             }
 
             ProviderType::AntigravityOauth => {
-                ensure_exact_credential_fields(
-                    &value,
-                    &["accessToken", "refreshToken", "projectId"],
-                )?;
+                fields.reject_unexpected_field(&[
+                    StoredField::AccessToken,
+                    StoredField::RefreshToken,
+                    StoredField::ProjectId,
+                ])?;
 
                 Ok(Self::AntigravityOauth {
-                    access_token: field("accessToken")?,
-                    refresh_token: field("refreshToken")?,
-                    project_id: field("projectId")?,
+                    access_token: fields.take(StoredField::AccessToken)?,
+                    refresh_token: fields.take(StoredField::RefreshToken)?,
+                    project_id: fields.take(StoredField::ProjectId)?,
                 })
             }
 
             ProviderType::OpenAiCompatible => {
-                ensure_exact_credential_fields(&value, &["apiKey"])?;
+                fields.reject_unexpected_field(&[StoredField::ApiKey])?;
 
-                Ok(Self::ApiKey(field("apiKey")?))
+                Ok(Self::ApiKey(fields.take(StoredField::ApiKey)?))
             }
         }
     }
@@ -217,32 +477,38 @@ impl Credentials {
         }
     }
 
-    /// Renders the credentials into their plaintext JSON storage form.
+    /// Renders the credentials into their plaintext JSON storage form
+    /// (README §3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if serialization fails, which cannot occur: every stored form is
+    /// a struct of strings, a shape serde_json always renders.
     pub(crate) fn to_json(&self) -> String {
         match self {
             Self::OpenAiOauth {
                 access_token,
                 refresh_token,
                 account_id,
-            } => serde_json::json!({
-                "accessToken": access_token,
-                "refreshToken": refresh_token,
-                "accountId": account_id,
-            })
-            .to_string(),
+            } => serialize_stored_credentials(&StoredOpenAiOauthCredentials {
+                access_token,
+                refresh_token,
+                account_id,
+            }),
 
             Self::AntigravityOauth {
                 access_token,
                 refresh_token,
                 project_id,
-            } => serde_json::json!({
-                "accessToken": access_token,
-                "refreshToken": refresh_token,
-                "projectId": project_id,
-            })
-            .to_string(),
+            } => serialize_stored_credentials(&StoredAntigravityOauthCredentials {
+                access_token,
+                refresh_token,
+                project_id,
+            }),
 
-            Self::ApiKey(api_key) => serde_json::json!({"apiKey": api_key}).to_string(),
+            Self::ApiKey(api_key) => {
+                serialize_stored_credentials(&StoredApiKeyCredentials { api_key })
+            }
         }
     }
 }
@@ -383,30 +649,22 @@ impl Model {
     }
 }
 
-/// Rejects a credentials payload carrying fields outside the provider type's
-/// exact field set. Non-object payloads are accepted here; they fail the
-/// required-field checks that follow.
+/// Serializes one stored credentials form into the exact plaintext JSON text
+/// the `credentials` column carries (README §3).
 ///
-/// # Errors
+/// # Panics
 ///
-/// Returns [`ParseError::UnknownField`] naming the first unknown field.
-fn ensure_exact_credential_fields(
-    value: &serde_json::Value,
-    allowed_fields: &[&str],
-) -> Result<(), ParseError> {
-    let Some(object) = value.as_object() else {
-        return Ok(());
-    };
-
-    for field_name in object.keys() {
-        if !allowed_fields.contains(&field_name.as_str()) {
-            let allowed = allowed_fields.join("`, `");
-
-            return Err(ParseError::UnknownField(field_name.to_string(), allowed));
-        }
-    }
-
-    Ok(())
+/// Panics if serialization fails, which cannot occur: every stored form is a
+/// struct of strings, a shape serde_json always renders.
+fn serialize_stored_credentials<T>(credentials: &T) -> String
+where
+    T: Serialize,
+{
+    #[expect(
+        clippy::expect_used,
+        reason = "a stored credentials form is a struct of strings, which serde_json always renders"
+    )]
+    serde_json::to_string(credentials).expect("stored credentials serialize")
 }
 
 #[cfg(test)]
@@ -478,6 +736,121 @@ mod tests {
         assert_eq!(
             OAuthProviderType::AntigravityOauth.as_provider_type(),
             ProviderType::AntigravityOauth
+        );
+    }
+
+    /// Verifies the exact plaintext storage form of every provider kind
+    /// (README §3): the stored key names are the contract the management input
+    /// and every stored row share, and each form round-trips through
+    /// [`Credentials::to_json`] and [`Credentials::parse`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if a stored form or its round-trip diverges from the contract.
+    #[test]
+    fn round_trips_stored_credentials() {
+        let cases = [
+            (
+                ProviderType::OpenAiOauth,
+                Credentials::OpenAiOauth {
+                    access_token: "access".to_string(),
+                    refresh_token: "refresh".to_string(),
+                    account_id: "account".to_string(),
+                },
+                r#"{"accessToken":"access","refreshToken":"refresh","accountId":"account"}"#,
+            ),
+            (
+                ProviderType::AntigravityOauth,
+                Credentials::AntigravityOauth {
+                    access_token: "access".to_string(),
+                    refresh_token: "refresh".to_string(),
+                    project_id: "project".to_string(),
+                },
+                r#"{"accessToken":"access","refreshToken":"refresh","projectId":"project"}"#,
+            ),
+            (
+                ProviderType::OpenAiCompatible,
+                Credentials::ApiKey("sk-secret".to_string()),
+                r#"{"apiKey":"sk-secret"}"#,
+            ),
+        ];
+
+        for (provider_type, credentials, stored) in cases {
+            assert_eq!(credentials.to_json(), stored);
+
+            assert_eq!(
+                Credentials::parse(provider_type, stored).unwrap(),
+                credentials
+            );
+        }
+    }
+
+    /// Verifies the credentials rejection taxonomy every management input and
+    /// every stored row passes through: a key outside the provider kind's
+    /// exact field set is rejected naming it and the allowed set, while a
+    /// field that is absent or carries a non-string value is rejected as
+    /// missing — including a payload that is not a JSON object at all, whose
+    /// missing first field is named instead of being reported as malformed
+    /// JSON. Non-object payloads and non-string values are therefore never
+    /// silently accepted or silently dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejection lands outside its documented variant or wording.
+    #[test]
+    fn rejects_credentials_outside_the_exact_field_set() {
+        let error = Credentials::parse(
+            ProviderType::OpenAiOauth,
+            r#"{"accessToken":"a","refreshToken":"r","accountId":"x","expiresAt":123}"#,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ParseError::UnknownField(ref field, ref allowed)
+                if field == "expiresAt" && allowed == "accessToken`, `refreshToken`, `accountId"
+        ));
+
+        // A field another provider kind stores is as unknown to this kind's
+        // exact field set as a field no kind stores, even when its value is no
+        // string.
+        let error = Credentials::parse(
+            ProviderType::AntigravityOauth,
+            r#"{"accessToken":"a","refreshToken":"r","projectId":"p","apiKey":null}"#,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ParseError::UnknownField(ref field, ref allowed)
+                if field == "apiKey" && allowed == "accessToken`, `refreshToken`, `projectId"
+        ));
+
+        for payload in [
+            r#"{"refreshToken":"r","accountId":"x"}"#,
+            r#"{"accessToken":5,"refreshToken":"r","accountId":"x"}"#,
+            r#"{"accessToken":null,"refreshToken":"r","accountId":"x"}"#,
+            r#"{"accessToken":[],"refreshToken":"r","accountId":"x"}"#,
+            r#"{"accessToken":{"nested":true},"refreshToken":"r","accountId":"x"}"#,
+            r#""sk-secret""#,
+            "[]",
+            "null",
+        ] {
+            let error = Credentials::parse(ProviderType::OpenAiOauth, payload).unwrap_err();
+
+            assert_eq!(
+                error.to_string(),
+                "Credentials must carry a string `accessToken` field",
+                "payload: {payload}"
+            );
+        }
+
+        let error = Credentials::parse(ProviderType::OpenAiOauth, "{").unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .starts_with("Credentials are not valid JSON")
         );
     }
 }

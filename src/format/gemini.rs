@@ -3,17 +3,25 @@
 //! Speaks the `gemini_generate_content` upstream protocol, both in the
 //! Antigravity Code Assist envelope (§5.2) and as a bare OpenAI-compatible
 //! upstream protocol (§5.3).
+//!
+//! Rendered payloads are first-party types in the upstream wire shape, so
+//! field presence per request is declared by `skip_serializing_if` rather than
+//! assembled conditionally.
 
-use super::{PayloadError, UpstreamEventParser};
+use super::{PayloadError, UpstreamError, UpstreamEventParser};
 use crate::{
-    ids,
+    format, ids,
     ir::{
         InvalidRequest, IrEvent, IrFinishReason, IrImage, IrPart, IrRequest, IrResponseFormat,
         IrRole, IrToolChoice, IrUsage,
     },
     sse::SseFrame,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// The `responseMimeType` value requesting a JSON response.
+const JSON_MIME_TYPE: &str = "application/json";
 
 /// Renders the upstream request URL and payload for an Antigravity provider.
 ///
@@ -24,26 +32,52 @@ use serde_json::Value;
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] when the request cannot be rendered.
-pub(crate) fn render_antigravity_request(
-    ir: &IrRequest,
+pub(crate) fn render_antigravity_request<'a>(
+    ir: &'a IrRequest,
     base_url: &str,
-    user_agent: &str,
-    upstream_id: &str,
-    project: &str,
+    user_agent: &'a str,
+    upstream_id: &'a str,
+    project: &'a str,
     is_streaming: bool,
-) -> Result<(String, Value), InvalidRequest> {
+) -> Result<(String, AntigravityEnvelope<'a>), InvalidRequest> {
     let url = render_request_url(base_url, upstream_id, is_streaming, true);
 
-    let envelope = serde_json::json!({
-        "project": project,
-        "model": upstream_id,
-        "request": render_generate_content_request(ir)?,
-        "requestType": "agent",
-        "userAgent": user_agent,
-        "requestId": format!("agent-{}", ids::new_uuid()),
-    });
+    let envelope = AntigravityEnvelope {
+        project,
+        model: upstream_id,
+        request: render_generate_content_request(ir)?,
+        request_type: "agent",
+        user_agent,
+        request_id: format!("agent-{}", ids::new_uuid()),
+    };
 
     Ok((url, envelope))
+}
+
+/// The Code Assist envelope wrapping one GenerateContentRequest (README §5.2).
+#[derive(Debug, Serialize)]
+pub(crate) struct AntigravityEnvelope<'a> {
+    /// Cloud Code Assist project the request bills to.
+    project: &'a str,
+
+    /// Upstream model name.
+    model: &'a str,
+
+    /// The wrapped request.
+    request: GenerateContentRequest<'a>,
+
+    /// Always `agent`.
+    #[serde(rename = "requestType")]
+    request_type: &'static str,
+
+    /// `User-Agent` value the Code Assist endpoint requires, echoed in the
+    /// body.
+    #[serde(rename = "userAgent")]
+    user_agent: &'a str,
+
+    /// Gateway-minted request identifier.
+    #[serde(rename = "requestId")]
+    request_id: String,
 }
 
 /// Renders the upstream request URL and payload for an OpenAI-compatible
@@ -52,12 +86,12 @@ pub(crate) fn render_antigravity_request(
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] when the request cannot be rendered.
-pub(crate) fn render_compatible_request(
-    ir: &IrRequest,
+pub(crate) fn render_compatible_request<'a>(
+    ir: &'a IrRequest,
     base_url: &str,
     upstream_id: &str,
     is_streaming: bool,
-) -> Result<(String, Value), InvalidRequest> {
+) -> Result<(String, GenerateContentRequest<'a>), InvalidRequest> {
     let url = render_request_url(base_url, upstream_id, is_streaming, false);
 
     Ok((url, render_generate_content_request(ir)?))
@@ -94,6 +128,272 @@ fn render_request_url(
     }
 }
 
+/// The bare GenerateContentRequest carried in the envelope `request` field or
+/// sent directly to a compatible upstream.
+#[derive(Debug, Serialize)]
+pub(crate) struct GenerateContentRequest<'a> {
+    /// Conversation contents, in alternating-role runs.
+    contents: Vec<Content<'a>>,
+
+    /// Concatenated system instructions, omitted when the request has none.
+    #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
+    system_instruction: Option<SystemInstruction<'a>>,
+
+    /// Advertised function tools, omitted when the request has none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<ToolGroup<'a>>,
+
+    /// Tool selection restriction, omitted when the request has none.
+    #[serde(rename = "toolConfig", skip_serializing_if = "Option::is_none")]
+    tool_config: Option<ToolConfig<'a>>,
+
+    /// Sampling and output configuration, omitted when it would be empty.
+    #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
+    generation_config: Option<GenerationConfig<'a>>,
+}
+
+/// One content entry: the parts of an alternating-role run of messages.
+#[derive(Debug, Serialize)]
+struct Content<'a> {
+    /// Gemini content role, `user` or `model`.
+    role: &'static str,
+
+    /// The run's parts in order.
+    parts: Vec<Part<'a>>,
+}
+
+/// The system instruction.
+#[derive(Debug, Serialize)]
+struct SystemInstruction<'a> {
+    /// Instruction parts; the gateway renders exactly one text part.
+    parts: Vec<Part<'a>>,
+}
+
+/// One Gemini part: the union of the part kinds the gateway renders, exactly
+/// one per part.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum Part<'a> {
+    /// Plain text.
+    Text {
+        /// The text content.
+        text: &'a str,
+    },
+
+    /// Base64-encoded inline image data.
+    InlineData {
+        /// The inline data object.
+        #[serde(rename = "inlineData")]
+        inline_data: InlineData<'a>,
+    },
+
+    /// An image referenced by URL.
+    FileData {
+        /// The file data object.
+        #[serde(rename = "fileData")]
+        file_data: FileData<'a>,
+    },
+
+    /// An assistant tool invocation.
+    FunctionCall {
+        /// The invocation itself.
+        #[serde(rename = "functionCall")]
+        function_call: FunctionCall<'a>,
+
+        /// Upstream thought signature that must be replayed on the next turn.
+        #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<&'a str>,
+    },
+
+    /// A tool result for a prior function call.
+    FunctionResponse {
+        /// The result itself.
+        #[serde(rename = "functionResponse")]
+        function_response: FunctionResponse<'a>,
+    },
+}
+
+/// Inline image data with its MIME type.
+#[derive(Debug, Serialize)]
+struct InlineData<'a> {
+    /// MIME type of the image data.
+    #[serde(rename = "mimeType")]
+    mime_type: &'a str,
+
+    /// Base64-encoded image bytes.
+    data: &'a str,
+}
+
+/// An image referenced by URL.
+#[derive(Debug, Serialize)]
+struct FileData<'a> {
+    /// The image URL.
+    #[serde(rename = "fileUri")]
+    file_uri: &'a str,
+}
+
+/// A tool invocation.
+#[derive(Debug, Serialize)]
+struct FunctionCall<'a> {
+    /// Name of the invoked function.
+    name: &'a str,
+
+    /// Arguments object, decoded from the IR's JSON-encoded arguments text.
+    args: serde_json::Map<String, Value>,
+
+    /// Identifier of the invocation. The IR's client-populated `call_id` is
+    /// exactly what the upstream's `FunctionResponse.id` is defined to match,
+    /// so parallel calls to one function name stay resolvable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<&'a str>,
+}
+
+/// A tool result.
+#[derive(Debug, Serialize)]
+struct FunctionResponse<'a> {
+    /// Name of the function being answered.
+    name: String,
+
+    /// The result payload.
+    response: ToolResult<'a>,
+
+    /// Identifier of the invocation being answered (see
+    /// [`FunctionCall::id`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<&'a str>,
+}
+
+/// The result payload of a tool response: the tool's own JSON object when the
+/// stored output is one, else the `{"result": ...}` wrapper the upstream
+/// requires.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum ToolResult<'a> {
+    /// A JSON-object result, forwarded verbatim.
+    Object(serde_json::Map<String, Value>),
+
+    /// Any other parsed JSON value, wrapped.
+    Wrapped {
+        /// The wrapped value, whose shape is the tool's own.
+        result: Value,
+    },
+
+    /// A result that is not JSON at all, wrapped as text.
+    Text {
+        /// The wrapped text.
+        result: &'a str,
+    },
+}
+
+/// One entry of the upstream `tools` array: a declaration group.
+#[derive(Debug, Serialize)]
+struct ToolGroup<'a> {
+    /// The advertised function declarations.
+    #[serde(rename = "functionDeclarations")]
+    function_declarations: Vec<FunctionDeclaration<'a>>,
+}
+
+/// One advertised function declaration.
+#[derive(Debug, Serialize)]
+struct FunctionDeclaration<'a> {
+    /// Function name the model calls.
+    name: &'a str,
+
+    /// Human-readable description.
+    description: Option<&'a str>,
+
+    /// JSON Schema of the accepted arguments, absent for a function that
+    /// takes none.
+    parameters: Option<&'a Value>,
+}
+
+/// The tool selection configuration.
+#[derive(Debug, Serialize)]
+struct ToolConfig<'a> {
+    /// The function calling configuration.
+    #[serde(rename = "functionCallingConfig")]
+    function_calling_config: FunctionCallingConfig<'a>,
+}
+
+/// The function calling configuration.
+#[derive(Debug, Serialize)]
+struct FunctionCallingConfig<'a> {
+    /// Selection mode.
+    mode: FunctionCallingMode,
+
+    /// Functions the model may call under the `ANY` mode, omitted when the
+    /// mode does not restrict the choice.
+    #[serde(rename = "allowedFunctionNames", skip_serializing_if = "Vec::is_empty")]
+    allowed_function_names: Vec<&'a str>,
+}
+
+/// The Gemini `functionCallingConfig.mode` values.
+#[derive(Debug, Clone, Copy, Serialize)]
+enum FunctionCallingMode {
+    /// The model decides freely.
+    #[serde(rename = "AUTO")]
+    Auto,
+
+    /// The model may not call tools.
+    #[serde(rename = "NONE")]
+    None,
+
+    /// The model must call a tool.
+    #[serde(rename = "ANY")]
+    Required,
+}
+
+/// Sampling and output configuration.
+#[derive(Debug, Serialize)]
+struct GenerationConfig<'a> {
+    /// Sampling temperature, omitted when the request has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+
+    /// Nucleus sampling threshold, omitted when the request has none.
+    #[serde(rename = "topP", skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+
+    /// Output token budget, omitted when the request has none.
+    #[serde(rename = "maxOutputTokens", skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u64>,
+
+    /// Response MIME type, present exactly when the request constrains the
+    /// response format.
+    #[serde(rename = "responseMimeType", skip_serializing_if = "Option::is_none")]
+    response_mime_type: Option<&'static str>,
+
+    /// JSON Schema the response must conform to; the schema's shape is the
+    /// client's to define.
+    #[serde(rename = "responseSchema", skip_serializing_if = "Option::is_none")]
+    response_schema: Option<&'a Value>,
+
+    /// Thinking configuration, omitted when the request named no level.
+    #[serde(rename = "thinkingConfig", skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<ThinkingConfig>,
+}
+
+impl GenerationConfig<'_> {
+    /// Whether every field is absent, in which case the whole configuration
+    /// is omitted from the request.
+    fn is_empty(&self) -> bool {
+        self.temperature.is_none()
+            && self.top_p.is_none()
+            && self.max_output_tokens.is_none()
+            && self.response_mime_type.is_none()
+            && self.response_schema.is_none()
+            && self.thinking_config.is_none()
+    }
+}
+
+/// Thinking configuration.
+#[derive(Debug, Serialize)]
+struct ThinkingConfig {
+    /// Token budget rendered from the canonical thinking level (README §6.4).
+    #[serde(rename = "thinkingBudget")]
+    thinking_budget: u32,
+}
+
 /// Renders the bare GenerateContentRequest carried in the envelope `request`
 /// field or sent directly to a compatible upstream.
 ///
@@ -108,14 +408,16 @@ fn render_request_url(
 ///
 /// Returns [`InvalidRequest`] for tool call arguments that are not JSON objects
 /// and tool outputs whose invocation cannot be resolved.
-fn render_generate_content_request(ir: &IrRequest) -> Result<Value, InvalidRequest> {
-    let mut contents: Vec<Value> = Vec::new();
+fn render_generate_content_request(
+    ir: &IrRequest,
+) -> Result<GenerateContentRequest<'_>, InvalidRequest> {
+    let mut contents: Vec<Content<'_>> = Vec::new();
 
     // The open run's role and accumulated parts; a message whose parts render
     // to nothing is transparent — it contributes nothing and cannot split a
     // run, since it produces no content entry to alternate against.
     let mut run_role: Option<&'static str> = None;
-    let mut run_parts: Vec<Value> = Vec::new();
+    let mut run_parts: Vec<Part<'_>> = Vec::new();
 
     for message in &ir.messages {
         let role = match message.role {
@@ -123,7 +425,7 @@ fn render_generate_content_request(ir: &IrRequest) -> Result<Value, InvalidReque
             IrRole::Assistant => "model",
         };
 
-        let parts: Vec<Value> = message
+        let parts: Vec<Part<'_>> = message
             .parts
             .iter()
             .map(|part| render_part(part, ir))
@@ -139,7 +441,10 @@ fn render_generate_content_request(ir: &IrRequest) -> Result<Value, InvalidReque
         if run_role != Some(role)
             && let Some(previous_role) = run_role.replace(role)
         {
-            contents.push(serde_json::json!({"role": previous_role, "parts": run_parts}));
+            contents.push(Content {
+                role: previous_role,
+                parts: run_parts,
+            });
 
             run_parts = Vec::new();
         }
@@ -148,109 +453,85 @@ fn render_generate_content_request(ir: &IrRequest) -> Result<Value, InvalidReque
     }
 
     if let Some(previous_role) = run_role {
-        contents.push(serde_json::json!({"role": previous_role, "parts": run_parts}));
+        contents.push(Content {
+            role: previous_role,
+            parts: run_parts,
+        });
     }
 
-    let mut request = serde_json::json!({"contents": contents});
+    let system_instruction = ir
+        .instructions
+        .as_ref()
+        .map(|instructions| SystemInstruction {
+            parts: vec![Part::Text { text: instructions }],
+        });
 
-    if let Some(instructions) = &ir.instructions {
-        super::json_insert(
-            &mut request,
-            "systemInstruction",
-            serde_json::json!({"parts": [{"text": instructions}]}),
-        );
-    }
-
-    if !ir.tools.is_empty() {
-        let declarations: Vec<Value> = ir
-            .tools
-            .iter()
-            .map(|tool| {
-                serde_json::json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
+    let tools = if ir.tools.is_empty() {
+        Vec::new()
+    } else {
+        vec![ToolGroup {
+            function_declarations: ir
+                .tools
+                .iter()
+                .map(|tool| FunctionDeclaration {
+                    name: &tool.name,
+                    description: tool.description.as_deref(),
+                    parameters: tool.parameters.as_ref(),
                 })
-            })
-            .collect();
+                .collect(),
+        }]
+    };
 
-        super::json_insert(
-            &mut request,
-            "tools",
-            serde_json::json!([{"functionDeclarations": declarations}]),
-        );
-    }
+    let tool_config = ir.tool_choice.as_ref().map(|tool_choice| ToolConfig {
+        function_calling_config: match tool_choice {
+            IrToolChoice::Auto => FunctionCallingConfig {
+                mode: FunctionCallingMode::Auto,
+                allowed_function_names: Vec::new(),
+            },
 
-    if let Some(tool_choice) = &ir.tool_choice {
-        let config = match tool_choice {
-            IrToolChoice::Auto => serde_json::json!({"mode": "AUTO"}),
-            IrToolChoice::None => serde_json::json!({"mode": "NONE"}),
-            IrToolChoice::Required => serde_json::json!({"mode": "ANY"}),
-            IrToolChoice::Function { name } => {
-                serde_json::json!({"mode": "ANY", "allowedFunctionNames": [name]})
-            }
-        };
+            IrToolChoice::None => FunctionCallingConfig {
+                mode: FunctionCallingMode::None,
+                allowed_function_names: Vec::new(),
+            },
 
-        super::json_insert(
-            &mut request,
-            "toolConfig",
-            serde_json::json!({"functionCallingConfig": config}),
-        );
-    }
+            IrToolChoice::Required => FunctionCallingConfig {
+                mode: FunctionCallingMode::Required,
+                allowed_function_names: Vec::new(),
+            },
 
-    let mut generation_config = serde_json::Map::new();
+            IrToolChoice::Function { name } => FunctionCallingConfig {
+                mode: FunctionCallingMode::Required,
+                allowed_function_names: vec![name],
+            },
+        },
+    });
 
-    if let Some(temperature) = ir.temperature {
-        generation_config.insert("temperature".to_string(), Value::from(temperature));
-    }
+    let (response_mime_type, response_schema) = match &ir.response_format {
+        Some(IrResponseFormat::Json) => (Some(JSON_MIME_TYPE), None),
 
-    if let Some(top_p) = ir.top_p {
-        generation_config.insert("topP".to_string(), Value::from(top_p));
-    }
+        Some(IrResponseFormat::JsonSchema { schema, .. }) => (Some(JSON_MIME_TYPE), Some(schema)),
 
-    if let Some(max_output_tokens) = ir.max_output_tokens {
-        generation_config.insert(
-            "maxOutputTokens".to_string(),
-            Value::from(max_output_tokens),
-        );
-    }
+        _ => (None, None),
+    };
 
-    match &ir.response_format {
-        Some(IrResponseFormat::Json) => {
-            generation_config.insert(
-                "responseMimeType".to_string(),
-                Value::String("application/json".to_string()),
-            );
-        }
+    let generation_config = GenerationConfig {
+        temperature: ir.temperature,
+        top_p: ir.top_p,
+        max_output_tokens: ir.max_output_tokens,
+        response_mime_type,
+        response_schema,
+        thinking_config: ir.reasoning_effort.map(|effort| ThinkingConfig {
+            thinking_budget: effort.to_thinking_budget(),
+        }),
+    };
 
-        Some(IrResponseFormat::JsonSchema { schema, .. }) => {
-            generation_config.insert(
-                "responseMimeType".to_string(),
-                Value::String("application/json".to_string()),
-            );
-
-            generation_config.insert("responseSchema".to_string(), schema.clone());
-        }
-
-        _ => {}
-    }
-
-    if let Some(effort) = ir.reasoning_effort {
-        generation_config.insert(
-            "thinkingConfig".to_string(),
-            serde_json::json!({"thinkingBudget": effort.to_thinking_budget()}),
-        );
-    }
-
-    if !generation_config.is_empty() {
-        super::json_insert(
-            &mut request,
-            "generationConfig",
-            Value::Object(generation_config),
-        );
-    }
-
-    Ok(request)
+    Ok(GenerateContentRequest {
+        contents,
+        system_instruction,
+        tools,
+        tool_config,
+        generation_config: (!generation_config.is_empty()).then_some(generation_config),
+    })
 }
 
 /// Resolves the function name a tool output answers, scanning earlier
@@ -287,17 +568,24 @@ fn resolve_tool_output_name(call_id: &str, ir: &IrRequest) -> Result<String, Inv
 ///
 /// Returns [`InvalidRequest`] per [`resolve_tool_output_name`] and for
 /// non-object tool call arguments.
-fn render_part(part: &IrPart, ir: &IrRequest) -> Result<Vec<Value>, InvalidRequest> {
+fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, InvalidRequest> {
     match part {
-        IrPart::Text { text } => Ok(vec![serde_json::json!({"text": text})]),
+        IrPart::Text { text } => Ok(vec![Part::Text { text }]),
 
         IrPart::Image { image } => Ok(vec![match image {
             IrImage::Inline {
                 mime_type,
                 data_base64,
-            } => serde_json::json!({"inlineData": {"mimeType": mime_type, "data": data_base64}}),
+            } => Part::InlineData {
+                inline_data: InlineData {
+                    mime_type,
+                    data: data_base64,
+                },
+            },
 
-            IrImage::Url(url) => serde_json::json!({"fileData": {"fileUri": url}}),
+            IrImage::Url(url) => Part::FileData {
+                file_data: FileData { file_uri: url },
+            },
         }]),
 
         IrPart::ToolCall {
@@ -305,49 +593,31 @@ fn render_part(part: &IrPart, ir: &IrRequest) -> Result<Vec<Value>, InvalidReque
             name,
             arguments,
             thought_signature,
-        } => {
-            // The id is client-populated on replay — exactly what the
-            // upstream's `FunctionResponse.id` is defined to match — so
-            // parallel calls to one function name stay resolvable.
-            let mut function_call = serde_json::json!({
-                "name": name,
-                "args": super::arguments_as_object(arguments)?,
-            });
-
-            super::json_insert(&mut function_call, "id", Value::String(call_id.clone()));
-
-            let mut gemini_part = serde_json::json!({"functionCall": function_call});
-
-            if let Some(signature) = thought_signature {
-                super::json_insert(
-                    &mut gemini_part,
-                    "thoughtSignature",
-                    Value::String(signature.clone()),
-                );
-            }
-
-            Ok(vec![gemini_part])
-        }
+        } => Ok(vec![Part::FunctionCall {
+            function_call: FunctionCall {
+                name,
+                args: format::arguments_as_object(arguments)?,
+                id: Some(call_id),
+            },
+            thought_signature: thought_signature.as_deref(),
+        }]),
 
         IrPart::ToolOutput { call_id, content } => {
             let name = resolve_tool_output_name(call_id, ir)?;
 
             let response = match serde_json::from_str::<Value>(content) {
-                Ok(Value::Object(map)) => Value::Object(map),
-                Ok(other) => serde_json::json!({"result": other}),
-                Err(_) => serde_json::json!({"result": content}),
+                Ok(Value::Object(map)) => ToolResult::Object(map),
+                Ok(other) => ToolResult::Wrapped { result: other },
+                Err(_) => ToolResult::Text { result: content },
             };
 
-            // The response carries the answered call's id: the IR's shared
-            // `call_id` plus the resolution above prove the pairing, so a
-            // same-name parallel call resolves by id rather than by name.
-            let mut function_response = serde_json::json!({"name": name, "response": response});
-
-            super::json_insert(&mut function_response, "id", Value::String(call_id.clone()));
-
-            Ok(vec![
-                serde_json::json!({"functionResponse": function_response}),
-            ])
+            Ok(vec![Part::FunctionResponse {
+                function_response: FunctionResponse {
+                    name,
+                    response,
+                    id: Some(call_id),
+                },
+            }])
         }
     }
 }
@@ -373,6 +643,148 @@ pub(crate) struct UpstreamParser {
     is_finished: bool,
 }
 
+/// One upstream GenerateContentResponse, or the Cloud Code Assist envelope
+/// wrapping one.
+///
+/// The Cloud Code Assist API wraps every GenerateContentResponse —
+/// `:generateContent` JSON bodies and `alt=sse` frames alike — in a
+/// `response` member beside `traceId` and `metadata` (README §5.2), while
+/// Gemini-compatible upstreams carry the bare response, which has no
+/// top-level `response` member of its own. Every member is optional because
+/// the body is either the envelope or the bare response, and upstreams are
+/// third-party: members the gateway does not read are ignored.
+#[derive(Debug, Default, Deserialize)]
+struct UpstreamBody {
+    /// The response wrapped by the Code Assist envelope.
+    #[serde(default)]
+    response: Option<Box<UpstreamBody>>,
+
+    /// Failure the upstream may embed in a 2xx body (README §6.7).
+    #[serde(default)]
+    error: Option<UpstreamError>,
+
+    /// Upstream response identifier.
+    #[serde(rename = "responseId", default)]
+    response_id: Option<String>,
+
+    /// Upstream model name, empty when the upstream omits it.
+    #[serde(rename = "modelVersion", default)]
+    model_version: Option<String>,
+
+    /// Candidate answers; the gateway reads the primary one.
+    #[serde(default)]
+    candidates: Vec<Candidate>,
+
+    /// Prompt-level feedback, sent only when no candidate was generated.
+    #[serde(rename = "promptFeedback", default)]
+    prompt_feedback: Option<PromptFeedback>,
+
+    /// Token accounting.
+    #[serde(rename = "usageMetadata", default)]
+    usage_metadata: Option<UsageMetadata>,
+}
+
+impl UpstreamBody {
+    /// The GenerateContentResponse to ingest: the envelope's wrapped response
+    /// when the body is an envelope, else the body itself.
+    fn payload(&self) -> &Self {
+        match &self.response {
+            Some(payload) => payload,
+
+            None => self,
+        }
+    }
+}
+
+/// One upstream candidate answer.
+#[derive(Debug, Default, Deserialize)]
+struct Candidate {
+    /// Upstream-assigned index, absent on upstreams that omit it.
+    #[serde(default)]
+    index: Option<u64>,
+
+    /// The candidate's content.
+    #[serde(default)]
+    content: Option<CandidateContent>,
+
+    /// Upstream finish reason string.
+    #[serde(rename = "finishReason", default)]
+    finish_reason: Option<String>,
+}
+
+/// The content of one upstream candidate.
+#[derive(Debug, Default, Deserialize)]
+struct CandidateContent {
+    /// The content parts in order.
+    #[serde(default)]
+    parts: Vec<GeminiPart>,
+}
+
+/// One upstream content part, carrying its text, its tool call, or neither.
+#[derive(Debug, Default, Deserialize)]
+struct GeminiPart {
+    /// Text content, absent on a non-text part.
+    #[serde(default)]
+    text: Option<String>,
+
+    /// Whether the text is reasoning rather than answer text.
+    #[serde(default)]
+    thought: Option<bool>,
+
+    /// The tool call, present on a `functionCall` part.
+    #[serde(rename = "functionCall", default)]
+    function_call: Option<FunctionCallPayload>,
+
+    /// Upstream thought signature that must be replayed on the next turn.
+    #[serde(rename = "thoughtSignature", default)]
+    thought_signature: Option<String>,
+}
+
+/// The tool call of one upstream part.
+#[derive(Debug, Default, Deserialize)]
+struct FunctionCallPayload {
+    /// Name of the invoked function, empty when the upstream omits it.
+    #[serde(default)]
+    name: Option<String>,
+
+    /// Arguments the model supplied; the object's members are the tool's own
+    /// schema, which the gateway forwards verbatim.
+    #[serde(default)]
+    args: Option<serde_json::Map<String, Value>>,
+
+    /// Invocation identifier, absent on an upstream that does not mint one.
+    #[serde(default)]
+    id: Option<String>,
+}
+
+/// Prompt-level feedback of a blocked prompt.
+#[derive(Debug, Default, Deserialize)]
+struct PromptFeedback {
+    /// Why the prompt was blocked.
+    #[serde(rename = "blockReason", default)]
+    block_reason: Option<String>,
+}
+
+/// Upstream token accounting in the Gemini shape.
+#[derive(Debug, Default, Deserialize)]
+struct UsageMetadata {
+    /// Tokens consumed by the prompt.
+    #[serde(rename = "promptTokenCount", default)]
+    prompt_token_count: u64,
+
+    /// Tokens produced by the candidates, excluding reasoning.
+    #[serde(rename = "candidatesTokenCount", default)]
+    candidates_token_count: u64,
+
+    /// Tokens spent on model reasoning.
+    #[serde(rename = "thoughtsTokenCount", default)]
+    thoughts_token_count: Option<u64>,
+
+    /// Prompt tokens served from the upstream cache.
+    #[serde(rename = "cachedContentTokenCount", default)]
+    cached_content_token_count: Option<u64>,
+}
+
 impl UpstreamParser {
     /// Creates an empty parser.
     pub(crate) fn new() -> Self {
@@ -380,22 +792,21 @@ impl UpstreamParser {
     }
 
     /// Ingests one GenerateContentResponse object.
-    fn ingest_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PayloadError`] for an embedded upstream error object and for
+    /// a `MALFORMED_FUNCTION_CALL` finish.
+    fn ingest_response(&mut self, body: UpstreamBody) -> Result<Vec<IrEvent>, PayloadError> {
         // An error object inside a 2xx body is a malformed upstream payload
         // (README §6.7); the check sits beside the protocol fields, before
         // the `response` envelope below is unwrapped, shared with the
         // OpenAI-family codecs.
-        super::reject_upstream_error(&value)?;
+        if let Some(error) = &body.error {
+            return Err(error.failure());
+        }
 
-        // The Cloud Code Assist API wraps every GenerateContentResponse —
-        // `:generateContent` JSON bodies and `alt=sse` frames alike — in a
-        // `response` envelope beside `traceId` and `metadata` (README §5.2),
-        // while Gemini-compatible upstreams carry the bare response, which
-        // has no top-level `response` field of its own. Unwrap when present.
-        let value = match value.get("response") {
-            Some(inner) if inner.is_object() => inner,
-            _ => &value,
-        };
+        let value = body.payload();
 
         let mut events = Vec::new();
 
@@ -404,24 +815,21 @@ impl UpstreamParser {
 
             events.push(IrEvent::MessageStart {
                 id: value
-                    .get("responseId")
-                    .and_then(Value::as_str)
-                    .map_or_else(|| format!("gen-{}", ids::new_uuid()), str::to_string),
-                model: super::string_field(value, "modelVersion"),
+                    .response_id
+                    .clone()
+                    .unwrap_or_else(|| format!("gen-{}", ids::new_uuid())),
+                model: value.model_version.clone().unwrap_or_default(),
             });
         }
 
-        if let Some(candidate) = super::primary_indexed(value, "candidates") {
-            if let Some(parts) = candidate
-                .pointer("/content/parts")
-                .and_then(Value::as_array)
-            {
-                for part in parts {
+        if let Some(candidate) = primary_candidate(&value.candidates) {
+            if let Some(content) = &candidate.content {
+                for part in &content.parts {
                     self.ingest_part(part, &mut events);
                 }
             }
 
-            if let Some(finish_reason) = candidate.get("finishReason").and_then(Value::as_str) {
+            if let Some(finish_reason) = &candidate.finish_reason {
                 self.is_finished = true;
 
                 events.push(IrEvent::Finish(finish_reason_from_gemini(
@@ -438,8 +846,9 @@ impl UpstreamParser {
         // candidate finish above always wins.
         if !self.is_finished
             && value
-                .pointer("/promptFeedback/blockReason")
-                .and_then(Value::as_str)
+                .prompt_feedback
+                .as_ref()
+                .and_then(|feedback| feedback.block_reason.as_deref())
                 .is_some()
         {
             self.is_finished = true;
@@ -447,20 +856,13 @@ impl UpstreamParser {
             events.push(IrEvent::Finish(IrFinishReason::ContentFilter));
         }
 
-        if let Some(usage) = value.get("usageMetadata").filter(|usage| usage.is_object()) {
-            let reasoning_tokens = usage.get("thoughtsTokenCount").and_then(Value::as_u64);
+        if let Some(usage) = &value.usage_metadata {
+            let reasoning_tokens = usage.thoughts_token_count;
 
             events.push(IrEvent::Usage(IrUsage {
-                input_tokens: usage
-                    .get("promptTokenCount")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                output_tokens: usage
-                    .get("candidatesTokenCount")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0)
-                    + reasoning_tokens.unwrap_or(0),
-                cached_tokens: usage.get("cachedContentTokenCount").and_then(Value::as_u64),
+                input_tokens: usage.prompt_token_count,
+                output_tokens: usage.candidates_token_count + reasoning_tokens.unwrap_or(0),
+                cached_tokens: usage.cached_content_token_count,
                 // Gemini reports no cache-write accounting.
                 cache_write_tokens: None,
                 reasoning_tokens,
@@ -476,39 +878,35 @@ impl UpstreamParser {
     ///
     /// Panics if serializing the borrowed `args` map fails, which cannot
     /// occur: serializing a JSON object map is infallible.
-    fn ingest_part(&mut self, part: &Value, events: &mut Vec<IrEvent>) {
-        if let Some(text) = part.get("text").and_then(Value::as_str) {
-            let is_thought = part
-                .get("thought")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+    fn ingest_part(&mut self, part: &GeminiPart, events: &mut Vec<IrEvent>) {
+        if let Some(text) = &part.text {
+            let is_thought = part.thought.unwrap_or(false);
 
             events.push(if is_thought {
-                IrEvent::ReasoningDelta(text.to_string())
+                IrEvent::ReasoningDelta(text.clone())
             } else {
-                IrEvent::TextDelta(text.to_string())
+                IrEvent::TextDelta(text.clone())
             });
         }
 
-        let Some(function_call) = part.get("functionCall") else {
+        let Some(function_call) = &part.function_call else {
             return;
         };
 
         self.is_call_delivered = true;
 
-        let name = super::string_field(function_call, "name");
+        let name = function_call.name.clone().unwrap_or_default();
 
         // The arguments serialize straight from the borrowed map — no deep
-        // copy — with a missing or non-object `args` rendering an empty JSON
-        // object.
-        let arguments = match function_call.get("args").and_then(Value::as_object) {
-            Some(object) =>
+        // copy — with a missing `args` rendering an empty JSON object.
+        let arguments = match &function_call.args {
+            Some(args) =>
             {
                 #[expect(
                     clippy::expect_used,
                     reason = "serializing a JSON object map cannot fail"
                 )]
-                serde_json::to_string(object).expect("JSON map serialization is infallible")
+                serde_json::to_string(args).expect("JSON map serialization is infallible")
             }
 
             None => "{}".to_string(),
@@ -519,9 +917,9 @@ impl UpstreamParser {
         // without it two same-name calls in one turn are unresolvable. An
         // id-less call mints one so the pairing channel always exists; the
         // minted id also rides outward as the client-facing tool-call id.
-        let call_id = match super::string_field(function_call, "id") {
-            id if id.is_empty() => format!("call_{}", ids::new_uuid()),
-            id => id,
+        let call_id = match function_call.id.clone() {
+            Some(id) if !id.is_empty() => id,
+            _ => format!("call_{}", ids::new_uuid()),
         };
 
         events.push(IrEvent::ToolCallDelta {
@@ -536,10 +934,7 @@ impl UpstreamParser {
             call_id,
             name,
             arguments,
-            thought_signature: part
-                .get("thoughtSignature")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            thought_signature: part.thought_signature.clone(),
         });
 
         self.call_counter += 1;
@@ -553,9 +948,9 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for malformed JSON and upstream error objects.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
-        let value = super::parse_frame_json(frame)?;
+        let body = format::parse_frame::<UpstreamBody>(frame)?;
 
-        self.ingest_response(value)
+        self.ingest_response(body)
     }
 
     /// Parses a complete upstream non-streaming JSON response.
@@ -565,7 +960,9 @@ impl UpstreamEventParser for UpstreamParser {
     /// Returns [`PayloadError`] for upstream error objects and malformed
     /// bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        self.ingest_response(value)
+        let body = format::parse_body::<UpstreamBody>(value)?;
+
+        self.ingest_response(body)
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {
@@ -581,6 +978,17 @@ impl UpstreamEventParser for UpstreamParser {
 
         Vec::new()
     }
+}
+
+/// Selects the primary candidate of an upstream `candidates` array: the entry
+/// whose `index` is 0, tolerating index-less upstreams by taking the first
+/// entry instead. Parallel candidates beyond the primary are not supported and
+/// the remainder is ignored.
+fn primary_candidate(candidates: &[Candidate]) -> Option<&Candidate> {
+    candidates
+        .iter()
+        .find(|candidate| candidate.index == Some(0))
+        .or_else(|| candidates.first())
 }
 
 /// Maps a Gemini `finishReason` to the canonical reason.
@@ -627,6 +1035,16 @@ fn finish_reason_from_gemini(
 mod tests {
     use super::*;
     use crate::ir::IrMessage;
+
+    /// Renders a bare GenerateContentRequest into the JSON value the tests
+    /// assert against.
+    #[expect(
+        clippy::expect_used,
+        reason = "the rendered request is under test; a failing render is the failure"
+    )]
+    fn request_json(request: &GenerateContentRequest<'_>) -> Value {
+        serde_json::to_value(request).expect("the rendered request serializes")
+    }
 
     /// A turn whose upstream reported `MALFORMED_FUNCTION_CALL` is a failed
     /// generation, not a successful completion: both the JSON body and the
@@ -907,7 +1325,7 @@ mod tests {
         let request = render_generate_content_request(&ir).expect("a tool-call history renders");
 
         assert_eq!(
-            request["contents"],
+            request_json(&request)["contents"],
             serde_json::json!([
                 {"role": "user", "parts": [{"text": "Run both checks"}]},
                 {"role": "model", "parts": [
@@ -988,7 +1406,7 @@ mod tests {
         let request = render_generate_content_request(&ir).expect("a tool history renders");
 
         assert_eq!(
-            request["contents"],
+            request_json(&request)["contents"],
             serde_json::json!([
                 {"role": "model", "parts": [{
                     "functionCall": {"id": "fc-777", "name": "weather", "args": {"city": "Oslo"}},
@@ -1070,6 +1488,8 @@ mod tests {
 
         let request = render_generate_content_request(&ir).expect("a tool history renders");
 
+        let request = request_json(&request);
+
         let call = &request["contents"][0]["parts"][0]["functionCall"];
         let response = &request["contents"][1]["parts"][0]["functionResponse"];
 
@@ -1126,7 +1546,7 @@ mod tests {
         let request = render_generate_content_request(&ir).expect("a tool history renders");
 
         assert_eq!(
-            request["contents"],
+            request_json(&request)["contents"],
             serde_json::json!([
                 {"role": "model", "parts": [
                     {"functionCall": {"id": "up-1", "name": "lookup", "args": {"key": "a"}}},
@@ -1181,7 +1601,7 @@ mod tests {
         let request = render_generate_content_request(&ir).expect("a user-run history renders");
 
         assert_eq!(
-            request["contents"],
+            request_json(&request)["contents"],
             serde_json::json!([{"role": "user", "parts": [
                 {"text": "first question"},
                 {"text": "look at this"},
@@ -1222,15 +1642,14 @@ mod tests {
 
         let request = render_generate_content_request(&ir).expect("an alternating history renders");
 
-        // serde_json object keys serialize in sorted order ("parts" before
-        // "role"), so the pin below is the stable byte rendering.
+        // The typed contents serialize their fields in declaration order, so
+        // the pin below is the exact upstream byte rendering.
         assert_eq!(
-            serde_json::to_string(&request["contents"])
-                .expect("rendered contents always serialize"),
+            serde_json::to_string(&request.contents).expect("rendered contents always serialize"),
             concat!(
-                r#"[{"parts":[{"text":"hello"}],"role":"user"},"#,
-                r#"{"parts":[{"text":"hi there"}],"role":"model"},"#,
-                r#"{"parts":[{"text":"one more question"}],"role":"user"}"#,
+                r#"[{"role":"user","parts":[{"text":"hello"}]},"#,
+                r#"{"role":"model","parts":[{"text":"hi there"}]},"#,
+                r#"{"role":"user","parts":[{"text":"one more question"}]}"#,
                 r#"]"#,
             ),
         );

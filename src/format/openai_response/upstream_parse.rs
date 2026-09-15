@@ -1,11 +1,16 @@
 //! Upstream-event parsing for the Responses codec: parses upstream SSE events
 //! or a complete JSON body into IR events.
+//!
+//! Upstream payloads are third-party, so the models below carry exactly the
+//! members the codec reads, ignore every member it does not, and default what
+//! upstreams legitimately omit.
 
 use crate::{
-    format::{self, PayloadError, UpstreamEventParser},
+    format::{self, PayloadError, UpstreamError, UpstreamEventParser},
     ir::{IrEvent, IrFinishReason, IrUsage},
     sse::SseFrame,
 };
+use serde::Deserialize;
 use serde_json::Value;
 
 /// Parses upstream Responses payloads — SSE events or a full JSON body — into
@@ -32,6 +37,205 @@ pub(crate) struct UpstreamParser {
     /// without one degrades to [`IrFinishReason::Stop`] in the parser's
     /// finish hook, matching the aggregated rendering default.
     is_finished: bool,
+}
+
+/// One upstream Responses event: the union of the members the gateway reads
+/// across the event vocabulary, selected by `event_type`.
+///
+/// Upstreams are third-party, so every member is optional — each event type
+/// carries its own subset, and upstreams attach identifiers, sequence numbers,
+/// and provider extensions the gateway never reads — and no member is
+/// required. The `error` member is read on every event type: any frame bearing
+/// one is an upstream failure, recognized type or not (README §6.7).
+#[derive(Debug, Default, Deserialize)]
+struct UpstreamEvent {
+    /// Event type discriminator.
+    #[serde(rename = "type", default)]
+    event_type: String,
+
+    /// Failure the upstream may embed in any event.
+    #[serde(default)]
+    error: Option<UpstreamError>,
+
+    /// The response object of the response-level events, and of a complete
+    /// non-streaming body.
+    #[serde(default)]
+    response: Option<ResponseObject>,
+
+    /// The output item of the item-level events.
+    #[serde(default)]
+    item: Option<OutputItem>,
+
+    /// Position of the item within the response's output array.
+    #[serde(default)]
+    output_index: Option<u64>,
+
+    /// Incremental text of the delta events.
+    #[serde(default)]
+    delta: Option<String>,
+
+    /// Failure text of the bare `error` event.
+    #[serde(default)]
+    message: Option<String>,
+}
+
+/// The upstream response object, carried by the response-level events as the
+/// `response` member and by a complete non-streaming body as the body itself.
+#[derive(Debug, Default, Deserialize)]
+struct ResponseObject {
+    /// Upstream response identifier, empty when the upstream omits it.
+    #[serde(default)]
+    id: String,
+
+    /// Upstream model name, empty when the upstream omits it.
+    #[serde(default)]
+    model: String,
+
+    /// Response status, deciding the finish mapping.
+    #[serde(default)]
+    status: Option<String>,
+
+    /// The completed output items, in output order.
+    #[serde(default)]
+    output: Vec<OutputItem>,
+
+    /// Why an `incomplete` response was cut short.
+    #[serde(default)]
+    incomplete_details: Option<IncompleteDetails>,
+
+    /// Token accounting.
+    #[serde(default)]
+    usage: Option<UpstreamUsage>,
+
+    /// Failure the upstream attached to the response.
+    #[serde(default)]
+    error: Option<UpstreamError>,
+}
+
+/// Why an upstream response is incomplete.
+#[derive(Debug, Default, Deserialize)]
+struct IncompleteDetails {
+    /// Upstream reason string.
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// Upstream token accounting in the Responses shape.
+#[derive(Debug, Default, Deserialize)]
+struct UpstreamUsage {
+    /// Tokens consumed by the input.
+    #[serde(default)]
+    input_tokens: u64,
+
+    /// Tokens produced by the output.
+    #[serde(default)]
+    output_tokens: u64,
+
+    /// Input token breakdown, absent when the upstream reports totals only.
+    #[serde(default)]
+    input_tokens_details: Option<InputTokensDetails>,
+
+    /// Output token breakdown, absent when the upstream reports totals only.
+    #[serde(default)]
+    output_tokens_details: Option<OutputTokensDetails>,
+}
+
+/// The upstream input token breakdown.
+#[derive(Debug, Default, Deserialize)]
+struct InputTokensDetails {
+    /// Input tokens served from the upstream prompt cache.
+    #[serde(default)]
+    cached_tokens: Option<u64>,
+
+    /// Input tokens written to the upstream prompt cache.
+    #[serde(default)]
+    cache_write_tokens: Option<u64>,
+}
+
+/// The upstream output token breakdown.
+#[derive(Debug, Default, Deserialize)]
+struct OutputTokensDetails {
+    /// Output tokens spent on model reasoning.
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
+}
+
+/// One upstream output item: the union of the fields the gateway reads across
+/// the item kinds it maps to IR events. Items of other kinds carry none of
+/// them and are ignored.
+#[derive(Debug, Default, Deserialize)]
+struct OutputItem {
+    /// Item kind discriminator.
+    #[serde(rename = "type", default)]
+    item_type: String,
+
+    /// Content parts of a `message` item.
+    #[serde(default)]
+    content: Vec<ContentPart>,
+
+    /// Summary parts of a `reasoning` item.
+    #[serde(default)]
+    summary: Vec<SummaryPart>,
+
+    /// Identifier of the invocation of a `function_call` item.
+    #[serde(default)]
+    call_id: String,
+
+    /// Name of the invoked function of a `function_call` item.
+    #[serde(default)]
+    name: String,
+
+    /// JSON-encoded arguments of a `function_call` item.
+    #[serde(default)]
+    arguments: String,
+
+    /// Upstream thought signature the gateway extension carries (README §6.6).
+    #[serde(default)]
+    thought_signature: Option<String>,
+}
+
+/// One content part of a `message` item. Refusal text is message text: it
+/// rides the same text channel as `output_text` parts (README §6.2). Parts of
+/// other kinds carry no text and are ignored.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum ContentPart {
+    /// Assistant output text.
+    #[serde(rename = "output_text")]
+    OutputText {
+        /// The text, absent when the part carries none.
+        #[serde(default)]
+        text: Option<String>,
+    },
+
+    /// A model refusal.
+    #[serde(rename = "refusal")]
+    Refusal {
+        /// The refusal text, absent when the part carries none.
+        #[serde(default)]
+        refusal: Option<String>,
+    },
+
+    /// Any other part kind, which carries no text.
+    #[serde(other)]
+    Other,
+}
+
+/// One summary part of a `reasoning` item.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum SummaryPart {
+    /// Reasoning summary text.
+    #[serde(rename = "summary_text")]
+    SummaryText {
+        /// The text, absent when the part carries none.
+        #[serde(default)]
+        text: Option<String>,
+    },
+
+    /// Any other part kind, which carries no text.
+    #[serde(other)]
+    Other,
 }
 
 /// Exactly-once fallback-recovery state for one output kind: whether live
@@ -83,6 +287,18 @@ enum OutputItemOrigin {
     Terminal(usize),
 }
 
+impl OutputItemOrigin {
+    /// The output index a fallback recovery keys on, or [`None`] for the JSON
+    /// body origin, whose items always deliver.
+    fn recovery_index(self) -> Option<usize> {
+        match self {
+            Self::Json(_) => None,
+
+            Self::StreamDone(index) | Self::Terminal(index) => Some(index),
+        }
+    }
+}
+
 impl UpstreamParser {
     /// Creates an empty parser.
     pub(crate) fn new() -> Self {
@@ -90,28 +306,31 @@ impl UpstreamParser {
     }
 
     /// Ingests one upstream event object.
-    fn ingest_event(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PayloadError`] for upstream failure events.
+    fn ingest_event(&mut self, event: UpstreamEvent) -> Result<Vec<IrEvent>, PayloadError> {
         // Any frame bearing a top-level error object is an upstream failure,
         // recognized event type or not; without this check such a frame
         // would fall through to the unknown-type arm and parse as an empty
         // success (README §6.7).
-        format::reject_upstream_error(&value)?;
+        if let Some(error) = &event.error {
+            return Err(error.failure());
+        }
 
-        let event_type = value
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        match event_type {
-            "response.created" | "response.in_progress" => Ok(self.message_start_events(&value)),
+        match event.event_type.as_str() {
+            "response.created" | "response.in_progress" => {
+                Ok(self.message_start_events(event.response.as_ref()))
+            }
 
             "response.output_item.added" => {
-                let mut events = self.message_start_events(&value);
+                let mut events = self.message_start_events(event.response.as_ref());
 
-                let output_index = event_output_index(&value);
+                let output_index = event_output_index(&event);
 
-                if let Some(item) = value.get("item")
-                    && item.get("type").and_then(Value::as_str) == Some("function_call")
+                if let Some(item) = &event.item
+                    && item.item_type == "function_call"
                 {
                     self.is_call_delivered = true;
 
@@ -122,9 +341,9 @@ impl UpstreamParser {
             }
 
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                let mut events = self.message_start_events(&value);
+                let mut events = self.message_start_events(event.response.as_ref());
 
-                let deltas = self.delta_event(&value, IrEvent::ReasoningDelta);
+                let deltas = delta_event(&event, IrEvent::ReasoningDelta);
 
                 // Only an event that actually carried a delta exhausts the
                 // fallback sources; a delta-typed event without a payload
@@ -139,9 +358,9 @@ impl UpstreamParser {
             }
 
             "response.output_text.delta" | "response.refusal.delta" => {
-                let mut events = self.message_start_events(&value);
+                let mut events = self.message_start_events(event.response.as_ref());
 
-                let deltas = self.delta_event(&value, IrEvent::TextDelta);
+                let deltas = delta_event(&event, IrEvent::TextDelta);
 
                 if !deltas.is_empty() {
                     self.text_recovery.is_delivered = true;
@@ -153,14 +372,9 @@ impl UpstreamParser {
             }
 
             "response.function_call_arguments.delta" => {
-                let mut events = self.message_start_events(&value);
+                let mut events = self.message_start_events(event.response.as_ref());
 
-                let output_index = event_output_index(&value);
-
-                let delta = value
-                    .get("delta")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                let output_index = event_output_index(&event);
 
                 self.is_call_delivered = true;
 
@@ -168,32 +382,35 @@ impl UpstreamParser {
                     index: output_index,
                     call_id: None,
                     name: None,
-                    arguments_delta: delta.to_string(),
+                    arguments_delta: event.delta.clone().unwrap_or_default(),
                 });
 
                 Ok(events)
             }
 
             "response.output_item.done" => {
-                let mut events = self.message_start_events(&value);
+                let mut events = self.message_start_events(event.response.as_ref());
 
-                if let Some(item) = value.get("item") {
-                    let output_index = event_output_index(&value);
+                if let Some(item) = &event.item {
+                    let output_index = event_output_index(&event);
 
                     self.ingest_output_item(
                         item,
                         OutputItemOrigin::StreamDone(output_index),
                         &mut events,
-                    )?;
+                    );
                 }
 
                 Ok(events)
             }
 
             "response.completed" | "response.incomplete" => {
-                let response = value.get("response").unwrap_or(&format::MISSING);
+                let mut events = self.message_start_events(event.response.as_ref());
 
-                let mut events = self.message_start_events(&value);
+                // An absent response object behaves exactly as an empty one:
+                // no output to recover, no usage, and the delivered-calls
+                // flag alone deciding the finish.
+                let response = event.response.unwrap_or_default();
 
                 // A third-party `openai_compatible` upstream may carry items
                 // only in the terminal response object; when no live event
@@ -216,21 +433,18 @@ impl UpstreamParser {
                 // must not mark the turn as a tool-call turn.
                 let mut is_call_recovered = false;
 
-                if (!self.text_recovery.is_delivered
+                if !self.text_recovery.is_delivered
                     || !self.reasoning_recovery.is_delivered
-                    || is_call_recoverable)
-                    && let Some(output) = response.get("output").and_then(Value::as_array)
+                    || is_call_recoverable
                 {
-                    for (position, item) in output.iter().enumerate() {
+                    for (position, item) in response.output.iter().enumerate() {
                         self.ingest_output_item(
                             item,
                             OutputItemOrigin::Terminal(position),
                             &mut events,
-                        )?;
+                        );
 
-                        if is_call_recoverable
-                            && item.get("type").and_then(Value::as_str) == Some("function_call")
-                        {
+                        if is_call_recoverable && item.item_type == "function_call" {
                             is_call_recovered = true;
                         }
                     }
@@ -245,31 +459,27 @@ impl UpstreamParser {
                 // The delivery flag was flipped after the terminal walk above,
                 // so calls recovered from the output array count too.
                 events.push(IrEvent::Finish(finish_reason_for_response(
-                    response,
+                    &response,
                     self.is_call_delivered,
                 )));
-                push_usage_events(response, &mut events);
+
+                push_usage_events(&response, &mut events);
 
                 Ok(events)
             }
 
-            "response.failed" => {
-                let message = value
-                    .pointer("/response/error/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("upstream response failed");
+            "response.failed" => Err(PayloadError::new(
+                event
+                    .response
+                    .as_ref()
+                    .and_then(|response| response.error.as_ref())
+                    .and_then(UpstreamError::message)
+                    .unwrap_or("upstream response failed"),
+            )),
 
-                Err(PayloadError::new(message))
-            }
-
-            "error" => {
-                let message = value
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("upstream stream error");
-
-                Err(PayloadError::new(message))
-            }
+            "error" => Err(PayloadError::new(
+                event.message.as_deref().unwrap_or("upstream stream error"),
+            )),
 
             _ => Ok(Vec::new()),
         }
@@ -290,180 +500,138 @@ impl UpstreamParser {
     /// streamed done event is recognized by the shared index.
     fn ingest_output_item(
         &mut self,
-        item: &Value,
+        item: &OutputItem,
         origin: OutputItemOrigin,
         events: &mut Vec<IrEvent>,
-    ) -> Result<(), PayloadError> {
-        match item.get("type").and_then(Value::as_str) {
-            Some("message") => {
-                let should_extract = match origin {
-                    OutputItemOrigin::Json(_) => true,
-
-                    OutputItemOrigin::StreamDone(index) | OutputItemOrigin::Terminal(index) => {
-                        self.text_recovery.can_recover(index)
-                    }
+    ) {
+        match item.item_type.as_str() {
+            "message" => {
+                let should_extract = match origin.recovery_index() {
+                    Some(index) => self.text_recovery.can_recover(index),
+                    None => true,
                 };
 
-                if should_extract
-                    && let Some(content) = item.get("content").and_then(Value::as_array)
-                {
-                    for part in content {
-                        // Refusal text is message text: it rides the same
-                        // text channel as `output_text` parts (README §6.2).
-                        let text = match part.get("type").and_then(Value::as_str) {
-                            Some("output_text") => part.get("text").and_then(Value::as_str),
-
-                            Some("refusal") => part.get("refusal").and_then(Value::as_str),
-
-                            _ => None,
-                        };
-
-                        if let Some(text) = text {
-                            // The recovery record is written only when a text
-                            // part was actually pushed, so a text-less item
-                            // does not exhaust its output index for a later
-                            // item that carries the text.
-                            if let OutputItemOrigin::StreamDone(index)
-                            | OutputItemOrigin::Terminal(index) = origin
-                            {
-                                self.text_recovery.record(index);
-                            }
-
-                            events.push(IrEvent::TextDelta(text.to_string()));
-                        }
-                    }
+                if !should_extract {
+                    return;
                 }
 
-                Ok(())
+                for part in &item.content {
+                    // Refusal text is message text: it rides the same text
+                    // channel as `output_text` parts (README §6.2).
+                    let text = match part {
+                        ContentPart::OutputText { text } => text.as_deref(),
+
+                        ContentPart::Refusal { refusal } => refusal.as_deref(),
+
+                        ContentPart::Other => None,
+                    };
+
+                    if let Some(text) = text {
+                        // The recovery record is written only when a text
+                        // part was actually pushed, so a text-less item
+                        // does not exhaust its output index for a later
+                        // item that carries the text.
+                        if let Some(index) = origin.recovery_index() {
+                            self.text_recovery.record(index);
+                        }
+
+                        events.push(IrEvent::TextDelta(text.to_string()));
+                    }
+                }
             }
 
-            Some("reasoning") => {
-                let should_extract = match origin {
-                    OutputItemOrigin::Json(_) => true,
-
-                    OutputItemOrigin::StreamDone(index) | OutputItemOrigin::Terminal(index) => {
-                        self.reasoning_recovery.can_recover(index)
-                    }
+            "reasoning" => {
+                let should_extract = match origin.recovery_index() {
+                    Some(index) => self.reasoning_recovery.can_recover(index),
+                    None => true,
                 };
 
-                if should_extract
-                    && let Some(summary) = item.get("summary").and_then(Value::as_array)
-                {
-                    for part in summary {
-                        if let Some(text) = part.get("text").and_then(Value::as_str) {
-                            // Same per-extraction rule as the message arm: a
-                            // summary-less item does not exhaust its output
-                            // index.
-                            if let OutputItemOrigin::StreamDone(index)
-                            | OutputItemOrigin::Terminal(index) = origin
-                            {
-                                self.reasoning_recovery.record(index);
-                            }
-
-                            events.push(IrEvent::ReasoningDelta(text.to_string()));
-                        }
-                    }
+                if !should_extract {
+                    return;
                 }
 
-                Ok(())
+                for part in &item.summary {
+                    let SummaryPart::SummaryText { text } = part else {
+                        continue;
+                    };
+
+                    if let Some(text) = text {
+                        // Same per-extraction rule as the message arm: a
+                        // summary-less item does not exhaust its output
+                        // index.
+                        if let Some(index) = origin.recovery_index() {
+                            self.reasoning_recovery.record(index);
+                        }
+
+                        events.push(IrEvent::ReasoningDelta(text.clone()));
+                    }
+                }
             }
 
-            Some("function_call") => {
-                match origin {
-                    // A JSON body delivers the whole call at once; mirror the
-                    // chat and gemini JSON paths with a full-arguments delta
-                    // plus a done per call, so streaming renderers open and
-                    // complete the item.
-                    OutputItemOrigin::Json(index) => {
-                        self.is_call_delivered = true;
+            "function_call" => match origin {
+                // A JSON body delivers the whole call at once; mirror the
+                // chat and gemini JSON paths with a full-arguments delta
+                // plus a done per call, so streaming renderers open and
+                // complete the item.
+                OutputItemOrigin::Json(index) => {
+                    self.is_call_delivered = true;
 
-                        let call_id = format::string_field(item, "call_id");
-                        let name = format::string_field(item, "name");
-                        let arguments = format::string_field(item, "arguments");
+                    events.push(IrEvent::ToolCallDelta {
+                        index,
+                        call_id: Some(item.call_id.clone()),
+                        name: Some(item.name.clone()),
+                        arguments_delta: item.arguments.clone(),
+                    });
 
-                        events.push(IrEvent::ToolCallDelta {
-                            index,
-                            call_id: Some(call_id.clone()),
-                            name: Some(name.clone()),
-                            arguments_delta: arguments.clone(),
-                        });
+                    events.push(self.complete_function_call(item, index));
+                }
 
-                        events.push(IrEvent::ToolCallDone {
-                            index,
-                            call_id,
-                            name,
-                            arguments,
-                            thought_signature: item
-                                .get("thought_signature")
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
-                        });
-                    }
+                OutputItemOrigin::StreamDone(index) => {
+                    self.is_call_delivered = true;
 
-                    OutputItemOrigin::StreamDone(index) => {
-                        self.is_call_delivered = true;
+                    events.push(self.complete_function_call(item, index));
+                }
 
+                // The terminal fallback completes a call exactly-once:
+                // only when no live call event was delivered before the
+                // terminal event may the output array deliver calls,
+                // mirroring the per-kind text recovery; re-emitting
+                // delivered calls here would duplicate them. The delivery
+                // flag is owned by the terminal-event arm, which flips it
+                // only after the whole output array is walked, so several
+                // recovered calls each deliver exactly once; the flag
+                // keeps its pre-walk value for every item of this walk.
+                OutputItemOrigin::Terminal(index) => {
+                    if !self.is_call_delivered {
                         events.push(self.complete_function_call(item, index));
                     }
-
-                    // The terminal fallback completes a call exactly-once:
-                    // only when no live call event was delivered before the
-                    // terminal event may the output array deliver calls,
-                    // mirroring the per-kind text recovery; re-emitting
-                    // delivered calls here would duplicate them. The delivery
-                    // flag is owned by the terminal-event arm, which flips it
-                    // only after the whole output array is walked, so several
-                    // recovered calls each deliver exactly once; the flag
-                    // keeps its pre-walk value for every item of this walk.
-                    OutputItemOrigin::Terminal(index) => {
-                        if !self.is_call_delivered {
-                            events.push(self.complete_function_call(item, index));
-                        }
-                    }
                 }
+            },
 
-                Ok(())
-            }
-
-            _ => Ok(()),
+            _ => {}
         }
     }
 
     /// Emits the opening delta for a function call item revealed by
     /// `output_item.added`.
-    fn open_function_call(&self, item: &Value, output_index: usize) -> IrEvent {
+    fn open_function_call(&self, item: &OutputItem, output_index: usize) -> IrEvent {
         IrEvent::ToolCallDelta {
             index: output_index,
-            call_id: Some(format::string_field(item, "call_id")),
-            name: Some(format::string_field(item, "name")),
+            call_id: Some(item.call_id.clone()),
+            name: Some(item.name.clone()),
             arguments_delta: String::new(),
         }
     }
 
     /// Emits the completion of a function call item delivered by a streaming
     /// `output_item.done`.
-    fn complete_function_call(&self, item: &Value, index: usize) -> IrEvent {
+    fn complete_function_call(&self, item: &OutputItem, index: usize) -> IrEvent {
         IrEvent::ToolCallDone {
             index,
-            call_id: format::string_field(item, "call_id"),
-            name: format::string_field(item, "name"),
-            arguments: format::string_field(item, "arguments"),
-            thought_signature: item
-                .get("thought_signature")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        }
-    }
-
-    /// Builds a delta event from an upstream delta payload.
-    fn delta_event(
-        &self,
-        value: &Value,
-        make_event_fn: impl Fn(String) -> IrEvent,
-    ) -> Vec<IrEvent> {
-        match value.get("delta") {
-            Some(Value::String(delta)) => vec![make_event_fn(delta.clone())],
-            _ => Vec::new(),
+            call_id: item.call_id.clone(),
+            name: item.name.clone(),
+            arguments: item.arguments.clone(),
+            thought_signature: item.thought_signature.clone(),
         }
     }
 
@@ -472,19 +640,23 @@ impl UpstreamParser {
     /// see the live `response.created`/`response.in_progress` events —
     /// no-live-delta upstreams per README §6.3 — still open their event
     /// stream with it, and the once-only guard turns repeats into no-ops.
-    fn message_start_events(&mut self, value: &Value) -> Vec<IrEvent> {
+    ///
+    /// The identity comes from the response object the event carries; an
+    /// event carrying none opens the stream with empty identity.
+    fn message_start_events(&mut self, response: Option<&ResponseObject>) -> Vec<IrEvent> {
         if self.is_started {
             return Vec::new();
         }
 
         self.is_started = true;
 
-        let response = value.get("response").unwrap_or(value);
+        let (id, model) = match response {
+            Some(response) => (response.id.clone(), response.model.clone()),
 
-        vec![IrEvent::MessageStart {
-            id: format::string_field(response, "id"),
-            model: format::string_field(response, "model"),
-        }]
+            None => (String::new(), String::new()),
+        };
+
+        vec![IrEvent::MessageStart { id, model }]
     }
 }
 
@@ -495,7 +667,7 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for malformed JSON and upstream failure events.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
-        let value = format::parse_frame_json(frame)?;
+        let value = format::parse_frame::<UpstreamEvent>(frame)?;
 
         self.ingest_event(value)
     }
@@ -507,25 +679,26 @@ impl UpstreamEventParser for UpstreamParser {
     /// Returns [`PayloadError`] for upstream failure statuses and malformed
     /// bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
+        let response = format::parse_body::<ResponseObject>(value)?;
+
         // A 2xx body carrying a top-level error object is an upstream
         // failure (README §6.7), not an empty success; the failed-status
         // fallback below still covers a failure without an error object.
-        format::reject_upstream_error(&value)?;
-
-        let mut events = self.message_start_events(&value);
-
-        if let Some(output) = value.get("output").and_then(Value::as_array) {
-            for (position, item) in output.iter().enumerate() {
-                self.ingest_output_item(item, OutputItemOrigin::Json(position), &mut events)?;
-            }
+        if let Some(error) = &response.error {
+            return Err(error.failure());
         }
 
-        let status = value.get("status");
+        let mut events = self.message_start_events(Some(&response));
 
-        if status.and_then(Value::as_str) == Some("failed") {
-            let message = value
-                .pointer("/error/message")
-                .and_then(Value::as_str)
+        for (position, item) in response.output.iter().enumerate() {
+            self.ingest_output_item(item, OutputItemOrigin::Json(position), &mut events);
+        }
+
+        if response.status.as_deref() == Some("failed") {
+            let message = response
+                .error
+                .as_ref()
+                .and_then(UpstreamError::message)
                 .unwrap_or("upstream response failed");
 
             return Err(PayloadError::new(message));
@@ -536,11 +709,11 @@ impl UpstreamEventParser for UpstreamParser {
         // The output walk above flipped the delivery flag for every
         // `function_call` item the body carried.
         events.push(IrEvent::Finish(finish_reason_for_response(
-            &value,
+            &response,
             self.is_call_delivered,
         )));
 
-        push_usage_events(&value, &mut events);
+        push_usage_events(&response, &mut events);
 
         Ok(events)
     }
@@ -561,12 +734,20 @@ impl UpstreamEventParser for UpstreamParser {
     }
 }
 
-/// Reads the `output_index` field of an upstream stream event.
-fn event_output_index(value: &Value) -> usize {
-    value
-        .get("output_index")
-        .and_then(Value::as_u64)
-        .unwrap_or_default() as usize
+/// Reads the `output_index` field of an upstream stream event, defaulting to
+/// the first position.
+fn event_output_index(event: &UpstreamEvent) -> usize {
+    event.output_index.unwrap_or_default() as usize
+}
+
+/// Builds a delta event from an upstream delta payload; an event carrying no
+/// delta delivered nothing.
+fn delta_event(event: &UpstreamEvent, make_event_fn: impl Fn(String) -> IrEvent) -> Vec<IrEvent> {
+    match &event.delta {
+        Some(delta) => vec![make_event_fn(delta.clone())],
+
+        None => Vec::new(),
+    }
 }
 
 /// Finish reason for a response object already known not to be failed.
@@ -579,8 +760,11 @@ fn event_output_index(value: &Value) -> usize {
 /// failed / in_progress / cancelled / queued / incomplete), so the delivered
 /// calls decide, matching official Chat Completions semantics for
 /// text+tool-call mixed turns too.
-fn finish_reason_for_response(response: &Value, is_call_delivered: bool) -> IrFinishReason {
-    if response.get("status").and_then(Value::as_str) != Some("incomplete") {
+fn finish_reason_for_response(
+    response: &ResponseObject,
+    is_call_delivered: bool,
+) -> IrFinishReason {
+    if response.status.as_deref() != Some("incomplete") {
         if is_call_delivered {
             return IrFinishReason::ToolCall;
         }
@@ -589,8 +773,9 @@ fn finish_reason_for_response(response: &Value, is_call_delivered: bool) -> IrFi
     }
 
     match response
-        .pointer("/incomplete_details/reason")
-        .and_then(Value::as_str)
+        .incomplete_details
+        .as_ref()
+        .and_then(|details| details.reason.as_deref())
     {
         Some("content_filter") => IrFinishReason::ContentFilter,
 
@@ -599,31 +784,27 @@ fn finish_reason_for_response(response: &Value, is_call_delivered: bool) -> IrFi
 }
 
 /// Appends an [`IrEvent::Usage`] for the response's usage object, when present.
-fn push_usage_events(response: &Value, events: &mut Vec<IrEvent>) {
-    if let Some(usage) = response.get("usage").filter(|usage| usage.is_object()) {
-        let input_tokens_details = usage.get("input_tokens_details");
-        let output_tokens_details = usage.get("output_tokens_details");
+fn push_usage_events(response: &ResponseObject, events: &mut Vec<IrEvent>) {
+    let Some(usage) = &response.usage else {
+        return;
+    };
 
-        events.push(IrEvent::Usage(IrUsage {
-            input_tokens: usage
-                .get("input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-            output_tokens: usage
-                .get("output_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-            cached_tokens: input_tokens_details
-                .and_then(|details| details.get("cached_tokens"))
-                .and_then(Value::as_u64),
-            cache_write_tokens: input_tokens_details
-                .and_then(|details| details.get("cache_write_tokens"))
-                .and_then(Value::as_u64),
-            reasoning_tokens: output_tokens_details
-                .and_then(|details| details.get("reasoning_tokens"))
-                .and_then(Value::as_u64),
-        }));
-    }
+    events.push(IrEvent::Usage(IrUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cached_tokens: usage
+            .input_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens),
+        cache_write_tokens: usage
+            .input_tokens_details
+            .as_ref()
+            .and_then(|details| details.cache_write_tokens),
+        reasoning_tokens: usage
+            .output_tokens_details
+            .as_ref()
+            .and_then(|details| details.reasoning_tokens),
+    }));
 }
 
 #[cfg(test)]

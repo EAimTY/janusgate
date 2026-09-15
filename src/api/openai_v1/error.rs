@@ -7,6 +7,7 @@
 //! rides on the domain error's [`Display`](std::fmt::Display).
 
 use crate::{
+    format::{OpenAiErrorBody, OpenAiErrorEnvelope},
     gateway::Error as GatewayError,
     ir::InvalidRequest,
     provider::{oauth::Error as OAuthError, storage::Error as StorageError},
@@ -167,23 +168,25 @@ impl Error {
         }
     }
 
-    /// Renders the OpenAI JSON error structure.
-    pub(super) fn to_openai_json(&self) -> serde_json::Value {
+    /// Renders the OpenAI error object: the classified row beside the
+    /// human-readable message.
+    pub(super) fn body(&self) -> OpenAiErrorBody {
         let row = self.row();
 
-        serde_json::json!({
-            "error": {
-                "message": self.to_string(),
-                "type": row.error_type,
-                "param": row.param,
-                "code": row.code,
-            }
-        })
+        OpenAiErrorBody {
+            message: self.to_string(),
+            r#type: row.error_type,
+            param: row.param,
+            code: row.code,
+        }
     }
 
-    /// Renders the error into an HTTP response.
+    /// Renders the error into an HTTP response, wrapped in the OpenAI error
+    /// envelope the surface's JSON clients parse.
     pub(super) fn into_response(self) -> Response {
-        super::json_response(self.row().status, self.to_openai_json())
+        let status = self.row().status;
+
+        super::json_response(status, &OpenAiErrorEnvelope { error: self.body() })
     }
 }
 
@@ -338,13 +341,10 @@ mod tests {
         for (error, status, body) in cases {
             assert_eq!(error.row().status, status);
 
-            let rendered = error.to_openai_json();
+            let rendered = serde_json::to_value(error.body())
+                .expect("a typed error body serializes into a JSON value");
 
-            assert_eq!(
-                rendered.get("error"),
-                Some(&body),
-                "row mismatch for {rendered}"
-            );
+            assert_eq!(rendered, body, "row mismatch for {error}");
         }
     }
 

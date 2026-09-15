@@ -329,13 +329,7 @@ async fn refresh_and_build_credentials(
             account_id: refreshed
                 .id_token
                 .as_deref()
-                .and_then(|id_token| {
-                    token::jwt_claim(
-                        id_token,
-                        &["https://api.openai.com/auth", "chatgpt_account_id"],
-                    )
-                })
-                .and_then(|claim| claim.as_str().map(str::to_string))
+                .and_then(token::openai_account_claim)
                 .unwrap_or_else(|| account_id.clone()),
             access_token,
             refresh_token: refreshed

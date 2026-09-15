@@ -18,6 +18,7 @@ use crate::{
     ir::{InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrRequest, IrToolChoice},
     sse::SseFrame,
 };
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 pub(crate) mod gemini;
@@ -111,13 +112,46 @@ pub(crate) trait ClientSseRenderer {
     fn render(&mut self, event: &IrEvent) -> Vec<String>;
 
     /// Renders a mid-stream error as a terminal frame. `error` is the
-    /// surface's rendered OpenAI error envelope (`{"error": {...}}`).
-    fn error_frame(&mut self, error: &serde_json::Value) -> String;
+    /// surface's classified failure in the OpenAI error shape; each codec
+    /// places it in its own terminal frame — the Chat Completions error
+    /// envelope or the failed Responses response object.
+    fn error_frame(&mut self, error: &OpenAiErrorBody) -> String;
+}
+
+/// The OpenAI error object (README §6.7): the shape every outward failure
+/// renders as, whether in a JSON error envelope, inside a streamed Chat
+/// Completions error frame, or as the `error` of a failed Responses response
+/// object.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpenAiErrorBody {
+    /// Human-readable error message.
+    pub(crate) message: String,
+
+    /// OpenAI `type` field.
+    pub(crate) r#type: &'static str,
+
+    /// OpenAI `param` field, when the failure names a request parameter.
+    pub(crate) param: Option<String>,
+
+    /// OpenAI `code` field, when the failure has a stable code.
+    pub(crate) code: Option<String>,
+}
+
+/// The JSON error envelope `{"error": {...}}` shared by the JSON error
+/// response and the streamed Chat Completions error frame, so both render the
+/// same envelope from the same type.
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAiErrorEnvelope {
+    /// The rendered error object.
+    pub(crate) error: OpenAiErrorBody,
 }
 
 /// An outward client format: parses client requests into IR and renders IR
 /// events back in the client's wire shape, live or aggregated.
 pub(crate) trait ClientFormat {
+    /// The non-streaming success body this format renders.
+    type JsonResponse: Serialize;
+
     /// Parses one client request body.
     ///
     /// # Errors
@@ -141,7 +175,7 @@ pub(crate) trait ClientFormat {
     /// Renders an aggregated completion as a non-streaming response body.
     /// `public_id` is the public routing ID (README §3) the client
     /// addressed.
-    fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> serde_json::Value;
+    fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse;
 }
 
 impl UpstreamFormat {
@@ -188,72 +222,105 @@ pub(in crate::format) fn finish_reason_to_openai(reason: IrFinishReason) -> &'st
     }
 }
 
-/// Looks up the allowed-field table entry whose tag name equals `tag`.
+/// A wire value that is either a plain string or an array of typed items: the
+/// two official shapes of message content, tool-result output, and the
+/// Responses `input` field.
 ///
-/// Internally tagged serde enums cannot reject unknown fields themselves, so
-/// request parsers keep an allowlist per variant and match it against the raw
-/// JSON; variants absent from the table are left to serde to reject.
-pub(in crate::format) fn allowed_fields<'a>(
-    table: &'a [(&'a str, &'a [&'a str])],
-    tag: &str,
-) -> Option<&'a [&'a str]> {
-    table
-        .iter()
-        .find(|(name, _)| *name == tag)
-        .map(|(_, fields)| *fields)
+/// Deserialization is hand-written rather than an `untagged` enum because an
+/// untagged enum buffers its variants and reports every inner failure as
+/// "data did not match any variant", which would lose the member name a
+/// rejection has to name (README §6.6).
+#[derive(Debug)]
+pub(in crate::format) enum StringOrArray<T> {
+    /// The plain-string form.
+    Text(String),
+
+    /// The array form.
+    Array(Vec<T>),
 }
 
-/// Rejects every field of `object` absent from `allowed`, naming the first
-/// offender against `context`.
-///
-/// # Errors
-///
-/// Returns [`InvalidRequest`] naming the first unknown field.
-pub(in crate::format) fn reject_unknown_fields(
-    object: &serde_json::Map<String, serde_json::Value>,
-    allowed: &[&str],
-    context: &str,
-) -> Result<(), InvalidRequest> {
-    for field in object.keys() {
-        if !allowed.contains(&field.as_str()) {
-            return Err(InvalidRequest::field(
-                field,
-                format!("Unsupported field `{field}` in {context}"),
-            ));
+impl<'de, T> Deserialize<'de> for StringOrArray<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// Visitor accepting either shape and propagating every inner failure.
+        struct StringOrArrayVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T> serde::de::Visitor<'de> for StringOrArrayVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = StringOrArray<T>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string or an array of items")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(StringOrArray::Text(value.to_string()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(StringOrArray::Text(value))
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                // Element-wise ingestion propagates an item's own rejection —
+                // including the member name it carries — instead of collapsing
+                // it into a shape mismatch.
+                let mut items = Vec::new();
+
+                while let Some(item) = sequence.next_element::<T>()? {
+                    items.push(item);
+                }
+
+                Ok(StringOrArray::Array(items))
+            }
         }
-    }
 
-    Ok(())
+        deserializer.deserialize_any(StringOrArrayVisitor(std::marker::PhantomData))
+    }
 }
 
-/// Rejects unknown fields on tagged content-part objects, matching each
-/// part's `type` against `table`.
+/// Parses one client request body into its typed form.
+///
+/// The protocol's request shapes are concrete types with
+/// `deny_unknown_fields`, so one deserialization enforces every strictness
+/// rule at once: a member outside the shape, a missing required member, and a
+/// member of the wrong JSON kind are all rejected. serde names the offending
+/// member in the rejection, which is what README §6.6 requires; the rejection
+/// carries no [`InvalidRequest::param`] because serde reports the failure
+/// against the body as a whole rather than against one named parameter.
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] naming the first unknown field.
-pub(in crate::format) fn validate_content_part_fields(
-    parts: &[serde_json::Value],
-    table: &[(&str, &[&str])],
-) -> Result<(), InvalidRequest> {
-    for part in parts {
-        let Some(object) = part.as_object() else {
-            continue;
-        };
+/// Returns [`InvalidRequest`] for a body that is not valid JSON and for a body
+/// whose shape the protocol does not allow.
+pub(in crate::format) fn parse_client_request<T>(body: &[u8]) -> Result<T, InvalidRequest>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_slice(body).map_err(|error| match error.classify() {
+        // A well-formed body of the wrong shape reports serde's own wording,
+        // which names the offending member; a malformed body keeps the
+        // JSON-syntax wording.
+        serde_json::error::Category::Data => InvalidRequest::request(error.to_string()),
 
-        let part_type = object
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-
-        let Some(allowed) = allowed_fields(table, part_type) else {
-            continue;
-        };
-
-        reject_unknown_fields(object, allowed, &format!("`{part_type}` content part"))?;
-    }
-
-    Ok(())
+        _ => InvalidRequest::from_json(error),
+    })
 }
 
 /// Parses tool function arguments into a JSON object, treating an empty
@@ -285,86 +352,100 @@ pub(in crate::format) fn arguments_as_object(
     }
 }
 
-/// Placeholder for a missing JSON object field, so read-only upstream parse
-/// walks can borrow instead of deep-cloning the subtrees they inspect.
-const MISSING: Value = Value::Null;
-
-/// Parses the JSON payload of an upstream SSE frame; the single home of the
-/// malformed-frame rejection shared by every codec's `ingest_frame`.
+/// Parses the JSON payload of an upstream SSE frame into a codec's typed
+/// upstream shape; the single home of the malformed-frame rejection shared by
+/// every codec's `ingest_frame`.
 ///
 /// # Errors
 ///
-/// Returns [`PayloadError`] when the frame data is not valid JSON.
-pub(in crate::format) fn parse_frame_json(frame: &SseFrame) -> Result<Value, PayloadError> {
+/// Returns [`PayloadError`] when the frame data is not valid JSON or does not
+/// match the codec's upstream shape.
+pub(in crate::format) fn parse_frame<T>(frame: &SseFrame) -> Result<T, PayloadError>
+where
+    T: DeserializeOwned,
+{
     serde_json::from_str(&frame.data)
-        .map_err(|_| PayloadError::new("malformed JSON in upstream SSE frame"))
+        .map_err(|_| PayloadError::new("malformed upstream payload in SSE frame"))
 }
 
-/// Reads a string field of an upstream JSON object, defaulting to the empty
-/// string.
-pub(in crate::format) fn string_field(value: &Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-/// Selects the primary entry of the array under `container_key`: the entry
-/// whose `index` is 0, tolerating index-less upstreams by taking the first
-/// entry instead. Parallel entries beyond the primary are not supported and
-/// the remainder is ignored.
-pub(in crate::format) fn primary_indexed<'a>(
-    value: &'a Value,
-    container_key: &str,
-) -> Option<&'a Value> {
-    let entries = value.get(container_key)?.as_array()?;
-
-    entries
-        .iter()
-        .find(|entry| entry.get("index").and_then(Value::as_u64) == Some(0))
-        .or_else(|| entries.first())
-}
-
-/// Rejects an upstream body carrying a top-level error object; shared by the
-/// OpenAI-family codecs, whose upstreams embed the error beside the protocol
-/// fields.
+/// Parses one complete upstream JSON body into a codec's typed upstream shape.
 ///
-/// An error body inside a 2xx response is a malformed upstream payload
-/// (README §6.7), so the embedded `code` is never mirrored as the outward
-/// status — a 2xx code would otherwise render a success status carrying an
-/// error body. The embedded code and text ride in the message instead.
+/// # Errors
+///
+/// Returns [`PayloadError`] when the body does not match the codec's upstream
+/// shape.
+pub(in crate::format) fn parse_body<T>(value: Value) -> Result<T, PayloadError>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(value)
+        .map_err(|error| PayloadError::new(format!("malformed upstream payload: {error}")))
+}
+
+/// The `error` member an upstream may embed in a 2xx response body
+/// (README §6.7).
+///
+/// An error body inside a 2xx response is a malformed upstream payload, so the
+/// embedded `code` is never mirrored as the outward status — a 2xx code would
+/// otherwise render a success status carrying an error body — and the embedded
+/// code and text ride in the message instead.
 ///
 /// A present-but-null `error` is success, not failure: the non-streaming
-/// Responses body is the Response object, whose shape carries
-/// `"error": null` on every success, and Chat Completions success bodies
-/// never carry the key at all.
-///
-/// # Errors
-///
-/// Returns [`PayloadError`] carrying the upstream error text and code.
-pub(in crate::format) fn reject_upstream_error(value: &Value) -> Result<(), PayloadError> {
-    let Some(error) = value.get("error").filter(|error| !error.is_null()) else {
-        return Ok(());
-    };
+/// Responses body is the Response object, whose shape carries `"error": null`
+/// on every success, and Chat Completions success bodies never carry the key at
+/// all. Modelling the member as an [`Option`] is what makes that distinction —
+/// JSON `null` deserializes to [`None`].
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(in crate::format) enum UpstreamError {
+    /// The plain-string form.
+    Text(String),
 
-    let text = error
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| {
-            error
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| error.to_string());
+    /// The object form carrying the human-readable text, with whatever code
+    /// the upstream attached beside it.
+    Object {
+        /// Human-readable error text.
+        message: String,
 
-    let detail = match error.get("code") {
-        Some(code) => format!("{text} (upstream error code: {code})"),
-        None => text,
-    };
+        /// Upstream-specific error code, of any JSON shape.
+        #[serde(default)]
+        code: Option<Value>,
+    },
 
-    Err(PayloadError::new(detail))
+    /// Any other JSON shape, rendered verbatim: an upstream error member is
+    /// third-party data whose shape the gateway does not define.
+    Raw(Value),
+}
+
+impl UpstreamError {
+    /// The human-readable text of the error, when it carries one: the string
+    /// form's text or the object form's `message`.
+    pub(in crate::format) fn message(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+
+            Self::Object { message, .. } => Some(message),
+
+            Self::Raw(_) => None,
+        }
+    }
+
+    /// Renders the failure carrying the embedded text, with the upstream code
+    /// beside it when the error carries one.
+    pub(in crate::format) fn failure(&self) -> PayloadError {
+        let detail = match self {
+            Self::Text(text) => text.clone(),
+
+            Self::Object { message, code } => match code {
+                Some(code) => format!("{message} (upstream error code: {code})"),
+                None => message.clone(),
+            },
+
+            Self::Raw(value) => value.to_string(),
+        };
+
+        PayloadError::new(detail)
+    }
 }
 
 /// Parses an OpenAI-family `tool_choice` mode name; shared by both codecs.
@@ -453,40 +534,23 @@ pub(in crate::format) fn validate_sampling_ranges(
     Ok(())
 }
 
-/// Inserts `value` under `key` into a JSON object literal.
+/// Serializes a rendered outward payload into its wire form.
 ///
-/// Every caller passes a `json!` object literal, so a non-object base is an
-/// internal invariant violation.
+/// Every outward payload is a first-party type whose serialization is total,
+/// so a serialization failure is an invariant violation rather than a
+/// recoverable condition.
 ///
 /// # Panics
 ///
-/// Panics when the base value is not a JSON object, violating the stated
-/// invariant.
-pub(in crate::format) fn json_insert(
-    base: &mut serde_json::Value,
-    key: &str,
-    value: serde_json::Value,
-) {
+/// Panics if `value` fails to serialize, which cannot occur for the rendered
+/// wire types.
+pub(in crate::format) fn render_json<T>(value: &T) -> String
+where
+    T: Serialize + ?Sized,
+{
     #[expect(
         clippy::expect_used,
-        reason = "every base is a `json!` object literal created by the caller"
+        reason = "rendered wire types are first-party and serialize totally"
     )]
-    let object = base
-        .as_object_mut()
-        .expect("JSON value is an object literal");
-
-    object.insert(key.to_string(), value);
-}
-
-/// Attaches the gateway `thought_signature` extension (README §6.6) to a
-/// rendered tool-call object at its wire position; `None` attaches nothing.
-/// The extension key is defined exactly once, here.
-pub(in crate::format) fn insert_thought_signature(target: &mut Value, signature: &Option<String>) {
-    if let Some(signature) = signature {
-        json_insert(
-            target,
-            "thought_signature",
-            Value::String(signature.clone()),
-        );
-    }
+    serde_json::to_string(value).expect("rendered wire payloads serialize")
 }

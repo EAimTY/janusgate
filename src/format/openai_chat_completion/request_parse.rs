@@ -8,37 +8,8 @@ use crate::{
         IrRole, IrTool, IrToolChoice,
     },
 };
-use serde::Deserialize;
+use serde::{Deserialize, de::IgnoredAny};
 use serde_json::Value;
-
-/// Fields allowed on each chat message object, keyed by role. Unknown fields
-/// are rejected because internally tagged serde enums cannot enforce this.
-const MESSAGE_FIELDS_BY_ROLE: &[(&str, &[&str])] = &[
-    ("system", &["role", "content"]),
-    ("developer", &["role", "content"]),
-    ("user", &["role", "content"]),
-    (
-        "assistant",
-        &[
-            "role",
-            "content",
-            "reasoning",
-            "reasoning_content",
-            "tool_calls",
-        ],
-    ),
-    ("tool", &["role", "content", "tool_call_id"]),
-];
-
-/// Fields allowed on each chat content part, keyed by part type.
-const CONTENT_PART_FIELDS: &[(&str, &[&str])] = &[
-    ("text", &["type", "text"]),
-    ("image_url", &["type", "image_url", "detail"]),
-];
-
-/// Roles whose array `content` may carry only `{"type": "text"}` parts,
-/// matching the official wire schema for those roles.
-const TEXT_ONLY_CONTENT_ROLES: &[&str] = &["system", "developer", "tool"];
 
 /// Strictly parsed Chat Completions request body.
 #[derive(Debug, Deserialize)]
@@ -91,26 +62,27 @@ struct RequestBody {
     stream_options: Option<StreamOptionsIn>,
 }
 
-/// Chat message, tagged by `role`.
+/// Chat message, tagged by `role`; a member outside the message's own shape is
+/// rejected.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "role", rename_all = "lowercase")]
+#[serde(tag = "role", rename_all = "lowercase", deny_unknown_fields)]
 enum MessageIn {
     /// System instruction.
     System {
         /// Instruction text: a plain string or an array of text parts.
-        content: TextContentIn,
+        content: format::StringOrArray<TextPartIn>,
     },
 
     /// Developer instruction.
     Developer {
         /// Instruction text: a plain string or an array of text parts.
-        content: TextContentIn,
+        content: format::StringOrArray<TextPartIn>,
     },
 
     /// User turn.
     User {
         /// Text or mixed text/image content.
-        content: UserContentIn,
+        content: format::StringOrArray<UserPartIn>,
     },
 
     /// Assistant turn. The `reasoning` and `reasoning_content` fields, when
@@ -120,61 +92,83 @@ enum MessageIn {
     Assistant {
         /// Text content, when any.
         #[serde(default)]
-        content: Option<TextContentIn>,
+        content: Option<format::StringOrArray<TextPartIn>>,
 
         /// Tool invocations made during the turn.
         #[serde(default)]
         tool_calls: Option<Vec<ToolCallIn>>,
+
+        /// Reasoning text under the OpenRouter/vLLM key; accepted and ignored,
+        /// because the gateway itself emits `reasoning_content` and a stateless
+        /// gateway has no replayable reasoning state (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        reasoning: Option<IgnoredAny>,
+
+        /// Reasoning text under the DeepSeek de-facto key; accepted and
+        /// ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        reasoning_content: Option<IgnoredAny>,
     },
 
     /// Tool result.
     Tool {
         /// Result content: a plain string or an array of text parts.
-        content: TextContentIn,
+        content: format::StringOrArray<TextPartIn>,
 
         /// Identifier of the invocation being answered.
         tool_call_id: String,
     },
 }
 
-/// User message content: plain string or typed parts.
+/// Content part of a text-only role's array content, tagged by `type`.
+///
+/// The official wire schema admits only text parts on those roles. The image
+/// kind is modelled so the rejection can name the offending kind, and every
+/// further kind lands in [`TextPartIn::Other`], which the conversion rejects
+/// the same way.
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum UserContentIn {
-    /// Plain text.
-    Text(String),
-
-    /// Typed parts.
-    Parts(Vec<UserPartIn>),
-}
-
-/// Text-only message content: a plain string or typed text parts. The
-/// system, developer, assistant, and tool roles all share this wire shape;
-/// only user content carries image parts.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum TextContentIn {
-    /// Plain text.
-    Text(String),
-
-    /// Typed parts.
-    Parts(Vec<TextPartIn>),
-}
-
-/// Text content part, tagged by `type`.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum TextPartIn {
     /// Text segment.
     Text {
         /// The text content.
         text: String,
     },
+
+    /// Image segment, which a text-only role does not admit.
+    ImageUrl {
+        /// The image reference.
+        #[serde(default)]
+        #[expect(dead_code, reason = "rejected by the conversion below")]
+        image_url: Option<IgnoredAny>,
+    },
+
+    /// Any other part kind, of which the tag value the enum machinery consumed
+    /// leaves no trace.
+    #[serde(other)]
+    Other,
 }
 
-/// User content part, tagged by `type`.
+impl TextPartIn {
+    /// The part's wire type name, for the rejection that names the offending
+    /// kind; [`None`] for a kind [`TextPartIn::Other`] swallowed.
+    fn type_name(&self) -> Option<&'static str> {
+        match self {
+            Self::Text { .. } => Some("text"),
+
+            Self::ImageUrl { .. } => Some("image_url"),
+
+            Self::Other => None,
+        }
+    }
+}
+
+/// User content part, tagged by `type`; a member outside the part's own shape
+/// is rejected.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum UserPartIn {
     /// Text segment.
     Text {
@@ -186,6 +180,12 @@ enum UserPartIn {
     ImageUrl {
         /// The image reference.
         image_url: ImageUrlIn,
+
+        /// OpenAI image detail hint beside the reference; accepted and ignored
+        /// (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        detail: Option<IgnoredAny>,
     },
 }
 
@@ -292,15 +292,18 @@ struct ToolChoiceFunctionIn {
     name: String,
 }
 
-/// Response format restriction, tagged by `type`.
+/// Response format restriction, tagged by `type`; a member outside the
+/// format's own shape is rejected, and the fieldless formats are empty struct
+/// variants rather than unit variants because only struct variants reject
+/// unknown members.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ResponseFormatIn {
     /// Free-form text.
-    Text,
+    Text {},
 
     /// Any valid JSON value.
-    JsonObject,
+    JsonObject {},
 
     /// JSON conforming to a named schema.
     JsonSchema {
@@ -340,35 +343,36 @@ struct StreamOptionsIn {
 /// Returns [`InvalidRequest`] for malformed JSON, unknown or unsupported
 /// fields, invalid parameter ranges, and invalid image references.
 pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
-    let raw: Value = serde_json::from_slice(body).map_err(InvalidRequest::from_json)?;
-
-    // Raw-field validation runs before deserialization so `raw` can be
-    // consumed directly instead of cloned; deserializing a body with inline
-    // base64 images can reach the 64 MB request cap.
-    validate_message_fields(raw.get("messages"))?;
-    validate_response_format_fields(raw.get("response_format"))?;
-
-    let request: RequestBody = serde_json::from_value(raw).map_err(InvalidRequest::from_json)?;
+    let request: RequestBody = format::parse_client_request(body)?;
 
     let mut instructions_parts: Vec<String> = Vec::new();
     let mut messages: Vec<IrMessage> = Vec::new();
 
     for message in &request.messages {
         match message {
-            MessageIn::System { content } | MessageIn::Developer { content } => {
-                instructions_parts.push(flatten_text_content(content));
+            MessageIn::System { content } => {
+                instructions_parts.push(flatten_text_content(content, "system")?);
+            }
+
+            MessageIn::Developer { content } => {
+                instructions_parts.push(flatten_text_content(content, "developer")?);
             }
 
             MessageIn::User { content } => {
+                // Only user content carries image parts, so no text-only
+                // rejection applies here.
                 let parts = match content {
-                    UserContentIn::Text(text) => vec![IrPart::Text { text: text.clone() }],
-                    UserContentIn::Parts(parts) => {
+                    format::StringOrArray::Text(text) => {
+                        vec![IrPart::Text { text: text.clone() }]
+                    }
+
+                    format::StringOrArray::Array(parts) => {
                         let mut converted = Vec::with_capacity(parts.len());
 
                         for part in parts {
                             converted.push(match part {
                                 UserPartIn::Text { text } => IrPart::Text { text: text.clone() },
-                                UserPartIn::ImageUrl { image_url } => IrPart::Image {
+                                UserPartIn::ImageUrl { image_url, .. } => IrPart::Image {
                                     image: IrImage::from_url(&image_url.url)?,
                                 },
                             });
@@ -387,17 +391,24 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             MessageIn::Assistant {
                 content,
                 tool_calls,
+                ..
             } => {
                 let mut parts: Vec<IrPart> = Vec::new();
 
                 if let Some(content) = content {
                     match content {
-                        TextContentIn::Text(text) => {
+                        format::StringOrArray::Text(text) => {
                             parts.push(IrPart::Text { text: text.clone() })
                         }
-                        TextContentIn::Parts(parts_in) => {
+
+                        format::StringOrArray::Array(parts_in) => {
                             for part in parts_in {
-                                let TextPartIn::Text { text } = part;
+                                let TextPartIn::Text { text } = part else {
+                                    return Err(text_only_content_rejection(
+                                        "assistant",
+                                        part.type_name(),
+                                    ));
+                                };
 
                                 parts.push(IrPart::Text { text: text.clone() });
                             }
@@ -443,7 +454,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                     role: IrRole::Tool,
                     parts: vec![IrPart::ToolOutput {
                         call_id: tool_call_id.clone(),
-                        content: flatten_text_content(content),
+                        content: flatten_text_content(content, "tool")?,
                     }],
                 });
             }
@@ -497,8 +508,8 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     let response_format = match &request.response_format {
         None => None,
-        Some(ResponseFormatIn::Text) => Some(IrResponseFormat::Text),
-        Some(ResponseFormatIn::JsonObject) => Some(IrResponseFormat::Json),
+        Some(ResponseFormatIn::Text {}) => Some(IrResponseFormat::Text),
+        Some(ResponseFormatIn::JsonObject {}) => Some(IrResponseFormat::Json),
         Some(ResponseFormatIn::JsonSchema { json_schema }) => Some(IrResponseFormat::JsonSchema {
             name: json_schema.name.clone(),
             schema: json_schema.schema.clone(),
@@ -544,96 +555,45 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 /// with the same blank-line separator used to concatenate system/developer
 /// messages into IR instructions, so the array form flattens to exactly what
 /// the equivalent plain-string form carries.
-fn flatten_text_content(content: &TextContentIn) -> String {
-    match content {
-        TextContentIn::Text(text) => text.clone(),
+fn flatten_text_content(
+    content: &format::StringOrArray<TextPartIn>,
+    role: &str,
+) -> Result<String, InvalidRequest> {
+    let parts = match content {
+        format::StringOrArray::Text(text) => return Ok(text.clone()),
 
-        TextContentIn::Parts(parts) => parts
-            .iter()
-            .map(|TextPartIn::Text { text }| text.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-    }
-}
-
-/// Rejects unknown fields on chat message objects; internally tagged serde
-/// enums cannot enforce this themselves. Also rejects non-text part types in
-/// the array content of the text-only roles, where the official wire schema
-/// admits only `{"type": "text"}` parts.
-///
-/// # Errors
-///
-/// Returns [`InvalidRequest`] naming the first unknown field or the first
-/// unsupported content part type.
-fn validate_message_fields(messages: Option<&Value>) -> Result<(), InvalidRequest> {
-    let Some(messages) = messages.and_then(Value::as_array) else {
-        return Ok(());
+        format::StringOrArray::Array(parts) => parts,
     };
 
-    for message in messages {
-        let Some(object) = message.as_object() else {
-            continue;
+    let mut combined = String::new();
+
+    for part in parts {
+        let TextPartIn::Text { text } = part else {
+            return Err(text_only_content_rejection(role, part.type_name()));
         };
 
-        let role = object
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        let Some(allowed_fields) = format::allowed_fields(MESSAGE_FIELDS_BY_ROLE, role) else {
-            continue;
-        };
-
-        format::reject_unknown_fields(object, allowed_fields, &format!("`{role}` message"))?;
-
-        if let Some(parts) = object.get("content").and_then(Value::as_array) {
-            format::validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
-
-            // A recognizable non-text part on a text-only role is rejected
-            // here, naming the part type, instead of surfacing as an
-            // untagged-enum serde failure; malformed parts without a `type`
-            // string are left to serde's rejection.
-            if TEXT_ONLY_CONTENT_ROLES.contains(&role) {
-                for part in parts {
-                    let Some(part_type) = part.get("type").and_then(Value::as_str) else {
-                        continue;
-                    };
-
-                    if part_type != "text" {
-                        return Err(InvalidRequest::field(
-                            "content",
-                            format!(
-                                "{role} message content parts must be text; \
-                                 `{part_type}` is not supported"
-                            ),
-                        ));
-                    }
-                }
-            }
+        if !combined.is_empty() {
+            combined.push_str("\n\n");
         }
+
+        combined.push_str(text);
     }
 
-    Ok(())
+    Ok(combined)
 }
 
-/// Rejects unknown fields on the `response_format` envelope around its
-/// internally tagged variants.
-fn validate_response_format_fields(response_format: Option<&Value>) -> Result<(), InvalidRequest> {
-    let Some(object) = response_format.and_then(Value::as_object) else {
-        return Ok(());
+/// Rejects a content part on a role whose array content admits only text
+/// parts, naming the offending kind when it is one the codec recognizes.
+fn text_only_content_rejection(role: &str, part_type: Option<&str>) -> InvalidRequest {
+    let message = match part_type {
+        Some(part_type) => {
+            format!("{role} message content parts must be text; `{part_type}` is not supported")
+        }
+
+        None => format!("{role} message content parts must be text"),
     };
 
-    let format_type = object
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-
-    let permitted_fields: &[&str] = match format_type {
-        "json_schema" => &["type", "json_schema"],
-        _ => &["type"],
-    };
-
-    format::reject_unknown_fields(object, permitted_fields, "response_format")
+    InvalidRequest::field("content", message)
 }
 
 #[cfg(test)]
@@ -808,6 +768,53 @@ mod tests {
             assert_eq!(
                 error.to_string(),
                 format!("{role} message content parts must be text; `image_url` is not supported"),
+            );
+        }
+    }
+
+    /// Unknown members are rejected wherever the protocol defines a shape: a
+    /// message member outside the message's own shape, a content-part member
+    /// outside the part's own shape, and a member beside a fieldless response
+    /// format. serde's rejection names the offending member, which is the
+    /// contract README §6.6 documents.
+    #[test]
+    fn unknown_members_are_rejected() {
+        let cases = [
+            (
+                serde_json::json!({
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "hi", "bogus": 1}],
+                }),
+                "bogus",
+            ),
+            (
+                serde_json::json!({
+                    "model": "m",
+                    "messages": [{
+                        "role": "user",
+                        "content": [{"type": "text", "text": "hi", "bogus": 1}],
+                    }],
+                }),
+                "bogus",
+            ),
+            (
+                serde_json::json!({
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "response_format": {"type": "json_object", "bogus": 1},
+                }),
+                "bogus",
+            ),
+        ];
+
+        for (body, field) in cases {
+            let error = parse(body).expect_err("an unknown member must be rejected");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{field}`")),
+                "unexpected rejection: {error}"
             );
         }
     }

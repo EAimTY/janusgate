@@ -1,13 +1,24 @@
 //! Client-response rendering for the Responses codec: renders IR events as
 //! Responses SSE events or an aggregated non-streaming body.
+//!
+//! Every rendered payload is a first-party type in the official Responses
+//! shape (README §6.3), so the wire contract lives in the type system rather
+//! than in assembled JSON.
 
 use crate::{
-    format::{self, ClientSseRenderer},
+    format::{self, ClientSseRenderer, OpenAiErrorBody},
     ids,
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
     sse, unix_time,
 };
+use serde::Serialize;
 use serde_json::Value;
+
+/// Sequence number of the first rendered event.
+const FIRST_SEQUENCE_NUMBER: u64 = 0;
+
+/// Position of the only content part and summary part the gateway renders.
+const PRIMARY_INDEX: u32 = 0;
 
 /// Streaming client response renderer producing Responses SSE events.
 #[derive(Debug)]
@@ -27,18 +38,17 @@ pub(super) struct SseRenderer {
     /// Whether `response.created` was emitted.
     is_created: bool,
 
-    /// Open reasoning item awaiting completion: `(item_id, output_index,
-    /// accumulated text)`.
-    reasoning: Option<(String, usize, String)>,
+    /// Open reasoning item awaiting completion.
+    reasoning: Option<OpenTextItem>,
 
     /// Open assistant message item awaiting completion.
-    message: Option<(String, usize, String)>,
+    message: Option<OpenTextItem>,
 
     /// Open function call items keyed by IR tool call index.
-    calls: Vec<(usize, OutputItem)>,
+    calls: Vec<(usize, TrackedCall)>,
 
     /// Completed output items for the final response object.
-    completed_items: Vec<OutputItem>,
+    completed_items: Vec<TrackedItem>,
 
     /// Next output index to assign.
     next_output_index: usize,
@@ -51,21 +61,458 @@ pub(super) struct SseRenderer {
     finish: Option<IrFinishReason>,
 }
 
-/// One output item tracked by the client-side SSE renderer.
+/// An open text-bearing item — a reasoning summary or an assistant message —
+/// accumulating its text across deltas.
 #[derive(Debug)]
-struct OutputItem {
+struct OpenTextItem {
+    /// Gateway-issued item identifier.
+    item_id: String,
+
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// Text accumulated so far.
+    text: String,
+}
+
+/// A function call item tracked while its stream is in flight: the call as
+/// rendered so far beside its position in the output array.
+#[derive(Debug)]
+struct TrackedCall {
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// The call item, completed in place by its done event.
+    item: FunctionCallItem,
+}
+
+/// A completed output item tracked for the terminal response object.
+#[derive(Debug)]
+struct TrackedItem {
     /// Position of the item within the output array.
     output_index: usize,
 
     /// The rendered item.
-    item: Value,
+    item: OutputItem,
+}
+
+/// One rendered output item in the official Responses shape.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OutputItem {
+    /// A reasoning item carrying its summary.
+    Reasoning {
+        /// Gateway-issued item identifier.
+        id: String,
+
+        /// Summary parts; the gateway renders exactly one.
+        summary: Vec<SummaryPart>,
+    },
+
+    /// An assistant message item carrying its output text.
+    Message {
+        /// Gateway-issued item identifier.
+        id: String,
+
+        /// Always `assistant`.
+        role: &'static str,
+
+        /// Item lifecycle status.
+        status: ItemStatus,
+
+        /// Content parts; the gateway renders exactly one.
+        content: Vec<OutputTextPart>,
+    },
+
+    /// A function call requested by the model.
+    FunctionCall(FunctionCallItem),
+}
+
+/// One function call output item. Every identity field is a string in the
+/// official shape (openai-python's `ResponseFunctionToolCallItem` types them
+/// without defaults), so an item opened before its identity is known carries
+/// empty strings until its done event stamps the authoritative values.
+#[derive(Debug, Clone, Serialize)]
+struct FunctionCallItem {
+    /// Gateway-issued item identifier.
+    id: String,
+
+    /// Item lifecycle status.
+    status: ItemStatus,
+
+    /// Identifier of the invocation, round-tripped to the matching tool
+    /// result.
+    call_id: String,
+
+    /// Name of the invoked function.
+    name: String,
+
+    /// JSON-encoded arguments, accumulated across the call's stream.
+    arguments: String,
+
+    /// Upstream thought signature the client must replay on the next turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
+}
+
+/// Lifecycle status of a rendered output item.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ItemStatus {
+    /// The item is still streaming.
+    InProgress,
+
+    /// The item is complete.
+    Completed,
+}
+
+/// Lifecycle status of a rendered response object.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ResponseStatus {
+    /// The response has been created; its output has not started.
+    InProgress,
+
+    /// The response finished cleanly.
+    Completed,
+
+    /// The response finished truncated or filtered.
+    Incomplete,
+
+    /// The response failed mid-stream.
+    Failed,
+}
+
+/// One summary part of a reasoning item.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SummaryPart {
+    /// The reasoning text the gateway accumulated.
+    SummaryText {
+        /// Accumulated reasoning text.
+        text: String,
+    },
+}
+
+/// One content part of a rendered message item; the gateway renders text
+/// only.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OutputTextPart {
+    /// An output text part carrying the assistant's text.
+    OutputText {
+        /// Accumulated assistant text.
+        text: String,
+
+        /// Official `annotations` field. The gateway never annotates output
+        /// text, so the array is always empty; its element shape is the
+        /// official OpenAI shape, which the gateway never renders.
+        annotations: Vec<Value>,
+
+        /// Official `logprobs` field. The gateway tracks no token
+        /// probabilities, so the array is always empty; its element shape is
+        /// the official OpenAI shape, which the gateway never renders.
+        logprobs: Vec<Value>,
+    },
+}
+
+/// The official Response object, shared by every rendered response —
+/// streaming and non-streaming — and by the `response.failed` error frame.
+///
+/// `parallel_tool_calls`, `tool_choice`, and `tools` are required fields of
+/// the official Response shape (openai-python `Response` types them without
+/// defaults), so the shell always carries the statics describing the gateway
+/// itself: it advertises no parallel tool-call control, tool calls happen
+/// whenever the model decides (`auto`), and no tool definitions are echoed
+/// back to the client. `usage`, `incomplete_details`, and `error` are carried
+/// by the events that report them and omitted elsewhere.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ResponseObject {
+    /// Gateway-issued response identifier.
+    id: String,
+
+    /// Always `response`.
+    object: &'static str,
+
+    /// Unix creation timestamp.
+    created_at: i64,
+
+    /// Response lifecycle status.
+    status: ResponseStatus,
+
+    /// Public model name the client addressed.
+    model: String,
+
+    /// Completed output items in output order.
+    output: Vec<OutputItem>,
+
+    /// Always `false`: the gateway exposes no parallel tool-call control.
+    parallel_tool_calls: bool,
+
+    /// Always `auto`: the model decides whether to call tools.
+    tool_choice: &'static str,
+
+    /// Always empty: the gateway echoes no tool definitions back to the
+    /// client. The element shape is the official OpenAI tool shape, which the
+    /// gateway never renders here.
+    tools: Vec<Value>,
+
+    /// Token accounting, carried by the terminal event and the aggregated
+    /// body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<ResponseUsage>,
+
+    /// Why the response is incomplete, carried only by an incomplete
+    /// response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    incomplete_details: Option<IncompleteDetails>,
+
+    /// The failure, carried only by a failed response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<OpenAiErrorBody>,
+}
+
+/// Token accounting in the official Responses shape.
+///
+/// openai-python's `ResponseUsage` types all five fields as required — the two
+/// detail objects included, their inner integers too (official OpenAPI schema:
+/// `input_tokens_details` requires `cached_tokens` and `cache_write_tokens`,
+/// `output_tokens_details` requires `reasoning_tokens`) — so the details are
+/// always carried, zero-filled when the upstream reported no breakdown.
+#[derive(Debug, Clone, Serialize)]
+struct ResponseUsage {
+    /// Tokens consumed by the input.
+    input_tokens: u64,
+
+    /// Input token breakdown.
+    input_tokens_details: InputTokensDetails,
+
+    /// Tokens produced by the output.
+    output_tokens: u64,
+
+    /// Output token breakdown.
+    output_tokens_details: OutputTokensDetails,
+
+    /// Sum of input and output tokens.
+    total_tokens: u64,
+}
+
+impl ResponseUsage {
+    /// Renders one observation, zero-filling every absent breakdown.
+    fn render(usage: IrUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            input_tokens_details: InputTokensDetails {
+                cached_tokens: usage.cached_tokens.unwrap_or(0),
+                cache_write_tokens: usage.cache_write_tokens.unwrap_or(0),
+            },
+            output_tokens: usage.output_tokens,
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: usage.reasoning_tokens.unwrap_or(0),
+            },
+            total_tokens: usage.input_tokens + usage.output_tokens,
+        }
+    }
+}
+
+/// The official input token breakdown.
+#[derive(Debug, Clone, Serialize)]
+struct InputTokensDetails {
+    /// Input tokens served from the upstream prompt cache.
+    cached_tokens: u64,
+
+    /// Input tokens written to the upstream prompt cache.
+    cache_write_tokens: u64,
+}
+
+/// The official output token breakdown.
+#[derive(Debug, Clone, Serialize)]
+struct OutputTokensDetails {
+    /// Output tokens spent on model reasoning.
+    reasoning_tokens: u64,
+}
+
+/// Why a response is incomplete.
+#[derive(Debug, Clone, Serialize)]
+struct IncompleteDetails {
+    /// Official reason string.
+    reason: &'static str,
+}
+
+/// The envelope every rendered SSE event carries: the event name as the
+/// payload's `type` discriminator and the event's sequence number, wrapped
+/// around the event's own fields.
+///
+/// The payload carries `type` because strict clients — openai-python's
+/// `ResponseStreamEvent` union and openai/codex's serde type-tagged enum —
+/// discriminate events on the JSON payload, not the `event:` line.
+#[derive(Debug, Serialize)]
+struct EventEnvelope<'a, T> {
+    /// Event name, rendered both on the `event:` line and as the payload's
+    /// `type`.
+    #[serde(rename = "type")]
+    event_type: &'a str,
+
+    /// Monotonic sequence number of this event within the response.
+    sequence_number: u64,
+
+    /// The event's own fields.
+    #[serde(flatten)]
+    payload: T,
+}
+
+/// Payload of the five response-level events: the response object as it
+/// stands.
+#[derive(Debug, Serialize)]
+struct ResponseEvent {
+    /// The response object.
+    response: ResponseObject,
+}
+
+/// Payload of `response.output_item.added` and `response.output_item.done`.
+#[derive(Debug, Serialize)]
+struct OutputItemEvent {
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// The item as it stands.
+    item: OutputItem,
+}
+
+/// Payload of `response.reasoning_summary_part.added` and
+/// `response.reasoning_summary_part.done`.
+#[derive(Debug, Serialize)]
+struct ReasoningSummaryPartEvent {
+    /// Identifier of the reasoning item.
+    item_id: String,
+
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// Position of the summary part within the item.
+    summary_index: u32,
+
+    /// The summary part.
+    part: SummaryPart,
+}
+
+/// Payload of `response.reasoning_summary_text.delta`.
+#[derive(Debug, Serialize)]
+struct ReasoningSummaryTextDelta {
+    /// Identifier of the reasoning item.
+    item_id: String,
+
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// Position of the summary part within the item.
+    summary_index: u32,
+
+    /// Incremental reasoning text.
+    delta: String,
+}
+
+/// Payload of `response.reasoning_summary_text.done`.
+#[derive(Debug, Serialize)]
+struct ReasoningSummaryTextDone {
+    /// Identifier of the reasoning item.
+    item_id: String,
+
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// Position of the summary part within the item.
+    summary_index: u32,
+
+    /// Complete reasoning text.
+    text: String,
+}
+
+/// Payload of `response.content_part.added` and `response.content_part.done`.
+#[derive(Debug, Serialize)]
+struct ContentPartEvent {
+    /// Identifier of the message item.
+    item_id: String,
+
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// Position of the content part within the item.
+    content_index: u32,
+
+    /// The content part.
+    part: OutputTextPart,
+}
+
+/// Payload of `response.output_text.delta`.
+#[derive(Debug, Serialize)]
+struct OutputTextDelta {
+    /// Identifier of the message item.
+    item_id: String,
+
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// Position of the content part within the item.
+    content_index: u32,
+
+    /// Incremental assistant text.
+    delta: String,
+
+    /// Official `logprobs` field, always empty (see [`OutputTextPart`]).
+    logprobs: Vec<Value>,
+}
+
+/// Payload of `response.output_text.done`.
+#[derive(Debug, Serialize)]
+struct OutputTextDone {
+    /// Identifier of the message item.
+    item_id: String,
+
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// Position of the content part within the item.
+    content_index: u32,
+
+    /// Complete assistant text.
+    text: String,
+
+    /// Official `logprobs` field, always empty (see [`OutputTextPart`]).
+    logprobs: Vec<Value>,
+}
+
+/// Payload of `response.function_call_arguments.delta`.
+#[derive(Debug, Serialize)]
+struct FunctionCallArgumentsDelta {
+    /// Identifier of the function call item.
+    item_id: String,
+
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// Incremental JSON-encoded arguments text.
+    delta: String,
+}
+
+/// Payload of `response.function_call_arguments.done`.
+#[derive(Debug, Serialize)]
+struct FunctionCallArgumentsDone {
+    /// Identifier of the function call item.
+    item_id: String,
+
+    /// Position of the item within the output array.
+    output_index: usize,
+
+    /// Complete JSON-encoded arguments text.
+    arguments: String,
 }
 
 impl SseRenderer {
     /// Creates a renderer for one streamed response.
     pub(super) fn new(model: String) -> Self {
         Self {
-            sequence: 0,
+            sequence: FIRST_SEQUENCE_NUMBER,
             id: format!("resp_{}", ids::new_uuid()),
             model,
             created_at: unix_time::unix_now(),
@@ -85,98 +532,95 @@ impl SseRenderer {
     fn close_open_items(&mut self) -> Vec<String> {
         let mut frames = Vec::new();
 
-        if let Some((item_id, output_index, text)) = self.reasoning.take() {
-            let completed_item = serde_json::json!({
-                "id": item_id,
-                "type": "reasoning",
-                "summary": [{"type": "summary_text", "text": text}],
-            });
+        if let Some(open) = self.reasoning.take() {
+            let summary_part = SummaryPart::SummaryText {
+                text: open.text.clone(),
+            };
 
-            for (event_name, payload) in [
-                (
-                    "response.reasoning_summary_text.done",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "summary_index": 0,
-                        "text": text,
-                    }),
-                ),
-                (
-                    "response.reasoning_summary_part.done",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "summary_index": 0,
-                        "part": {"type": "summary_text", "text": text},
-                    }),
-                ),
-                (
-                    "response.output_item.done",
-                    serde_json::json!({
-                        "output_index": output_index,
-                        "item": completed_item.clone(),
-                    }),
-                ),
-            ] {
-                frames.push(self.event_frame(event_name, payload));
-            }
+            let completed_item = OutputItem::Reasoning {
+                id: open.item_id.clone(),
+                summary: vec![summary_part.clone()],
+            };
 
-            self.completed_items.push(OutputItem {
-                output_index,
+            frames.push(self.event_frame(
+                "response.reasoning_summary_text.done",
+                ReasoningSummaryTextDone {
+                    item_id: open.item_id.clone(),
+                    output_index: open.output_index,
+                    summary_index: PRIMARY_INDEX,
+                    text: open.text.clone(),
+                },
+            ));
+
+            frames.push(self.event_frame(
+                "response.reasoning_summary_part.done",
+                ReasoningSummaryPartEvent {
+                    item_id: open.item_id.clone(),
+                    output_index: open.output_index,
+                    summary_index: PRIMARY_INDEX,
+                    part: summary_part,
+                },
+            ));
+
+            frames.push(self.event_frame(
+                "response.output_item.done",
+                OutputItemEvent {
+                    output_index: open.output_index,
+                    item: completed_item.clone(),
+                },
+            ));
+
+            self.completed_items.push(TrackedItem {
+                output_index: open.output_index,
                 item: completed_item,
             });
         }
 
-        if let Some((item_id, output_index, text)) = self.message.take() {
-            let content_part = serde_json::json!({
-                "type": "output_text",
-                "text": text,
-                "annotations": [],
-                "logprobs": [],
-            });
+        if let Some(open) = self.message.take() {
+            let content_part = OutputTextPart::OutputText {
+                text: open.text.clone(),
+                annotations: Vec::new(),
+                logprobs: Vec::new(),
+            };
 
-            let completed_item = serde_json::json!({
-                "id": item_id,
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [content_part.clone()],
-            });
+            let completed_item = OutputItem::Message {
+                id: open.item_id.clone(),
+                role: "assistant",
+                status: ItemStatus::Completed,
+                content: vec![content_part.clone()],
+            };
 
-            for (event_name, payload) in [
-                (
-                    "response.output_text.done",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "content_index": 0,
-                        "text": content_part.get("text").cloned().unwrap_or(Value::Null),
-                        "logprobs": [],
-                    }),
-                ),
-                (
-                    "response.content_part.done",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "content_index": 0,
-                        "part": content_part,
-                    }),
-                ),
-                (
-                    "response.output_item.done",
-                    serde_json::json!({
-                        "output_index": output_index,
-                        "item": completed_item.clone(),
-                    }),
-                ),
-            ] {
-                frames.push(self.event_frame(event_name, payload));
-            }
+            frames.push(self.event_frame(
+                "response.output_text.done",
+                OutputTextDone {
+                    item_id: open.item_id.clone(),
+                    output_index: open.output_index,
+                    content_index: PRIMARY_INDEX,
+                    text: open.text.clone(),
+                    logprobs: Vec::new(),
+                },
+            ));
 
-            self.completed_items.push(OutputItem {
-                output_index,
+            frames.push(self.event_frame(
+                "response.content_part.done",
+                ContentPartEvent {
+                    item_id: open.item_id.clone(),
+                    output_index: open.output_index,
+                    content_index: PRIMARY_INDEX,
+                    part: content_part,
+                },
+            ));
+
+            frames.push(self.event_frame(
+                "response.output_item.done",
+                OutputItemEvent {
+                    output_index: open.output_index,
+                    item: completed_item.clone(),
+                },
+            ));
+
+            self.completed_items.push(TrackedItem {
+                output_index: open.output_index,
                 item: completed_item,
             });
         }
@@ -185,30 +629,38 @@ impl SseRenderer {
     }
 
     /// Builds the response object shell shared by all events.
-    fn response_shell(&self, status: &str, output: Value) -> Value {
-        response_shell(
-            self.id.clone(),
-            self.created_at,
-            &self.model,
+    fn response_shell(&self, status: ResponseStatus, output: Vec<OutputItem>) -> ResponseObject {
+        ResponseObject {
+            id: self.id.clone(),
+            object: "response",
+            created_at: self.created_at,
             status,
+            model: self.model.clone(),
             output,
-        )
+            parallel_tool_calls: false,
+            tool_choice: "auto",
+            tools: Vec::new(),
+            usage: None,
+            incomplete_details: None,
+            error: None,
+        }
     }
 
-    /// Formats one SSE frame with the given event name and payload, assigning
-    /// the next sequence number.
-    ///
-    /// The payload carries `type` because strict clients — openai-python's
-    /// `ResponseStreamEvent` union and openai/codex's serde type-tagged enum —
-    /// discriminate events on the JSON payload, not the `event:` line.
-    fn event_frame(&mut self, event_name: &str, mut payload: Value) -> String {
-        format::json_insert(&mut payload, "type", Value::String(event_name.to_string()));
-
-        format::json_insert(&mut payload, "sequence_number", Value::from(self.sequence));
+    /// Formats one SSE frame with the given event name and typed payload,
+    /// assigning the next sequence number.
+    fn event_frame<T>(&mut self, event_name: &'static str, payload: T) -> String
+    where
+        T: Serialize,
+    {
+        let envelope = EventEnvelope {
+            event_type: event_name,
+            sequence_number: self.sequence,
+            payload,
+        };
 
         self.sequence += 1;
 
-        sse::format_frame(Some(event_name), &payload.to_string())
+        sse::format_frame(Some(event_name), &format::render_json(&envelope))
     }
 }
 
@@ -223,67 +675,74 @@ impl ClientSseRenderer for SseRenderer {
 
                 self.is_created = true;
 
-                let shell = self.response_shell("in_progress", Value::Array(Vec::new()));
+                let shell = self.response_shell(ResponseStatus::InProgress, Vec::new());
 
                 vec![
                     self.event_frame(
                         "response.created",
-                        serde_json::json!({"response": shell.clone()}),
+                        ResponseEvent {
+                            response: shell.clone(),
+                        },
                     ),
-                    self.event_frame(
-                        "response.in_progress",
-                        serde_json::json!({"response": shell}),
-                    ),
+                    self.event_frame("response.in_progress", ResponseEvent { response: shell }),
                 ]
             }
 
             IrEvent::ReasoningDelta(delta) => {
                 let (mut frames, item_id, output_index) = match &self.reasoning {
-                    Some((item_id, output_index, _)) => {
-                        (Vec::new(), item_id.clone(), *output_index)
-                    }
+                    Some(open) => (Vec::new(), open.item_id.clone(), open.output_index),
 
                     None => {
                         let item_id = format!("rs_{}", ids::new_uuid());
                         let output_index = self.next_output_index;
 
                         self.next_output_index += 1;
-                        self.reasoning = Some((item_id.clone(), output_index, String::new()));
+                        self.reasoning = Some(OpenTextItem {
+                            item_id: item_id.clone(),
+                            output_index,
+                            text: String::new(),
+                        });
 
-                        let mut frames = vec![self.event_frame(
-                            "response.output_item.added",
-                            serde_json::json!({
-                                "output_index": output_index,
-                                "item": {"id": item_id, "type": "reasoning", "summary": []},
-                            }),
-                        )];
-
-                        frames.push(self.event_frame(
-                            "response.reasoning_summary_part.added",
-                            serde_json::json!({
-                                "item_id": item_id,
-                                "output_index": output_index,
-                                "summary_index": 0,
-                                "part": {"type": "summary_text", "text": ""},
-                            }),
-                        ));
+                        let frames = vec![
+                            self.event_frame(
+                                "response.output_item.added",
+                                OutputItemEvent {
+                                    output_index,
+                                    item: OutputItem::Reasoning {
+                                        id: item_id.clone(),
+                                        summary: Vec::new(),
+                                    },
+                                },
+                            ),
+                            self.event_frame(
+                                "response.reasoning_summary_part.added",
+                                ReasoningSummaryPartEvent {
+                                    item_id: item_id.clone(),
+                                    output_index,
+                                    summary_index: PRIMARY_INDEX,
+                                    part: SummaryPart::SummaryText {
+                                        text: String::new(),
+                                    },
+                                },
+                            ),
+                        ];
 
                         (frames, item_id, output_index)
                     }
                 };
 
-                if let Some((_, _, accumulated)) = &mut self.reasoning {
-                    accumulated.push_str(delta);
+                if let Some(open) = &mut self.reasoning {
+                    open.text.push_str(delta);
                 }
 
                 frames.push(self.event_frame(
                     "response.reasoning_summary_text.delta",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "summary_index": 0,
-                        "delta": delta,
-                    }),
+                    ReasoningSummaryTextDelta {
+                        item_id,
+                        output_index,
+                        summary_index: PRIMARY_INDEX,
+                        delta: delta.clone(),
+                    },
                 ));
 
                 frames
@@ -291,66 +750,67 @@ impl ClientSseRenderer for SseRenderer {
 
             IrEvent::TextDelta(delta) => {
                 let (mut frames, item_id, output_index) = match &self.message {
-                    Some((item_id, output_index, _)) => {
-                        (Vec::new(), item_id.clone(), *output_index)
-                    }
+                    Some(open) => (Vec::new(), open.item_id.clone(), open.output_index),
 
                     None => {
                         let item_id = format!("msg_{}", ids::new_uuid());
                         let output_index = self.next_output_index;
 
                         self.next_output_index += 1;
-                        self.message = Some((item_id.clone(), output_index, String::new()));
+                        self.message = Some(OpenTextItem {
+                            item_id: item_id.clone(),
+                            output_index,
+                            text: String::new(),
+                        });
 
-                        let mut frames = vec![self.event_frame(
-                            "response.output_item.added",
-                            serde_json::json!({
-                                "output_index": output_index,
-                                "item": {
-                                    "id": item_id,
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "status": "in_progress",
-                                    "content": [],
+                        let frames = vec![
+                            self.event_frame(
+                                "response.output_item.added",
+                                OutputItemEvent {
+                                    output_index,
+                                    item: OutputItem::Message {
+                                        id: item_id.clone(),
+                                        role: "assistant",
+                                        status: ItemStatus::InProgress,
+                                        content: Vec::new(),
+                                    },
                                 },
-                            }),
-                        )];
-
-                        frames.push(self.event_frame(
-                            "response.content_part.added",
-                            serde_json::json!({
-                                "item_id": item_id,
-                                "output_index": output_index,
-                                "content_index": 0,
-                                "part": {
-                                    "type": "output_text",
-                                    "text": "",
-                                    "annotations": [],
-                                    "logprobs": [],
+                            ),
+                            self.event_frame(
+                                "response.content_part.added",
+                                ContentPartEvent {
+                                    item_id: item_id.clone(),
+                                    output_index,
+                                    content_index: PRIMARY_INDEX,
+                                    part: OutputTextPart::OutputText {
+                                        text: String::new(),
+                                        annotations: Vec::new(),
+                                        logprobs: Vec::new(),
+                                    },
                                 },
-                            }),
-                        ));
+                            ),
+                        ];
 
                         (frames, item_id, output_index)
                     }
                 };
 
-                if let Some((_, _, accumulated)) = &mut self.message {
-                    accumulated.push_str(delta);
+                if let Some(open) = &mut self.message {
+                    open.text.push_str(delta);
                 }
 
                 frames.push(self.event_frame(
                     "response.output_text.delta",
-                    // `logprobs` is a required field of the official event
-                    // shape (openai-python `ResponseTextDeltaEvent`), so the
-                    // gateway always carries it, empty when untracked.
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "content_index": 0,
-                        "delta": delta,
-                        "logprobs": [],
-                    }),
+                    OutputTextDelta {
+                        item_id,
+                        output_index,
+                        content_index: PRIMARY_INDEX,
+                        delta: delta.clone(),
+                        // `logprobs` is a required field of the official event
+                        // shape (openai-python `ResponseTextDeltaEvent`), so
+                        // the gateway always carries it, empty when untracked.
+                        logprobs: Vec::new(),
+                    },
                 ));
 
                 frames
@@ -369,16 +829,7 @@ impl ClientSseRenderer for SseRenderer {
                     .iter()
                     .find(|(open_index, _)| open_index == index)
                 {
-                    Some((_, open)) => {
-                        let item_id = open
-                            .item
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-
-                        (item_id, open.output_index)
-                    }
+                    Some((_, open)) => (open.item.id.clone(), open.output_index),
 
                     None => {
                         let item_id = format!("fc_{}", ids::new_uuid());
@@ -392,28 +843,31 @@ impl ClientSseRenderer for SseRenderer {
                         // with no preceding `output_item.added`, or a Chat
                         // Completions delta whose first tool-call entry
                         // carries only arguments, arrives exactly so. Every
-                        // field of the official function_call item is a
-                        // required string (openai-python's
-                        // `ResponseFunctionToolCallItem` has no field
-                        // defaults), so unknown identity renders as empty
-                        // strings — the same defaults the done path's
-                        // recovery branch opens with — until the done event
-                        // stamps the real `call_id`, `name`, and `arguments`.
-                        let item = serde_json::json!({
-                            "id": item_id,
-                            "type": "function_call",
-                            "status": "in_progress",
-                            "call_id": call_id.as_deref().unwrap_or_default(),
-                            "name": name.as_deref().unwrap_or_default(),
-                            "arguments": "",
-                        });
+                        // identity field of the official function_call item
+                        // is a required string, so unknown identity renders
+                        // as empty strings — the same defaults the done
+                        // path's recovery branch opens with — until the done
+                        // event stamps the real `call_id`, `name`, and
+                        // `arguments`.
+                        let item = FunctionCallItem {
+                            id: item_id.clone(),
+                            status: ItemStatus::InProgress,
+                            call_id: call_id.clone().unwrap_or_default(),
+                            name: name.clone().unwrap_or_default(),
+                            arguments: String::new(),
+                            thought_signature: None,
+                        };
 
                         frames.push(self.event_frame(
                             "response.output_item.added",
-                            serde_json::json!({"output_index": output_index, "item": item.clone()}),
+                            OutputItemEvent {
+                                output_index,
+                                item: OutputItem::FunctionCall(item.clone()),
+                            },
                         ));
 
-                        self.calls.push((*index, OutputItem { output_index, item }));
+                        self.calls
+                            .push((*index, TrackedCall { output_index, item }));
 
                         (item_id, output_index)
                     }
@@ -422,11 +876,11 @@ impl ClientSseRenderer for SseRenderer {
                 if !arguments_delta.is_empty() {
                     frames.push(self.event_frame(
                         "response.function_call_arguments.delta",
-                        serde_json::json!({
-                            "item_id": item_id,
-                            "output_index": output_index,
-                            "delta": arguments_delta,
-                        }),
+                        FunctionCallArgumentsDelta {
+                            item_id,
+                            output_index,
+                            delta: arguments_delta.clone(),
+                        },
                     ));
                 }
 
@@ -464,72 +918,67 @@ impl ClientSseRenderer for SseRenderer {
 
                         let frames = vec![self.event_frame(
                             "response.output_item.added",
-                            serde_json::json!({
-                                "output_index": output_index,
-                                "item": {
-                                    "id": item_id,
-                                    "type": "function_call",
-                                    "status": "in_progress",
-                                    "call_id": call_id,
-                                    "name": name,
-                                    "arguments": "",
-                                },
-                            }),
+                            OutputItemEvent {
+                                output_index,
+                                item: OutputItem::FunctionCall(FunctionCallItem {
+                                    id: item_id.clone(),
+                                    status: ItemStatus::InProgress,
+                                    call_id: call_id.clone(),
+                                    name: name.clone(),
+                                    arguments: String::new(),
+                                    thought_signature: None,
+                                }),
+                            },
                         )];
 
                         (
-                            OutputItem {
+                            TrackedCall {
                                 output_index,
-                                item: serde_json::json!({
-                                    "id": item_id,
-                                    "type": "function_call",
-                                }),
+                                item: FunctionCallItem {
+                                    id: item_id,
+                                    status: ItemStatus::InProgress,
+                                    call_id: String::new(),
+                                    name: String::new(),
+                                    arguments: String::new(),
+                                    thought_signature: None,
+                                },
                             },
                             frames,
                         )
                     }
                 };
 
-                format::json_insert(
-                    &mut open.item,
-                    "status",
-                    Value::String("completed".to_string()),
-                );
-                format::json_insert(&mut open.item, "call_id", Value::String(call_id.clone()));
-                format::json_insert(&mut open.item, "name", Value::String(name.clone()));
-                format::json_insert(
-                    &mut open.item,
-                    "arguments",
-                    Value::String(arguments.clone()),
-                );
+                open.item.status = ItemStatus::Completed;
+                open.item.call_id = call_id.clone();
+                open.item.name = name.clone();
+                open.item.arguments = arguments.clone();
+                open.item.thought_signature = thought_signature.clone();
 
-                format::insert_thought_signature(&mut open.item, thought_signature);
-
+                let item_id = open.item.id.clone();
                 let output_index = open.output_index;
-                let item_id = open
-                    .item
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
 
                 frames.push(self.event_frame(
                     "response.function_call_arguments.done",
-                    serde_json::json!({
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "arguments": arguments,
-                    }),
+                    FunctionCallArgumentsDone {
+                        item_id,
+                        output_index,
+                        arguments: arguments.clone(),
+                    },
                 ));
+
+                let completed_item = OutputItem::FunctionCall(open.item);
 
                 frames.push(self.event_frame(
                     "response.output_item.done",
-                    serde_json::json!({"output_index": output_index, "item": open.item.clone()}),
+                    OutputItemEvent {
+                        output_index,
+                        item: completed_item.clone(),
+                    },
                 ));
 
-                self.completed_items.push(OutputItem {
+                self.completed_items.push(TrackedItem {
                     output_index,
-                    item: open.item,
+                    item: completed_item,
                 });
 
                 frames
@@ -550,15 +999,14 @@ impl ClientSseRenderer for SseRenderer {
             IrEvent::Done => {
                 let mut frames = self.close_open_items();
 
-                let mut output: Vec<(usize, Value)> = self
-                    .completed_items
-                    .iter()
-                    .map(|open| (open.output_index, open.item.clone()))
-                    .collect();
+                let mut completed_items = std::mem::take(&mut self.completed_items);
 
-                output.sort_by_key(|(output_index, _)| *output_index);
+                completed_items.sort_by_key(|tracked| tracked.output_index);
 
-                let output: Vec<Value> = output.into_iter().map(|(_, item)| item).collect();
+                let output = completed_items
+                    .into_iter()
+                    .map(|tracked| tracked.item)
+                    .collect::<Vec<_>>();
 
                 let usage = self.usage.unwrap_or_default();
 
@@ -567,35 +1015,28 @@ impl ClientSseRenderer for SseRenderer {
                 // strict clients can tell a truncated response from a full
                 // one.
                 let incomplete_reason = self.finish.and_then(incomplete_details_reason);
-                let is_incomplete = incomplete_reason.is_some();
 
-                let mut shell = self.response_shell(
-                    if is_incomplete {
-                        "incomplete"
-                    } else {
-                        "completed"
-                    },
-                    Value::Array(output),
-                );
-
-                format::json_insert(&mut shell, "usage", usage_json(usage));
-
-                if let Some(reason) = incomplete_reason {
-                    format::json_insert(
-                        &mut shell,
-                        "incomplete_details",
-                        serde_json::json!({"reason": reason}),
-                    );
-                }
-
-                let terminal_event = if is_incomplete {
+                let terminal_event = if incomplete_reason.is_some() {
                     "response.incomplete"
                 } else {
                     "response.completed"
                 };
 
-                frames
-                    .push(self.event_frame(terminal_event, serde_json::json!({"response": shell})));
+                let mut shell = self.response_shell(
+                    if incomplete_reason.is_some() {
+                        ResponseStatus::Incomplete
+                    } else {
+                        ResponseStatus::Completed
+                    },
+                    output,
+                );
+
+                shell.usage = Some(ResponseUsage::render(usage));
+
+                shell.incomplete_details =
+                    incomplete_reason.map(|reason| IncompleteDetails { reason });
+
+                frames.push(self.event_frame(terminal_event, ResponseEvent { response: shell }));
 
                 frames
             }
@@ -603,144 +1044,81 @@ impl ClientSseRenderer for SseRenderer {
     }
 
     /// Renders a mid-stream error as a terminal `response.failed` event.
-    fn error_frame(&mut self, error: &serde_json::Value) -> String {
-        let error_payload = error
-            .get("error")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
+    ///
+    /// Strict clients validate the embedded response object like any other,
+    /// so it carries the full required shell rather than a bare
+    /// id/status/error subset.
+    fn error_frame(&mut self, error: &OpenAiErrorBody) -> String {
+        let mut shell = self.response_shell(ResponseStatus::Failed, Vec::new());
 
-        // Strict clients validate the embedded response object like any
-        // other, so it carries the full required shell rather than a bare
-        // id/status/error subset.
-        let mut shell = self.response_shell("failed", Value::Array(Vec::new()));
+        shell.error = Some(OpenAiErrorBody {
+            message: error.message.clone(),
+            r#type: error.r#type,
+            param: error.param.clone(),
+            code: error.code.clone(),
+        });
 
-        format::json_insert(&mut shell, "error", error_payload);
-
-        self.event_frame(
-            "response.failed",
-            serde_json::json!({
-                "response": shell,
-            }),
-        )
+        self.event_frame("response.failed", ResponseEvent { response: shell })
     }
-}
-
-/// Builds the official Response object shell shared by every rendered
-/// response, streaming and non-streaming.
-///
-/// `parallel_tool_calls`, `tool_choice`, and `tools` are required fields of
-/// the official Response shape (openai-python `Response` types them without
-/// defaults), so the shell always carries the statics describing the gateway
-/// itself: it advertises no parallel tool-call control, tool calls happen
-/// whenever the model decides (`auto`), and no tool definitions are echoed
-/// back to the client. Callers attach `usage` and, where applicable,
-/// `incomplete_details` or `error` after construction.
-fn response_shell(id: String, created_at: i64, model: &str, status: &str, output: Value) -> Value {
-    serde_json::json!({
-        "id": id,
-        "object": "response",
-        "created_at": created_at,
-        "status": status,
-        "model": model,
-        "output": output,
-        "parallel_tool_calls": false,
-        "tool_choice": "auto",
-        "tools": [],
-    })
 }
 
 /// Renders an aggregated completion as a non-streaming Responses API response.
-pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> Value {
-    let mut output: Vec<Value> = Vec::new();
+pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> ResponseObject {
+    let mut output: Vec<OutputItem> = Vec::new();
 
     if !aggregation.reasoning.is_empty() {
-        output.push(serde_json::json!({
-            "id": format!("rs_{}", ids::new_uuid()),
-            "type": "reasoning",
-            "summary": [{"type": "summary_text", "text": aggregation.reasoning}],
-        }));
+        output.push(OutputItem::Reasoning {
+            id: format!("rs_{}", ids::new_uuid()),
+            summary: vec![SummaryPart::SummaryText {
+                text: aggregation.reasoning.clone(),
+            }],
+        });
     }
 
     if !aggregation.text.is_empty() {
-        output.push(serde_json::json!({
-            "id": format!("msg_{}", ids::new_uuid()),
-            "type": "message",
-            "role": "assistant",
-            "status": "completed",
-            "content": [{
-                "type": "output_text",
-                "text": aggregation.text,
-                "annotations": [],
-                "logprobs": [],
+        output.push(OutputItem::Message {
+            id: format!("msg_{}", ids::new_uuid()),
+            role: "assistant",
+            status: ItemStatus::Completed,
+            content: vec![OutputTextPart::OutputText {
+                text: aggregation.text.clone(),
+                annotations: Vec::new(),
+                logprobs: Vec::new(),
             }],
-        }));
+        });
     }
 
     for tool_call in &aggregation.tool_calls {
-        let mut item = serde_json::json!({
-            "id": format!("fc_{}", ids::new_uuid()),
-            "type": "function_call",
-            "status": "completed",
-            "call_id": tool_call.call_id,
-            "name": tool_call.name,
-            "arguments": tool_call.arguments,
-        });
-
-        format::insert_thought_signature(&mut item, &tool_call.thought_signature);
-
-        output.push(item);
+        output.push(OutputItem::FunctionCall(FunctionCallItem {
+            id: format!("fc_{}", ids::new_uuid()),
+            status: ItemStatus::Completed,
+            call_id: tool_call.call_id.clone(),
+            name: tool_call.name.clone(),
+            arguments: tool_call.arguments.clone(),
+            thought_signature: tool_call.thought_signature.clone(),
+        }));
     }
-
-    let usage = aggregation.usage.unwrap_or_default();
 
     let incomplete_reason = aggregation.finish.and_then(incomplete_details_reason);
 
-    let mut body = response_shell(
-        format!("resp_{}", ids::new_uuid()),
-        unix_time::unix_now(),
-        model,
-        if incomplete_reason.is_some() {
-            "incomplete"
+    ResponseObject {
+        id: format!("resp_{}", ids::new_uuid()),
+        object: "response",
+        created_at: unix_time::unix_now(),
+        status: if incomplete_reason.is_some() {
+            ResponseStatus::Incomplete
         } else {
-            "completed"
+            ResponseStatus::Completed
         },
-        Value::Array(output),
-    );
-
-    format::json_insert(&mut body, "usage", usage_json(usage));
-
-    if let Some(reason) = incomplete_reason {
-        format::json_insert(
-            &mut body,
-            "incomplete_details",
-            serde_json::json!({"reason": reason}),
-        );
+        model: model.to_string(),
+        output,
+        parallel_tool_calls: false,
+        tool_choice: "auto",
+        tools: Vec::new(),
+        usage: Some(ResponseUsage::render(aggregation.usage.unwrap_or_default())),
+        incomplete_details: incomplete_reason.map(|reason| IncompleteDetails { reason }),
+        error: None,
     }
-
-    body
-}
-
-/// Renders the usage object shared by the streaming terminal events and the
-/// aggregated response body.
-///
-/// openai-python's `ResponseUsage` types all five fields as required — the two
-/// detail objects included, their inner integers too (official OpenAPI schema:
-/// `input_tokens_details` requires `cached_tokens` and `cache_write_tokens`,
-/// `output_tokens_details` requires `reasoning_tokens`) — so the details are
-/// always carried, zero-filled when the upstream reported no breakdown.
-fn usage_json(usage: IrUsage) -> Value {
-    serde_json::json!({
-        "input_tokens": usage.input_tokens,
-        "input_tokens_details": {
-            "cached_tokens": usage.cached_tokens.unwrap_or(0),
-            "cache_write_tokens": usage.cache_write_tokens.unwrap_or(0),
-        },
-        "output_tokens": usage.output_tokens,
-        "output_tokens_details": {
-            "reasoning_tokens": usage.reasoning_tokens.unwrap_or(0),
-        },
-        "total_tokens": usage.input_tokens + usage.output_tokens,
-    })
 }
 
 /// Renders the `incomplete_details.reason` string for a finish reason that
@@ -893,7 +1271,8 @@ mod tests {
             ..IrAggregation::default()
         };
 
-        let body = render_json_response("m", &aggregation);
+        let body = serde_json::to_value(render_json_response("m", &aggregation))
+            .expect("the aggregated body serializes into a JSON value");
 
         assert_eq!(
             body.get("usage"),

@@ -2,12 +2,12 @@
 //! events as Chat Completions SSE frames or an aggregated non-streaming body.
 
 use crate::{
-    format::{self, ClientSseRenderer},
+    format::{self, ClientSseRenderer, OpenAiErrorBody, OpenAiErrorEnvelope},
     ids,
     ir::{IrAggregation, IrEvent, IrUsage},
     sse, unix_time,
 };
-use serde_json::Value;
+use serde::Serialize;
 
 /// Streaming client response renderer producing Chat Completions SSE frames.
 #[derive(Debug)]
@@ -44,6 +44,131 @@ pub(super) struct SseRenderer {
     usage: Option<IrUsage>,
 }
 
+/// One streamed Chat Completions chunk (the `chat.completion.chunk` shape).
+#[derive(Debug, Serialize)]
+struct ChatCompletionChunk<'a> {
+    /// Gateway-issued completion identifier.
+    id: &'a str,
+
+    /// Object kind.
+    object: &'static str,
+
+    /// Unix creation timestamp.
+    created: i64,
+
+    /// Public model name echoed to the client.
+    model: &'a str,
+
+    /// Per-choice deltas; empty on the terminal usage-only chunk, matching
+    /// the official stream shape.
+    choices: Vec<ChunkChoice>,
+
+    /// Token accounting, carried only by the terminal usage-only chunk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<TokenUsage>,
+}
+
+/// One streamed choice: the incremental delta beside the finish reason, which
+/// only the terminal content chunk carries.
+#[derive(Debug, Serialize)]
+struct ChunkChoice {
+    /// Always 0: the gateway serves one choice per request.
+    index: u32,
+
+    /// The incremental delta.
+    delta: Delta,
+
+    /// Canonical finish reason, `null` on every non-terminal chunk.
+    finish_reason: Option<&'static str>,
+}
+
+/// The incremental delta of one chunk. Absent fields are omitted rather than
+/// rendered as `null`, exactly as the official stream shape carries them; the
+/// delta of the finishing chunk is empty.
+#[derive(Debug, Default, Serialize)]
+struct Delta {
+    /// Role announcement, carried by the leading chunk only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'static str>,
+
+    /// Assistant text; the leading chunk carries the empty string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+
+    /// Reasoning text. Chat Completions has no official reasoning delta
+    /// field; `reasoning_content` is the de-facto key that reasoner-aware
+    /// OpenAI-compatible clients read (see DeepSeek's reasoning model guide).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+
+    /// Tool calls opened or extended by this delta.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<DeltaToolCall>>,
+}
+
+/// One tool call opened or extended by a delta. The identity fields are
+/// carried by the chunk that first reveals the call; an established call
+/// carries only its index beside whatever this chunk adds.
+#[derive(Debug, Serialize)]
+struct DeltaToolCall {
+    /// Stable index of the call within the response.
+    index: usize,
+
+    /// Invocation identifier, revealed by the opening chunk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+
+    /// Tool kind, `function`; revealed alongside the identifier.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    tool_type: Option<&'static str>,
+
+    /// The function name and argument fragment this chunk delivers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function: Option<DeltaFunction>,
+
+    /// Upstream thought signature the client must replay on the next turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
+}
+
+/// The function fragment of a tool-call delta: the name when this chunk first
+/// reveals it, beside the argument bytes this chunk delivers.
+#[derive(Debug, Serialize)]
+struct DeltaFunction {
+    /// Invoked function name, revealed by the opening chunk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+
+    /// Incremental JSON-encoded arguments text.
+    arguments: String,
+}
+
+/// Token accounting in the flat Chat Completions shape, shared by the streamed
+/// terminal usage chunk and the aggregated response body so streamed and
+/// non-streamed clients observe byte-identical accounting (README §6.3).
+#[derive(Debug, Serialize)]
+struct TokenUsage {
+    /// Tokens consumed by the input.
+    prompt_tokens: u64,
+
+    /// Tokens produced by the output.
+    completion_tokens: u64,
+
+    /// Sum of the two.
+    total_tokens: u64,
+}
+
+impl TokenUsage {
+    /// Renders one observation.
+    fn render(usage: IrUsage) -> Self {
+        Self {
+            prompt_tokens: usage.input_tokens,
+            completion_tokens: usage.output_tokens,
+            total_tokens: usage.input_tokens + usage.output_tokens,
+        }
+    }
+}
+
 impl SseRenderer {
     /// Creates a renderer for one streamed completion.
     pub(super) fn new(model: String, should_include_usage: bool) -> Self {
@@ -59,35 +184,36 @@ impl SseRenderer {
     }
 
     /// Formats one delta chunk with an optional finish reason.
-    fn chunk_frame(&self, delta: Value, finish_reason: Option<&str>) -> String {
-        let chunk = serde_json::json!({
-            "id": self.id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": self.model,
-            "choices": [{
-                "index": 0,
-                "delta": delta,
-                "finish_reason": finish_reason,
+    fn chunk_frame(&self, delta: Delta, finish_reason: Option<&'static str>) -> String {
+        let chunk = ChatCompletionChunk {
+            id: &self.id,
+            object: "chat.completion.chunk",
+            created: self.created,
+            model: &self.model,
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta,
+                finish_reason,
             }],
-        });
+            usage: None,
+        };
 
-        sse::format_data_frame(&chunk.to_string())
+        sse::format_data_frame(&format::render_json(&chunk))
     }
 
     /// Formats the terminal usage-only chunk carrying an empty choices
     /// array, matching the official stream shape.
     fn usage_frame(&self, usage: IrUsage) -> String {
-        let chunk = serde_json::json!({
-            "id": self.id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": self.model,
-            "choices": [],
-            "usage": usage_json(usage),
-        });
+        let chunk = ChatCompletionChunk {
+            id: &self.id,
+            object: "chat.completion.chunk",
+            created: self.created,
+            model: &self.model,
+            choices: Vec::new(),
+            usage: Some(TokenUsage::render(usage)),
+        };
 
-        sse::format_data_frame(&chunk.to_string())
+        sse::format_data_frame(&format::render_json(&chunk))
     }
 }
 
@@ -102,23 +228,31 @@ impl ClientSseRenderer for SseRenderer {
                     self.is_role_sent = true;
 
                     vec![self.chunk_frame(
-                        serde_json::json!({"role": "assistant", "content": ""}),
+                        Delta {
+                            role: Some("assistant"),
+                            content: Some(String::new()),
+                            ..Delta::default()
+                        },
                         None,
                     )]
                 }
             }
 
-            IrEvent::TextDelta(delta) => {
-                vec![self.chunk_frame(serde_json::json!({"content": delta}), None)]
-            }
+            IrEvent::TextDelta(delta) => vec![self.chunk_frame(
+                Delta {
+                    content: Some(delta.clone()),
+                    ..Delta::default()
+                },
+                None,
+            )],
 
-            IrEvent::ReasoningDelta(delta) => {
-                // Chat Completions has no official reasoning delta field;
-                // `reasoning_content` is the de-facto key that reasoner-aware
-                // OpenAI-compatible clients read (see DeepSeek's reasoning
-                // model guide).
-                vec![self.chunk_frame(serde_json::json!({"reasoning_content": delta}), None)]
-            }
+            IrEvent::ReasoningDelta(delta) => vec![self.chunk_frame(
+                Delta {
+                    reasoning_content: Some(delta.clone()),
+                    ..Delta::default()
+                },
+                None,
+            )],
 
             IrEvent::ToolCallDelta {
                 index,
@@ -138,30 +272,22 @@ impl ClientSseRenderer for SseRenderer {
                         .push((*index, arguments_delta.clone())),
                 }
 
-                let mut function = serde_json::Map::new();
-
-                if let Some(name) = name {
-                    function.insert("name".to_string(), Value::String(name.clone()));
-                }
-
-                function.insert(
-                    "arguments".to_string(),
-                    Value::String(arguments_delta.clone()),
-                );
-
-                let mut tool_call = serde_json::Map::new();
-
-                tool_call.insert("index".to_string(), Value::from(*index as u64));
-
-                if let Some(call_id) = call_id {
-                    tool_call.insert("id".to_string(), Value::String(call_id.clone()));
-                    tool_call.insert("type".to_string(), Value::String("function".to_string()));
-                }
-
-                tool_call.insert("function".to_string(), Value::Object(function));
+                let tool_call = DeltaToolCall {
+                    index: *index,
+                    id: call_id.clone(),
+                    tool_type: call_id.as_ref().map(|_| "function"),
+                    function: Some(DeltaFunction {
+                        name: name.clone(),
+                        arguments: arguments_delta.clone(),
+                    }),
+                    thought_signature: None,
+                };
 
                 vec![self.chunk_frame(
-                    serde_json::json!({"tool_calls": [Value::Object(tool_call)]}),
+                    Delta {
+                        tool_calls: Some(vec![tool_call]),
+                        ..Delta::default()
+                    },
                     None,
                 )]
             }
@@ -186,16 +312,24 @@ impl ClientSseRenderer for SseRenderer {
                         // carries the complete call and renders as one full
                         // tool_calls delta chunk, exactly the shape a delta
                         // would have produced.
-                        let mut tool_call = serde_json::json!({
-                            "index": index,
-                            "id": call_id,
-                            "type": "function",
-                            "function": {"name": name, "arguments": arguments},
-                        });
+                        let tool_call = DeltaToolCall {
+                            index: *index,
+                            id: Some(call_id.clone()),
+                            tool_type: Some("function"),
+                            function: Some(DeltaFunction {
+                                name: Some(name.clone()),
+                                arguments: arguments.clone(),
+                            }),
+                            thought_signature: thought_signature.clone(),
+                        };
 
-                        format::insert_thought_signature(&mut tool_call, thought_signature);
-
-                        vec![self.chunk_frame(serde_json::json!({"tool_calls": [tool_call]}), None)]
+                        vec![self.chunk_frame(
+                            Delta {
+                                tool_calls: Some(vec![tool_call]),
+                                ..Delta::default()
+                            },
+                            None,
+                        )]
                     }
 
                     Some(streamed) => {
@@ -219,20 +353,35 @@ impl ClientSseRenderer for SseRenderer {
                             && !unstreamed.is_empty()
                         {
                             frames.push(self.chunk_frame(
-                                serde_json::json!({"tool_calls": [{
-                                    "index": index,
-                                    "function": {"arguments": unstreamed},
-                                }]}),
+                                Delta {
+                                    tool_calls: Some(vec![DeltaToolCall {
+                                        index: *index,
+                                        id: None,
+                                        tool_type: None,
+                                        function: Some(DeltaFunction {
+                                            name: None,
+                                            arguments: unstreamed.to_string(),
+                                        }),
+                                        thought_signature: None,
+                                    }]),
+                                    ..Delta::default()
+                                },
                                 None,
                             ));
                         }
 
                         if let Some(signature) = thought_signature {
                             frames.push(self.chunk_frame(
-                                serde_json::json!({"tool_calls": [{
-                                    "index": index,
-                                    "thought_signature": signature,
-                                }]}),
+                                Delta {
+                                    tool_calls: Some(vec![DeltaToolCall {
+                                        index: *index,
+                                        id: None,
+                                        tool_type: None,
+                                        function: None,
+                                        thought_signature: Some(signature.clone()),
+                                    }]),
+                                    ..Delta::default()
+                                },
                                 None,
                             ));
                         }
@@ -244,7 +393,7 @@ impl ClientSseRenderer for SseRenderer {
 
             IrEvent::Finish(reason) => {
                 vec![self.chunk_frame(
-                    serde_json::json!({}),
+                    Delta::default(),
                     Some(format::finish_reason_to_openai(*reason)),
                 )]
             }
@@ -274,91 +423,152 @@ impl ClientSseRenderer for SseRenderer {
         }
     }
 
-    /// Renders a mid-stream error as a terminal SSE frame.
-    fn error_frame(&mut self, error: &serde_json::Value) -> String {
-        sse::format_data_frame(&error.to_string())
+    /// Renders a mid-stream error as a terminal SSE frame carrying the
+    /// OpenAI error envelope.
+    fn error_frame(&mut self, error: &OpenAiErrorBody) -> String {
+        let envelope = OpenAiErrorEnvelope {
+            error: OpenAiErrorBody {
+                message: error.message.clone(),
+                r#type: error.r#type,
+                param: error.param.clone(),
+                code: error.code.clone(),
+            },
+        };
+
+        sse::format_data_frame(&format::render_json(&envelope))
     }
 }
 
-/// Renders the usage object shared by the streamed terminal usage chunk and
-/// the aggregated response body, so streamed and non-streamed clients observe
-/// byte-identical token accounting (README §6.3).
-fn usage_json(usage: IrUsage) -> Value {
-    serde_json::json!({
-        "prompt_tokens": usage.input_tokens,
-        "completion_tokens": usage.output_tokens,
-        "total_tokens": usage.input_tokens + usage.output_tokens,
-    })
+/// The aggregated, non-streaming Chat Completions response body.
+#[derive(Debug, Serialize)]
+pub(crate) struct ChatCompletionResponse {
+    /// Gateway-issued completion identifier.
+    id: String,
+
+    /// Object kind.
+    object: &'static str,
+
+    /// Unix creation timestamp.
+    created: i64,
+
+    /// Public model name the client addressed.
+    model: String,
+
+    /// The single served choice.
+    choices: Vec<ResponseChoice>,
+
+    /// Token accounting.
+    usage: TokenUsage,
+}
+
+/// The single aggregated choice.
+#[derive(Debug, Serialize)]
+struct ResponseChoice {
+    /// Always 0: the gateway serves one choice per request.
+    index: u32,
+
+    /// The complete assistant message.
+    message: AssistantMessage,
+
+    /// Canonical finish reason; `stop` when the upstream reported none.
+    finish_reason: &'static str,
+}
+
+/// The complete aggregated assistant message.
+#[derive(Debug, Serialize)]
+struct AssistantMessage {
+    /// Always `assistant`.
+    role: &'static str,
+
+    /// The full assistant text, `null` for a turn that produced none.
+    content: Option<String>,
+
+    /// The full reasoning text, omitted for a turn that produced none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+
+    /// Completed tool calls, omitted when the turn made none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<MessageToolCall>,
+}
+
+/// One completed tool call of an aggregated message.
+#[derive(Debug, Serialize)]
+struct MessageToolCall {
+    /// Invocation identifier.
+    id: String,
+
+    /// Tool kind, `function`.
+    #[serde(rename = "type")]
+    tool_type: &'static str,
+
+    /// The complete function invocation.
+    function: MessageFunction,
+
+    /// Upstream thought signature the client must replay on the next turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
+}
+
+/// The complete function invocation of an aggregated tool call.
+#[derive(Debug, Serialize)]
+struct MessageFunction {
+    /// Invoked function name.
+    name: String,
+
+    /// Complete JSON-encoded arguments text.
+    arguments: String,
 }
 
 /// Renders an aggregated completion as a non-streaming Chat Completions
 /// response.
-pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> Value {
-    let tool_calls: Vec<Value> = aggregation
+pub(super) fn render_json_response(
+    model: &str,
+    aggregation: &IrAggregation,
+) -> ChatCompletionResponse {
+    let tool_calls = aggregation
         .tool_calls
         .iter()
-        .map(|tool_call| {
-            let mut tool_call_json = serde_json::json!({
-                "id": tool_call.call_id,
-                "type": "function",
-                "function": {
-                    "name": tool_call.name,
-                    "arguments": tool_call.arguments,
-                },
-            });
-
-            format::insert_thought_signature(&mut tool_call_json, &tool_call.thought_signature);
-
-            tool_call_json
+        .map(|tool_call| MessageToolCall {
+            id: tool_call.call_id.clone(),
+            tool_type: "function",
+            function: MessageFunction {
+                name: tool_call.name.clone(),
+                arguments: tool_call.arguments.clone(),
+            },
+            thought_signature: tool_call.thought_signature.clone(),
         })
         .collect();
 
-    let mut message = serde_json::json!({"role": "assistant"});
-
-    let content = if aggregation.text.is_empty() {
-        Value::Null
-    } else {
-        Value::String(aggregation.text.clone())
+    let message = AssistantMessage {
+        role: "assistant",
+        content: (!aggregation.text.is_empty()).then(|| aggregation.text.clone()),
+        reasoning_content: (!aggregation.reasoning.is_empty())
+            .then(|| aggregation.reasoning.clone()),
+        tool_calls,
     };
 
-    format::json_insert(&mut message, "content", content);
-
-    if !aggregation.reasoning.is_empty() {
-        format::json_insert(
-            &mut message,
-            "reasoning_content",
-            Value::String(aggregation.reasoning.clone()),
-        );
-    }
-
-    if !tool_calls.is_empty() {
-        format::json_insert(&mut message, "tool_calls", Value::Array(tool_calls));
-    }
-
-    let finish_reason = aggregation
-        .finish
-        .map(format::finish_reason_to_openai)
-        .unwrap_or("stop");
-
-    let usage = aggregation.usage.unwrap_or_default();
-
-    serde_json::json!({
-        "id": format!("chatcmpl-{}", ids::new_uuid()),
-        "object": "chat.completion",
-        "created": unix_time::unix_now(),
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "message": message,
-            "finish_reason": finish_reason,
+    ChatCompletionResponse {
+        id: format!("chatcmpl-{}", ids::new_uuid()),
+        object: "chat.completion",
+        created: unix_time::unix_now(),
+        model: model.to_string(),
+        choices: vec![ResponseChoice {
+            index: 0,
+            message,
+            finish_reason: aggregation
+                .finish
+                .map(format::finish_reason_to_openai)
+                .unwrap_or("stop"),
         }],
-        "usage": usage_json(usage),
-    })
+        usage: TokenUsage::render(aggregation.usage.unwrap_or_default()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     /// Parses the JSON payload of every rendered SSE frame.
     #[expect(

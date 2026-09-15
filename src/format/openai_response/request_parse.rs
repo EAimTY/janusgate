@@ -8,59 +8,9 @@ use crate::{
         IrRole, IrTool, IrToolChoice,
     },
 };
-use serde::Deserialize;
+use serde::{Deserialize, de::IgnoredAny};
 use serde_json::Value;
-
-/// Fields allowed on each Responses input item, keyed by item type. Unknown
-/// fields are rejected because internally tagged serde enums cannot enforce
-/// this.
-///
-/// `message` items accept and ignore `id`, `phase`, and `status`: codex
-/// replays parsed output items verbatim each turn, and the gateway itself
-/// stamps `id` and `status` onto its rendered assistant `message` items, so
-/// rejecting them would break history replay.
-const INPUT_ITEM_FIELDS: &[(&str, &[&str])] = &[
-    (
-        "message",
-        &["type", "id", "role", "content", "phase", "status"],
-    ),
-    (
-        "function_call",
-        &[
-            "type",
-            "id",
-            "call_id",
-            "name",
-            "arguments",
-            "status",
-            "thought_signature",
-        ],
-    ),
-    (
-        "function_call_output",
-        &["type", "id", "call_id", "output", "status"],
-    ),
-];
-
-/// Fields allowed on each Responses content part, keyed by part type.
-///
-/// `output_text` accepts and ignores `annotations` and `logprobs`: the
-/// gateway's own rendered `output_text` parts carry both fields, so
-/// replaying an aggregated response verbatim must parse.
-const CONTENT_PART_FIELDS: &[(&str, &[&str])] = &[
-    ("input_text", &["type", "text"]),
-    ("output_text", &["type", "text", "annotations", "logprobs"]),
-    ("input_image", &["type", "image_url", "detail"]),
-];
-
-/// Fields allowed on each `function_call_output` `output` content part,
-/// keyed by part type. Image and file parts are recognized here so the
-/// part-type rejection names them instead of an unknown-field error.
-const OUTPUT_PART_FIELDS: &[(&str, &[&str])] = &[
-    ("input_text", &["type", "text"]),
-    ("input_image", &["type", "image_url", "detail"]),
-    ("input_file", &["type", "file_id", "file_data", "filename"]),
-];
+use std::collections::BTreeMap;
 
 /// Strictly parsed Responses request body.
 #[derive(Debug, Deserialize)]
@@ -69,8 +19,8 @@ struct RequestBody {
     /// Public model name to route to.
     model: String,
 
-    /// Conversation input.
-    input: InputIn,
+    /// Conversation input: a plain string or an ordered item array.
+    input: format::StringOrArray<ItemIn>,
 
     /// System instructions.
     #[serde(default)]
@@ -163,32 +113,48 @@ struct RequestBody {
     access_programs: Option<Value>,
 }
 
-/// Conversation input: plain string or item array.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum InputIn {
-    /// Single user text turn.
-    Text(String),
-
-    /// Ordered input items.
-    Items(Vec<ItemIn>),
-}
-
 /// Input item, tagged by `type`.
+///
+/// The shapes are strict: a member outside the item's own shape is rejected.
+/// The exception is a `reasoning` item, whose payload is accepted and ignored
+/// in whatever shape it arrives, because it carries no replayable state — the
+/// variant captures every member beside its tag for exactly that reason.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ItemIn {
     /// Conversation message.
     Message {
+        /// Gateway-rendered item identifier; accepted and ignored, because
+        /// codex replays parsed output items verbatim each turn (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        id: Option<IgnoredAny>,
+
         /// Authoring role.
         role: String,
 
         /// Text or typed content.
-        content: MessageContentIn,
+        content: format::StringOrArray<PartIn>,
+
+        /// Gateway-rendered item phase; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        phase: Option<IgnoredAny>,
+
+        /// Gateway-rendered item status; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        status: Option<IgnoredAny>,
     },
 
     /// A past tool invocation.
     FunctionCall {
+        /// Gateway-rendered item identifier; accepted and ignored (README
+        /// §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        id: Option<IgnoredAny>,
+
         /// Invocation identifier.
         call_id: String,
 
@@ -199,6 +165,11 @@ enum ItemIn {
         #[serde(default)]
         arguments: String,
 
+        /// Gateway-rendered item status; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        status: Option<IgnoredAny>,
+
         /// Thought signature to reattach across turns.
         #[serde(default)]
         thought_signature: Option<String>,
@@ -206,31 +177,47 @@ enum ItemIn {
 
     /// A tool result.
     FunctionCallOutput {
+        /// Gateway-rendered item identifier; accepted and ignored (README
+        /// §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        id: Option<IgnoredAny>,
+
         /// Identifier of the invocation being answered.
         call_id: String,
 
         /// Result content: a plain string or an array of text parts.
-        output: OutputIn,
+        output: format::StringOrArray<OutputPartIn>,
+
+        /// Gateway-rendered item status; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        status: Option<IgnoredAny>,
     },
 
-    /// Reasoning items carry no replayable state and are accepted but ignored.
-    Reasoning {},
+    /// Reasoning items carry no replayable state: the payload is accepted and
+    /// ignored in whatever shape it arrives, so every member beside the tag
+    /// lands here.
+    Reasoning(BTreeMap<String, IgnoredAny>),
 }
 
-/// Message content: plain string or typed parts.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum MessageContentIn {
-    /// Plain text.
-    Text(String),
-
-    /// Typed parts.
-    Parts(Vec<PartIn>),
+impl ItemIn {
+    /// Wraps one plain-text user turn: the item a bare-string `input` carries.
+    fn user_text(text: String) -> Self {
+        Self::Message {
+            id: None,
+            role: "user".to_string(),
+            content: format::StringOrArray::Text(text),
+            phase: None,
+            status: None,
+        }
+    }
 }
 
-/// Content part, tagged by `type`.
+/// Content part, tagged by `type`; a member outside the part's own shape is
+/// rejected.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum PartIn {
     /// Text segment on the input side.
     InputText {
@@ -242,6 +229,19 @@ enum PartIn {
     OutputText {
         /// The text content.
         text: String,
+
+        /// Gateway-rendered annotations; accepted and ignored, because the
+        /// gateway's own rendered `output_text` parts carry the member and
+        /// replaying an aggregated response verbatim must parse (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        annotations: Option<IgnoredAny>,
+
+        /// Gateway-rendered log probabilities; accepted and ignored (README
+        /// §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        logprobs: Option<IgnoredAny>,
     },
 
     /// Image segment.
@@ -249,36 +249,79 @@ enum PartIn {
         /// Remote or data URL of the image.
         image_url: String,
 
-        /// OpenAI image detail hint; accepted and ignored.
+        /// OpenAI image detail hint; accepted and ignored (README §6.6).
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
-        detail: Option<String>,
+        detail: Option<IgnoredAny>,
     },
 }
 
-/// Tool result output: a plain string or content parts, the two official
-/// forms of a `function_call_output` item's `output`.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum OutputIn {
-    /// Plain text.
-    Text(String),
-
-    /// Typed parts.
-    Parts(Vec<OutputPartIn>),
-}
-
 /// Content part of a `function_call_output` output array, tagged by `type`.
-/// Only `input_text` is supported: the IR tool output has no media channel,
-/// and raw validation rejects image and file parts before deserialization.
+///
+/// Only `input_text` is supported: the IR tool output has no media channel.
+/// The image and file kinds are modelled so the rejection can name the
+/// offending kind, and every further kind lands in [`OutputPartIn::Other`],
+/// which the conversion rejects the same way.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum OutputPartIn {
     /// Text segment.
     InputText {
         /// The text content.
         text: String,
     },
+
+    /// Image segment, which the IR tool output cannot carry.
+    InputImage {
+        /// Remote or data URL of the image.
+        #[serde(default)]
+        #[expect(dead_code, reason = "rejected by the conversion below")]
+        image_url: Option<IgnoredAny>,
+
+        /// OpenAI image detail hint; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "rejected by the conversion below")]
+        detail: Option<IgnoredAny>,
+    },
+
+    /// File segment, which the IR tool output cannot carry.
+    InputFile {
+        /// Upstream file identifier.
+        #[serde(default)]
+        #[expect(dead_code, reason = "rejected by the conversion below")]
+        file_id: Option<IgnoredAny>,
+
+        /// Inline file data.
+        #[serde(default)]
+        #[expect(dead_code, reason = "rejected by the conversion below")]
+        file_data: Option<IgnoredAny>,
+
+        /// File name.
+        #[serde(default)]
+        #[expect(dead_code, reason = "rejected by the conversion below")]
+        filename: Option<IgnoredAny>,
+    },
+
+    /// Any other part kind, of which the tag value the enum machinery
+    /// consumed leaves no trace.
+    #[serde(other)]
+    Other,
+}
+
+impl OutputPartIn {
+    /// The part's wire type name, for the rejection that names the offending
+    /// kind; [`None`] for a kind [`OutputPartIn::Other`] swallowed.
+    fn type_name(&self) -> Option<&'static str> {
+        match self {
+            Self::InputText { .. } => Some("input_text"),
+
+            Self::InputImage { .. } => Some("input_image"),
+
+            Self::InputFile { .. } => Some("input_file"),
+
+            Self::Other => None,
+        }
+    }
 }
 
 /// Advertised function tool.
@@ -352,15 +395,17 @@ struct TextIn {
     verbosity: Option<String>,
 }
 
-/// Response format, tagged by `type`.
+/// Response format, tagged by `type`; a member outside the format's own shape
+/// is rejected, and the fieldless formats are empty struct variants rather
+/// than unit variants because only struct variants reject unknown members.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FormatIn {
     /// Free-form text.
-    Text,
+    Text {},
 
     /// Any valid JSON value.
-    JsonObject,
+    JsonObject {},
 
     /// JSON conforming to a named schema.
     JsonSchema {
@@ -384,13 +429,7 @@ enum FormatIn {
 /// Returns [`InvalidRequest`] for malformed JSON, unknown or unsupported
 /// fields, invalid parameter ranges, and invalid image references.
 pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
-    let raw: Value = serde_json::from_slice(body).map_err(InvalidRequest::from_json)?;
-
-    // Raw-field validation runs before deserialization so `raw` can be
-    // consumed directly instead of cloned.
-    validate_input_item_fields(raw.get("input"))?;
-
-    let request: RequestBody = serde_json::from_value(raw).map_err(InvalidRequest::from_json)?;
+    let request: RequestBody = format::parse_client_request(body)?;
 
     if request.store == Some(true) {
         return Err(InvalidRequest::field(
@@ -415,17 +454,14 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     let mut messages: Vec<IrMessage> = Vec::new();
 
     let input_items: Vec<ItemIn> = match request.input {
-        InputIn::Text(text) => vec![ItemIn::Message {
-            role: "user".to_string(),
-            content: MessageContentIn::Text(text),
-        }],
+        format::StringOrArray::Text(text) => vec![ItemIn::user_text(text)],
 
-        InputIn::Items(items) => items,
+        format::StringOrArray::Array(items) => items,
     };
 
     for item in input_items {
         match item {
-            ItemIn::Message { role, content } => match role.as_str() {
+            ItemIn::Message { role, content, .. } => match role.as_str() {
                 "system" | "developer" => {
                     instruction_parts.push(message_content_text(&content)?);
                 }
@@ -453,6 +489,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                 name,
                 arguments,
                 thought_signature,
+                ..
             } => {
                 format::arguments_as_object(&arguments)?;
 
@@ -467,17 +504,19 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                 });
             }
 
-            ItemIn::FunctionCallOutput { call_id, output } => {
+            ItemIn::FunctionCallOutput {
+                call_id, output, ..
+            } => {
                 messages.push(IrMessage {
                     role: IrRole::Tool,
                     parts: vec![IrPart::ToolOutput {
                         call_id,
-                        content: tool_output_text(&output),
+                        content: tool_output_text(&output)?,
                     }],
                 });
             }
 
-            ItemIn::Reasoning {} => {}
+            ItemIn::Reasoning(_payload) => {}
         }
     }
 
@@ -516,8 +555,8 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     let response_format = match request.text.as_ref().and_then(|text| text.format.as_ref()) {
         None => None,
-        Some(FormatIn::Text) => Some(IrResponseFormat::Text),
-        Some(FormatIn::JsonObject) => Some(IrResponseFormat::Json),
+        Some(FormatIn::Text {}) => Some(IrResponseFormat::Text),
+        Some(FormatIn::JsonObject {}) => Some(IrResponseFormat::Json),
         Some(FormatIn::JsonSchema {
             name,
             schema,
@@ -582,16 +621,16 @@ fn build_instructions(direct: Option<String>, pushed: Vec<String>) -> Option<Str
 /// Returns [`InvalidRequest`] naming the offending content part when the
 /// message carries non-text parts: instructions have no image channel, so
 /// silently dropping parts would lose request content.
-fn message_content_text(content: &MessageContentIn) -> Result<String, InvalidRequest> {
+fn message_content_text(content: &format::StringOrArray<PartIn>) -> Result<String, InvalidRequest> {
     match content {
-        MessageContentIn::Text(text) => Ok(text.clone()),
+        format::StringOrArray::Text(text) => Ok(text.clone()),
 
-        MessageContentIn::Parts(parts) => {
+        format::StringOrArray::Array(parts) => {
             let mut combined = String::new();
 
             for part in parts {
                 match part {
-                    PartIn::InputText { text } | PartIn::OutputText { text } => {
+                    PartIn::InputText { text } | PartIn::OutputText { text, .. } => {
                         if !combined.is_empty() {
                             combined.push_str("\n\n");
                         }
@@ -619,16 +658,18 @@ fn message_content_text(content: &MessageContentIn) -> Result<String, InvalidReq
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] for malformed image references.
-fn message_content_parts(content: &MessageContentIn) -> Result<Vec<IrPart>, InvalidRequest> {
+fn message_content_parts(
+    content: &format::StringOrArray<PartIn>,
+) -> Result<Vec<IrPart>, InvalidRequest> {
     match content {
-        MessageContentIn::Text(text) => Ok(vec![IrPart::Text { text: text.clone() }]),
+        format::StringOrArray::Text(text) => Ok(vec![IrPart::Text { text: text.clone() }]),
 
-        MessageContentIn::Parts(parts) => {
+        format::StringOrArray::Array(parts) => {
             let mut converted = Vec::with_capacity(parts.len());
 
             for part in parts {
                 converted.push(match part {
-                    PartIn::InputText { text } | PartIn::OutputText { text } => {
+                    PartIn::InputText { text } | PartIn::OutputText { text, .. } => {
                         IrPart::Text { text: text.clone() }
                     }
 
@@ -647,93 +688,45 @@ fn message_content_parts(content: &MessageContentIn) -> Result<Vec<IrPart>, Inva
 /// parts join with the same blank-line separator the Chat Completions codec
 /// uses for its text-parts content, so the array form flattens to exactly
 /// what the equivalent plain-string form carries.
-fn tool_output_text(output: &OutputIn) -> String {
-    match output {
-        OutputIn::Text(text) => text.clone(),
-
-        OutputIn::Parts(parts) => parts
-            .iter()
-            .map(|OutputPartIn::InputText { text }| text.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-    }
-}
-
-/// Rejects unknown fields on Responses input items; internally tagged serde
-/// enums cannot enforce this themselves.
-///
-/// Reasoning items are skipped wholesale: they are accepted and ignored, so
-/// their payload is not validated.
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] naming the first unknown field.
-fn validate_input_item_fields(input: Option<&Value>) -> Result<(), InvalidRequest> {
-    let items = match input {
-        Some(Value::Array(items)) => items,
-        _ => return Ok(()),
+/// Returns [`InvalidRequest`] naming `output` for a recognized non-text part:
+/// the IR tool output has no media channel, so silently dropping such a part
+/// would lose request content.
+fn tool_output_text(
+    output: &format::StringOrArray<OutputPartIn>,
+) -> Result<String, InvalidRequest> {
+    let parts = match output {
+        format::StringOrArray::Text(text) => return Ok(text.clone()),
+
+        format::StringOrArray::Array(parts) => parts,
     };
 
-    for item in items {
-        let Some(object) = item.as_object() else {
-            continue;
+    let mut combined = String::new();
+
+    for part in parts {
+        let OutputPartIn::InputText { text } = part else {
+            let message = match part.type_name() {
+                Some(part_type) => format!(
+                    "function_call_output output parts must be text; \
+                     `{part_type}` is not supported"
+                ),
+
+                None => "function_call_output output parts must be text".to_string(),
+            };
+
+            return Err(InvalidRequest::field("output", message));
         };
 
-        let item_type = object
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        if item_type == "reasoning" {
-            continue;
+        if !combined.is_empty() {
+            combined.push_str("\n\n");
         }
 
-        let Some(permitted_fields) = format::allowed_fields(INPUT_ITEM_FIELDS, item_type) else {
-            continue;
-        };
-
-        format::reject_unknown_fields(
-            object,
-            permitted_fields,
-            &format!("`{item_type}` input item"),
-        )?;
-
-        if let Some(parts) = object.get("content").and_then(Value::as_array) {
-            format::validate_content_part_fields(parts, CONTENT_PART_FIELDS)?;
-        }
-
-        // A `function_call_output` item's `output` may be an array of
-        // content parts, which get the same raw validation as `content`
-        // arrays.
-        if item_type == "function_call_output"
-            && let Some(parts) = object.get("output").and_then(Value::as_array)
-        {
-            format::validate_content_part_fields(parts, OUTPUT_PART_FIELDS)?;
-
-            // A recognizable non-text part is rejected here, naming the part
-            // type, instead of surfacing as an untagged-enum serde failure:
-            // the IR tool output has no media channel, so image and file
-            // parts cannot be carried. Malformed parts without a `type`
-            // string are left to serde's rejection.
-            for part in parts {
-                let Some(part_type) = part.get("type").and_then(Value::as_str) else {
-                    continue;
-                };
-
-                if part_type != "input_text" {
-                    return Err(InvalidRequest::field(
-                        "output",
-                        format!(
-                            "function_call_output output parts must be text; \
-                             `{part_type}` is not supported"
-                        ),
-                    ));
-                }
-            }
-        }
+        combined.push_str(text);
     }
 
-    Ok(())
+    Ok(combined)
 }
 
 #[cfg(test)]
@@ -967,6 +960,82 @@ mod tests {
                 ),
             );
         }
+    }
+
+    /// Unknown members are rejected wherever the protocol defines a shape: an
+    /// item member outside the item's own shape, a content-part member outside
+    /// the part's own shape, a member beside a fieldless response format, and a
+    /// member beside the request envelope's own fields. serde's rejection names
+    /// the offending member, which is the contract README §6.6 documents.
+    #[test]
+    fn unknown_members_are_rejected() {
+        let cases = [
+            (
+                serde_json::json!({
+                    "model": "m",
+                    "input": [
+                        {"type": "message", "role": "user", "content": "hi", "bogus": 1},
+                    ],
+                }),
+                "bogus",
+            ),
+            (
+                serde_json::json!({
+                    "model": "m",
+                    "input": [{
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hi", "bogus": 1}],
+                    }],
+                }),
+                "bogus",
+            ),
+            (
+                serde_json::json!({
+                    "model": "m",
+                    "input": "hi",
+                    "text": {"format": {"type": "text", "bogus": 1}},
+                }),
+                "bogus",
+            ),
+            (
+                serde_json::json!({"model": "m", "input": "hi", "bogus": 1}),
+                "bogus",
+            ),
+        ];
+
+        for (body, field) in cases {
+            let error = parse(body).expect_err("an unknown member must be rejected");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{field}`")),
+                "unexpected rejection: {error}"
+            );
+        }
+    }
+
+    /// A `reasoning` input item carries no replayable state, so its payload is
+    /// accepted in whatever shape it arrives — unknown members included — while
+    /// every other item shape stays strict (README §6.6).
+    #[test]
+    fn reasoning_items_are_accepted_in_any_shape() {
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "thought"}],
+                    "encrypted_content": "ciphertext",
+                },
+            ],
+        }))
+        .expect("a reasoning item payload must parse in any shape");
+
+        assert_eq!(parsed.ir.messages.len(), 1);
     }
 
     /// The official `none` effort — the OpenAI vocabulary's explicit

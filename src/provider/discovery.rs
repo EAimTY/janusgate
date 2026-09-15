@@ -3,7 +3,8 @@
 use super::{Provider, ProviderType, endpoints, http_body, http_body::ExchangeFailure, oauth};
 use crate::format::UpstreamFormat;
 use reqwest::Client;
-use serde_json::Value;
+use serde::{Deserialize, Serialize, de::IgnoredAny};
+use std::collections::BTreeMap;
 
 /// Upstream model discovery failures. These paths never forward foreign
 /// statuses, so an upstream rejection pins 502 with the status embedded in
@@ -51,6 +52,71 @@ impl From<ExchangeFailure> for Error {
             ExchangeFailure::Unavailable { detail } => Self::Unavailable { detail },
         }
     }
+}
+
+/// The `fetchAvailableModels` request body (README §5.2): the action takes no
+/// inputs, so the body is the empty object.
+#[derive(Debug, Serialize)]
+struct FetchAvailableModelsRequest {}
+
+/// A Codex model list (README §5.1): the vendor serves the model entries under
+/// `items` or `models`. The payload is upstream-owned, so unknown fields are
+/// ignored.
+#[derive(Debug, Deserialize)]
+struct CodexModelsResponse {
+    /// Model entries the payload carries.
+    #[serde(alias = "models")]
+    items: Option<Vec<CodexModelEntry>>,
+}
+
+/// One model entry of a Codex model list.
+#[derive(Debug, Deserialize)]
+struct CodexModelEntry {
+    /// Upstream model identifier the entry names.
+    slug: Option<String>,
+}
+
+/// A Cloud Code Assist `fetchAvailableModels` response (README §5.2): the
+/// available models keyed by model name. The payload is upstream-owned, so
+/// unknown fields are ignored.
+#[derive(Debug, Deserialize)]
+struct AvailableModelsResponse {
+    /// The available models. Each value is a provider-specific model
+    /// descriptor the gateway never reads — discovery takes only the map's
+    /// keys as `upstream_id` values — so its shape is not the gateway's to
+    /// define.
+    models: Option<BTreeMap<String, IgnoredAny>>,
+}
+
+/// An OpenAI-compatible model list (README §5.3): the OpenAI protocols serve
+/// the model entries under `data`. The payload is upstream-owned, so unknown
+/// fields are ignored.
+#[derive(Debug, Deserialize)]
+struct CompatibleModelsResponse {
+    /// Model entries the payload carries.
+    data: Option<Vec<CompatibleModelEntry>>,
+}
+
+/// One model entry of an OpenAI-compatible model list.
+#[derive(Debug, Deserialize)]
+struct CompatibleModelEntry {
+    /// Upstream model identifier the entry names.
+    id: Option<String>,
+}
+
+/// A Gemini `models.list` response (README §5.3): the entries are served under
+/// `models`. The payload is upstream-owned, so unknown fields are ignored.
+#[derive(Debug, Deserialize)]
+struct GeminiModelsResponse {
+    /// Model entries the payload carries.
+    models: Option<Vec<GeminiModelEntry>>,
+}
+
+/// One model entry of a Gemini model list.
+#[derive(Debug, Deserialize)]
+struct GeminiModelEntry {
+    /// Model resource name, `models/<id>`.
+    name: Option<String>,
 }
 
 /// Fetches the upstream model identifiers (`upstream_id` values) of a
@@ -102,48 +168,37 @@ async fn discover_codex(
         .bearer_auth(secret)
         .header(endpoints::CODEX_ACCOUNT_ID_HEADER, account_id);
 
-    let value: Value = http_body::send_and_parse_json(request, "upstream").await?;
+    let response: CodexModelsResponse = http_body::send_and_parse_json(request, "upstream").await?;
 
-    let entries = value
-        .get("items")
-        .or_else(|| value.get("models"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| Error::Unavailable {
-            detail: "model discovery payload lacks an `items` or `models` array".to_string(),
-        })?;
+    let entries = response.items.ok_or_else(|| Error::Unavailable {
+        detail: "model discovery payload lacks an `items` or `models` array".to_string(),
+    })?;
 
     entries
-        .iter()
+        .into_iter()
         .map(|entry| {
-            entry
-                .get("slug")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| Error::Unavailable {
-                    detail: "model discovery entry lacks a `slug` string".to_string(),
-                })
+            entry.slug.ok_or_else(|| Error::Unavailable {
+                detail: "model discovery entry lacks a `slug` string".to_string(),
+            })
         })
         .collect()
 }
 
 /// Discovers Antigravity models from Cloud Code Assist.
 async fn discover_antigravity(http: &Client, secret: &str) -> Result<Vec<String>, Error> {
-    let value: Value = oauth::post_code_assist(
+    let response: AvailableModelsResponse = oauth::post_code_assist(
         http,
         endpoints::ANTIGRAVITY_FETCH_AVAILABLE_MODELS_ACTION,
         secret,
-        &serde_json::json!({}),
+        &FetchAvailableModelsRequest {},
     )
     .await?;
 
-    let models = value
-        .get("models")
-        .and_then(Value::as_object)
-        .ok_or_else(|| Error::Unavailable {
-            detail: "model discovery payload lacks a `models` object".to_string(),
-        })?;
+    let models = response.models.ok_or_else(|| Error::Unavailable {
+        detail: "model discovery payload lacks a `models` object".to_string(),
+    })?;
 
-    Ok(models.keys().cloned().collect())
+    Ok(models.into_keys().collect())
 }
 
 /// Discovers models from an OpenAI-compatible upstream, shaped by its
@@ -166,62 +221,96 @@ async fn discover_compatible(
 
     let base_url = base_url.trim_end_matches('/');
 
-    let request = match protocol {
-        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
-            http.get(format!("{base_url}/models")).bearer_auth(secret)
-        }
-
-        UpstreamFormat::GeminiGenerateContent => http
-            .get(format!("{base_url}/models"))
-            .header(endpoints::GEMINI_API_KEY_HEADER, secret),
-    };
-
-    let value: Value = http_body::send_and_parse_json(request, "upstream").await?;
-
     match protocol {
         UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
-            let entries =
-                value
-                    .get("data")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| Error::Unavailable {
-                        detail: "model discovery payload lacks a `data` array".to_string(),
-                    })?;
+            let request = http.get(format!("{base_url}/models")).bearer_auth(secret);
+
+            let response: CompatibleModelsResponse =
+                http_body::send_and_parse_json(request, "upstream").await?;
+
+            let entries = response.data.ok_or_else(|| Error::Unavailable {
+                detail: "model discovery payload lacks a `data` array".to_string(),
+            })?;
 
             entries
-                .iter()
+                .into_iter()
                 .map(|entry| {
-                    entry
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                        .ok_or_else(|| Error::Unavailable {
-                            detail: "model discovery entry lacks an `id` string".to_string(),
-                        })
+                    entry.id.ok_or_else(|| Error::Unavailable {
+                        detail: "model discovery entry lacks an `id` string".to_string(),
+                    })
                 })
                 .collect()
         }
 
         UpstreamFormat::GeminiGenerateContent => {
-            let entries = value
-                .get("models")
-                .and_then(Value::as_array)
-                .ok_or_else(|| Error::Unavailable {
-                    detail: "model discovery payload lacks a `models` array".to_string(),
-                })?;
+            let request = http
+                .get(format!("{base_url}/models"))
+                .header(endpoints::GEMINI_API_KEY_HEADER, secret);
+
+            let response: GeminiModelsResponse =
+                http_body::send_and_parse_json(request, "upstream").await?;
+
+            let entries = response.models.ok_or_else(|| Error::Unavailable {
+                detail: "model discovery payload lacks a `models` array".to_string(),
+            })?;
 
             entries
-                .iter()
+                .into_iter()
                 .map(|entry| {
-                    let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| {
-                        Error::Unavailable {
-                            detail: "model discovery entry lacks a `name` string".to_string(),
-                        }
+                    let name = entry.name.ok_or_else(|| Error::Unavailable {
+                        detail: "model discovery entry lacks a `name` string".to_string(),
                     })?;
 
-                    Ok(name.strip_prefix("models/").unwrap_or(name).to_string())
+                    Ok(name.strip_prefix("models/").unwrap_or(&name).to_string())
                 })
                 .collect()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `fetchAvailableModels` action takes no inputs, so its body is the
+    /// empty JSON object (README §5.2): the request keeps its shape however
+    /// the request struct is refactored.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the empty request body does not render as JSON.
+    #[test]
+    fn renders_the_empty_model_discovery_body() {
+        assert_eq!(
+            serde_json::to_string(&FetchAvailableModelsRequest {}).unwrap(),
+            "{}"
+        );
+    }
+
+    /// The vendor serves the Codex model list under `items` or `models`
+    /// (README §5.1), and the upstream payload carries fields the gateway does
+    /// not model: both key spellings yield the same entries, and unknown
+    /// fields are ignored rather than failing discovery.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the payload or its entries do not parse.
+    #[test]
+    fn codex_model_list_accepts_both_key_spellings() {
+        for json in [
+            r#"{"items": [{"slug": "gpt-5", "unmodeled": true}], "unknown": 1}"#,
+            r#"{"models": [{"slug": "gpt-5", "unmodeled": true}], "unknown": 1}"#,
+        ] {
+            let response: CodexModelsResponse = serde_json::from_str(json).unwrap();
+
+            let slugs = response
+                .items
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.slug.unwrap())
+                .collect::<Vec<_>>();
+
+            assert_eq!(slugs, ["gpt-5"]);
         }
     }
 }

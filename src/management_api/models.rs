@@ -13,8 +13,86 @@ use crate::{
 use axum::{body::Bytes, extract::State, http::StatusCode, response::Response};
 use log::info;
 use reqwest::Client;
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+
+/// One model listing entry in its management wire shape (README §7.1).
+/// `is_enabled` is the model's configured switch while
+/// `is_effectively_enabled` is the canonical effective status
+/// (`provider.is_enabled && model.is_enabled`).
+#[derive(Debug, Serialize)]
+struct ModelResponse {
+    /// Owning provider row identifier.
+    provider_id: i64,
+
+    /// Owning provider's current name.
+    provider: String,
+
+    /// Exact upstream model identifier.
+    upstream_id: String,
+
+    /// Public routing ID.
+    id: String,
+
+    /// Explicit public ID override; `null` when the ID is composed from the
+    /// provider's prefix.
+    id_override: Option<String>,
+
+    /// Configured serving switch.
+    is_enabled: bool,
+
+    /// Whether the model currently serves traffic.
+    is_effectively_enabled: bool,
+
+    /// Canonical thinking level override; `null` when no filtering is
+    /// configured.
+    thinking_levels_override: Option<Vec<ir::IrReasoningEffort>>,
+}
+
+impl ModelResponse {
+    /// Renders one stored entry, revalidating its stored thinking-levels
+    /// override through the shared stored-override parser.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManagementApiError`] when the stored override is corrupt.
+    fn from_entry(entry: &ModelEntry) -> Result<Self, ManagementApiError> {
+        Ok(Self {
+            provider_id: entry.provider_id,
+            provider: entry.provider_name.clone(),
+            upstream_id: entry.model.upstream_id.clone(),
+            id: entry.model.id.clone(),
+            id_override: entry.model.id_override.clone(),
+            is_enabled: entry.model.is_enabled,
+            is_effectively_enabled: entry
+                .model
+                .is_effectively_enabled(entry.is_provider_enabled),
+            thinking_levels_override: thinking_levels_override(
+                &entry.model.thinking_levels_override,
+            )?,
+        })
+    }
+}
+
+/// The `list-models` success body (README §7.1).
+#[derive(Debug, Serialize)]
+struct ListModelsResponse {
+    /// Every stored model, ordered by public ID.
+    models: Vec<ModelResponse>,
+}
+
+/// The `save-model` success body (README §7.1).
+#[derive(Debug, Serialize)]
+struct ModelEnvelope {
+    /// The saved model row.
+    model: ModelResponse,
+}
+
+/// The `discover-models` success body (README §7.1).
+#[derive(Debug, Serialize)]
+struct DiscoverModelsResponse {
+    /// Number of model rows the refresh stored.
+    discovered: usize,
+}
 
 /// Strictly parsed `discover-models` request.
 #[derive(Debug, Deserialize)]
@@ -54,10 +132,9 @@ pub(super) async fn discover(State(context): State<Context>, body: Bytes) -> Res
     let outcome = handle_discover(&context.database, &context.control_plane, &body).await;
 
     match outcome {
-        Ok(discovered) => super::json_response(
-            StatusCode::OK,
-            serde_json::json!({ "discovered": discovered }),
-        ),
+        Ok(discovered) => {
+            super::json_response(StatusCode::OK, &DiscoverModelsResponse { discovered })
+        }
         Err(error) => error.into_response(),
     }
 }
@@ -69,15 +146,15 @@ pub(super) async fn list(State(context): State<Context>) -> Response {
 
         let rendered = entries
             .iter()
-            .map(model_entry_json)
+            .map(ModelResponse::from_entry)
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(serde_json::json!({ "models": rendered }))
+        Ok(ListModelsResponse { models: rendered })
     }
     .await;
 
     match outcome {
-        Ok(rendered) => super::json_response(StatusCode::OK, rendered),
+        Ok(rendered) => super::json_response(StatusCode::OK, &rendered),
         Err(error) => {
             error::log_error("list-models", &error);
 
@@ -91,9 +168,7 @@ pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Respons
     let outcome = handle_save(&context.database, &body).await;
 
     match outcome {
-        Ok(rendered) => {
-            super::json_response(StatusCode::OK, serde_json::json!({ "model": rendered }))
-        }
+        Ok(rendered) => super::json_response(StatusCode::OK, &ModelEnvelope { model: rendered }),
         Err(error) => error.into_response(),
     }
 }
@@ -182,7 +257,10 @@ async fn handle_discover(
 ///
 /// Returns [`ManagementApiError`] for empty identifiers, unknown rows, invalid
 /// thinking levels, and public ID collisions.
-async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, ManagementApiError> {
+async fn handle_save(
+    database: &Database,
+    body: &Bytes,
+) -> Result<ModelResponse, ManagementApiError> {
     let request: SaveModelBody = super::parse_body(body, "save-model")?;
 
     let outcome = async {
@@ -202,7 +280,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, Managem
                 // with the stored-override contract (README §7.1).
                 let parsed = ir::parse_thinking_levels(levels, "thinking_levels_override")?;
 
-                Some(Some(ir::render_thinking_levels(&parsed).to_string()))
+                Some(Some(ir::render_thinking_levels(&parsed)))
             }
         };
 
@@ -223,7 +301,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, Managem
         .await?)
     }
     .await
-    .and_then(|entry| model_entry_json(&entry));
+    .and_then(|entry| ModelResponse::from_entry(&entry));
 
     match &outcome {
         Ok(_) => info!(
@@ -243,45 +321,55 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Value, Managem
     outcome
 }
 
-/// Renders one model listing entry.
-///
-/// # Errors
-///
-/// Returns [`ManagementApiError`] when the stored thinking-level override is
-/// corrupt.
-fn model_entry_json(entry: &ModelEntry) -> Result<Value, ManagementApiError> {
-    let thinking_levels_override = thinking_levels_json(&entry.model.thinking_levels_override)?;
-
-    // `is_enabled` is the model's configured switch; `is_effectively_enabled`
-    // is the canonical effective status (`provider.is_enabled &&
-    // model.is_enabled`).
-    Ok(serde_json::json!({
-        "provider_id": entry.provider_id,
-        "provider": entry.provider_name,
-        "upstream_id": entry.model.upstream_id,
-        "id": entry.model.id,
-        "id_override": entry.model.id_override,
-        "is_enabled": entry.model.is_enabled,
-        "is_effectively_enabled": entry.model.is_effectively_enabled(entry.is_provider_enabled),
-        "thinking_levels_override": thinking_levels_override,
-    }))
-}
-
-/// Renders the stored thinking-level override for listing, validating it
-/// through the shared stored-override parser: a corrupt stored value is
-/// drift inside the database — an invariant violation, symmetric with the
-/// gateway's fail-fast — and is never masked as an absent override.
+/// Renders the stored thinking-level override for listing as canonical
+/// levels, validating it through the shared stored-override parser: a corrupt
+/// stored value is drift inside the database — an invariant violation,
+/// symmetric with the gateway's fail-fast — and is never masked as an absent
+/// override.
 ///
 /// # Errors
 ///
 /// Returns [`ManagementApiError`] when the stored override is corrupt.
-fn thinking_levels_json(stored: &Option<String>) -> Result<Value, ManagementApiError> {
+fn thinking_levels_override(
+    stored: &Option<String>,
+) -> Result<Option<Vec<ir::IrReasoningEffort>>, ManagementApiError> {
     let Some(json) = stored else {
-        return Ok(Value::Null);
+        return Ok(None);
     };
 
-    let levels =
-        ir::parse_stored_thinking_levels_override(json).map_err(ManagementApiError::internal)?;
+    ir::parse_stored_thinking_levels_override(json)
+        .map(Some)
+        .map_err(ManagementApiError::internal)
+}
 
-    Ok(ir::render_thinking_levels(&levels))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that a stored `thinking_levels_override` renders as canonical
+    /// level names, that an absent override stays `null`, and that drift fails
+    /// instead of rendering as absent. The render is the listing contract
+    /// README §7.1 documents, and the drift rejection is what keeps a corrupt
+    /// stored value from silently relaxing a model's filtering.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered override diverges from the documented shape or
+    /// the drift rejection stops firing.
+    #[test]
+    fn renders_stored_thinking_levels_override() {
+        assert!(
+            thinking_levels_override(&None)
+                .expect("an absent override renders")
+                .is_none()
+        );
+
+        assert_eq!(
+            thinking_levels_override(&Some(r#"["low","off"]"#.to_string()))
+                .expect("a valid stored override parses"),
+            Some(vec![ir::IrReasoningEffort::Low, ir::IrReasoningEffort::Off])
+        );
+
+        assert!(thinking_levels_override(&Some(r#"["bogus"]"#.to_string())).is_err());
+    }
 }

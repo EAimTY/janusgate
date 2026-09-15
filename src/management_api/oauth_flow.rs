@@ -4,13 +4,26 @@ use super::error::{self, ManagementApiError};
 use crate::{
     context::Context,
     database::Database,
-    provider::{NewProvider, OAuthProviderType, oauth, storage},
+    provider::{NewProvider, OAuthProviderType, Provider, oauth, storage},
     unix_time,
 };
 use axum::{body::Bytes, extract::State, http::StatusCode, response::Response};
 use log::info;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+/// The `start-provider-oauth` success body (README §7.1).
+#[derive(Debug, Serialize)]
+struct StartOAuthResponse<'a> {
+    /// URL the administrator opens to authorize.
+    authorize_url: &'a str,
+
+    /// Opaque state token identifying the flow.
+    state: &'a str,
+
+    /// Unix timestamp when the flow expires.
+    expires_at: i64,
+}
 
 /// Strictly parsed `start-provider-oauth` request.
 #[derive(Debug, Deserialize)]
@@ -51,11 +64,11 @@ pub(super) async fn start(State(context): State<Context>, body: Bytes) -> Respon
     match outcome {
         Ok(flow) => super::json_response(
             StatusCode::OK,
-            serde_json::json!({
-                "authorize_url": flow.authorize_url,
-                "state": flow.state,
-                "expires_at": flow.expires_at,
-            }),
+            &StartOAuthResponse {
+                authorize_url: &flow.authorize_url,
+                state: &flow.state,
+                expires_at: flow.expires_at,
+            },
         ),
         Err(error) => error.into_response(),
     }
@@ -66,9 +79,12 @@ pub(super) async fn complete(State(context): State<Context>, body: Bytes) -> Res
     let outcome = handle_complete(&context.database, &context.control_plane, &body).await;
 
     match outcome {
-        Ok(rendered) => {
-            super::json_response(StatusCode::OK, serde_json::json!({ "provider": rendered }))
-        }
+        Ok(provider) => super::json_response(
+            StatusCode::OK,
+            &super::ProviderEnvelope {
+                provider: super::ProviderResponse::from_provider(&provider),
+            },
+        ),
         Err(error) => error.into_response(),
     }
 }
@@ -155,7 +171,7 @@ async fn handle_complete(
     database: &Database,
     control_plane: &Client,
     body: &Bytes,
-) -> Result<serde_json::Value, ManagementApiError> {
+) -> Result<Provider, ManagementApiError> {
     let request: CompleteOAuthBody = super::parse_body(body, "complete-provider-oauth")?;
 
     // The log context rides on whichever form the request names, computed
@@ -314,7 +330,7 @@ async fn handle_complete(
             }
         };
 
-        Ok(super::provider_json(&stored))
+        Ok(stored)
     }
     .await;
 

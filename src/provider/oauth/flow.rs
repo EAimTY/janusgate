@@ -8,6 +8,7 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 /// OpenAI OAuth client identifier of the Codex CLI.
@@ -112,7 +113,7 @@ pub(crate) fn begin_flow(oauth_type: OAuthProviderType) -> OAuthFlow {
 }
 
 /// Tokens returned by an OAuth token endpoint.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 struct TokenResponse {
     /// New access token.
     access_token: Option<String>,
@@ -193,14 +194,10 @@ pub(crate) async fn exchange_code(
                     detail: "token exchange response lacks an id token".to_string(),
                 })?;
 
-            let account_id = token::jwt_claim(
-                &id_token,
-                &["https://api.openai.com/auth", "chatgpt_account_id"],
-            )
-            .and_then(|claim| claim.as_str().map(str::to_string))
-            .ok_or_else(|| Error::Unavailable {
-                detail: "id token lacks a ChatGPT account claim".to_string(),
-            })?;
+            let account_id =
+                token::openai_account_claim(&id_token).ok_or_else(|| Error::Unavailable {
+                    detail: "id token lacks a ChatGPT account claim".to_string(),
+                })?;
 
             Credentials::OpenAiOauth {
                 access_token,
@@ -227,6 +224,28 @@ pub(crate) async fn exchange_code(
         credentials,
         expires_at,
     })
+}
+
+/// The `TokenResponse` counterpart of a rejected token request: the RFC 6749
+/// §5.2 error payload, from which the terminal `invalid_grant` is diagnosed.
+/// The payload is upstream-owned, so unknown fields are ignored.
+#[derive(Debug, Deserialize)]
+struct TokenErrorResponse {
+    /// OAuth error name, such as `invalid_grant`.
+    error: Option<String>,
+}
+
+/// The OpenAI refresh-grant request body (README §5.1).
+#[derive(Debug, Serialize)]
+struct OpenAiRefreshGrantRequest<'a> {
+    /// OAuth client identifier of the Codex CLI.
+    client_id: &'a str,
+
+    /// Grant type; always `refresh_token`.
+    grant_type: &'a str,
+
+    /// Grant being refreshed.
+    refresh_token: &'a str,
 }
 
 /// Result of a refresh grant.
@@ -259,11 +278,11 @@ pub(super) async fn refresh_tokens(
     let request = match oauth_type {
         OAuthProviderType::OpenAiOauth => {
             http.post(format!("{OPENAI_ISSUER}/oauth/token"))
-                .json(&serde_json::json!({
-                    "client_id": OPENAI_CLIENT_ID,
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                }))
+                .json(&OpenAiRefreshGrantRequest {
+                    client_id: OPENAI_CLIENT_ID,
+                    grant_type: "refresh_token",
+                    refresh_token,
+                })
         }
 
         OAuthProviderType::AntigravityOauth => http.post(ANTIGRAVITY_TOKEN_URL).form(&[
@@ -294,14 +313,9 @@ pub(super) async fn refresh_tokens(
 /// grant is not re-attempted as if it were transient, while any other
 /// rejection keeps the generic upstream rendering with the status embedded.
 fn token_grant_rejection(status: u16, body: &str, grant: &str) -> Error {
-    let error_name = serde_json::from_str::<serde_json::Value>(body)
+    let error_name = serde_json::from_str::<TokenErrorResponse>(body)
         .ok()
-        .and_then(|value| {
-            value
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        });
+        .and_then(|response| response.error);
 
     if error_name.as_deref() == Some("invalid_grant") {
         return Error::Unavailable {

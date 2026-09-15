@@ -5,12 +5,26 @@ use crate::{
     context::Context,
     database::Database,
     format::UpstreamFormat,
-    provider::{Credentials, NewProvider, ProviderType, storage},
+    provider::{Credentials, NewProvider, Provider, ProviderType, storage},
 };
 use axum::{body::Bytes, extract::State, http::StatusCode, response::Response};
 use log::info;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// The `list-providers` success body (README §7.1).
+#[derive(Debug, Serialize)]
+struct ListProvidersResponse<'a> {
+    /// Every stored provider, ordered by row identifier.
+    providers: Vec<super::ProviderResponse<'a>>,
+}
+
+/// The `delete-provider` success body (README §7.1).
+#[derive(Debug, Serialize)]
+struct DeleteProviderResponse {
+    /// Always `true`; a missing provider renders as a 404 instead.
+    deleted: bool,
+}
 
 /// Strictly parsed `save-provider` request. `id` selects the provider to
 /// update — its absence creates one. `name` and `model_prefix` are required
@@ -62,10 +76,15 @@ pub(super) async fn list(State(context): State<Context>) -> Response {
         Ok(providers) => {
             let rendered = providers
                 .iter()
-                .map(super::provider_json)
+                .map(super::ProviderResponse::from_provider)
                 .collect::<Vec<_>>();
 
-            super::json_response(StatusCode::OK, serde_json::json!({ "providers": rendered }))
+            super::json_response(
+                StatusCode::OK,
+                &ListProvidersResponse {
+                    providers: rendered,
+                },
+            )
         }
 
         Err(error) => {
@@ -83,9 +102,12 @@ pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Respons
     let outcome = handle_save(&context.database, &body).await;
 
     match outcome {
-        Ok(rendered) => {
-            super::json_response(StatusCode::OK, serde_json::json!({ "provider": rendered }))
-        }
+        Ok(provider) => super::json_response(
+            StatusCode::OK,
+            &super::ProviderEnvelope {
+                provider: super::ProviderResponse::from_provider(&provider),
+            },
+        ),
         Err(error) => error.into_response(),
     }
 }
@@ -98,7 +120,7 @@ pub(super) async fn delete(State(context): State<Context>, body: Bytes) -> Respo
         Ok(id) => {
             info!("deleted provider {id}");
 
-            super::json_response(StatusCode::OK, serde_json::json!({"deleted": true}))
+            super::json_response(StatusCode::OK, &DeleteProviderResponse { deleted: true })
         }
         Err(error) => error.into_response(),
     }
@@ -146,10 +168,7 @@ async fn handle_delete(database: &Database, body: &Bytes) -> Result<i64, Managem
 /// Returns [`ManagementApiError`] for empty names, unknown ids, unknown types,
 /// OAuth creation attempts, type mismatches, taken names, and public name
 /// collisions.
-async fn handle_save(
-    database: &Database,
-    body: &Bytes,
-) -> Result<serde_json::Value, ManagementApiError> {
+async fn handle_save(database: &Database, body: &Bytes) -> Result<Provider, ManagementApiError> {
     let request: SaveProviderBody = super::parse_body(body, "save-provider")?;
 
     let outcome = async {
@@ -252,7 +271,7 @@ async fn handle_save(
 
             info!("updated provider `{}`", request.name);
 
-            return Ok(super::provider_json(&stored));
+            return Ok(stored);
         }
 
         let Some(provider_type) = provider_type else {
@@ -301,7 +320,7 @@ async fn handle_save(
 
         info!("created provider `{}`", request.name);
 
-        Ok(super::provider_json(&stored))
+        Ok(stored)
     }
     .await;
 

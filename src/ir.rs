@@ -148,6 +148,20 @@ impl IrReasoningEffort {
     }
 }
 
+/// Serializes a canonical level as its canonical name, so a level array is
+/// exactly the `thinking_levels_override` wire form rendered by
+/// [`render_thinking_levels`] and parsed by
+/// [`parse_stored_thinking_levels_override`]. The name is defined once, in
+/// [`IrReasoningEffort::to_canonical`].
+impl serde::Serialize for IrReasoningEffort {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.to_canonical())
+    }
+}
+
 /// Reason a completion finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IrFinishReason {
@@ -709,15 +723,18 @@ pub(crate) fn parse_stored_thinking_levels_override(
 /// Renders canonical thinking levels into their canonical JSON array: the
 /// exact wire form stored in the `thinking_levels_override` column and
 /// rendered by the management listing, so a saved override always round-trips
-/// through [`parse_stored_thinking_levels_override`]. Serializing a string
-/// array cannot fail, so the render is total.
-pub(crate) fn render_thinking_levels(levels: &[IrReasoningEffort]) -> serde_json::Value {
-    serde_json::Value::Array(
-        levels
-            .iter()
-            .map(|level| serde_json::Value::String(level.to_canonical().to_string()))
-            .collect(),
-    )
+/// through [`parse_stored_thinking_levels_override`].
+///
+/// # Panics
+///
+/// Panics if serialization fails, which cannot occur: the value is an array
+/// of canonical level names, a shape serde_json always renders.
+pub(crate) fn render_thinking_levels(levels: &[IrReasoningEffort]) -> String {
+    #[expect(
+        clippy::expect_used,
+        reason = "serializing canonical level names into a JSON string array cannot fail"
+    )]
+    serde_json::to_string(levels).expect("canonical thinking levels serialize")
 }
 
 #[cfg(test)]
@@ -754,7 +771,7 @@ mod tests {
     fn rendered_levels_round_trip_through_the_stored_parser() {
         let levels = [IrReasoningEffort::Low, IrReasoningEffort::High];
 
-        let stored = render_thinking_levels(&levels).to_string();
+        let stored = render_thinking_levels(&levels);
 
         assert_eq!(stored, r#"["low","high"]"#);
         assert_eq!(

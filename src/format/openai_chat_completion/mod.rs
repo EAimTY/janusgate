@@ -8,7 +8,6 @@ use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest},
     ir::{InvalidRequest, IrAggregation},
 };
-use serde_json::Value;
 
 mod client_render;
 mod request_parse;
@@ -22,6 +21,8 @@ pub(crate) use self::{upstream_parse::UpstreamParser, upstream_render::render_re
 pub(crate) struct Format;
 
 impl ClientFormat for Format {
+    type JsonResponse = client_render::ChatCompletionResponse;
+
     fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
         request_parse::parse_request(body)
     }
@@ -33,7 +34,7 @@ impl ClientFormat for Format {
         Box::new(SseRenderer::new(public_id, should_include_usage))
     }
 
-    fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Value {
+    fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse {
         client_render::render_json_response(public_id, aggregation)
     }
 }
