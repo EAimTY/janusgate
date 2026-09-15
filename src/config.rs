@@ -19,9 +19,15 @@ nest! {
         /// error.
         pub(crate) log_level: LevelFilter,
 
-        /// Address and TCP port on which the gateway listens for plaintext HTTP
-        /// connections.
+        /// Address and TCP port on which the gateway listens for HTTP
+        /// connections; the listener speaks TLS when `tls` is configured and
+        /// plaintext HTTP otherwise.
         pub(crate) listen: HostPortPair,
+
+        /// Inbound TLS termination; when this section is present the listener
+        /// serves HTTPS, and when it is absent the listener serves plaintext
+        /// HTTP.
+        pub(crate) tls: Option<TlsConfig>,
 
         /// In-process SQLite database configuration.
         pub(crate) database:
@@ -79,6 +85,21 @@ nest! {
                 pub(crate) cors: CorsConfig,
             },
     }
+}
+
+/// Inbound TLS termination.
+///
+/// The presence of this section selects HTTPS for the whole listener.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TlsConfig {
+    /// File path of the PEM certificate chain served to TLS clients, leaf
+    /// certificate first.
+    pub(crate) certificate: PathBuf,
+
+    /// File path of the PEM private key matching the leaf certificate of the
+    /// chain.
+    pub(crate) private_key: PathBuf,
 }
 
 impl CorsConfig {

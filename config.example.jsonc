@@ -5,6 +5,17 @@
     // Listen address and port (host:port).
     "listen": "0.0.0.0:8080",
 
+    // Inbound TLS termination. When present, the listener serves HTTPS using
+    // the PEM certificate chain and private key loaded from these paths; when
+    // absent, the listener serves plaintext HTTP. Placeholder paths that MUST
+    // be replaced with real files before deployment.
+    "tls": {
+        // PEM certificate chain file path, leaf certificate first.
+        "certificate": "certificate.pem",
+        // PEM private key file path matching the leaf certificate.
+        "private_key": "private-key.pem"
+    },
+
     "database": {
         // Path to the in-process Turso SQLite database file.
         "path": "janusgate.db",

@@ -1,4 +1,5 @@
-//! Plaintext HTTP server lifecycle and connection driving.
+//! HTTP server lifecycle and connection driving over plaintext TCP or TLS,
+//! speaking HTTP/1 and HTTP/2.
 
 use super::{api, context, management_api};
 use axum::{
@@ -7,22 +8,22 @@ use axum::{
     http::{Request, Response, StatusCode},
 };
 use host_port_pair::Host;
-use hserver::{ConnectionBuilder, Incoming, Server};
+use hserver::{ConnectionBuilder, Incoming, Server, Tls};
 use hyper_util::rt::TokioTimer;
 use log::{debug, error, info, warn};
+use rustls::{
+    ServerConfig,
+    crypto::aws_lc_rs,
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+};
 use socket2::{Domain, Protocol, SockAddr, Socket as Socket2, Type};
 use std::{
     error::Error,
-    io::Error as IoError,
     net::{SocketAddr, TcpListener as StdTcpListener, ToSocketAddrs as _},
-    pin::Pin,
-    task::{Context, Poll},
+    sync::Arc,
     time::Duration,
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
-    net::{TcpListener, TcpStream},
-};
+use tokio::net::{TcpListener, TcpStream};
 use tower::Service;
 
 /// Delay before the first accept retry after a failed accept attempt.
@@ -36,22 +37,13 @@ const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 /// for the listening socket before it starts refusing new ones.
 const LISTEN_BACKLOG: i32 = 32;
 
-/// Leading bytes of the HTTP/2 connection preface (RFC 9113, Section 3.4).
+/// ALPN protocols offered on TLS listeners, in preference order.
 ///
-/// These three bytes discriminate an HTTP/2 preface client from every
-/// supported HTTP/1 request-line: request-lines start with a method token,
-/// and the closest near-matches ("PROPFIND"/"PROPPATCH" and a hypothetical
-/// "PRI"-method request) diverge at the third byte, so a full match here can
-/// only come from an HTTP/2 preface client or from a request that is outside
-/// the documented plaintext HTTP/1.1 surface either way.
-const HTTP2_PREFACE_PREFIX: [u8; 3] = *b"PRI";
-
-/// Deadline for reading the leading request bytes of an accepted connection.
-///
-/// Matches the 30-second header-read deadline hyper enforces for HTTP/1
-/// connections, so a client sending nothing is closed at the same point
-/// instead of parking an accepted connection indefinitely.
-const REQUEST_PEEK_DEADLINE: Duration = Duration::from_secs(30);
+/// Rustls negotiates one of them with the TLS client, and hyper-util's
+/// protocol auto-detection independently identifies the spoken protocol
+/// from the decrypted stream's leading bytes, so both ALPN-negotiated and
+/// plaintext prior-knowledge HTTP/2 clients are served.
+const ALPN_PROTOCOLS: [&[u8]; 2] = [b"h2", b"http/1.1"];
 
 /// Computes the delay before the next accept attempt after
 /// `consecutive_failures` consecutive accept failures. The delay doubles per
@@ -67,6 +59,17 @@ fn accept_backoff_delay(consecutive_failures: u32) -> Duration {
 /// Hyper's HTTP/1 timer is armed so its default 30-second header-read
 /// deadline takes effect: without a timer, hyper silently disables its
 /// timeouts and a slow client can park a connection task indefinitely.
+///
+/// No deadline is imposed on the phase before the first request headers —
+/// the TLS handshake, hyper-util's protocol auto-detection, or a client
+/// simply sending nothing. Neither hyper-util nor rustls exposes a hook for
+/// one, and adding one is rejected on the merits: a first-request deadline
+/// burdens legitimately slow clients while failing to bound resource
+/// exhaustion, because an attacker holding sockets with slow request bodies
+/// or slow keep-alive traffic makes the same investment as one holding
+/// sockets silently. The socket-exhaustion threat is answered, if ever, by
+/// connection-count limiting at the accept edge, not by opening-phase
+/// timeouts.
 fn connection_builder() -> ConnectionBuilder {
     let mut connection_builder = ConnectionBuilder::new();
 
@@ -75,153 +78,90 @@ fn connection_builder() -> ConnectionBuilder {
     connection_builder
 }
 
-/// Verdict of the leading-bytes read performed on every accepted connection.
-enum RequestPrelude {
-    /// The connection began with [`HTTP2_PREFACE_PREFIX`]; it must be closed
-    /// without a response.
-    Http2Preface,
-
-    /// The connection produced no usable leading bytes: the peer sent nothing
-    /// within [`REQUEST_PEEK_DEADLINE`], disconnected, or errored. It is
-    /// closed without a response.
-    Unreadable,
-
-    /// The leading bytes are incompatible with the HTTP/2 preface; the
-    /// connection proceeds as HTTP/1. Carries the leading bytes already
-    /// consumed from the socket, which must be replayed to the connection
-    /// before any further reads.
-    Http1 {
-        /// Leading request bytes consumed from the socket by the
-        /// [`read_request_prelude`] read.
-        replayed_bytes: Vec<u8>,
-    },
-}
-
-/// A transport that serves the bytes consumed by [`read_request_prelude`]
-/// ahead of the underlying stream.
+/// Builds the inbound TLS server configuration from the `tls` section of the
+/// global application configuration, returning `None` when that section is
+/// absent and the listener serves plaintext HTTP.
 ///
-/// The accept-edge read removes bytes from the socket, so accepted
-/// connections are handed to `hserver` through this wrapper: its reads
-/// replay the consumed bytes first and only then reach the stream, so no
-/// consumed byte is lost.
-struct PreludeReplayStream<TStream> {
-    /// Accepted transport all reads eventually delegate to.
-    stream: TStream,
-
-    /// Bytes consumed by [`read_request_prelude`] and served again before
-    /// any read reaches [`PreludeReplayStream::stream`].
-    replayed_bytes: Vec<u8>,
-}
-
-impl<TStream> PreludeReplayStream<TStream>
-where
-    TStream: AsyncRead + AsyncWrite + Unpin,
-{
-    /// Wraps `stream` so that `replayed_bytes` are served before stream reads.
-    fn new(stream: TStream, replayed_bytes: Vec<u8>) -> Self {
-        Self {
-            stream,
-            replayed_bytes,
-        }
-    }
-}
-
-impl<TStream> AsyncRead for PreludeReplayStream<TStream>
-where
-    TStream: AsyncRead + AsyncWrite + Unpin,
-{
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<Result<(), IoError>> {
-        let this = self.get_mut();
-
-        while buf.remaining() > 0 {
-            let Some(&next_byte) = this.replayed_bytes.first() else {
-                break;
-            };
-
-            buf.put_slice(&[next_byte]);
-
-            this.replayed_bytes.remove(0);
-        }
-
-        if this.replayed_bytes.is_empty() {
-            return Pin::new(&mut this.stream).poll_read(cx, buf);
-        }
-
-        Poll::Ready(Ok(()))
-    }
-}
-
-impl<TStream> AsyncWrite for PreludeReplayStream<TStream>
-where
-    TStream: AsyncRead + AsyncWrite + Unpin,
-{
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, IoError>> {
-        Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
-        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
-    }
-}
-
-/// Reads the leading request bytes from `stream`, up to the length of
-/// [`HTTP2_PREFACE_PREFIX`], within [`REQUEST_PEEK_DEADLINE`], and returns
-/// the [`RequestPrelude`] verdict.
+/// The configuration offers the protocols of [`ALPN_PROTOCOLS`] through ALPN
+/// and performs no client-certificate authentication; inbound access is
+/// governed by the gateway's own token authentication either way.
 ///
-/// The bytes carried by a `RequestPrelude::Http1` verdict are consumed from
-/// the socket, so they must be served through [`PreludeReplayStream`] to
-/// avoid losing them.
-async fn read_request_prelude(stream: &mut TcpStream) -> RequestPrelude {
-    let read = async {
-        let mut replayed_bytes = Vec::with_capacity(HTTP2_PREFACE_PREFIX.len());
+/// # Panics
+///
+/// Panics if `CONFIG` is uninitialized or if the certificate or private key
+/// files cannot be read or combined into a TLS server configuration.
+fn tls_server_config() -> Option<Arc<ServerConfig>> {
+    let tls = crate::CONFIG.tls.as_ref()?;
 
-        for expected_byte in HTTP2_PREFACE_PREFIX {
-            let mut byte = [0_u8; 1];
+    #[expect(
+        clippy::panic,
+        reason = "an unreadable or unparsable TLS certificate chain file is fatal"
+    )]
+    let certificates = CertificateDer::pem_file_iter(&tls.certificate)
+        .unwrap_or_else(|error| {
+            panic!(
+                "cannot read TLS certificate chain {:?}: {error}",
+                tls.certificate
+            )
+        })
+        .collect::<Result<Vec<CertificateDer>, _>>()
+        .unwrap_or_else(|error| {
+            panic!(
+                "cannot parse TLS certificate chain {:?}: {error}",
+                tls.certificate
+            )
+        });
 
-            match stream.read(&mut byte).await {
-                Ok(1) => {}
-                Ok(_) | Err(_) => return RequestPrelude::Unreadable,
-            }
+    #[expect(
+        clippy::panic,
+        reason = "an unreadable or unparsable TLS private key file is fatal"
+    )]
+    let private_key = PrivateKeyDer::from_pem_file(&tls.private_key).unwrap_or_else(|error| {
+        panic!(
+            "cannot read or parse TLS private key {:?}: {error}",
+            tls.private_key
+        )
+    });
 
-            replayed_bytes.push(byte[0]);
+    #[expect(
+        clippy::panic,
+        reason = "an unusable TLS certificate chain or private key is fatal"
+    )]
+    let mut server_config =
+        ServerConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap_or_else(|error| panic!("cannot select TLS protocol versions: {error}"))
+            .with_no_client_auth()
+            .with_single_cert(certificates, private_key)
+            .unwrap_or_else(|error| panic!("cannot build TLS server configuration: {error}"));
 
-            if byte[0] != expected_byte {
-                return RequestPrelude::Http1 { replayed_bytes };
-            }
-        }
+    server_config.alpn_protocols = ALPN_PROTOCOLS.into_iter().map(Vec::from).collect();
 
-        RequestPrelude::Http2Preface
-    };
-
-    tokio::time::timeout(REQUEST_PEEK_DEADLINE, read)
-        .await
-        .unwrap_or(RequestPrelude::Unreadable)
+    Some(Arc::new(server_config))
 }
 
-/// Runs the HTTP server, accepting incoming TCP connections and serving HTTP
-/// requests using an Axum router over `hserver`.
+/// Runs the HTTP server, accepting incoming TCP connections and serving
+/// HTTP/1 or HTTP/2 requests using an Axum router over `hserver`, wrapped in
+/// TLS when the `tls` configuration section is present.
 ///
 /// This function runs indefinitely and never returns.
 ///
 /// # Panics
 ///
-/// Panics if the TCP listener fails to initialize.
+/// Panics if the TCP listener or the TLS server configuration fails to
+/// initialize.
 pub(crate) async fn run(context: context::Context) -> ! {
+    let tls_server_config = tls_server_config();
+
     let (tcp_listener, socket_address) = init_tcp_listener();
 
-    info!("listening on {socket_address}");
+    let scheme = if tls_server_config.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+
+    info!("listening on {scheme}://{socket_address}");
 
     let router = router(context);
 
@@ -258,51 +198,61 @@ pub(crate) async fn run(context: context::Context) -> ! {
 
         tokio::spawn(serve_accepted_connection(
             router.clone(),
+            tls_server_config.clone(),
             stream,
             peer_address,
         ));
     }
 }
 
-/// Serves one accepted connection: a client opening with the HTTP/2
-/// connection preface is closed without a response, and every other
-/// connection is handed to `hserver` as HTTP/1 with the leading bytes
-/// replayed.
+/// Serves one accepted connection — directly, or behind a TLS handshake
+/// first when TLS is configured — with HTTP/1 or HTTP/2 auto-detected per
+/// connection by hyper-util's protocol detection.
 ///
-/// The leading-bytes read applies [`REQUEST_PEEK_DEADLINE`], after which the
-/// connection is closed like one whose client sends nothing. This future
-/// runs the connection to completion, so callers must execute it in its own
-/// task to keep the accept loop unblocked during that deadline.
-async fn serve_accepted_connection<S>(service: S, mut stream: TcpStream, peer_address: SocketAddr)
-where
+/// This future runs the connection to completion, so callers must execute it
+/// in its own task to keep the accept loop unblocked.
+async fn serve_accepted_connection<S>(
+    service: S,
+    tls_server_config: Option<Arc<ServerConfig>>,
+    stream: TcpStream,
+    peer_address: SocketAddr,
+) where
     S: Service<Request<Incoming>, Response = Response<Body>> + Clone + Send + 'static,
     S::Future: Send,
     S::Error: Into<Box<dyn Error + Send + Sync>>,
 {
-    match read_request_prelude(&mut stream).await {
-        RequestPrelude::Http1 { replayed_bytes } => {
-            let transport = PreludeReplayStream::new(stream, replayed_bytes);
+    let mut server = Server::new(connection_builder(), service);
 
-            let mut server = Server::new(connection_builder(), service);
+    match tls_server_config {
+        Some(config) => {
+            // A handshake failure is routinely a plaintext or otherwise
+            // TLS-incompatible client, so it is recorded at debug level like
+            // a connection error.
+            match server
+                .handle_upgradable(Tls(config, stream), peer_address)
+                .await
+            {
+                Ok(connection) => {
+                    // A connection error is routinely the client vanishing
+                    // mid-request or mid-stream, so it is recorded at debug
+                    // level only.
+                    if let Err(error) = connection.await {
+                        debug!("{peer_address}: connection ended with error: {error}");
+                    }
+                }
 
-            let connection = server.handle_upgradable(transport, peer_address);
+                Err(error) => debug!("{peer_address}: TLS handshake failed: {error}"),
+            }
+        }
+
+        None => {
+            let connection = server.handle_upgradable(stream, peer_address);
 
             // A connection error is routinely the client vanishing mid-request
             // or mid-stream, so it is recorded at debug level only.
             if let Err(error) = connection.await {
                 debug!("{peer_address}: connection ended with error: {error}");
             }
-        }
-
-        // Dropping the socket closes the connection without a response;
-        // hserver is never invoked, so an HTTP/2 preface client can never
-        // reach hyper-util's deadline-less auto protocol detection.
-        RequestPrelude::Http2Preface => {
-            debug!("{peer_address}: closed an HTTP/2 preface connection");
-        }
-
-        RequestPrelude::Unreadable => {
-            debug!("{peer_address}: closed an unresponsive connection");
         }
     }
 }

@@ -36,7 +36,7 @@
 | Layer | Component | Notes |
 | :--- | :--- | :--- |
 | **Language** | Rust (2024 edition) | Strict types, memory safety, zero-cost abstractions |
-| **HTTP Server** | `hserver` + `socket2` | The gateway's `server` module owns the TCP listener (`socket2`) and the accept loop; `hserver` drives the per-connection Hyper HTTP/1 lifecycle (plaintext HTTP, no TLS for now) |
+| **HTTP Server** | `hserver` + `socket2` + `rustls` | The gateway's `server` module owns the TCP listener (`socket2`) and the accept loop; `hserver` drives the per-connection Hyper lifecycle — HTTP/1 or HTTP/2, auto-detected per connection — wrapped in TLS (`rustls` via hserver's `tls` feature) when the `tls` configuration section is present (§8) |
 | **Routing & Handlers** | `axum` (Router & utils) | Hierarchical routing (implements `tower::Service`), request extractors, and response helpers; `axum::serve` is strictly unused |
 | **Middleware** | `tower` + `tower-http` | Service abstraction, middleware composition, and layer stacking; `tower-http` (cors feature) provides the CORS layer (§4) and the `AllowOrigin` type of the configuration schema (§8) |
 | **Database** | `turso` | In-process SQLite-compatible SQL database (`tursodatabase/turso`) |
@@ -48,12 +48,12 @@
 ### 2.2 Server Pipeline Architecture & Router Hierarchy
 
 ```text
-[Incoming TCP / Plaintext HTTP]
+[Incoming TCP]
                │
                ▼
       ┌─────────────────┐
-      │server.rs+hserver│  (server.rs: TCP listener & accept loop; hserver: HTTP/1 lifecycle; no TLS)
-      └────────┬────────┘
+      │server.rs+hserver│  (server.rs: TCP listener & accept loop; hserver: HTTP/1 & HTTP/2
+      └────────┬────────┘   lifecycle; TLS handshake first when `tls` is configured)
                │ (invokes Router as tower::Service)
                ▼
       ┌─────────────────┐
@@ -79,9 +79,9 @@
 
 The server architecture separates low-level connection driving from hierarchical routing:
 1. **Server Lifecycle (`server` module + `hserver`)**:
-   - The gateway's own `server` module owns the TCP listener (`socket2`: dual-stack IPv4/IPv6, non-blocking, explicit listen backlog) and the accept loop, which retries failed accepts with exponential backoff and spawns one task per accepted connection; `hserver` only drives the low-level Hyper HTTP/1 connection lifecycle over plaintext HTTP (TLS is omitted for now).
+   - The gateway's own `server` module owns the TCP listener (`socket2`: dual-stack IPv4/IPv6, non-blocking, explicit listen backlog) and the accept loop, which retries failed accepts with exponential backoff and spawns one task per accepted connection; `hserver` only drives the low-level Hyper connection lifecycle — HTTP/1 or HTTP/2, selected per connection by protocol auto-detection (the HTTP/2 connection preface for plaintext prior-knowledge clients; ALPN for TLS clients) — directly over the accepted TCP stream, or wrapped in TLS (`rustls` via hserver's `tls` feature) when the `tls` configuration section (§8) is present. TLS applies to the whole listener: the PEM certificate chain and private key are loaded and combined into one shared Rustls server configuration at startup, and every accepted connection then runs its TLS handshake before any HTTP byte is exchanged. The handshake offers both `h2` and `http/1.1` through ALPN and performs no client-certificate authentication; inbound access is governed by the gateway's own token authentication either way (§4).
    - Startup builds the shared `Context` (`src/context.rs`) — the `Database` handle plus the two upstream HTTP clients, data plane and control plane (§4) — and passes it to `server::run(context)`, which supplies it to the root router as router state.
-   - `axum::serve` is **strictly unused**. Instead, every accepted HTTP/1 connection is delegated directly to Axum's root `Router` as an implementation of `tower::Service`.
+   - `axum::serve` is **strictly unused**. Instead, every accepted connection — after its TLS handshake, when TLS is configured — is delegated directly to Axum's root `Router` as an implementation of `tower::Service`.
 2. **Hierarchical Routers (`axum::Router`)**:
    - **Root Router**:
      - Holds the shared `Context` — the `Database` handle plus the two upstream HTTP clients — as its router state and propagates it to sub-routers.
@@ -172,14 +172,15 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 3. **Network Invariants**:
    - Inbound endpoints do not use sessions or cookies. Cross-Origin Resource Sharing (CORS) is configurable independently on the outward API sub-router (`/api`) and the administrative management API sub-router (`/management-api`) via `cors` (`allowed_origin`, `allow_private_network`) in configuration. Preflight `OPTIONS` requests are handled and matching CORS response headers are attached, including Private Network Access headers when enabled.
    - Accepted inbound TCP connections enable `TCP_NODELAY` (best-effort: a failure is logged and the connection is still served), so small streaming frames — SSE events in particular — are written immediately instead of stalling against Nagle's algorithm and the peer's delayed ACK.
-   - Inbound HTTP/1 connections that do not finish sending request headers within 30 seconds are closed.
-   - Inbound connections presenting the HTTP/2 connection preface are closed: only plaintext HTTP/1 is spoken.
+   - Inbound connections speak HTTP/1 or HTTP/2, selected per connection by hyper-util's protocol auto-detection; TLS connections offer both `h2` and `http/1.1` through ALPN.
+   - HTTP/1 connections that do not finish sending request headers within 30 seconds are closed. The deadline engages once protocol detection has selected HTTP/1; HTTP/2 connections have no inbound idle or keep-alive deadline.
+   - Connections may park indefinitely between acceptance and their first request headers: neither hyper-util's protocol auto-detection nor the Rustls TLS handshake exposes a deadline, and no first-request deadline is imposed deliberately. A first-request deadline would burden legitimately slow clients while failing to bound resource exhaustion — an attacker holding sockets via slow request bodies or slow keep-alive traffic makes the same investment as one holding sockets silently — so the socket-exhaustion threat is answered, if ever, by connection-count limiting at the accept edge, not by opening-phase timeouts.
    - Outbound requests to upstream providers connect directly without proxying.
 4. **Resource Bounds** (value — where enforced — what it bounds):
    - Upstream connect timeout, 10 s — both upstream HTTP clients — TCP connection establishment to an upstream provider.
    - Upstream read idle timeout, 300 s — data-plane upstream HTTP client — silence gap between consecutive reads of an upstream body (reset after every successful read, so it never truncates a slow-but-flowing response; the data plane sets no total request timeout, so a long generation is never cut off).
    - Control-plane total timeout, 30 s — control-plane upstream HTTP client — total wall-clock budget of one short control-plane request (OAuth token exchange and refresh, model discovery, project onboarding §5), so a stalled request fails below the 90-second refresh-lease staleness window (§3) instead of holding its lease or the requesting client for minutes.
-   - Inbound HTTP/1 header-read deadline, 30 s — HTTP/1 connection builder — time a client may take to finish sending request headers before the connection is closed.
+   - Inbound HTTP/1 header-read deadline, 30 s — HTTP/1 connection builder — time a client may take to finish sending request headers before the connection is closed; it engages once protocol detection selects HTTP/1.
    - TCP listen backlog, 32 — TCP listener setup — pending, not-yet-accepted connections the kernel queues before refusing new ones.
    - Request body caps, 64 MiB outward and 2 MiB management — axum body-limit layer on each sub-router — larger request bodies are rejected with HTTP 413.
    - SSE frame cap, 16 MiB — SSE frame parser — a single upstream SSE frame; a larger frame aborts the stream as malformed.
@@ -434,7 +435,7 @@ One strictness rule applies uniformly to every management request body: **names 
 
 ### Configuration File (`config.jsonc`)
 
-JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. The root schema is: `log_level` (level filter, see below), `listen`, `database` (`path`, `max_connections`, `pool_timeout`), `management_api` (`token`, `cors`), and `api` (`key`, `cors`). Each `cors` object configures `allowed_origin` and `allow_private_network`: `allowed_origin` specifies allowed origins as a single string (e.g. `"*"` or `"https://dashboard.example.com"`) or an array of strings (e.g. `["*"]`, `["https://dashboard.example.com"]`, or `[]` to disallow all cross-origin requests), and `allow_private_network` is a boolean controlling Private Network Access (PNA) preflight responses (`Access-Control-Allow-Private-Network`). Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
+JanusGate is configured through a JSON file supporting comments (JSONC), supplied via the `-c` or `--config` command-line argument. The root schema is: `log_level` (level filter, see below), `listen`, `tls` (optional; `certificate`, `private_key` — present serves HTTPS over TLS, absent serves plaintext HTTP), `database` (`path`, `max_connections`, `pool_timeout`), `management_api` (`token`, `cors`), and `api` (`key`, `cors`). Each `cors` object configures `allowed_origin` and `allow_private_network`: `allowed_origin` specifies allowed origins as a single string (e.g. `"*"` or `"https://dashboard.example.com"`) or an array of strings (e.g. `["*"]`, `["https://dashboard.example.com"]`, or `[]` to disallow all cross-origin requests), and `allow_private_network` is a boolean controlling Private Network Access (PNA) preflight responses (`Access-Control-Allow-Private-Network`). Refer to [`config.example.jsonc`](config.example.jsonc) for the configuration layout and available options.
 
 ### Logging
 
@@ -443,14 +444,14 @@ JanusGate is configured through a JSON file supporting comments (JSONC), supplie
 - Records are written to standard error as plain text without ANSI styling, one line per record in the format `<RFC 3339 UTC timestamp (millisecond precision)> <level padded to 5 characters> <target>: <message>`, for example:
 
   ```text
-  2026-09-11T08:15:30.123Z INFO  janusgate::server: listening on 0.0.0.0:8080
+  2026-09-11T08:15:30.123Z INFO  janusgate::server: listening on http://0.0.0.0:8080
   ```
 
 - **Severity policy**:
   - `error` — an operation failed on the gateway's or an upstream's behalf: a request failed with an upstream or internal error (logged once at the response boundary that renders it, with the model and provider context the boundary holds), an upstream stream aborted mid-flight (logged where the pump detects the abort), or the TCP accept loop failed an accept (retried with backoff).
   - `warn` — the gateway continues with degraded or anomalous-but-tolerated behavior: the best-effort `TCP_NODELAY` activation failed, a token-refresh lease could not be cleared after a failed refresh, or an unauthorized management API request was rejected.
   - `info` — lifecycle and state changes: canonical schema application on a fresh database, the listening socket, a completed token refresh, and every management mutation (provider saved or deleted, OAuth flow started or completed, model discovery, model overrides saved).
-  - `debug` — per-request pipeline detail: the outward dispatch (public model, provider, upstream model, wire format, streaming mode), the upstream response status, client-fault rejections (malformed body, failed authentication, unknown model, conflicts), connection-edge anomalies (HTTP/2 preface and unresponsive connections closed), and unauthorized outward requests.
+  - `debug` — per-request pipeline detail: the outward dispatch (public model, provider, upstream model, wire format, streaming mode), the upstream response status, client-fault rejections (malformed body, failed authentication, unknown model, conflicts), connection-edge anomalies (failed TLS handshakes and connections that end with errors), and unauthorized outward requests.
   - `trace` — reserved; the gateway emits no `trace` records.
 - Every rendered API error is logged exactly once — at the response boundary rendering it, or, for failures that become mid-stream error frames instead of an HTTP error response, at the pump that detects them. Log records never carry credentials, tokens, OAuth authorization codes or state tokens, prompt text, or completion text, matching the stateless-execution design (§1).
 - Records emitted by dependency crates (`reqwest`, `hyper`, …) pass through the same global filter and appear under their own targets; there is no per-target suppression.
