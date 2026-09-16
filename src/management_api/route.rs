@@ -239,8 +239,10 @@ pub(super) fn ordered_vocabulary<T: TS + 'static>(config: &Config) -> ClosureTyp
 }
 
 /// Builds the renderer of one ordered vocabulary's declaration: the doc
-/// comment, then the ordered const tuple carrying the vocabulary's canonical
-/// order, followed by the union derived from the tuple.
+/// comment on the ordered const tuple carrying the vocabulary's canonical
+/// order, then the same doc comment again on the union derived from the
+/// tuple, so hovering either artifact in a client shows the vocabulary's
+/// documentation.
 #[cfg(feature = "management-api-typescript-bindings")]
 fn ordered_declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
     fn render<T: TS + 'static + ?Sized>(config: &Config) -> String {
@@ -250,18 +252,13 @@ fn ordered_declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
             .map(|member| format!("\"{member}\""))
             .collect::<Vec<_>>()
             .join(", ");
+        let docs = T::docs().unwrap_or_default();
 
-        let mut rendered = T::docs().unwrap_or_default();
-
-        rendered.push_str(&format!(
-            "export const {order_ident} = [{order}] as const;\n\n"
-        ));
-        rendered.push_str(&format!(
-            "export type {} = (typeof {order_ident})[number];",
+        format!(
+            "{docs}export const {order_ident} = [{order}] as const;\n\n\
+             {docs}export type {} = (typeof {order_ident})[number];",
             T::ident(config)
-        ));
-
-        rendered
+        )
     }
 
     render::<T>
@@ -269,7 +266,7 @@ fn ordered_declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
 
 /// Derives the TypeScript identifier of one vocabulary's ordered const tuple
 /// from its type identifier: CamelCase becomes SCREAMING_SNAKE_CASE suffixed
-/// with `ORDER` — `IrReasoningEffort` renders `IR_REASONING_EFFORT_ORDER`.
+/// with `ORDER` — `ThinkingLevel` renders `THINKING_LEVEL_ORDER`.
 #[cfg(feature = "management-api-typescript-bindings")]
 fn order_const_ident(ident: &str) -> String {
     let mut rendered = String::with_capacity(ident.len() + "_ORDER".len());
@@ -288,13 +285,13 @@ fn order_const_ident(ident: &str) -> String {
 }
 
 /// Extracts a unit-only enum's wire names, in variant order, from its ts-rs
-/// declaration `type X = "a" | "b";` — the union's member order is the
-/// variant order, so the tuple built from it carries the enum's canonical
-/// order.
+/// inline rendering — `"a" | "b"`, the union bare of any declaration wrapper;
+/// the union's member order is the variant order, so the tuple built from it
+/// carries the enum's canonical order.
 ///
 /// # Panics
 ///
-/// Panics naming the type when the declaration is not a union of quoted
+/// Panics naming the type when the inline rendering is not a union of quoted
 /// string literals — a struct, a tagged union, or a `repr(enum)` taxonomy
 /// defines no variant-ordered vocabulary to publish; an ordered vocabulary is
 /// a unit-only enum by contract.
@@ -304,28 +301,23 @@ fn order_const_ident(ident: &str) -> String {
     reason = "a vocabulary type that is not a unit-only enum union is a fatal declaration bug"
 )]
 fn union_members<T: TS + 'static + ?Sized>(config: &Config) -> Vec<String> {
-    let declaration = T::decl(config);
+    let inline = T::inline(config);
     let ident = T::ident(config);
 
-    let members = declaration
-        .strip_prefix(&format!("type {ident} = "))
-        .and_then(|union| union.strip_suffix(';'))
-        .and_then(|union| {
-            union
-                .split(" | ")
-                .map(|member| {
-                    member
-                        .strip_prefix('"')
-                        .and_then(|member| member.strip_suffix('"'))
-                        .map(str::to_owned)
-                })
-                .collect::<Option<Vec<_>>>()
-        });
+    let members = inline
+        .split(" | ")
+        .map(|member| {
+            member
+                .strip_prefix('"')
+                .and_then(|member| member.strip_suffix('"'))
+                .map(str::to_owned)
+        })
+        .collect::<Option<Vec<_>>>();
 
     let Some(members) = members else {
         panic!(
             "ordered vocabulary `{ident}` is not a unit-only enum union; \
-             its ts-rs declaration is `{declaration}`"
+             its ts-rs inline rendering is `{inline}`"
         );
     };
 

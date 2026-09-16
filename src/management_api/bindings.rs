@@ -331,13 +331,13 @@ mod tests {
     /// Verifies that generation is deterministic across runs, that it renders
     /// exactly one file — `v0.ts`, named after the version segment, directly
     /// in the output target — holding everything: every wire type's
-    /// declaration inline (the nested thinking-level vocabulary as its
-    /// ordered const tuple with the union derived from it, and the error body
-    /// with its errno taxonomy included, the empty request type's too) plus
-    /// the route table, ordered by path, referencing the types declared above
-    /// it with no imports. The route table keys are the routes' paths within
-    /// the version, version prefix excluded — the file name is what carries
-    /// the version.
+    /// declaration inline (the nested thinking-level vocabulary, under its
+    /// binding name, as its ordered const tuple with the union derived from
+    /// it, and the error body with its errno taxonomy included, the empty
+    /// request type's too) plus the route table, ordered by path, referencing
+    /// the types declared above it with no imports. The route table keys are
+    /// the routes' paths within the version, version prefix excluded — the
+    /// file name is what carries the version.
     ///
     /// # Panics
     ///
@@ -415,18 +415,28 @@ mod tests {
         assert!(first.contains("export type BindingsTestAlphaRequest"));
         assert!(first.contains("export type BindingsTestBetaRequest"));
 
-        // The thinking-level vocabulary publishes as its ordered const tuple
-        // — doc comment attached, values in the enum's variant order — with
-        // the union derived from the tuple, never as an unordered union.
+        // The thinking-level vocabulary publishes under its binding name —
+        // the Rust type's module-internal `Ir` prefix never reaches the
+        // bindings — as its ordered const tuple, values in the enum's
+        // variant order, with the union derived from the tuple; both
+        // artifacts carry the doc comment, and the unordered union spelling
+        // never renders.
         assert!(first.contains(concat!(
             " * Canonical thinking levels, ordered by increasing reasoning strength.\n",
             " */\n",
-            "export const IR_REASONING_EFFORT_ORDER = ",
+            "export const THINKING_LEVEL_ORDER = ",
             "[\"off\", \"low\", \"medium\", \"high\"] as const;\n\n",
-            "export type IrReasoningEffort = (typeof IR_REASONING_EFFORT_ORDER)[number];",
+        )));
+        assert!(first.contains(concat!(
+            " */\n",
+            "export type ThinkingLevel = (typeof THINKING_LEVEL_ORDER)[number];",
         )));
         assert!(
-            !first.contains("export type IrReasoningEffort = \"off\""),
+            !first.contains("IrReasoningEffort"),
+            "the Rust type name never reaches the bindings"
+        );
+        assert!(
+            !first.contains("export type ThinkingLevel = \"off\""),
             "the vocabulary never renders as an unordered union"
         );
 

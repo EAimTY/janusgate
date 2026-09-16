@@ -178,7 +178,7 @@ pub struct UpdateModelRequest {
     /// Canonical thinking level override; `null` disables filtering.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
-        ts(type = "Array<IrReasoningEffort> | null")
+        ts(type = "Array<ThinkingLevel> | null")
     )]
     pub thinking_levels_override: Nullable<Vec<IrReasoningEffort>>,
 }

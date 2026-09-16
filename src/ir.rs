@@ -50,10 +50,13 @@ impl InvalidRequest {
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 // The wire names are the canonical level names rendered by the manual serde
-// implementation below, so the TypeScript union must rename identically.
+// implementation below, so the TypeScript union must rename identically. The
+// type itself sheds the module-internal `Ir` prefix under its binding name:
+// it is the one wire type whose Rust name carries one, and the prefix never
+// reaches frontend code.
 #[cfg_attr(
     feature = "management-api-typescript-bindings",
-    ts(rename_all = "lowercase")
+    ts(rename = "ThinkingLevel", rename_all = "lowercase")
 )]
 pub enum IrReasoningEffort {
     /// No reasoning (OpenAI `minimal`, Gemini budget `0`).
