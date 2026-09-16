@@ -3,7 +3,7 @@
 
 use super::Error;
 use crate::{
-    database::{Database, Transaction, Value, params, params_from_iter},
+    database::{Database, Transaction, params},
     provider::{Model, ModelRouting},
 };
 use std::collections::HashMap;
@@ -97,18 +97,33 @@ pub(crate) struct ModelEntry {
     pub(crate) model: Model,
 }
 
-/// Lists every stored model with its provider facts.
+/// Lists the stored models with their provider facts, narrowed to one
+/// provider's rows when `provider_id` is `Some`; an unknown provider yields
+/// an empty list, because a filter addresses no row (README §7.1).
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when the query fails or a row is malformed.
-pub(crate) async fn list_model_entries(database: &Database) -> Result<Vec<ModelEntry>, Error> {
-    let sql = format!(
-        "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id ORDER BY m.id",
-        super::MODEL_ENTRY_COLUMNS
-    );
+pub(crate) async fn list_model_entries(
+    database: &Database,
+    provider_id: Option<i64>,
+) -> Result<Vec<ModelEntry>, Error> {
+    let sql = match provider_id {
+        None => format!(
+            "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id ORDER BY m.id",
+            super::MODEL_ENTRY_COLUMNS
+        ),
+        Some(_) => format!(
+            "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
+             WHERE m.provider_id = ?1 ORDER BY m.id",
+            super::MODEL_ENTRY_COLUMNS
+        ),
+    };
 
-    let rows = database.query(sql, ()).await?;
+    let rows = match provider_id {
+        None => database.query(sql, ()).await?,
+        Some(provider_id) => database.query(sql, params![provider_id]).await?,
+    };
 
     let mut entries = Vec::with_capacity(rows.len());
 
@@ -145,21 +160,22 @@ pub(crate) async fn list_enabled_models_with_owner(
 }
 
 /// Replaces the model rows of one provider with a freshly discovered set
-/// inside a single transaction, returning the number of stored rows.
+/// inside a single transaction, returning the stored rows with their
+/// provider facts.
 ///
 /// `upstream_ids` must be non-empty: rejecting an empty discovered set is the
 /// caller's precondition, enforced by the management surface with a 502
 /// before this function is reached (README §7.1). This function performs no
 /// emptiness check — an empty set would irreversibly wipe the provider's
-/// curated rows and return `Ok(0)` — because an upstream that legitimately
-/// reports no models, a fresh pre-onboarded account, or an outage answering
-/// 200 with an empty payload must fail loudly instead.
+/// curated rows and return an empty list — because an upstream that
+/// legitimately reports no models, a fresh pre-onboarded account, or an
+/// outage answering 200 with an empty payload must fail loudly instead.
 ///
 /// The provider row is re-read inside the transaction, so the public IDs are
 /// composed from the provider's current prefix even when a concurrent
-/// `save-provider` changed it after the caller's outer read (README §7.1).
-/// Overrides carry over from the stored rows by `upstream_id`; discovered
-/// models absent from the stored set vanish with their overrides.
+/// `providers:update` changed it after the caller's outer read (README
+/// §7.1). Overrides carry over from the stored rows by `upstream_id`;
+/// discovered models absent from the stored set vanish with their overrides.
 ///
 /// The composed public IDs undergo the same collision checks as
 /// [`super::update_provider`]: pairwise distinctness within the provider and
@@ -174,7 +190,7 @@ pub(crate) async fn replace_discovered_models(
     database: &Database,
     provider_id: i64,
     upstream_ids: &[String],
-) -> Result<usize, Error> {
+) -> Result<Vec<ModelEntry>, Error> {
     let mut transaction = database.transaction().await?;
 
     let Some(provider) =
@@ -225,7 +241,16 @@ pub(crate) async fn replace_discovered_models(
 
     transaction.commit().await?;
 
-    Ok(models.len())
+    // The returned entries mirror exactly what this transaction wrote.
+    Ok(models
+        .iter()
+        .map(|model| ModelEntry {
+            provider_id: provider.id,
+            provider_name: provider.name.clone(),
+            is_provider_enabled: provider.is_enabled,
+            model: model.clone(),
+        })
+        .collect())
 }
 
 /// Replaces the model rows of a provider inside a transaction.
@@ -265,7 +290,10 @@ async fn replace_provider_models(
     Ok(())
 }
 
-/// One `save-model` update about to be applied transactionally.
+/// One `models:update` rewrite about to be applied transactionally: the
+/// row's complete desired override state (README §7.1) — every field
+/// total, the two override columns mirroring their nullable storage as
+/// `None` for "no override".
 pub(crate) struct ModelOverrideUpdate<'a> {
     /// Owning provider's id, the lookup key.
     pub(crate) provider_id: i64,
@@ -273,26 +301,27 @@ pub(crate) struct ModelOverrideUpdate<'a> {
     /// Exact upstream model identifier.
     pub(crate) upstream_id: &'a str,
 
-    /// Public ID override; `None` leaves it unchanged, `Some` writes the
-    /// inner value, clearing the column when the inner value is `None`.
-    pub(crate) id_override: Option<Option<String>>,
+    /// Public ID override; `None` composes the ID from the provider's
+    /// prefix.
+    pub(crate) id_override: Option<&'a str>,
 
-    /// Serving state; `None` leaves it unchanged, `Some` sets it.
-    pub(crate) is_enabled: Option<bool>,
+    /// Serving state.
+    pub(crate) is_enabled: bool,
 
-    /// Canonical thinking levels override; same tri-state semantics.
-    pub(crate) thinking_levels_override: Option<Option<String>>,
+    /// Canonical thinking levels override in its stored JSON form; `None`
+    /// stores no override.
+    pub(crate) thinking_levels_override: Option<&'a str>,
 }
 
-/// Writes one model's overrides and recomputes its public ID inside a single
-/// transaction, returning the updated row with its provider facts.
+/// Rewrites one model's override state and recomputes its public ID inside a
+/// single transaction, returning the updated row with its provider facts.
 ///
 /// The provider row is re-read inside the transaction, so the recomputed
 /// public ID uses the provider's current prefix even when a concurrent
-/// `save-provider` changed it after the caller's outer read; the stored model
-/// row and the routed-ID collision check observe the same snapshot. The
-/// collision check matches [`super::update_provider`]'s quality tier: an ID
-/// already routed by another model row yields a 409 naming the holder, and
+/// `providers:update` changed it after the caller's outer read; the stored
+/// model row and the routed-ID collision check observe the same snapshot.
+/// The collision check matches [`super::update_provider`]'s quality tier: an
+/// ID already routed by another model row yields a 409 naming the holder, and
 /// nothing is written. Unknown providers or models yield 404.
 ///
 /// # Errors
@@ -313,26 +342,24 @@ pub(crate) async fn update_model_overrides_checked(
         });
     };
 
-    let Some(model) =
-        find_model_in_transaction(&mut transaction, provider.id, update.upstream_id).await?
-    else {
+    // The stored row's existence is the only fact needed: every override
+    // column is restated by the rewrite.
+    if find_model_in_transaction(&mut transaction, provider.id, update.upstream_id)
+        .await?
+        .is_none()
+    {
         return Err(Error::NotFound {
             message: format!(
                 "Model `{}` does not exist on provider `{}`",
                 update.upstream_id, provider.name
             ),
         });
-    };
-
-    let new_id_override = update
-        .id_override
-        .clone()
-        .unwrap_or_else(|| model.id_override.clone());
+    }
 
     let new_id = Model::public_id(
         &provider.model_prefix,
         update.upstream_id,
-        new_id_override.as_deref(),
+        update.id_override,
     );
 
     super::ensure_ids_routable(
@@ -342,43 +369,24 @@ pub(crate) async fn update_model_overrides_checked(
     )
     .await?;
 
-    let mut assignments: Vec<String> = Vec::new();
+    transaction
+        .execute(
+            "UPDATE models SET id_override = ?1, is_enabled = ?2, \
+             thinking_levels_override = ?3, id = ?4 \
+             WHERE provider_id = ?5 AND upstream_id = ?6",
+            params![
+                update.id_override,
+                i64::from(update.is_enabled),
+                update.thinking_levels_override,
+                new_id,
+                provider.id,
+                update.upstream_id,
+            ],
+        )
+        .await?;
 
-    let mut values: Vec<Value> = Vec::new();
-
-    if let Some(override_value) = update.id_override {
-        assignments.push("id_override = ?".to_string());
-
-        values.push(override_value.into());
-    }
-
-    if let Some(is_enabled) = update.is_enabled {
-        assignments.push("is_enabled = ?".to_string());
-
-        values.push(i64::from(is_enabled).into());
-    }
-
-    if let Some(override_value) = update.thinking_levels_override {
-        assignments.push("thinking_levels_override = ?".to_string());
-
-        values.push(override_value.into());
-    }
-
-    assignments.push("id = ?".to_string());
-
-    values.push(new_id.into());
-
-    values.push(provider.id.into());
-
-    values.push(update.upstream_id.into());
-
-    let sql = format!(
-        "UPDATE models SET {} WHERE provider_id = ? AND upstream_id = ?",
-        assignments.join(", ")
-    );
-
-    transaction.execute(sql, params_from_iter(values)).await?;
-
+    // The read-back entry carries the provider facts the response renders,
+    // observed on the write's own snapshot.
     let entry = find_model_entry_in_transaction(&mut transaction, provider.id, update.upstream_id)
         .await?
         .ok_or_else(|| Error::Drift {

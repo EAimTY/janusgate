@@ -22,7 +22,7 @@
 use crate::{
     ir::InvalidRequest,
     provider::{
-        OAuthProviderType, ParseError, ProviderType, discovery::Error as DiscoveryError,
+        OAuthProviderType, ProviderType, discovery::Error as DiscoveryError,
         oauth::Error as OAuthError, storage::Error as StorageError,
     },
 };
@@ -205,22 +205,8 @@ pub(super) enum Error {
         param: &'static str,
     },
 
-    /// The request names a provider type outside the closed set.
-    #[error("Unknown provider type `{value}`")]
-    UnknownProviderType {
-        /// The rejected value.
-        value: String,
-    },
-
-    /// The request names a wire protocol outside the closed set.
-    #[error("Unknown protocol `{value}`")]
-    UnknownProtocol {
-        /// The rejected value.
-        value: String,
-    },
-
-    /// An update supplies a provider type that differs from the stored,
-    /// immutable one.
+    /// A `providers:update` request restates a provider type that differs
+    /// from the stored, immutable one.
     #[error(
         "Provider `{name}` has type `{}` and cannot become `{}`",
         stored.as_str(),
@@ -233,11 +219,11 @@ pub(super) enum Error {
         /// The stored, immutable provider type.
         stored: ProviderType,
 
-        /// The rejected, differing provider type.
+        /// The rejected, differing restated provider type.
         requested: ProviderType,
     },
 
-    /// A re-authorization's OAuth state carries a provider type that
+    /// A reauthorization's OAuth state carries a provider type that
     /// differs from the provider's stored one.
     #[error(
         "Provider `{name}` has type `{}` and cannot be authorized as `{}`",
@@ -254,55 +240,6 @@ pub(super) enum Error {
         /// The OAuth state's flow type.
         state_type: OAuthProviderType,
     },
-
-    /// The request supplies credentials without the provider type that pins
-    /// their interpretation.
-    #[error("credentials require a `type` in the same request")]
-    CredentialsWithoutProviderType,
-
-    /// A provider creation omits the provider type.
-    #[error("type is required when creating a provider")]
-    CreationRequiresProviderType,
-
-    /// A provider creation names an OAuth account kind, which only
-    /// `complete-provider-oauth` creates.
-    #[error(
-        "`{}` providers are created by completing an OAuth flow",
-        provider_type.as_str()
-    )]
-    CreationRequiresOauthFlow {
-        /// The OAuth account kind the creation attempted.
-        provider_type: ProviderType,
-    },
-
-    /// An `openai_compatible` creation omits the protocol.
-    #[error("protocol is required for openai_compatible providers")]
-    CreationRequiresProtocol,
-
-    /// An `openai_compatible` creation omits the base URL.
-    #[error("base_url is required for openai_compatible providers")]
-    CreationRequiresBaseUrl,
-
-    /// A provider creation omits credentials.
-    #[error("credentials are required when creating a provider")]
-    CreationRequiresCredentials,
-
-    /// A completion supplies `name` beside the `id` it re-authorizes.
-    #[error("name cannot be supplied together with id")]
-    CompletionNameWithId,
-
-    /// A completion supplies `model_prefix` beside the `id` it
-    /// re-authorizes.
-    #[error("model_prefix cannot be supplied together with id")]
-    CompletionModelPrefixWithId,
-
-    /// A creating completion omits `name`.
-    #[error("name is required when creating a provider")]
-    CompletionRequiresName,
-
-    /// A creating completion omits `model_prefix`.
-    #[error("model_prefix is required when creating a provider")]
-    CompletionRequiresModelPrefix,
 
     /// The addressed provider row does not exist.
     #[error("Provider {id} does not exist")]
@@ -323,10 +260,10 @@ pub(super) enum Error {
     #[error("OAuth state is unknown, expired, or already consumed")]
     UnknownOauthState,
 
-    /// The provider vanished between the completion's lookup and its
-    /// credentials write — a concurrent `delete-provider`.
-    #[error("provider {id} vanished during OAuth completion")]
-    ProviderVanishedDuringCompletion {
+    /// The provider vanished between the reauthorization's lookup and its
+    /// credentials write — a concurrent `providers:delete`.
+    #[error("provider {id} vanished during OAuth reauthorization")]
+    ProviderVanishedDuringReauthorization {
         /// Identifier of the vanished provider row.
         id: i64,
     },
@@ -343,10 +280,6 @@ pub(super) enum Error {
     /// outward API renders it in its own contract.
     #[error(transparent)]
     Validation(#[from] InvalidRequest),
-
-    /// Captured credentials do not match the provider type's field set.
-    #[error(transparent)]
-    Credentials(#[from] ParseError),
 
     /// The database refused the read or write, or reported stored drift.
     #[error(transparent)]
@@ -405,26 +338,13 @@ impl Error {
             Self::UnmappedPath { .. }
             | Self::ProviderNotFound { .. }
             | Self::UnknownOauthState
-            | Self::ProviderVanishedDuringCompletion { .. } => ErrorCode::NotFound,
+            | Self::ProviderVanishedDuringReauthorization { .. } => ErrorCode::NotFound,
 
             Self::MethodNotAllowed { .. } => ErrorCode::MethodNotAllowed,
 
             Self::EmptyIdentifier { .. }
-            | Self::UnknownProviderType { .. }
-            | Self::UnknownProtocol { .. }
             | Self::ProviderTypeMismatch { .. }
-            | Self::CredentialsWithoutProviderType
-            | Self::CreationRequiresProviderType
-            | Self::CreationRequiresOauthFlow { .. }
-            | Self::CreationRequiresProtocol
-            | Self::CreationRequiresBaseUrl
-            | Self::CreationRequiresCredentials
-            | Self::CompletionNameWithId
-            | Self::CompletionModelPrefixWithId
-            | Self::CompletionRequiresName
-            | Self::CompletionRequiresModelPrefix
-            | Self::Validation(_)
-            | Self::Credentials(_) => ErrorCode::InvalidRequest,
+            | Self::Validation(_) => ErrorCode::InvalidRequest,
 
             Self::OauthStateTypeMismatch { .. } | Self::ProviderNameTaken { .. } => {
                 ErrorCode::Conflict
@@ -753,11 +673,7 @@ mod tests {
                 ErrorCode::InvalidRequest,
             ),
             (
-                Error::from(ParseError::MissingField("apiKey".to_string())),
-                ErrorCode::InvalidRequest,
-            ),
-            (
-                Error::ProviderVanishedDuringCompletion { id: 7 },
+                Error::ProviderVanishedDuringReauthorization { id: 7 },
                 ErrorCode::NotFound,
             ),
             (Error::UnknownOauthState, ErrorCode::NotFound),
@@ -814,7 +730,7 @@ mod tests {
             (
                 Error::MethodNotAllowed {
                     method: http::Method::PATCH,
-                    path: "/list-providers".to_string(),
+                    path: "/providers:list".to_string(),
                 },
                 true,
             ),

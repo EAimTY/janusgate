@@ -174,9 +174,9 @@ pub(crate) async fn delete_provider(database: &Database, provider_id: i64) -> Re
 /// refresh lease, returning whether a provider row was still there to update.
 ///
 /// Reporting `false` lets a caller whose outer read observed the row — the
-/// OAuth completion — fail with the refresh path's 404 classification when a
-/// concurrent `delete-provider` won the race, instead of a silent no-op
-/// followed by a storage-drift 500 from the reload.
+/// OAuth reauthorization — fail with the refresh path's 404 classification
+/// when a concurrent `providers:delete` won the race, instead of a silent
+/// no-op followed by a storage-drift 500 from the reload.
 ///
 /// # Errors
 ///
@@ -198,13 +198,11 @@ pub(crate) async fn update_credentials(
     Ok(changes == 1)
 }
 
-/// The raw `save-provider` field changes for an existing provider. `name`
-/// and `model_prefix` are not optional: the caller states the naming on
-/// every request, and both are applied verbatim — supplying a different
-/// `name` is how a provider is renamed. The optional fields are
-/// supplied-or-absent: `None` means the field is absent from the request and
-/// keeps the stored value, which is resolved against the row re-read inside
-/// the update transaction.
+/// The `providers:update` field state for an existing provider (README
+/// §7.1): the caller restates the row's complete readable state, so every
+/// field is total — the write applies each one verbatim, and only the
+/// write-only `credentials` is supplied-or-absent, with `None` meaning
+/// absent and keeping the stored secret.
 pub(crate) struct ProviderUpdate<'a> {
     /// Unique provider name; may rename the provider.
     pub(crate) name: &'a str,
@@ -212,29 +210,31 @@ pub(crate) struct ProviderUpdate<'a> {
     /// Prefix prepended to every public model name; may be empty.
     pub(crate) model_prefix: &'a str,
 
-    /// Upstream wire format.
+    /// Upstream wire format; `None` for the OAuth account kinds, which pin
+    /// their own.
     pub(crate) protocol: Option<UpstreamFormat>,
 
-    /// Upstream base URL.
+    /// Upstream base URL; `None` for the OAuth account kinds.
     pub(crate) base_url: Option<&'a str>,
 
     /// Whether the provider serves traffic.
-    pub(crate) is_enabled: Option<bool>,
+    pub(crate) is_enabled: bool,
 
     /// Replacement credentials; `None` keeps the stored ones.
     pub(crate) credentials: Option<&'a Credentials>,
 }
 
-/// Applies one `save-provider` update to an existing provider inside a single
-/// transaction and returns the updated row.
+/// Applies one `providers:update` rewrite to an existing provider inside a
+/// single transaction.
 ///
-/// The provider row is re-read inside the transaction and absent fields are
-/// merged from it, so a caller's stale outer snapshot can never revert a
-/// field a concurrent `save-provider` just wrote (README §7.1). An unknown
-/// provider — including one deleted between the caller's outer read and this
-/// call — is rejected with 404 and nothing is written.
+/// The provider row is re-read inside the transaction for the rename check,
+/// the immutable-type pin, and the public-ID recompute, so a caller's stale
+/// outer snapshot can never write through a concurrent change's results
+/// (README §7.1). An unknown provider — including one deleted between the
+/// caller's outer read and this call — is rejected with 404 and nothing is
+/// written.
 ///
-/// The write owns the provider row — the supplied `name` included, so a
+/// The write owns the provider row — the restated `name` included, so a
 /// different name renames the provider — an optional credentials replacement
 /// (which resets `expires_at` and clears any refresh lease), and — upholding
 /// the README §3 invariant — the public `id` of unoverridden model rows,
@@ -255,11 +255,12 @@ pub(crate) async fn update_provider(
     database: &Database,
     provider_id: i64,
     update: ProviderUpdate<'_>,
-) -> Result<Provider, Error> {
+) -> Result<(), Error> {
     let mut transaction = database.transaction().await?;
 
-    // The merge reads the row inside the transaction, so absent fields keep
-    // the newest stored values, never the caller's snapshot.
+    // The re-read pins the rename check and the public-ID recompute to the
+    // transaction's snapshot; the caller's outer type check cannot drift,
+    // because the stored type is immutable.
     let Some(provider) = find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
     else {
         return Err(Error::NotFound {
@@ -267,33 +268,21 @@ pub(crate) async fn update_provider(
         });
     };
 
-    let name = update.name;
-
     // A rename must not take a name another provider already holds; the
     // provider's own row is excluded, so re-sending the unchanged name is
     // never a conflict.
     let name_holders = transaction
         .query(
             "SELECT id FROM providers WHERE name = ?1 AND id != ?2",
-            params![name, provider.id],
+            params![update.name, provider.id],
         )
         .await?;
 
     if !name_holders.is_empty() {
         return Err(Error::Conflict {
-            message: super::provider_name_taken_message(name),
+            message: super::provider_name_taken_message(update.name),
         });
     }
-
-    let model_prefix = update.model_prefix;
-
-    let protocol = update.protocol.or(provider.protocol);
-
-    let base_url = update.base_url.or(provider.base_url.as_deref());
-
-    let is_enabled = update.is_enabled.unwrap_or(provider.is_enabled);
-
-    let is_credentials_replaced = update.credentials.is_some();
 
     let models = models::find_models_in_transaction(&mut transaction, provider.id).await?;
 
@@ -301,7 +290,7 @@ pub(crate) async fn update_provider(
         .iter()
         .map(|model| {
             let id = Model::public_id(
-                model_prefix,
+                update.model_prefix,
                 &model.upstream_id,
                 model.id_override.as_deref(),
             );
@@ -315,7 +304,7 @@ pub(crate) async fn update_provider(
         .map(|(id, model)| (id.as_str(), model.upstream_id.as_str()))
         .collect();
 
-    super::ensure_ids_pairwise_distinct(name, &composed)?;
+    super::ensure_ids_pairwise_distinct(update.name, &composed)?;
 
     super::ensure_ids_routable(&mut transaction, provider.id, &composed).await?;
 
@@ -324,11 +313,11 @@ pub(crate) async fn update_provider(
             "UPDATE providers SET name = ?1, model_prefix = ?2, protocol = ?3, base_url = ?4, \
              is_enabled = ?5 WHERE id = ?6",
             params![
-                name,
-                model_prefix,
-                protocol.map(UpstreamFormat::as_str),
-                base_url,
-                i64::from(is_enabled),
+                update.name,
+                update.model_prefix,
+                update.protocol.map(UpstreamFormat::as_str),
+                update.base_url,
+                i64::from(update.is_enabled),
                 provider.id,
             ],
         )
@@ -359,22 +348,7 @@ pub(crate) async fn update_provider(
 
     transaction.commit().await?;
 
-    // The returned row mirrors exactly what this transaction wrote.
-    Ok(Provider {
-        id: provider.id,
-        name: name.to_string(),
-        model_prefix: model_prefix.to_string(),
-        provider_type: provider.provider_type,
-        protocol,
-        base_url: base_url.map(str::to_string),
-        credentials: update.credentials.cloned().unwrap_or(provider.credentials),
-        expires_at: if is_credentials_replaced {
-            None
-        } else {
-            provider.expires_at
-        },
-        is_enabled,
-    })
+    Ok(())
 }
 
 /// Attempts to acquire the token refresh lease inside a transaction.

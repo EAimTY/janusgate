@@ -26,15 +26,23 @@ pub(crate) mod openai_chat_completion;
 pub(crate) mod openai_response;
 
 /// Wire formats an upstream provider may speak.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpstreamFormat {
+///
+/// The serde and TypeScript names are the management wire names, shared with
+/// [`UpstreamFormat::as_str`] — the storage form and the wire form are one
+/// vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub enum UpstreamFormat {
     /// OpenAI Responses protocol.
+    #[serde(rename = "openai_response")]
     OpenAiResponse,
 
     /// OpenAI Chat Completions protocol.
+    #[serde(rename = "openai_chat_completion")]
     OpenAiChatCompletion,
 
     /// Gemini GenerateContent protocol.
+    #[serde(rename = "gemini_generate_content")]
     GeminiGenerateContent,
 }
 

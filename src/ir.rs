@@ -662,7 +662,7 @@ pub(crate) fn apply_thinking_levels(
 /// field in every error.
 ///
 /// This is the single validation path for canonical thinking levels: both the
-/// `save-model` request parser and the stored `thinking_levels_override`
+/// `models:update` request parser and the stored `thinking_levels_override`
 /// parser delegate here, so the wording can never drift between them.
 ///
 /// # Errors

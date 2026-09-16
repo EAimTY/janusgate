@@ -13,7 +13,7 @@ use std::{fs, io::Error as IoError, num::NonZero, path::Path, time::Duration};
 use turso::{Builder as TursoBuilder, Connection, Database as TursoDatabase, Error as TursoError};
 
 #[rustfmt::skip]
-pub(crate) use turso::{IntoParams, Row, Value, params, params_from_iter};
+pub(crate) use turso::{IntoParams, Row, Value, params};
 
 /// Non-zero 32-bit big-endian schema fingerprint computed at compile time.
 const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(concat!(

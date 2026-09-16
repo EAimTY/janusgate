@@ -16,15 +16,23 @@ pub(crate) mod oauth;
 pub(crate) mod storage;
 
 /// Kinds of upstream provider accounts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderType {
+///
+/// The serde and TypeScript names are the management wire names, shared with
+/// [`ProviderType::as_str`] — the storage form and the wire form are one
+/// vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub enum ProviderType {
     /// ChatGPT account speaking the Codex Responses protocol.
+    #[serde(rename = "openai_oauth")]
     OpenAiOauth,
 
     /// Google account speaking Gemini GenerateContent via Code Assist.
+    #[serde(rename = "antigravity_oauth")]
     AntigravityOauth,
 
     /// Static API key account speaking a configured protocol.
+    #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
 }
 
@@ -59,12 +67,18 @@ impl ProviderType {
 }
 
 /// Kinds of upstream provider accounts that use OAuth authorization flows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OAuthProviderType {
+///
+/// The serde and TypeScript names are the management wire names, shared with
+/// [`OAuthProviderType::as_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub enum OAuthProviderType {
     /// ChatGPT account speaking the Codex Responses protocol.
+    #[serde(rename = "openai_oauth")]
     OpenAiOauth,
 
     /// Google account speaking Gemini GenerateContent via Code Assist.
+    #[serde(rename = "antigravity_oauth")]
     AntigravityOauth,
 }
 
@@ -456,7 +470,7 @@ fn missing(field: &str) -> ParseError {
 #[derive(Debug, Clone)]
 pub(crate) struct NewProvider<'a> {
     /// Unique, non-empty, renameable label (README §3); a later
-    /// `save-provider` update may rename it.
+    /// `providers:update` request may rename it.
     pub(crate) name: &'a str,
 
     /// Prefix prepended to every public model name.
@@ -609,6 +623,49 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verifies that the serde wire names and the storage names of the closed
+    /// type vocabularies are one vocabulary: every variant serializes to, and
+    /// deserializes from, exactly its `as_str` name, so the management wire,
+    /// the TypeScript bindings, and the database rows can never drift apart.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a wire name diverges from the storage name.
+    #[test]
+    fn round_trips_type_names_with_their_storage_forms() {
+        for provider_type in [
+            ProviderType::OpenAiOauth,
+            ProviderType::AntigravityOauth,
+            ProviderType::OpenAiCompatible,
+        ] {
+            #[expect(clippy::expect_used, reason = "a unit enum always serializes")]
+            let rendered =
+                serde_json::to_string(&provider_type).expect("a provider type always serializes");
+
+            assert_eq!(rendered, format!("\"{}\"", provider_type.as_str()));
+
+            #[expect(
+                clippy::expect_used,
+                reason = "the name was just rendered from the same variant"
+            )]
+            let parsed: ProviderType =
+                serde_json::from_str(&rendered).expect("a rendered name parses back");
+
+            assert_eq!(parsed, provider_type);
+        }
+
+        for oauth_type in [
+            OAuthProviderType::OpenAiOauth,
+            OAuthProviderType::AntigravityOauth,
+        ] {
+            #[expect(clippy::expect_used, reason = "a unit enum always serializes")]
+            let rendered =
+                serde_json::to_string(&oauth_type).expect("an OAuth type always serializes");
+
+            assert_eq!(rendered, format!("\"{}\"", oauth_type.as_str()));
+        }
+    }
 
     /// Verifies that `Model::public_id` uses `model_prefix + upstream_id` when
     /// unoverridden, and uses `id_override` directly without `model_prefix`

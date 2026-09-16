@@ -17,7 +17,7 @@ pub trait Route {
     /// HTTP method the route answers.
     const METHOD: http::Method;
 
-    /// Path within the version's sub-router, such as `/list-providers`; the
+    /// Path within the version's sub-router, such as `/providers:list`; the
     /// version prefix is not part of it.
     const PATH: &'static str;
 

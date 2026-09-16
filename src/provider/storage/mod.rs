@@ -5,9 +5,9 @@
 //! public model ID collision checks.
 //!
 //! The entity split interlocks deliberately, mirroring the README §7.1
-//! transaction contracts: `save-provider` recomputes its models' public IDs
-//! from the fresh prefix, so [`providers`] reads model rows through
-//! [`models::find_models_in_transaction`], while `save-model` and model
+//! transaction contracts: `providers:update` recomputes its models' public
+//! IDs from the fresh prefix, so [`providers`] reads model rows through
+//! [`models::find_models_in_transaction`], while `models:update` and model
 //! discovery re-read the provider row inside their transactions through
 //! [`providers::find_provider_by_id_in_transaction`].
 
@@ -157,26 +157,17 @@ impl IntoValue for ProviderType {
     }
 }
 
-impl TryFrom<&Value> for ProviderType {
-    type Error = Error;
-
-    fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::Text(text) => Self::parse(text).ok_or_else(|| Error::Drift {
-                message: format!("unknown provider type `{text}`"),
-            }),
-            _ => Err(Error::Drift {
-                message: "provider type column must be a text value".to_string(),
-            }),
-        }
-    }
-}
-
-impl TryFrom<Value> for ProviderType {
-    type Error = Error;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        Self::try_from(&value)
+/// Reads a provider type column, failing with an internal drift error on an
+/// unknown or non-text value: the column was written through
+/// [`ProviderType::as_str`], so anything else is storage drift.
+fn provider_type_from_value(value: Value) -> Result<ProviderType, Error> {
+    match value {
+        Value::Text(text) => ProviderType::parse(&text).ok_or_else(|| Error::Drift {
+            message: format!("unknown provider type `{text}`"),
+        }),
+        _ => Err(Error::Drift {
+            message: "provider type column must be a text value".to_string(),
+        }),
     }
 }
 
@@ -186,32 +177,22 @@ impl IntoValue for OAuthProviderType {
     }
 }
 
-impl TryFrom<&Value> for OAuthProviderType {
-    type Error = Error;
-
-    fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::Text(text) => Self::parse(text).ok_or_else(|| Error::Drift {
-                message: format!("unknown OAuth provider type `{text}`"),
-            }),
-            _ => Err(Error::Drift {
-                message: "OAuth state type column must be a text value".to_string(),
-            }),
-        }
-    }
-}
-
-impl TryFrom<Value> for OAuthProviderType {
-    type Error = Error;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        Self::try_from(&value)
+/// Reads an OAuth state type column; see [`provider_type_from_value`] for
+/// the drift classification.
+fn oauth_provider_type_from_value(value: Value) -> Result<OAuthProviderType, Error> {
+    match value {
+        Value::Text(text) => OAuthProviderType::parse(&text).ok_or_else(|| Error::Drift {
+            message: format!("unknown OAuth provider type `{text}`"),
+        }),
+        _ => Err(Error::Drift {
+            message: "OAuth state type column must be a text value".to_string(),
+        }),
     }
 }
 
 /// Parses a provider row in [`PROVIDER_COLUMNS`] order.
 fn provider_from_row(row: &Row) -> Result<Provider, Error> {
-    let provider_type = ProviderType::try_from(row.get_value(3)?)?;
+    let provider_type = provider_type_from_value(row.get_value(3)?)?;
 
     let protocol =
         match row.get::<Option<String>>(4)? {
@@ -449,17 +430,17 @@ mod tests {
 
         // 1. Discover models: "gpt-4" and "claude"
         #[expect(clippy::unwrap_used, reason = "model discovery succeeds")]
-        let count = replace_discovered_models(
+        let discovered = replace_discovered_models(
             &database,
             provider_id,
             &["gpt-4".to_string(), "claude".to_string()],
         )
         .await
         .unwrap();
-        assert_eq!(count, 2);
+        assert_eq!(discovered.len(), 2);
 
         #[expect(clippy::unwrap_used, reason = "list models succeeds")]
-        let entries = list_model_entries(&database).await.unwrap();
+        let entries = list_model_entries(&database, None).await.unwrap();
         assert_eq!(entries.len(), 2);
         #[expect(clippy::unwrap_used, reason = "gpt-4 is in discovered entries")]
         let gpt4 = entries
@@ -471,15 +452,16 @@ mod tests {
         assert!(gpt4.model.is_enabled);
         assert!(gpt4.model.is_effectively_enabled(gpt4.is_provider_enabled));
 
-        // 2. Set id_override on "gpt-4" to "top-gpt" (bypasses "p1/" prefix)
+        // 2. Set id_override on "gpt-4" to "top-gpt" (bypasses "p1/" prefix);
+        // the rewrite restates the row's full override state
         #[expect(clippy::unwrap_used, reason = "override update succeeds")]
         let updated = update_model_overrides_checked(
             &database,
             ModelOverrideUpdate {
                 provider_id,
                 upstream_id: "gpt-4",
-                id_override: Some(Some("top-gpt".to_string())),
-                is_enabled: None,
+                id_override: Some("top-gpt"),
+                is_enabled: true,
                 thinking_levels_override: None,
             },
         )
@@ -503,7 +485,8 @@ mod tests {
         let old_routing = find_routing(&database, "p1/gpt-4").await.unwrap();
         assert!(old_routing.is_none());
 
-        // 3. Update provider's model_prefix to "new-p1/"
+        // 3. Update provider's model_prefix to "new-p1/"; the rewrite restates
+        // the compatible provider's full state
         #[expect(clippy::unwrap_used, reason = "provider prefix update succeeds")]
         update_provider(
             &database,
@@ -511,9 +494,9 @@ mod tests {
             ProviderUpdate {
                 name: "provider-1",
                 model_prefix: "new-p1/",
-                protocol: None,
-                base_url: None,
-                is_enabled: None,
+                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+                base_url: Some("http://localhost:8080"),
+                is_enabled: true,
                 credentials: None,
             },
         )
@@ -523,7 +506,7 @@ mod tests {
         // Check: "gpt-4" retains "top-gpt", while "claude" is recomputed as
         // "new-p1/claude"
         #[expect(clippy::unwrap_used, reason = "list models succeeds")]
-        let entries_after_prefix = list_model_entries(&database).await.unwrap();
+        let entries_after_prefix = list_model_entries(&database, None).await.unwrap();
         #[expect(clippy::unwrap_used, reason = "gpt-4 is in entries")]
         let gpt4_after = entries_after_prefix
             .iter()
@@ -544,8 +527,8 @@ mod tests {
             ModelOverrideUpdate {
                 provider_id,
                 upstream_id: "gpt-4",
-                id_override: Some(None),
-                is_enabled: None,
+                id_override: None,
+                is_enabled: true,
                 thinking_levels_override: None,
             },
         )
@@ -560,8 +543,8 @@ mod tests {
             ModelOverrideUpdate {
                 provider_id,
                 upstream_id: "claude",
-                id_override: Some(Some("new-p1/gpt-4".to_string())),
-                is_enabled: None,
+                id_override: Some("new-p1/gpt-4"),
+                is_enabled: true,
                 thinking_levels_override: None,
             },
         )
@@ -576,7 +559,7 @@ mod tests {
                 provider_id,
                 upstream_id: "claude",
                 id_override: None,
-                is_enabled: Some(false),
+                is_enabled: false,
                 thinking_levels_override: None,
             },
         )
@@ -605,9 +588,9 @@ mod tests {
             ProviderUpdate {
                 name: "provider-1",
                 model_prefix: "new-p1/",
-                protocol: None,
-                base_url: None,
-                is_enabled: Some(false),
+                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+                base_url: Some("http://localhost:8080"),
+                is_enabled: false,
                 credentials: None,
             },
         )
@@ -787,16 +770,15 @@ mod tests {
             let value = provider_type.into_value().unwrap();
             assert_eq!(value, Value::Text(provider_type.as_str().to_string()));
 
-            #[expect(clippy::unwrap_used, reason = "try_from returns Ok for valid Text")]
-            let parsed = ProviderType::try_from(&value).unwrap();
+            #[expect(clippy::unwrap_used, reason = "the helper returns Ok for valid Text")]
+            let parsed = provider_type_from_value(value).unwrap();
             assert_eq!(parsed, provider_type);
         }
 
         let invalid = Value::Text("unknown_type".to_string());
-        assert!(ProviderType::try_from(&invalid).is_err());
+        assert!(provider_type_from_value(invalid).is_err());
 
-        let non_text = Value::Integer(42);
-        assert!(ProviderType::try_from(&non_text).is_err());
+        assert!(provider_type_from_value(Value::Integer(42)).is_err());
     }
 
     /// Verifies value conversions between database values and OAuth provider
@@ -818,18 +800,17 @@ mod tests {
             let value = oauth_type.into_value().unwrap();
             assert_eq!(value, Value::Text(oauth_type.as_str().to_string()));
 
-            #[expect(clippy::unwrap_used, reason = "try_from returns Ok for valid Text")]
-            let parsed = OAuthProviderType::try_from(&value).unwrap();
+            #[expect(clippy::unwrap_used, reason = "the helper returns Ok for valid Text")]
+            let parsed = oauth_provider_type_from_value(value).unwrap();
             assert_eq!(parsed, oauth_type);
         }
 
         let incompatible = Value::Text("openai_compatible".to_string());
-        assert!(OAuthProviderType::try_from(&incompatible).is_err());
+        assert!(oauth_provider_type_from_value(incompatible).is_err());
 
         let invalid = Value::Text("unknown_type".to_string());
-        assert!(OAuthProviderType::try_from(&invalid).is_err());
+        assert!(oauth_provider_type_from_value(invalid).is_err());
 
-        let non_text = Value::Integer(42);
-        assert!(OAuthProviderType::try_from(&non_text).is_err());
+        assert!(oauth_provider_type_from_value(Value::Integer(42)).is_err());
     }
 }

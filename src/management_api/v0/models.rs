@@ -1,9 +1,8 @@
-//! Management endpoints discovering, listing, and overriding models.
+//! Management routes listing, discovering, and overriding models.
 
-use super::{Error, route, validate_identifier};
+use super::{Error, IrReasoningEffort, Nullable, route, validate_identifier};
 use crate::{
     context::Context,
-    database::Database,
     ir,
     provider::{
         discovery, oauth,
@@ -17,28 +16,28 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 route! {
-    pub impl Route for DiscoverModels {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/discover-models";
-        type Request = DiscoverModelsRequest;
-        type Response = DiscoverModelsResponse;
-    }
-}
-
-route! {
     pub impl Route for ListModels {
-        const METHOD: http::Method = http::Method::GET;
-        const PATH: &'static str = "/list-models";
+        const METHOD: http::Method = http::Method::POST;
+        const PATH: &'static str = "/models:list";
         type Request = ListModelsRequest;
         type Response = ListModelsResponse;
     }
 }
 
 route! {
-    pub impl Route for SaveModel {
+    pub impl Route for DiscoverModels {
         const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/save-model";
-        type Request = SaveModelRequest;
+        const PATH: &'static str = "/models:discover";
+        type Request = DiscoverModelsRequest;
+        type Response = DiscoverModelsResponse;
+    }
+}
+
+route! {
+    pub impl Route for UpdateModel {
+        const METHOD: http::Method = http::Method::POST;
+        const PATH: &'static str = "/models:update";
+        type Request = UpdateModelRequest;
         type Response = ModelEnvelope;
     }
 }
@@ -63,7 +62,7 @@ pub struct ModelResponse {
     pub id: String,
 
     /// Explicit public ID override; `null` when the ID is composed from the
-    /// provider's prefix.
+    /// provider's prefix. One of the two nullable mirror columns.
     pub id_override: Option<String>,
 
     /// Configured serving switch.
@@ -73,8 +72,8 @@ pub struct ModelResponse {
     pub is_effectively_enabled: bool,
 
     /// Canonical thinking level override; `null` when no filtering is
-    /// configured.
-    pub thinking_levels_override: Option<Vec<ir::IrReasoningEffort>>,
+    /// configured. The other nullable mirror column.
+    pub thinking_levels_override: Option<Vec<IrReasoningEffort>>,
 }
 
 impl ModelResponse {
@@ -102,14 +101,25 @@ impl ModelResponse {
     }
 }
 
-/// The `list-models` request body (README §7.1); the route carries no body,
-/// so the payload is the empty request type.
+/// Strictly parsed `models:list` request: the empty request lists every
+/// provider's rows; the filter narrows the listing to one provider and is
+/// never `null` (README §7.0 rule 2) — an unknown `provider_id` yields an
+/// empty list, because a filter addresses no row.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListModelsRequest {}
+pub struct ListModelsRequest {
+    /// Owning provider row identifier filter.
+    #[serde(
+        default,
+        deserialize_with = "super::absent_keeps::deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
+    pub provider_id: Option<i64>,
+}
 
-/// The `list-models` success body (README §7.1).
+/// The `models:list` success body (README §7.1).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ListModelsResponse {
@@ -117,90 +127,78 @@ pub struct ListModelsResponse {
     pub models: Vec<ModelResponse>,
 }
 
-/// The `save-model` success body (README §7.1).
-#[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ModelEnvelope {
-    /// The saved model row.
-    pub model: ModelResponse,
-}
-
-/// The `discover-models` success body (README §7.1).
+/// The `models:discover` success body (README §7.1): the provider's
+/// complete fresh rows — which `upstream_id`s appeared, how the public IDs
+/// composed, and which overrides carried over are transaction-recomputed
+/// facts the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct DiscoverModelsResponse {
-    /// Number of model rows the refresh stored.
-    pub discovered: usize,
+    /// The provider's model rows as stored by the refresh.
+    pub models: Vec<ModelResponse>,
 }
 
-/// Strictly parsed `discover-models` request.
+/// Strictly parsed `models:discover` request.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct DiscoverModelsRequest {
-    /// Provider row identifier.
-    pub id: i64,
+    /// Provider whose model rows the refresh replaces.
+    pub provider_id: i64,
 }
 
-/// Strictly parsed `save-model` request; each override field is tri-state:
-/// absent leaves it unchanged, `null` clears it, a value sets it. The
-/// `double_option` adapter is what makes the mapping explicit, since plain
-/// serde maps JSON `null` and field absence to the same outer `None`.
+/// Strictly parsed `models:update` request (README §7.1): the complete
+/// desired override state of the row, every field required (README §7.0
+/// rule 3). The two override fields are the required-nullable mirror
+/// columns (rule 2) — `null` means no override, exactly like the storage
+/// columns — so the request is the row's mirror: a client renders the row,
+/// edits it, and sends the same shape back. Model rows are never created or
+/// deleted here; discovery is their only source.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct SaveModelRequest {
+pub struct UpdateModelRequest {
     /// Owning provider row identifier.
     pub provider_id: i64,
 
     /// Exact upstream model identifier; must be non-empty.
     pub upstream_id: String,
 
-    /// Public ID override.
-    #[serde(
-        default,
-        with = "::serde_with::rust::double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
+    /// Public ID override; `null` composes the ID from the provider's
+    /// prefix.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
-        ts(optional = nullable, as = "Option<String>")
+        ts(type = "string | null")
     )]
-    pub id_override: Option<Option<String>>,
+    pub id_override: Nullable<String>,
 
     /// Serving state.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
-    pub is_enabled: Option<bool>,
+    pub is_enabled: bool,
 
-    /// Canonical thinking levels override.
-    #[serde(
-        default,
-        with = "::serde_with::rust::double_option",
-        skip_serializing_if = "Option::is_none"
-    )]
+    /// Canonical thinking level override; `null` disables filtering.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
-        ts(optional = nullable, as = "Option<Vec<String>>")
+        ts(type = "Array<IrReasoningEffort> | null")
     )]
-    pub thinking_levels_override: Option<Option<Vec<String>>>,
+    pub thinking_levels_override: Nullable<Vec<IrReasoningEffort>>,
 }
 
-/// Handles `POST /discover-models`.
-pub(super) async fn discover(
-    State(context): State<Context>,
-    WithRejection(Json(request), _): WithRejection<Json<DiscoverModelsRequest>, Error>,
-) -> Result<Json<DiscoverModelsResponse>, Error> {
-    let discovered = handle_discover(&context.database, &context.control_plane, request).await?;
-
-    Ok(Json(DiscoverModelsResponse { discovered }))
+/// The `models:update` success body (README §7.1): the recomposed `id` and
+/// `is_effectively_enabled` derive from transaction-time provider state, so
+/// they are not client-computable.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ModelEnvelope {
+    /// The rewritten model row.
+    pub model: ModelResponse,
 }
 
-/// Handles `GET /list-models`.
+/// Handles `POST /models:list`.
 pub(super) async fn list(
     State(context): State<Context>,
+    WithRejection(Json(request), _): WithRejection<Json<ListModelsRequest>, Error>,
 ) -> Result<Json<ListModelsResponse>, Error> {
-    let entries = storage::list_model_entries(&context.database).await?;
+    let entries = storage::list_model_entries(&context.database, request.provider_id).await?;
 
     let models = entries
         .iter()
@@ -210,35 +208,53 @@ pub(super) async fn list(
     Ok(Json(ListModelsResponse { models }))
 }
 
-/// Handles `POST /save-model`.
-pub(super) async fn save(
+/// Handles `POST /models:discover`.
+pub(super) async fn discover(
     State(context): State<Context>,
-    WithRejection(Json(request), _): WithRejection<Json<SaveModelRequest>, Error>,
-) -> Result<Json<ModelEnvelope>, Error> {
-    let model = handle_save(&context.database, request).await?;
+    WithRejection(Json(request), _): WithRejection<Json<DiscoverModelsRequest>, Error>,
+) -> Result<Json<DiscoverModelsResponse>, Error> {
+    let entries = handle_discover(&context.database, &context.control_plane, request).await?;
 
-    Ok(Json(ModelEnvelope { model }))
+    let models = entries
+        .iter()
+        .map(ModelResponse::from_entry)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(Json(DiscoverModelsResponse { models }))
 }
 
-/// Refreshes one provider's model rows from upstream, carrying overrides over
-/// by `upstream_id`.
+/// Handles `POST /models:update`.
+pub(super) async fn update(
+    State(context): State<Context>,
+    WithRejection(Json(request), _): WithRejection<Json<UpdateModelRequest>, Error>,
+) -> Result<Json<ModelEnvelope>, Error> {
+    let entry = handle_update(&context.database, request).await?;
+
+    Ok(Json(ModelEnvelope {
+        model: ModelResponse::from_entry(&entry)?,
+    }))
+}
+
+/// Refreshes one provider's model rows from upstream, carrying overrides
+/// over by `upstream_id`.
 ///
 /// `control_plane` is the bounded client used for the token refresh and the
 /// upstream discovery calls.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for an empty provider identifier, unknown
-/// providers, upstream failures (including an upstream that reports no
-/// models), and public ID collisions.
+/// Returns [`Error`] for unknown providers, upstream failures (including
+/// an upstream that reports no models), and public ID collisions.
 async fn handle_discover(
-    database: &Database,
+    database: &crate::database::Database,
     control_plane: &Client,
     request: DiscoverModelsRequest,
-) -> Result<usize, Error> {
-    let provider = storage::find_provider_by_id(database, request.id)
+) -> Result<Vec<ModelEntry>, Error> {
+    let provider = storage::find_provider_by_id(database, request.provider_id)
         .await?
-        .ok_or(Error::ProviderNotFound { id: request.id })?;
+        .ok_or(Error::ProviderNotFound {
+            id: request.provider_id,
+        })?;
 
     let fresh = oauth::ensure_fresh_token(database, control_plane, &provider).await?;
 
@@ -265,67 +281,74 @@ async fn handle_discover(
 
     // The replace re-reads the provider row inside its transaction, so the
     // public IDs are composed from the provider's current prefix and
-    // checked for collisions atomically with the write (README
-    // §7.1).
-    let discovered = storage::replace_discovered_models(database, request.id, &unique_ids).await?;
+    // checked for collisions atomically with the write (README §7.1).
+    let entries =
+        storage::replace_discovered_models(database, request.provider_id, &unique_ids).await?;
 
-    info!("discovered {discovered} models for provider {}", request.id);
+    info!(
+        "discovered {} models for provider {}",
+        entries.len(),
+        request.provider_id
+    );
 
-    Ok(discovered)
+    Ok(entries)
 }
 
-/// Writes one model's overrides and recomputes its public ID.
+/// Rewrites one model's full override state and recomputes its public ID.
 ///
 /// # Errors
 ///
 /// Returns [`Error`] for empty identifiers, unknown rows, invalid
 /// thinking levels, and public ID collisions.
-async fn handle_save(
-    database: &Database,
-    request: SaveModelRequest,
-) -> Result<ModelResponse, Error> {
+async fn handle_update(
+    database: &crate::database::Database,
+    request: UpdateModelRequest,
+) -> Result<ModelEntry, Error> {
     validate_identifier("upstream_id", &request.upstream_id)?;
 
-    if let Some(Some(ref id_override)) = request.id_override {
+    if let Some(id_override) = &request.id_override.0 {
         validate_identifier("id_override", id_override)?;
     }
 
-    let thinking_levels_override = match &request.thinking_levels_override {
+    let thinking_levels_override = match &request.thinking_levels_override.0 {
+        // The request field is already the canonical level set; only the
+        // documented non-emptiness needs enforcing here.
         None => None,
 
-        Some(None) => Some(None),
+        Some(levels) => {
+            if levels.is_empty() {
+                return Err(Error::from(ir::InvalidRequest::field(
+                    "thinking_levels_override",
+                    "must be a non-empty array",
+                )));
+            }
 
-        Some(Some(levels)) => {
-            // The shared parser keeps save-model validation byte-identical
-            // with the stored-override contract (README §7.1).
-            let parsed = ir::parse_thinking_levels(levels, "thinking_levels_override")?;
-
-            Some(Some(ir::render_thinking_levels(&parsed)))
+            Some(ir::render_thinking_levels(levels))
         }
     };
 
     // The checked update re-reads the provider and model rows inside its
-    // transaction, so the recomputed public ID uses the provider's
-    // current prefix and the collision check applies atomically
-    // with the write (README §7.1).
+    // transaction, so the recomputed public ID uses the provider's current
+    // prefix and the collision check applies atomically with the write
+    // (README §7.1).
     let entry = storage::update_model_overrides_checked(
         database,
         storage::ModelOverrideUpdate {
             provider_id: request.provider_id,
             upstream_id: &request.upstream_id,
-            id_override: request.id_override.clone(),
+            id_override: request.id_override.0.as_deref(),
             is_enabled: request.is_enabled,
-            thinking_levels_override,
+            thinking_levels_override: thinking_levels_override.as_deref(),
         },
     )
     .await?;
 
     info!(
-        "saved the overrides of model `{}`/`{}`",
+        "updated the overrides of model `{}`/`{}`",
         request.provider_id, request.upstream_id
     );
 
-    ModelResponse::from_entry(&entry)
+    Ok(entry)
 }
 
 /// Renders the stored thinking-level override for listing as canonical
@@ -385,5 +408,55 @@ mod tests {
         );
 
         assert!(thinking_levels_override(&Some(r#"["bogus"]"#.to_string())).is_err());
+    }
+
+    /// Verifies the `models:update` request's two-state poles (README §7.0
+    /// rule 2): both override fields must be present and accept `null`, and
+    /// an unknown field is rejected.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the request parses or rejects outside its contract.
+    #[test]
+    fn parses_the_full_state_update_strictly() {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the documented payload is constructed to parse"
+        )]
+        let parsed: UpdateModelRequest = serde_json::from_str(
+            r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,
+                "is_enabled":true,"thinking_levels_override":["low","high"]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.id_override, Nullable(None));
+        assert_eq!(
+            parsed.thinking_levels_override,
+            Nullable(Some(vec![IrReasoningEffort::Low, IrReasoningEffort::High]))
+        );
+
+        // An omitted override key reads as `null` — the documented
+        // tolerance of rule 2: under full-state semantics the two spellings
+        // share the one meaning, and the bindings keep well-typed clients
+        // honest by requiring the key.
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the documented payload is constructed to parse"
+        )]
+        let omitted: UpdateModelRequest = serde_json::from_str(
+            r#"{"provider_id":7,"upstream_id":"gpt-4o","is_enabled":true,
+                "thinking_levels_override":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(omitted.id_override, Nullable(None));
+
+        assert!(
+            serde_json::from_str::<UpdateModelRequest>(
+                r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,
+                    "is_enabled":true,"thinking_levels_override":null,"bogus":1}"#
+            )
+            .is_err()
+        );
     }
 }

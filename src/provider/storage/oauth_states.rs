@@ -61,7 +61,7 @@ pub(crate) async fn find_oauth_state_type(
         return Ok(None);
     };
 
-    let state_type = OAuthProviderType::try_from(row.get_value(0)?)?;
+    let state_type = super::oauth_provider_type_from_value(row.get_value(0)?)?;
 
     Ok(Some(state_type))
 }
@@ -94,7 +94,7 @@ pub(crate) async fn consume_oauth_state(
         return Ok(None);
     };
 
-    let state_type = OAuthProviderType::try_from(row.get_value(0)?)?;
+    let state_type = super::oauth_provider_type_from_value(row.get_value(0)?)?;
     let verifier: String = row.get(1)?;
 
     Ok(Some(OAuthState {
