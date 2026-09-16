@@ -36,7 +36,7 @@ const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 const SSE_CHANNEL_BUFFER: usize = 64;
 
 /// Constructs the format sub-router with OpenAI bearer authentication and its
-/// own 404 fallback.
+/// own 404 response.
 pub(super) fn router() -> Router<Context> {
     Router::new()
         .route("/chat/completions", post(chat_completions))

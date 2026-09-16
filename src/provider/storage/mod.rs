@@ -140,20 +140,16 @@ const MODEL_COLUMNS: &str = "provider_id, upstream_id, id, id_override, is_enabl
      thinking_levels_override";
 
 /// The combined column order of provider-model joins.
-const PROVIDER_MODEL_COLUMNS: &str = concat!(
-    "p.id, p.name, p.model_prefix, p.type, p.protocol, p.base_url, p.credentials, ",
-    "p.expires_at, p.is_enabled, ",
-    "m.upstream_id, m.id, m.id_override, m.is_enabled, m.thinking_levels_override"
-);
+const PROVIDER_MODEL_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.type, p.protocol, \
+     p.base_url, p.credentials, p.expires_at, p.is_enabled, \
+     m.upstream_id, m.id, m.id_override, m.is_enabled, m.thinking_levels_override";
 
 /// The combined column order of the model-entry join, consumed positionally by
 /// [`model_entry_from_row`]: the provider id, name, and enabled flag, then the
 /// model columns.
-const MODEL_ENTRY_COLUMNS: &str = concat!(
-    "p.id, p.name, p.is_enabled, ",
-    "m.provider_id, m.upstream_id, m.id, m.id_override, m.is_enabled, \
-     m.thinking_levels_override"
-);
+const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, p.is_enabled, \
+     m.provider_id, m.upstream_id, m.id, m.id_override, m.is_enabled, \
+     m.thinking_levels_override";
 
 impl IntoValue for ProviderType {
     fn into_value(self) -> Result<Value, TursoError> {

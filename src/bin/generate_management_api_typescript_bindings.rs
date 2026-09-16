@@ -1,7 +1,10 @@
 //! Generates the management API TypeScript bindings.
 //!
-//! Takes the output directory as its only argument — relative or absolute;
-//! the directory is created when absent. Run with:
+//! Takes the output target directory as its only argument — relative or
+//! absolute, created when absent. Every version's bindings are rendered into
+//! one `<version>.ts` file directly in that target — `/management-api/v0`
+//! into `v0.ts` — so one invocation covers the whole management API. Run
+//! with:
 //!
 //! ```text
 //! cargo run \

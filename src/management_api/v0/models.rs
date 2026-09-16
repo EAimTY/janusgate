@@ -1,9 +1,6 @@
 //! Management endpoints discovering, listing, and overriding models.
 
-use super::{
-    error::{self, ManagementApiError},
-    route,
-};
+use super::{Error, route, validate_identifier};
 use crate::{
     context::Context,
     database::Database,
@@ -13,7 +10,8 @@ use crate::{
         storage::{self, ModelEntry},
     },
 };
-use axum::{body::Bytes, extract::State, http::StatusCode, response::Response};
+use axum::{Json, extract::State};
+use axum_extra::extract::WithRejection;
 use log::info;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -85,8 +83,8 @@ impl ModelResponse {
     ///
     /// # Errors
     ///
-    /// Returns [`ManagementApiError`] when the stored override is corrupt.
-    fn from_entry(entry: &ModelEntry) -> Result<Self, ManagementApiError> {
+    /// Returns [`Error`] when the stored override is corrupt.
+    fn from_entry(entry: &ModelEntry) -> Result<Self, Error> {
         Ok(Self {
             provider_id: entry.provider_id,
             provider: entry.provider_name.clone(),
@@ -189,197 +187,145 @@ pub struct SaveModelRequest {
 }
 
 /// Handles `POST /discover-models`.
-pub(super) async fn discover(State(context): State<Context>, body: Bytes) -> Response {
-    let outcome = handle_discover(&context.database, &context.control_plane, &body).await;
+pub(super) async fn discover(
+    State(context): State<Context>,
+    WithRejection(Json(request), _): WithRejection<Json<DiscoverModelsRequest>, Error>,
+) -> Result<Json<DiscoverModelsResponse>, Error> {
+    let discovered = handle_discover(&context.database, &context.control_plane, request).await?;
 
-    match outcome {
-        Ok(discovered) => {
-            super::json_response(StatusCode::OK, &DiscoverModelsResponse { discovered })
-        }
-        Err(error) => error.into_response(),
-    }
+    Ok(Json(DiscoverModelsResponse { discovered }))
 }
 
 /// Handles `GET /list-models`.
-pub(super) async fn list(State(context): State<Context>) -> Response {
-    let outcome = async {
-        let entries = storage::list_model_entries(&context.database).await?;
+pub(super) async fn list(
+    State(context): State<Context>,
+) -> Result<Json<ListModelsResponse>, Error> {
+    let entries = storage::list_model_entries(&context.database).await?;
 
-        let rendered = entries
-            .iter()
-            .map(ModelResponse::from_entry)
-            .collect::<Result<Vec<_>, _>>()?;
+    let models = entries
+        .iter()
+        .map(ModelResponse::from_entry)
+        .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(ListModelsResponse { models: rendered })
-    }
-    .await;
-
-    match outcome {
-        Ok(rendered) => super::json_response(StatusCode::OK, &rendered),
-        Err(error) => {
-            error::log_error("list-models", &error);
-
-            error.into_response()
-        }
-    }
+    Ok(Json(ListModelsResponse { models }))
 }
 
 /// Handles `POST /save-model`.
-pub(super) async fn save(State(context): State<Context>, body: Bytes) -> Response {
-    let outcome = handle_save(&context.database, &body).await;
+pub(super) async fn save(
+    State(context): State<Context>,
+    WithRejection(Json(request), _): WithRejection<Json<SaveModelRequest>, Error>,
+) -> Result<Json<ModelEnvelope>, Error> {
+    let model = handle_save(&context.database, request).await?;
 
-    match outcome {
-        Ok(rendered) => super::json_response(StatusCode::OK, &ModelEnvelope { model: rendered }),
-        Err(error) => error.into_response(),
-    }
+    Ok(Json(ModelEnvelope { model }))
 }
 
 /// Refreshes one provider's model rows from upstream, carrying overrides over
-/// by `upstream_id`. The outcome is logged: the discovered count at info
-/// level, every failure at the provider's response boundary.
+/// by `upstream_id`.
 ///
 /// `control_plane` is the bounded client used for the token refresh and the
 /// upstream discovery calls.
 ///
 /// # Errors
 ///
-/// Returns [`ManagementApiError`] for an empty provider identifier, unknown
+/// Returns [`Error`] for an empty provider identifier, unknown
 /// providers, upstream failures (including an upstream that reports no
 /// models), and public ID collisions.
 async fn handle_discover(
     database: &Database,
     control_plane: &Client,
-    body: &Bytes,
-) -> Result<usize, ManagementApiError> {
-    let request: DiscoverModelsRequest = super::parse_body(body, "discover-models")?;
+    request: DiscoverModelsRequest,
+) -> Result<usize, Error> {
+    let provider = storage::find_provider_by_id(database, request.id)
+        .await?
+        .ok_or(Error::ProviderNotFound { id: request.id })?;
 
-    let outcome = async {
-        let provider = storage::find_provider_by_id(database, request.id)
-            .await?
-            .ok_or_else(|| {
-                ManagementApiError::not_found(storage::provider_not_found_message(request.id))
-            })?;
+    let fresh = oauth::ensure_fresh_token(database, control_plane, &provider).await?;
 
-        let fresh = oauth::ensure_fresh_token(database, control_plane, &provider).await?;
+    let upstream_ids = discovery::discover_upstream_models(control_plane, &fresh).await?;
 
-        let upstream_ids = discovery::discover_upstream_models(control_plane, &fresh).await?;
+    // Discovery payloads can repeat an upstream identifier; keep the first
+    // occurrence.
+    let mut unique_ids: Vec<String> = Vec::with_capacity(upstream_ids.len());
 
-        // Discovery payloads can repeat an upstream identifier; keep the first
-        // occurrence.
-        let mut unique_ids: Vec<String> = Vec::with_capacity(upstream_ids.len());
-
-        for upstream_id in upstream_ids {
-            if unique_ids.iter().any(|existing| existing == &upstream_id) {
-                continue;
-            }
-
-            unique_ids.push(upstream_id);
+    for upstream_id in upstream_ids {
+        if unique_ids.iter().any(|existing| existing == &upstream_id) {
+            continue;
         }
 
-        // An upstream reporting no models must not wipe curated rows, so the
-        // empty replacement is refused before the replace is attempted
-        // (README §7.1).
-        if unique_ids.is_empty() {
-            return Err(ManagementApiError::upstream(concat!(
-                "Upstream request failed: upstream reported no models; ",
-                "refusing to replace the provider's model rows",
-            )));
-        }
-
-        // The replace re-reads the provider row inside its transaction, so the
-        // public IDs are composed from the provider's current prefix and
-        // checked for collisions atomically with the write (README
-        // §7.1).
-        Ok(storage::replace_discovered_models(database, request.id, &unique_ids).await?)
-    }
-    .await;
-
-    match &outcome {
-        Ok(discovered) => {
-            info!("discovered {discovered} models for provider {}", request.id)
-        }
-
-        Err(error) => {
-            error::log_error(
-                &format!("model discovery for provider {}", request.id),
-                error,
-            );
-        }
+        unique_ids.push(upstream_id);
     }
 
-    outcome
+    // An upstream reporting no models must not wipe curated rows, so the
+    // empty replacement is refused before the replace is attempted
+    // (README §7.1).
+    if unique_ids.is_empty() {
+        return Err(Error::UpstreamReportedNoModels);
+    }
+
+    // The replace re-reads the provider row inside its transaction, so the
+    // public IDs are composed from the provider's current prefix and
+    // checked for collisions atomically with the write (README
+    // §7.1).
+    let discovered = storage::replace_discovered_models(database, request.id, &unique_ids).await?;
+
+    info!("discovered {discovered} models for provider {}", request.id);
+
+    Ok(discovered)
 }
 
-/// Writes one model's overrides and recomputes its public ID. The outcome is
-/// logged: the saved overrides at info level, every failure at the
-/// model's response boundary.
+/// Writes one model's overrides and recomputes its public ID.
 ///
 /// # Errors
 ///
-/// Returns [`ManagementApiError`] for empty identifiers, unknown rows, invalid
+/// Returns [`Error`] for empty identifiers, unknown rows, invalid
 /// thinking levels, and public ID collisions.
 async fn handle_save(
     database: &Database,
-    body: &Bytes,
-) -> Result<ModelResponse, ManagementApiError> {
-    let request: SaveModelRequest = super::parse_body(body, "save-model")?;
+    request: SaveModelRequest,
+) -> Result<ModelResponse, Error> {
+    validate_identifier("upstream_id", &request.upstream_id)?;
 
-    let outcome = async {
-        super::validate_identifier("upstream_id", &request.upstream_id)?;
+    if let Some(Some(ref id_override)) = request.id_override {
+        validate_identifier("id_override", id_override)?;
+    }
 
-        if let Some(Some(ref id_override)) = request.id_override {
-            super::validate_identifier("id_override", id_override)?;
+    let thinking_levels_override = match &request.thinking_levels_override {
+        None => None,
+
+        Some(None) => Some(None),
+
+        Some(Some(levels)) => {
+            // The shared parser keeps save-model validation byte-identical
+            // with the stored-override contract (README §7.1).
+            let parsed = ir::parse_thinking_levels(levels, "thinking_levels_override")?;
+
+            Some(Some(ir::render_thinking_levels(&parsed)))
         }
+    };
 
-        let thinking_levels_override = match &request.thinking_levels_override {
-            None => None,
+    // The checked update re-reads the provider and model rows inside its
+    // transaction, so the recomputed public ID uses the provider's
+    // current prefix and the collision check applies atomically
+    // with the write (README §7.1).
+    let entry = storage::update_model_overrides_checked(
+        database,
+        storage::ModelOverrideUpdate {
+            provider_id: request.provider_id,
+            upstream_id: &request.upstream_id,
+            id_override: request.id_override.clone(),
+            is_enabled: request.is_enabled,
+            thinking_levels_override,
+        },
+    )
+    .await?;
 
-            Some(None) => Some(None),
+    info!(
+        "saved the overrides of model `{}`/`{}`",
+        request.provider_id, request.upstream_id
+    );
 
-            Some(Some(levels)) => {
-                // The shared parser keeps save-model validation byte-identical
-                // with the stored-override contract (README §7.1).
-                let parsed = ir::parse_thinking_levels(levels, "thinking_levels_override")?;
-
-                Some(Some(ir::render_thinking_levels(&parsed)))
-            }
-        };
-
-        // The checked update re-reads the provider and model rows inside its
-        // transaction, so the recomputed public ID uses the provider's
-        // current prefix and the collision check applies atomically
-        // with the write (README §7.1).
-        Ok(storage::update_model_overrides_checked(
-            database,
-            storage::ModelOverrideUpdate {
-                provider_id: request.provider_id,
-                upstream_id: &request.upstream_id,
-                id_override: request.id_override.clone(),
-                is_enabled: request.is_enabled,
-                thinking_levels_override,
-            },
-        )
-        .await?)
-    }
-    .await
-    .and_then(|entry| ModelResponse::from_entry(&entry));
-
-    match &outcome {
-        Ok(_) => info!(
-            "saved the overrides of model `{}`/`{}`",
-            request.provider_id, request.upstream_id
-        ),
-
-        Err(error) => error::log_error(
-            &format!(
-                "save-model `{}`/`{}`",
-                request.provider_id, request.upstream_id
-            ),
-            error,
-        ),
-    }
-
-    outcome
+    ModelResponse::from_entry(&entry)
 }
 
 /// Renders the stored thinking-level override for listing as canonical
@@ -390,17 +336,17 @@ async fn handle_save(
 ///
 /// # Errors
 ///
-/// Returns [`ManagementApiError`] when the stored override is corrupt.
+/// Returns [`Error`] when the stored override is corrupt.
 fn thinking_levels_override(
     stored: &Option<String>,
-) -> Result<Option<Vec<ir::IrReasoningEffort>>, ManagementApiError> {
+) -> Result<Option<Vec<ir::IrReasoningEffort>>, Error> {
     let Some(json) = stored else {
         return Ok(None);
     };
 
     ir::parse_stored_thinking_levels_override(json)
         .map(Some)
-        .map_err(ManagementApiError::internal)
+        .map_err(|detail| Error::StoredOverrideDrift { detail })
 }
 
 #[cfg(test)]

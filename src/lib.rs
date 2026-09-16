@@ -118,15 +118,21 @@ fn parse_config(args: impl IntoIterator<Item = impl Into<OsString>>) -> Config {
     )]
     let path = config_path.expect("missing argument CONFIG");
 
-    #[expect(clippy::panic, reason = "unopenable configuration file is fatal")]
+    #[expect(
+        clippy::expect_used,
+        reason = "an unopenable configuration file is fatal"
+    )]
     let file = File::options()
         .read(true)
         .open(&path)
-        .unwrap_or_else(|error| panic!("cannot open configuration file {path:?}: {error}"));
+        .expect("cannot open the configuration file");
 
-    #[expect(clippy::panic, reason = "unparsable configuration content is fatal")]
+    #[expect(
+        clippy::expect_used,
+        reason = "unparsable configuration content is fatal"
+    )]
     let config: Config = serde_json::from_reader(StripComments::new(file))
-        .unwrap_or_else(|error| panic!("cannot parse configuration file {path:?}: {error}"));
+        .expect("cannot parse the configuration file");
 
     config
 }

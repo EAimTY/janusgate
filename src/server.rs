@@ -94,46 +94,32 @@ fn tls_server_config() -> Option<Arc<ServerConfig>> {
     let tls = crate::CONFIG.tls.as_ref()?;
 
     #[expect(
-        clippy::panic,
+        clippy::expect_used,
         reason = "an unreadable or unparsable TLS certificate chain file is fatal"
     )]
     let certificates = CertificateDer::pem_file_iter(&tls.certificate)
-        .unwrap_or_else(|error| {
-            panic!(
-                "cannot read TLS certificate chain {:?}: {error}",
-                tls.certificate
-            )
-        })
+        .expect("cannot read the TLS certificate chain")
         .collect::<Result<Vec<CertificateDer>, _>>()
-        .unwrap_or_else(|error| {
-            panic!(
-                "cannot parse TLS certificate chain {:?}: {error}",
-                tls.certificate
-            )
-        });
+        .expect("cannot parse the TLS certificate chain");
 
     #[expect(
-        clippy::panic,
+        clippy::expect_used,
         reason = "an unreadable or unparsable TLS private key file is fatal"
     )]
-    let private_key = PrivateKeyDer::from_pem_file(&tls.private_key).unwrap_or_else(|error| {
-        panic!(
-            "cannot read or parse TLS private key {:?}: {error}",
-            tls.private_key
-        )
-    });
+    let private_key = PrivateKeyDer::from_pem_file(&tls.private_key)
+        .expect("cannot read or parse the TLS private key");
 
     #[expect(
-        clippy::panic,
+        clippy::expect_used,
         reason = "an unusable TLS certificate chain or private key is fatal"
     )]
     let mut server_config =
         ServerConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
             .with_safe_default_protocol_versions()
-            .unwrap_or_else(|error| panic!("cannot select TLS protocol versions: {error}"))
+            .expect("cannot select TLS protocol versions")
             .with_no_client_auth()
             .with_single_cert(certificates, private_key)
-            .unwrap_or_else(|error| panic!("cannot build TLS server configuration: {error}"));
+            .expect("cannot build the TLS server configuration");
 
     server_config.alpn_protocols = ALPN_PROTOCOLS.into_iter().map(Vec::from).collect();
 
@@ -267,13 +253,15 @@ fn router(context: context::Context) -> Router {
         .with_state(context)
 }
 
-/// Answers unmapped root paths with an empty 404 response.
+/// Answers a request that matches no route anywhere with an empty 404
+/// response.
 ///
-/// Each nested sub-router owns the JSON-shaped fallback for its own domain —
-/// management errors under `/management-api`, OpenAI errors under
-/// `/api/openai-v1`. The `/api` parent router defines no fallback, so its
-/// unmapped paths propagate up to this empty 404.
-async fn fallback() -> StatusCode {
+/// The root router owns this response, and the `/api` and `/management-api`
+/// parent routers declare this very handler as their own fallback, so a path
+/// that belongs to no domain is answered identically whichever router catches
+/// it; see the TODO in [`api::router`](crate::api::router) for why the parent
+/// routers declare it rather than inherit it.
+pub(crate) async fn fallback() -> StatusCode {
     StatusCode::NOT_FOUND
 }
 
@@ -289,15 +277,21 @@ fn init_tcp_listener() -> (TcpListener, SocketAddr) {
     let socket_address = match crate::CONFIG.listen.host() {
         Host::IpAddr(ip_address) => SocketAddr::from((*ip_address, crate::CONFIG.listen.port())),
         Host::DnsName(dns_name) => {
-            #[expect(clippy::panic, reason = "binding to unresolvable listen host is fatal")]
+            #[expect(
+                clippy::expect_used,
+                reason = "binding to an unresolvable listen host is fatal"
+            )]
             let mut socket_addresses = (dns_name.as_str(), crate::CONFIG.listen.port())
                 .to_socket_addrs()
-                .unwrap_or_else(|error| panic!("cannot resolve listen host {dns_name}: {error}"));
+                .expect("cannot resolve the listen host");
 
-            #[expect(clippy::panic, reason = "binding to empty address resolution is fatal")]
+            #[expect(
+                clippy::expect_used,
+                reason = "binding to an empty address resolution is fatal"
+            )]
             socket_addresses
                 .next()
-                .unwrap_or_else(|| panic!("listen host {dns_name} resolved to no addresses"))
+                .expect("the listen host resolved to no addresses")
         }
     };
 
@@ -306,55 +300,56 @@ fn init_tcp_listener() -> (TcpListener, SocketAddr) {
         SocketAddr::V6(_) => Domain::IPV6,
     };
 
-    #[expect(clippy::panic, reason = "TCP socket creation failure is fatal")]
+    #[expect(clippy::expect_used, reason = "TCP socket creation failure is fatal")]
     let socket = Socket2::new(domain, Type::STREAM, Some(Protocol::TCP))
-        .unwrap_or_else(|error| panic!("cannot create TCP socket for {socket_address}: {error}"));
+        .expect("cannot create the TCP socket");
 
     if socket_address.is_ipv6() {
         #[expect(
-            clippy::panic,
+            clippy::expect_used,
             reason = "TCP socket dual-stack configuration failure is fatal"
         )]
-        socket.set_only_v6(false).unwrap_or_else(|error| {
-            panic!("cannot configure dual-stack mode on {socket_address}: {error}")
-        });
+        socket
+            .set_only_v6(false)
+            .expect("cannot configure dual-stack mode on the TCP socket");
     }
 
     #[expect(
-        clippy::panic,
+        clippy::expect_used,
         reason = "TCP socket nonblocking configuration failure is fatal"
     )]
-    socket.set_nonblocking(true).unwrap_or_else(|error| {
-        panic!("cannot configure nonblocking mode on {socket_address}: {error}")
-    });
+    socket
+        .set_nonblocking(true)
+        .expect("cannot configure nonblocking mode on the TCP socket");
 
     // Make socket reusable right after restart in debug builds.
     #[cfg(debug_assertions)]
     {
         #[expect(
-            clippy::panic,
+            clippy::expect_used,
             reason = "TCP socket address reuse configuration failure is fatal"
         )]
-        socket.set_reuse_address(true).unwrap_or_else(|error| {
-            panic!("cannot configure address reuse on {socket_address}: {error}")
-        });
+        socket
+            .set_reuse_address(true)
+            .expect("cannot configure address reuse on the TCP socket");
     }
 
-    #[expect(clippy::panic, reason = "binding TCP listener is fatal")]
+    #[expect(clippy::expect_used, reason = "binding the TCP listener is fatal")]
     socket
         .bind(&SockAddr::from(socket_address))
-        .unwrap_or_else(|error| panic!("cannot bind TCP listener on {socket_address}: {error}"));
+        .expect("cannot bind the TCP listener");
 
-    #[expect(clippy::panic, reason = "listening on TCP socket is fatal")]
-    socket.listen(LISTEN_BACKLOG).unwrap_or_else(|error| {
-        panic!("cannot listen on TCP socket for {socket_address}: {error}")
-    });
+    #[expect(clippy::expect_used, reason = "listening on the TCP socket is fatal")]
+    socket
+        .listen(LISTEN_BACKLOG)
+        .expect("cannot listen on the TCP socket");
 
-    #[expect(clippy::panic, reason = "converting TCP listener to tokio is fatal")]
-    let tcp_listener =
-        TcpListener::from_std(StdTcpListener::from(socket)).unwrap_or_else(|error| {
-            panic!("cannot register TCP listener on {socket_address} with tokio: {error}")
-        });
+    #[expect(
+        clippy::expect_used,
+        reason = "converting the TCP listener to tokio is fatal"
+    )]
+    let tcp_listener = TcpListener::from_std(StdTcpListener::from(socket))
+        .expect("cannot register the TCP listener with tokio");
 
     (tcp_listener, socket_address)
 }

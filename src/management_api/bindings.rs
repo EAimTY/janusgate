@@ -1,17 +1,17 @@
 //! The management API TypeScript bindings generator, active only under the
-//! `management-api-typescript-bindings` feature. It renders one `.ts` file
-//! per wire payload type — ts-rs owns the Rust-to-TypeScript conversion and
-//! the transitive dependency exports — and composes the `routes.ts` route
-//! table from the [`MANAGEMENT_API_ROUTES`](super::route::MANAGEMENT_API_ROUTES)
-//! registry.
+//! `management-api-typescript-bindings` feature. It renders one version's
+//! whole wire surface — every payload type declaration ts-rs produces for the
+//! version's routes and extra exported types, then the route table composed
+//! from the version's registry — into one `<version>.ts` file directly in the
+//! output target, so a client imports a version from a single module and
+//! never chases per-type files.
+//!
+//! The generator is version-agnostic: the caller names the version prefix and
+//! hands over that version's route registry, so every version's bindings are
+//! produced by the same code while their contents stay entirely separate.
 
-use super::route::MANAGEMENT_API_ROUTES;
-use std::{
-    any::TypeId,
-    collections::{HashMap, HashSet},
-    fs,
-    path::Path,
-};
+use super::route::{ClosureType, PayloadBinding, PayloadSource, RouteBinding};
+use std::{any::TypeId, collections::HashMap, fs, path::Path};
 use ts_rs::Config;
 
 /// One route as the generator sees it, after collection from the registry.
@@ -19,7 +19,7 @@ struct CollectedRoute {
     /// HTTP method name, such as `POST`.
     method: String,
 
-    /// Path within the `/management-api` sub-router.
+    /// Path within the version's sub-router.
     path: &'static str,
 
     /// TypeScript identifier of the request payload type.
@@ -29,52 +29,59 @@ struct CollectedRoute {
     response_ident: String,
 }
 
-/// Generates the management API TypeScript bindings into `out_dir`, which
-/// may be relative or absolute and is created when absent: one `.ts` file
-/// per wire type, rendered by ts-rs, plus the `routes.ts` route table. The
-/// output is deterministic — routes are ordered by path and method, types by
-/// name.
+/// Generates one version's TypeScript bindings as one file directly in
+/// `output_target`, which may be relative or absolute and is created when
+/// absent. The file is named after the version segment of `version_prefix` —
+/// `/v0` renders `v0.ts` — so every version's bindings land side by side under
+/// one shared target. The output is deterministic — routes are ordered by path
+/// and method, type declarations by name.
+///
+/// `routes` supplies the version's route payloads, and `exported_types` the
+/// payload types it publishes besides them, such as its error body. Both are
+/// this version's alone: name collisions and duplicate routes are rejected per
+/// version.
 ///
 /// # Panics
 ///
-/// Panics when two routes share one method and path, when two distinct
-/// payload types share one TypeScript name, or when ts-rs or the filesystem
-/// fail; the generator is a first-party build tool and every failure is a
-/// fixable declaration or environment bug.
-pub fn generate_typescript_bindings(out_dir: &Path) {
+/// Panics when `routes` holds two routes sharing one method and path, when two
+/// distinct payload types of the version share one TypeScript name, or when
+/// the filesystem fails; the generator is a first-party build tool and every
+/// failure is a fixable declaration or environment bug.
+pub(super) fn generate(
+    output_target: &Path,
+    version_prefix: &str,
+    routes: &[RouteBinding],
+    exported_types: &[PayloadSource],
+) {
+    let output_file = output_target.join(format!("{}.ts", version_prefix.trim_start_matches('/')));
+
     #[expect(
         clippy::expect_used,
-        reason = "an uncreatable bindings directory is a fatal generator failure"
+        reason = "an uncreatable output directory is a fatal generator failure"
     )]
-    fs::create_dir_all(out_dir).expect("creating the bindings directory must succeed");
+    fs::create_dir_all(output_target).expect("creating the output directory must succeed");
 
     // Management payloads ride JSON, whose numbers are IEEE-754 doubles, and
     // every management identifier stays far below the 2^53 precision
     // boundary — so 64-bit identifiers render as `number`, not `bigint`.
-    let config = Config::new().with_large_int("number").with_out_dir(out_dir);
+    let config = Config::new().with_large_int("number");
 
-    let mut routes = Vec::new();
-    let mut exported = HashSet::new();
+    let mut collected = Vec::new();
+    let mut declarations: HashMap<TypeId, ClosureType> = HashMap::new();
     let mut names: HashMap<String, TypeId> = HashMap::new();
 
-    for binding in MANAGEMENT_API_ROUTES.iter() {
+    for source in exported_types {
+        collect_payload(&(source)(&config), &mut names, &mut declarations);
+    }
+
+    for binding in routes {
         let request = (binding.request)(&config);
         let response = (binding.response)(&config);
 
-        for payload in [&request, &response] {
-            register_type_names(&mut names, &payload.closure);
+        collect_payload(&request, &mut names, &mut declarations);
+        collect_payload(&response, &mut names, &mut declarations);
 
-            if exported.insert(payload.root.0) {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "a bindings export failure is a fatal generator failure"
-                )]
-                (payload.export_all)(&config)
-                    .expect("exporting a management payload type must succeed");
-            }
-        }
-
-        routes.push(CollectedRoute {
+        collected.push(CollectedRoute {
             method: (binding.method)().as_str().to_owned(),
             path: binding.path,
             request_ident: request.root.1,
@@ -82,19 +89,42 @@ pub fn generate_typescript_bindings(out_dir: &Path) {
         });
     }
 
-    routes.sort_by(|previous, next| {
+    collected.sort_by(|previous, next| {
         (previous.path, &previous.method).cmp(&(next.path, &next.method))
     });
 
-    reject_duplicate_routes(&routes);
+    reject_duplicate_routes(&collected);
 
-    let rendered = render_routes_file(&routes);
+    // Registry iteration order is unspecified, so the declarations are
+    // deduplicated into a map and ordered by name before rendering; the same
+    // input always renders the same bytes.
+    let mut ordered: Vec<ClosureType> = declarations.into_values().collect();
+    ordered.sort_by(|previous, next| previous.ident.cmp(&next.ident));
+
+    let rendered = render_version_file(&config, &ordered, &collected);
 
     #[expect(
         clippy::expect_used,
-        reason = "an unwritable routes file is a fatal generator failure"
+        reason = "an unwritable bindings file is a fatal generator failure"
     )]
-    fs::write(out_dir.join("routes.ts"), rendered).expect("writing the routes file must succeed");
+    fs::write(output_file, rendered).expect("writing the bindings file must succeed");
+}
+
+/// Registers one payload type's closure — the type plus every type it
+/// transitively references — in the version's declaration set, exactly once
+/// per Rust type, rejecting TypeScript name collisions along the way.
+fn collect_payload(
+    payload: &PayloadBinding,
+    names: &mut HashMap<String, TypeId>,
+    declarations: &mut HashMap<TypeId, ClosureType>,
+) {
+    register_type_names(names, &payload.closure);
+
+    for closure_type in &payload.closure {
+        declarations
+            .entry(closure_type.type_id)
+            .or_insert_with(|| closure_type.clone());
+    }
 }
 
 /// Records every closure type's TypeScript name, rejecting a name claimed by
@@ -108,15 +138,18 @@ pub fn generate_typescript_bindings(out_dir: &Path) {
     clippy::panic,
     reason = "a type-name collision is a fatal route-declaration bug"
 )]
-fn register_type_names(names: &mut HashMap<String, TypeId>, closure: &[(TypeId, String)]) {
-    for (type_id, ident) in closure {
-        if let Some(existing) = names.get(ident)
-            && *existing != *type_id
+fn register_type_names(names: &mut HashMap<String, TypeId>, closure: &[ClosureType]) {
+    for closure_type in closure {
+        if let Some(existing) = names.get(&closure_type.ident)
+            && *existing != closure_type.type_id
         {
-            panic!("two distinct management payload types share the TypeScript name `{ident}`");
+            panic!(
+                "two distinct management payload types share the TypeScript name `{}`",
+                closure_type.ident
+            );
         }
 
-        names.insert(ident.clone(), *type_id);
+        names.insert(closure_type.ident.clone(), closure_type.type_id);
     }
 }
 
@@ -145,28 +178,37 @@ fn reject_duplicate_routes(routes: &[CollectedRoute]) {
     }
 }
 
-/// Renders the `routes.ts` route table: sorted imports, the route object
-/// grouped by path, and the lookup helpers over it.
-fn render_routes_file(routes: &[CollectedRoute]) -> String {
-    let mut imports: Vec<&str> = routes
-        .iter()
-        .flat_map(|route| [route.request_ident.as_str(), route.response_ident.as_str()])
-        .collect();
-    imports.sort_unstable();
-    imports.dedup();
-
+/// Renders one version's whole bindings file: the generated-by header, the
+/// payload type declarations ordered by name, and the route table over them.
+fn render_version_file(
+    config: &Config,
+    declarations: &[ClosureType],
+    routes: &[CollectedRoute],
+) -> String {
     let mut rendered = String::from(concat!(
         "// Generated by `cargo run --bin generate-management-api-typescript-bindings \\\n",
         "//     --features management-api-typescript-bindings -- <output-directory>`.\\\n",
         "// Do not edit.\n",
-        "\n",
     ));
 
-    for ident in imports {
-        rendered.push_str(&format!("import type {{ {ident} }} from \"./{ident}\";\n"));
+    for closure_type in declarations {
+        rendered.push('\n');
+        rendered.push_str(&(closure_type.declaration)(config));
+        rendered.push('\n');
     }
 
-    rendered.push_str("\nexport type Routes = {\n");
+    rendered.push('\n');
+    rendered.push_str(&render_route_table(routes));
+    rendered.push('\n');
+
+    rendered
+}
+
+/// Renders the route table: the `Routes` object grouped by path, and the
+/// lookup helpers over it. Every payload type the table references is declared
+/// earlier in the same file, so no imports are needed.
+fn render_route_table(routes: &[CollectedRoute]) -> String {
+    let mut rendered = String::from("export type Routes = {\n");
 
     let mut previous_path: Option<&str> = None;
 
@@ -188,6 +230,9 @@ fn render_routes_file(routes: &[CollectedRoute]) -> String {
 
     rendered.push_str("  };\n};\n");
 
+    // Through generic indexed accesses TypeScript cannot resolve
+    // `Routes[P][M]["request"]` (TS2536 under strict), so the lookup helpers
+    // extract the fields through conditional `infer` instead.
     rendered.push_str(concat!(
         "\n",
         "export type Path = keyof Routes;\n",
@@ -195,10 +240,10 @@ fn render_routes_file(routes: &[CollectedRoute]) -> String {
         "export type Method<P extends Path> = keyof Routes[P];\n",
         "\n",
         "export type Request<P extends Path, M extends Method<P>> =\n",
-        "  Routes[P][M][\"request\"];\n",
+        "  Routes[P][M] extends { request: infer Request } ? Request : never;\n",
         "\n",
         "export type Response<P extends Path, M extends Method<P>> =\n",
-        "  Routes[P][M][\"response\"];\n",
+        "  Routes[P][M] extends { response: infer Response } ? Response : never;",
     ));
 
     rendered
@@ -207,7 +252,7 @@ fn render_routes_file(routes: &[CollectedRoute]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::management_api::route;
+    use crate::management_api::{route::payload_binding, v0, v0::route};
     use std::path::PathBuf;
 
     route! {
@@ -252,8 +297,8 @@ mod tests {
         levels: Vec<crate::ir::IrReasoningEffort>,
     }
 
-    /// A per-run output directory, removed first so every run starts empty.
-    fn fresh_output_directory() -> PathBuf {
+    /// A per-run output target, removed first so every run starts empty.
+    fn fresh_output_target() -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
             "janusgate-management-api-bindings-{}",
             std::process::id()
@@ -264,31 +309,54 @@ mod tests {
         directory
     }
 
-    /// Verifies that generation is deterministic across runs, ordered by
-    /// path, renders both payloads for every route — the empty request type
-    /// included — and exports one file per wire type, the nested
-    /// reasoning-effort enum included.
+    /// Verifies that generation is deterministic across runs, that it renders
+    /// exactly one file — `v0.ts`, named after the version segment, directly
+    /// in the output target — holding everything: every wire type's
+    /// declaration inline (the nested reasoning-effort enum and the error body
+    /// with its errno taxonomy included, the empty request type's too) plus
+    /// the route table, ordered by path, referencing the types declared above
+    /// it with no imports. The route table keys are the routes' paths within
+    /// the version, version prefix excluded — the file name is what carries
+    /// the version.
     ///
     /// # Panics
     ///
-    /// Panics if either run fails or the two runs render different bytes.
+    /// Panics if either run fails, the two runs render different bytes, or
+    /// the output diverges from the single-file shape.
     #[test]
-    fn generates_deterministic_ordered_bindings() {
-        let directory = fresh_output_directory();
+    fn generates_deterministic_single_file_bindings() {
+        let target = fresh_output_target();
 
-        generate_typescript_bindings(&directory);
-
-        #[expect(clippy::expect_used, reason = "the generator just wrote the file")]
-        let first = fs::read_to_string(directory.join("routes.ts"))
-            .expect("routes.ts exists after generation");
-
-        generate_typescript_bindings(&directory);
+        generate(&target, v0::PREFIX, &v0::ROUTES, v0::EXPORTED_TYPES);
 
         #[expect(clippy::expect_used, reason = "the generator just wrote the file")]
-        let second = fs::read_to_string(directory.join("routes.ts"))
-            .expect("routes.ts exists after regeneration");
+        let first =
+            fs::read_to_string(target.join("v0.ts")).expect("v0.ts exists after generation");
+
+        generate(&target, v0::PREFIX, &v0::ROUTES, v0::EXPORTED_TYPES);
+
+        #[expect(clippy::expect_used, reason = "the generator just wrote the file")]
+        let second =
+            fs::read_to_string(target.join("v0.ts")).expect("v0.ts exists after regeneration");
 
         assert_eq!(first, second, "generation must be deterministic");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the generator just wrote into the target"
+        )]
+        let mut entries: Vec<String> = fs::read_dir(&target)
+            .expect("the output target is readable")
+            .map(|entry| {
+                #[expect(clippy::expect_used, reason = "the directory was just written")]
+                let entry = entry.expect("every directory entry is readable");
+
+                entry.file_name().to_string_lossy().into_owned()
+            })
+            .collect();
+        entries.sort_unstable();
+
+        assert_eq!(entries, ["v0.ts"], "one version renders exactly one file");
 
         #[expect(
             clippy::expect_used,
@@ -312,11 +380,14 @@ mod tests {
         assert!(first.contains("response: BindingsTestAlphaResponse;"));
         assert!(first.contains("request: BindingsTestBetaRequest;"));
 
-        assert!(directory.join("BindingsTestAlphaRequest.ts").exists());
-        assert!(directory.join("BindingsTestBetaRequest.ts").exists());
-        assert!(directory.join("IrReasoningEffort.ts").exists());
+        assert!(first.contains("export type BindingsTestAlphaRequest"));
+        assert!(first.contains("export type BindingsTestBetaRequest"));
+        assert!(first.contains("export type IrReasoningEffort"));
+        assert!(first.contains("export type ErrorResponse"));
+        assert!(first.contains("export enum ErrorCode"));
+        assert!(!first.contains("import "), "a single file needs no imports");
 
-        let _ = fs::remove_dir_all(&directory);
+        let _ = fs::remove_dir_all(&target);
     }
 
     /// Verifies that a method-and-path collision between two routes is
@@ -346,14 +417,42 @@ mod tests {
     fn rejects_conflicting_type_names() {
         let mut names = HashMap::new();
 
-        register_type_names(&mut names, &[(TypeId::of::<u8>(), "Distinct".to_string())]);
+        register_type_names(&mut names, &[closure_type(TypeId::of::<u8>(), "Distinct")]);
 
-        register_type_names(&mut names, &[(TypeId::of::<u8>(), "Stable".to_string())]);
-        register_type_names(&mut names, &[(TypeId::of::<u8>(), "Stable".to_string())]);
+        register_type_names(&mut names, &[closure_type(TypeId::of::<u8>(), "Stable")]);
+        register_type_names(&mut names, &[closure_type(TypeId::of::<u8>(), "Stable")]);
 
-        register_type_names(&mut names, &[(TypeId::of::<u16>(), "Clashing".to_string())]);
+        register_type_names(&mut names, &[closure_type(TypeId::of::<u16>(), "Clashing")]);
 
-        register_type_names(&mut names, &[(TypeId::of::<u32>(), "Clashing".to_string())]);
+        register_type_names(&mut names, &[closure_type(TypeId::of::<u32>(), "Clashing")]);
+    }
+
+    /// Verifies that a payload type ts-rs cannot declare is rejected before it
+    /// reaches the route table, so an inline-only type — `()` above all — can
+    /// never stand in for an explicitly declared request or response payload
+    /// type; an empty concrete type is declarable and therefore allowed.
+    ///
+    /// # Panics
+    ///
+    /// Panics as designed, on the type that carries no declaration.
+    #[test]
+    #[should_panic(expected = "has no TypeScript declaration")]
+    fn rejects_undeclarable_payload_types() {
+        let _ = payload_binding::<()>(&Config::new());
+    }
+
+    /// Builds a minimal closure type for the checker tests; the declaration
+    /// renderer is never invoked there.
+    fn closure_type(type_id: TypeId, ident: &str) -> ClosureType {
+        fn declaration(_config: &Config) -> String {
+            String::new()
+        }
+
+        ClosureType {
+            type_id,
+            ident: ident.to_string(),
+            declaration,
+        }
     }
 
     /// Builds a minimal collected route for the checker tests.

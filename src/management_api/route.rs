@@ -1,20 +1,24 @@
 //! The management API route contract, the `route!` macro that declares every
 //! route in one place, and — under the `management-api-typescript-bindings`
-//! feature — the distributed registry the TypeScript bindings generator
-//! consumes. The server router reads the same [`Route`] constants, so a
-//! route's method, path, and payload types are written exactly once.
+//! feature — the binding machinery the TypeScript bindings generator consumes.
+//!
+//! Nothing here belongs to a version: a version module owns its route
+//! registry and wraps `route!` to bind that registry, while this module owns
+//! the contract and the expansion both share. The version routers read the
+//! same [`Route`] constants, so a route's method, path, and payload types are
+//! written exactly once.
 
-/// The contract of one management API route: the HTTP method and sub-router
-/// path it is served at, and the concrete wire payload types it exchanges.
-/// Every request and response payload is a named type unique across the
-/// management API; a route that carries no request body declares an empty
-/// request struct. Routes are declared through the crate's `route!` macro,
-/// never by hand.
+/// The contract of one management API route: the HTTP method and path it is
+/// served at, and the concrete wire payload types it exchanges. Every request
+/// and response payload is a named type unique across its version; a route
+/// that carries no request body declares an empty request struct. Routes are
+/// declared through their version's `route!` macro, never by hand.
 pub trait Route {
     /// HTTP method the route answers.
     const METHOD: http::Method;
 
-    /// Path within the `/management-api` sub-router.
+    /// Path within the version's sub-router, such as `/list-providers`; the
+    /// version prefix is not part of it.
     const PATH: &'static str;
 
     /// Request body type; an empty struct when the route carries no request
@@ -28,7 +32,23 @@ pub trait Route {
 #[cfg(feature = "management-api-typescript-bindings")]
 use std::{any::TypeId, collections::HashSet};
 #[cfg(feature = "management-api-typescript-bindings")]
-use ts_rs::{Config, Dependency, ExportError, TS, TypeVisitor};
+use ts_rs::{Config, Dependency, TS, TypeVisitor};
+
+/// One type of a payload's transitive closure as the bindings generator sees
+/// it: identity, TypeScript identifier, and the renderer of its declaration.
+#[cfg(feature = "management-api-typescript-bindings")]
+#[derive(Clone)]
+pub(super) struct ClosureType {
+    /// Identity of the Rust type.
+    pub(crate) type_id: TypeId,
+
+    /// TypeScript identifier of the type.
+    pub(crate) ident: String,
+
+    /// Renders the type's declaration — doc comment included — as it appears
+    /// in the version's single bindings file.
+    pub(crate) declaration: fn(&Config) -> String,
+}
 
 /// ts-rs-backed description of one request or response payload type, produced
 /// lazily because `TypeId` and TypeScript identifiers are not computable in a
@@ -38,17 +58,13 @@ pub(super) struct PayloadBinding {
     /// Identity and TypeScript identifier of the payload type itself.
     pub(crate) root: (TypeId, String),
 
-    /// The payload type plus every type it transitively references, each as
-    /// its identity and TypeScript identifier; the walk mirrors the one
-    /// ts-rs's exporter performs, so a file is written for every entry.
-    pub(crate) closure: Vec<(TypeId, String)>,
-
-    /// Recursively exports the payload type and its dependencies into the
-    /// generator's output directory.
-    pub(crate) export_all: fn(&Config) -> Result<(), ExportError>,
+    /// The payload type plus every type it transitively references; the walk
+    /// mirrors the one ts-rs's exporter performs, so every entry's declaration
+    /// is rendered into the version's bindings file.
+    pub(crate) closure: Vec<ClosureType>,
 }
 
-/// One route's registration in [`MANAGEMENT_API_ROUTES`], holding function
+/// One route's registration in its version's registry, holding function
 /// pointers because a distributed-slice entry must be a static initializer
 /// and none of the ts-rs values are const-computable.
 #[cfg(feature = "management-api-typescript-bindings")]
@@ -56,7 +72,7 @@ pub(super) struct RouteBinding {
     /// HTTP method the route answers.
     pub(crate) method: fn() -> http::Method,
 
-    /// Path within the `/management-api` sub-router.
+    /// Path within its version's sub-router.
     pub(crate) path: &'static str,
 
     /// Request payload binding.
@@ -66,11 +82,10 @@ pub(super) struct RouteBinding {
     pub(crate) response: fn(&Config) -> PayloadBinding,
 }
 
-/// Every declared management API route, collected link-time; iteration order
-/// is unspecified, so the generator sorts before rendering.
+/// One payload type a version's bindings export besides its route payloads,
+/// such as its error body; instantiated as `payload_binding::<T>`.
 #[cfg(feature = "management-api-typescript-bindings")]
-#[linkme::distributed_slice]
-pub(super) static MANAGEMENT_API_ROUTES: [RouteBinding];
+pub(super) type PayloadSource = fn(&Config) -> PayloadBinding;
 
 /// Provides the route's method as an owned value.
 #[cfg(feature = "management-api-typescript-bindings")]
@@ -97,28 +112,60 @@ where
 }
 
 /// Builds the ts-rs-backed description of one payload type.
+///
+/// # Panics
+///
+/// Panics when the type carries no TypeScript declaration of its own, such as
+/// `()`; every route payload is a declared concrete type, so such a type is a
+/// fatal route-declaration bug.
 #[cfg(feature = "management-api-typescript-bindings")]
-fn payload_binding<T: TS + 'static>(config: &Config) -> PayloadBinding {
+pub(super) fn payload_binding<T: TS + 'static>(config: &Config) -> PayloadBinding {
+    require_declared_payload::<T>(config);
+
     PayloadBinding {
         root: (TypeId::of::<T>(), T::ident(config)),
         closure: type_closure::<T>(config),
-        export_all: T::export_all,
+    }
+}
+
+/// Requires a payload type to be declarable: a named concrete type ts-rs
+/// renders a declaration for, an empty struct included. An inline-only type —
+/// `()` above all, which every route contract forbids as a payload — has no
+/// declaration and could only be referenced by the route table as an inline
+/// TypeScript spelling, so it is rejected here instead of rendering broken
+/// bindings.
+///
+/// # Panics
+///
+/// Panics naming the Rust type when ts-rs reports no declaration for it.
+#[cfg(feature = "management-api-typescript-bindings")]
+#[expect(
+    clippy::panic,
+    reason = "an undeclarable payload type is a fatal route-declaration bug"
+)]
+fn require_declared_payload<T: TS + 'static>(config: &Config) {
+    if Dependency::from_ty::<T>(config).is_none() {
+        panic!(
+            "management payload type `{}` has no TypeScript declaration; \
+             every route declares a concrete request and response type",
+            std::any::type_name::<T>(),
+        );
     }
 }
 
 /// Collects `T` and every transitively referenced exportable type, as
-/// identities paired with TypeScript identifiers.
+/// identities paired with TypeScript identifiers and declaration renderers.
 #[cfg(feature = "management-api-typescript-bindings")]
-fn type_closure<T: TS + 'static>(config: &Config) -> Vec<(TypeId, String)> {
+fn type_closure<T: TS + 'static>(config: &Config) -> Vec<ClosureType> {
     struct Walk<'a> {
         config: &'a Config,
         seen: HashSet<TypeId>,
-        visited: Vec<(TypeId, String)>,
+        visited: Vec<ClosureType>,
     }
 
     impl TypeVisitor for Walk<'_> {
         fn visit<T: TS + 'static + ?Sized>(&mut self) {
-            // Inline-only types such as primitives carry no file or name of
+            // Inline-only types such as primitives carry no declaration of
             // their own, so they cannot participate in a name collision.
             if Dependency::from_ty::<T>(self.config).is_none()
                 || !self.seen.insert(TypeId::of::<T>())
@@ -126,8 +173,11 @@ fn type_closure<T: TS + 'static>(config: &Config) -> Vec<(TypeId, String)> {
                 return;
             }
 
-            self.visited
-                .push((TypeId::of::<T>(), T::ident(self.config)));
+            self.visited.push(ClosureType {
+                type_id: TypeId::of::<T>(),
+                ident: T::ident(self.config),
+                declaration: declaration::<T>(),
+            });
 
             T::visit_dependencies(self);
         }
@@ -144,12 +194,34 @@ fn type_closure<T: TS + 'static>(config: &Config) -> Vec<(TypeId, String)> {
     walk.visited
 }
 
+/// Builds the renderer of one closure type's declaration: the doc comment
+/// followed by the `export`-prefixed declaration, exactly as ts-rs writes it
+/// into a per-type file, minus the per-file scaffolding — note header and
+/// imports — that the version's single bindings file replaces.
+#[cfg(feature = "management-api-typescript-bindings")]
+fn declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
+    fn render<T: TS + 'static + ?Sized>(config: &Config) -> String {
+        let mut rendered = T::docs().unwrap_or_default();
+
+        rendered.push_str("export ");
+        rendered.push_str(&T::decl(config));
+
+        rendered
+    }
+
+    render::<T>
+}
+
 /// Declares one management API route: a marker type carrying its [`Route`]
 /// implementation and — under the `management-api-typescript-bindings`
-/// feature — its registration in [`MANAGEMENT_API_ROUTES`]. The marker type
-/// is generated, exists only at the type level, and is named by `$route`.
+/// feature — its registration in `$registry`, the declaring version's route
+/// slice. The marker type is generated, exists only at the type level, and is
+/// named by `$route`.
+///
+/// A version wraps this macro to bind its own registry, so a route
+/// declaration names neither the registry nor the version.
 macro_rules! route {
-    ($vis:vis impl Route for $route:ident {
+    ($registry:path; $vis:vis impl Route for $route:ident {
         const METHOD: http::Method = $method:expr;
         const PATH: &'static str = $path:expr;
         type Request = $request:ty;
@@ -163,13 +235,13 @@ macro_rules! route {
         )]
         $vis struct $route {}
 
-        #[doc = concat!("Registers the `", $path, "` route in the bindings registry.")]
+        #[doc = concat!("Registers the `", $path, "` route in the version's registry.")]
         #[expect(
             non_upper_case_globals,
             reason = "the binding static is named after its route marker type"
         )]
         #[cfg(feature = "management-api-typescript-bindings")]
-        #[linkme::distributed_slice($crate::management_api::route::MANAGEMENT_API_ROUTES)]
+        #[linkme::distributed_slice($registry)]
         static $route: $crate::management_api::route::RouteBinding =
             $crate::management_api::route::RouteBinding {
                 method: $crate::management_api::route::route_method::<$route>,
@@ -182,7 +254,7 @@ macro_rules! route {
             #[doc = "HTTP method the route answers."]
             const METHOD: ::http::Method = $method;
 
-            #[doc = concat!("Path `", $path, "` within the `/management-api` sub-router.")]
+            #[doc = concat!("Path `", $path, "` within the version's sub-router.")]
             const PATH: &'static str = $path;
 
             #[doc = "Request body type; empty when the route carries no body."]

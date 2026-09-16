@@ -6,7 +6,7 @@
 
 ## 1. Overview & Scope
 
-**JanusGate** is a self-hosted, lightweight AI gateway written in Rust. It exposes an OpenAI-compatible API (`/api/openai-v1`) backed by heterogeneous upstream accounts, managed via a management JSON API (`/management-api/*`).
+**JanusGate** is a self-hosted, lightweight AI gateway written in Rust. It exposes an OpenAI-compatible API (`/api/openai-v1`) backed by heterogeneous upstream accounts, managed via a versioned management JSON API (`/management-api/v0/*`).
 
 ### Provider Types
 
@@ -23,7 +23,7 @@
 
 ### Design Principles & Non-Goals
 - **Stateless execution**: Zero persistence of prompts, completions, tokens, or usage metrics.
-- **Headless admin**: No frontend SPA. Administration is conducted exclusively through `/management-api/*` JSON endpoints.
+- **Headless admin**: No frontend SPA. Administration is conducted exclusively through `/management-api/v0/*` JSON endpoints.
 - **Strict model passthrough**: Zero automatic or hardcoded model mapping. Upstream calls pass the exact model identifiers yielded by upstream model discovery (`upstream_id`), even for OAuth providers.
 - **Excluded**: Multi-tenancy, dynamic pooling/load balancing, automatic provider fallback, automatic model mapping/aliasing, prompt caching, request logging, billing/rate-limiting, outbound proxying.
 
@@ -57,24 +57,23 @@
                │ (invokes Router as tower::Service)
                ▼
       ┌─────────────────┐
-      │   Root Router   │  (Fallback: empty 404)
+      │   Root Router   │  (404: empty)
       └───┬─────────┬───┘
           │         │
           │         └──────────────────────────────────┐
           ▼                                            ▼
 ┌───────────────────┐                        ┌───────────────────┐
 │ Management API Rtr│ (/management-api/*)    │    API Router     │ (/api/*)
-│ (Management Auth) │                        │ (No fallback)     │
-│ (Fallback: 404    │                        └─────────┬─────────┘
-│   errno JSON)     │                                  │
-└───────────────────┘                                  │
-                                                       ▼
-                                             ┌───────────────────┐
-                                             │ Format Sub-router │ (/openai-v1/*)
-                                             │ (Format Auth)     │
-                                             │ (Fallback: OpenAI │
-                                             │   404 JSON)       │
-                                             └───────────────────┘
+│ (CORS)            │                        │ (CORS)            │
+│ (No fallback)     │                        │ (No fallback)     │
+└─────────┬─────────┘                        └─────────┬─────────┘
+          │                                            │
+          ▼                                            ▼
+┌───────────────────┐                        ┌───────────────────┐
+│  Mgmt API v0 Rtr  │ (/management-api/v0/*) │ Format Sub-router │ (/openai-v1/*)
+│ (Management Auth) │                        │ (Format Auth)     │
+│ (404: errno JSON) │                        │ (404: OpenAI JSON)│
+└───────────────────┘                        └───────────────────┘
 ```
 
 The server architecture separates low-level connection driving from hierarchical routing:
@@ -88,22 +87,27 @@ The server architecture separates low-level connection driving from hierarchical
      - Nests `/management-api` and `/api` sub-routers.
      - Maintains its own top-level fallback route returning an empty HTTP 404 response for any unmapped root paths.
    - **Management API Sub-router (`/management-api`)**:
-     - Scoped to management endpoints (`/list-providers`, `/save-provider`, etc.).
-     - Wrapped with management authentication middleware (`Authorization: <token>`).
-     - Maintains its own fallback route returning a management-specific 404 JSON error response.
+     - Parent router for every management API version.
+     - Nests the version sub-routers (`/v0`) and applies the management CORS policy (`management_api.cors`).
+     - Defines no route of its own: unmapped paths outside every version are answered with the same empty 404 the root router renders (§2.2).
+   - **Management API Version Sub-routers (e.g. `/v0`)**:
+     - Scoped to that version's management endpoints (`/list-providers`, `/save-provider`, etc.) and owning that version's payloads and error taxonomy.
+     - Wrapped with management authentication middleware (`Authorization: <token>`) and the management body limit.
+     - Answers unmapped paths beneath the version prefix with that version's errno-shaped 404 JSON error response (§7).
    - **API Sub-router (`/api`)**:
      - Parent router for all external gateway protocols.
      - Nests isolated format sub-routers (e.g. `/openai-v1`).
-     - Defines no fallback of its own: unmapped paths under `/api` propagate upward to the root router's empty 404.
+     - Defines no route of its own: unmapped paths outside every format are answered with the same empty 404 the root router renders (§2.2).
    - **Format-Specific Sub-routers (e.g. `/openai-v1`)**:
      - Scoped to that protocol's endpoints (`/chat/completions`, `/responses`, `/models`).
      - Wrapped with format-specific authentication middleware (e.g. `Authorization: Bearer <key>`).
-     - Maintains its own fallback route returning format-compliant 404 error payloads (e.g. OpenAI JSON error structure: `{"error": {"message": "Invalid URL", "type": "invalid_request_error", "code": null}}`).
-3. **Independent 404 Fallback Routes**:
-   - Exactly three fallback handlers exist, one per routing domain: the root router answers unmapped paths with an empty 404, the management API sub-router answers with its errno error JSON (§7), and the `/openai-v1` format sub-router answers with the OpenAI error JSON. The `/api` parent router defines none, delegating its unmatched paths to the root router.
+     - Answers unmapped paths beneath the format prefix with format-compliant 404 error payloads (e.g. OpenAI JSON error structure: `{"error": {"message": "Invalid URL", "type": "invalid_request_error", "code": null}}`).
+3. **Independent 404 Responses**:
+   - Each routing domain answers its own unmapped paths: the root router with an empty 404, the management API v0 version sub-router with version 0's errno error JSON (§7), and the `/openai-v1` format sub-router with the OpenAI error JSON. The `/api` and `/management-api` parent routers own no route, so their unmatched paths reach the same empty 404.
+   - That empty 404 is one shared handler: the root router declares it, and the two parent routers declare that same handler as their own fallback instead of inheriting it. axum 0.8 discards a nested router's fallback — together with every fallback collected from routers nested below it — when the router being nested declares none of its own (tokio-rs/axum#3138; axum 0.9 fixes the propagation through tokio-rs/axum#3158), so without the parents' declaration the sub-routers' 404s below them would never run. The parent declarations are marked `TODO(axum 0.9)` and disappear with that release; the observable behavior is identical either way, because all three name the same handler.
 4. **Method Mismatch on Routed Paths**:
-   - A request whose method is not registered on an otherwise-matching routed path (e.g. `GET /api/openai-v1/chat/completions`) never reaches the 404 fallbacks: axum's method routing answers HTTP 405 with an empty body and an `Allow` header listing the registered methods.
-   - This 405 is distinct from the 404 fallbacks above, which serve only unmapped paths; the router-level authentication middleware still applies, so an unauthorized request is rejected with 401 before the 405 is produced.
+   - A request whose method is not registered on an otherwise-matching routed path never reaches the 404 responses: axum's method routing answers HTTP 405 with an `Allow` header listing the registered methods. Within a management API version sub-router that 405 renders the version's error body (errno 8 `method_not_allowed`); the outward `/openai-v1` format sub-router answers it with an empty body.
+   - This 405 is distinct from the 404 responses above, which serve only unmapped paths; the router-level authentication middleware still applies, so an unauthorized request is rejected with 401 before the 405 is produced.
 
 **Fail-fast panics are contractual**: the process installs a panic hook before any other startup operation that prints the panic diagnostic to stderr and terminates the process with exit code 1, so a panic in any spawned task — accepted-connection or request-pipeline — kills the whole gateway by design instead of leaving a partially operational server behind.
 
@@ -160,13 +164,13 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 
 1. **Inbound Authentication**:
    - Authentication is format-specific and enforced at the router layer via Tower middleware before requests reach endpoint handlers:
-     - **Management Sub-router (`/management-api/*`)**: Uses management authentication middleware applied to the `/management-api` sub-router. Requires `Authorization: <token>` without any `Bearer` prefix, matching `management_api.token` in configuration.
-     - **Outward API Sub-router (`/api`)**: Performs no authentication itself and defines no fallback of its own; it only nests the format sub-routers, delegating its unmatched paths to the root router's empty 404 (§2.2). Each format-specific sub-router enforces authentication and protocol-compliant header parsing independently — the `/openai-v1` sub-router validates client requests against the shared gateway API key, matching `api.key` in configuration, via `Authorization: Bearer <key>` conforming to the OpenAI specification. The `Bearer` scheme is compared case-insensitively (RFC 9110 §11.1) while the key itself is compared byte-exactly; malformed header forms (missing space, tab separator, glued scheme, leading whitespace, trailing content) are rejected.
+     - **Management Version Sub-router (`/management-api/v0/*`)**: Uses management authentication middleware applied to the version sub-router. Requires `Authorization: <token>` without any `Bearer` prefix, matching `management_api.token` in configuration.
+     - **Outward API Sub-router (`/api`)**: Performs no authentication itself and owns no route; it nests the format sub-routers and answers its unmatched paths with the same empty 404 the root router renders (§2.2). Each format-specific sub-router enforces authentication and protocol-compliant header parsing independently — the `/openai-v1` sub-router validates client requests against the shared gateway API key, matching `api.key` in configuration, via `Authorization: Bearer <key>` conforming to the OpenAI specification. The `Bearer` scheme is compared case-insensitively (RFC 9110 §11.1) while the key itself is compared byte-exactly; malformed header forms (missing space, tab separator, glued scheme, leading whitespace, trailing content) are rejected.
    - All token comparisons use constant-time byte comparison. Mismatch yields HTTP 401.
    - Error response bodies are router-domain specific:
      - Root router: plain HTTP 404 with an empty body.
-     - Management API: `{"error": {"code": <numeric errno>, "message": <human-readable message>}}`; the closed errno taxonomy and each errno's pinned HTTP status are defined in §7.
-     - Outward API (`/openai-v1` format fallback): OpenAI JSON error structure `{"error": {"message": ..., "type": ..., "param": null, "code": ...}}`; the fallback returns `type: "invalid_request_error"`, `code: null` and `message: "Invalid URL (<METHOD> <path>)"` with HTTP 404.
+     - Management API version sub-router (`/management-api/v0/*`): `{"errno": <numeric errno>, "message": <human-readable message>}`; the closed errno taxonomy and each errno's pinned HTTP status are defined in §7. An unmapped path outside every management API version reaches no version's 404 response and is answered with the shared empty 404 (§2.2).
+     - Outward API (`/openai-v1` format 404): OpenAI JSON error structure `{"error": {"message": ..., "type": ..., "param": null, "code": ...}}`; the 404 response carries `type: "invalid_request_error"`, `code: null` and `message: "Invalid URL (<METHOD> <path>)"` with HTTP 404.
 2. **Plaintext Credential Storage**:
    - Upstream credentials and tokens are stored directly in plaintext JSON within the database. No encryption or decryption is performed.
 3. **Network Invariants**:
@@ -372,11 +376,13 @@ Error payloads for the `/responses` endpoint use the same OpenAI error JSON stru
 
 ---
 
-## 7. Management API (`/management-api/*`)
+## 7. Management API (`/management-api/v0/*`)
 
-All management routes are registered under the `/management-api` sub-router with its own 404 fallback handler and require authorization via `Authorization: <token>` (without any `Bearer` prefix).
+The management API is versioned. Every version owns its routes, wire payloads, error taxonomy, and bindings, while the route contract, the `route!` declaration macro, and the bindings generator are shared by every version; the management API router mounts each version under its own prefix — currently `/management-api/v0`. Version 0's routes require authorization via `Authorization: <token>` (without any `Bearer` prefix) and are served by the version sub-router, which owns the version's errno-shaped 404 response; an unmapped path outside every version reaches no version's 404 response and is answered with the shared empty 404 (§2.2).
 
-Responses are JSON. Success responses use HTTP 200; errors use the structure from §4: `{"error": {"code": <errno>, "message": <human-readable message>}}`. The `code` is a numeric errno from a closed taxonomy, and each errno pins exactly one HTTP status — the two can never drift apart:
+Every route declares its method, path, request payload type, and response payload type exactly once, next to its handler. Both payload types are concrete named types: a route that carries no request body declares an empty request type, and an inline-only type (such as `()`) is never a payload type. The bindings' route table (§7.3) is generated from these declarations.
+
+Responses are JSON. Success responses use HTTP 200; errors use the structure from §4: `{"errno": <errno>, "message": <human-readable message>}`. Each version defines its own error taxonomy; the `errno` field is a numeric code from version 0's closed taxonomy, and each errno pins exactly one HTTP status — the two can never drift apart:
 
 | errno | Category | HTTP Status |
 | :--- | :--- | :--- |
@@ -386,21 +392,26 @@ Responses are JSON. Success responses use HTTP 200; errors use the structure fro
 | 4 | `conflict` — the request collides with existing state | 409 |
 | 5 | `upstream_error` — upstream provider failed or was unreachable | 502 |
 | 6 | `internal` — gateway failure | 500 |
+| 7 | `payload_too_large` — the request body exceeds the management body limit | 413 |
+| 8 | `method_not_allowed` — the method is not registered on the addressed path | 405 |
+| 9 | `unsupported_media_type` — the request body's content type is not JSON | 415 |
 
-The rest of this document names management errors by category and HTTP status (e.g. 404 `not_found`). Upstream failures on management endpoints always render errno 5 with HTTP 502 and the upstream status embedded in the message; a foreign upstream status is never forwarded verbatim. The outward OpenAI error taxonomy (§6.7) is an entirely separate error domain, with its own error type, and is never rendered on a management route.
+Request bodies are parsed strictly as JSON and must carry the `Content-Type: application/json` header; a body-carrying request without it is rejected with errno 9. Every failure inside the management API version router renders this body — a rejected field, a malformed JSON body, an oversized body, a wrong body content type, an unmatched method, an unmapped path, a storage or upstream failure — so no response shaped by axum itself ever escapes the version's error domain.
+
+The rest of this document names management errors by category and HTTP status (e.g. 404 `not_found`). Upstream failures on management endpoints always render errno 5 with HTTP 502 and the upstream status embedded in the message; a foreign upstream status is never forwarded verbatim. Failures whose cause is internal — engine failures, constraint details, lease failures, stored drift (errno 6, and constraint-violation 409s) — render their category's fixed message, so the cause is recorded in the log record and never reaches the caller. The outward OpenAI error taxonomy (§6.7) is an entirely separate error domain, with its own error type, and is never rendered on a management route.
 
 One strictness rule applies uniformly to every management request body: **names are non-empty**. Every request field naming an entity — the `name` a provider is created with, `upstream_id`, and `id_override` when present — must be a non-empty string; an empty name is rejected with 400 naming the field instead of falling through to a 404 lookup miss. Name content is the caller's choice and is never validated further. `providers.name` additionally carries a `CHECK (name <> '')` constraint, so the empty string is a storage-level violation (§3). Existing providers are addressed exclusively by their `id`; an unknown id is rejected with 404.
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
-| `GET` | `/management-api/list-providers` | List all configured providers and their status |
-| `POST` | `/management-api/save-provider` | Create or update a provider |
-| `POST` | `/management-api/delete-provider` | Delete a provider and its models |
-| `POST` | `/management-api/start-provider-oauth` | Generate OAuth authorize URL and PKCE state |
-| `POST` | `/management-api/complete-provider-oauth` | Exchange auth code for tokens and save provider |
-| `POST` | `/management-api/discover-models` | Refresh available models from upstream |
-| `GET` | `/management-api/list-models` | List all routed models and their overrides |
-| `POST` | `/management-api/save-model` | Update model configuration (id, is_enabled, thinking levels) |
+| `GET` | `/management-api/v0/list-providers` | List all configured providers and their status |
+| `POST` | `/management-api/v0/save-provider` | Create or update a provider |
+| `POST` | `/management-api/v0/delete-provider` | Delete a provider and its models |
+| `POST` | `/management-api/v0/start-provider-oauth` | Generate OAuth authorize URL and PKCE state |
+| `POST` | `/management-api/v0/complete-provider-oauth` | Exchange auth code for tokens and save provider |
+| `POST` | `/management-api/v0/discover-models` | Refresh available models from upstream |
+| `GET` | `/management-api/v0/list-models` | List all routed models and their overrides |
+| `POST` | `/management-api/v0/save-model` | Update model configuration (id, is_enabled, thinking levels) |
 
 ### 7.1 Endpoint Contracts
 
@@ -428,6 +439,13 @@ One strictness rule applies uniformly to every management request body: **names 
 - OAuth state rows expire 10 minutes after creation; completion of an unknown, expired, or already-consumed state yields 404.
 - The state row is consumed by the first completion attempt that observes it — including attempts whose token exchange or project resolution then fails — so a failed exchange burns the state and a retry requires a fresh `start-provider-oauth`. A completion rejected before consumption (a mixed or incomplete completion form, a taken creation name, an unknown re-authorization id, or a provider-type mismatch — see §7.1) does not consume the state; it remains available to a matching completion.
 - A refreshed or exchanged token pair stores credentials JSON per §3 and sets `expires_at` to `now + expires_in`; when the token response omits `expires_in`, the `exp` claim of the access token JWT is used, falling back to 86400 seconds.
+
+### 7.3 TypeScript Bindings
+
+- The management API's wire surface is published as TypeScript bindings behind the `management-api-typescript-bindings` feature: `cargo run --bin generate-management-api-typescript-bindings --features management-api-typescript-bindings -- <output-directory>` renders every wire payload type declaration plus the route table into one file per version, directly in the output target.
+- Bindings are versioned with the routes they describe: each version's bindings are written into their own `<version>.ts` file in the output target (`<output-directory>/v0.ts`), and every route table key is the route's path within that version (`/list-providers`), so the file name — not the key — carries the version. One file holds everything a client of the version needs: the type declarations and the route table reference each other inside it, with no imports.
+- Each version also publishes the wire types it owns besides its route payloads: its error body (`ErrorResponse`, the flat `{errno, message}` object) and its errno taxonomy (`ErrorCode`), the latter as a numeric TypeScript enum whose values are the errno discriminants tabulated above.
+- The route table types the path, method, request, and response of every route (`Path`, `Method<P>`, `Request<P, M>`, `Response<P, M>`), so a client addresses a versioned route without restating it. Every route's declared request and response types are published, the empty request type of a body-less route included; a payload type with no declaration of its own is a fatal declaration error rather than a route table referencing a type the file never declares.
 
 ---
 
