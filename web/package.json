@@ -1,0 +1,29 @@
+{
+    "name": "janusgate-web",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "dependencies": {
+        "@solidjs/web": "^2.0.0-rc.6",
+        "solid-js": "^2.0.0-rc.6"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.12",
+        "@solidjs/vite-plugin": "^3.0.0-next.35",
+        "@tailwindcss/vite": "^4.3.3",
+        "jsdom": "^30.0.1",
+        "typescript": "^7.0.2",
+        "vite": "^8.2.2",
+        "vitest": "^4.1.11"
+    },
+    "scripts": {
+        "generate-bindings": "workdir=$(mktemp -d) && git clone --quiet --depth 1 --branch ${JANUSGATE_REF:-rust} https://github.com/EAimTY/janusgate.git $workdir/janusgate && rm -rf $PWD/src/management-api/generated && cargo run --locked --manifest-path $workdir/janusgate/Cargo.toml --bin generate-management-api-typescript-bindings --features management-api-typescript-bindings -- $PWD/src/management-api/generated; status=$?; rm -rf $workdir; exit $status",
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview",
+        "typecheck": "tsc --noEmit",
+        "check": "biome check && npm run typecheck",
+        "fix": "biome check --write --unsafe && npm run typecheck",
+        "test": "vitest run --passWithNoTests"
+    }
+}
