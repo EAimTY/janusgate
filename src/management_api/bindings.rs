@@ -10,7 +10,7 @@
 //! hands over that version's route registry, so every version's bindings are
 //! produced by the same code while their contents stay entirely separate.
 
-use super::route::{ClosureType, PayloadBinding, PayloadSource, RouteBinding};
+use super::route::{ClosureType, OrderedVocabulary, PayloadBinding, PayloadSource, RouteBinding};
 use std::{any::TypeId, collections::HashMap, fs, path::Path};
 use ts_rs::Config;
 
@@ -36,22 +36,25 @@ struct CollectedRoute {
 /// one shared target. The output is deterministic — routes are ordered by path
 /// and method, type declarations by name.
 ///
-/// `routes` supplies the version's route payloads, and `exported_types` the
-/// payload types it publishes besides them, such as its error body. Both are
-/// this version's alone: name collisions and duplicate routes are rejected per
-/// version.
+/// `routes` supplies the version's route payloads, `exported_types` the
+/// payload types it publishes besides them such as its error body, and
+/// `ordered_vocabularies` the closed vocabularies whose variant order it
+/// publishes. All three are this version's alone: name collisions and
+/// duplicate routes are rejected per version.
 ///
 /// # Panics
 ///
 /// Panics when `routes` holds two routes sharing one method and path, when two
-/// distinct payload types of the version share one TypeScript name, or when
-/// the filesystem fails; the generator is a first-party build tool and every
-/// failure is a fixable declaration or environment bug.
+/// distinct payload types of the version share one TypeScript name, when an
+/// ordered vocabulary's ts-rs declaration is not a unit-only enum's union, or
+/// when the filesystem fails; the generator is a first-party build tool and
+/// every failure is a fixable declaration or environment bug.
 pub(super) fn generate(
     output_target: &Path,
     version_prefix: &str,
     routes: &[RouteBinding],
     exported_types: &[PayloadSource],
+    ordered_vocabularies: &[OrderedVocabulary],
 ) {
     let output_file = output_target.join(format!("{}.ts", version_prefix.trim_start_matches('/')));
 
@@ -94,6 +97,18 @@ pub(super) fn generate(
     });
 
     reject_duplicate_routes(&collected);
+
+    // An ordered vocabulary replaces the union ts-rs collected for its type —
+    // or stands alone when no payload references it — with the variant-ordered
+    // const tuple and the union derived from it, so the version's file
+    // publishes membership and canonical order as one artifact.
+    for vocabulary in ordered_vocabularies {
+        let vocabulary = vocabulary(&config);
+
+        register_type_names(&mut names, std::slice::from_ref(&vocabulary));
+
+        declarations.insert(vocabulary.type_id, vocabulary);
+    }
 
     // Registry iteration order is unspecified, so the declarations are
     // deduplicated into a map and ordered by name before rendering; the same
@@ -252,7 +267,11 @@ fn render_route_table(routes: &[CollectedRoute]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::management_api::{route::payload_binding, v0, v0::route};
+    use crate::management_api::{
+        route::{ordered_vocabulary, payload_binding},
+        v0,
+        v0::route,
+    };
     use std::path::PathBuf;
 
     route! {
@@ -312,7 +331,8 @@ mod tests {
     /// Verifies that generation is deterministic across runs, that it renders
     /// exactly one file — `v0.ts`, named after the version segment, directly
     /// in the output target — holding everything: every wire type's
-    /// declaration inline (the nested reasoning-effort enum and the error body
+    /// declaration inline (the nested thinking-level vocabulary as its
+    /// ordered const tuple with the union derived from it, and the error body
     /// with its errno taxonomy included, the empty request type's too) plus
     /// the route table, ordered by path, referencing the types declared above
     /// it with no imports. The route table keys are the routes' paths within
@@ -327,13 +347,25 @@ mod tests {
     fn generates_deterministic_single_file_bindings() {
         let target = fresh_output_target();
 
-        generate(&target, v0::PREFIX, &v0::ROUTES, v0::EXPORTED_TYPES);
+        generate(
+            &target,
+            v0::PREFIX,
+            &v0::ROUTES,
+            v0::EXPORTED_TYPES,
+            v0::ORDERED_VOCABULARIES,
+        );
 
         #[expect(clippy::expect_used, reason = "the generator just wrote the file")]
         let first =
             fs::read_to_string(target.join("v0.ts")).expect("v0.ts exists after generation");
 
-        generate(&target, v0::PREFIX, &v0::ROUTES, v0::EXPORTED_TYPES);
+        generate(
+            &target,
+            v0::PREFIX,
+            &v0::ROUTES,
+            v0::EXPORTED_TYPES,
+            v0::ORDERED_VOCABULARIES,
+        );
 
         #[expect(clippy::expect_used, reason = "the generator just wrote the file")]
         let second =
@@ -382,7 +414,22 @@ mod tests {
 
         assert!(first.contains("export type BindingsTestAlphaRequest"));
         assert!(first.contains("export type BindingsTestBetaRequest"));
-        assert!(first.contains("export type IrReasoningEffort"));
+
+        // The thinking-level vocabulary publishes as its ordered const tuple
+        // — doc comment attached, values in the enum's variant order — with
+        // the union derived from the tuple, never as an unordered union.
+        assert!(first.contains(concat!(
+            " * Canonical thinking levels, ordered by increasing reasoning strength.\n",
+            " */\n",
+            "export const IR_REASONING_EFFORT_ORDER = ",
+            "[\"off\", \"low\", \"medium\", \"high\"] as const;\n\n",
+            "export type IrReasoningEffort = (typeof IR_REASONING_EFFORT_ORDER)[number];",
+        )));
+        assert!(
+            !first.contains("export type IrReasoningEffort = \"off\""),
+            "the vocabulary never renders as an unordered union"
+        );
+
         assert!(first.contains("export type ErrorResponse"));
         assert!(first.contains("export enum ErrorCode"));
         assert!(!first.contains("import "), "a single file needs no imports");
@@ -439,6 +486,23 @@ mod tests {
     #[should_panic(expected = "has no TypeScript declaration")]
     fn rejects_undeclarable_payload_types() {
         let _ = payload_binding::<()>(&Config::new());
+    }
+
+    /// Verifies that a type declared as an ordered vocabulary whose ts-rs
+    /// declaration is not a unit-only enum's union is rejected: a struct, a
+    /// tagged union, or a `repr(enum)` taxonomy carries no variant-ordered
+    /// vocabulary to publish, so rendering one would publish an order the
+    /// type does not define.
+    ///
+    /// # Panics
+    ///
+    /// Panics as designed, through the declaration renderer.
+    #[test]
+    #[should_panic(expected = "is not a unit-only enum union")]
+    fn rejects_non_union_ordered_vocabularies() {
+        let vocabulary = ordered_vocabulary::<BindingsTestBetaRequest>(&Config::new());
+
+        (vocabulary.declaration)(&Config::new());
     }
 
     /// Builds a minimal closure type for the checker tests; the declaration

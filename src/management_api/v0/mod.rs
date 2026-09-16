@@ -33,7 +33,9 @@ pub use crate::format::UpstreamFormat;
 #[cfg(feature = "management-api-typescript-bindings")]
 use crate::management_api::route::RouteBinding;
 #[cfg(feature = "management-api-typescript-bindings")]
-use crate::management_api::route::{PayloadSource, payload_binding};
+use crate::management_api::route::{
+    OrderedVocabulary, PayloadSource, ordered_vocabulary, payload_binding,
+};
 use crate::{context::Context, management_api::Route, provider::Provider, security};
 pub use crate::{
     ir::IrReasoningEffort,
@@ -83,6 +85,14 @@ pub(super) static ROUTES: [RouteBinding];
 /// the error body, which carries the errno taxonomy this version pins.
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) static EXPORTED_TYPES: &[PayloadSource] = &[payload_binding::<ErrorResponse>];
+
+/// The closed vocabularies this version's bindings publish whose variant
+/// order is itself a published fact: the canonical thinking levels (§6.4),
+/// ordered by increasing reasoning strength, render as an ordered const tuple
+/// with the level union derived from it.
+#[cfg(feature = "management-api-typescript-bindings")]
+pub(super) static ORDERED_VOCABULARIES: &[OrderedVocabulary] =
+    &[ordered_vocabulary::<IrReasoningEffort>];
 
 /// Declares one version 0 route, registering it in [`ROUTES`]. The shared
 /// `route!` macro carries the declaration syntax and the contract a route

@@ -87,6 +87,13 @@ pub(super) struct RouteBinding {
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) type PayloadSource = fn(&Config) -> PayloadBinding;
 
+/// One ordered vocabulary a version's bindings publish besides their route
+/// payloads: a closed unit-only enum whose variant order is itself a
+/// published fact, such as the canonical thinking levels' order of
+/// increasing reasoning strength. Instantiated as `ordered_vocabulary::<T>`.
+#[cfg(feature = "management-api-typescript-bindings")]
+pub(super) type OrderedVocabulary = fn(&Config) -> ClosureType;
+
 /// Provides the route's method as an owned value.
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) fn route_method<R: Route>() -> http::Method {
@@ -210,6 +217,119 @@ fn declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
     }
 
     render::<T>
+}
+
+/// Builds one ordered vocabulary's replacement declaration: the enum as a
+/// [`ClosureType`] like any payload's, whose declaration renders the
+/// variant-ordered const tuple plus the union derived from the tuple
+/// instead of ts-rs's union, so the Rust enum stays the single source of
+/// truth for both membership and order.
+///
+/// # Panics
+///
+/// Panics naming the type when its ts-rs declaration is not a unit-only
+/// enum's union; see [`union_members`].
+#[cfg(feature = "management-api-typescript-bindings")]
+pub(super) fn ordered_vocabulary<T: TS + 'static>(config: &Config) -> ClosureType {
+    ClosureType {
+        type_id: TypeId::of::<T>(),
+        ident: T::ident(config),
+        declaration: ordered_declaration::<T>(),
+    }
+}
+
+/// Builds the renderer of one ordered vocabulary's declaration: the doc
+/// comment, then the ordered const tuple carrying the vocabulary's canonical
+/// order, followed by the union derived from the tuple.
+#[cfg(feature = "management-api-typescript-bindings")]
+fn ordered_declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
+    fn render<T: TS + 'static + ?Sized>(config: &Config) -> String {
+        let order_ident = order_const_ident(&T::ident(config));
+        let order = union_members::<T>(config)
+            .iter()
+            .map(|member| format!("\"{member}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let mut rendered = T::docs().unwrap_or_default();
+
+        rendered.push_str(&format!(
+            "export const {order_ident} = [{order}] as const;\n\n"
+        ));
+        rendered.push_str(&format!(
+            "export type {} = (typeof {order_ident})[number];",
+            T::ident(config)
+        ));
+
+        rendered
+    }
+
+    render::<T>
+}
+
+/// Derives the TypeScript identifier of one vocabulary's ordered const tuple
+/// from its type identifier: CamelCase becomes SCREAMING_SNAKE_CASE suffixed
+/// with `ORDER` — `IrReasoningEffort` renders `IR_REASONING_EFFORT_ORDER`.
+#[cfg(feature = "management-api-typescript-bindings")]
+fn order_const_ident(ident: &str) -> String {
+    let mut rendered = String::with_capacity(ident.len() + "_ORDER".len());
+
+    for (index, character) in ident.chars().enumerate() {
+        if index > 0 && character.is_ascii_uppercase() {
+            rendered.push('_');
+        }
+
+        rendered.push(character.to_ascii_uppercase());
+    }
+
+    rendered.push_str("_ORDER");
+
+    rendered
+}
+
+/// Extracts a unit-only enum's wire names, in variant order, from its ts-rs
+/// declaration `type X = "a" | "b";` — the union's member order is the
+/// variant order, so the tuple built from it carries the enum's canonical
+/// order.
+///
+/// # Panics
+///
+/// Panics naming the type when the declaration is not a union of quoted
+/// string literals — a struct, a tagged union, or a `repr(enum)` taxonomy
+/// defines no variant-ordered vocabulary to publish; an ordered vocabulary is
+/// a unit-only enum by contract.
+#[cfg(feature = "management-api-typescript-bindings")]
+#[expect(
+    clippy::panic,
+    reason = "a vocabulary type that is not a unit-only enum union is a fatal declaration bug"
+)]
+fn union_members<T: TS + 'static + ?Sized>(config: &Config) -> Vec<String> {
+    let declaration = T::decl(config);
+    let ident = T::ident(config);
+
+    let members = declaration
+        .strip_prefix(&format!("type {ident} = "))
+        .and_then(|union| union.strip_suffix(';'))
+        .and_then(|union| {
+            union
+                .split(" | ")
+                .map(|member| {
+                    member
+                        .strip_prefix('"')
+                        .and_then(|member| member.strip_suffix('"'))
+                        .map(str::to_owned)
+                })
+                .collect::<Option<Vec<_>>>()
+        });
+
+    let Some(members) = members else {
+        panic!(
+            "ordered vocabulary `{ident}` is not a unit-only enum union; \
+             its ts-rs declaration is `{declaration}`"
+        );
+    };
+
+    members
 }
 
 /// Declares one management API route: a marker type carrying its [`Route`]

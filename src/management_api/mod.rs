@@ -26,17 +26,25 @@ use std::path::Path;
 /// `<version>.ts` file per version, directly in `output_target`, which may be
 /// relative or absolute and is created when absent. Versions are listed
 /// explicitly: each contributes its prefix — which names its file — its route
-/// registry, and the payload types it publishes besides its routes.
+/// registry, the payload types it publishes besides its routes, and the
+/// ordered vocabularies whose variant order it publishes.
 ///
 /// # Panics
 ///
 /// Panics when a version's registry holds two routes sharing one method and
 /// path, when two distinct payload types of one version share one TypeScript
-/// name, or when the filesystem fails; the generator is a first-party build
+/// name, when an ordered vocabulary's declaration is not a unit-only enum's
+/// union, or when the filesystem fails; the generator is a first-party build
 /// tool and every failure is a fixable declaration or environment bug.
 #[cfg(feature = "management-api-typescript-bindings")]
 pub fn generate_typescript_bindings(output_target: &Path) {
-    bindings::generate(output_target, v0::PREFIX, &v0::ROUTES, v0::EXPORTED_TYPES);
+    bindings::generate(
+        output_target,
+        v0::PREFIX,
+        &v0::ROUTES,
+        v0::EXPORTED_TYPES,
+        v0::ORDERED_VOCABULARIES,
+    );
 }
 
 /// Constructs the management API router, mounting every version under its
