@@ -28,7 +28,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 - Treat fatal configuration, contract and invariant violations as fatal: use `unwrap()` / `expect()` instead of adding recovery paths that obscure bugs and complicate debugging.
 - Do not contort idiomatic code into verbose workarounds merely to dodge panic-related Clippy lints (such as `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `todo`, `unimplemented`, or `unreachable`). When panicking is safe and acceptable—such as a proven invariant or an intentional fail-fast fatal condition—retain the direct construct and document the justification using `#[expect(..., reason = "...")]` on the narrowest applicable scope (such as a single statement or match arm, rather than a whole function or block).
 - Rustdoc is mandatory: every item, private ones included, and the crate itself must be documented, intra-doc links must resolve, and `# Panics` and `# Safety` sections are required where the corresponding Clippy lints apply. Lint policy is configured centrally in `[lints]` in `Cargo.toml` and in `clippy.toml`.
-- After every code modification, run `cargo fmt`, `cargo check`, `cargo clippy`, and `cargo test` to ensure no formatting issues, compilation errors, lint regressions, or test failures were introduced.
+- After every code modification, run `cargo fmt --all`, `cargo check --workspace`, `cargo clippy --workspace`, and `cargo test --workspace` to ensure no formatting issues, compilation errors, lint regressions, or test failures were introduced.
 
 ### SQL (SQLite)
 
