@@ -1,29 +1,67 @@
 //! Management endpoints listing, saving, and deleting providers.
 
-use super::error::{self, ManagementApiError};
+use super::{
+    error::{self, ManagementApiError},
+    route,
+};
 use crate::{
     context::Context,
     database::Database,
     format::UpstreamFormat,
-    provider::{Credentials, NewProvider, Provider, ProviderType, storage},
+    provider::{Credentials, NewProvider, ParseError, Provider, ProviderType, storage},
 };
 use axum::{body::Bytes, extract::State, http::StatusCode, response::Response};
 use log::info;
 use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
+
+route! {
+    pub impl Route for ListProviders {
+        const METHOD: http::Method = http::Method::GET;
+        const PATH: &'static str = "/list-providers";
+        type Request = ListProvidersRequest;
+        type Response = ListProvidersResponse;
+    }
+}
+
+route! {
+    pub impl Route for SaveProvider {
+        const METHOD: http::Method = http::Method::POST;
+        const PATH: &'static str = "/save-provider";
+        type Request = SaveProviderRequest;
+        type Response = super::ProviderEnvelope;
+    }
+}
+
+route! {
+    pub impl Route for DeleteProvider {
+        const METHOD: http::Method = http::Method::POST;
+        const PATH: &'static str = "/delete-provider";
+        type Request = DeleteProviderRequest;
+        type Response = DeleteProviderResponse;
+    }
+}
+
+/// The `list-providers` request body (README §7.1); the route carries no
+/// body, so the payload is the empty request type.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ListProvidersRequest {}
 
 /// The `list-providers` success body (README §7.1).
-#[derive(Debug, Serialize)]
-struct ListProvidersResponse<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ListProvidersResponse {
     /// Every stored provider, ordered by row identifier.
-    providers: Vec<super::ProviderResponse<'a>>,
+    pub providers: Vec<super::ProviderResponse>,
 }
 
 /// The `delete-provider` success body (README §7.1).
-#[derive(Debug, Serialize)]
-struct DeleteProviderResponse {
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct DeleteProviderResponse {
     /// Always `true`; a missing provider renders as a 404 instead.
-    deleted: bool,
+    pub deleted: bool,
 }
 
 /// Strictly parsed `save-provider` request. `id` selects the provider to
@@ -32,46 +70,179 @@ struct DeleteProviderResponse {
 /// is the caller's choice (README §7.1); supplying a different `name` for an
 /// existing provider renames it. The remaining fields are plain optional:
 /// absent keeps the stored value.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SaveProviderBody {
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct SaveProviderRequest {
     /// Provider row identifier; absent creates a new provider.
-    id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub id: Option<i64>,
 
     /// Unique provider name; must be non-empty. Renames the provider when it
     /// differs from the stored name.
-    name: String,
+    pub name: String,
 
     /// Public model name prefix; may be empty.
-    model_prefix: String,
+    pub model_prefix: String,
 
     /// Account kind; required for creation.
     #[serde(rename = "type")]
-    provider_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub provider_type: Option<String>,
 
     /// Upstream protocol.
-    protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub protocol: Option<String>,
 
     /// Upstream base URL.
-    base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub base_url: Option<String>,
 
-    /// Plaintext credentials payload. Its exact shape is fixed by the
-    /// provider type (README §3), but which shape applies depends on the
-    /// sibling `type` member — invisible to serde — so it is captured
-    /// verbatim here and parsed by [`Credentials::parse`] once the type is
-    /// resolved.
-    credentials: Option<Box<RawValue>>,
+    /// Plaintext credentials payload. Which of its fields applies is pinned
+    /// by the sibling `type` — or the stored row on update — and validated
+    /// per kind by `SaveProviderCredentials::to_credentials`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub credentials: Option<SaveProviderCredentials>,
 
     /// Serving state.
-    is_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub is_enabled: Option<bool>,
+}
+
+/// The `save-provider` `credentials` payload (README §3): the concrete,
+/// key-typed capture of the three per-provider-type credential shapes. Which
+/// subset applies is pinned by the request's `type` — or the stored row on
+/// update — and enforced by `SaveProviderCredentials::to_credentials`,
+/// which renders the same verdicts a stored-credentials parse renders.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct SaveProviderCredentials {
+    /// Static API key (`openai_compatible`).
+    #[serde(rename = "apiKey")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub api_key: Option<String>,
+
+    /// OAuth access token (`openai_oauth`, `antigravity_oauth`).
+    #[serde(rename = "accessToken")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub access_token: Option<String>,
+
+    /// OAuth refresh token (`openai_oauth`, `antigravity_oauth`).
+    #[serde(rename = "refreshToken")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub refresh_token: Option<String>,
+
+    /// ChatGPT account ID (`openai_oauth`).
+    #[serde(rename = "accountId")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub account_id: Option<String>,
+
+    /// Cloud Code Assist project ID (`antigravity_oauth`).
+    #[serde(rename = "projectId")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub project_id: Option<String>,
+}
+
+impl SaveProviderCredentials {
+    /// Validates the captured fields against the provider type's exact field
+    /// set: a captured field outside the set is rejected naming it, a missing
+    /// required field is rejected naming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] when the captured fields do not match the shape
+    /// required by the provider type.
+    fn to_credentials(&self, provider_type: ProviderType) -> Result<Credentials, ParseError> {
+        match provider_type {
+            ProviderType::OpenAiCompatible => {
+                self.reject_fields_outside(&["apiKey"])?;
+
+                Ok(Credentials::ApiKey(self.api_key.clone().ok_or_else(
+                    || ParseError::MissingField("apiKey".to_string()),
+                )?))
+            }
+
+            ProviderType::OpenAiOauth => {
+                self.reject_fields_outside(&["accessToken", "refreshToken", "accountId"])?;
+
+                Ok(Credentials::OpenAiOauth {
+                    access_token: required_field(&self.access_token, "accessToken")?,
+                    refresh_token: required_field(&self.refresh_token, "refreshToken")?,
+                    account_id: required_field(&self.account_id, "accountId")?,
+                })
+            }
+
+            ProviderType::AntigravityOauth => {
+                self.reject_fields_outside(&["accessToken", "refreshToken", "projectId"])?;
+
+                Ok(Credentials::AntigravityOauth {
+                    access_token: required_field(&self.access_token, "accessToken")?,
+                    refresh_token: required_field(&self.refresh_token, "refreshToken")?,
+                    project_id: required_field(&self.project_id, "projectId")?,
+                })
+            }
+        }
+    }
+
+    /// Rejects captured fields outside the provider type's exact field set,
+    /// naming the first offender.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::UnknownField`] naming the first captured field
+    /// outside `allowed`.
+    fn reject_fields_outside(&self, allowed: &[&str]) -> Result<(), ParseError> {
+        let captured = [
+            ("apiKey", &self.api_key),
+            ("accessToken", &self.access_token),
+            ("refreshToken", &self.refresh_token),
+            ("accountId", &self.account_id),
+            ("projectId", &self.project_id),
+        ];
+
+        for (name, value) in captured {
+            if value.is_some() && !allowed.contains(&name) {
+                return Err(ParseError::UnknownField(
+                    name.to_string(),
+                    allowed.join("`, `"),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Requires one captured credential field's value.
+///
+/// # Errors
+///
+/// Returns [`ParseError::MissingField`] naming the field when it is absent.
+fn required_field(field: &Option<String>, name: &str) -> Result<String, ParseError> {
+    field
+        .clone()
+        .ok_or_else(|| ParseError::MissingField(name.to_string()))
 }
 
 /// Strictly parsed `delete-provider` request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DeleteProviderBody {
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct DeleteProviderRequest {
     /// Provider row identifier.
-    id: i64,
+    pub id: i64,
 }
 
 /// Handles `GET /list-providers`.
@@ -142,7 +313,7 @@ pub(super) async fn delete(State(context): State<Context>, body: Bytes) -> Respo
 /// Returns [`ManagementApiError`] for a malformed body, storage failures,
 /// and an unknown id.
 async fn handle_delete(database: &Database, body: &Bytes) -> Result<i64, ManagementApiError> {
-    let request: DeleteProviderBody = super::parse_body(body, "delete-provider")?;
+    let request: DeleteProviderRequest = super::parse_body(body, "delete-provider")?;
 
     let outcome = async {
         if !storage::delete_provider(database, request.id).await? {
@@ -170,10 +341,10 @@ async fn handle_delete(database: &Database, body: &Bytes) -> Result<i64, Managem
 /// # Errors
 ///
 /// Returns [`ManagementApiError`] for empty names, unknown ids, unknown types,
-/// OAuth creation attempts, type mismatches, taken names, and public name
-/// collisions.
+/// OAuth creation attempts, type mismatches, taken names, malformed
+/// credentials, and public name collisions.
 async fn handle_save(database: &Database, body: &Bytes) -> Result<Provider, ManagementApiError> {
-    let request: SaveProviderBody = super::parse_body(body, "save-provider")?;
+    let request: SaveProviderRequest = super::parse_body(body, "save-provider")?;
 
     let outcome = async {
         super::validate_identifier("name", &request.name)?;
@@ -244,7 +415,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Provider, Mana
         let credentials = match (&request.credentials, provider_type) {
             (None, _) => None,
 
-            (Some(raw), Some(kind)) => Some(Credentials::parse(kind, raw.get())?),
+            (Some(credentials), Some(kind)) => Some(credentials.to_credentials(kind)?),
 
             (Some(_), None) => {
                 return Err(ManagementApiError::invalid_request(

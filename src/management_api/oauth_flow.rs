@@ -1,6 +1,9 @@
-//! Management endpoints beginning and completing OAuth authorization flows.
+//! Management endpoints starting and completing provider OAuth flows.
 
-use super::error::{self, ManagementApiError};
+use super::{
+    error::{self, ManagementApiError},
+    route,
+};
 use crate::{
     context::Context,
     database::Database,
@@ -12,49 +15,76 @@ use log::info;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+route! {
+    pub impl Route for StartProviderOauth {
+        const METHOD: http::Method = http::Method::POST;
+        const PATH: &'static str = "/start-provider-oauth";
+        type Request = StartProviderOauthRequest;
+        type Response = StartProviderOauthResponse;
+    }
+}
+
+route! {
+    pub impl Route for CompleteProviderOauth {
+        const METHOD: http::Method = http::Method::POST;
+        const PATH: &'static str = "/complete-provider-oauth";
+        type Request = CompleteProviderOauthRequest;
+        type Response = super::ProviderEnvelope;
+    }
+}
+
 /// The `start-provider-oauth` success body (README §7.1).
-#[derive(Debug, Serialize)]
-struct StartOAuthResponse<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct StartProviderOauthResponse {
     /// URL the administrator opens to authorize.
-    authorize_url: &'a str,
+    pub authorize_url: String,
 
     /// Opaque state token identifying the flow.
-    state: &'a str,
+    pub state: String,
 
     /// Unix timestamp when the flow expires.
-    expires_at: i64,
+    pub expires_at: i64,
 }
 
 /// Strictly parsed `start-provider-oauth` request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StartOAuthBody {
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct StartProviderOauthRequest {
     /// Account kind to authorize.
     #[serde(rename = "type")]
-    provider_type: String,
+    pub provider_type: String,
 }
 
 /// Strictly parsed `complete-provider-oauth` request. A completion takes
 /// exactly one form: `id` re-authorizes an existing provider, while `name`
 /// plus `model_prefix` create a new one; mixing the forms is an invalid
 /// request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CompleteOAuthBody {
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct CompleteProviderOauthRequest {
     /// State token returned by `start-provider-oauth`.
-    state: String,
+    pub state: String,
 
     /// Authorization code from the provider callback.
-    code: String,
+    pub code: String,
 
     /// Provider row identifier to re-authorize; absent creates a provider.
-    id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub id: Option<i64>,
 
     /// Provider name for a provider being created; must be non-empty.
-    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub name: Option<String>,
 
     /// Public model name prefix for a provider being created; may be empty.
-    model_prefix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub model_prefix: Option<String>,
 }
 
 /// Handles `POST /start-provider-oauth`.
@@ -64,9 +94,9 @@ pub(super) async fn start(State(context): State<Context>, body: Bytes) -> Respon
     match outcome {
         Ok(flow) => super::json_response(
             StatusCode::OK,
-            &StartOAuthResponse {
-                authorize_url: &flow.authorize_url,
-                state: &flow.state,
+            &StartProviderOauthResponse {
+                authorize_url: flow.authorize_url,
+                state: flow.state,
                 expires_at: flow.expires_at,
             },
         ),
@@ -101,7 +131,7 @@ async fn handle_start(
     database: &Database,
     body: &Bytes,
 ) -> Result<oauth::OAuthFlow, ManagementApiError> {
-    let request: StartOAuthBody = super::parse_body(body, "start-provider-oauth")?;
+    let request: StartProviderOauthRequest = super::parse_body(body, "start-provider-oauth")?;
 
     let outcome = async {
         let provider_type = OAuthProviderType::parse(&request.provider_type).ok_or_else(|| {
@@ -158,7 +188,7 @@ enum Completion<'a> {
 /// provider. The outcome is logged: the created or re-authorized provider at
 /// info level, every failure at the completion's response boundary.
 ///
-/// `control_plane` is the bounded client used for the token exchange and the
+/// `control_plane` is the bounded client for the token exchange and the
 /// project resolution.
 ///
 /// # Errors
@@ -172,7 +202,7 @@ async fn handle_complete(
     control_plane: &Client,
     body: &Bytes,
 ) -> Result<Provider, ManagementApiError> {
-    let request: CompleteOAuthBody = super::parse_body(body, "complete-provider-oauth")?;
+    let request: CompleteProviderOauthRequest = super::parse_body(body, "complete-provider-oauth")?;
 
     // The log context rides on whichever form the request names, computed
     // from the raw request so it survives the moved fields below.

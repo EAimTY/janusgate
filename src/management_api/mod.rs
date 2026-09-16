@@ -1,9 +1,19 @@
 //! Administrative management API routing, its self-contained error domain,
 //! and handling.
 
+#[cfg(feature = "management-api-typescript-bindings")]
+mod bindings;
 mod error;
+mod models;
+mod oauth_flow;
+mod providers;
+mod route;
 
 use self::error::ManagementApiError;
+// The management API's public route surface: the route contract, every route
+// marker, and every route's request and response payload types. Nested wire
+// shapes — provider and model rows, captured credentials — stay private.
+pub use crate::ir::IrReasoningEffort;
 use crate::{context::Context, format::UpstreamFormat, provider::Provider, security};
 use axum::{
     Router,
@@ -12,14 +22,27 @@ use axum::{
     http::{StatusCode, header},
     middleware::{self, Next},
     response::Response,
-    routing::{get, post},
+    routing::{MethodFilter, on},
 };
+#[cfg(feature = "management-api-typescript-bindings")]
+pub use bindings::generate_typescript_bindings;
 use log::warn;
-use serde::{Serialize, de::DeserializeOwned};
-
-mod models;
-mod oauth_flow;
-mod providers;
+pub use models::{
+    DiscoverModels, DiscoverModelsRequest, DiscoverModelsResponse, ListModels, ListModelsRequest,
+    ListModelsResponse, ModelEnvelope, ModelResponse, SaveModel, SaveModelRequest,
+};
+pub use oauth_flow::{
+    CompleteProviderOauth, CompleteProviderOauthRequest, StartProviderOauth,
+    StartProviderOauthRequest, StartProviderOauthResponse,
+};
+pub use providers::{
+    DeleteProvider, DeleteProviderRequest, DeleteProviderResponse, ListProviders,
+    ListProvidersRequest, ListProvidersResponse, SaveProvider, SaveProviderCredentials,
+    SaveProviderRequest,
+};
+pub use route::Route;
+use route::route;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Maximum accepted request body size for the management API.
 ///
@@ -28,18 +51,77 @@ mod providers;
 /// the outward client surface allows 64 MiB for inline image data.
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Converts a route's method constant into axum's method filter.
+///
+/// # Panics
+///
+/// Panics when the method is not a standard HTTP method; management routes
+/// declare standard methods only, so this is a route-declaration invariant.
+fn method_filter(method: &http::Method) -> MethodFilter {
+    #[expect(
+        clippy::panic,
+        reason = "management routes declare standard HTTP methods only"
+    )]
+    MethodFilter::try_from(method.clone())
+        .unwrap_or_else(|rejection| panic!("non-standard HTTP method {rejection}"))
+}
+
 /// Constructs the administrative management API router with its own token
-/// authentication, 404 fallback, and CORS middleware.
+/// authentication, 404 fallback, and CORS middleware. Method and path are
+/// wired from each route's [`Route`] constants, so the `route!` declaration
+/// is the single place they are written.
 pub(crate) fn router() -> Router<Context> {
     Router::new()
-        .route("/list-providers", get(providers::list))
-        .route("/save-provider", post(providers::save))
-        .route("/delete-provider", post(providers::delete))
-        .route("/start-provider-oauth", post(oauth_flow::start))
-        .route("/complete-provider-oauth", post(oauth_flow::complete))
-        .route("/discover-models", post(models::discover))
-        .route("/list-models", get(models::list))
-        .route("/save-model", post(models::save))
+        .route(
+            providers::ListProviders::PATH,
+            on(
+                method_filter(&providers::ListProviders::METHOD),
+                providers::list,
+            ),
+        )
+        .route(
+            providers::SaveProvider::PATH,
+            on(
+                method_filter(&providers::SaveProvider::METHOD),
+                providers::save,
+            ),
+        )
+        .route(
+            providers::DeleteProvider::PATH,
+            on(
+                method_filter(&providers::DeleteProvider::METHOD),
+                providers::delete,
+            ),
+        )
+        .route(
+            oauth_flow::StartProviderOauth::PATH,
+            on(
+                method_filter(&oauth_flow::StartProviderOauth::METHOD),
+                oauth_flow::start,
+            ),
+        )
+        .route(
+            oauth_flow::CompleteProviderOauth::PATH,
+            on(
+                method_filter(&oauth_flow::CompleteProviderOauth::METHOD),
+                oauth_flow::complete,
+            ),
+        )
+        .route(
+            models::DiscoverModels::PATH,
+            on(
+                method_filter(&models::DiscoverModels::METHOD),
+                models::discover,
+            ),
+        )
+        .route(
+            models::ListModels::PATH,
+            on(method_filter(&models::ListModels::METHOD), models::list),
+        )
+        .route(
+            models::SaveModel::PATH,
+            on(method_filter(&models::SaveModel::METHOD), models::save),
+        )
         .fallback(fallback)
         .layer(middleware::from_fn(authenticate))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -119,44 +201,48 @@ fn validate_identifier(param: &str, value: &str) -> Result<(), ManagementApiErro
 /// never exposed. `id` is the provider's public identifier — every management
 /// reference to an existing provider goes through it — while `name` is the
 /// unique, renameable label.
-#[derive(Debug, Serialize)]
-struct ProviderResponse<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ProviderResponse {
     /// Provider row identifier.
-    id: i64,
+    pub id: i64,
 
     /// Unique, renameable label.
-    name: &'a str,
+    pub name: String,
 
     /// Prefix prepended to every public model name.
-    model_prefix: &'a str,
+    pub model_prefix: String,
 
     /// Account kind.
     #[serde(rename = "type")]
-    provider_type: &'static str,
+    pub provider_type: String,
 
     /// Upstream wire format; `null` when the account kind pins it.
-    protocol: Option<&'static str>,
+    pub protocol: Option<String>,
 
     /// Upstream base URL; `null` for OAuth accounts.
-    base_url: Option<&'a str>,
+    pub base_url: Option<String>,
 
     /// Unix timestamp when the OAuth access token expires.
-    expires_at: Option<i64>,
+    pub expires_at: Option<i64>,
 
     /// Whether the provider serves traffic.
-    is_enabled: bool,
+    pub is_enabled: bool,
 }
 
-impl<'a> ProviderResponse<'a> {
+impl ProviderResponse {
     /// Renders one provider row; credentials are never read.
-    fn from_provider(provider: &'a Provider) -> Self {
+    fn from_provider(provider: &Provider) -> Self {
         Self {
             id: provider.id,
-            name: &provider.name,
-            model_prefix: &provider.model_prefix,
-            provider_type: provider.provider_type.as_str(),
-            protocol: provider.protocol.map(UpstreamFormat::as_str),
-            base_url: provider.base_url.as_deref(),
+            name: provider.name.clone(),
+            model_prefix: provider.model_prefix.clone(),
+            provider_type: provider.provider_type.as_str().to_string(),
+            protocol: provider
+                .protocol
+                .map(UpstreamFormat::as_str)
+                .map(String::from),
+            base_url: provider.base_url.clone(),
             expires_at: provider.expires_at,
             is_enabled: provider.is_enabled,
         }
@@ -165,10 +251,11 @@ impl<'a> ProviderResponse<'a> {
 
 /// The `save-provider` and `complete-provider-oauth` success body
 /// (README §7.1); the envelope every provider-returning endpoint renders.
-#[derive(Debug, Serialize)]
-struct ProviderEnvelope<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ProviderEnvelope {
     /// The created or updated provider row.
-    provider: ProviderResponse<'a>,
+    pub provider: ProviderResponse,
 }
 
 /// Builds a JSON response with the given status code.

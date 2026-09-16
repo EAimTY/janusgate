@@ -46,8 +46,16 @@ impl InvalidRequest {
 }
 
 /// Canonical thinking levels, ordered by increasing reasoning strength.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum IrReasoningEffort {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+// The wire names are the canonical level names rendered by the manual serde
+// implementation below, so the TypeScript union must rename identically.
+#[cfg_attr(
+    feature = "management-api-typescript-bindings",
+    ts(rename_all = "lowercase")
+)]
+pub enum IrReasoningEffort {
     /// No reasoning (OpenAI `minimal`, Gemini budget `0`).
     Off,
 
@@ -150,9 +158,9 @@ impl IrReasoningEffort {
 
 /// Serializes a canonical level as its canonical name, so a level array is
 /// exactly the `thinking_levels_override` wire form rendered by
-/// [`render_thinking_levels`] and parsed by
-/// [`parse_stored_thinking_levels_override`]. The name is defined once, in
-/// [`IrReasoningEffort::to_canonical`].
+/// `render_thinking_levels` and parsed by
+/// `parse_stored_thinking_levels_override`. The name is defined once, in
+/// `IrReasoningEffort::to_canonical`.
 impl serde::Serialize for IrReasoningEffort {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

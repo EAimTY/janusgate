@@ -1,6 +1,9 @@
 //! Management endpoints discovering, listing, and overriding models.
 
-use super::error::{self, ManagementApiError};
+use super::{
+    error::{self, ManagementApiError},
+    route,
+};
 use crate::{
     context::Context,
     database::Database,
@@ -15,37 +18,65 @@ use log::info;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+route! {
+    pub impl Route for DiscoverModels {
+        const METHOD: http::Method = http::Method::POST;
+        const PATH: &'static str = "/discover-models";
+        type Request = DiscoverModelsRequest;
+        type Response = DiscoverModelsResponse;
+    }
+}
+
+route! {
+    pub impl Route for ListModels {
+        const METHOD: http::Method = http::Method::GET;
+        const PATH: &'static str = "/list-models";
+        type Request = ListModelsRequest;
+        type Response = ListModelsResponse;
+    }
+}
+
+route! {
+    pub impl Route for SaveModel {
+        const METHOD: http::Method = http::Method::POST;
+        const PATH: &'static str = "/save-model";
+        type Request = SaveModelRequest;
+        type Response = ModelEnvelope;
+    }
+}
+
 /// One model listing entry in its management wire shape (README §7.1).
 /// `is_enabled` is the model's configured switch while
 /// `is_effectively_enabled` is the canonical effective status
 /// (`provider.is_enabled && model.is_enabled`).
-#[derive(Debug, Serialize)]
-struct ModelResponse {
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ModelResponse {
     /// Owning provider row identifier.
-    provider_id: i64,
+    pub provider_id: i64,
 
     /// Owning provider's current name.
-    provider: String,
+    pub provider: String,
 
     /// Exact upstream model identifier.
-    upstream_id: String,
+    pub upstream_id: String,
 
     /// Public routing ID.
-    id: String,
+    pub id: String,
 
     /// Explicit public ID override; `null` when the ID is composed from the
     /// provider's prefix.
-    id_override: Option<String>,
+    pub id_override: Option<String>,
 
     /// Configured serving switch.
-    is_enabled: bool,
+    pub is_enabled: bool,
 
     /// Whether the model currently serves traffic.
-    is_effectively_enabled: bool,
+    pub is_effectively_enabled: bool,
 
     /// Canonical thinking level override; `null` when no filtering is
     /// configured.
-    thinking_levels_override: Option<Vec<ir::IrReasoningEffort>>,
+    pub thinking_levels_override: Option<Vec<ir::IrReasoningEffort>>,
 }
 
 impl ModelResponse {
@@ -73,58 +104,88 @@ impl ModelResponse {
     }
 }
 
+/// The `list-models` request body (README §7.1); the route carries no body,
+/// so the payload is the empty request type.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ListModelsRequest {}
+
 /// The `list-models` success body (README §7.1).
-#[derive(Debug, Serialize)]
-struct ListModelsResponse {
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ListModelsResponse {
     /// Every stored model, ordered by public ID.
-    models: Vec<ModelResponse>,
+    pub models: Vec<ModelResponse>,
 }
 
 /// The `save-model` success body (README §7.1).
-#[derive(Debug, Serialize)]
-struct ModelEnvelope {
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ModelEnvelope {
     /// The saved model row.
-    model: ModelResponse,
+    pub model: ModelResponse,
 }
 
 /// The `discover-models` success body (README §7.1).
-#[derive(Debug, Serialize)]
-struct DiscoverModelsResponse {
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct DiscoverModelsResponse {
     /// Number of model rows the refresh stored.
-    discovered: usize,
+    pub discovered: usize,
 }
 
 /// Strictly parsed `discover-models` request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DiscoverModelsBody {
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct DiscoverModelsRequest {
     /// Provider row identifier.
-    id: i64,
+    pub id: i64,
 }
 
 /// Strictly parsed `save-model` request; each override field is tri-state:
 /// absent leaves it unchanged, `null` clears it, a value sets it. The
 /// `double_option` adapter is what makes the mapping explicit, since plain
 /// serde maps JSON `null` and field absence to the same outer `None`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SaveModelBody {
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct SaveModelRequest {
     /// Owning provider row identifier.
-    provider_id: i64,
+    pub provider_id: i64,
 
     /// Exact upstream model identifier; must be non-empty.
-    upstream_id: String,
+    pub upstream_id: String,
 
     /// Public ID override.
-    #[serde(default, with = "::serde_with::rust::double_option")]
-    id_override: Option<Option<String>>,
+    #[serde(
+        default,
+        with = "::serde_with::rust::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(optional = nullable, as = "Option<String>")
+    )]
+    pub id_override: Option<Option<String>>,
 
     /// Serving state.
-    is_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional = nullable))]
+    pub is_enabled: Option<bool>,
 
     /// Canonical thinking levels override.
-    #[serde(default, with = "::serde_with::rust::double_option")]
-    thinking_levels_override: Option<Option<Vec<String>>>,
+    #[serde(
+        default,
+        with = "::serde_with::rust::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(optional = nullable, as = "Option<Vec<String>>")
+    )]
+    pub thinking_levels_override: Option<Option<Vec<String>>>,
 }
 
 /// Handles `POST /discover-models`.
@@ -190,7 +251,7 @@ async fn handle_discover(
     control_plane: &Client,
     body: &Bytes,
 ) -> Result<usize, ManagementApiError> {
-    let request: DiscoverModelsBody = super::parse_body(body, "discover-models")?;
+    let request: DiscoverModelsRequest = super::parse_body(body, "discover-models")?;
 
     let outcome = async {
         let provider = storage::find_provider_by_id(database, request.id)
@@ -249,8 +310,8 @@ async fn handle_discover(
     outcome
 }
 
-/// Writes one model's overrides and recomputes its public ID. The outcome
-/// is logged: the saved overrides at info level, every failure at the
+/// Writes one model's overrides and recomputes its public ID. The outcome is
+/// logged: the saved overrides at info level, every failure at the
 /// model's response boundary.
 ///
 /// # Errors
@@ -261,7 +322,7 @@ async fn handle_save(
     database: &Database,
     body: &Bytes,
 ) -> Result<ModelResponse, ManagementApiError> {
-    let request: SaveModelBody = super::parse_body(body, "save-model")?;
+    let request: SaveModelRequest = super::parse_body(body, "save-model")?;
 
     let outcome = async {
         super::validate_identifier("upstream_id", &request.upstream_id)?;

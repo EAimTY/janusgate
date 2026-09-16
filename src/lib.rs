@@ -17,7 +17,7 @@ mod http_client;
 mod ids;
 mod ir;
 mod logging;
-mod management_api;
+pub mod management_api;
 mod provider;
 mod security;
 mod server;
