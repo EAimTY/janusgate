@@ -94,7 +94,7 @@ struct RequestBody {
     /// ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
-    stream_options: Option<Value>,
+    stream_options: IgnoredAny,
 
     /// Requested service tier; the gateway has no tier control, so it is
     /// accepted and ignored.
@@ -105,12 +105,12 @@ struct RequestBody {
     /// Free-form client metadata; accepted and ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
-    client_metadata: Option<Value>,
+    client_metadata: IgnoredAny,
 
     /// Client-declared access programs; accepted and ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
-    access_programs: Option<Value>,
+    access_programs: IgnoredAny,
 }
 
 /// Input item, tagged by `type`.
@@ -743,8 +743,16 @@ mod tests {
     /// both, so replaying a response verbatim as the next request's input —
     /// the codex replay loop — must parse (README §6.6 history-replay
     /// carve-outs).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed request diverges from the documented IR.
     #[test]
     fn message_input_item_with_status_parses() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the replayed assistant message is constructed to parse"
+        )]
         let parsed = parse(serde_json::json!({
             "model": "m",
             "input": [
@@ -769,10 +777,16 @@ mod tests {
 
         assert_eq!(parsed.ir.messages.len(), 2);
 
-        assert_eq!(parsed.ir.messages[1].role, IrRole::Assistant);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the preceding length assertion guarantees two messages"
+        )]
+        let assistant = &parsed.ir.messages[1];
+
+        assert_eq!(assistant.role, IrRole::Assistant);
 
         assert_eq!(
-            parsed.ir.messages[1].parts,
+            assistant.parts,
             vec![IrPart::Text {
                 text: "hello".to_string(),
             }],
@@ -783,8 +797,16 @@ mod tests {
     /// the same IR as the part without it: typed SDK clients send `detail`
     /// on every `input_image`, and the gateway cannot honor it downstream,
     /// so it is accepted and ignored like `strict` (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed requests diverge from the documented IR.
     #[test]
     fn input_image_detail_is_accepted_and_ignored() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the plain image body is constructed to parse"
+        )]
         let plain = parse(serde_json::json!({
             "model": "m",
             "input": [
@@ -798,6 +820,10 @@ mod tests {
         }))
         .expect("a plain input_image part must parse");
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the detailed image body is constructed to parse"
+        )]
         let detailed = parse(serde_json::json!({
             "model": "m",
             "input": [
@@ -819,8 +845,16 @@ mod tests {
     /// and the content-parts array form, and the text-parts array flattens
     /// to exactly the string form's tool output with the blank-line
     /// separator (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed requests diverge from the documented IR.
     #[test]
     fn function_call_output_string_and_text_parts_agree() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the string-form output is constructed to parse"
+        )]
         let string_form = parse(serde_json::json!({
             "model": "m",
             "input": [
@@ -829,6 +863,10 @@ mod tests {
         }))
         .expect("a string output must parse");
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the parts-form output is constructed to parse"
+        )]
         let parts_form = parse(serde_json::json!({
             "model": "m",
             "input": [
@@ -842,8 +880,14 @@ mod tests {
 
         assert_eq!(parts_form.ir.messages, string_form.ir.messages);
 
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the parsed body carries exactly one message"
+        )]
+        let parts = &parts_form.ir.messages[0].parts;
+
         assert_eq!(
-            parts_form.ir.messages[0].parts,
+            *parts,
             vec![IrPart::ToolOutput {
                 call_id: "call_1".to_string(),
                 content: "x\n\ny".to_string(),
@@ -859,8 +903,16 @@ mod tests {
     /// the item-level carve-outs are ever reached (README §6.6). The
     /// supported fields inside the envelope — streaming, reasoning effort,
     /// and `text.format` — keep their semantics.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed envelope diverges from the documented IR.
     #[test]
     fn codex_envelope_parses() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the codex CLI envelope is constructed to parse"
+        )]
         let parsed = parse(serde_json::json!({
             "model": "m",
             "instructions": "be terse",
@@ -891,8 +943,16 @@ mod tests {
     /// The envelope control fields are accepted and ignored: the same request
     /// with and without them parses to identical IR, so their presence never
     /// changes routing or the upstream render (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed requests diverge from the documented IR.
     #[test]
     fn envelope_control_fields_are_accepted_and_ignored() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the plain request is constructed to parse"
+        )]
         let plain = parse(serde_json::json!({
             "model": "m",
             "input": "hi",
@@ -900,6 +960,10 @@ mod tests {
         }))
         .expect("the plain request must parse");
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the decorated request is constructed to parse"
+        )]
         let decorated = parse(serde_json::json!({
             "model": "m",
             "input": "hi",
@@ -924,6 +988,10 @@ mod tests {
     /// A non-text part in a `function_call_output` output array is rejected
     /// naming `output`: the IR tool output has no media channel, so image
     /// and file parts cannot be carried (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejection lands outside its documented wording.
     #[test]
     fn function_call_output_non_text_parts_are_rejected() {
         for part_type in ["input_image", "input_file"] {
@@ -939,6 +1007,10 @@ mod tests {
                 })
             };
 
+            #[expect(
+                clippy::expect_used,
+                reason = "each non-text part is constructed to be rejected"
+            )]
             let error = parse(serde_json::json!({
                 "model": "m",
                 "input": [
@@ -967,6 +1039,10 @@ mod tests {
     /// the part's own shape, a member beside a fieldless response format, and a
     /// member beside the request envelope's own fields. serde's rejection names
     /// the offending member, which is the contract README §6.6 documents.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejection lands outside its documented wording.
     #[test]
     fn unknown_members_are_rejected() {
         let cases = [
@@ -1005,6 +1081,10 @@ mod tests {
         ];
 
         for (body, field) in cases {
+            #[expect(
+                clippy::expect_used,
+                reason = "each unknown member is constructed to be rejected"
+            )]
             let error = parse(body).expect_err("an unknown member must be rejected");
 
             assert!(
@@ -1019,8 +1099,16 @@ mod tests {
     /// A `reasoning` input item carries no replayable state, so its payload is
     /// accepted in whatever shape it arrives — unknown members included — while
     /// every other item shape stays strict (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the reasoning item is rejected or not ignored.
     #[test]
     fn reasoning_items_are_accepted_in_any_shape() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the reasoning payload is constructed to parse"
+        )]
         let parsed = parse(serde_json::json!({
             "model": "m",
             "input": [
@@ -1043,8 +1131,13 @@ mod tests {
     /// level `minimal` maps to, and the closed vocabulary still rejects
     /// `xhigh`: the canonical set has no target for it that would not
     /// silently downgrade an explicit client request (README §6.4).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed effort or rejection diverges from the contract.
     #[test]
     fn reasoning_effort_none_parses_to_off_and_xhigh_is_rejected() {
+        #[expect(clippy::expect_used, reason = "`none` is constructed to parse")]
         let none = parse(serde_json::json!({
             "model": "m",
             "input": "hi",
@@ -1054,6 +1147,7 @@ mod tests {
 
         assert_eq!(none.ir.reasoning_effort, Some(IrReasoningEffort::Off));
 
+        #[expect(clippy::expect_used, reason = "`xhigh` is constructed to be rejected")]
         let error = parse(serde_json::json!({
             "model": "m",
             "input": "hi",

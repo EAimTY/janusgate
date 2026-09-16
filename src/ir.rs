@@ -750,6 +750,10 @@ mod tests {
     /// Panics if the rendered drift message diverges from the contract.
     #[test]
     fn renders_the_stored_override_drift_wording() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the corrupt override is constructed to fail"
+        )]
         let message = parse_stored_thinking_levels_override(r#"["bogus"]"#)
             .expect_err("a corrupt stored override must fail");
 

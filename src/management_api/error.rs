@@ -280,8 +280,11 @@ mod tests {
     fn renders_errno_json() {
         let error = ManagementApiError::not_found("Provider 7 does not exist");
 
+        #[expect(clippy::expect_used, reason = "the error body always serializes")]
+        let rendered = serde_json::to_string(&error.body()).expect("the error body serializes");
+
         assert_eq!(
-            serde_json::to_string(&error.body()).expect("the error body serializes"),
+            rendered,
             r#"{"error":{"code":3,"message":"Provider 7 does not exist"}}"#
         );
     }

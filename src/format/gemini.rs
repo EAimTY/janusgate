@@ -1038,6 +1038,10 @@ mod tests {
 
     /// Renders a bare GenerateContentRequest into the JSON value the tests
     /// assert against.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered request fails to serialize.
     #[expect(
         clippy::expect_used,
         reason = "the rendered request is under test; a failing render is the failure"
@@ -1050,6 +1054,10 @@ mod tests {
     /// generation, not a successful completion: both the JSON body and the
     /// streaming path reject it as an upstream failure (README §6.7) instead
     /// of rendering a clean finish that would mask the failure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flagged turn parses as a success or its wording drifts.
     #[test]
     fn malformed_function_call_finish_reason_is_an_upstream_failure() {
         let body = serde_json::json!({
@@ -1061,6 +1069,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the flagged body is constructed to be rejected"
+        )]
         let error = parser
             .parse_json_response(body)
             .expect_err("a malformed function call turn must fail");
@@ -1078,6 +1090,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the flagged frame is constructed to be rejected"
+        )]
         let error = parser
             .ingest_frame(&frame)
             .expect_err("a malformed function call stream frame must fail");
@@ -1088,6 +1104,10 @@ mod tests {
     /// Ordinary finish reasons keep mapping through the now fallible mapper:
     /// a turn cut off by the token limit still parses and reports the
     /// canonical length finish.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flagged turn fails to parse.
     #[test]
     fn ordinary_finish_reasons_still_map() {
         let body = serde_json::json!({
@@ -1099,6 +1119,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the MAX_TOKENS turn is constructed to parse"
+        )]
         let events = parser
             .parse_json_response(body)
             .expect("a MAX_TOKENS turn parses");
@@ -1111,12 +1135,20 @@ mod tests {
     /// stream must not degrade the block into a successful `Stop` finish:
     /// both the aggregated body and the streaming path report the canonical
     /// content-filter finish.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the blocked turn fails to parse or its finish drifts.
     #[test]
     fn prompt_block_finishes_as_content_filter() {
         let body = serde_json::json!({"promptFeedback": {"blockReason": "SAFETY"}});
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the prompt-blocked body is constructed to parse"
+        )]
         let events = parser
             .parse_json_response(body.clone())
             .expect("a prompt-blocked body parses");
@@ -1130,6 +1162,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the prompt-blocked frame is constructed to parse"
+        )]
         let events = parser
             .ingest_frame(&frame)
             .expect("a prompt-blocked frame parses");
@@ -1142,6 +1178,10 @@ mod tests {
     /// the aggregated body and the streaming path report the canonical
     /// content-filter finish instead of a clean `Stop` that would hide the
     /// filtering from clients branching on it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flagged turn fails to parse or its finish drifts.
     #[test]
     fn language_finish_reason_maps_to_content_filter() {
         let body = serde_json::json!({
@@ -1153,6 +1193,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the LANGUAGE-flagged body is constructed to parse"
+        )]
         let events = parser
             .parse_json_response(body.clone())
             .expect("a LANGUAGE-flagged body parses");
@@ -1166,6 +1210,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the LANGUAGE-flagged frame is constructed to parse"
+        )]
         let events = parser
             .ingest_frame(&frame)
             .expect("a LANGUAGE-flagged frame parses");
@@ -1176,6 +1224,10 @@ mod tests {
     /// Upstream sends `promptFeedback` only when no candidate was generated,
     /// so a response that also carried a finishing candidate keeps that
     /// candidate's finish reason instead of being overridden by the feedback.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the finishing candidate fails to parse.
     #[test]
     fn candidate_finish_wins_over_prompt_feedback() {
         let body = serde_json::json!({
@@ -1188,6 +1240,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the finishing candidate is constructed to parse"
+        )]
         let events = parser
             .parse_json_response(body)
             .expect("a finishing candidate parses");
@@ -1201,6 +1257,10 @@ mod tests {
     /// `thoughtsTokenCount` the reasoning output count, while the output
     /// total keeps including the reasoning tokens and the absent
     /// cache-write count stays [`None`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the usage breakdown diverges from the upstream report.
     #[test]
     fn usage_breakdown_reports_cache_and_reasoning_tokens() {
         let body = serde_json::json!({
@@ -1218,6 +1278,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the usage-bearing body is constructed to parse"
+        )]
         let events = parser
             .parse_json_response(body)
             .expect("a usage-bearing body parses");
@@ -1243,6 +1307,10 @@ mod tests {
     /// OpenAI-family rejection, wording included; the shared classification
     /// also rejects the non-object error values the retired inline copy
     /// silently ignored (README §6.7 malformed-payload handling).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an error body parses as a success or its wording drifts.
     #[test]
     fn embedded_error_object_uses_shared_rejection() {
         let body = serde_json::json!({
@@ -1251,6 +1319,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the embedded error object is constructed to be rejected"
+        )]
         let error = parser
             .parse_json_response(body)
             .expect_err("an embedded error object must fail");
@@ -1264,6 +1336,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the non-object error value is constructed to be rejected"
+        )]
         let error = parser
             .parse_json_response(body)
             .expect_err("a non-object error value must fail");
@@ -1277,6 +1353,10 @@ mod tests {
     /// content instead of rendering consecutive `user` entries the upstream
     /// rejects with 400 INVALID_ARGUMENT. Every call and response part also
     /// carries its call id, the pairing channel the upstream matches on.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered contents diverge from the pinned wire shape.
     #[test]
     fn parallel_tool_results_land_in_one_user_content() {
         let ir = IrRequest {
@@ -1322,11 +1402,23 @@ mod tests {
             ..IrRequest::default()
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "a tool-call history is constructed to render"
+        )]
         let request = render_generate_content_request(&ir).expect("a tool-call history renders");
 
+        let rendered = request_json(&request);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the rendered request is an object carrying `contents`"
+        )]
+        let contents = &rendered["contents"];
+
         assert_eq!(
-            request_json(&request)["contents"],
-            serde_json::json!([
+            contents,
+            &serde_json::json!([
                 {"role": "user", "parts": [{"text": "Run both checks"}]},
                 {"role": "model", "parts": [
                     {"functionCall": {"id": "call_a", "name": "lint", "args": {}}},
@@ -1349,6 +1441,10 @@ mod tests {
     /// delta and the done event, since the delta is what reveals the id to
     /// the client — and the replayed history must carry it on the
     /// `functionCall` part and the matching `functionResponse` part alike.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed events or rendered history drop the upstream id.
     #[test]
     fn upstream_call_id_seeds_the_ir_and_replays_on_call_and_response() {
         let body = serde_json::json!({
@@ -1362,6 +1458,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the id-bearing call is constructed to parse"
+        )]
         let events = parser
             .parse_json_response(body)
             .expect("an id-bearing function call parses");
@@ -1379,6 +1479,10 @@ mod tests {
         assert_eq!(delta_id.as_deref(), Some("fc-777"));
         assert_eq!(done.as_deref(), Some("fc-777"));
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the preceding assertion pins the done event's id"
+        )]
         let call_id = done.expect("the done event carries the upstream call id");
 
         let ir = IrRequest {
@@ -1403,11 +1507,23 @@ mod tests {
             ..IrRequest::default()
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "a tool history is constructed to render"
+        )]
         let request = render_generate_content_request(&ir).expect("a tool history renders");
 
+        let rendered = request_json(&request);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the rendered request is an object carrying `contents`"
+        )]
+        let contents = &rendered["contents"];
+
         assert_eq!(
-            request_json(&request)["contents"],
-            serde_json::json!([
+            contents,
+            &serde_json::json!([
                 {"role": "model", "parts": [{
                     "functionCall": {"id": "fc-777", "name": "weather", "args": {"city": "Oslo"}},
                 }]},
@@ -1426,6 +1542,10 @@ mod tests {
     /// the done event — and the replayed history pairs the call and its
     /// response under that same minted id, so the matching channel exists
     /// even when the upstream declined to name the call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the minted id fails to pair the call and its response.
     #[test]
     fn id_less_call_mints_one_id_shared_by_call_and_response() {
         let body = serde_json::json!({
@@ -1439,6 +1559,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the id-less call is constructed to parse"
+        )]
         let events = parser
             .parse_json_response(body)
             .expect("an id-less function call parses");
@@ -1458,6 +1582,10 @@ mod tests {
             _ => None,
         });
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the parsed stream is constructed to carry a done event"
+        )]
         let (call_id, name, arguments) = done.expect("the done event carries the minted call id");
 
         assert_eq!(delta_id.as_deref(), Some(call_id.as_str()));
@@ -1486,24 +1614,42 @@ mod tests {
             ..IrRequest::default()
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "a tool history is constructed to render"
+        )]
         let request = render_generate_content_request(&ir).expect("a tool history renders");
 
         let request = request_json(&request);
 
-        let call = &request["contents"][0]["parts"][0]["functionCall"];
-        let response = &request["contents"][1]["parts"][0]["functionResponse"];
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the rendered history pins one call part and one response part"
+        )]
+        let (call, response) = (
+            &request["contents"][0]["parts"][0]["functionCall"],
+            &request["contents"][1]["parts"][0]["functionResponse"],
+        );
 
         assert_eq!(call["id"], response["id"]);
-        assert_eq!(
-            call["id"],
-            delta_id.expect("the delta revealed the minted id")
-        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the preceding assertions pin the delta's id"
+        )]
+        let revealed = delta_id.expect("the delta revealed the minted id");
+
+        assert_eq!(call["id"], revealed);
     }
 
     /// Two same-name calls with distinct upstream ids replay with distinct
     /// response ids paired per call — the exact ambiguity the id field
     /// exists to resolve. The outputs arrive in reverse order to prove the
     /// pairing follows each part's id, not positional correspondence.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered ids diverge from the pinned pairing.
     #[test]
     fn same_name_calls_pair_distinct_response_ids() {
         let ir = IrRequest {
@@ -1543,11 +1689,23 @@ mod tests {
             ..IrRequest::default()
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "a tool history is constructed to render"
+        )]
         let request = render_generate_content_request(&ir).expect("a tool history renders");
 
+        let rendered = request_json(&request);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the rendered request is an object carrying `contents`"
+        )]
+        let contents = &rendered["contents"];
+
         assert_eq!(
-            request_json(&request)["contents"],
-            serde_json::json!([
+            contents,
+            &serde_json::json!([
                 {"role": "model", "parts": [
                     {"functionCall": {"id": "up-1", "name": "lookup", "args": {"key": "a"}}},
                     {"functionCall": {"id": "up-2", "name": "lookup", "args": {"key": "b"}}},
@@ -1567,6 +1725,10 @@ mod tests {
     /// Consecutive user messages — legal and common in OpenAI clients, which
     /// have no alternation requirement — coalesce into one `user` content
     /// whose parts keep the messages' encounter order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered contents diverge from the pinned wire shape.
     #[test]
     fn consecutive_user_messages_coalesce_in_part_order() {
         let ir = IrRequest {
@@ -1598,11 +1760,23 @@ mod tests {
             ..IrRequest::default()
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "a user-run history is constructed to render"
+        )]
         let request = render_generate_content_request(&ir).expect("a user-run history renders");
 
+        let rendered = request_json(&request);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the rendered request is an object carrying `contents`"
+        )]
+        let contents = &rendered["contents"];
+
         assert_eq!(
-            request_json(&request)["contents"],
-            serde_json::json!([{"role": "user", "parts": [
+            contents,
+            &serde_json::json!([{"role": "user", "parts": [
                 {"text": "first question"},
                 {"text": "look at this"},
                 {"fileData": {"fileUri": "https://example.com/cat.png"}},
@@ -1614,6 +1788,10 @@ mod tests {
     /// An already-alternating history must render byte-identically to the
     /// pre-change output, which mapped every message 1:1 onto one content
     /// entry: the pin below fixes those exact serialized bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered bytes diverge from the pinned wire shape.
     #[test]
     fn alternating_history_renders_the_pinned_wire_shape() {
         let ir = IrRequest {
@@ -1640,12 +1818,20 @@ mod tests {
             ..IrRequest::default()
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "an alternating history is constructed to render"
+        )]
         let request = render_generate_content_request(&ir).expect("an alternating history renders");
 
         // The typed contents serialize their fields in declaration order, so
         // the pin below is the exact upstream byte rendering.
+        #[expect(clippy::expect_used, reason = "rendered contents always serialize")]
+        let rendered =
+            serde_json::to_string(&request.contents).expect("rendered contents always serialize");
+
         assert_eq!(
-            serde_json::to_string(&request.contents).expect("rendered contents always serialize"),
+            rendered,
             concat!(
                 r#"[{"role":"user","parts":[{"text":"hello"}]},"#,
                 r#"{"role":"model","parts":[{"text":"hi there"}]},"#,

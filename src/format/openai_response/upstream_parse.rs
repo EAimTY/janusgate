@@ -814,6 +814,10 @@ mod tests {
     /// A 2xx JSON body carrying a top-level error object is an upstream
     /// failure (README §6.7), not an empty success: the upstream's error
     /// text and embedded code must reach the caller.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the error body parses as a success or its wording drifts.
     #[test]
     fn json_body_with_error_object_is_rejected() {
         let body = serde_json::json!({
@@ -822,6 +826,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the error body is constructed to be rejected"
+        )]
         let error = parser
             .parse_json_response(body)
             .expect_err("a 2xx error body must not parse as an empty success");
@@ -836,10 +844,18 @@ mod tests {
     /// carries `"error": null` on every success; such a body must parse as a
     /// complete success, not reject with the null literal as the failure
     /// text (README §6.7).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the success body is rejected or its events diverge.
     #[test]
     fn json_body_with_null_error_field_parses_as_success() {
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the null-error body is constructed to parse as a success"
+        )]
         let events = parser
             .parse_json_response(serde_json::json!({
                 "error": null,
@@ -857,6 +873,10 @@ mod tests {
     /// when its `type` is unrecognized, and a bare error object with no
     /// `type` at all likewise aborts instead of parsing as an empty success
     /// (README §6.3: the stream aborts with a terminal error frame).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an error-bearing frame parses as a success.
     #[test]
     fn error_bearing_frames_are_rejected() {
         let mut parser = UpstreamParser::new();
@@ -869,6 +889,10 @@ mod tests {
             .to_string(),
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the error-bearing frame is constructed to be rejected"
+        )]
         let error = parser
             .ingest_frame(&frame)
             .expect_err("an unrecognized frame bearing an error object must fail");
@@ -881,6 +905,10 @@ mod tests {
             data: serde_json::json!({"error": "hard failure"}).to_string(),
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the bare error frame is constructed to be rejected"
+        )]
         let error = parser
             .ingest_frame(&frame)
             .expect_err("a bare error frame must fail");
@@ -890,6 +918,10 @@ mod tests {
 
     /// The rejection keys on the error object only: an unrecognized frame
     /// without one is still ignored, exactly as before.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the frame is rejected or renders events.
     #[test]
     fn unrecognized_frames_without_error_objects_are_still_ignored() {
         let mut parser = UpstreamParser::new();
@@ -902,6 +934,10 @@ mod tests {
             .to_string(),
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the error-less frame is constructed to be ignored"
+        )]
         let events = parser
             .ingest_frame(&frame)
             .expect("an unrecognized frame without an error object is ignored");
@@ -913,10 +949,18 @@ mod tests {
     /// `cache_write_tokens`, `reasoning_tokens` — parse into the IR usage so
     /// the outward Responses rendering can carry them through; totals-only
     /// usage leaves them absent for the renderer's zero-fill.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the usage events diverge from the upstream breakdowns.
     #[test]
     fn usage_breakdowns_parse_into_ir() {
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed response is constructed to parse"
+        )]
         let events = parser
             .parse_json_response(serde_json::json!({
                 "id": "resp_1",
@@ -945,6 +989,10 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the totals-only response is constructed to parse"
+        )]
         let events = parser
             .parse_json_response(serde_json::json!({
                 "id": "resp_2",
@@ -1007,6 +1055,10 @@ mod tests {
     /// that streams no live events — delivers every item's text exactly
     /// once, and the recovery stream still opens with MessageStart, first
     /// (README §6.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recovered events diverge from the exactly-once contract.
     #[test]
     fn terminal_output_array_delivers_every_message_item_once() {
         let mut parser = UpstreamParser::new();
@@ -1024,6 +1076,10 @@ mod tests {
             },
         ]);
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed frame is constructed to parse"
+        )]
         let events = parser
             .ingest_frame(&completed_frame(output))
             .expect("a completed frame parses");
@@ -1042,6 +1098,10 @@ mod tests {
     /// Reasoning recovery is independent per index: a terminal array of
     /// reasoning + message + reasoning delivers both reasonings and the
     /// message text exactly once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recovered events diverge from the exactly-once contract.
     #[test]
     fn terminal_output_array_delivers_interleaved_reasoning_items() {
         let mut parser = UpstreamParser::new();
@@ -1056,6 +1116,10 @@ mod tests {
             {"type": "reasoning", "summary": [{"type": "summary_text", "text": "think two"}]},
         ]);
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed frame is constructed to parse"
+        )]
         let events = parser
             .ingest_frame(&completed_frame(output))
             .expect("a completed frame parses");
@@ -1077,10 +1141,15 @@ mod tests {
     /// terminal array's copy of the same items (shared output indices) is
     /// not re-delivered. The done-only stream still opens with MessageStart,
     /// ahead of the first item's text (README §6.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the delivered events diverge from the exactly-once contract.
     #[test]
     fn streamed_done_items_deliver_each_message_item_once() {
         let mut parser = UpstreamParser::new();
 
+        #[expect(clippy::expect_used, reason = "the done frame is constructed to parse")]
         let events = parser
             .ingest_frame(&message_done_frame(0, "first"))
             .expect("a done frame parses");
@@ -1093,6 +1162,7 @@ mod tests {
             ],
         );
 
+        #[expect(clippy::expect_used, reason = "the done frame is constructed to parse")]
         let events = parser
             .ingest_frame(&message_done_frame(1, "second"))
             .expect("a done frame parses");
@@ -1112,6 +1182,10 @@ mod tests {
             },
         ]);
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed frame is constructed to parse"
+        )]
         let events = parser
             .ingest_frame(&completed_frame(output))
             .expect("a completed frame parses");
@@ -1123,6 +1197,10 @@ mod tests {
     /// not re-delivered by the streamed done item or by any terminal-array
     /// item of the same kind (README §6.3: fallbacks deliver only what live
     /// deltas did not).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the delivered events diverge from the precedence contract.
     #[test]
     fn live_deltas_silence_fallback_recovery() {
         let mut parser = UpstreamParser::new();
@@ -1135,6 +1213,10 @@ mod tests {
             .to_string(),
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the delta frame is constructed to parse"
+        )]
         let events = parser.ingest_frame(&delta_frame).expect("a delta parses");
 
         assert_eq!(
@@ -1142,6 +1224,7 @@ mod tests {
             vec![bare_message_start(), IrEvent::TextDelta("live".to_string()),],
         );
 
+        #[expect(clippy::expect_used, reason = "the done frame is constructed to parse")]
         let events = parser
             .ingest_frame(&message_done_frame(0, "live"))
             .expect("a done frame parses");
@@ -1156,6 +1239,10 @@ mod tests {
             },
         ]);
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed frame is constructed to parse"
+        )]
         let events = parser
             .ingest_frame(&completed_frame(output))
             .expect("a completed frame parses");
@@ -1168,6 +1255,10 @@ mod tests {
     /// and `response.output_item.added` — still opens the IR stream with
     /// MessageStart, ahead of the delta it precedes (README §6.2:
     /// MessageStart is emitted exactly once, first).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered events diverge from the documented stream shape.
     #[test]
     fn first_event_being_a_bare_call_delta_still_opens_with_message_start() {
         let mut parser = UpstreamParser::new();
@@ -1181,6 +1272,10 @@ mod tests {
             .to_string(),
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the delta frame is constructed to parse"
+        )]
         let events = parser.ingest_frame(&frame).expect("a delta frame parses");
 
         assert_eq!(

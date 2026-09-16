@@ -358,15 +358,22 @@ mod tests {
     /// the drift rejection stops firing.
     #[test]
     fn renders_stored_thinking_levels_override() {
-        assert!(
-            thinking_levels_override(&None)
-                .expect("an absent override renders")
-                .is_none()
-        );
+        #[expect(clippy::expect_used, reason = "an absent override renders")]
+        let absent = thinking_levels_override(&None)
+            .expect("an absent override renders")
+            .is_none();
+
+        assert!(absent);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the stored override is constructed to be valid"
+        )]
+        let valid = thinking_levels_override(&Some(r#"["low","off"]"#.to_string()))
+            .expect("a valid stored override parses");
 
         assert_eq!(
-            thinking_levels_override(&Some(r#"["low","off"]"#.to_string()))
-                .expect("a valid stored override parses"),
+            valid,
             Some(vec![ir::IrReasoningEffort::Low, ir::IrReasoningEffort::Off])
         );
 

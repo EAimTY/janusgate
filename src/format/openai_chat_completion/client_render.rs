@@ -571,6 +571,10 @@ mod tests {
     use serde_json::Value;
 
     /// Parses the JSON payload of every rendered SSE frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rendered frame is missing or its payload is not JSON.
     #[expect(
         clippy::expect_used,
         reason = "the rendered frames are under test; a missing or malformed frame is the failure"
@@ -592,6 +596,11 @@ mod tests {
 
     /// Joins the tool-call argument fragments a rendered frame set delivers,
     /// exactly as a client assembling the stream would.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rendered frame lacks exactly one tool call with string
+    /// arguments.
     #[expect(
         clippy::expect_used,
         reason = "the rendered frames are under test; a missing or malformed frame is the failure"
@@ -611,6 +620,10 @@ mod tests {
     }
 
     /// Parses the JSON payload of the only rendered SSE frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the event renders no frame or more than one.
     #[expect(
         clippy::expect_used,
         reason = "the rendered frames are under test; a missing or malformed frame is the failure"
@@ -630,6 +643,10 @@ mod tests {
     /// its full arguments from the done event exactly once, because a
     /// streamed done always carries the authoritative complete arguments
     /// (README §6.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered stream diverges from the documented behavior.
     #[test]
     fn done_renders_arguments_the_opening_delta_never_streamed() {
         let mut renderer = SseRenderer::new("m".to_string(), false);
@@ -657,6 +674,10 @@ mod tests {
     /// Live deltas that already streamed the full arguments — the Gemini
     /// upstream delivers every call this way — are not repeated by the done
     /// event, so the client assembles the arguments exactly once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered stream diverges from the documented behavior.
     #[test]
     fn done_repeats_no_arguments_the_live_deltas_already_streamed() {
         let mut renderer = SseRenderer::new("m".to_string(), false);
@@ -688,6 +709,10 @@ mod tests {
     /// from them at a byte the deltas did not stream — loses its residual
     /// arguments silently: the done skips its argument frame (README
     /// §6.2), while its other content still renders.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered stream diverges from the documented behavior.
     #[test]
     fn done_with_arguments_divergent_from_the_streamed_bytes_skips_the_argument_frame() {
         let mut renderer = SseRenderer::new("m".to_string(), false);
@@ -752,6 +777,10 @@ mod tests {
     /// splice onto the streamed prefix into arguments matching neither the
     /// deltas nor the done, so the divergent done silently skips its
     /// argument frame (README §6.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered stream diverges from the documented behavior.
     #[test]
     fn done_longer_but_divergent_from_the_streamed_bytes_skips_the_argument_frame() {
         let mut renderer = SseRenderer::new("m".to_string(), false);
@@ -779,6 +808,10 @@ mod tests {
     /// A done for an index no delta ever opened — the recovery class of
     /// README §6.2 — renders the complete call as one full tool_calls delta
     /// chunk, exactly the shape a delta would have produced.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered stream diverges from the documented behavior.
     #[test]
     fn done_without_a_prior_delta_renders_the_complete_call() {
         let mut renderer = SseRenderer::new("m".to_string(), false);

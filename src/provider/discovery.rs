@@ -281,10 +281,13 @@ mod tests {
     /// Panics if the empty request body does not render as JSON.
     #[test]
     fn renders_the_empty_model_discovery_body() {
-        assert_eq!(
-            serde_json::to_string(&FetchAvailableModelsRequest {}).unwrap(),
-            "{}"
-        );
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the empty request body always serializes"
+        )]
+        let body = serde_json::to_string(&FetchAvailableModelsRequest {}).unwrap();
+
+        assert_eq!(body, "{}");
     }
 
     /// The vendor serves the Codex model list under `items` or `models`
@@ -301,8 +304,16 @@ mod tests {
             r#"{"items": [{"slug": "gpt-5", "unmodeled": true}], "unknown": 1}"#,
             r#"{"models": [{"slug": "gpt-5", "unmodeled": true}], "unknown": 1}"#,
         ] {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "both payload spellings are constructed to parse"
+            )]
             let response: CodexModelsResponse = serde_json::from_str(json).unwrap();
 
+            #[expect(
+                clippy::unwrap_used,
+                reason = "both payloads carry the items array and each entry a slug"
+            )]
             let slugs = response
                 .items
                 .unwrap()

@@ -1138,6 +1138,10 @@ mod tests {
     use super::*;
 
     /// Parses the JSON payload of the last rendered SSE frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no frame is rendered or its payload is not JSON.
     #[expect(
         clippy::expect_used,
         reason = "the rendered frames are under test; a missing or malformed frame is the failure"
@@ -1155,6 +1159,10 @@ mod tests {
 
     /// Parses the JSON payload of the first rendered frame carrying
     /// `event_name`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no frame carries `event_name` or its payload is not JSON.
     #[expect(
         clippy::expect_used,
         reason = "the rendered frames are under test; a missing frame is the failure"
@@ -1179,6 +1187,10 @@ mod tests {
     /// `ResponseFunctionToolCallItem` requires both as strings with no
     /// defaults, so a `null` or missing field would fail a strict typed
     /// client on the transient item before the done event repairs it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered frames diverge from the documented shape.
     #[test]
     fn opening_tool_call_delta_renders_required_identity_strings() {
         let mut renderer = SseRenderer::new("m".to_string());
@@ -1190,6 +1202,10 @@ mod tests {
             arguments_delta: "{\"".to_string(),
         });
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the added frame is under test; a missing item is the failure"
+        )]
         let item = frame_payload(&frames, "response.output_item.added")
             .get("item")
             .expect("the added frame carries the item")
@@ -1222,6 +1238,10 @@ mod tests {
     /// The streaming terminal event renders the full official usage shape:
     /// openai-python's `ResponseUsage` requires all five fields including both
     /// detail objects, so upstream-reported breakdowns ride through intact.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered frames diverge from the documented usage shape.
     #[test]
     fn terminal_event_usage_carries_upstream_breakdowns() {
         let mut renderer = SseRenderer::new("m".to_string());
@@ -1238,6 +1258,10 @@ mod tests {
 
         let payload = terminal_frame_payload(&frames);
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the terminal response is under test; missing usage is the failure"
+        )]
         let usage = payload
             .pointer("/response/usage")
             .expect("the terminal response carries usage");
@@ -1260,6 +1284,10 @@ mod tests {
     /// Breakdowns absent from the upstream — every cross-format upstream, and
     /// any Responses upstream that reports totals only — render zero-filled,
     /// because strict SDK consumers require the detail fields to be present.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered usage diverges from the documented shape.
     #[test]
     fn aggregated_response_usage_zero_fills_absent_breakdowns() {
         let aggregation = IrAggregation {
@@ -1271,6 +1299,10 @@ mod tests {
             ..IrAggregation::default()
         };
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the aggregated body always serializes into a JSON value"
+        )]
         let body = serde_json::to_value(render_json_response("m", &aggregation))
             .expect("the aggregated body serializes into a JSON value");
 

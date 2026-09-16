@@ -341,6 +341,10 @@ mod tests {
         for (error, status, body) in cases {
             assert_eq!(error.row().status, status);
 
+            #[expect(
+                clippy::expect_used,
+                reason = "a typed error body serializes into a JSON value"
+            )]
             let rendered = serde_json::to_value(error.body())
                 .expect("a typed error body serializes into a JSON value");
 

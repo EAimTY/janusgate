@@ -165,6 +165,7 @@ mod tests {
             exp: i64,
         }
 
+        #[expect(clippy::unwrap_used, reason = "the test claim always serializes")]
         let claims = serde_json::to_string(&TestExpClaim { exp }).unwrap();
 
         let payload = general_purpose::URL_SAFE_NO_PAD.encode(claims);
@@ -203,6 +204,10 @@ mod tests {
             chatgpt_account_id: String,
         }
 
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the test identity token always serializes"
+        )]
         let claims = serde_json::to_string(&TestIdTokenClaims {
             authorization: TestAuthorizationClaim {
                 chatgpt_account_id: "account-1".to_string(),
@@ -225,12 +230,20 @@ mod tests {
     /// permanently stale token or presenting an expired token under a default
     /// lifetime. A reported `expires_in` still wins and is never overridden
     /// by the spent claim.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the expiry lookup or assertions fail.
     #[test]
     fn rejects_past_exp_claim_as_malformed() {
         let jwt = jwt_with_exp(-3_600);
 
         assert!(token_expiry_from(None, Some(&jwt)).is_err());
 
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the reported expires_in is constructed to be accepted"
+        )]
         let expiry = token_expiry_from(Some(600), Some(&jwt)).unwrap();
 
         assert!(expiry > unix_time::unix_now());
@@ -239,12 +252,24 @@ mod tests {
     /// Without `expires_in`, a decodable future `exp` claim supplies the
     /// lifetime and a token with no usable claim (opaque Google `ya29…`
     /// tokens) falls through to the default lifetime instead of failing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the expiry lookup or assertions fail.
     #[test]
     fn falls_back_to_exp_claim_then_default_lifetime() {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the future exp claim is constructed to be accepted"
+        )]
         let expiry = token_expiry_from(None, Some(&jwt_with_exp(3_600))).unwrap();
 
         assert!((3595..=3600).contains(&(expiry - unix_time::unix_now())));
 
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the opaque token falls back to the default lifetime"
+        )]
         let expiry = token_expiry_from(None, Some("ya29-opaque-token")).unwrap();
 
         assert!((86_399..=86_400).contains(&(expiry - unix_time::unix_now())));
@@ -256,9 +281,17 @@ mod tests {
     /// token that drives a refresh grant on every request — and a debug build
     /// would panic. Both bounds overflow for any current timestamp, so the
     /// rejection is deterministic.
+    ///
+    /// # Panics
+    ///
+    /// Panics if assertions fail.
     #[test]
     fn rejects_overflowing_expires_in_as_malformed() {
         for expires_in in [i64::MAX, i64::MAX - DEFAULT_TOKEN_TTL] {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "the overflowing expires_in is constructed to be rejected"
+            )]
             let error = token_expiry_from(Some(expires_in), None).unwrap_err();
 
             assert!(
@@ -274,8 +307,16 @@ mod tests {
     /// release build and slip past the non-future guard, so the subtraction is
     /// checked and the claim is rejected as malformed like an ordinary past
     /// claim.
+    ///
+    /// # Panics
+    ///
+    /// Panics if assertions fail.
     #[test]
     fn rejects_underflowing_exp_claim_as_malformed() {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the underflowing exp claim is constructed to be rejected"
+        )]
         let error = token_expiry_from(None, Some(&jwt_with_exp_claim(i64::MIN))).unwrap_err();
 
         assert!(

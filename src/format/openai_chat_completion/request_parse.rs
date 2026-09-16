@@ -608,8 +608,16 @@ mod tests {
     /// Plain-string content keeps parsing on the text-only roles: system and
     /// developer strings concatenate into instructions in encounter order,
     /// and a tool string becomes the tool output verbatim (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed request diverges from the documented IR.
     #[test]
     fn string_content_parses_on_text_only_roles() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the constructed body parses on every text-only role"
+        )]
         let parsed = parse(serde_json::json!({
             "model": "m",
             "messages": [
@@ -626,6 +634,10 @@ mod tests {
             Some("be terse\n\nno markdown"),
         );
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the constructed body carries a tool message"
+        )]
         let tool_message = parsed
             .ir
             .messages
@@ -647,8 +659,16 @@ mod tests {
     /// content: parts join with the blank-line separator, and the flattened
     /// system/developer texts concatenate into instructions unchanged, so
     /// both wire forms produce identical IR (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed requests diverge from the documented IR.
     #[test]
     fn text_part_arrays_flatten_to_the_string_form() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the constructed string-form body parses"
+        )]
         let string_form = parse(serde_json::json!({
             "model": "m",
             "messages": [
@@ -660,6 +680,7 @@ mod tests {
         }))
         .expect("string content must parse");
 
+        #[expect(clippy::expect_used, reason = "the constructed parts-form body parses")]
         let parts_form = parse(serde_json::json!({
             "model": "m",
             "messages": [
@@ -683,6 +704,10 @@ mod tests {
 
         assert_eq!(parts_form.ir.messages, string_form.ir.messages);
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the constructed body carries a tool message"
+        )]
         let tool_message = parts_form
             .ir
             .messages
@@ -702,8 +727,16 @@ mod tests {
     /// IR as the part without it: typed SDK clients send `detail` on every
     /// image part, and the gateway cannot honor it downstream, so it is
     /// accepted and ignored like `strict` (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed requests diverge from the documented IR.
     #[test]
     fn image_url_detail_is_accepted_and_ignored() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the plain image body is constructed to parse"
+        )]
         let plain = parse(serde_json::json!({
             "model": "m",
             "messages": [
@@ -717,6 +750,10 @@ mod tests {
         }))
         .expect("a plain image part must parse");
 
+        #[expect(
+            clippy::expect_used,
+            reason = "the detailed image body is constructed to parse"
+        )]
         let detailed = parse(serde_json::json!({
             "model": "m",
             "messages": [
@@ -739,6 +776,10 @@ mod tests {
     /// Only `{"type": "text"}` parts are valid inside a text-only role's
     /// content array per the official schema; any other part type is
     /// rejected naming it (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejection lands outside its documented wording.
     #[test]
     fn non_text_parts_on_text_only_roles_are_rejected() {
         for role in ["system", "developer", "tool"] {
@@ -757,6 +798,10 @@ mod tests {
                 serde_json::json!({"role": role, "content": content})
             };
 
+            #[expect(
+                clippy::expect_used,
+                reason = "the non-text part is constructed to be rejected"
+            )]
             let error = parse(serde_json::json!({
                 "model": "m",
                 "messages": [message],
@@ -777,6 +822,10 @@ mod tests {
     /// outside the part's own shape, and a member beside a fieldless response
     /// format. serde's rejection names the offending member, which is the
     /// contract README §6.6 documents.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rejection lands outside its documented wording.
     #[test]
     fn unknown_members_are_rejected() {
         let cases = [
@@ -808,6 +857,10 @@ mod tests {
         ];
 
         for (body, field) in cases {
+            #[expect(
+                clippy::expect_used,
+                reason = "each unknown member is constructed to be rejected"
+            )]
             let error = parse(body).expect_err("an unknown member must be rejected");
 
             assert!(
@@ -824,8 +877,13 @@ mod tests {
     /// level `minimal` maps to, and the closed vocabulary still rejects
     /// `xhigh`: the canonical set has no target for it that would not
     /// silently downgrade an explicit client request (README §6.4).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed request or rejection diverges from the contract.
     #[test]
     fn reasoning_effort_none_parses_to_off_and_xhigh_is_rejected() {
+        #[expect(clippy::expect_used, reason = "`none` is constructed to parse")]
         let none = parse(serde_json::json!({
             "model": "m",
             "messages": [{"role": "user", "content": "hi"}],
@@ -835,6 +893,7 @@ mod tests {
 
         assert_eq!(none.ir.reasoning_effort, Some(IrReasoningEffort::Off));
 
+        #[expect(clippy::expect_used, reason = "`xhigh` is constructed to be rejected")]
         let error = parse(serde_json::json!({
             "model": "m",
             "messages": [{"role": "user", "content": "hi"}],

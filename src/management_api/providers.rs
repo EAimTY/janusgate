@@ -10,7 +10,7 @@ use crate::{
 use axum::{body::Bytes, extract::State, http::StatusCode, response::Response};
 use log::info;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::value::RawValue;
 
 /// The `list-providers` success body (README §7.1).
 #[derive(Debug, Serialize)]
@@ -55,8 +55,12 @@ struct SaveProviderBody {
     /// Upstream base URL.
     base_url: Option<String>,
 
-    /// Plaintext credentials payload.
-    credentials: Option<Value>,
+    /// Plaintext credentials payload. Its exact shape is fixed by the
+    /// provider type (README §3), but which shape applies depends on the
+    /// sibling `type` member — invisible to serde — so it is captured
+    /// verbatim here and parsed by [`Credentials::parse`] once the type is
+    /// resolved.
+    credentials: Option<Box<RawValue>>,
 
     /// Serving state.
     is_enabled: Option<bool>,
@@ -240,7 +244,7 @@ async fn handle_save(database: &Database, body: &Bytes) -> Result<Provider, Mana
         let credentials = match (&request.credentials, provider_type) {
             (None, _) => None,
 
-            (Some(value), Some(kind)) => Some(Credentials::parse(kind, &value.to_string())?),
+            (Some(raw), Some(kind)) => Some(Credentials::parse(kind, raw.get())?),
 
             (Some(_), None) => {
                 return Err(ManagementApiError::invalid_request(

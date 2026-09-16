@@ -227,6 +227,7 @@ mod tests {
             is_enabled: true,
         };
 
+        #[expect(clippy::expect_used, reason = "the provider body always serializes")]
         let rendered = serde_json::to_string(&ProviderEnvelope {
             provider: ProviderResponse::from_provider(&provider),
         })

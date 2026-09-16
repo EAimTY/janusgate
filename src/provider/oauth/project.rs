@@ -256,6 +256,10 @@ mod tests {
     /// `loadCodeAssist` and as an `{id}` object from the `onboardUser`
     /// operation result (README §5.2); both shapes resolve to the same
     /// project id, while an unrecognized shape carries none.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a payload does not parse or an assertion fails.
     #[test]
     fn companion_project_field_accepts_both_shapes() {
         for (json, expected) in [
@@ -266,6 +270,10 @@ mod tests {
             ("5", None),
             ("null", None),
         ] {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "every payload shape is constructed to parse"
+            )]
             let field: CompanionProject = serde_json::from_str(json).unwrap();
 
             assert_eq!(field.into_project_id().as_deref(), expected, "json: {json}");
@@ -278,6 +286,10 @@ mod tests {
     /// fails instead of storing an empty project; a failure payload that
     /// carries no status or message still names both placeholders in the
     /// upstream detail.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a payload does not parse or an assertion fails.
     #[test]
     fn onboard_operation_without_project_fails() {
         for json in [
@@ -285,30 +297,47 @@ mod tests {
             r#"{"done": true, "response": {"cloudaicompanionProject": ""}}"#,
             r#"{"done": true, "response": {"cloudaicompanionProject": {"id": ""}}}"#,
         ] {
+            #[expect(clippy::unwrap_used, reason = "every payload is constructed to parse")]
             let operation: OnboardOperation = serde_json::from_str(json).unwrap();
 
-            assert_eq!(onboard_operation_project(operation).unwrap(), None);
+            #[expect(
+                clippy::unwrap_used,
+                reason = "the operation without a project resolves to no project"
+            )]
+            let project = onboard_operation_project(operation).unwrap();
+
+            assert_eq!(project, None);
         }
 
         let failed = r#"{"error":{"status":"DENIED","message":"nope"}}"#;
 
+        #[expect(clippy::unwrap_used, reason = "the payload is constructed to parse")]
         let operation: OnboardOperation = serde_json::from_str(failed).unwrap();
 
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the failed operation is constructed to be rejected"
+        )]
+        let error = onboard_operation_project(operation).unwrap_err();
+
         assert_eq!(
-            onboard_operation_project(operation)
-                .unwrap_err()
-                .to_string(),
+            error.to_string(),
             "Upstream request failed: onboardUser failed upstream: DENIED: nope"
         );
 
         let bare_failure = r#"{"error":{}}"#;
 
+        #[expect(clippy::unwrap_used, reason = "the payload is constructed to parse")]
         let operation: OnboardOperation = serde_json::from_str(bare_failure).unwrap();
 
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the failed operation is constructed to be rejected"
+        )]
+        let error = onboard_operation_project(operation).unwrap_err();
+
         assert_eq!(
-            onboard_operation_project(operation)
-                .unwrap_err()
-                .to_string(),
+            error.to_string(),
             "Upstream request failed: onboardUser failed upstream: unknown status: no message"
         );
     }
@@ -316,18 +345,26 @@ mod tests {
     /// A successful `onboardUser` operation resolves the project id from both
     /// the `{id}` object shape the LRO result documents and the plain-string
     /// shape observed defensively by first-party clients.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a payload does not parse or an assertion fails.
     #[test]
     fn onboard_operation_resolves_both_project_shapes() {
         for json in [
             r#"{"done": true, "response": {"cloudaicompanionProject": {"id": "proj-1"}}}"#,
             r#"{"done": true, "response": {"cloudaicompanionProject": "proj-1"}}"#,
         ] {
+            #[expect(clippy::unwrap_used, reason = "every payload is constructed to parse")]
             let operation: OnboardOperation = serde_json::from_str(json).unwrap();
 
-            assert_eq!(
-                onboard_operation_project(operation).unwrap(),
-                Some("proj-1".to_string())
-            );
+            #[expect(
+                clippy::unwrap_used,
+                reason = "both project shapes are constructed to resolve"
+            )]
+            let project = onboard_operation_project(operation).unwrap();
+
+            assert_eq!(project, Some("proj-1".to_string()));
         }
     }
 }
