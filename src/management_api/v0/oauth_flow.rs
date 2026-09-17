@@ -147,6 +147,31 @@ pub(super) async fn reauthorize(
     Ok(Json(ReauthorizeProviderResponse { expires_at }))
 }
 
+/// Trims the pasted authorization code and rejects paste mistakes: an empty code, or a code
+/// carrying callback-URL structure (`?`, `#`, `&`) or whitespace, is a value the provider never
+/// issued. Runs before the state is consumed, so the pending flow survives for the corrected
+/// paste instead of burning on a doomed exchange.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the pasted value is empty or carries URL structure or whitespace.
+fn pasted_authorization_code(code: &str) -> Result<&str, Error> {
+    let code = code.trim();
+
+    if code.is_empty() {
+        return Err(Error::EmptyIdentifier { param: "code" });
+    }
+
+    if code
+        .chars()
+        .any(|character| character.is_whitespace() || matches!(character, '?' | '#' | '&'))
+    {
+        return Err(Error::MalformedAuthorizationCode);
+    }
+
+    Ok(code)
+}
+
 /// Begins an OAuth flow and persists its state row.
 ///
 /// # Errors
@@ -180,8 +205,8 @@ async fn handle_start(
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for empty or taken names, unknown, expired, or already-consumed states,
-/// exchange failures, and a name taken concurrently by another creation.
+/// Returns [`Error`] for empty, malformed, or taken names, unknown, expired, or
+/// already-consumed states, exchange failures, and a name taken concurrently by another creation.
 async fn handle_complete(
     database: &crate::database::Database,
     control_plane: &Client,
@@ -190,6 +215,8 @@ async fn handle_complete(
     // Pre-consume validations, computed from the still-unconsumed state so the pending flow
     // survives every rejection.
     super::validate_identifier("name", &request.name)?;
+
+    let code = pasted_authorization_code(&request.code)?;
 
     // The pre-insert check renders a clean 409; the database's UNIQUE constraint is the concurrent
     // backstop.
@@ -209,13 +236,8 @@ async fn handle_complete(
         .await?
         .ok_or(Error::UnknownOauthState)?;
 
-    let exchanged = oauth::exchange_code(
-        control_plane,
-        state.state_type,
-        &request.code,
-        &state.verifier,
-    )
-    .await?;
+    let exchanged =
+        oauth::exchange_code(control_plane, state.state_type, code, &state.verifier).await?;
 
     let stored = storage::insert_provider(
         database,
@@ -246,8 +268,9 @@ async fn handle_complete(
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for unknown, expired, or already-consumed states, unknown providers, exchange
-/// failures, type mismatches, and a provider deleted concurrently after the completion's lookup.
+/// Returns [`Error`] for empty or malformed codes, unknown, expired, or already-consumed states,
+/// unknown providers, exchange failures, type mismatches, and a provider deleted concurrently
+/// after the completion's lookup.
 async fn handle_reauthorize(
     database: &crate::database::Database,
     control_plane: &Client,
@@ -260,6 +283,8 @@ async fn handle_reauthorize(
         .ok_or(Error::ProviderNotFound {
             id: request.provider_id,
         })?;
+
+    let code = pasted_authorization_code(&request.code)?;
 
     let now = unix_time::unix_now();
 
@@ -280,13 +305,8 @@ async fn handle_reauthorize(
         .await?
         .ok_or(Error::UnknownOauthState)?;
 
-    let exchanged = oauth::exchange_code(
-        control_plane,
-        state.state_type,
-        &request.code,
-        &state.verifier,
-    )
-    .await?;
+    let exchanged =
+        oauth::exchange_code(control_plane, state.state_type, code, &state.verifier).await?;
 
     let is_updated = storage::update_credentials(
         database,
@@ -310,4 +330,45 @@ async fn handle_reauthorize(
     );
 
     Ok(exchanged.expires_at)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pasted code carrying URL structure or whitespace is a paste mistake, never an
+    /// authorization code: it must fail before the state is consumed, so the pending flow
+    /// survives for the corrected paste. An empty code fails the same way.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a pastable code is rejected or a paste mistake is accepted.
+    #[test]
+    fn rejects_unpastable_codes_before_consuming_state() {
+        assert!(pasted_authorization_code("ac_clean.code-123_~").is_ok());
+        assert!(pasted_authorization_code("  ac_padded  ").is_ok());
+
+        assert!(matches!(
+            pasted_authorization_code(""),
+            Err(Error::EmptyIdentifier { param: "code" })
+        ));
+        assert!(matches!(
+            pasted_authorization_code("   "),
+            Err(Error::EmptyIdentifier { param: "code" })
+        ));
+
+        for pasted in [
+            "http://localhost:1455/auth/callback?code=ac_abc&state=xyz",
+            "ac_abc def",
+            "ac_abc\ndef",
+        ] {
+            assert!(
+                matches!(
+                    pasted_authorization_code(pasted),
+                    Err(Error::MalformedAuthorizationCode)
+                ),
+                "paste mistake accepted: {pasted}"
+            );
+        }
+    }
 }

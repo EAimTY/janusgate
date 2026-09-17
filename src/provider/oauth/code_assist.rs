@@ -1,4 +1,8 @@
 //! Transport for the Cloud Code Assist API of the Antigravity upstream.
+//!
+//! The reference port sends richer headers on these calls (an Electron `User-Agent` plus
+//! `Client-Metadata` in `fetchProjectID` at rev `16e0056`); the gateway sends the mandatory
+//! `User-Agent: antigravity` alone, which the endpoint accepts — verified live.
 
 use crate::provider::{endpoints, http_body, http_body::ExchangeFailure};
 use reqwest::{Client, header};

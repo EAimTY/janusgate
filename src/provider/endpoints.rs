@@ -10,7 +10,9 @@ pub(crate) const CODEX_INFERENCE_URL: &str = "https://chatgpt.com/backend-api/co
 /// Upstream URL of the Codex model discovery endpoint.
 pub(crate) const CODEX_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
 
-/// `Originator` header value required by the Codex endpoint.
+/// `Originator` header value required by the Codex endpoint: the CLI's default originator
+/// (`DEFAULT_ORIGINATOR` in `codex-rs/login/src/auth/default_client.rs` at rev `fcf0545`), also
+/// carried as the authorize URL's `originator` parameter.
 pub(crate) const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
 /// `chatgpt-account-id` header name required by the Codex endpoint, carrying the ChatGPT account ID
@@ -24,7 +26,10 @@ pub(crate) const CODEX_CLIENT_VERSION: &str = "0.147.0";
 /// Base URL of the Antigravity Code Assist API.
 ///
 /// Personal/consumer accounts must use `daily-cloudcode-pa.googleapis.com`;
-/// `cloudcode-pa.googleapis.com` returns `429 RESOURCE_EXHAUSTED`.
+/// `cloudcode-pa.googleapis.com` returns `429 RESOURCE_EXHAUSTED`. The reference port infers
+/// against the sandbox daily base instead (`request.ts` at rev `16e0056`); the gateway pins the
+/// non-sandbox daily base, and a location-gated account fails on either base with an upstream
+/// eligibility error — verified live — so the base is not the remedy there.
 pub(crate) const ANTIGRAVITY_BASE_URL: &str =
     "https://daily-cloudcode-pa.googleapis.com/v1internal";
 

@@ -245,6 +245,14 @@ pub(super) enum Error {
     #[error("OAuth state is unknown, expired, or already consumed")]
     UnknownOauthState,
 
+    /// The pasted authorization code carries callback-URL structure or whitespace instead of one
+    /// opaque code value: a paste mistake, never a code the provider issued.
+    #[error(
+        "`code` must be one opaque authorization code value, \
+         not a callback URL or a value with whitespace"
+    )]
+    MalformedAuthorizationCode,
+
     /// The provider vanished between the reauthorization's lookup and its credentials write — a
     /// concurrent `providers:delete`.
     #[error("provider {id} vanished during OAuth reauthorization")]
@@ -325,6 +333,7 @@ impl Error {
             Self::MethodNotAllowed { .. } => ErrorCode::MethodNotAllowed,
 
             Self::EmptyIdentifier { .. }
+            | Self::MalformedAuthorizationCode
             | Self::ProviderTypeMismatch { .. }
             | Self::Validation(_) => ErrorCode::InvalidRequest,
 
@@ -684,6 +693,7 @@ mod tests {
                 ErrorCode::NotFound,
             ),
             (Error::UnknownOauthState, ErrorCode::NotFound),
+            (Error::MalformedAuthorizationCode, ErrorCode::InvalidRequest),
             (
                 Error::OauthStateTypeMismatch {
                     name: "acme".to_string(),
@@ -725,6 +735,7 @@ mod tests {
     fn classifies_client_faults() {
         let cases = [
             (Error::EmptyIdentifier { param: "name" }, true),
+            (Error::MalformedAuthorizationCode, true),
             (Error::Unauthorized, true),
             (Error::ProviderNotFound { id: 7 }, true),
             (

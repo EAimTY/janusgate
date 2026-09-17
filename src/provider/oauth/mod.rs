@@ -6,6 +6,42 @@
 //! [`refresh`] is the lease-guarded refresh loop, [`code_assist`] is the shared Antigravity Code
 //! Assist transport, and [`token`] holds the JWT claim and token-lifetime helpers shared by the
 //! flow and refresh paths.
+//!
+//! # Reference implementations
+//!
+//! Both provider flows mirror their canonical clients wire-for-wire, pinned below; the gateway
+//! speaks the same protocol so the same upstream accepts it. Deliberate divergences are
+//! documented where they occur, and every mirrored fact was verified live against the real
+//! endpoints.
+//!
+//! ## OpenAI Codex (`openai_oauth`)
+//!
+//! Mirrors `openai/codex` at rev `fcf05456bb27e6c3d5677550f54011db6a2a0817` (main, 2026-09-17):
+//! `codex-rs/login/src/server.rs` (authorize URL, code exchange, token-endpoint error shapes),
+//! `codex-rs/login/src/pkce.rs` (PKCE generation), `codex-rs/login/src/token_data.rs` (identity
+//! claims), `codex-rs/login/src/auth/manager.rs` (refresh grant, terminal refresh codes).
+//!
+//! End to end: [`flow::begin_flow`] mints the PKCE pair and the authorize URL the administrator
+//! opens; the provider redirects to the loopback callback with a single-use code, which the
+//! administrator pastes back; [`flow::exchange_code`] redeems it for the token set and reads the
+//! ChatGPT account id from the identity token; [`refresh::ensure_fresh_token`] renews the access
+//! token under the database lease once it expires.
+//!
+//! ## Google Antigravity (`antigravity_oauth`)
+//!
+//! Mirrors `NoeFabris/opencode-antigravity-auth` at rev `16e0056` (2026-08-28), the most widely
+//! ported open implementation of the IDE's flow: `src/constants.ts` (client, scopes, redirect,
+//! endpoints, headers), `src/antigravity/oauth.ts` (authorize, exchange, project lookup),
+//! `src/plugin/project.ts` (onboarding), `src/plugin/quota.ts` (`fetchAvailableModels`),
+//! `src/plugin/request.ts` (inference envelope and headers). Google's own `google-antigravity/*`
+//! repositories carry no OAuth login code (verified by inspection), so the port stands in as the
+//! reference.
+//!
+//! End to end: [`flow::begin_flow`] mints the authorize URL (client-secret style, no PKCE); the
+//! pasted code is redeemed by [`flow::exchange_code`], which resolves the Code Assist project id
+//! via [`project::resolve_project_id`] (`loadCodeAssist`, then `onboardUser`); the credentials
+//! then serve inference and [`refresh::ensure_fresh_token`] renews them under the database
+//! lease.
 
 use super::{http_body, http_body::ExchangeFailure, storage::Error as StorageError};
 

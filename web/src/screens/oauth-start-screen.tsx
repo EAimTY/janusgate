@@ -72,7 +72,9 @@ function AuthorizeStep(props: {
                 </a>
                 <p class="text-xs text-slate-500">
                     This flow expires at {formatTimestamp(props.flow.expires_at)}; its state is
-                    single-use, so a failed exchange needs a fresh flow.
+                    single-use, so a failed exchange needs a fresh flow. Authorization codes are
+                    single-use too and die early: paste the code and complete promptly after
+                    approving access.
                 </p>
             </div>
 
@@ -157,7 +159,7 @@ function CreateProviderOauthScreen(props: { readonly api: ManagementApi }): JSX.
         const outcome = await performManagementCall(() =>
             props.api.completeProviderOauth({
                 state: currentFlow.state,
-                code: code(),
+                code: code().trim(),
                 name: name(),
                 model_prefix: modelPrefix(),
             }),
@@ -344,7 +346,7 @@ function ReauthorizeProviderOauthScreen(props: {
         const outcome = await performManagementCall(() =>
             props.api.reauthorizeProvider({
                 state: currentFlow.state,
-                code: code(),
+                code: code().trim(),
                 provider_id: props.providerId,
             }),
         );

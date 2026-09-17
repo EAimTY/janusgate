@@ -1,5 +1,15 @@
 //! Google Code Assist project onboarding: resolving the Cloud Code Assist project ID of the
 //! authenticated Google account.
+//!
+//! Mirrors the reference port (`NoeFabris/opencode-antigravity-auth` at rev `16e0056`):
+//! `fetchProjectID` in `src/antigravity/oauth.ts` (the `loadCodeAssist` lookup accepting the bare
+//! string and the `{id}` object) and `onboardManagedProject` in `src/plugin/project.ts` (the
+//! tiered `onboardUser` provisioning). Divergences are deliberate: the gateway resolves against
+//! the single daily base URL instead of the reference's endpoint fallback chains, picks the tier
+//! from `paidTier` then `currentTier` then `free-tier` instead of the reference's default-first
+//! `allowedTiers` pick, polls the operation against a 60-second budget instead of the reference's
+//! fixed attempt count, and fails the resolution outright instead of falling back to the
+//! reference's hardcoded project id — every shape on the wire itself is identical.
 
 use super::{Error, code_assist};
 use crate::provider::endpoints;
@@ -148,7 +158,8 @@ impl CompanionProject {
 }
 
 /// Resolves the Cloud Code Assist project ID for the authenticated Google account: `loadCodeAssist`
-/// first, then the `onboardUser` long-running operation polled within [`ONBOARD_TOTAL_BUDGET`].
+/// first, then the `onboardUser` long-running operation polled within [`ONBOARD_TOTAL_BUDGET`]
+/// (README §5.2; the reference `fetchProjectID`/`onboardManagedProject` at rev `16e0056`).
 ///
 /// # Errors
 ///
