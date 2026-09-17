@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Node.js
+/node_modules/
+
+# Build and test results
+/dist/
+/coverage/
+
+# Generated management API bindings (`npm run generate-bindings`)
+/src/management-api/generated/
+
+# Local environment files
+/.env
+
+# Pi
+/.pi/npm

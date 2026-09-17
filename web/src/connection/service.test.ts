@@ -1,0 +1,169 @@
+import { flush } from "solid-js";
+import { describe, expect, it } from "vitest";
+import { appConfig } from "/src/config";
+import type { Connection } from "./model";
+import { readStoredConnection } from "./model";
+import { createConnectionService } from "./service";
+
+const connection: Connection = {
+    baseUrl: "https://gateway.example.com",
+    token: "secret",
+};
+
+function createStorage(seed?: Connection): Storage {
+    const entries = new Map<string, string>();
+    if (seed !== undefined) {
+        entries.set(appConfig.connectionStorageKey, JSON.stringify(seed));
+    }
+    return {
+        get length() {
+            return entries.size;
+        },
+        clear: () => entries.clear(),
+        getItem: (key: string) => entries.get(key) ?? null,
+        key: (index: number) =>
+            [
+                ...entries.keys(),
+            ][index] ?? null,
+        removeItem: (key: string) => {
+            entries.delete(key);
+        },
+        setItem: (key: string, value: string) => {
+            entries.set(key, value);
+        },
+    };
+}
+
+describe("createConnectionService", () => {
+    it("resumes a stored connection", () => {
+        const service = createConnectionService({
+            storage: createStorage(connection),
+            probe: async () => {
+                throw new Error("must not probe on startup");
+            },
+        });
+
+        expect(service.connectionState()).toEqual({
+            status: "connected",
+            connection,
+        });
+        expect(service.currentConnection()).toEqual(connection);
+    });
+
+    it("starts unconnected without storage", () => {
+        const service = createConnectionService({
+            storage: null,
+            probe: async () => {},
+        });
+
+        expect(service.connectionState()).toEqual({
+            status: "unconnected",
+            notice: null,
+        });
+        expect(service.currentConnection()).toBeNull();
+    });
+
+    it("verifies, persists and accepts a candidate", async () => {
+        const storage = createStorage();
+        const probed: Connection[] = [];
+        const service = createConnectionService({
+            storage,
+            probe: async (candidate) => {
+                probed.push(candidate);
+            },
+        });
+
+        await service.connect(connection);
+
+        expect(probed).toEqual([
+            connection,
+        ]);
+        expect(readStoredConnection(storage)).toEqual(connection);
+        expect(service.connectionState()).toEqual({
+            status: "connected",
+            connection,
+        });
+    });
+
+    it("keeps the visitor on setup with the failure message when the probe fails", async () => {
+        const storage = createStorage();
+        const service = createConnectionService({
+            storage,
+            probe: async () => {
+                throw new Error("Failed to fetch");
+            },
+        });
+
+        await service.connect(connection);
+
+        expect(readStoredConnection(storage)).toBeNull();
+        expect(service.connectionState()).toEqual({
+            status: "unconnected",
+            notice: "Failed to fetch",
+        });
+        expect(service.currentConnection()).toBeNull();
+    });
+
+    it("never probes while a connection is being verified or already held", async () => {
+        const storage = createStorage();
+        let probeCount = 0;
+        let releaseProbe: (() => void) | undefined;
+        const service = createConnectionService({
+            storage,
+            probe: async () => {
+                probeCount += 1;
+                await new Promise<void>((resolve) => {
+                    releaseProbe = resolve;
+                });
+            },
+        });
+
+        const firstAttempt = service.connect(connection);
+        await service.connect({
+            baseUrl: "https://other.example.com",
+            token: "other",
+        });
+        releaseProbe?.();
+        await firstAttempt;
+
+        expect(probeCount).toBe(1);
+        expect(service.connectionState()).toEqual({
+            status: "connected",
+            connection,
+        });
+    });
+
+    it("forgets the stored pair", () => {
+        const storage = createStorage(connection);
+        const service = createConnectionService({
+            storage,
+            probe: async () => {},
+        });
+
+        service.forget();
+        flush();
+
+        expect(readStoredConnection(storage)).toBeNull();
+        expect(service.connectionState()).toEqual({
+            status: "unconnected",
+            notice: null,
+        });
+    });
+
+    it("clears a rejected connection and explains it on setup", () => {
+        const storage = createStorage(connection);
+        const service = createConnectionService({
+            storage,
+            probe: async () => {},
+        });
+
+        service.reportUnauthorized("invalid management token");
+        flush();
+
+        expect(readStoredConnection(storage)).toBeNull();
+        expect(service.connectionState()).toEqual({
+            status: "unconnected",
+            notice: "invalid management token",
+        });
+    });
+});
