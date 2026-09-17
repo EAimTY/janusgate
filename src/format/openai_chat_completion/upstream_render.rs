@@ -1,26 +1,12 @@
-//! Upstream-request rendering for the Chat Completions codec: renders an IR
-//! request into the `openai_chat_completion` upstream payload.
+//! Upstream-request rendering for the Chat Completions codec: renders an IR request into the
+//! `openai_chat_completion` upstream payload.
 //!
-//! The rendered payload is a first-party type in the upstream wire shape, so
-//! field presence per request is declared by `skip_serializing_if` rather than
-//! assembled conditionally.
+//! The rendered payload is a first-party type in the upstream wire shape, so field presence per
+//! request is declared by `skip_serializing_if` rather than assembled conditionally.
 
 use crate::ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice};
 use serde::Serialize;
 use serde_json::Value;
-
-/// Renders the upstream request URL and payload for an OpenAI-compatible
-/// Chat Completions upstream: `POST <base_url>/chat/completions`
-/// (README §5.3).
-pub(crate) fn render_request<'a>(
-    ir: &'a IrRequest,
-    base_url: &str,
-    is_streaming: bool,
-) -> (String, RequestBody<'a>) {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-
-    (url, render_request_body(ir, is_streaming))
-}
 
 /// The upstream Chat Completions request payload.
 #[derive(Debug, Serialize)]
@@ -187,8 +173,8 @@ struct ToolFunction<'a> {
     parameters: Option<&'a Value>,
 }
 
-/// A `tool_choice` restriction in the upstream shape: a bare mode string or a
-/// named-function object.
+/// A `tool_choice` restriction in the upstream shape: a bare mode string or a named-function
+/// object.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum ToolChoice<'a> {
@@ -258,6 +244,18 @@ struct JsonSchema<'a> {
     schema: &'a Value,
 }
 
+/// Renders the upstream request URL and payload for an OpenAI-compatible Chat Completions upstream:
+/// `POST <base_url>/chat/completions` (README §5.3).
+pub(crate) fn render_request<'a>(
+    ir: &'a IrRequest,
+    base_url: &str,
+    is_streaming: bool,
+) -> (String, RequestBody<'a>) {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+    (url, render_request_body(ir, is_streaming))
+}
+
 /// Renders an IR request into the upstream Chat Completions payload.
 fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
     let mut messages: Vec<Message<'_>> = Vec::new();
@@ -322,10 +320,9 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
                     })
                     .collect();
 
-                // The Chat Completions wire spec types assistant `content` as
-                // `string | null`; parts arrays are not universally accepted
-                // by compatible upstreams, and the gateway attaches no
-                // per-part semantics to assistant text, so parts join like
+                // The Chat Completions wire spec types assistant `content` as `string | null`;
+                // parts arrays are not universally accepted by compatible upstreams, and the
+                // gateway attaches no per-part semantics to assistant text, so parts join like
                 // system instructions do.
                 let content = match texts.as_slice() {
                     [] => None,

@@ -34,6 +34,7 @@ function providerDescription(provider: ProviderResponse | null, providerId: numb
     if (provider === null) {
         return `Provider #${providerId}`;
     }
+
     return `${providerTypeLabel(provider.type)} · #${provider.id}`;
 }
 
@@ -48,6 +49,7 @@ function discoveryNotice(modelCount: number): string {
  */
 export function ProviderDetailScreen(props: ProviderDetailScreenProps): JSX.Element {
     const providers = createAsyncResource((signal) => props.api.listProviders(signal));
+
     const models = createAsyncResource((signal) =>
         props.api.listModels(
             {
@@ -56,6 +58,7 @@ export function ProviderDetailScreen(props: ProviderDetailScreenProps): JSX.Elem
             signal,
         ),
     );
+
     const [actionFailure, setActionFailure] = createSignal<string | null>(null);
     const [notice, setNotice] = createSignal<string | null>(null);
     const [isDiscovering, setIsDiscovering] = createSignal(false);
@@ -64,6 +67,7 @@ export function ProviderDetailScreen(props: ProviderDetailScreenProps): JSX.Elem
 
     const provider = createMemo(() => {
         const listing = providers.value();
+
         return listing === null
             ? null
             : (listing.providers.find((row) => row.id === props.providerId) ?? null);
@@ -73,9 +77,11 @@ export function ProviderDetailScreen(props: ProviderDetailScreenProps): JSX.Elem
 
     const replaceModel = (updated: ModelResponse): void => {
         const current = models.value();
+
         if (current === null) {
             return;
         }
+
         models.setValue({
             models: current.models.map((row) =>
                 row.provider_id === updated.provider_id && row.upstream_id === updated.upstream_id
@@ -89,11 +95,13 @@ export function ProviderDetailScreen(props: ProviderDetailScreenProps): JSX.Elem
         setActionFailure(null);
         setNotice(null);
         setIsDiscovering(true);
+
         const outcome = await performManagementCall(() =>
             props.api.discoverModels({
                 provider_id: props.providerId,
             }),
         );
+
         setIsDiscovering(false);
 
         if (outcome.status === "ok") {
@@ -102,11 +110,14 @@ export function ProviderDetailScreen(props: ProviderDetailScreenProps): JSX.Elem
             models.setValue({
                 models: outcome.result.models,
             });
+
             setNotice(discoveryNotice(outcome.result.models.length));
             return;
         }
+
         if (outcome.status === "failed") {
             setActionFailure(outcome.message);
+
             if (outcome.errno === ErrorCode.NotFound) {
                 // The provider is gone, so the listing no longer shows it.
                 await providers.reload();
@@ -118,20 +129,24 @@ export function ProviderDetailScreen(props: ProviderDetailScreenProps): JSX.Elem
         setActionFailure(null);
         setNotice(null);
         setIsDeleting(true);
+
         const outcome = await performManagementCall(() =>
             props.api.deleteProvider({
                 provider_id: props.providerId,
             }),
         );
+
         setIsDeleting(false);
 
         if (outcome.status === "ok") {
             navigate(hrefs.providers());
             return;
         }
+
         if (outcome.status === "failed") {
             setIsConfirmingDelete(false);
             setActionFailure(outcome.message);
+
             if (outcome.errno === ErrorCode.NotFound) {
                 await providers.reload();
             }
@@ -147,6 +162,7 @@ export function ProviderDetailScreen(props: ProviderDetailScreenProps): JSX.Elem
 
     const providerSaved = async (): Promise<void> => {
         setNotice("Provider updated.");
+
         // `providers:update` answers an empty object (README §4.5), and a
         // changed prefix recomposes unoverridden model IDs — so both listings
         // this screen shows are refetched.
@@ -371,9 +387,11 @@ function ProviderEditForm(props: ProviderEditFormProps): JSX.Element {
     const [baseUrl, setBaseUrl] = createSignal(
         props.provider.type === "openai_compatible" ? props.provider.base_url : "",
     );
+
     const [protocol, setProtocol] = createSignal(
         props.provider.type === "openai_compatible" ? props.provider.protocol : "openai_response",
     );
+
     const [apiKey, setApiKey] = createSignal("");
     const [nameError, setNameError] = createSignal<string | null>(null);
     const [baseUrlError, setBaseUrlError] = createSignal<string | null>(null);
@@ -383,15 +401,19 @@ function ProviderEditForm(props: ProviderEditFormProps): JSX.Element {
 
     const save = async (event: SubmitEvent): Promise<void> => {
         event.preventDefault();
+
         if (isSaving()) {
             return;
         }
 
         const nameFailure = name().trim() === "" ? "Enter a provider name." : null;
         const isCompatible = props.provider.type === "openai_compatible";
+
         const baseUrlFailure =
             isCompatible && baseUrl().trim() === "" ? "Enter the upstream base URL." : null;
+
         const parsedProtocol = findUpstreamFormat(protocol());
+
         const protocolFailure =
             isCompatible && parsedProtocol === null ? "Choose a protocol." : null;
 
@@ -399,6 +421,7 @@ function ProviderEditForm(props: ProviderEditFormProps): JSX.Element {
         setBaseUrlError(baseUrlFailure);
         setProtocolError(protocolFailure);
         setFailure(null);
+
         if (
             nameFailure !== null ||
             baseUrlFailure !== null ||
@@ -429,17 +452,21 @@ function ProviderEditForm(props: ProviderEditFormProps): JSX.Element {
 
         setIsSaving(true);
         props.onSaveStarted();
+
         const outcome = await performManagementCall(() =>
             props.api.updateProvider(toUpdateProviderRequest(props.provider, edits)),
         );
+
         setIsSaving(false);
 
         if (outcome.status === "ok") {
             props.onSaved();
             return;
         }
+
         if (outcome.status === "failed") {
             setFailure(outcome.message);
+
             if (outcome.errno === ErrorCode.NotFound) {
                 props.onRowVanished(outcome.message);
             }

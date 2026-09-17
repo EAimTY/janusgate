@@ -54,6 +54,7 @@ export function parseRowIdentifier(value: string | null): number | null {
     if (value === null || !/^\d+$/.test(value)) {
         return null;
     }
+
     const identifier = Number(value);
     return Number.isSafeInteger(identifier) ? identifier : null;
 }
@@ -71,6 +72,7 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
             name: "providers",
         };
     }
+
     if (normalizedPath === "/providers/new") {
         return {
             name: "providerCreate",
@@ -78,8 +80,10 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
     }
 
     const providerDetailMatch = /^\/providers\/([^/]+)$/.exec(normalizedPath);
+
     if (providerDetailMatch !== null) {
         const providerId = parseRowIdentifier(providerDetailMatch[1] ?? null);
+
         return providerId === null
             ? {
                   name: "notFound",
@@ -128,6 +132,7 @@ export function navigate(target: string): void {
     if (target === `${window.location.pathname}${window.location.search}`) {
         return;
     }
+
     window.history.pushState(null, "", target);
     setLocation(readLocation());
     window.scrollTo(0, 0);

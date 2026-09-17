@@ -6,6 +6,7 @@ describe("matchAppRoute", () => {
         expect(matchAppRoute("/", "")).toEqual({
             name: "providers",
         });
+
         expect(matchAppRoute("/providers", "")).toEqual({
             name: "providers",
         });
@@ -29,6 +30,7 @@ describe("matchAppRoute", () => {
             name: "providerDetail",
             providerId: 12,
         });
+
         expect(matchAppRoute("/models/", "")).toEqual({
             name: "models",
             providerFilter: null,
@@ -40,14 +42,17 @@ describe("matchAppRoute", () => {
             name: "models",
             providerFilter: null,
         });
+
         expect(matchAppRoute("/models", "?provider=7")).toEqual({
             name: "models",
             providerFilter: 7,
         });
+
         expect(matchAppRoute("/models", "?unknown=1")).toEqual({
             name: "models",
             providerFilter: null,
         });
+
         // A filter addresses no row when it is not a row identifier.
         expect(matchAppRoute("/models", "?provider=all")).toEqual({
             name: "models",
@@ -60,6 +65,7 @@ describe("matchAppRoute", () => {
             name: "oauthStart",
             reauthorizeProviderId: null,
         });
+
         expect(matchAppRoute("/oauth/start", "?provider=3")).toEqual({
             name: "oauthStart",
             reauthorizeProviderId: 3,
@@ -101,18 +107,21 @@ describe("hrefs", () => {
 
     it("round-trips through the matcher", () => {
         const providerDetail = matchAppRoute(hrefs.providerDetail(12), "");
+
         expect(providerDetail).toEqual({
             name: "providerDetail",
             providerId: 12,
         });
 
         const models = matchAppRoute("/models", "?provider=7");
+
         expect(models).toEqual({
             name: "models",
             providerFilter: 7,
         });
 
         const oauth = matchAppRoute("/oauth/start", "?provider=3");
+
         expect(oauth).toEqual({
             name: "oauthStart",
             reauthorizeProviderId: 3,

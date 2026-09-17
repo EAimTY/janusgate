@@ -1,9 +1,8 @@
-//! Upstream-event parsing for the Responses codec: parses upstream SSE events
-//! or a complete JSON body into IR events.
+//! Upstream-event parsing for the Responses codec: parses upstream SSE events or a complete JSON
+//! body into IR events.
 //!
-//! Upstream payloads are third-party, so the models below carry exactly the
-//! members the codec reads, ignore every member it does not, and default what
-//! upstreams legitimately omit.
+//! Upstream payloads are third-party, so the models below carry exactly the members the codec
+//! reads, ignore every member it does not, and default what upstreams legitimately omit.
 
 use crate::{
     format::{self, PayloadError, UpstreamError, UpstreamEventParser},
@@ -13,40 +12,36 @@ use crate::{
 use serde::Deserialize;
 use serde_json::Value;
 
-/// Parses upstream Responses payloads — SSE events or a full JSON body — into
-/// IR events.
+/// Parses upstream Responses payloads — SSE events or a full JSON body — into IR events.
 #[derive(Debug, Default)]
 pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
     is_started: bool,
 
-    /// Message-text fallback-recovery state: live delta delivery exhausts
-    /// every fallback source for the kind, and per-index records keep each
-    /// item from delivering twice.
+    /// Message-text fallback-recovery state: live delta delivery exhausts every fallback source
+    /// for the kind, and per-index records keep each item from delivering twice.
     text_recovery: FallbackRecovery,
 
-    /// Reasoning-text fallback-recovery state; same contract as
-    /// `text_recovery`.
+    /// Reasoning-text fallback-recovery state; same contract as `text_recovery`.
     reasoning_recovery: FallbackRecovery,
 
-    /// Whether a live event already delivered a tool call, marking the
-    /// terminal output array as an exhausted source for them.
+    /// Whether a live event already delivered a tool call, marking the terminal output array as an
+    /// exhausted source for them.
     is_call_delivered: bool,
 
-    /// Whether a finish reason was already emitted; a clean end-of-stream
-    /// without one degrades to [`IrFinishReason::Stop`] in the parser's
-    /// finish hook, matching the aggregated rendering default.
+    /// Whether a finish reason was already emitted; a clean end-of-stream without one degrades to
+    /// [`IrFinishReason::Stop`] in the parser's finish hook, matching the aggregated rendering
+    /// default.
     is_finished: bool,
 }
 
-/// One upstream Responses event: the union of the members the gateway reads
-/// across the event vocabulary, selected by `event_type`.
+/// One upstream Responses event: the union of the members the gateway reads across the event
+/// vocabulary, selected by `event_type`.
 ///
-/// Upstreams are third-party, so every member is optional — each event type
-/// carries its own subset, and upstreams attach identifiers, sequence numbers,
-/// and provider extensions the gateway never reads — and no member is
-/// required. The `error` member is read on every event type: any frame bearing
-/// one is an upstream failure, recognized type or not (README §6.7).
+/// Upstreams are third-party, so every member is optional — each event type carries its own subset,
+/// and upstreams attach identifiers, sequence numbers, and provider extensions the gateway never
+/// reads — and no member is required. The `error` member is read on every event type: any frame
+/// bearing one is an upstream failure, recognized type or not (README §6.7).
 #[derive(Debug, Default, Deserialize)]
 struct UpstreamEvent {
     /// Event type discriminator.
@@ -79,8 +74,8 @@ struct UpstreamEvent {
     message: Option<String>,
 }
 
-/// The upstream response object, carried by the response-level events as the
-/// `response` member and by a complete non-streaming body as the body itself.
+/// The upstream response object, carried by the response-level events as the `response` member and
+/// by a complete non-streaming body as the body itself.
 #[derive(Debug, Default, Deserialize)]
 struct ResponseObject {
     /// Upstream response identifier, empty when the upstream omits it.
@@ -160,9 +155,8 @@ struct OutputTokensDetails {
     reasoning_tokens: Option<u64>,
 }
 
-/// One upstream output item: the union of the fields the gateway reads across
-/// the item kinds it maps to IR events. Items of other kinds carry none of
-/// them and are ignored.
+/// One upstream output item: the union of the fields the gateway reads across the item kinds it
+/// maps to IR events. Items of other kinds carry none of them and are ignored.
 #[derive(Debug, Default, Deserialize)]
 struct OutputItem {
     /// Item kind discriminator.
@@ -194,9 +188,9 @@ struct OutputItem {
     thought_signature: Option<String>,
 }
 
-/// One content part of a `message` item. Refusal text is message text: it
-/// rides the same text channel as `output_text` parts (README §6.2). Parts of
-/// other kinds carry no text and are ignored.
+/// One content part of a `message` item. Refusal text is message text: it rides the same text
+/// channel as `output_text` parts (README §6.2). Parts of other kinds carry no text and are
+/// ignored.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum ContentPart {
@@ -238,12 +232,11 @@ enum SummaryPart {
     Other,
 }
 
-/// Exactly-once fallback-recovery state for one output kind: whether live
-/// delta events already delivered the kind — exhausting every fallback
-/// source for it — and the output indices whose item a fallback source, a
-/// streamed `output_item.done` item or a terminal output-array item,
-/// already delivered, so the same item never delivers twice across sources
-/// while distinct items each deliver exactly once.
+/// Exactly-once fallback-recovery state for one output kind: whether live delta events already
+/// delivered the kind — exhausting every fallback source for it — and the output indices whose item
+/// a fallback source, a streamed `output_item.done` item or a terminal output-array item, already
+/// delivered, so the same item never delivers twice across sources while distinct items each
+/// deliver exactly once.
 #[derive(Debug, Default)]
 struct FallbackRecovery {
     /// Whether live delta events already delivered the kind.
@@ -253,16 +246,32 @@ struct FallbackRecovery {
     recovered_indices: Vec<usize>,
 }
 
+/// Origin of an upstream output item, deciding how it maps to IR events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputItemOrigin {
+    /// An item of a complete JSON response body; the value is the item's position in the `output`
+    /// array.
+    Json(usize),
+
+    /// A streaming `output_item.done` event; the value is the upstream `output_index`.
+    StreamDone(usize),
+
+    /// An item of the terminal event's `response.output` array; the value is the item's position,
+    /// used as the index of a call the terminal walk recovers. Consulted only for kinds that no
+    /// live event delivered.
+    Terminal(usize),
+}
+
 impl FallbackRecovery {
-    /// Whether a fallback source may recover the item at `index`: live
-    /// deltas exhaust every fallback source for the kind, and a fallback
-    /// delivery for `index` exhausts further sources for the same item.
+    /// Whether a fallback source may recover the item at `index`: live deltas exhaust every
+    /// fallback source for the kind, and a fallback delivery for `index` exhausts further sources
+    /// for the same item.
     fn can_recover(&self, index: usize) -> bool {
         !self.is_delivered && !self.recovered_indices.contains(&index)
     }
 
-    /// Records that a fallback source recovered the item at `index`;
-    /// repeats for further parts of the same item are ignored.
+    /// Records that a fallback source recovered the item at `index`; repeats for further parts of
+    /// the same item are ignored.
     fn record(&mut self, index: usize) {
         if !self.recovered_indices.contains(&index) {
             self.recovered_indices.push(index);
@@ -270,26 +279,9 @@ impl FallbackRecovery {
     }
 }
 
-/// Origin of an upstream output item, deciding how it maps to IR events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutputItemOrigin {
-    /// An item of a complete JSON response body; the value is the item's
-    /// position in the `output` array.
-    Json(usize),
-
-    /// A streaming `output_item.done` event; the value is the upstream
-    /// `output_index`.
-    StreamDone(usize),
-
-    /// An item of the terminal event's `response.output` array; the value is
-    /// the item's position, used as the index of a call the terminal walk
-    /// recovers. Consulted only for kinds that no live event delivered.
-    Terminal(usize),
-}
-
 impl OutputItemOrigin {
-    /// The output index a fallback recovery keys on, or [`None`] for the JSON
-    /// body origin, whose items always deliver.
+    /// The output index a fallback recovery keys on, or [`None`] for the JSON body origin, whose
+    /// items always deliver.
     fn recovery_index(self) -> Option<usize> {
         match self {
             Self::Json(_) => None,
@@ -311,10 +303,9 @@ impl UpstreamParser {
     ///
     /// Returns [`PayloadError`] for upstream failure events.
     fn ingest_event(&mut self, event: UpstreamEvent) -> Result<Vec<IrEvent>, PayloadError> {
-        // Any frame bearing a top-level error object is an upstream failure,
-        // recognized event type or not; without this check such a frame
-        // would fall through to the unknown-type arm and parse as an empty
-        // success (README §6.7).
+        // Any frame bearing a top-level error object is an upstream failure, recognized event type
+        // or not; without this check such a frame would fall through to the unknown-type arm and
+        // parse as an empty success (README §6.7).
         if let Some(error) = &event.error {
             return Err(error.failure());
         }
@@ -345,9 +336,8 @@ impl UpstreamParser {
 
                 let deltas = delta_event(&event, IrEvent::ReasoningDelta);
 
-                // Only an event that actually carried a delta exhausts the
-                // fallback sources; a delta-typed event without a payload
-                // delivered nothing.
+                // Only an event that actually carried a delta exhausts the fallback sources; a
+                // delta-typed event without a payload delivered nothing.
                 if !deltas.is_empty() {
                     self.reasoning_recovery.is_delivered = true;
                 }
@@ -407,30 +397,25 @@ impl UpstreamParser {
             "response.completed" | "response.incomplete" => {
                 let mut events = self.message_start_events(event.response.as_ref());
 
-                // An absent response object behaves exactly as an empty one:
-                // no output to recover, no usage, and the delivered-calls
-                // flag alone deciding the finish.
+                // An absent response object behaves exactly as an empty one: no output to recover,
+                // no usage, and the delivered-calls flag alone deciding the finish.
                 let response = event.response.unwrap_or_default();
 
-                // A third-party `openai_compatible` upstream may carry items
-                // only in the terminal response object; when no live event
-                // delivered a kind, recover it from the output array exactly
-                // as from a JSON response body. Text and reasoning recovery
-                // is decided per item inside `ingest_output_item` against
-                // the live-delivery flags and the per-index recovery
-                // records, so several message or reasoning items of the
-                // array each deliver exactly once. The call recovery
-                // decision is snapshotted before the walk: the walk must
-                // consult the pre-walk state for every item, so a terminal
-                // output array carrying several function_call items
-                // delivers each of them instead of only the first.
+                // A third-party `openai_compatible` upstream may carry items only in the terminal
+                // response object; when no live event delivered a kind, recover it from the output
+                // array exactly as from a JSON response body. Text and reasoning recovery is
+                // decided per item inside `ingest_output_item` against the live-delivery flags and
+                // the per-index recovery records, so several message or reasoning items of the
+                // array each deliver exactly once. The call recovery decision is snapshotted before
+                // the walk: the walk must consult the pre-walk state for every item, so a terminal
+                // output array carrying several function_call items delivers each of them instead
+                // of only the first.
                 let is_call_recoverable = !self.is_call_delivered;
 
-                // Whether the walk actually recovered calls: the delivery
-                // flag keeps its pre-walk value for every item of the walk,
-                // so the flip afterwards records the walk's outcome — the
-                // finish mapping consults it, and a text-only output array
-                // must not mark the turn as a tool-call turn.
+                // Whether the walk actually recovered calls: the delivery flag keeps its pre-walk
+                // value for every item of the walk, so the flip afterwards records the walk's
+                // outcome — the finish mapping consults it, and a text-only output array must not
+                // mark the turn as a tool-call turn.
                 let mut is_call_recovered = false;
 
                 if !self.text_recovery.is_delivered
@@ -456,8 +441,8 @@ impl UpstreamParser {
 
                 self.is_finished = true;
 
-                // The delivery flag was flipped after the terminal walk above,
-                // so calls recovered from the output array count too.
+                // The delivery flag was flipped after the terminal walk above, so calls recovered
+                // from the output array count too.
                 events.push(IrEvent::Finish(finish_reason_for_response(
                     &response,
                     self.is_call_delivered,
@@ -485,19 +470,17 @@ impl UpstreamParser {
         }
     }
 
-    /// Ingests one output item from a JSON response body, a streaming
-    /// `output_item.done` event, or the terminal event's output array.
+    /// Ingests one output item from a JSON response body, a streaming `output_item.done` event, or
+    /// the terminal event's output array.
     ///
-    /// Conformant upstreams deliver message text, reasoning text, and tool
-    /// calls as live events, so streamed and terminal items are fallback
-    /// sources consulted only when no live event delivered that kind of item
-    /// — third-party `openai_compatible` upstreams may stream complete items
-    /// without deltas, and their items must still reach the client exactly
-    /// once. Fallback recovery of text and reasoning is keyed by the item's
-    /// output index: a recovery delivery for one index never silences
-    /// another item of the same kind, and one index is never delivered
-    /// twice, so the terminal array's copy of an item already delivered as a
-    /// streamed done event is recognized by the shared index.
+    /// Conformant upstreams deliver message text, reasoning text, and tool calls as live events, so
+    /// streamed and terminal items are fallback sources consulted only when no live event delivered
+    /// that kind of item — third-party `openai_compatible` upstreams may stream complete items
+    /// without deltas, and their items must still reach the client exactly once. Fallback recovery
+    /// of text and reasoning is keyed by the item's output index: a recovery delivery for one index
+    /// never silences another item of the same kind, and one index is never delivered twice, so the
+    /// terminal array's copy of an item already delivered as a streamed done event is recognized by
+    /// the shared index.
     fn ingest_output_item(
         &mut self,
         item: &OutputItem,
@@ -516,8 +499,8 @@ impl UpstreamParser {
                 }
 
                 for part in &item.content {
-                    // Refusal text is message text: it rides the same text
-                    // channel as `output_text` parts (README §6.2).
+                    // Refusal text is message text: it rides the same text channel as `output_text`
+                    // parts (README §6.2).
                     let text = match part {
                         ContentPart::OutputText { text } => text.as_deref(),
 
@@ -527,10 +510,9 @@ impl UpstreamParser {
                     };
 
                     if let Some(text) = text {
-                        // The recovery record is written only when a text
-                        // part was actually pushed, so a text-less item
-                        // does not exhaust its output index for a later
-                        // item that carries the text.
+                        // The recovery record is written only when a text part was actually pushed,
+                        // so a text-less item does not exhaust its output index for a later item
+                        // that carries the text.
                         if let Some(index) = origin.recovery_index() {
                             self.text_recovery.record(index);
                         }
@@ -556,9 +538,8 @@ impl UpstreamParser {
                     };
 
                     if let Some(text) = text {
-                        // Same per-extraction rule as the message arm: a
-                        // summary-less item does not exhaust its output
-                        // index.
+                        // Same per-extraction rule as the message arm: a summary-less item does not
+                        // exhaust its output index.
                         if let Some(index) = origin.recovery_index() {
                             self.reasoning_recovery.record(index);
                         }
@@ -569,10 +550,9 @@ impl UpstreamParser {
             }
 
             "function_call" => match origin {
-                // A JSON body delivers the whole call at once; mirror the
-                // chat and gemini JSON paths with a full-arguments delta
-                // plus a done per call, so streaming renderers open and
-                // complete the item.
+                // A JSON body delivers the whole call at once; mirror the chat and gemini JSON
+                // paths with a full-arguments delta plus a done per call, so streaming renderers
+                // open and complete the item.
                 OutputItemOrigin::Json(index) => {
                     self.is_call_delivered = true;
 
@@ -592,15 +572,13 @@ impl UpstreamParser {
                     events.push(self.complete_function_call(item, index));
                 }
 
-                // The terminal fallback completes a call exactly-once:
-                // only when no live call event was delivered before the
-                // terminal event may the output array deliver calls,
-                // mirroring the per-kind text recovery; re-emitting
-                // delivered calls here would duplicate them. The delivery
-                // flag is owned by the terminal-event arm, which flips it
-                // only after the whole output array is walked, so several
-                // recovered calls each deliver exactly once; the flag
-                // keeps its pre-walk value for every item of this walk.
+                // The terminal fallback completes a call exactly-once: only when no live call event
+                // was delivered before the terminal event may the output array deliver calls,
+                // mirroring the per-kind text recovery; re-emitting delivered calls here would
+                // duplicate them. The delivery flag is owned by the terminal-event arm, which flips
+                // it only after the whole output array is walked, so several recovered calls each
+                // deliver exactly once; the flag keeps its pre-walk value for every item of this
+                // walk.
                 OutputItemOrigin::Terminal(index) => {
                     if !self.is_call_delivered {
                         events.push(self.complete_function_call(item, index));
@@ -612,8 +590,7 @@ impl UpstreamParser {
         }
     }
 
-    /// Emits the opening delta for a function call item revealed by
-    /// `output_item.added`.
+    /// Emits the opening delta for a function call item revealed by `output_item.added`.
     fn open_function_call(&self, item: &OutputItem, output_index: usize) -> IrEvent {
         IrEvent::ToolCallDelta {
             index: output_index,
@@ -623,8 +600,7 @@ impl UpstreamParser {
         }
     }
 
-    /// Emits the completion of a function call item delivered by a streaming
-    /// `output_item.done`.
+    /// Emits the completion of a function call item delivered by a streaming `output_item.done`.
     fn complete_function_call(&self, item: &OutputItem, index: usize) -> IrEvent {
         IrEvent::ToolCallDone {
             index,
@@ -635,14 +611,13 @@ impl UpstreamParser {
         }
     }
 
-    /// Emits [`IrEvent::MessageStart`] exactly once, first (README §6.2):
-    /// every ingest arm opens with this call, so recovery paths that never
-    /// see the live `response.created`/`response.in_progress` events —
-    /// no-live-delta upstreams per README §6.3 — still open their event
-    /// stream with it, and the once-only guard turns repeats into no-ops.
+    /// Emits [`IrEvent::MessageStart`] exactly once, first (README §6.2): every ingest arm opens
+    /// with this call, so recovery paths that never see the live
+    /// `response.created`/`response.in_progress` events — no-live-delta upstreams per README §6.3 —
+    /// still open their event stream with it, and the once-only guard turns repeats into no-ops.
     ///
-    /// The identity comes from the response object the event carries; an
-    /// event carrying none opens the stream with empty identity.
+    /// The identity comes from the response object the event carries; an event carrying none opens
+    /// the stream with empty identity.
     fn message_start_events(&mut self, response: Option<&ResponseObject>) -> Vec<IrEvent> {
         if self.is_started {
             return Vec::new();
@@ -676,14 +651,13 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// # Errors
     ///
-    /// Returns [`PayloadError`] for upstream failure statuses and malformed
-    /// bodies.
+    /// Returns [`PayloadError`] for upstream failure statuses and malformed bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
         let response = format::parse_body::<ResponseObject>(value)?;
 
-        // A 2xx body carrying a top-level error object is an upstream
-        // failure (README §6.7), not an empty success; the failed-status
-        // fallback below still covers a failure without an error object.
+        // A 2xx body carrying a top-level error object is an upstream failure (README §6.7), not an
+        // empty success; the failed-status fallback below still covers a failure without an error
+        // object.
         if let Some(error) = &response.error {
             return Err(error.failure());
         }
@@ -706,8 +680,8 @@ impl UpstreamEventParser for UpstreamParser {
 
         self.is_finished = true;
 
-        // The output walk above flipped the delivery flag for every
-        // `function_call` item the body carried.
+        // The output walk above flipped the delivery flag for every `function_call` item the body
+        // carried.
         events.push(IrEvent::Finish(finish_reason_for_response(
             &response,
             self.is_call_delivered,
@@ -719,11 +693,10 @@ impl UpstreamEventParser for UpstreamParser {
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {
-        // An upstream may close its stream cleanly after streaming deltas
-        // without ever sending the terminal `response.completed` or
-        // `response.incomplete` event; the missing finish reason degrades to
-        // `Stop` so the streamed client sees the same terminal finish as the
-        // aggregated rendering of the same stream.
+        // An upstream may close its stream cleanly after streaming deltas without ever sending the
+        // terminal `response.completed` or `response.incomplete` event; the missing finish reason
+        // degrades to `Stop` so the streamed client sees the same terminal finish as the aggregated
+        // rendering of the same stream.
         if !self.is_finished {
             self.is_finished = true;
 
@@ -734,14 +707,13 @@ impl UpstreamEventParser for UpstreamParser {
     }
 }
 
-/// Reads the `output_index` field of an upstream stream event, defaulting to
-/// the first position.
+/// Reads the `output_index` field of an upstream stream event, defaulting to the first position.
 fn event_output_index(event: &UpstreamEvent) -> usize {
     event.output_index.unwrap_or_default() as usize
 }
 
-/// Builds a delta event from an upstream delta payload; an event carrying no
-/// delta delivered nothing.
+/// Builds a delta event from an upstream delta payload; an event carrying no delta delivered
+/// nothing.
 fn delta_event(event: &UpstreamEvent, make_event_fn: impl Fn(String) -> IrEvent) -> Vec<IrEvent> {
     match &event.delta {
         Some(delta) => vec![make_event_fn(delta.clone())],
@@ -752,14 +724,12 @@ fn delta_event(event: &UpstreamEvent, make_event_fn: impl Fn(String) -> IrEvent)
 
 /// Finish reason for a response object already known not to be failed.
 ///
-/// An `incomplete` status maps through `incomplete_details.reason` (unknown
-/// reasons degrade to [`IrFinishReason::Length`] — the output was cut short).
-/// Any other status finished normally, and a normally finished turn that
-/// delivered function calls carries the canonical [`IrFinishReason::ToolCall`]
-/// finish: the Responses status vocabulary has no tool-call value (completed /
-/// failed / in_progress / cancelled / queued / incomplete), so the delivered
-/// calls decide, matching official Chat Completions semantics for
-/// text+tool-call mixed turns too.
+/// An `incomplete` status maps through `incomplete_details.reason` (unknown reasons degrade to
+/// [`IrFinishReason::Length`] — the output was cut short). Any other status finished normally, and
+/// a normally finished turn that delivered function calls carries the canonical
+/// [`IrFinishReason::ToolCall`] finish: the Responses status vocabulary has no tool-call value
+/// (completed / failed / in_progress / cancelled / queued / incomplete), so the delivered calls
+/// decide, matching official Chat Completions semantics for text+tool-call mixed turns too.
 fn finish_reason_for_response(
     response: &ResponseObject,
     is_call_delivered: bool,
@@ -809,11 +779,16 @@ fn push_usage_events(response: &ResponseObject, events: &mut Vec<IrEvent>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::UpstreamParser;
+    use crate::{
+        format::UpstreamEventParser as _,
+        ir::{IrEvent, IrFinishReason, IrUsage},
+        sse::SseFrame,
+    };
+    use serde_json::Value;
 
-    /// A 2xx JSON body carrying a top-level error object is an upstream
-    /// failure (README §6.7), not an empty success: the upstream's error
-    /// text and embedded code must reach the caller.
+    /// A 2xx JSON body carrying a top-level error object is an upstream failure (README §6.7), not
+    /// an empty success: the upstream's error text and embedded code must reach the caller.
     ///
     /// # Panics
     ///
@@ -840,10 +815,9 @@ mod tests {
         );
     }
 
-    /// The non-streaming Responses body is the Response object, whose shape
-    /// carries `"error": null` on every success; such a body must parse as a
-    /// complete success, not reject with the null literal as the failure
-    /// text (README §6.7).
+    /// The non-streaming Responses body is the Response object, whose shape carries `"error": null`
+    /// on every success; such a body must parse as a complete success, not reject with the null
+    /// literal as the failure text (README §6.7).
     ///
     /// # Panics
     ///
@@ -869,10 +843,9 @@ mod tests {
         assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)),);
     }
 
-    /// A stream frame bearing a top-level error object is a failure even
-    /// when its `type` is unrecognized, and a bare error object with no
-    /// `type` at all likewise aborts instead of parsing as an empty success
-    /// (README §6.3: the stream aborts with a terminal error frame).
+    /// A stream frame bearing a top-level error object is a failure even when its `type` is
+    /// unrecognized, and a bare error object with no `type` at all likewise aborts instead of
+    /// parsing as an empty success (README §6.3: the stream aborts with a terminal error frame).
     ///
     /// # Panics
     ///
@@ -916,8 +889,8 @@ mod tests {
         assert_eq!(error.to_string(), "hard failure");
     }
 
-    /// The rejection keys on the error object only: an unrecognized frame
-    /// without one is still ignored, exactly as before.
+    /// The rejection keys on the error object only: an unrecognized frame without one is still
+    /// ignored, exactly as before.
     ///
     /// # Panics
     ///
@@ -945,10 +918,9 @@ mod tests {
         assert!(events.is_empty());
     }
 
-    /// The usage detail objects an upstream reports — `cached_tokens`,
-    /// `cache_write_tokens`, `reasoning_tokens` — parse into the IR usage so
-    /// the outward Responses rendering can carry them through; totals-only
-    /// usage leaves them absent for the renderer's zero-fill.
+    /// The usage detail objects an upstream reports — `cached_tokens`, `cache_write_tokens`,
+    /// `reasoning_tokens` — parse into the IR usage so the outward Responses rendering can carry
+    /// them through; totals-only usage leaves them absent for the renderer's zero-fill.
     ///
     /// # Panics
     ///
@@ -1041,8 +1013,8 @@ mod tests {
         }
     }
 
-    /// The MessageStart a recovery path emits: the recovery frames carry no
-    /// response identity, so the event's fields are empty.
+    /// The MessageStart a recovery path emits: the recovery frames carry no response identity, so
+    /// the event's fields are empty.
     fn bare_message_start() -> IrEvent {
         IrEvent::MessageStart {
             id: String::new(),
@@ -1050,10 +1022,9 @@ mod tests {
         }
     }
 
-    /// The exactly-once recovery contract (README §6.3): a terminal output
-    /// array carrying several `message` items — the shape of an upstream
-    /// that streams no live events — delivers every item's text exactly
-    /// once, and the recovery stream still opens with MessageStart, first
+    /// The exactly-once recovery contract (README §6.3): a terminal output array carrying several
+    /// `message` items — the shape of an upstream that streams no live events — delivers every
+    /// item's text exactly once, and the recovery stream still opens with MessageStart, first
     /// (README §6.2).
     ///
     /// # Panics
@@ -1095,9 +1066,8 @@ mod tests {
         );
     }
 
-    /// Reasoning recovery is independent per index: a terminal array of
-    /// reasoning + message + reasoning delivers both reasonings and the
-    /// message text exactly once.
+    /// Reasoning recovery is independent per index: a terminal array of reasoning + message +
+    /// reasoning delivers both reasonings and the message text exactly once.
     ///
     /// # Panics
     ///
@@ -1136,10 +1106,9 @@ mod tests {
         );
     }
 
-    /// Successive streamed `output_item.done` message items — the no-delta
-    /// streaming shape — each deliver their text exactly once, and the
-    /// terminal array's copy of the same items (shared output indices) is
-    /// not re-delivered. The done-only stream still opens with MessageStart,
+    /// Successive streamed `output_item.done` message items — the no-delta streaming shape — each
+    /// deliver their text exactly once, and the terminal array's copy of the same items (shared
+    /// output indices) is not re-delivered. The done-only stream still opens with MessageStart,
     /// ahead of the first item's text (README §6.2).
     ///
     /// # Panics
@@ -1193,10 +1162,9 @@ mod tests {
         assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::Stop)]);
     }
 
-    /// Live deltas keep precedence: text the deltas already delivered is
-    /// not re-delivered by the streamed done item or by any terminal-array
-    /// item of the same kind (README §6.3: fallbacks deliver only what live
-    /// deltas did not).
+    /// Live deltas keep precedence: text the deltas already delivered is not re-delivered by the
+    /// streamed done item or by any terminal-array item of the same kind (README §6.3: fallbacks
+    /// deliver only what live deltas did not).
     ///
     /// # Panics
     ///
@@ -1250,11 +1218,10 @@ mod tests {
         assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::Stop)]);
     }
 
-    /// A bare function-call arguments delta as a stream's first event — an
-    /// upstream that skipped `response.created`, `response.in_progress`,
-    /// and `response.output_item.added` — still opens the IR stream with
-    /// MessageStart, ahead of the delta it precedes (README §6.2:
-    /// MessageStart is emitted exactly once, first).
+    /// A bare function-call arguments delta as a stream's first event — an upstream that skipped
+    /// `response.created`, `response.in_progress`, and `response.output_item.added` — still opens
+    /// the IR stream with MessageStart, ahead of the delta it precedes (README §6.2: MessageStart
+    /// is emitted exactly once, first).
     ///
     /// # Panics
     ///

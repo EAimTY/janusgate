@@ -1,5 +1,5 @@
-//! Process entry point: installs the process-wide fail-fast panic hook and
-//! delegates all startup and serving to the library's `run`.
+//! Process entry point: installs the process-wide fail-fast panic hook and delegates all startup
+//! and serving to the library's `run`.
 
 use std::{env, panic, process};
 use tokio::main;
@@ -8,8 +8,8 @@ use tokio::main;
 ///
 /// # Panics
 ///
-/// Panics if command-line arguments or configuration cannot be parsed or if
-/// the global configuration or logger has already been initialized.
+/// Panics if command-line arguments or configuration cannot be parsed or if the global
+/// configuration or logger has already been initialized.
 #[main]
 async fn main() -> ! {
     set_panic_hook();
@@ -17,14 +17,12 @@ async fn main() -> ! {
     janusgate::run(env::args_os()).await
 }
 
-/// Configures a custom panic hook that terminates the entire process
-/// immediately.
+/// Configures a custom panic hook that terminates the entire process immediately.
 ///
-/// By default, a panic on a background or worker thread in Rust only unwinds
-/// that specific thread. In an asynchronous server, this leaves the remaining
-/// runtime operational while services or connections may be permanently broken.
-/// This hook prints diagnostic panic info to stderr via the standard hook and
-/// calls `process::exit(1)` to ensure fail-fast semantics.
+/// By default, a panic on a background or worker thread in Rust only unwinds that specific thread.
+/// In an asynchronous server, this leaves the remaining runtime operational while services or
+/// connections may be permanently broken. This hook prints diagnostic panic info to stderr via the
+/// standard hook and calls `process::exit(1)` to ensure fail-fast semantics.
 fn set_panic_hook() {
     let hook = panic::take_hook();
 

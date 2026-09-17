@@ -1,8 +1,6 @@
 //! Management routes beginning and completing provider OAuth flows.
 
-use super::{
-    Error, OAuthProviderType, ProviderEnvelope, ProviderResponse, route, validate_identifier,
-};
+use super::{Error, OAuthProviderType, ProviderEnvelope, ProviderResponse, route};
 use crate::{
     context::Context,
     provider::{NewProvider, Provider, oauth, storage},
@@ -28,7 +26,7 @@ route! {
         const METHOD: http::Method = http::Method::POST;
         const PATH: &'static str = "/oauth:complete";
         type Request = CompleteProviderOauthRequest;
-        type Response = super::ProviderEnvelope;
+        type Response = ProviderEnvelope;
     }
 }
 
@@ -41,9 +39,9 @@ route! {
     }
 }
 
-/// Strictly parsed `oauth:start` request: the account kind the flow
-/// authorizes. The field's own parsing rejects values outside the two OAuth
-/// account kinds — `openai_compatible` authorizes nothing.
+/// Strictly parsed `oauth:start` request: the account kind the flow authorizes. The field's own
+/// parsing rejects values outside the two OAuth account kinds — `openai_compatible` authorizes
+/// nothing.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -53,8 +51,7 @@ pub struct StartProviderOauthRequest {
     pub provider_type: OAuthProviderType,
 }
 
-/// The `oauth:start` success body (README §7.1): three server-derived
-/// facts.
+/// The `oauth:start` success body (README §7.1): three server-derived facts.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct StartProviderOauthResponse {
@@ -68,10 +65,9 @@ pub struct StartProviderOauthResponse {
     pub expires_at: i64,
 }
 
-/// Strictly parsed `oauth:complete` request (README §7.1): the flow creates
-/// a provider, so the naming is stated in full — every field required, no
-/// defaults. Re-authorizing an existing provider is the separate
-/// `oauth:reauthorize` route; the two completion forms cannot be mixed
+/// Strictly parsed `oauth:complete` request (README §7.1): the flow creates a provider, so the
+/// naming is stated in full — every field required, no defaults. Re-authorizing an existing
+/// provider is the separate `oauth:reauthorize` route; the two completion forms cannot be mixed
 /// because they are two routes.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,13 +82,12 @@ pub struct CompleteProviderOauthRequest {
     /// Name of the provider being created; must be non-empty.
     pub name: String,
 
-    /// Public model name prefix of the provider being created; may be
-    /// empty.
+    /// Public model name prefix of the provider being created; may be empty.
     pub model_prefix: String,
 }
 
-/// Strictly parsed `oauth:reauthorize` request (README §7.1): the flow
-/// replaces the credentials of one existing provider.
+/// Strictly parsed `oauth:reauthorize` request (README §7.1): the flow replaces the credentials of
+/// one existing provider.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -107,9 +102,8 @@ pub struct ReauthorizeProviderRequest {
     pub provider_id: i64,
 }
 
-/// The `oauth:reauthorize` success body (README §7.1): the new expiry is
-/// the only readable fact the exchange produced — the credentials
-/// themselves are write-only.
+/// The `oauth:reauthorize` success body (README §7.1): the new expiry is the only readable fact the
+/// exchange produced — the credentials themselves are write-only.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ReauthorizeProviderResponse {
@@ -182,25 +176,23 @@ async fn handle_start(
 
 /// Exchanges the authorization code and creates the provider (README §7.1).
 ///
-/// `control_plane` is the bounded client for the token exchange and the
-/// project resolution.
+/// `control_plane` is the bounded client for the token exchange and the project resolution.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for empty or taken names, unknown, expired, or
-/// already-consumed states, exchange failures, and a name taken
-/// concurrently by another creation.
+/// Returns [`Error`] for empty or taken names, unknown, expired, or already-consumed states,
+/// exchange failures, and a name taken concurrently by another creation.
 async fn handle_complete(
     database: &crate::database::Database,
     control_plane: &Client,
     request: CompleteProviderOauthRequest,
 ) -> Result<Provider, Error> {
-    // Pre-consume validations, computed from the still-unconsumed state so
-    // the pending flow survives every rejection.
-    validate_identifier("name", &request.name)?;
+    // Pre-consume validations, computed from the still-unconsumed state so the pending flow
+    // survives every rejection.
+    super::validate_identifier("name", &request.name)?;
 
-    // The pre-insert check renders a clean 409; the database's UNIQUE
-    // constraint is the concurrent backstop.
+    // The pre-insert check renders a clean 409; the database's UNIQUE constraint is the concurrent
+    // backstop.
     if storage::find_provider(database, &request.name)
         .await?
         .is_some()
@@ -212,8 +204,7 @@ async fn handle_complete(
 
     let now = unix_time::unix_now();
 
-    // An unknown or expired state is left to the consume, which yields the
-    // 404.
+    // An unknown or expired state is left to the consume, which yields the 404.
     let state = storage::consume_oauth_state(database, &request.state, now)
         .await?
         .ok_or(Error::UnknownOauthState)?;
@@ -249,24 +240,21 @@ async fn handle_complete(
     Ok(stored)
 }
 
-/// Exchanges the authorization code and replaces one provider's credentials
-/// (README §7.1).
+/// Exchanges the authorization code and replaces one provider's credentials (README §7.1).
 ///
-/// `control_plane` is the bounded client for the token exchange and the
-/// project resolution.
+/// `control_plane` is the bounded client for the token exchange and the project resolution.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for unknown, expired, or already-consumed states,
-/// unknown providers, exchange failures, type mismatches, and a provider
-/// deleted concurrently after the completion's lookup.
+/// Returns [`Error`] for unknown, expired, or already-consumed states, unknown providers, exchange
+/// failures, type mismatches, and a provider deleted concurrently after the completion's lookup.
 async fn handle_reauthorize(
     database: &crate::database::Database,
     control_plane: &Client,
     request: ReauthorizeProviderRequest,
 ) -> Result<i64, Error> {
-    // Pre-consume validations, computed from the still-unconsumed state so
-    // the pending flow survives every rejection.
+    // Pre-consume validations, computed from the still-unconsumed state so the pending flow
+    // survives every rejection.
     let provider = storage::find_provider_by_id(database, request.provider_id)
         .await?
         .ok_or(Error::ProviderNotFound {
@@ -275,10 +263,9 @@ async fn handle_reauthorize(
 
     let now = unix_time::unix_now();
 
-    // State rows are immutable, so a provider-type mismatch is computable
-    // before the atomic consume: the rejection must not burn the pending
-    // flow or spend the token exchange. An unknown or expired state is left
-    // to the consume below, which yields the 404.
+    // State rows are immutable, so a provider-type mismatch is computable before the atomic
+    // consume: the rejection must not burn the pending flow or spend the token exchange. An unknown
+    // or expired state is left to the consume below, which yields the 404.
     if let Some(state_type) = storage::find_oauth_state_type(database, &request.state, now).await?
         && state_type.as_provider_type() != provider.provider_type
     {
@@ -309,9 +296,8 @@ async fn handle_reauthorize(
     )
     .await?;
 
-    // A concurrent `providers:delete` between the outer lookup and this
-    // write affects zero rows; like the refresh path, the vanished provider
-    // is a 404, not a storage-drift 500.
+    // A concurrent `providers:delete` between the outer lookup and this write affects zero rows;
+    // like the refresh path, the vanished provider is a 404, not a storage-drift 500.
     if !is_updated {
         return Err(Error::ProviderVanishedDuringReauthorization {
             id: request.provider_id,

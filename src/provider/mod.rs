@@ -1,5 +1,4 @@
-//! Provider entities, credentials, upstream storage, OAuth flows, and model
-//! discovery.
+//! Provider entities, credentials, upstream storage, OAuth flows, and model discovery.
 
 use crate::format::UpstreamFormat;
 use serde::{
@@ -18,8 +17,7 @@ pub(crate) mod storage;
 /// Kinds of upstream provider accounts.
 ///
 /// The serde and TypeScript names are the management wire names, shared with
-/// [`ProviderType::as_str`] — the storage form and the wire form are one
-/// vocabulary.
+/// [`ProviderType::as_str`] — the storage form and the wire form are one vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum ProviderType {
@@ -114,8 +112,8 @@ impl OAuthProviderType {
 /// Upstream credentials stored as plaintext JSON.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Credentials {
-    /// ChatGPT OAuth credentials; the account ID accompanies every upstream
-    /// request as the `chatgpt-account-id` header.
+    /// ChatGPT OAuth credentials; the account ID accompanies every upstream request as the
+    /// `chatgpt-account-id` header.
     OpenAiOauth {
         /// OAuth access token.
         access_token: String,
@@ -127,8 +125,8 @@ pub(crate) enum Credentials {
         account_id: String,
     },
 
-    /// Google OAuth credentials; the Cloud Code Assist project ID accompanies
-    /// the Antigravity envelope.
+    /// Google OAuth credentials; the Cloud Code Assist project ID accompanies the Antigravity
+    /// envelope.
     AntigravityOauth {
         /// OAuth access token.
         access_token: String,
@@ -144,9 +142,9 @@ pub(crate) enum Credentials {
     ApiKey(String),
 }
 
-/// The plaintext storage form of `openai_oauth` credentials (README §3):
-/// `{"accessToken", "refreshToken", "accountId"}` and nothing else, so a
-/// stored payload can never drift from the documented shape.
+/// The plaintext storage form of `openai_oauth` credentials (README §3): `{"accessToken",
+/// "refreshToken", "accountId"}` and nothing else, so a stored payload can never drift from the
+/// documented shape.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredOpenAiOauthCredentials<'a> {
@@ -160,8 +158,8 @@ struct StoredOpenAiOauthCredentials<'a> {
     account_id: &'a str,
 }
 
-/// The plaintext storage form of `antigravity_oauth` credentials (README §3):
-/// `{"accessToken", "refreshToken", "projectId"}` and nothing else.
+/// The plaintext storage form of `antigravity_oauth` credentials (README §3): `{"accessToken",
+/// "refreshToken", "projectId"}` and nothing else.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredAntigravityOauthCredentials<'a> {
@@ -175,8 +173,8 @@ struct StoredAntigravityOauthCredentials<'a> {
     project_id: &'a str,
 }
 
-/// The plaintext storage form of `openai_compatible` credentials (README §3):
-/// `{"apiKey"}` and nothing else.
+/// The plaintext storage form of `openai_compatible` credentials (README §3): `{"apiKey"}` and
+/// nothing else.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredApiKeyCredentials<'a> {
@@ -184,18 +182,17 @@ struct StoredApiKeyCredentials<'a> {
     api_key: &'a str,
 }
 
-/// A stored credentials value: the string it carries, or any other JSON value,
-/// which carries no string. [`Credentials::parse`] rejects a field carrying a
-/// non-string value exactly like a field the payload omits, so both read as no
-/// string.
+/// A stored credentials value: the string it carries, or any other JSON value, which carries no
+/// string. [`Credentials::parse`] rejects a field carrying a non-string value exactly like a field
+/// the payload omits, so both read as no string.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum StoredFieldValue {
     /// The field carries a JSON string.
     Text(String),
 
-    /// The field carries any other JSON value — `null`, a number, a boolean,
-    /// an array, or an object — and therefore no string.
+    /// The field carries any other JSON value — `null`, a number, a boolean, an array, or an object
+    /// — and therefore no string.
     NonString(IgnoredAny),
 }
 
@@ -209,10 +206,9 @@ impl StoredFieldValue {
     }
 }
 
-/// A stored credentials payload (README §3): the plaintext JSON object of
-/// one provider kind's lenient field collection, or any other JSON value,
-/// which carries no fields and fails the required-field verdict exactly
-/// like an empty object.
+/// A stored credentials payload (README §3): the plaintext JSON object of one provider kind's
+/// lenient field collection, or any other JSON value, which carries no fields and fails the
+/// required-field verdict exactly like an empty object.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum StoredCredentialsPayload<T> {
@@ -223,10 +219,9 @@ enum StoredCredentialsPayload<T> {
     NonObject(IgnoredAny),
 }
 
-/// The lenient read form of `openai_oauth` credentials (README §3): each
-/// stored field's string value — absent, `null`, and non-string values all
-/// reading as absent — plus every key the payload carries outside the
-/// exact field set. Collecting never rejects anything; the verdict is
+/// The lenient read form of `openai_oauth` credentials (README §3): each stored field's string
+/// value — absent, `null`, and non-string values all reading as absent — plus every key the payload
+/// carries outside the exact field set. Collecting never rejects anything; the verdict is
 /// [`Credentials::parse`]'s.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,8 +243,8 @@ struct StoredOpenAiOauthFields {
     extra: BTreeMap<String, IgnoredAny>,
 }
 
-/// The lenient read form of `antigravity_oauth` credentials (README §3);
-/// see [`StoredOpenAiOauthFields`] for the reading rules.
+/// The lenient read form of `antigravity_oauth` credentials (README §3); see
+/// [`StoredOpenAiOauthFields`] for the reading rules.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredAntigravityOauthFields {
@@ -270,8 +265,8 @@ struct StoredAntigravityOauthFields {
     extra: BTreeMap<String, IgnoredAny>,
 }
 
-/// The lenient read form of `openai_compatible` credentials (README §3);
-/// see [`StoredOpenAiOauthFields`] for the reading rules.
+/// The lenient read form of `openai_compatible` credentials (README §3); see
+/// [`StoredOpenAiOauthFields`] for the reading rules.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredApiKeyFields {
@@ -284,9 +279,9 @@ struct StoredApiKeyFields {
     extra: BTreeMap<String, IgnoredAny>,
 }
 
-/// Reads one stored field's value into its string, when it carries one:
-/// through [`StoredFieldValue`], a value of any other JSON shape carries no
-/// string and reads as an absent field, exactly like the key being omitted.
+/// Reads one stored field's value into its string, when it carries one: through
+/// [`StoredFieldValue`], a value of any other JSON shape carries no string and reads as an absent
+/// field, exactly like the key being omitted.
 fn string_or_absent<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -294,12 +289,11 @@ where
     StoredFieldValue::deserialize(deserializer).map(StoredFieldValue::into_string)
 }
 
-/// A credentials parse failure, typed so each boundary renders its own error
-/// domain: management input validation maps it to a 400 invalid request
-/// naming `credentials`, while storage row decoding wraps it once as a 500
-/// internal error — stored credentials are written only through the validated
-/// management path, so a payload that fails there is database drift and never
-/// a client fault.
+/// A credentials parse failure, typed so each boundary renders its own error domain: management
+/// input validation maps it to a 400 invalid request naming `credentials`, while storage row
+/// decoding wraps it once as a 500 internal error — stored credentials are written only through the
+/// validated management path, so a payload that fails there is database drift and never a client
+/// fault.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ParseError {
     /// The payload is not valid JSON.
@@ -310,8 +304,7 @@ pub(crate) enum ParseError {
     #[error("Credentials must carry a string `{0}` field")]
     MissingField(String),
 
-    /// The payload carries a field outside the provider type's exact field
-    /// set.
+    /// The payload carries a field outside the provider type's exact field set.
     #[error("Credentials carry an unknown `{0}` field; allowed: `{1}`")]
     UnknownField(String, String),
 }
@@ -319,19 +312,17 @@ pub(crate) enum ParseError {
 impl Credentials {
     /// Parses credentials JSON for the given provider type.
     ///
-    /// The payload is first read into the provider kind's lenient field
-    /// collection — each stored field's string value, with an absent,
-    /// `null`, and non-string field all reading as absent, and every key
-    /// outside the kind's exact field set collected — and the verdict is
-    /// then rendered here: an unknown field is rejected naming it, because
-    /// a tolerated extra field — such as an admin-pasted `expiresAt` —
-    /// would be silently dropped on storage and change the credentials'
-    /// semantics without notice.
+    /// The payload is first read into the provider kind's lenient field collection — each stored
+    /// field's string value, with an absent, `null`, and non-string field all reading as absent,
+    /// and every key outside the kind's exact field set collected — and the verdict is then
+    /// rendered here: an unknown field is rejected naming it, because a tolerated extra field —
+    /// such as an admin-pasted `expiresAt` — would be silently dropped on storage and change the
+    /// credentials' semantics without notice.
     ///
     /// # Errors
     ///
-    /// Returns [`ParseError`] when the payload does not match the shape
-    /// required by the provider type.
+    /// Returns [`ParseError`] when the payload does not match the shape required by the provider
+    /// type.
     pub(crate) fn parse(provider_type: ProviderType, json: &str) -> Result<Self, ParseError> {
         match provider_type {
             ProviderType::OpenAiOauth => {
@@ -374,10 +365,9 @@ impl Credentials {
         }
     }
 
-    /// The secret these credentials present to an upstream: the OAuth access
-    /// token for OAuth accounts, the static API key for key-based accounts.
-    /// Depending on the wire format it is sent as a bearer token or as an
-    /// API key header.
+    /// The secret these credentials present to an upstream: the OAuth access token for OAuth
+    /// accounts, the static API key for key-based accounts. Depending on the wire format it is sent
+    /// as a bearer token or as an API key header.
     pub(crate) fn secret(&self) -> &str {
         match self {
             Self::OpenAiOauth { access_token, .. }
@@ -387,13 +377,12 @@ impl Credentials {
         }
     }
 
-    /// Renders the credentials into their plaintext JSON storage form
-    /// (README §3).
+    /// Renders the credentials into their plaintext JSON storage form (README §3).
     ///
     /// # Panics
     ///
-    /// Panics if serialization fails, which cannot occur: every stored form is
-    /// a struct of strings, a shape serde_json always renders.
+    /// Panics if serialization fails, which cannot occur: every stored form is a struct of strings,
+    /// a shape serde_json always renders.
     pub(crate) fn to_json(&self) -> String {
         match self {
             Self::OpenAiOauth {
@@ -423,10 +412,9 @@ impl Credentials {
     }
 }
 
-/// Reads a stored credentials payload (README §3) into one provider kind's
-/// lenient field collection. A payload that is not a JSON object carries no
-/// fields and reads as the empty collection, failing the required-field
-/// verdict exactly like an empty object.
+/// Reads a stored credentials payload (README §3) into one provider kind's lenient field
+/// collection. A payload that is not a JSON object carries no fields and reads as the empty
+/// collection, failing the required-field verdict exactly like an empty object.
 ///
 /// # Errors
 ///
@@ -443,10 +431,9 @@ where
     )
 }
 
-/// Rejects a collected extra key — one outside the provider kind's exact
-/// stored field set — naming it and the allowed set. Of several extra keys
-/// the lexically first is named: the collected keys form an ordered map,
-/// not a payload-ordered list.
+/// Rejects a collected extra key — one outside the provider kind's exact stored field set — naming
+/// it and the allowed set. Of several extra keys the lexically first is named: the collected keys
+/// form an ordered map, not a payload-ordered list.
 ///
 /// # Errors
 ///
@@ -469,8 +456,8 @@ fn missing(field: &str) -> ParseError {
 /// The fields of a provider about to be inserted.
 #[derive(Debug, Clone)]
 pub(crate) struct NewProvider<'a> {
-    /// Unique, non-empty, renameable label (README §3); a later
-    /// `providers:update` request may rename it.
+    /// Unique, non-empty, renameable label (README §3); a later `providers:update` request may
+    /// rename it.
     pub(crate) name: &'a str,
 
     /// Prefix prepended to every public model name.
@@ -501,8 +488,8 @@ pub(crate) struct Provider {
     /// Row identifier.
     pub(crate) id: i64,
 
-    /// Unique, non-empty, renameable label (README §3); the immutable `id`
-    /// is the provider's public identifier.
+    /// Unique, non-empty, renameable label (README §3); the immutable `id` is the provider's
+    /// public identifier.
     pub(crate) name: String,
 
     /// Prefix prepended to every public model name.
@@ -528,11 +515,9 @@ pub(crate) struct Provider {
 }
 
 impl Provider {
-    /// The upstream wire format the provider speaks: the type-fixed format
-    /// when the account kind pins one, otherwise the configured `protocol`.
-    /// `None` means an `openai_compatible` provider carries no protocol,
-    /// which is a configuration invariant violation the caller fails fast
-    /// on.
+    /// The upstream wire format the provider speaks: the type-fixed format when the account kind
+    /// pins one, otherwise the configured `protocol`. `None` means an `openai_compatible` provider
+    /// carries no protocol, which is a configuration invariant violation the caller fails fast on.
     pub(crate) fn upstream_format(&self) -> Option<UpstreamFormat> {
         match self.provider_type.upstream_format() {
             Some(format) => Some(format),
@@ -553,8 +538,8 @@ pub(crate) struct Model {
     /// Public routing ID, maintained at write time.
     pub(crate) id: String,
 
-    /// Non-`None` explicitly sets the public routing ID directly, bypassing
-    /// the provider's `model_prefix`.
+    /// Non-`None` explicitly sets the public routing ID directly, bypassing the provider's
+    /// `model_prefix`.
     pub(crate) id_override: Option<String>,
 
     /// Whether the model is enabled to serve traffic under its provider.
@@ -573,14 +558,13 @@ pub(crate) struct ModelRouting {
     /// Resolved model row.
     pub(crate) model: Model,
 
-    /// Whether the model effectively serves traffic
-    /// ([`Model::is_effectively_enabled`]).
+    /// Whether the model effectively serves traffic ([`Model::is_effectively_enabled`]).
     pub(crate) is_effectively_enabled: bool,
 }
 
 impl Model {
-    /// The public routing ID the model carries: an explicit override directly
-    /// replaces the ID without prefix, else `model_prefix + upstream_id`.
+    /// The public routing ID the model carries: an explicit override directly replaces the ID
+    /// without prefix, else `model_prefix + upstream_id`.
     pub(crate) fn public_id(
         model_prefix: &str,
         upstream_id: &str,
@@ -592,23 +576,23 @@ impl Model {
         }
     }
 
-    /// The model's effective serving status: true if and only if both the
-    /// owning provider and the model itself are enabled (README §3).
+    /// The model's effective serving status: true if and only if both the owning provider and the
+    /// model itself are enabled (README §3).
     ///
-    /// The provider's `enabled` flag serves as the master switch: disabling a
-    /// provider turns off all its models unconditionally.
+    /// The provider's `enabled` flag serves as the master switch: disabling a provider turns off
+    /// all its models unconditionally.
     pub(crate) fn is_effectively_enabled(&self, is_provider_enabled: bool) -> bool {
         is_provider_enabled && self.is_enabled
     }
 }
 
-/// Serializes one stored credentials form into the exact plaintext JSON text
-/// the `credentials` column carries (README §3).
+/// Serializes one stored credentials form into the exact plaintext JSON text the `credentials`
+/// column carries (README §3).
 ///
 /// # Panics
 ///
-/// Panics if serialization fails, which cannot occur: every stored form is a
-/// struct of strings, a shape serde_json always renders.
+/// Panics if serialization fails, which cannot occur: every stored form is a struct of strings, a
+/// shape serde_json always renders.
 fn serialize_stored_credentials<T>(credentials: &T) -> String
 where
     T: Serialize,
@@ -624,10 +608,10 @@ where
 mod tests {
     use super::*;
 
-    /// Verifies that the serde wire names and the storage names of the closed
-    /// type vocabularies are one vocabulary: every variant serializes to, and
-    /// deserializes from, exactly its `as_str` name, so the management wire,
-    /// the TypeScript bindings, and the database rows can never drift apart.
+    /// Verifies that the serde wire names and the storage names of the closed type vocabularies are
+    /// one vocabulary: every variant serializes to, and deserializes from, exactly its `as_str`
+    /// name, so the management wire, the TypeScript bindings, and the database rows can never drift
+    /// apart.
     ///
     /// # Panics
     ///
@@ -667,9 +651,8 @@ mod tests {
         }
     }
 
-    /// Verifies that `Model::public_id` uses `model_prefix + upstream_id` when
-    /// unoverridden, and uses `id_override` directly without `model_prefix`
-    /// when an override is present.
+    /// Verifies that `Model::public_id` uses `model_prefix + upstream_id` when unoverridden, and
+    /// uses `id_override` directly without `model_prefix` when an override is present.
     ///
     /// # Panics
     ///
@@ -686,8 +669,8 @@ mod tests {
         assert_eq!(empty_prefix_id, "gemini-pro");
     }
 
-    /// Verifies that `Model::is_effectively_enabled` requires both the provider
-    /// and the model to be enabled.
+    /// Verifies that `Model::is_effectively_enabled` requires both the provider and the model to be
+    /// enabled.
     ///
     /// # Panics
     ///
@@ -702,6 +685,7 @@ mod tests {
             is_enabled: true,
             thinking_levels_override: None,
         };
+
         assert!(model_enabled.is_effectively_enabled(true));
         assert!(!model_enabled.is_effectively_enabled(false));
 
@@ -713,12 +697,13 @@ mod tests {
             is_enabled: false,
             thinking_levels_override: None,
         };
+
         assert!(!model_disabled.is_effectively_enabled(true));
         assert!(!model_disabled.is_effectively_enabled(false));
     }
 
-    /// Verifies that `OAuthProviderType` accurately maps to `ProviderType`
-    /// without relying on an implicit `From` implementation.
+    /// Verifies that `OAuthProviderType` accurately maps to `ProviderType` without relying on an
+    /// implicit `From` implementation.
     ///
     /// # Panics
     ///
@@ -735,10 +720,9 @@ mod tests {
         );
     }
 
-    /// Verifies the exact plaintext storage form of every provider kind
-    /// (README §3): the stored key names are the contract the management input
-    /// and every stored row share, and each form round-trips through
-    /// [`Credentials::to_json`] and [`Credentials::parse`].
+    /// Verifies the exact plaintext storage form of every provider kind (README §3): the stored key
+    /// names are the contract the management input and every stored row share, and each form
+    /// round-trips through [`Credentials::to_json`] and [`Credentials::parse`]..
     ///
     /// # Panics
     ///
@@ -784,14 +768,12 @@ mod tests {
         }
     }
 
-    /// Verifies the credentials rejection taxonomy every management input and
-    /// every stored row passes through: a key outside the provider kind's
-    /// exact field set is rejected naming it and the allowed set, while a
-    /// field that is absent or carries a non-string value is rejected as
-    /// missing — including a payload that is not a JSON object at all, whose
-    /// missing first field is named instead of being reported as malformed
-    /// JSON. Non-object payloads and non-string values are therefore never
-    /// silently accepted or silently dropped.
+    /// Verifies the credentials rejection taxonomy every management input and every stored row
+    /// passes through: a key outside the provider kind's exact field set is rejected naming it and
+    /// the allowed set, while a field that is absent or carries a non-string value is rejected as
+    /// missing — including a payload that is not a JSON object at all, whose missing first field is
+    /// named instead of being reported as malformed JSON. Non-object payloads and non-string values
+    /// are therefore never silently accepted or silently dropped.
     ///
     /// # Panics
     ///
@@ -814,9 +796,8 @@ mod tests {
                 if field == "expiresAt" && allowed == "accessToken`, `refreshToken`, `accountId"
         ));
 
-        // A field another provider kind stores is as unknown to this kind's
-        // exact field set as a field no kind stores, even when its value is no
-        // string.
+        // A field another provider kind stores is as unknown to this kind's exact field set as a
+        // field no kind stores, even when its value is no string.
         #[expect(
             clippy::unwrap_used,
             reason = "the foreign stored field is constructed to be rejected"
@@ -833,9 +814,8 @@ mod tests {
                 if field == "apiKey" && allowed == "accessToken`, `refreshToken`, `projectId"
         ));
 
-        // Of several unknown keys the lexically first is named, because the
-        // collected extra keys form an ordered map rather than a
-        // payload-ordered list.
+        // Of several unknown keys the lexically first is named, because the collected extra keys
+        // form an ordered map rather than a payload-ordered list.
         #[expect(
             clippy::unwrap_used,
             reason = "the unknown fields are constructed to be rejected"

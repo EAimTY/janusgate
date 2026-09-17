@@ -1,17 +1,16 @@
 //! The management API TypeScript bindings generator, active only under the
-//! `management-api-typescript-bindings` feature. It renders one version's
-//! whole wire surface — every payload type declaration ts-rs produces for the
-//! version's routes and extra exported types, then the route table composed
-//! from the version's registry — into one `<version>.ts` file directly in the
-//! output target, so a client imports a version from a single module and
-//! never chases per-type files.
+//! `management-api-typescript-bindings` feature. It renders one version's whole wire surface —
+//! every payload type declaration ts-rs produces for the version's routes and extra exported types,
+//! then the route table composed from the version's registry — into one `<version>.ts` file
+//! directly in the output target, so a client imports a version from a single module and never
+//! chases per-type files.
 //!
-//! The generator is version-agnostic: the caller names the version prefix and
-//! hands over that version's route registry, so every version's bindings are
-//! produced by the same code while their contents stay entirely separate.
+//! The generator is version-agnostic: the caller names the version prefix and hands over that
+//! version's route registry, so every version's bindings are produced by the same code while their
+//! contents stay entirely separate.
 
 use super::route::{ClosureType, OrderedVocabulary, PayloadBinding, PayloadSource, RouteBinding};
-use std::{any::TypeId, collections::HashMap, fs, path::Path};
+use std::{any::TypeId, collections::HashMap, fs, path::Path, slice};
 use ts_rs::Config;
 
 /// One route as the generator sees it, after collection from the registry.
@@ -29,26 +28,23 @@ struct CollectedRoute {
     response_ident: String,
 }
 
-/// Generates one version's TypeScript bindings as one file directly in
-/// `output_target`, which may be relative or absolute and is created when
-/// absent. The file is named after the version segment of `version_prefix` —
-/// `/v0` renders `v0.ts` — so every version's bindings land side by side under
-/// one shared target. The output is deterministic — routes are ordered by path
-/// and method, type declarations by name.
+/// Generates one version's TypeScript bindings as one file directly in `output_target`, which may
+/// be relative or absolute and is created when absent. The file is named after the version segment
+/// of `version_prefix` — `/v0` renders `v0.ts` — so every version's bindings land side by side
+/// under one shared target. The output is deterministic — routes are ordered by path and method,
+/// type declarations by name.
 ///
-/// `routes` supplies the version's route payloads, `exported_types` the
-/// payload types it publishes besides them such as its error body, and
-/// `ordered_vocabularies` the closed vocabularies whose variant order it
-/// publishes. All three are this version's alone: name collisions and
-/// duplicate routes are rejected per version.
+/// `routes` supplies the version's route payloads, `exported_types` the payload types it publishes
+/// besides them such as its error body, and `ordered_vocabularies` the closed vocabularies whose
+/// variant order it publishes. All three are this version's alone: name collisions and duplicate
+/// routes are rejected per version.
 ///
 /// # Panics
 ///
-/// Panics when `routes` holds two routes sharing one method and path, when two
-/// distinct payload types of the version share one TypeScript name, when an
-/// ordered vocabulary's ts-rs declaration is not a unit-only enum's union, or
-/// when the filesystem fails; the generator is a first-party build tool and
-/// every failure is a fixable declaration or environment bug.
+/// Panics when `routes` holds two routes sharing one method and path, when two distinct payload
+/// types of the version share one TypeScript name, when an ordered vocabulary's ts-rs declaration
+/// is not a unit-only enum's union, or when the filesystem fails; the generator is a first-party
+/// build tool and every failure is a fixable declaration or environment bug.
 pub(super) fn generate(
     output_target: &Path,
     version_prefix: &str,
@@ -64,9 +60,9 @@ pub(super) fn generate(
     )]
     fs::create_dir_all(output_target).expect("creating the output directory must succeed");
 
-    // Management payloads ride JSON, whose numbers are IEEE-754 doubles, and
-    // every management identifier stays far below the 2^53 precision
-    // boundary — so 64-bit identifiers render as `number`, not `bigint`.
+    // Management payloads ride JSON, whose numbers are IEEE-754 doubles, and every management
+    // identifier stays far below the 2^53 precision boundary — so 64-bit identifiers render as
+    // `number`, not `bigint`.
     let config = Config::new().with_large_int("number");
 
     let mut collected = Vec::new();
@@ -98,21 +94,19 @@ pub(super) fn generate(
 
     reject_duplicate_routes(&collected);
 
-    // An ordered vocabulary replaces the union ts-rs collected for its type —
-    // or stands alone when no payload references it — with the variant-ordered
-    // const tuple and the union derived from it, so the version's file
-    // publishes membership and canonical order as one artifact.
+    // An ordered vocabulary replaces the union ts-rs collected for its type — or stands alone when
+    // no payload references it — with the variant-ordered const tuple and the union derived from
+    // it, so the version's file publishes membership and canonical order as one artifact.
     for vocabulary in ordered_vocabularies {
         let vocabulary = vocabulary(&config);
 
-        register_type_names(&mut names, std::slice::from_ref(&vocabulary));
+        register_type_names(&mut names, slice::from_ref(&vocabulary));
 
         declarations.insert(vocabulary.type_id, vocabulary);
     }
 
-    // Registry iteration order is unspecified, so the declarations are
-    // deduplicated into a map and ordered by name before rendering; the same
-    // input always renders the same bytes.
+    // Registry iteration order is unspecified, so the declarations are deduplicated into a map and
+    // ordered by name before rendering; the same input always renders the same bytes.
     let mut ordered: Vec<ClosureType> = declarations.into_values().collect();
     ordered.sort_by(|previous, next| previous.ident.cmp(&next.ident));
 
@@ -125,9 +119,9 @@ pub(super) fn generate(
     fs::write(output_file, rendered).expect("writing the bindings file must succeed");
 }
 
-/// Registers one payload type's closure — the type plus every type it
-/// transitively references — in the version's declaration set, exactly once
-/// per Rust type, rejecting TypeScript name collisions along the way.
+/// Registers one payload type's closure — the type plus every type it transitively references — in
+/// the version's declaration set, exactly once per Rust type, rejecting TypeScript name collisions
+/// along the way.
 fn collect_payload(
     payload: &PayloadBinding,
     names: &mut HashMap<String, TypeId>,
@@ -142,13 +136,13 @@ fn collect_payload(
     }
 }
 
-/// Records every closure type's TypeScript name, rejecting a name claimed by
-/// two distinct Rust types.
+/// Records every closure type's TypeScript name, rejecting a name claimed by two distinct Rust
+/// types.
 ///
 /// # Panics
 ///
-/// Panics naming the collision when it occurs; management payload type names
-/// are unique by contract, so a collision is a declaration bug.
+/// Panics naming the collision when it occurs; management payload type names are unique by
+/// contract, so a collision is a declaration bug.
 #[expect(
     clippy::panic,
     reason = "a type-name collision is a fatal route-declaration bug"
@@ -172,8 +166,8 @@ fn register_type_names(names: &mut HashMap<String, TypeId>, closure: &[ClosureTy
 ///
 /// # Panics
 ///
-/// Panics naming the collision when it occurs; the `route!` declarations are
-/// first-party, so a duplicate is a declaration bug.
+/// Panics naming the collision when it occurs; the `route!` declarations are first-party, so a
+/// duplicate is a declaration bug.
 #[expect(
     clippy::panic,
     reason = "a duplicate route is a fatal route-declaration bug"
@@ -193,8 +187,8 @@ fn reject_duplicate_routes(routes: &[CollectedRoute]) {
     }
 }
 
-/// Renders one version's whole bindings file: the generated-by header, the
-/// payload type declarations ordered by name, and the route table over them.
+/// Renders one version's whole bindings file: the generated-by header, the payload type
+/// declarations ordered by name, and the route table over them.
 fn render_version_file(
     config: &Config,
     declarations: &[ClosureType],
@@ -219,9 +213,9 @@ fn render_version_file(
     rendered
 }
 
-/// Renders the route table: the `Routes` object grouped by path, and the
-/// lookup helpers over it. Every payload type the table references is declared
-/// earlier in the same file, so no imports are needed.
+/// Renders the route table: the `Routes` object grouped by path, and the lookup helpers over it.
+/// Every payload type the table references is declared earlier in the same file, so no imports are
+/// needed.
 fn render_route_table(routes: &[CollectedRoute]) -> String {
     let mut rendered = String::from("export type Routes = {\n");
 
@@ -245,9 +239,8 @@ fn render_route_table(routes: &[CollectedRoute]) -> String {
 
     rendered.push_str("  };\n};\n");
 
-    // Through generic indexed accesses TypeScript cannot resolve
-    // `Routes[P][M]["request"]` (TS2536 under strict), so the lookup helpers
-    // extract the fields through conditional `infer` instead.
+    // Through generic indexed accesses TypeScript cannot resolve `Routes[P][M]["request"]` (TS2536
+    // under strict), so the lookup helpers extract the fields through conditional `infer` instead.
     rendered.push_str(concat!(
         "\n",
         "export type Path = keyof Routes;\n",
@@ -266,13 +259,10 @@ fn render_route_table(routes: &[CollectedRoute]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::management_api::{
-        route::{ordered_vocabulary, payload_binding},
-        v0,
-        v0::route,
-    };
-    use std::path::PathBuf;
+    use super::{ClosureType, CollectedRoute};
+    use crate::management_api::{route as route_contract, v0, v0::route};
+    use std::{any::TypeId, collections::HashMap, env, fs, path::PathBuf, process};
+    use ts_rs::Config;
 
     route! {
         impl Route for BindingsTestAlpha {
@@ -318,9 +308,9 @@ mod tests {
 
     /// A per-run output target, removed first so every run starts empty.
     fn fresh_output_target() -> PathBuf {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = env::temp_dir().join(format!(
             "janusgate-management-api-bindings-{}",
-            std::process::id()
+            process::id()
         ));
 
         let _ = fs::remove_dir_all(&directory);
@@ -328,26 +318,24 @@ mod tests {
         directory
     }
 
-    /// Verifies that generation is deterministic across runs, that it renders
-    /// exactly one file — `v0.ts`, named after the version segment, directly
-    /// in the output target — holding everything: every wire type's
-    /// declaration inline (the nested thinking-level vocabulary, under its
-    /// binding name, as its ordered const tuple with the union derived from
-    /// it, and the error body with its errno taxonomy included, the empty
-    /// request type's too) plus the route table, ordered by path, referencing
-    /// the types declared above it with no imports. The route table keys are
-    /// the routes' paths within the version, version prefix excluded — the
-    /// file name is what carries the version.
+    /// Verifies that generation is deterministic across runs, that it renders exactly one file —
+    /// `v0.ts`, named after the version segment, directly in the output target — holding
+    /// everything: every wire type's declaration inline (the nested thinking-level vocabulary,
+    /// under its binding name, as its ordered const tuple with the union derived from it, and the
+    /// error body with its errno taxonomy included, the empty request type's too) plus the route
+    /// table, ordered by path, referencing the types declared above it with no imports. The route
+    /// table keys are the routes' paths within the version, version prefix excluded — the file name
+    /// is what carries the version.
     ///
     /// # Panics
     ///
-    /// Panics if either run fails, the two runs render different bytes, or
-    /// the output diverges from the single-file shape.
+    /// Panics if either run fails, the two runs render different bytes, or the output diverges from
+    /// the single-file shape.
     #[test]
     fn generates_deterministic_single_file_bindings() {
         let target = fresh_output_target();
 
-        generate(
+        super::generate(
             &target,
             v0::PREFIX,
             &v0::ROUTES,
@@ -359,7 +347,7 @@ mod tests {
         let first =
             fs::read_to_string(target.join("v0.ts")).expect("v0.ts exists after generation");
 
-        generate(
+        super::generate(
             &target,
             v0::PREFIX,
             &v0::ROUTES,
@@ -386,6 +374,7 @@ mod tests {
                 entry.file_name().to_string_lossy().into_owned()
             })
             .collect();
+
         entries.sort_unstable();
 
         assert_eq!(entries, ["v0.ts"], "one version renders exactly one file");
@@ -415,26 +404,27 @@ mod tests {
         assert!(first.contains("export type BindingsTestAlphaRequest"));
         assert!(first.contains("export type BindingsTestBetaRequest"));
 
-        // The thinking-level vocabulary publishes under its binding name —
-        // the Rust type's module-internal `Ir` prefix never reaches the
-        // bindings — as its ordered const tuple, values in the enum's
-        // variant order, with the union derived from the tuple; both
-        // artifacts carry the doc comment, and the unordered union spelling
-        // never renders.
+        // The thinking-level vocabulary publishes under its binding name — the Rust type's
+        // module-internal `Ir` prefix never reaches the bindings — as its ordered const tuple,
+        // values in the enum's variant order, with the union derived from the tuple; both artifacts
+        // carry the doc comment, and the unordered union spelling never renders.
         assert!(first.contains(concat!(
             " * Canonical thinking levels, ordered by increasing reasoning strength.\n",
             " */\n",
             "export const THINKING_LEVEL_ORDER = ",
             "[\"off\", \"low\", \"medium\", \"high\"] as const;\n\n",
         )));
+
         assert!(first.contains(concat!(
             " */\n",
             "export type ThinkingLevel = (typeof THINKING_LEVEL_ORDER)[number];",
         )));
+
         assert!(
             !first.contains("IrReasoningEffort"),
             "the Rust type name never reaches the bindings"
         );
+
         assert!(
             !first.contains("export type ThinkingLevel = \"off\""),
             "the vocabulary never renders as an unordered union"
@@ -447,8 +437,8 @@ mod tests {
         let _ = fs::remove_dir_all(&target);
     }
 
-    /// Verifies that a method-and-path collision between two routes is
-    /// rejected when the sorted route list is scanned.
+    /// Verifies that a method-and-path collision between two routes is rejected when the sorted
+    /// route list is scanned.
     ///
     /// # Panics
     ///
@@ -456,15 +446,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "duplicate management route POST /clash")]
     fn rejects_duplicate_routes() {
-        reject_duplicate_routes(&[
+        super::reject_duplicate_routes(&[
             collected("GET", "/alpha"),
             collected("POST", "/clash"),
             collected("POST", "/clash"),
         ]);
     }
 
-    /// Verifies that one TypeScript name claimed by two distinct Rust types
-    /// is rejected, while one type claiming its own name twice is not.
+    /// Verifies that one TypeScript name claimed by two distinct Rust types is rejected, while one
+    /// type claiming its own name twice is not.
     ///
     /// # Panics
     ///
@@ -474,20 +464,20 @@ mod tests {
     fn rejects_conflicting_type_names() {
         let mut names = HashMap::new();
 
-        register_type_names(&mut names, &[closure_type(TypeId::of::<u8>(), "Distinct")]);
+        super::register_type_names(&mut names, &[closure_type(TypeId::of::<u8>(), "Distinct")]);
 
-        register_type_names(&mut names, &[closure_type(TypeId::of::<u8>(), "Stable")]);
-        register_type_names(&mut names, &[closure_type(TypeId::of::<u8>(), "Stable")]);
+        super::register_type_names(&mut names, &[closure_type(TypeId::of::<u8>(), "Stable")]);
+        super::register_type_names(&mut names, &[closure_type(TypeId::of::<u8>(), "Stable")]);
 
-        register_type_names(&mut names, &[closure_type(TypeId::of::<u16>(), "Clashing")]);
+        super::register_type_names(&mut names, &[closure_type(TypeId::of::<u16>(), "Clashing")]);
 
-        register_type_names(&mut names, &[closure_type(TypeId::of::<u32>(), "Clashing")]);
+        super::register_type_names(&mut names, &[closure_type(TypeId::of::<u32>(), "Clashing")]);
     }
 
-    /// Verifies that a payload type ts-rs cannot declare is rejected before it
-    /// reaches the route table, so an inline-only type — `()` above all — can
-    /// never stand in for an explicitly declared request or response payload
-    /// type; an empty concrete type is declarable and therefore allowed.
+    /// Verifies that a payload type ts-rs cannot declare is rejected before it reaches the route
+    /// table, so an inline-only type — `()` above all — can never stand in for an explicitly
+    /// declared request or response payload type; an empty concrete type is declarable and
+    /// therefore allowed.
     ///
     /// # Panics
     ///
@@ -495,14 +485,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "has no TypeScript declaration")]
     fn rejects_undeclarable_payload_types() {
-        let _ = payload_binding::<()>(&Config::new());
+        let _ = route_contract::payload_binding::<()>(&Config::new());
     }
 
-    /// Verifies that a type declared as an ordered vocabulary whose ts-rs
-    /// declaration is not a unit-only enum's union is rejected: a struct, a
-    /// tagged union, or a `repr(enum)` taxonomy carries no variant-ordered
-    /// vocabulary to publish, so rendering one would publish an order the
-    /// type does not define.
+    /// Verifies that a type declared as an ordered vocabulary whose ts-rs declaration is not a
+    /// unit-only enum's union is rejected: a struct, a tagged union, or a `repr(enum)` taxonomy
+    /// carries no variant-ordered vocabulary to publish, so rendering one would publish an order
+    /// the type does not define.
     ///
     /// # Panics
     ///
@@ -510,13 +499,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "is not a unit-only enum union")]
     fn rejects_non_union_ordered_vocabularies() {
-        let vocabulary = ordered_vocabulary::<BindingsTestBetaRequest>(&Config::new());
+        let vocabulary =
+            route_contract::ordered_vocabulary::<BindingsTestBetaRequest>(&Config::new());
 
         (vocabulary.declaration)(&Config::new());
     }
 
-    /// Builds a minimal closure type for the checker tests; the declaration
-    /// renderer is never invoked there.
+    /// Builds a minimal closure type for the checker tests; the declaration renderer is never
+    /// invoked there.
     fn closure_type(type_id: TypeId, ident: &str) -> ClosureType {
         fn declaration(_config: &Config) -> String {
             String::new()

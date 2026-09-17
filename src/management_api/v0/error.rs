@@ -1,23 +1,19 @@
-//! Management API error domain: the failure type, its wire body, the errno
-//! taxonomy, and the single logging point.
+//! Management API error domain: the failure type, its wire body, the errno taxonomy, and the single
+//! logging point.
 //!
-//! The management surface owns its error domain end to end and shares nothing
-//! with the outward OpenAI error type. [`Error`] is what a handler, an
-//! extractor, the storage layer, or an upstream layer produces: one concrete
-//! variant per failure, carrying the values that identify it — the rejected
-//! field, the unknown value, the provider id — so a log record prints the
-//! whole cause. Every failure in the version's request lifecycle converges
-//! here — a rejected field, a malformed body, a body over the version's
-//! limit, a wrong body content type, an unmatched method, an unauthorized
-//! request, a storage or upstream failure — so no axum-shaped rejection ever
-//! reaches a client. [`IntoResponse`] is the one boundary a failure crosses
-//! on its way to the caller: it logs the failure exactly once and derives
-//! [`ErrorResponse`] from it, where a client fault states the variant's own
-//! wording while an internal cause renders its category's fixed message.
-//! [`ErrorCode`] is the wire's closed taxonomy: its `#[repr(u16)]`
-//! discriminant is the `errno` carried in every error body, and the HTTP
-//! status is derived from the variant through `AsStatusCode`, so a category
-//! and its status can never drift apart.
+//! The management surface owns its error domain end to end and shares nothing with the outward
+//! OpenAI error type. [`Error`] is what a handler, an extractor, the storage layer, or an upstream
+//! layer produces: one concrete variant per failure, carrying the values that identify it — the
+//! rejected field, the unknown value, the provider id — so a log record prints the whole cause.
+//! Every failure in the version's request lifecycle converges here — a rejected field, a malformed
+//! body, a body over the version's limit, a wrong body content type, an unmatched method, an
+//! unauthorized request, a storage or upstream failure — so no axum-shaped rejection ever reaches a
+//! client. [`IntoResponse`] is the one boundary a failure crosses on its way to the caller: it logs
+//! the failure exactly once and derives [`ErrorResponse`] from it, where a client fault states the
+//! variant's own wording while an internal cause renders its category's fixed message.
+//! [`ErrorCode`] is the wire's closed taxonomy: its `#[repr(u16)]` discriminant is the `errno`
+//! carried in every error body, and the HTTP status is derived from the variant through
+//! `AsStatusCode`, so a category and its status can never drift apart.
 
 use crate::{
     ir::InvalidRequest,
@@ -32,16 +28,29 @@ use axum::{
     extract::rejection::{BytesRejection, FailedToBufferBody, JsonRejection},
     response::{IntoResponse, Response},
 };
+use http::Method;
 use log::{debug, error};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as DeError};
+
+/// Message a failed write's constraint violation renders: the engine's SQL detail stays in the log
+/// record.
+const CONSTRAINT_MESSAGE: &str = "the request collides with existing state";
+
+/// Message every internal failure renders: its cause stays in the log record.
+const INTERNAL_MESSAGE: &str = "internal error";
+
+/// Message an over-limit request body renders.
+const PAYLOAD_TOO_LARGE_MESSAGE: &str = "request body exceeds the management body limit";
+
+/// Message an unreadable request body renders: the transport detail stays in the log record.
+const UNREADABLE_BODY_MESSAGE: &str = "request body could not be read";
 
 /// Machine-readable management error taxonomy.
 ///
-/// The discriminant is the `errno` rendered in the management error body;
-/// each variant pins exactly one HTTP status, derived through the
-/// `AsStatusCode` implementation. The taxonomy is part of this version's
-/// published wire surface, and the TypeScript bindings publish it as a
-/// numeric enum carrying those same discriminants.
+/// The discriminant is the `errno` rendered in the management error body; each variant pins exactly
+/// one HTTP status, derived through the `AsStatusCode` implementation. The taxonomy is part of this
+/// version's published wire surface, and the TypeScript bindings publish it as a numeric enum
+/// carrying those same discriminants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AsStatusCode)]
 #[cfg_attr(
     feature = "management-api-typescript-bindings",
@@ -90,8 +99,8 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// Every category, in `errno` order: the closed taxonomy's members, the
-    /// one place they are enumerated besides the variants themselves.
+    /// Every category, in `errno` order: the closed taxonomy's members, the one place they are
+    /// enumerated besides the variants themselves.
     const ALL: [Self; 9] = [
         Self::InvalidRequest,
         Self::Unauthorized,
@@ -104,21 +113,14 @@ impl ErrorCode {
         Self::UnsupportedMediaType,
     ];
 
-    /// Parses one `errno` discriminant back into its category, yielding
-    /// `None` for a number outside the closed taxonomy.
+    /// Parses one `errno` discriminant back into its category, yielding `None` for a number outside
+    /// the closed taxonomy.
     fn from_errno(errno: u16) -> Option<Self> {
         Self::ALL.into_iter().find(|code| u16::from(*code) == errno)
     }
 }
 
-impl From<ErrorCode> for u16 {
-    fn from(code: ErrorCode) -> Self {
-        code as Self
-    }
-}
-
-/// Serializes a category as its numeric `errno` discriminant, matching the
-/// rendered error body.
+/// Serializes a category as its numeric `errno` discriminant, matching the rendered error body.
 impl Serialize for ErrorCode {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -128,8 +130,8 @@ impl Serialize for ErrorCode {
     }
 }
 
-/// Deserializes a category from its numeric `errno` discriminant; a number
-/// outside the closed taxonomy is malformed rather than silently misread.
+/// Deserializes a category from its numeric `errno` discriminant; a number outside the closed
+/// taxonomy is malformed rather than silently misread.
 impl<'de> Deserialize<'de> for ErrorCode {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -138,38 +140,22 @@ impl<'de> Deserialize<'de> for ErrorCode {
         let errno = u16::deserialize(deserializer)?;
 
         Self::from_errno(errno).ok_or_else(|| {
-            <D::Error as serde::de::Error>::custom(format!("unknown management errno {errno}"))
+            <D::Error as DeError>::custom(format!("unknown management errno {errno}"))
         })
     }
 }
 
-/// Message a failed write's constraint violation renders: the engine's SQL
-/// detail stays in the log record.
-const CONSTRAINT_MESSAGE: &str = "the request collides with existing state";
-
-/// Message every internal failure renders: its cause stays in the log record.
-const INTERNAL_MESSAGE: &str = "internal error";
-
-/// Message an over-limit request body renders.
-const PAYLOAD_TOO_LARGE_MESSAGE: &str = "request body exceeds the management body limit";
-
-/// Message an unreadable request body renders: the transport detail stays in
-/// the log record.
-const UNREADABLE_BODY_MESSAGE: &str = "request body could not be read";
-
 /// A management API failure.
 ///
-/// Concrete: every variant names one failure and carries the values that
-/// identify it, so a log record printing the variant prints the whole cause.
-/// A client fault's own display is the message its category promises, which
-/// is what [`ErrorResponse`] derives; an internal cause's detail never
+/// Concrete: every variant names one failure and carries the values that identify it, so a log
+/// record printing the variant prints the whole cause. A client fault's own display is the message
+/// its category promises, which is what [`ErrorResponse`] derives; an internal cause's detail never
 /// crosses the wire.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum Error {
-    /// The request body failed JSON extraction: it is not the JSON the
-    /// route's payload type accepts, its content type is not JSON, it
-    /// exceeds the version's body limit, or it could not be read. The
-    /// rejection's own display carries axum's detail for the log record.
+    /// The request body failed JSON extraction: it is not the JSON the route's payload type
+    /// accepts, its content type is not JSON, it exceeds the version's body limit, or it could not
+    /// be read. The rejection's own display carries axum's detail for the log record.
     #[error(transparent)]
     Json(#[from] JsonRejection),
 
@@ -181,7 +167,7 @@ pub(super) enum Error {
     #[error("Invalid URL ({method} {path})")]
     UnmappedPath {
         /// Method of the rejected request.
-        method: http::Method,
+        method: Method,
 
         /// Path of the rejected request.
         path: String,
@@ -191,7 +177,7 @@ pub(super) enum Error {
     #[error("Invalid method ({method} {path})")]
     MethodNotAllowed {
         /// Method of the rejected request.
-        method: http::Method,
+        method: Method,
 
         /// Path of the rejected request.
         path: String,
@@ -205,8 +191,8 @@ pub(super) enum Error {
         param: &'static str,
     },
 
-    /// A `providers:update` request restates a provider type that differs
-    /// from the stored, immutable one.
+    /// A `providers:update` request restates a provider type that differs from the stored,
+    /// immutable one.
     #[error(
         "Provider `{name}` has type `{}` and cannot become `{}`",
         stored.as_str(),
@@ -223,8 +209,8 @@ pub(super) enum Error {
         requested: ProviderType,
     },
 
-    /// A reauthorization's OAuth state carries a provider type that
-    /// differs from the provider's stored one.
+    /// A reauthorization's OAuth state carries a provider type that differs from the provider's
+    /// stored one.
     #[error(
         "Provider `{name}` has type `{}` and cannot be authorized as `{}`",
         provider_type.as_str(),
@@ -255,29 +241,28 @@ pub(super) enum Error {
         name: String,
     },
 
-    /// The completion's state token is unknown, expired, or already
-    /// consumed.
+    /// The completion's state token is unknown, expired, or already consumed.
     #[error("OAuth state is unknown, expired, or already consumed")]
     UnknownOauthState,
 
-    /// The provider vanished between the reauthorization's lookup and its
-    /// credentials write — a concurrent `providers:delete`.
+    /// The provider vanished between the reauthorization's lookup and its credentials write — a
+    /// concurrent `providers:delete`.
     #[error("provider {id} vanished during OAuth reauthorization")]
     ProviderVanishedDuringReauthorization {
         /// Identifier of the vanished provider row.
         id: i64,
     },
 
-    /// Upstream model discovery answered with no models; the curated rows
-    /// are never wiped by an empty replacement (README §7.1).
+    /// Upstream model discovery answered with no models; the curated rows are never wiped by an
+    /// empty replacement (README §7.1).
     #[error(
         "Upstream request failed: upstream reported no models; \
          refusing to replace the provider's model rows"
     )]
     UpstreamReportedNoModels,
 
-    /// The shared request validation rejected the request, exactly as the
-    /// outward API renders it in its own contract.
+    /// The shared request validation rejected the request, exactly as the outward API renders it in
+    /// its own contract.
     #[error(transparent)]
     Validation(#[from] InvalidRequest),
 
@@ -293,8 +278,7 @@ pub(super) enum Error {
     #[error(transparent)]
     Discovery(#[from] DiscoveryError),
 
-    /// A stored thinking-levels override is corrupt — database drift
-    /// (README §7.1).
+    /// A stored thinking-levels override is corrupt — database drift (README §7.1).
     #[error("{detail}")]
     StoredOverrideDrift {
         /// The shared stored-override parser's drift detail.
@@ -302,10 +286,9 @@ pub(super) enum Error {
     },
 }
 
-/// The flat management error body every failed management request renders
-/// (README §7). It is part of this version's published wire surface, so
-/// external frontends can parse a rendered error and the bindings can publish
-/// it.
+/// The flat management error body every failed management request renders (README §7). It is part
+/// of this version's published wire surface, so external frontends can parse a rendered error and
+/// the bindings can publish it.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ErrorResponse {
@@ -317,12 +300,11 @@ pub struct ErrorResponse {
 }
 
 impl Error {
-    /// The errno category the failure renders as: the one classification, so
-    /// the log level, the response status, and the body's `errno` can never
-    /// disagree. A cause's own category decides — a vanished provider is a
-    /// 404, a rejected grant a 502, an engine failure a 500 — and a body's
-    /// rejection is classified by its own variant: the length-limit
-    /// rejection is the version's 413, every other one an unusable request.
+    /// The errno category the failure renders as: the one classification, so the log level, the
+    /// response status, and the body's `errno` can never disagree. A cause's own category decides —
+    /// a vanished provider is a 404, a rejected grant a 502, an engine failure a 500 — and a body's
+    /// rejection is classified by its own variant: the length-limit rejection is the version's 413,
+    /// every other one an unusable request.
     fn as_errno(&self) -> ErrorCode {
         match self {
             Self::Json(rejection) => match rejection {
@@ -354,22 +336,27 @@ impl Error {
 
             Self::OAuth(error) => match error {
                 OAuthError::NotFound { .. } => ErrorCode::NotFound,
+
                 OAuthError::Rejected { .. } | OAuthError::Unavailable { .. } => {
                     ErrorCode::UpstreamError
                 }
+
                 OAuthError::Internal { .. } => ErrorCode::Internal,
             },
             Self::Discovery(error) => match error {
                 DiscoveryError::Rejected { .. } | DiscoveryError::Unavailable { .. } => {
                     ErrorCode::UpstreamError
                 }
+
                 DiscoveryError::Internal { .. } => ErrorCode::Internal,
             },
             Self::Storage(error) => match error {
                 StorageError::NotFound { .. } => ErrorCode::NotFound,
+
                 StorageError::Conflict { .. } | StorageError::Constraint { .. } => {
                     ErrorCode::Conflict
                 }
+
                 StorageError::Busy { .. }
                 | StorageError::Drift { .. }
                 | StorageError::Database(_) => ErrorCode::Internal,
@@ -379,21 +366,20 @@ impl Error {
         }
     }
 
-    /// Whether the failure is the calling client's own fault: every 4xx
-    /// category belongs to the caller and every 5xx category to the gateway or
-    /// an upstream. README §8's severity policy records client-fault rejections
-    /// at debug level and gateway or upstream failures at error level.
+    /// Whether the failure is the calling client's own fault: every 4xx category belongs to the
+    /// caller and every 5xx category to the gateway or an upstream. README §8's severity policy
+    /// records client-fault rejections at debug level and gateway or upstream failures at error
+    /// level.
     fn is_client_fault(&self) -> bool {
         self.as_errno().as_status_code().is_client_error()
     }
 }
 
-/// Renders the failure into the errno-shaped response and logs it exactly
-/// once: this is the only boundary a failure crosses on its way to the
-/// caller, whether it left a handler, an extractor, or the router's own
-/// edges. A client fault is recorded at debug level — the rendered response
-/// already informs the caller — while a gateway or upstream failure is
-/// recorded at error level with the whole cause the response withholds.
+/// Renders the failure into the errno-shaped response and logs it exactly once: this is the only
+/// boundary a failure crosses on its way to the caller, whether it left a handler, an extractor, or
+/// the router's own edges. A client fault is recorded at debug level — the rendered response
+/// already informs the caller — while a gateway or upstream failure is recorded at error level with
+/// the whole cause the response withholds.
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         if self.is_client_fault() {
@@ -410,11 +396,10 @@ impl IntoResponse for Error {
 
 /// Renders the wire body from a failure.
 ///
-/// The message is derived, never stored: a client fault states its variant's
-/// own wording — the concrete display is the client-facing message by
-/// construction, including an upstream failure's foreign status and excerpt —
-/// while every failure whose cause is internal renders its category's fixed
-/// message, keeping the cause in the log record.
+/// The message is derived, never stored: a client fault states its variant's own wording — the
+/// concrete display is the client-facing message by construction, including an upstream failure's
+/// foreign status and excerpt — while every failure whose cause is internal renders its category's
+/// fixed message, keeping the cause in the log record.
 impl From<Error> for ErrorResponse {
     fn from(error: Error) -> Self {
         let errno = error.as_errno();
@@ -442,14 +427,33 @@ impl From<Error> for ErrorResponse {
     }
 }
 
+impl From<ErrorCode> for u16 {
+    fn from(code: ErrorCode) -> Self {
+        code as Self
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use axum::extract::rejection::MissingJsonContentType;
+    use super::{CONSTRAINT_MESSAGE, Error, ErrorCode, ErrorResponse, INTERNAL_MESSAGE};
+    use crate::{
+        database::Error as DatabaseError,
+        ir::InvalidRequest,
+        provider::{
+            OAuthProviderType, ProviderType, discovery::Error as DiscoveryError,
+            oauth::Error as OAuthError, storage::Error as StorageError,
+        },
+    };
+    use as_http_status_code::{AsStatusCode as _, StatusCode};
+    use axum::{
+        extract::rejection::{JsonRejection, MissingJsonContentType},
+        response::IntoResponse as _,
+    };
+    use http::Method;
 
-    /// Verifies that every [`ErrorCode`] carries its documented errno
-    /// discriminant and derives its documented HTTP status through
-    /// [`AsStatusCode`], so the taxonomy table in README §7 stays truthful.
+    /// Verifies that every [`ErrorCode`] carries its documented errno discriminant and derives its
+    /// documented HTTP status through [`AsStatusCode`], so the taxonomy table in README §7 stays
+    /// truthful.
     ///
     /// # Panics
     ///
@@ -482,11 +486,9 @@ mod tests {
         }
     }
 
-    /// Verifies that a category crosses the wire as its numeric `errno`
-    /// discriminant and that an unknown number is rejected, so a published
-    /// error body round-trips while a number outside the closed taxonomy is
-    /// malformed instead of being misread as some other category
-    /// (README §7).
+    /// Verifies that a category crosses the wire as its numeric `errno` discriminant and that an
+    /// unknown number is rejected, so a published error body round-trips while a number outside the
+    /// closed taxonomy is malformed instead of being misread as some other category (README §7).
     ///
     /// # Panics
     ///
@@ -506,9 +508,9 @@ mod tests {
         assert!(serde_json::from_str::<ErrorCode>("10").is_err());
     }
 
-    /// Verifies that the errno taxonomy publishes to TypeScript as a numeric
-    /// enum carrying the documented discriminants, so a TypeScript client can
-    /// name the `code` value a rendered error carries (README §7).
+    /// Verifies that the errno taxonomy publishes to TypeScript as a numeric enum carrying the
+    /// documented discriminants, so a TypeScript client can name the `code` value a rendered error
+    /// carries (README §7).
     ///
     /// # Panics
     ///
@@ -519,32 +521,38 @@ mod tests {
         let declaration = <ErrorCode as ts_rs::TS>::decl(&ts_rs::Config::new());
 
         assert!(declaration.starts_with("enum ErrorCode"), "{declaration}");
+
         assert!(
             declaration.contains(r#""InvalidRequest" = 1"#),
             "{declaration}"
         );
+
         assert!(
             declaration.contains(r#""UpstreamError" = 5"#),
             "{declaration}"
         );
+
         assert!(declaration.contains(r#""Internal" = 6"#), "{declaration}");
+
         assert!(
             declaration.contains(r#""PayloadTooLarge" = 7"#),
             "{declaration}"
         );
+
         assert!(
             declaration.contains(r#""MethodNotAllowed" = 8"#),
             "{declaration}"
         );
+
         assert!(
             declaration.contains(r#""UnsupportedMediaType" = 9"#),
             "{declaration}"
         );
     }
 
-    /// Verifies that the rendered management body carries the numeric errno
-    /// and the variant's own wording, pinned at the wire level: the
-    /// serialized key names and nesting are the contract README §7 documents.
+    /// Verifies that the rendered management body carries the numeric errno and the variant's own
+    /// wording, pinned at the wire level: the serialized key names and nesting are the contract
+    /// README §7 documents.
     ///
     /// # Panics
     ///
@@ -563,8 +571,8 @@ mod tests {
         );
     }
 
-    /// Verifies that the response carries the category's derived status, in
-    /// particular the pinned 502 for upstream failures.
+    /// Verifies that the response carries the category's derived status, in particular the pinned
+    /// 502 for upstream failures.
     ///
     /// # Panics
     ///
@@ -579,11 +587,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
-    /// Verifies that every cause the handlers can surface is classified onto
-    /// the management taxonomy: storage rows split per outcome, an upstream
-    /// failure always pins 502 `UpstreamError`, a vanished provider stays a
-    /// 404, shared request validation and credentials parsing land on 400,
-    /// and a wrong body content type lands on the 415 category.
+    /// Verifies that every cause the handlers can surface is classified onto the management
+    /// taxonomy: storage rows split per outcome, an upstream failure always pins 502
+    /// `UpstreamError`, a vanished provider stays a 404, shared request validation and credentials
+    /// parsing land on 400, and a wrong body content type lands on the 415 category.
     ///
     /// # Panics
     ///
@@ -621,7 +628,7 @@ mod tests {
                 ErrorCode::Internal,
             ),
             (
-                Error::from(StorageError::Database(crate::database::Error::PoolClosed)),
+                Error::from(StorageError::Database(DatabaseError::PoolClosed)),
                 ErrorCode::Internal,
             ),
             (
@@ -705,12 +712,11 @@ mod tests {
         }
     }
 
-    /// Verifies that the client-fault classification partitions the taxonomy
-    /// exactly as README §8's severity policy prescribes: client-fault
-    /// rejections — malformed bodies, failed authentication, missing
-    /// resources, conflicts, an over-limit body, an unmatched method, a wrong
-    /// body content type — are logged at debug level, while gateway and
-    /// upstream failures are logged at error level.
+    /// Verifies that the client-fault classification partitions the taxonomy exactly as README §8's
+    /// severity policy prescribes: client-fault rejections — malformed bodies, failed
+    /// authentication, missing resources, conflicts, an over-limit body, an unmatched method, a
+    /// wrong body content type — are logged at debug level, while gateway and upstream failures are
+    /// logged at error level.
     ///
     /// # Panics
     ///
@@ -729,7 +735,7 @@ mod tests {
             ),
             (
                 Error::MethodNotAllowed {
-                    method: http::Method::PATCH,
+                    method: Method::PATCH,
                     path: "/providers:list".to_string(),
                 },
                 true,
@@ -758,10 +764,9 @@ mod tests {
         }
     }
 
-    /// Verifies that a wrong body content type renders the 415 category with
-    /// the rejection's own wording — the one extraction failure axum lets a
-    /// test construct directly, the body-buffering rejections carrying
-    /// private engine detail.
+    /// Verifies that a wrong body content type renders the 415 category with the rejection's own
+    /// wording — the one extraction failure axum lets a test construct directly, the body-buffering
+    /// rejections carrying private engine detail.
     ///
     /// # Panics
     ///
@@ -779,9 +784,8 @@ mod tests {
         );
     }
 
-    /// Verifies that an upstream failure's message is the domain failure's
-    /// display verbatim, so the foreign status and excerpt the management
-    /// contract promises stay owned by the domain module.
+    /// Verifies that an upstream failure's message is the domain failure's display verbatim, so the
+    /// foreign status and excerpt the management contract promises stay owned by the domain module.
     ///
     /// # Panics
     ///
@@ -799,10 +803,9 @@ mod tests {
         );
     }
 
-    /// Verifies the split between the failure and the body: an internal cause
-    /// keeps its detail for the log record while the client learns only the
-    /// category's message, and a constraint's engine detail stays internal the
-    /// same way.
+    /// Verifies the split between the failure and the body: an internal cause keeps its detail for
+    /// the log record while the client learns only the category's message, and a constraint's
+    /// engine detail stays internal the same way.
     ///
     /// # Panics
     ///

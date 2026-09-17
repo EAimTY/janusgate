@@ -1,10 +1,8 @@
-//! The outward format surface's own error domain: rendering OpenAI error
-//! bodies (README §6.7).
+//! The outward format surface's own error domain: rendering OpenAI error bodies (README §6.7).
 //!
-//! Domain failures arrive through [`From`](std::convert::From) conversions
-//! and are classified here onto their contract rows: the surface owns the
-//! status, the OpenAI `type`, `code`, and `param`, while the human message
-//! rides on the domain error's [`Display`](std::fmt::Display).
+//! Domain failures arrive through [`From`](std::convert::From) conversions and are classified here
+//! onto their contract rows: the surface owns the status, the OpenAI `type`, `code`, and `param`,
+//! while the human message rides on the domain error's [`Display`](std::fmt::Display).
 
 use crate::{
     format::{OpenAiErrorBody, OpenAiErrorEnvelope},
@@ -35,8 +33,7 @@ pub(super) enum Error {
         path: String,
     },
 
-    /// The client's request failed validation before or while preparing the
-    /// upstream call.
+    /// The client's request failed validation before or while preparing the upstream call.
     #[error(transparent)]
     InvalidRequest(#[from] InvalidRequest),
 
@@ -49,8 +46,8 @@ pub(super) enum Error {
     Storage(#[from] StorageError),
 }
 
-/// One rendered contract row: everything the HTTP status and the OpenAI
-/// error body need besides the message.
+/// One rendered contract row: everything the HTTP status and the OpenAI error body need besides the
+/// message.
 struct Row {
     /// HTTP status the surface answers with.
     status: StatusCode,
@@ -66,10 +63,9 @@ struct Row {
 }
 
 impl Error {
-    /// Classifies the error onto its contract row. The classification keys
-    /// on the failing domain module, so a token-endpoint rejection always
-    /// pins 502 even though it carries a foreign status, while the
-    /// completion upstream's status is mirrored verbatim (README §6.7).
+    /// Classifies the error onto its contract row. The classification keys on the failing domain
+    /// module, so a token-endpoint rejection always pins 502 even though it carries a foreign
+    /// status, while the completion upstream's status is mirrored verbatim (README §6.7).
     fn row(&self) -> Row {
         match self {
             Self::InvalidApiKey => Row {
@@ -152,9 +148,8 @@ impl Error {
         }
     }
 
-    /// Whether the error is the calling client's own fault — a malformed or
-    /// unsupported request, a failed authentication, or an unknown model —
-    /// as opposed to a gateway or upstream failure.
+    /// Whether the error is the calling client's own fault — a malformed or unsupported request, a
+    /// failed authentication, or an unknown model — as opposed to a gateway or upstream failure.
     fn is_client_fault(&self) -> bool {
         match self {
             Self::InvalidApiKey | Self::InvalidUrl { .. } | Self::InvalidRequest(_) => true,
@@ -168,8 +163,7 @@ impl Error {
         }
     }
 
-    /// Renders the OpenAI error object: the classified row beside the
-    /// human-readable message.
+    /// Renders the OpenAI error object: the classified row beside the human-readable message.
     pub(super) fn body(&self) -> OpenAiErrorBody {
         let row = self.row();
 
@@ -181,8 +175,8 @@ impl Error {
         }
     }
 
-    /// Renders the error into an HTTP response, wrapped in the OpenAI error
-    /// envelope the surface's JSON clients parse.
+    /// Renders the error into an HTTP response, wrapped in the OpenAI error envelope the surface's
+    /// JSON clients parse.
     pub(super) fn into_response(self) -> Response {
         let status = self.row().status;
 
@@ -190,12 +184,11 @@ impl Error {
     }
 }
 
-/// Logs one [`Error`] exactly once, at the response boundary about to render
-/// it to its caller: a client fault is recorded at debug level (the rendered
-/// response already informs the caller), while a gateway or upstream failure
-/// is recorded at error level. `operation` names the request the error
-/// belongs to, with whatever identifying context the boundary holds (such as
-/// the model or provider name).
+/// Logs one [`Error`] exactly once, at the response boundary about to render it to its caller: a
+/// client fault is recorded at debug level (the rendered response already informs the caller),
+/// while a gateway or upstream failure is recorded at error level. `operation` names the request
+/// the error belongs to, with whatever identifying context the boundary holds (such as the model or
+/// provider name).
 pub(super) fn log_error(operation: &str, error: &Error) {
     if error.is_client_fault() {
         debug!("{operation} rejected: {error}");
@@ -209,9 +202,9 @@ mod tests {
     use super::*;
     use crate::format::PayloadError;
 
-    /// Verifies that every domain failure classifies onto its row of the
-    /// outward error table (README §6.7 and §4): the derived status, the
-    /// OpenAI `type`, and the row's `code`, `param`, and message wording.
+    /// Verifies that every domain failure classifies onto its row of the outward error table
+    /// (README §6.7 and §4): the derived status, the OpenAI `type`, and the row's `code`, `param`,
+    /// and message wording.
     ///
     /// # Panics
     ///
@@ -352,9 +345,8 @@ mod tests {
         }
     }
 
-    /// Verifies that the fault-party classification covers exactly the
-    /// client-fault rows, so the debug-versus-error log policy (README §8)
-    /// keys on the party alone.
+    /// Verifies that the fault-party classification covers exactly the client-fault rows, so the
+    /// debug-versus-error log policy (README §8) keys on the party alone.
     ///
     /// # Panics
     ///

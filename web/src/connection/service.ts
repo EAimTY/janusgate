@@ -41,6 +41,7 @@ export function createConnectionService(
         type: "storedConnectionLoaded",
         connection: readStoredConnection(dependencies.storage),
     });
+
     const [connectionState, setConnectionState] = createSignal<ConnectionState>(currentState);
 
     // Reducer state is the source of truth and is updated synchronously; the
@@ -77,6 +78,7 @@ export function createConnectionService(
         }
 
         writeStoredConnection(dependencies.storage, candidate);
+
         dispatch({
             type: "connectionAccepted",
             connection: candidate,
@@ -85,6 +87,7 @@ export function createConnectionService(
 
     const forget = (): void => {
         clearStoredConnection(dependencies.storage);
+
         dispatch({
             type: "connectionForgotten",
         });
@@ -92,6 +95,7 @@ export function createConnectionService(
 
     const reportUnauthorized = (notice: string): void => {
         clearStoredConnection(dependencies.storage);
+
         dispatch({
             type: "connectionRejected",
             notice,

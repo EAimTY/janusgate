@@ -17,6 +17,7 @@ function browserStorage(): Storage | null {
     if (typeof window === "undefined") {
         return null;
     }
+
     try {
         // Storage can be absent or denied outright (privacy modes); the app
         // then lives in memory for this session only.

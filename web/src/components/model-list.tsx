@@ -169,9 +169,11 @@ function ModelEditor(props: ModelEditorProps): JSX.Element {
     const idPrefix = createUniqueId();
     const [idOverride, setIdOverride] = createSignal(props.model.id_override ?? "");
     const [isEnabled, setIsEnabled] = createSignal(props.model.is_enabled);
+
     const [thinkingLevels, setThinkingLevels] = createSignal<ThinkingLevel[]>(
         props.model.thinking_levels_override ?? [],
     );
+
     const [failure, setFailure] = createSignal<string | null>(null);
     const [isSaving, setIsSaving] = createSignal(false);
 
@@ -187,6 +189,7 @@ function ModelEditor(props: ModelEditorProps): JSX.Element {
 
     const save = async (event: SubmitEvent): Promise<void> => {
         event.preventDefault();
+
         if (isSaving()) {
             return;
         }
@@ -194,6 +197,7 @@ function ModelEditor(props: ModelEditorProps): JSX.Element {
         const trimmedOverride = idOverride().trim();
         setFailure(null);
         setIsSaving(true);
+
         const outcome = await performManagementCall(() =>
             props.api.updateModel(
                 toUpdateModelRequest(props.model, {
@@ -204,17 +208,20 @@ function ModelEditor(props: ModelEditorProps): JSX.Element {
                 }),
             ),
         );
+
         setIsSaving(false);
 
         if (outcome.status === "ok") {
             props.onSaved(outcome.result.model);
             return;
         }
+
         if (outcome.status === "failed") {
             if (outcome.errno === ErrorCode.NotFound) {
                 props.onVanished(outcome.message);
                 return;
             }
+
             setFailure(outcome.message);
         }
     };

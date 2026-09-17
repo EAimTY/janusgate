@@ -1,12 +1,10 @@
 //! Gemini GenerateContent protocol codec.
 //!
-//! Speaks the `gemini_generate_content` upstream protocol, both in the
-//! Antigravity Code Assist envelope (§5.2) and as a bare OpenAI-compatible
-//! upstream protocol (§5.3).
+//! Speaks the `gemini_generate_content` upstream protocol, both in the Antigravity Code Assist
+//! envelope (§5.2) and as a bare OpenAI-compatible upstream protocol (§5.3).
 //!
-//! Rendered payloads are first-party types in the upstream wire shape, so
-//! field presence per request is declared by `skip_serializing_if` rather than
-//! assembled conditionally.
+//! Rendered payloads are first-party types in the upstream wire shape, so field presence per
+//! request is declared by `skip_serializing_if` rather than assembled conditionally.
 
 use super::{PayloadError, UpstreamError, UpstreamEventParser};
 use crate::{
@@ -18,16 +16,16 @@ use crate::{
     sse::SseFrame,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// The `responseMimeType` value requesting a JSON response.
 const JSON_MIME_TYPE: &str = "application/json";
 
 /// Renders the upstream request URL and payload for an Antigravity provider.
 ///
-/// `base_url` and `user_agent` are the provider's Code Assist endpoint and
-/// the `User-Agent` value it requires; the provider layer owns endpoint
-/// knowledge, so both are threaded in rather than owned by the codec.
+/// `base_url` and `user_agent` are the provider's Code Assist endpoint and the `User-Agent` value
+/// it requires; the provider layer owns endpoint knowledge, so both are threaded in rather than
+/// owned by the codec.
 ///
 /// # Errors
 ///
@@ -80,8 +78,8 @@ pub(crate) struct AntigravityEnvelope<'a> {
     request_id: String,
 }
 
-/// Renders the upstream request URL and payload for an OpenAI-compatible
-/// Gemini provider, whose body is the bare GenerateContentRequest.
+/// Renders the upstream request URL and payload for an OpenAI-compatible Gemini provider, whose
+/// body is the bare GenerateContentRequest.
 ///
 /// # Errors
 ///
@@ -97,10 +95,9 @@ pub(crate) fn render_compatible_request<'a>(
     Ok((url, render_generate_content_request(ir)?))
 }
 
-/// Renders the GenerateContent URL for one call, the single place where the
-/// action segment (including its leading colon) is assembled: enveloped Code
-/// Assist upstreams take the action directly on the base URL, compatible
-/// upstreams insert `/models/<upstream_id>` before it.
+/// Renders the GenerateContent URL for one call, the single place where the action segment
+/// (including its leading colon) is assembled: enveloped Code Assist upstreams take the action
+/// directly on the base URL, compatible upstreams insert `/models/<upstream_id>` before it.
 fn render_request_url(
     base_url: &str,
     upstream_id: &str,
@@ -128,8 +125,8 @@ fn render_request_url(
     }
 }
 
-/// The bare GenerateContentRequest carried in the envelope `request` field or
-/// sent directly to a compatible upstream.
+/// The bare GenerateContentRequest carried in the envelope `request` field or sent directly to a
+/// compatible upstream.
 #[derive(Debug, Serialize)]
 pub(crate) struct GenerateContentRequest<'a> {
     /// Conversation contents, in alternating-role runs.
@@ -169,8 +166,7 @@ struct SystemInstruction<'a> {
     parts: Vec<Part<'a>>,
 }
 
-/// One Gemini part: the union of the part kinds the gateway renders, exactly
-/// one per part.
+/// One Gemini part: the union of the part kinds the gateway renders, exactly one per part.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum Part<'a> {
@@ -239,11 +235,11 @@ struct FunctionCall<'a> {
     name: &'a str,
 
     /// Arguments object, decoded from the IR's JSON-encoded arguments text.
-    args: serde_json::Map<String, Value>,
+    args: Map<String, Value>,
 
-    /// Identifier of the invocation. The IR's client-populated `call_id` is
-    /// exactly what the upstream's `FunctionResponse.id` is defined to match,
-    /// so parallel calls to one function name stay resolvable.
+    /// Identifier of the invocation. The IR's client-populated `call_id` is exactly what the
+    /// upstream's `FunctionResponse.id` is defined to match, so parallel calls to one function
+    /// name stay resolvable.
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<&'a str>,
 }
@@ -263,14 +259,13 @@ struct FunctionResponse<'a> {
     id: Option<&'a str>,
 }
 
-/// The result payload of a tool response: the tool's own JSON object when the
-/// stored output is one, else the `{"result": ...}` wrapper the upstream
-/// requires.
+/// The result payload of a tool response: the tool's own JSON object when the stored output is one,
+/// else the `{"result": ...}` wrapper the upstream requires.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum ToolResult<'a> {
     /// A JSON-object result, forwarded verbatim.
-    Object(serde_json::Map<String, Value>),
+    Object(Map<String, Value>),
 
     /// Any other parsed JSON value, wrapped.
     Wrapped {
@@ -394,28 +389,27 @@ struct ThinkingConfig {
     thinking_budget: u32,
 }
 
-/// Renders the bare GenerateContentRequest carried in the envelope `request`
-/// field or sent directly to a compatible upstream.
+/// Renders the bare GenerateContentRequest carried in the envelope `request` field or sent directly
+/// to a compatible upstream.
 ///
-/// The Gemini API requires `contents` roles to alternate between `user` and
-/// `model`, so each run of consecutive same-role messages coalesces into one
-/// content entry whose parts concatenate in order — the several tool results
-/// of one turn then ride as multiple `functionResponse` parts of a single
-/// `user` content, the canonical shape. An already-alternating history renders
-/// one content per message, exactly the 1:1 shape.
+/// The Gemini API requires `contents` roles to alternate between `user` and `model`, so each run of
+/// consecutive same-role messages coalesces into one content entry whose parts concatenate in order
+/// — the several tool results of one turn then ride as multiple `functionResponse` parts of a
+/// single `user` content, the canonical shape. An already-alternating history renders one content
+/// per message, exactly the 1:1 shape.
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] for tool call arguments that are not JSON objects
-/// and tool outputs whose invocation cannot be resolved.
+/// Returns [`InvalidRequest`] for tool call arguments that are not JSON objects and tool outputs
+/// whose invocation cannot be resolved.
 fn render_generate_content_request(
     ir: &IrRequest,
 ) -> Result<GenerateContentRequest<'_>, InvalidRequest> {
     let mut contents: Vec<Content<'_>> = Vec::new();
 
-    // The open run's role and accumulated parts; a message whose parts render
-    // to nothing is transparent — it contributes nothing and cannot split a
-    // run, since it produces no content entry to alternate against.
+    // The open run's role and accumulated parts; a message whose parts render to nothing is
+    // transparent — it contributes nothing and cannot split a run, since it produces no content
+    // entry to alternate against.
     let mut run_role: Option<&'static str> = None;
     let mut run_parts: Vec<Part<'_>> = Vec::new();
 
@@ -534,13 +528,12 @@ fn render_generate_content_request(
     })
 }
 
-/// Resolves the function name a tool output answers, scanning earlier
-/// messages for the matching invocation.
+/// Resolves the function name a tool output answers, scanning earlier messages for the matching
+/// invocation.
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] when no matching tool call exists in the
-/// conversation.
+/// Returns [`InvalidRequest`] when no matching tool call exists in the conversation.
 fn resolve_tool_output_name(call_id: &str, ir: &IrRequest) -> Result<String, InvalidRequest> {
     for message in &ir.messages {
         for part in &message.parts {
@@ -566,8 +559,8 @@ fn resolve_tool_output_name(call_id: &str, ir: &IrRequest) -> Result<String, Inv
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] per [`resolve_tool_output_name`] and for
-/// non-object tool call arguments.
+/// Returns [`InvalidRequest`] per [`resolve_tool_output_name`] and for non-object tool call
+/// arguments.
 fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, InvalidRequest> {
     match part {
         IrPart::Text { text } => Ok(vec![Part::Text { text }]),
@@ -622,8 +615,7 @@ fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, In
     }
 }
 
-/// Parses upstream Gemini responses — SSE frames or a full JSON body — into
-/// IR events.
+/// Parses upstream Gemini responses — SSE frames or a full JSON body — into IR events.
 #[derive(Debug, Default)]
 pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
@@ -632,27 +624,24 @@ pub(crate) struct UpstreamParser {
     /// Count of function calls synthesized in this response.
     call_counter: usize,
 
-    /// Whether the response delivered any `functionCall` part; Gemini ends
-    /// tool-call turns with the plain `STOP` reason, so the delivered calls
-    /// decide the canonical tool-call finish.
+    /// Whether the response delivered any `functionCall` part; Gemini ends tool-call turns with
+    /// the plain `STOP` reason, so the delivered calls decide the canonical tool-call finish.
     is_call_delivered: bool,
 
-    /// Whether a finish reason was already emitted; a clean end-of-stream
-    /// without one degrades to [`IrFinishReason::Stop`] in the parser's
-    /// finish hook, matching the aggregated rendering default.
+    /// Whether a finish reason was already emitted; a clean end-of-stream without one degrades to
+    /// [`IrFinishReason::Stop`] in the parser's finish hook, matching the aggregated rendering
+    /// default.
     is_finished: bool,
 }
 
-/// One upstream GenerateContentResponse, or the Cloud Code Assist envelope
-/// wrapping one.
+/// One upstream GenerateContentResponse, or the Cloud Code Assist envelope wrapping one.
 ///
-/// The Cloud Code Assist API wraps every GenerateContentResponse —
-/// `:generateContent` JSON bodies and `alt=sse` frames alike — in a
-/// `response` member beside `traceId` and `metadata` (README §5.2), while
-/// Gemini-compatible upstreams carry the bare response, which has no
-/// top-level `response` member of its own. Every member is optional because
-/// the body is either the envelope or the bare response, and upstreams are
-/// third-party: members the gateway does not read are ignored.
+/// The Cloud Code Assist API wraps every GenerateContentResponse — `:generateContent` JSON bodies
+/// and `alt=sse` frames alike — in a `response` member beside `traceId` and `metadata` (README
+/// §5.2), while Gemini-compatible upstreams carry the bare response, which has no top-level
+/// `response` member of its own. Every member is optional because the body is either the envelope
+/// or the bare response, and upstreams are third-party: members the gateway does not read are
+/// ignored.
 #[derive(Debug, Default, Deserialize)]
 struct UpstreamBody {
     /// The response wrapped by the Code Assist envelope.
@@ -685,8 +674,8 @@ struct UpstreamBody {
 }
 
 impl UpstreamBody {
-    /// The GenerateContentResponse to ingest: the envelope's wrapped response
-    /// when the body is an envelope, else the body itself.
+    /// The GenerateContentResponse to ingest: the envelope's wrapped response when the body is an
+    /// envelope, else the body itself.
     fn payload(&self) -> &Self {
         match &self.response {
             Some(payload) => payload,
@@ -747,10 +736,10 @@ struct FunctionCallPayload {
     #[serde(default)]
     name: Option<String>,
 
-    /// Arguments the model supplied; the object's members are the tool's own
-    /// schema, which the gateway forwards verbatim.
+    /// Arguments the model supplied; the object's members are the tool's own schema, which the
+    /// gateway forwards verbatim.
     #[serde(default)]
-    args: Option<serde_json::Map<String, Value>>,
+    args: Option<Map<String, Value>>,
 
     /// Invocation identifier, absent on an upstream that does not mint one.
     #[serde(default)]
@@ -795,13 +784,12 @@ impl UpstreamParser {
     ///
     /// # Errors
     ///
-    /// Returns [`PayloadError`] for an embedded upstream error object and for
-    /// a `MALFORMED_FUNCTION_CALL` finish.
+    /// Returns [`PayloadError`] for an embedded upstream error object and for a
+    /// `MALFORMED_FUNCTION_CALL` finish.
     fn ingest_response(&mut self, body: UpstreamBody) -> Result<Vec<IrEvent>, PayloadError> {
-        // An error object inside a 2xx body is a malformed upstream payload
-        // (README §6.7); the check sits beside the protocol fields, before
-        // the `response` envelope below is unwrapped, shared with the
-        // OpenAI-family codecs.
+        // An error object inside a 2xx body is a malformed upstream payload (README §6.7); the
+        // check sits beside the protocol fields, before the `response` envelope below is unwrapped,
+        // shared with the OpenAI-family codecs.
         if let Some(error) = &body.error {
             return Err(error.failure());
         }
@@ -839,11 +827,10 @@ impl UpstreamParser {
             }
         }
 
-        // A prompt-level block carries `promptFeedback.blockReason` and no
-        // candidates, so no `finishReason` ever arrives and the clean end of
-        // stream would degrade the block into a successful `Stop`. Upstream
-        // sends `promptFeedback` only when no candidate was generated, so a
-        // candidate finish above always wins.
+        // A prompt-level block carries `promptFeedback.blockReason` and no candidates, so no
+        // `finishReason` ever arrives and the clean end of stream would degrade the block into a
+        // successful `Stop`. Upstream sends `promptFeedback` only when no candidate was generated,
+        // so a candidate finish above always wins.
         if !self.is_finished
             && value
                 .prompt_feedback
@@ -876,8 +863,8 @@ impl UpstreamParser {
     ///
     /// # Panics
     ///
-    /// Panics if serializing the borrowed `args` map fails, which cannot
-    /// occur: serializing a JSON object map is infallible.
+    /// Panics if serializing the borrowed `args` map fails, which cannot occur: serializing a JSON
+    /// object map is infallible.
     fn ingest_part(&mut self, part: &GeminiPart, events: &mut Vec<IrEvent>) {
         if let Some(text) = &part.text {
             let is_thought = part.thought.unwrap_or(false);
@@ -897,8 +884,8 @@ impl UpstreamParser {
 
         let name = function_call.name.clone().unwrap_or_default();
 
-        // The arguments serialize straight from the borrowed map — no deep
-        // copy — with a missing `args` rendering an empty JSON object.
+        // The arguments serialize straight from the borrowed map — no deep copy — with a missing
+        // `args` rendering an empty JSON object.
         let arguments = match &function_call.args {
             Some(args) =>
             {
@@ -912,11 +899,10 @@ impl UpstreamParser {
             None => "{}".to_string(),
         };
 
-        // A populated upstream `functionCall.id` is the cross-turn matching
-        // channel: the replayed `functionResponse.id` must answer it, and
-        // without it two same-name calls in one turn are unresolvable. An
-        // id-less call mints one so the pairing channel always exists; the
-        // minted id also rides outward as the client-facing tool-call id.
+        // A populated upstream `functionCall.id` is the cross-turn matching channel: the replayed
+        // `functionResponse.id` must answer it, and without it two same-name calls in one turn are
+        // unresolvable. An id-less call mints one so the pairing channel always exists; the minted
+        // id also rides outward as the client-facing tool-call id.
         let call_id = match function_call.id.clone() {
             Some(id) if !id.is_empty() => id,
             _ => format!("call_{}", ids::new_uuid()),
@@ -957,8 +943,7 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// # Errors
     ///
-    /// Returns [`PayloadError`] for upstream error objects and malformed
-    /// bodies.
+    /// Returns [`PayloadError`] for upstream error objects and malformed bodies.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
         let body = format::parse_body::<UpstreamBody>(value)?;
 
@@ -966,10 +951,9 @@ impl UpstreamEventParser for UpstreamParser {
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {
-        // An upstream may close its stream cleanly after streaming content
-        // without ever sending a `finishReason`; the missing finish reason
-        // degrades to `Stop` so the streamed client sees the same terminal
-        // finish reason as the aggregated rendering of the same stream.
+        // An upstream may close its stream cleanly after streaming content without ever sending a
+        // `finishReason`; the missing finish reason degrades to `Stop` so the streamed client sees
+        // the same terminal finish reason as the aggregated rendering of the same stream.
         if !self.is_finished {
             self.is_finished = true;
 
@@ -980,10 +964,9 @@ impl UpstreamEventParser for UpstreamParser {
     }
 }
 
-/// Selects the primary candidate of an upstream `candidates` array: the entry
-/// whose `index` is 0, tolerating index-less upstreams by taking the first
-/// entry instead. Parallel candidates beyond the primary are not supported and
-/// the remainder is ignored.
+/// Selects the primary candidate of an upstream `candidates` array: the entry whose `index` is 0,
+/// tolerating index-less upstreams by taking the first entry instead. Parallel candidates beyond
+/// the primary are not supported and the remainder is ignored.
 fn primary_candidate(candidates: &[Candidate]) -> Option<&Candidate> {
     candidates
         .iter()
@@ -993,18 +976,16 @@ fn primary_candidate(candidates: &[Candidate]) -> Option<&Candidate> {
 
 /// Maps a Gemini `finishReason` to the canonical reason.
 ///
-/// Gemini ends function-call turns with the plain `STOP` reason — the
-/// `finishReason` vocabulary has no tool-call value — so a turn that
-/// delivered `functionCall` parts carries the canonical
-/// [`IrFinishReason::ToolCall`] finish, matching official Chat Completions
-/// semantics for text+tool-call mixed turns too.
+/// Gemini ends function-call turns with the plain `STOP` reason — the `finishReason` vocabulary has
+/// no tool-call value — so a turn that delivered `functionCall` parts carries the canonical
+/// [`IrFinishReason::ToolCall`] finish, matching official Chat Completions semantics for
+/// text+tool-call mixed turns too.
 ///
 /// # Errors
 ///
-/// Returns [`PayloadError`] for `MALFORMED_FUNCTION_CALL`: the model
-/// generated an invalid function call, so the turn delivered no usable
-/// result and must surface as an upstream failure (README §6.7) instead of a
-/// successful `Stop` finish that would mask the failure.
+/// Returns [`PayloadError`] for `MALFORMED_FUNCTION_CALL`: the model generated an invalid function
+/// call, so the turn delivered no usable result and must surface as an upstream failure (README
+/// §6.7) instead of a successful `Stop` finish that would mask the failure.
 fn finish_reason_from_gemini(
     value: &str,
     is_call_delivered: bool,
@@ -1012,10 +993,9 @@ fn finish_reason_from_gemini(
     match value {
         "MAX_TOKENS" => Ok(IrFinishReason::Length),
 
-        // The official `FinishReason` vocabulary flags filtered content with
-        // these six reasons — `LANGUAGE` ("the candidate content was flagged
-        // for using an unsupported language") grouped with its safety
-        // siblings — so each is a filtered turn, never a clean stop.
+        // The official `FinishReason` vocabulary flags filtered content with these six reasons —
+        // `LANGUAGE` ("the candidate content was flagged for using an unsupported language")
+        // grouped with its safety siblings — so each is a filtered turn, never a clean stop.
         "LANGUAGE" | "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" => {
             Ok(IrFinishReason::ContentFilter)
         }

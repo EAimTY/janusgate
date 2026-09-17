@@ -1,5 +1,4 @@
-//! In-process SQLite database engine and connection-pooled abstraction backed
-//! by Turso.
+//! In-process SQLite database engine and connection-pooled abstraction backed by Turso.
 
 use deadpool::{
     Runtime,
@@ -24,12 +23,11 @@ const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(conc
 /// Canonical SQLite DDL schema embedded at compile time.
 const DATABASE_SCHEMA: &str = include_str!("SCHEMA.sqlite");
 
-/// Maximum duration a database write waits for the database file lock held by
-/// another connection before failing.
+/// Maximum duration a database write waits for the database file lock held by another connection
+/// before failing.
 ///
-/// SQLite-compatible engines lock the whole database file for writes, so this
-/// bounds how long concurrent writers block each other instead of failing
-/// immediately with a busy error.
+/// SQLite-compatible engines lock the whole database file for writes, so this bounds how long
+/// concurrent writers block each other instead of failing immediately with a busy error.
 const CONNECTION_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Database operation, connection pool, and storage engine errors.
@@ -57,14 +55,12 @@ pub(crate) enum Error {
 }
 
 impl Error {
-    /// Whether this failure is the engine's stale-snapshot busy error: a
-    /// read-then-write transaction attempted its first write after a
-    /// concurrent commit invalidated its read snapshot, and the engine
-    /// refused the upgrade ("database snapshot is stale, rollback and
-    /// retry"; busy timeouts never help). The transaction must be rolled
-    /// back and the attempt retried, and the retry re-reads the newer state
-    /// — so a read-then-write lease such as the token-refresh acquire
-    /// classifies it as "not acquired" rather than as failed work.
+    /// Whether this failure is the engine's stale-snapshot busy error: a read-then-write
+    /// transaction attempted its first write after a concurrent commit invalidated its read
+    /// snapshot, and the engine refused the upgrade ("database snapshot is stale, rollback and
+    /// retry"; busy timeouts never help). The transaction must be rolled back and the attempt
+    /// retried, and the retry re-reads the newer state — so a read-then-write lease such as the
+    /// token-refresh acquire classifies it as "not acquired" rather than as failed work.
     pub(crate) fn is_stale_snapshot(&self) -> bool {
         matches!(self, Self::Turso(TursoError::BusySnapshot(_)))
     }
@@ -77,20 +73,18 @@ pub(crate) struct Database {
     pool: Pool<Manager>,
 }
 
-/// Database transaction handle holding exclusive ownership of a pooled
-/// connection.
+/// Database transaction handle holding exclusive ownership of a pooled connection.
 ///
-/// [`Transaction::commit`] or [`Transaction::rollback`] finishes the
-/// transaction and returns the connection to the pool. Dropping an unfinished
-/// handle discards its connection instead: the engine-level transaction on it
-/// is still open, and returning it to the pool would park the database write
-/// lock until the connection's next checkout.
+/// [`Transaction::commit`] or [`Transaction::rollback`] finishes the transaction and returns the
+/// connection to the pool. Dropping an unfinished handle discards its connection instead: the
+/// engine-level transaction on it is still open, and returning it to the pool would park the
+/// database write lock until the connection's next checkout.
 #[derive(Debug)]
 pub(crate) struct Transaction {
     /// Pooled connection hosting the open transaction.
     ///
-    /// This is an `Option` only so `Drop` can dismantle the checkout with
-    /// [`Object::take`] without running the pool-return path.
+    /// This is an `Option` only so `Drop` can dismantle the checkout with [`Object::take`] without
+    /// running the pool-return path.
     connection: Option<Object<Manager>>,
 
     /// Whether the transaction has been finished by commit or rollback.
@@ -105,27 +99,23 @@ struct Manager {
 }
 
 impl Database {
-    /// Opens the in-process SQLite database at the specified path and
-    /// initializes a connection pool with at most `max_connections` concurrent
-    /// connections, waiting at most `pool_timeout` for a free connection when
-    /// every connection is checked out.
+    /// Opens the in-process SQLite database at the specified path and initializes a connection pool
+    /// with at most `max_connections` concurrent connections, waiting at most `pool_timeout` for a
+    /// free connection when every connection is checked out.
     ///
-    /// Verifies the schema fingerprint stored in `PRAGMA user_version`. If the
-    /// database is fresh (`user_version == 0`), applies the canonical schema
-    /// and stores the compile-time schema fingerprint. If the fingerprint
-    /// matches [`DATABASE_SCHEMA_FINGERPRINT`], initialization succeeds.
-    /// Otherwise, panics.
+    /// Verifies the schema fingerprint stored in `PRAGMA user_version`. If the database is fresh
+    /// (`user_version == 0`), applies the canonical schema and stores the compile-time schema
+    /// fingerprint. If the fingerprint matches [`DATABASE_SCHEMA_FINGERPRINT`], initialization
+    /// succeeds. Otherwise, panics.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if opening the database or creating the connection
-    /// pool fails.
+    /// Returns [`Error`] if opening the database or creating the connection pool fails.
     ///
     /// # Panics
     ///
-    /// Panics if database verification connection fails, schema application
-    /// fails, or the schema fingerprint does not match
-    /// [`DATABASE_SCHEMA_FINGERPRINT`].
+    /// Panics if database verification connection fails, schema application fails, or the schema
+    /// fingerprint does not match [`DATABASE_SCHEMA_FINGERPRINT`]..
     pub(crate) async fn open(
         path: impl AsRef<Path>,
         max_connections: NonZero<usize>,
@@ -158,6 +148,7 @@ impl Database {
             .build()
         {
             Ok(pool) => pool,
+
             #[expect(
                 clippy::unreachable,
                 reason = "Deadpool requires a runtime only when timeouts are configured, and the \
@@ -171,16 +162,14 @@ impl Database {
         Ok(Self { pool })
     }
 
-    /// Executes a SQL statement with parameters using a pooled connection and
-    /// cached prepared statement.
+    /// Executes a SQL statement with parameters using a pooled connection and cached prepared
+    /// statement.
     ///
-    /// The statement must not produce rows; use [`Database::query`] for
-    /// row-returning statements.
+    /// The statement must not produce rows; use [`Database::query`] for row-returning statements.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if acquiring a connection, preparing the statement, or
-    /// execution fails.
+    /// Returns [`Error`] if acquiring a connection, preparing the statement, or execution fails.
     pub(crate) async fn execute(
         &self,
         sql: impl AsRef<str>,
@@ -191,17 +180,17 @@ impl Database {
         execute(&connection, sql, params).await
     }
 
-    /// Queries the database with parameters using a pooled connection and a
-    /// cached prepared statement, returning all rows eagerly materialized.
+    /// Queries the database with parameters using a pooled connection and a cached prepared
+    /// statement, returning all rows eagerly materialized.
     ///
-    /// The statement always executes to completion before the pooled
-    /// connection is released, so a result set can never outlive its
-    /// connection checkout or interleave with another borrower's statements.
+    /// The statement always executes to completion before the pooled connection is released, so a
+    /// result set can never outlive its connection checkout or interleave with another borrower's
+    /// statements.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if acquiring a connection, preparing the statement, or
-    /// executing the query fails.
+    /// Returns [`Error`] if acquiring a connection, preparing the statement, or executing the query
+    /// fails.
     pub(crate) async fn query(
         &self,
         sql: impl AsRef<str>,
@@ -212,16 +201,15 @@ impl Database {
         query(&connection, sql, params).await
     }
 
-    /// Begins a new transaction, checking out a connection from the pool and
-    /// retaining exclusive ownership of it for the lifetime of the transaction.
+    /// Begins a new transaction, checking out a connection from the pool and retaining exclusive
+    /// ownership of it for the lifetime of the transaction.
     ///
-    /// Dropping the returned handle without finishing it discards the checked
-    /// out connection; see [`Transaction`].
+    /// Dropping the returned handle without finishing it discards the checked out connection; see
+    /// [`Transaction`]..
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if acquiring a connection or starting the transaction
-    /// fails.
+    /// Returns [`Error`] if acquiring a connection or starting the transaction fails.
     pub(crate) async fn transaction(&self) -> Result<Transaction, Error> {
         let connection = self.pool.get().await?;
 
@@ -235,15 +223,13 @@ impl Database {
 }
 
 impl Transaction {
-    /// Executes a SQL statement within this transaction using a cached prepared
-    /// statement.
+    /// Executes a SQL statement within this transaction using a cached prepared statement.
     ///
-    /// The statement must not produce rows; use [`Transaction::query`] for
-    /// row-returning statements.
+    /// The statement must not produce rows; use [`Transaction::query`] for row-returning
+    /// statements.
     ///
-    /// Exclusive access to the handle is required (`&mut self`), so statements
-    /// within one transaction can never run concurrently or interleave on the
-    /// checked out connection.
+    /// Exclusive access to the handle is required (`&mut self`), so statements within one
+    /// transaction can never run concurrently or interleave on the checked out connection.
     ///
     /// # Errors
     ///
@@ -261,14 +247,12 @@ impl Transaction {
         execute(self.connection(), sql, params).await
     }
 
-    /// Queries the database within this transaction using a cached prepared
-    /// statement, returning all rows eagerly materialized. The statement
-    /// always executes to completion, leaving no unfinished statement state on
-    /// the connection when the transaction commits or rolls back.
+    /// Queries the database within this transaction using a cached prepared statement, returning
+    /// all rows eagerly materialized. The statement always executes to completion, leaving no
+    /// unfinished statement state on the connection when the transaction commits or rolls back.
     ///
-    /// Exclusive access to the handle is required (`&mut self`), so statements
-    /// within one transaction can never run concurrently or interleave on the
-    /// checked out connection.
+    /// Exclusive access to the handle is required (`&mut self`), so statements within one
+    /// transaction can never run concurrently or interleave on the checked out connection.
     ///
     /// # Errors
     ///
@@ -286,14 +270,13 @@ impl Transaction {
         query(self.connection(), sql, params).await
     }
 
-    /// Commits the transaction, applying all changes and returning the pooled
-    /// connection to the connection pool.
+    /// Commits the transaction, applying all changes and returning the pooled connection to the
+    /// connection pool.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if committing the transaction fails. A failed commit
-    /// discards the pooled connection instead of returning it, because the
-    /// transaction state on it is unresolved.
+    /// Returns [`Error`] if committing the transaction fails. A failed commit discards the pooled
+    /// connection instead of returning it, because the transaction state on it is unresolved.
     ///
     /// # Panics
     ///
@@ -307,14 +290,14 @@ impl Transaction {
         Ok(())
     }
 
-    /// Rolls back the transaction, discarding all changes and returning the
-    /// pooled connection to the connection pool.
+    /// Rolls back the transaction, discarding all changes and returning the pooled connection to
+    /// the connection pool.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] if rolling back the transaction fails. A failed
-    /// rollback discards the pooled connection instead of returning it, because
-    /// the transaction state on it is unresolved.
+    /// Returns [`Error`] if rolling back the transaction fails. A failed rollback discards the
+    /// pooled connection instead of returning it, because the transaction state on it is
+    /// unresolved.
     ///
     /// # Panics
     ///
@@ -383,6 +366,7 @@ impl From<PoolError<TursoError>> for Error {
             PoolError::Backend(error) => Self::Turso(error),
             PoolError::Closed => Self::PoolClosed,
             PoolError::Timeout(_) => Self::PoolTimeout,
+
             #[expect(
                 clippy::unreachable,
                 reason = "the pool attaches a Tokio runtime and installs no hooks, making these \
@@ -428,12 +412,11 @@ async fn execute(
     Ok(changes)
 }
 
-/// Prepares a cached SQL statement against the given connection and drains the
-/// result set to completion into an owned vector of rows.
+/// Prepares a cached SQL statement against the given connection and drains the result set to
+/// completion into an owned vector of rows.
 ///
-/// Draining matters: an unfinished statement left on the connection would
-/// corrupt or roll back whatever the next borrower of the pooled connection
-/// executes.
+/// Draining matters: an unfinished statement left on the connection would corrupt or roll back
+/// whatever the next borrower of the pooled connection executes.
 ///
 /// # Errors
 ///
@@ -455,13 +438,12 @@ async fn query(
     Ok(result)
 }
 
-/// Applies the pragmas and timeouts required by every JanusGate database
-/// connection, whether pooled or used for schema bootstrap.
+/// Applies the pragmas and timeouts required by every JanusGate database connection, whether pooled
+/// or used for schema bootstrap.
 ///
 /// # Errors
 ///
-/// Returns [`TursoError`] if configuring the busy timeout or the foreign key
-/// pragma fails.
+/// Returns [`TursoError`] if configuring the busy timeout or the foreign key pragma fails.
 async fn configure_connection(connection: &Connection) -> Result<(), TursoError> {
     connection.busy_timeout(CONNECTION_BUSY_TIMEOUT)?;
 
@@ -470,16 +452,14 @@ async fn configure_connection(connection: &Connection) -> Result<(), TursoError>
     Ok(())
 }
 
-/// Verifies that the database schema matches [`DATABASE_SCHEMA_FINGERPRINT`],
-/// applying the canonical schema if the database is newly created. The
-/// bootstrap outcome is logged: a fresh schema application at info level, a
-/// verified existing schema at debug level.
+/// Verifies that the database schema matches [`DATABASE_SCHEMA_FINGERPRINT`], applying the
+/// canonical schema if the database is newly created. The bootstrap outcome is logged: a fresh
+/// schema application at info level, a verified existing schema at debug level.
 ///
 /// # Panics
 ///
-/// Panics if connecting fails, setting pragmas fails, querying the fingerprint
-/// fails, applying the schema fails, or if an incompatible schema fingerprint
-/// is detected.
+/// Panics if connecting fails, setting pragmas fails, querying the fingerprint fails, applying the
+/// schema fails, or if an incompatible schema fingerprint is detected.
 async fn bootstrap_schema(database: &TursoDatabase, path: &str) {
     #[expect(
         clippy::expect_used,
@@ -565,13 +545,12 @@ async fn query_schema_fingerprint(connection: &Connection) -> i32 {
     user_version
 }
 
-/// Applies the canonical SQLite DDL schema in batch and records the
-/// compile-time fingerprint in `PRAGMA user_version` inside a single
-/// transaction.
+/// Applies the canonical SQLite DDL schema in batch and records the compile-time fingerprint in
+/// `PRAGMA user_version` inside a single transaction.
 ///
-/// The DDL and the fingerprint write must commit atomically: a crash that
-/// persisted only part of the schema would leave `user_version` at zero, and
-/// the next startup would reapply the DDL and fail on the existing tables.
+/// The DDL and the fingerprint write must commit atomically: a crash that persisted only part of
+/// the schema would leave `user_version` at zero, and the next startup would reapply the DDL and
+/// fail on the existing tables.
 ///
 /// # Panics
 ///

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ContractViolationError } from "./errors";
+
 import {
     parseDiscoverModelsResponse,
     parseEmptyResponse,
@@ -86,6 +87,7 @@ describe("response validation", () => {
 
     it("rejects a provider that is missing a field of its variant", () => {
         const { base_url: _baseUrl, ...withoutBaseUrl } = compatibleProvider;
+
         expect(() =>
             parseListProvidersResponse({
                 providers: [
@@ -110,6 +112,7 @@ describe("response validation", () => {
 
     it("rejects a non-object response and a non-array listing", () => {
         expect(() => parseListProvidersResponse("nope")).toThrow(ContractViolationError);
+
         expect(() =>
             parseListProvidersResponse({
                 providers: {},
@@ -127,6 +130,7 @@ describe("response validation", () => {
             ],
             is_effectively_enabled: false,
         };
+
         const response = parseListModelsResponse({
             models: [
                 model,
@@ -160,6 +164,7 @@ describe("response validation", () => {
 
     it("rejects an omitted required-nullable field", () => {
         const { id_override: _idOverride, ...withoutOverride } = model;
+
         expect(() =>
             parseListModelsResponse({
                 models: [
@@ -177,6 +182,7 @@ describe("response validation", () => {
         ).toEqual({
             provider: oauthProvider,
         });
+
         expect(
             parseModelEnvelope({
                 model,
@@ -184,6 +190,7 @@ describe("response validation", () => {
         ).toEqual({
             model,
         });
+
         expect(
             parseDiscoverModelsResponse({
                 models: [
@@ -195,6 +202,7 @@ describe("response validation", () => {
                 model,
             ],
         });
+
         expect(
             parseStartProviderOauthResponse({
                 authorize_url: "https://auth.example.com/authorize",
@@ -206,6 +214,7 @@ describe("response validation", () => {
             state: "opaque",
             expires_at: 1_800_000_600,
         });
+
         expect(
             parseReauthorizeProviderResponse({
                 expires_at: 1_800_000_600,
@@ -242,17 +251,20 @@ describe("parseErrorResponse", () => {
                 message: "unknown",
             }),
         ).toBeNull();
+
         expect(
             parseErrorResponse({
                 errno: 2,
             }),
         ).toBeNull();
+
         expect(
             parseErrorResponse({
                 errno: "2",
                 message: "text errno",
             }),
         ).toBeNull();
+
         expect(parseErrorResponse("plain text")).toBeNull();
         expect(parseErrorResponse(null)).toBeNull();
     });

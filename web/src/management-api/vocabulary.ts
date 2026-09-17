@@ -1,4 +1,5 @@
 import { ContractViolationError } from "/src/management-api/errors";
+
 import {
     type OAuthProviderType,
     type ProviderResponse,
@@ -64,6 +65,7 @@ function findOption<TValue extends string>(
             return option.value;
         }
     }
+
     return null;
 }
 
@@ -77,32 +79,38 @@ export function findOAuthProviderType(value: unknown): OAuthProviderType | null 
 
 export function findThinkingLevel(value: unknown): ThinkingLevel | null {
     const text = String(value);
+
     for (const level of THINKING_LEVEL_ORDER) {
         if (level === text) {
             return level;
         }
     }
+
     return null;
 }
 
 /** Narrows a wire value that must be one of the known upstream formats. */
 export function parseUpstreamFormat(value: unknown, context: string): UpstreamFormat {
     const format = findUpstreamFormat(value);
+
     if (format === null) {
         throw new ContractViolationError(
             `${context} is not a known upstream format: ${String(value)}`,
         );
     }
+
     return format;
 }
 
 /** Narrows a wire value that must be one of the canonical thinking levels. */
 export function parseThinkingLevel(value: unknown, context: string): ThinkingLevel {
     const level = findThinkingLevel(value);
+
     if (level === null) {
         throw new ContractViolationError(
             `${context} is not a canonical thinking level: ${String(value)}`,
         );
     }
+
     return level;
 }

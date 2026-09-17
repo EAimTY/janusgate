@@ -1,4 +1,5 @@
 import { ContractViolationError } from "/src/management-api/errors";
+
 import {
     type DiscoverModelsResponse,
     type EmptyResponse,
@@ -14,6 +15,7 @@ import {
     type StartProviderOauthResponse,
     type ThinkingLevel,
 } from "/src/management-api/generated/v0";
+
 import { parseThinkingLevel, parseUpstreamFormat } from "/src/management-api/vocabulary";
 
 /**
@@ -29,6 +31,7 @@ function expectRecord(value: unknown, context: string): object {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw new ContractViolationError(`${context} must be an object`);
     }
+
     return value;
 }
 
@@ -36,6 +39,7 @@ function expectArray(value: unknown, context: string): unknown[] {
     if (!Array.isArray(value)) {
         throw new ContractViolationError(`${context} must be an array`);
     }
+
     return value;
 }
 
@@ -43,6 +47,7 @@ function expectString(value: unknown, context: string): string {
     if (typeof value !== "string") {
         throw new ContractViolationError(`${context} must be a string`);
     }
+
     return value;
 }
 
@@ -50,6 +55,7 @@ function expectBoolean(value: unknown, context: string): boolean {
     if (typeof value !== "boolean") {
         throw new ContractViolationError(`${context} must be a boolean`);
     }
+
     return value;
 }
 
@@ -57,6 +63,7 @@ function expectInteger(value: unknown, context: string): number {
     if (typeof value !== "number" || !Number.isInteger(value)) {
         throw new ContractViolationError(`${context} must be an integer`);
     }
+
     return value;
 }
 
@@ -64,9 +71,11 @@ function expectNullableString(value: unknown, context: string): string | null {
     if (value === null) {
         return null;
     }
+
     if (typeof value !== "string") {
         throw new ContractViolationError(`${context} must be a string or null`);
     }
+
     return value;
 }
 
@@ -74,9 +83,11 @@ function expectNullableInteger(value: unknown, context: string): number | null {
     if (value === null) {
         return null;
     }
+
     if (typeof value !== "number" || !Number.isInteger(value)) {
         throw new ContractViolationError(`${context} must be an integer or null`);
     }
+
     return value;
 }
 
@@ -84,6 +95,7 @@ function expectThinkingLevelsOverride(value: unknown, context: string): Thinking
     if (value === null) {
         return null;
     }
+
     const entries = expectArray(value, context);
     return entries.map((entry, index) => parseThinkingLevel(entry, `${context}[${index}]`));
 }
@@ -94,11 +106,14 @@ export function parseProviderResponse(value: unknown, context: string): Provider
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
     const id = expectInteger(Reflect.get(record, "id"), `${context}.id`);
     const name = expectString(Reflect.get(record, "name"), `${context}.name`);
+
     const modelPrefix = expectString(
         Reflect.get(record, "model_prefix"),
         `${context}.model_prefix`,
     );
+
     const isEnabled = expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`);
+
     // A closure: the compatible variant has no `expires_at`, so its absence is
     // only an error where the union variant declares the field.
     const readExpiresAt = () =>
@@ -118,6 +133,7 @@ export function parseProviderResponse(value: unknown, context: string): Provider
                     `${context}.protocol`,
                 ),
             };
+
         case "openai_oauth":
             return {
                 type: "openai_oauth",
@@ -127,6 +143,7 @@ export function parseProviderResponse(value: unknown, context: string): Provider
                 is_enabled: isEnabled,
                 expires_at: readExpiresAt(),
             };
+
         case "antigravity_oauth":
             return {
                 type: "antigravity_oauth",
@@ -136,6 +153,7 @@ export function parseProviderResponse(value: unknown, context: string): Provider
                 is_enabled: isEnabled,
                 expires_at: readExpiresAt(),
             };
+
         default:
             throw new ContractViolationError(
                 `${context}.type is not a known provider type: ${type}`,
@@ -146,6 +164,7 @@ export function parseProviderResponse(value: unknown, context: string): Provider
 /** One model row, including the two nullable mirror columns. */
 export function parseModelResponse(value: unknown, context: string): ModelResponse {
     const record = expectRecord(value, context);
+
     return {
         provider_id: expectInteger(Reflect.get(record, "provider_id"), `${context}.provider_id`),
         provider: expectString(Reflect.get(record, "provider"), `${context}.provider`),
@@ -170,6 +189,7 @@ export function parseModelResponse(value: unknown, context: string): ModelRespon
 export function parseListProvidersResponse(value: unknown): ListProvidersResponse {
     const record = expectRecord(value, "response");
     const providers = expectArray(Reflect.get(record, "providers"), "response.providers");
+
     return {
         providers: providers.map((entry, index) =>
             parseProviderResponse(entry, `response.providers[${index}]`),
@@ -179,6 +199,7 @@ export function parseListProvidersResponse(value: unknown): ListProvidersRespons
 
 export function parseProviderEnvelope(value: unknown): ProviderEnvelope {
     const record = expectRecord(value, "response");
+
     return {
         provider: parseProviderResponse(Reflect.get(record, "provider"), "response.provider"),
     };
@@ -187,6 +208,7 @@ export function parseProviderEnvelope(value: unknown): ProviderEnvelope {
 export function parseListModelsResponse(value: unknown): ListModelsResponse {
     const record = expectRecord(value, "response");
     const models = expectArray(Reflect.get(record, "models"), "response.models");
+
     return {
         models: models.map((entry, index) =>
             parseModelResponse(entry, `response.models[${index}]`),
@@ -200,6 +222,7 @@ export function parseDiscoverModelsResponse(value: unknown): DiscoverModelsRespo
 
 export function parseModelEnvelope(value: unknown): ModelEnvelope {
     const record = expectRecord(value, "response");
+
     return {
         model: parseModelResponse(Reflect.get(record, "model"), "response.model"),
     };
@@ -207,6 +230,7 @@ export function parseModelEnvelope(value: unknown): ModelEnvelope {
 
 export function parseStartProviderOauthResponse(value: unknown): StartProviderOauthResponse {
     const record = expectRecord(value, "response");
+
     return {
         authorize_url: expectString(Reflect.get(record, "authorize_url"), "response.authorize_url"),
         state: expectString(Reflect.get(record, "state"), "response.state"),
@@ -216,6 +240,7 @@ export function parseStartProviderOauthResponse(value: unknown): StartProviderOa
 
 export function parseReauthorizeProviderResponse(value: unknown): ReauthorizeProviderResponse {
     const record = expectRecord(value, "response");
+
     return {
         expires_at: expectInteger(Reflect.get(record, "expires_at"), "response.expires_at"),
     };
@@ -246,11 +271,14 @@ export function parseErrorResponse(value: unknown): ErrorResponse | null {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         return null;
     }
+
     const errno: unknown = Reflect.get(value, "errno");
     const message: unknown = Reflect.get(value, "message");
+
     if (typeof errno !== "number" || typeof message !== "string" || !ERROR_CODES.has(errno)) {
         return null;
     }
+
     // `ErrorCode`'s members are their own numbers, and the membership test above
     // is against the set built from those members.
     return {

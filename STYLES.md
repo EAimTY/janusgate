@@ -10,7 +10,7 @@ This file contains the coding style guide that applies to the whole project. Per
 - Write comment prose as one line per paragraph and let `cargo fmt` wrap it at the configured `comment_width`; never hand-wrap comments.
 - Import every out-of-module type, including structs, enums, type aliases, and traits, and refer to it only by its type name, never by a path.
 - Refer to constants, statics, and free functions through exactly one meaningful module qualifier: `crate::item`, `super::item`, or `module::item`. Except for items defined in the caller's module, never import the value item itself or call it unqualified. Import and alias its module when needed; if the module name does not describe the item clearly, choose a clearer alias. Do not use a longer inline path at the call site.
-- In import paths, prefix direct child modules with `self::`, except that the crate root uses `crate::`. Use `super::` for sibling or ancestor modules.
+- In import paths, prefix direct child modules with `self::`, except that the crate root uses `crate::`. Use `super::` for sibling or ancestor modules. Never nest `super` (no `super::super::` chains); a deeper file addresses the crate root's subtrees through `crate::`.
 - A child module must not import its parent's private imports. When the parent re-exports an item, even with `pub(self)`, prefer importing that re-export from the parent.
 - Use the prelude `Result` from `std::result`, not specialized aliases such as `std::fmt::Result`.
 - Import external error types as `XxxError`. Avoid paths like `serde_json::Error` in type positions.

@@ -1,9 +1,9 @@
 //! Management routes listing, discovering, and overriding models.
 
-use super::{Error, IrReasoningEffort, Nullable, route, validate_identifier};
+use super::{Error, IrReasoningEffort, Nullable, route};
 use crate::{
     context::Context,
-    ir,
+    ir::{self, InvalidRequest},
     provider::{
         discovery, oauth,
         storage::{self, ModelEntry},
@@ -42,9 +42,8 @@ route! {
     }
 }
 
-/// One model listing entry in its management wire shape (README §7.1).
-/// `is_enabled` is the model's configured switch while
-/// `is_effectively_enabled` is the canonical effective status
+/// One model listing entry in its management wire shape (README §7.1). `is_enabled` is the model's
+/// configured switch while `is_effectively_enabled` is the canonical effective status
 /// (`provider.is_enabled && model.is_enabled`).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -61,8 +60,8 @@ pub struct ModelResponse {
     /// Public routing ID.
     pub id: String,
 
-    /// Explicit public ID override; `null` when the ID is composed from the
-    /// provider's prefix. One of the two nullable mirror columns.
+    /// Explicit public ID override; `null` when the ID is composed from the provider's prefix. One
+    /// of the two nullable mirror columns.
     pub id_override: Option<String>,
 
     /// Configured serving switch.
@@ -71,14 +70,14 @@ pub struct ModelResponse {
     /// Whether the model currently serves traffic.
     pub is_effectively_enabled: bool,
 
-    /// Canonical thinking level override; `null` when no filtering is
-    /// configured. The other nullable mirror column.
+    /// Canonical thinking level override; `null` when no filtering is configured. The other
+    /// nullable mirror column.
     pub thinking_levels_override: Option<Vec<IrReasoningEffort>>,
 }
 
 impl ModelResponse {
-    /// Renders one stored entry, revalidating its stored thinking-levels
-    /// override through the shared stored-override parser.
+    /// Renders one stored entry, revalidating its stored thinking-levels override through the
+    /// shared stored-override parser.
     ///
     /// # Errors
     ///
@@ -101,10 +100,9 @@ impl ModelResponse {
     }
 }
 
-/// Strictly parsed `models:list` request: the empty request lists every
-/// provider's rows; the filter narrows the listing to one provider and is
-/// never `null` (README §7.0 rule 2) — an unknown `provider_id` yields an
-/// empty list, because a filter addresses no row.
+/// Strictly parsed `models:list` request: the empty request lists every provider's rows; the filter
+/// narrows the listing to one provider and is never `null` (README §7.0 rule 2) — an unknown
+/// `provider_id` yields an empty list, because a filter addresses no row.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -127,10 +125,9 @@ pub struct ListModelsResponse {
     pub models: Vec<ModelResponse>,
 }
 
-/// The `models:discover` success body (README §7.1): the provider's
-/// complete fresh rows — which `upstream_id`s appeared, how the public IDs
-/// composed, and which overrides carried over are transaction-recomputed
-/// facts the caller cannot know.
+/// The `models:discover` success body (README §7.1): the provider's complete fresh rows — which
+/// `upstream_id`s appeared, how the public IDs composed, and which overrides carried over are
+/// transaction-recomputed facts the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct DiscoverModelsResponse {
@@ -147,13 +144,11 @@ pub struct DiscoverModelsRequest {
     pub provider_id: i64,
 }
 
-/// Strictly parsed `models:update` request (README §7.1): the complete
-/// desired override state of the row, every field required (README §7.0
-/// rule 3). The two override fields are the required-nullable mirror
-/// columns (rule 2) — `null` means no override, exactly like the storage
-/// columns — so the request is the row's mirror: a client renders the row,
-/// edits it, and sends the same shape back. Model rows are never created or
-/// deleted here; discovery is their only source.
+/// Strictly parsed `models:update` request (README §7.1): the complete desired override state of
+/// the row, every field required (README §7.0 rule 3). The two override fields are the
+/// required-nullable mirror columns (rule 2) — `null` means no override, exactly like the storage
+/// columns — so the request is the row's mirror: a client renders the row, edits it, and sends the
+/// same shape back. Model rows are never created or deleted here; discovery is their only source.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -164,8 +159,7 @@ pub struct UpdateModelRequest {
     /// Exact upstream model identifier; must be non-empty.
     pub upstream_id: String,
 
-    /// Public ID override; `null` composes the ID from the provider's
-    /// prefix.
+    /// Public ID override; `null` composes the ID from the provider's prefix.
     #[cfg_attr(
         feature = "management-api-typescript-bindings",
         ts(type = "string | null")
@@ -183,9 +177,8 @@ pub struct UpdateModelRequest {
     pub thinking_levels_override: Nullable<Vec<IrReasoningEffort>>,
 }
 
-/// The `models:update` success body (README §7.1): the recomposed `id` and
-/// `is_effectively_enabled` derive from transaction-time provider state, so
-/// they are not client-computable.
+/// The `models:update` success body (README §7.1): the recomposed `id` and `is_effectively_enabled`
+/// derive from transaction-time provider state, so they are not client-computable.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ModelEnvelope {
@@ -235,11 +228,10 @@ pub(super) async fn update(
     }))
 }
 
-/// Refreshes one provider's model rows from upstream, carrying overrides
-/// over by `upstream_id`.
+/// Refreshes one provider's model rows from upstream, carrying overrides over by `upstream_id`.
 ///
-/// `control_plane` is the bounded client used for the token refresh and the
-/// upstream discovery calls.
+/// `control_plane` is the bounded client used for the token refresh and the upstream discovery
+/// calls.
 ///
 /// # Errors
 ///
@@ -260,8 +252,7 @@ async fn handle_discover(
 
     let upstream_ids = discovery::discover_upstream_models(control_plane, &fresh).await?;
 
-    // Discovery payloads can repeat an upstream identifier; keep the first
-    // occurrence.
+    // Discovery payloads can repeat an upstream identifier; keep the first occurrence.
     let mut unique_ids: Vec<String> = Vec::with_capacity(upstream_ids.len());
 
     for upstream_id in upstream_ids {
@@ -272,16 +263,15 @@ async fn handle_discover(
         unique_ids.push(upstream_id);
     }
 
-    // An upstream reporting no models must not wipe curated rows, so the
-    // empty replacement is refused before the replace is attempted
-    // (README §7.1).
+    // An upstream reporting no models must not wipe curated rows, so the empty replacement is
+    // refused before the replace is attempted (README §7.1).
     if unique_ids.is_empty() {
         return Err(Error::UpstreamReportedNoModels);
     }
 
-    // The replace re-reads the provider row inside its transaction, so the
-    // public IDs are composed from the provider's current prefix and
-    // checked for collisions atomically with the write (README §7.1).
+    // The replace re-reads the provider row inside its transaction, so the public IDs are composed
+    // from the provider's current prefix and checked for collisions atomically with the write
+    // (README §7.1).
     let entries =
         storage::replace_discovered_models(database, request.provider_id, &unique_ids).await?;
 
@@ -304,10 +294,10 @@ async fn handle_update(
     database: &crate::database::Database,
     request: UpdateModelRequest,
 ) -> Result<ModelEntry, Error> {
-    validate_identifier("upstream_id", &request.upstream_id)?;
+    super::validate_identifier("upstream_id", &request.upstream_id)?;
 
     if let Some(id_override) = &request.id_override.0 {
-        validate_identifier("id_override", id_override)?;
+        super::validate_identifier("id_override", id_override)?;
     }
 
     let thinking_levels_override = match &request.thinking_levels_override.0 {
@@ -317,7 +307,7 @@ async fn handle_update(
 
         Some(levels) => {
             if levels.is_empty() {
-                return Err(Error::from(ir::InvalidRequest::field(
+                return Err(Error::from(InvalidRequest::field(
                     "thinking_levels_override",
                     "must be a non-empty array",
                 )));
@@ -327,10 +317,9 @@ async fn handle_update(
         }
     };
 
-    // The checked update re-reads the provider and model rows inside its
-    // transaction, so the recomputed public ID uses the provider's current
-    // prefix and the collision check applies atomically with the write
-    // (README §7.1).
+    // The checked update re-reads the provider and model rows inside its transaction, so the
+    // recomputed public ID uses the provider's current prefix and the collision check applies
+    // atomically with the write (README §7.1).
     let entry = storage::update_model_overrides_checked(
         database,
         storage::ModelOverrideUpdate {
@@ -351,18 +340,17 @@ async fn handle_update(
     Ok(entry)
 }
 
-/// Renders the stored thinking-level override for listing as canonical
-/// levels, validating it through the shared stored-override parser: a corrupt
-/// stored value is drift inside the database — an invariant violation,
-/// symmetric with the gateway's fail-fast — and is never masked as an absent
-/// override.
+/// Renders the stored thinking-level override for listing as canonical levels, validating it
+/// through the shared stored-override parser: a corrupt stored value is drift inside the database —
+/// an invariant violation, symmetric with the gateway's fail-fast — and is never masked as an
+/// absent override.
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when the stored override is corrupt.
 fn thinking_levels_override(
     stored: &Option<String>,
-) -> Result<Option<Vec<ir::IrReasoningEffort>>, Error> {
+) -> Result<Option<Vec<IrReasoningEffort>>, Error> {
     let Some(json) = stored else {
         return Ok(None);
     };
@@ -374,22 +362,22 @@ fn thinking_levels_override(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::UpdateModelRequest;
+    use crate::{ir::IrReasoningEffort, management_api::v0::Nullable};
 
-    /// Verifies that a stored `thinking_levels_override` renders as canonical
-    /// level names, that an absent override stays `null`, and that drift fails
-    /// instead of rendering as absent. The render is the listing contract
-    /// README §7.1 documents, and the drift rejection is what keeps a corrupt
-    /// stored value from silently relaxing a model's filtering.
+    /// Verifies that a stored `thinking_levels_override` renders as canonical level names, that an
+    /// absent override stays `null`, and that drift fails instead of rendering as absent. The
+    /// render is the listing contract README §7.1 documents, and the drift rejection is what keeps
+    /// a corrupt stored value from silently relaxing a model's filtering.
     ///
     /// # Panics
     ///
-    /// Panics if the rendered override diverges from the documented shape or
-    /// the drift rejection stops firing.
+    /// Panics if the rendered override diverges from the documented shape or the drift rejection
+    /// stops firing.
     #[test]
     fn renders_stored_thinking_levels_override() {
         #[expect(clippy::expect_used, reason = "an absent override renders")]
-        let absent = thinking_levels_override(&None)
+        let absent = super::thinking_levels_override(&None)
             .expect("an absent override renders")
             .is_none();
 
@@ -399,20 +387,19 @@ mod tests {
             clippy::expect_used,
             reason = "the stored override is constructed to be valid"
         )]
-        let valid = thinking_levels_override(&Some(r#"["low","off"]"#.to_string()))
+        let valid = super::thinking_levels_override(&Some(r#"["low","off"]"#.to_string()))
             .expect("a valid stored override parses");
 
         assert_eq!(
             valid,
-            Some(vec![ir::IrReasoningEffort::Low, ir::IrReasoningEffort::Off])
+            Some(vec![IrReasoningEffort::Low, IrReasoningEffort::Off])
         );
 
-        assert!(thinking_levels_override(&Some(r#"["bogus"]"#.to_string())).is_err());
+        assert!(super::thinking_levels_override(&Some(r#"["bogus"]"#.to_string())).is_err());
     }
 
-    /// Verifies the `models:update` request's two-state poles (README §7.0
-    /// rule 2): both override fields must be present and accept `null`, and
-    /// an unknown field is rejected.
+    /// Verifies the `models:update` request's two-state poles (README §7.0 rule 2): both override
+    /// fields must be present and accept `null`, and an unknown field is rejected.
     ///
     /// # Panics
     ///
@@ -435,10 +422,9 @@ mod tests {
             Nullable(Some(vec![IrReasoningEffort::Low, IrReasoningEffort::High]))
         );
 
-        // An omitted override key reads as `null` — the documented
-        // tolerance of rule 2: under full-state semantics the two spellings
-        // share the one meaning, and the bindings keep well-typed clients
-        // honest by requiring the key.
+        // An omitted override key reads as `null` — the documented tolerance of rule 2: under
+        // full-state semantics the two spellings share the one meaning, and the bindings keep
+        // well-typed clients honest by requiring the key.
         #[expect(
             clippy::unwrap_used,
             reason = "the documented payload is constructed to parse"

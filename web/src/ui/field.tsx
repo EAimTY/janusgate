@@ -94,12 +94,15 @@ function describedBy(props: {
     readonly error?: string | null;
 }): string | undefined {
     const ids: string[] = [];
+
     if ((props.error ?? null) !== null) {
         ids.push(`${props.id}-error`);
     }
+
     if ((props.hint ?? null) !== null) {
         ids.push(`${props.id}-hint`);
     }
+
     return ids.length === 0 ? undefined : ids.join(" ");
 }
 

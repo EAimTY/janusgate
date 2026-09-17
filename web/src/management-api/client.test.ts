@@ -22,14 +22,17 @@ const connection: Connection = {
 
 function stubFetch(handler: (call: RecordedCall) => Promise<Response>): RecordedCall[] {
     const calls: RecordedCall[] = [];
+
     vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const call: RecordedCall = {
             url: String(input),
             init: init ?? {},
         };
+
         calls.push(call);
         return handler(call);
     });
+
     return calls;
 }
 
@@ -65,6 +68,7 @@ describe("createManagementApi", () => {
         expect(result).toEqual({
             providers: [],
         });
+
         expect(calls).toHaveLength(1);
         const call = calls[0];
         expect(call?.url).toBe("http://127.0.0.1:47182/management-api/v0/providers:list");
@@ -82,6 +86,7 @@ describe("createManagementApi", () => {
                 models: [],
             }),
         );
+
         const controller = new AbortController();
 
         await createManagementApi(connection).listModels(
@@ -96,6 +101,7 @@ describe("createManagementApi", () => {
                 provider_id: 7,
             }),
         );
+
         expect(calls[0]?.init.signal).toBe(controller.signal);
     });
 
@@ -136,6 +142,7 @@ describe("createManagementApi", () => {
         );
 
         const notices: string[] = [];
+
         const error = await createManagementApi(connection, {
             onUnauthorized: (notice) => {
                 notices.push(notice);
@@ -146,6 +153,7 @@ describe("createManagementApi", () => {
 
         expect(isUnauthorizedFailure(error)).toBe(true);
         expect((error as ManagementApiError).message).toBe("invalid token");
+
         expect(notices).toEqual([
             "invalid token",
         ]);
@@ -160,6 +168,7 @@ describe("createManagementApi", () => {
         );
 
         const notices: string[] = [];
+
         await createManagementApi(connection, {
             onUnauthorized: (notice) => {
                 notices.push(notice);
@@ -273,6 +282,7 @@ describe("createManagementApi", () => {
                     });
                 }),
         );
+
         const controller = new AbortController();
         const pending = createManagementApi(connection).listProviders(controller.signal);
         controller.abort();

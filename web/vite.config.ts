@@ -6,13 +6,16 @@ export default defineConfig({
     resolve: {
         tsconfigPaths: true,
     },
+
     plugins: [
         solid(),
         tailwindcss(),
     ],
+
     // Generated web state lives under the repository's target/ tree, beside
     // the Rust build artifacts: the dev-server cache and the build output.
     cacheDir: "../target/web/cache",
+
     build: {
         outDir: "../target/web/dist",
         emptyOutDir: true,

@@ -1,5 +1,5 @@
-//! The OAuth protocol: authorization begin, authorization code exchange, and
-//! the refresh grant, over the OpenAI Codex and Google Antigravity clients.
+//! The OAuth protocol: authorization begin, authorization code exchange, and the refresh grant,
+//! over the OpenAI Codex and Google Antigravity clients.
 
 use super::{Error, project, token};
 use crate::{
@@ -7,8 +7,8 @@ use crate::{
     unix_time,
 };
 use base64::{Engine as _, engine::general_purpose};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use reqwest::{Client, RequestBuilder};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 
 /// OpenAI OAuth client identifier of the Codex CLI.
@@ -65,9 +65,72 @@ pub(crate) struct OAuthFlow {
     pub(crate) expires_at: i64,
 }
 
-/// Begins a pending OAuth authorization flow for the requested OAuth provider
-/// kind, generating a random state, optional PKCE verifier, and the provider's
-/// authorization URL.
+/// Result of an authorization code exchange.
+#[derive(Debug, Clone)]
+pub(crate) struct ExchangedTokens {
+    /// Credentials built from the exchanged tokens.
+    pub(crate) credentials: Credentials,
+
+    /// Unix timestamp when the access token expires.
+    pub(crate) expires_at: i64,
+}
+
+/// Result of a refresh grant.
+#[derive(Debug, Clone)]
+pub(super) struct RefreshedTokens {
+    /// New access token.
+    pub(super) access_token: String,
+
+    /// Replacement refresh token, when the endpoint rotated it.
+    pub(super) refresh_token: Option<String>,
+
+    /// Replacement identity token, when issued.
+    pub(super) id_token: Option<String>,
+
+    /// Lifetime of the access token in seconds, when the endpoint reports it.
+    pub(super) expires_in: Option<i64>,
+}
+
+/// Tokens returned by an OAuth token endpoint.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TokenResponse {
+    /// New access token.
+    access_token: Option<String>,
+
+    /// Replacement refresh token.
+    refresh_token: Option<String>,
+
+    /// OpenAI identity token.
+    id_token: Option<String>,
+
+    /// Lifetime of the access token in seconds.
+    expires_in: Option<i64>,
+}
+
+/// The `TokenResponse` counterpart of a rejected token request: the RFC 6749 §5.2 error payload,
+/// from which the terminal `invalid_grant` is diagnosed. The payload is upstream-owned, so unknown
+/// fields are ignored.
+#[derive(Debug, Deserialize)]
+struct TokenErrorResponse {
+    /// OAuth error name, such as `invalid_grant`.
+    error: Option<String>,
+}
+
+/// The OpenAI refresh-grant request body (README §5.1).
+#[derive(Debug, Serialize)]
+struct OpenAiRefreshGrantRequest<'a> {
+    /// OAuth client identifier of the Codex CLI.
+    client_id: &'a str,
+
+    /// Grant type; always `refresh_token`.
+    grant_type: &'a str,
+
+    /// Grant being refreshed.
+    refresh_token: &'a str,
+}
+
+/// Begins a pending OAuth authorization flow for the requested OAuth provider kind, generating a
+/// random state, optional PKCE verifier, and the provider's authorization URL.
 pub(crate) fn begin_flow(oauth_type: OAuthProviderType) -> OAuthFlow {
     let state = random_url_safe(32);
 
@@ -78,9 +141,9 @@ pub(crate) fn begin_flow(oauth_type: OAuthProviderType) -> OAuthFlow {
             let challenge =
                 general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
 
-            // The `originator` parameter carries the same Codex CLI value as
-            // the inference-time `Originator` header (README §5.1), so both
-            // source it from the endpoints module's single home.
+            // The `originator` parameter carries the same Codex CLI value as the inference-time
+            // `Originator` header (README §5.1), so both source it from the endpoints module's
+            // single home.
             let authorize_url = format!(
                 "{OPENAI_ISSUER}/oauth/authorize?response_type=code&client_id={OPENAI_CLIENT_ID}\
                  &redirect_uri={OPENAI_REDIRECT_URI}&scope={}&code_challenge={challenge}\
@@ -112,38 +175,11 @@ pub(crate) fn begin_flow(oauth_type: OAuthProviderType) -> OAuthFlow {
     }
 }
 
-/// Tokens returned by an OAuth token endpoint.
-#[derive(Debug, Clone, Default, Deserialize)]
-struct TokenResponse {
-    /// New access token.
-    access_token: Option<String>,
-
-    /// Replacement refresh token.
-    refresh_token: Option<String>,
-
-    /// OpenAI identity token.
-    id_token: Option<String>,
-
-    /// Lifetime of the access token in seconds.
-    expires_in: Option<i64>,
-}
-
-/// Result of an authorization code exchange.
-#[derive(Debug, Clone)]
-pub(crate) struct ExchangedTokens {
-    /// Credentials built from the exchanged tokens.
-    pub(crate) credentials: Credentials,
-
-    /// Unix timestamp when the access token expires.
-    pub(crate) expires_at: i64,
-}
-
 /// Exchanges an OAuth authorization code for stored credentials.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the token endpoint fails or the response omits
-/// required fields.
+/// Returns [`Error`] when the token endpoint fails or the response omits required fields.
 pub(crate) async fn exchange_code(
     http: &Client,
     oauth_type: OAuthProviderType,
@@ -172,8 +208,8 @@ pub(crate) async fn exchange_code(
 
     let response: TokenResponse = post_token_request(request, "authorization code").await?;
 
-    // Cloned rather than moved because the raw response still feeds the
-    // `token_expiry_from` fallback below.
+    // Cloned rather than moved because the raw response still feeds the `token_expiry_from`
+    // fallback below.
     let access_token = response
         .access_token
         .clone()
@@ -226,50 +262,11 @@ pub(crate) async fn exchange_code(
     })
 }
 
-/// The `TokenResponse` counterpart of a rejected token request: the RFC 6749
-/// §5.2 error payload, from which the terminal `invalid_grant` is diagnosed.
-/// The payload is upstream-owned, so unknown fields are ignored.
-#[derive(Debug, Deserialize)]
-struct TokenErrorResponse {
-    /// OAuth error name, such as `invalid_grant`.
-    error: Option<String>,
-}
-
-/// The OpenAI refresh-grant request body (README §5.1).
-#[derive(Debug, Serialize)]
-struct OpenAiRefreshGrantRequest<'a> {
-    /// OAuth client identifier of the Codex CLI.
-    client_id: &'a str,
-
-    /// Grant type; always `refresh_token`.
-    grant_type: &'a str,
-
-    /// Grant being refreshed.
-    refresh_token: &'a str,
-}
-
-/// Result of a refresh grant.
-#[derive(Debug, Clone)]
-pub(super) struct RefreshedTokens {
-    /// New access token.
-    pub(super) access_token: String,
-
-    /// Replacement refresh token, when the endpoint rotated it.
-    pub(super) refresh_token: Option<String>,
-
-    /// Replacement identity token, when issued.
-    pub(super) id_token: Option<String>,
-
-    /// Lifetime of the access token in seconds, when the endpoint reports it.
-    pub(super) expires_in: Option<i64>,
-}
-
 /// Refreshes an OAuth access token with the provider's refresh grant.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the token endpoint fails or omits an access
-/// token.
+/// Returns [`Error`] when the token endpoint fails or omits an access token.
 pub(super) async fn refresh_tokens(
     http: &Client,
     oauth_type: OAuthProviderType,
@@ -307,11 +304,10 @@ pub(super) async fn refresh_tokens(
     })
 }
 
-/// Classifies a token-endpoint rejection body (RFC 6749 §5.2): a terminal
-/// `invalid_grant` — a revoked or expired grant that only user
-/// re-authorization recovers — is diagnosed in the message so the doomed
-/// grant is not re-attempted as if it were transient, while any other
-/// rejection keeps the generic upstream rendering with the status embedded.
+/// Classifies a token-endpoint rejection body (RFC 6749 §5.2): a terminal `invalid_grant` — a
+/// revoked or expired grant that only user re-authorization recovers — is diagnosed in the message
+/// so the doomed grant is not re-attempted as if it were transient, while any other rejection keeps
+/// the generic upstream rendering with the status embedded.
 fn token_grant_rejection(status: u16, body: &str, grant: &str) -> Error {
     let error_name = serde_json::from_str::<TokenErrorResponse>(body)
         .ok()
@@ -332,20 +328,17 @@ fn token_grant_rejection(status: u16, body: &str, grant: &str) -> Error {
     }
 }
 
-/// POSTs the prepared token-endpoint request and deserializes the JSON
-/// response, classifying non-success statuses through
-/// [`token_grant_rejection`] with the given grant description. The body
-/// classification needs the full bounded error body, so the token grants map
-/// the shared exchange failure here instead of through the generic
-/// conversion on [`Error`].
+/// POSTs the prepared token-endpoint request and deserializes the JSON response, classifying
+/// non-success statuses through [`token_grant_rejection`] with the given grant description. The
+/// body classification needs the full bounded error body, so the token grants map the shared
+/// exchange failure here instead of through the generic conversion on [`Error`].
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for transport failures, non-success statuses, and
-/// malformed response bodies.
-async fn post_token_request<T>(request: reqwest::RequestBuilder, grant: &str) -> Result<T, Error>
+/// Returns [`Error`] for transport failures, non-success statuses, and malformed response bodies.
+async fn post_token_request<T>(request: RequestBuilder, grant: &str) -> Result<T, Error>
 where
-    T: serde::de::DeserializeOwned,
+    T: DeserializeOwned,
 {
     match http_body::send_and_parse_json(request, "token endpoint").await {
         Ok(parsed) => Ok(parsed),
@@ -358,10 +351,9 @@ where
     }
 }
 
-/// Percent-encodes a space-joined OAuth scope list for placement in an
-/// authorize URL query: RFC 3986 forbids raw spaces and README §5.1/§5.2
-/// document the `%20` form. Scope values are HTTPS URLs whose colons and
-/// slashes are legal query characters, so spaces are the only bytes that need
+/// Percent-encodes a space-joined OAuth scope list for placement in an authorize URL query: RFC
+/// 3986 forbids raw spaces and README §5.1/§5.2 document the `%20` form. Scope values are HTTPS
+/// URLs whose colons and slashes are legal query characters, so spaces are the only bytes that need
 /// escaping.
 fn encode_scopes(scopes: &str) -> String {
     scopes.replace(' ', "%20")

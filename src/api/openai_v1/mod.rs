@@ -1,12 +1,13 @@
 //! Outward OpenAI-compatible format sub-router (`/api/openai-v1`).
 
-mod error;
-
 use self::error::Error;
 use crate::{
     context::Context,
-    format::{ClientFormat, ClientSseRenderer, openai_chat_completion, openai_response},
-    gateway::{self, IrEventStream},
+    format::{
+        ClientFormat, ClientSseRenderer, openai_chat_completion::Format as ChatCompletionFormat,
+        openai_response::Format as ResponseFormat,
+    },
+    gateway::{self, Error as GatewayError, IrEventStream},
     ir::{Aggregator, IrAggregation},
     provider::storage,
     security,
@@ -22,21 +23,48 @@ use axum::{
 };
 use log::debug;
 use serde::Serialize;
+use std::io::Error as IoError;
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
+
+mod error;
 
 /// Maximum accepted request body size, large enough for inline image data.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
-/// Capacity of the channel between the SSE rendering task and the response
-/// body stream.
+/// Capacity of the channel between the SSE rendering task and the response body stream.
 ///
-/// Mirrors `gateway`'s `EVENT_CHANNEL_BUFFER` for the adjacent pipeline
-/// stage: both hops buffer equally, so one slow stage cannot accumulate an
-/// asymmetric backlog in the other.
+/// Mirrors `gateway`'s `EVENT_CHANNEL_BUFFER` for the adjacent pipeline stage: both hops buffer
+/// equally, so one slow stage cannot accumulate an asymmetric backlog in the other.
 const SSE_CHANNEL_BUFFER: usize = 64;
 
-/// Constructs the format sub-router with OpenAI bearer authentication and its
-/// own 404 response.
+/// The `GET /models` success body (the official OpenAI list shape).
+#[derive(Debug, Serialize)]
+struct ModelList<'a> {
+    /// Always `list`.
+    object: &'static str,
+
+    /// One entry per served model, ordered by public ID.
+    data: Vec<ModelObject<'a>>,
+}
+
+/// One served model in the official OpenAI model shape.
+#[derive(Debug, Serialize)]
+struct ModelObject<'a> {
+    /// Public routing ID (README §3).
+    id: &'a str,
+
+    /// Always `model`.
+    object: &'static str,
+
+    /// The official shape requires `created`; the gateway serves no model creation timestamps, so
+    /// it renders the epoch.
+    created: u64,
+
+    /// Name of the provider serving the model.
+    owned_by: &'a str,
+}
+
+/// Constructs the format sub-router with OpenAI bearer authentication and its own 404 response.
 pub(super) fn router() -> Router<Context> {
     Router::new()
         .route("/chat/completions", post(chat_completions))
@@ -47,8 +75,9 @@ pub(super) fn router() -> Router<Context> {
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
-/// Authenticates the request against the shared gateway API key using the
-/// OpenAI `Authorization: Bearer <key>` convention.
+/// Authenticates the request against the shared gateway API key using the OpenAI `Authorization:
+/// Bearer <key>` convention. The key is read from the live configuration, so a reload rotates it
+/// immediately.
 async fn authenticate(request: Request, next: Next) -> Response {
     let is_authorized = request
         .headers()
@@ -68,10 +97,9 @@ async fn authenticate(request: Request, next: Next) -> Response {
 
 /// Extracts the bearer token from an `Authorization` header value.
 ///
-/// The scheme is compared case-insensitively per RFC 9110 §11.1; the token
-/// is taken verbatim after the first space, so malformed forms — no space,
-/// tab separator, glued scheme, leading whitespace, trailing content — are
-/// rejected by the scheme mismatch or by the credential comparison.
+/// The scheme is compared case-insensitively per RFC 9110 §11.1; the token is taken verbatim after
+/// the first space, so malformed forms — no space, tab separator, glued scheme, leading whitespace,
+/// trailing content — are rejected by the scheme mismatch or by the credential comparison.
 fn bearer_token(authorization: &str) -> Option<&str> {
     let (scheme, token) = authorization.split_once(' ')?;
 
@@ -82,8 +110,8 @@ fn bearer_token(authorization: &str) -> Option<&str> {
     }
 }
 
-/// Handles unmapped format paths with an OpenAI-shaped 404, logging the
-/// rendered error once at this response boundary.
+/// Handles unmapped format paths with an OpenAI-shaped 404, logging the rendered error once at this
+/// response boundary.
 async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
     let error = Error::InvalidUrl {
         method: request.method().as_str().to_string(),
@@ -97,12 +125,12 @@ async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
 
 /// Handles `POST /chat/completions`.
 async fn chat_completions(State(context): State<Context>, body: Bytes) -> Response {
-    outcome_response(handle_completion::<openai_chat_completion::Format>(&context, &body).await)
+    outcome_response(handle_completion::<ChatCompletionFormat>(&context, &body).await)
 }
 
 /// Handles `POST /responses`.
 async fn responses(State(context): State<Context>, body: Bytes) -> Response {
-    outcome_response(handle_completion::<openai_response::Format>(&context, &body).await)
+    outcome_response(handle_completion::<ResponseFormat>(&context, &body).await)
 }
 
 /// Renders a handler outcome, mapping failures to OpenAI error responses.
@@ -113,14 +141,12 @@ fn outcome_response(outcome: Result<Response, Error>) -> Response {
     }
 }
 
-/// Routes one completion request through the gateway in the given client
-/// format: parse to IR, resolve routing, execute upstream, and render the
-/// event stream live or aggregated.
+/// Routes one completion request through the gateway in the given client format: parse to IR,
+/// resolve routing, execute upstream, and render the event stream live or aggregated.
 ///
-/// Every failure that reaches this boundary is logged exactly once here,
-/// with the request context available at each stage: a parse rejection names
-/// only the endpoint, a routing rejection names the requested model, and
-/// everything past routing additionally names the resolved provider.
+/// Every failure that reaches this boundary is logged exactly once here, with the request context
+/// available at each stage: a parse rejection names only the endpoint, a routing rejection names
+/// the requested model, and everything past routing additionally names the resolved provider.
 ///
 /// # Errors
 ///
@@ -128,9 +154,11 @@ fn outcome_response(outcome: Result<Response, Error>) -> Response {
 async fn handle_completion<TFormat>(context: &Context, body: &[u8]) -> Result<Response, Error>
 where
     TFormat: ClientFormat,
+    TFormat::JsonResponse: Serialize,
 {
     let parsed = match TFormat::parse_request(body) {
         Ok(parsed) => parsed,
+
         Err(error) => {
             let error = Error::from(error);
 
@@ -142,6 +170,7 @@ where
 
     let routing = match gateway::resolve_routing(&context.database, &parsed.ir.model).await {
         Ok(routing) => routing,
+
         Err(error) => {
             let error = Error::from(error);
 
@@ -224,33 +253,6 @@ async fn models(State(context): State<Context>) -> Response {
     }
 }
 
-/// The `GET /models` success body (the official OpenAI list shape).
-#[derive(Debug, Serialize)]
-struct ModelList<'a> {
-    /// Always `list`.
-    object: &'static str,
-
-    /// One entry per served model, ordered by public ID.
-    data: Vec<ModelObject<'a>>,
-}
-
-/// One served model in the official OpenAI model shape.
-#[derive(Debug, Serialize)]
-struct ModelObject<'a> {
-    /// Public routing ID (README §3).
-    id: &'a str,
-
-    /// Always `model`.
-    object: &'static str,
-
-    /// The official shape requires `created`; the gateway serves no model
-    /// creation timestamps, so it renders the epoch.
-    created: u64,
-
-    /// Name of the provider serving the model.
-    owned_by: &'a str,
-}
-
 /// Wraps an IR event stream into a live `text/event-stream` response.
 ///
 /// # Panics
@@ -261,7 +263,7 @@ fn sse_response(
     mut renderer: Box<dyn ClientSseRenderer + Send>,
 ) -> Response {
     let (sender, receiver) =
-        tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(SSE_CHANNEL_BUFFER);
+        tokio::sync::mpsc::channel::<Result<Bytes, IoError>>(SSE_CHANNEL_BUFFER);
 
     tokio::spawn(async move {
         let mut events = events;
@@ -304,7 +306,7 @@ fn sse_response(
 async fn aggregated_response<TBody>(
     events: IrEventStream,
     render_json_fn: impl Fn(&IrAggregation) -> TBody,
-) -> Result<Response, gateway::Error>
+) -> Result<Response, GatewayError>
 where
     TBody: Serialize,
 {
@@ -327,9 +329,9 @@ where
 
 /// Builds a JSON response with the given status code.
 ///
-/// The outward surface's universal response builder, defined at the surface
-/// root and kept separate from the management one so each router owns its
-/// rendering. The body is a typed payload, so serialization is total.
+/// The outward surface's universal response builder, defined at the surface root and kept separate
+/// from the management one so each router owns its rendering. The body is a typed payload, so
+/// serialization is total.
 ///
 /// # Panics
 ///

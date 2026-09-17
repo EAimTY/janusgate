@@ -1,9 +1,8 @@
 //! Upstream endpoint constants of the built-in provider kinds.
 //!
-//! Endpoint knowledge belongs to the provider layer (the only place that
-//! dials a given upstream), so gateway dispatch, model discovery, and OAuth
-//! project resolution all source their URLs and fixed headers from here
-//! instead of from the format codecs.
+//! Endpoint knowledge belongs to the provider layer (the only place that dials a given upstream),
+//! so gateway dispatch, model discovery, and OAuth project resolution all source their URLs and
+//! fixed headers from here instead of from the format codecs.
 
 /// Upstream URL of the Codex inference (Responses) endpoint.
 pub(crate) const CODEX_INFERENCE_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
@@ -14,20 +13,13 @@ pub(crate) const CODEX_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex
 /// `Originator` header value required by the Codex endpoint.
 pub(crate) const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
-/// `chatgpt-account-id` header name required by the Codex endpoint, carrying
-/// the ChatGPT account ID of the OAuth credentials.
+/// `chatgpt-account-id` header name required by the Codex endpoint, carrying the ChatGPT account ID
+/// of the OAuth credentials.
 pub(crate) const CODEX_ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
 
-/// CLI version the Codex upstream expects: it is required as the
-/// `client_version` query parameter on model discovery and is embedded in the
-/// `User-Agent` value below.
+/// CLI version the Codex upstream expects: it is required as the `client_version` query parameter
+/// on model discovery and is embedded in the `User-Agent` value below.
 pub(crate) const CODEX_CLIENT_VERSION: &str = "0.147.0";
-
-/// `User-Agent` header value required by the Codex endpoint, derived from
-/// [`CODEX_CLIENT_VERSION`].
-pub(crate) fn codex_user_agent() -> String {
-    format!("codex_cli_rs/{CODEX_CLIENT_VERSION}")
-}
 
 /// Base URL of the Antigravity Code Assist API.
 ///
@@ -48,7 +40,11 @@ pub(crate) const ANTIGRAVITY_FETCH_AVAILABLE_MODELS_ACTION: &str = ":fetchAvaila
 /// `User-Agent` header value required by the Antigravity Code Assist endpoint.
 pub(crate) const ANTIGRAVITY_USER_AGENT: &str = "antigravity";
 
-/// Header name carrying the API key of a compatible Gemini upstream (README
-/// §5.3); the OpenAI-family compatible upstreams authenticate through
-/// `Authorization: Bearer` instead.
+/// Header name carrying the API key of a compatible Gemini upstream (README §5.3); the
+/// OpenAI-family compatible upstreams authenticate through `Authorization: Bearer` instead.
 pub(crate) const GEMINI_API_KEY_HEADER: &str = "x-goog-api-key";
+
+/// `User-Agent` header value required by the Codex endpoint, derived from [`CODEX_CLIENT_VERSION`].
+pub(crate) fn codex_user_agent() -> String {
+    format!("codex_cli_rs/{CODEX_CLIENT_VERSION}")
+}

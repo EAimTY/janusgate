@@ -36,6 +36,7 @@ export function ProviderCreateScreen(props: ProviderCreateScreenProps): JSX.Elem
 
     const submit = async (event: SubmitEvent): Promise<void> => {
         event.preventDefault();
+
         if (isSaving()) {
             return;
         }
@@ -51,6 +52,7 @@ export function ProviderCreateScreen(props: ProviderCreateScreenProps): JSX.Elem
         setApiKeyError(apiKeyFailure);
         setProtocolError(protocolFailure);
         setFailure(null);
+
         if (
             nameFailure !== null ||
             baseUrlFailure !== null ||
@@ -61,6 +63,7 @@ export function ProviderCreateScreen(props: ProviderCreateScreenProps): JSX.Elem
         }
 
         setIsSaving(true);
+
         const outcome = await performManagementCall(() =>
             props.api.createProvider({
                 name: name(),
@@ -71,12 +74,14 @@ export function ProviderCreateScreen(props: ProviderCreateScreenProps): JSX.Elem
                 api_key: apiKey(),
             }),
         );
+
         setIsSaving(false);
 
         if (outcome.status === "ok") {
             navigate(hrefs.providerDetail(outcome.result.provider.id));
             return;
         }
+
         if (outcome.status === "failed") {
             setFailure(outcome.message);
         }

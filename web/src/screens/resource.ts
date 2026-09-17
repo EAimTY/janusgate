@@ -30,10 +30,12 @@ export function createAsyncResource<TValue>(
         controller = nextController;
 
         const outcome = await performManagementCall(() => load(nextController.signal));
+
         // A superseded or disposed load must not report anything.
         if (nextController.signal.aborted) {
             return;
         }
+
         if (outcome.status === "ok") {
             setValue(() => outcome.result);
             setFailure(null);
@@ -44,6 +46,7 @@ export function createAsyncResource<TValue>(
 
     onSettled(() => {
         void reload();
+
         return () => {
             controller?.abort();
         };

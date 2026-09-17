@@ -1,80 +1,183 @@
-//! HTTP server lifecycle and connection driving over plaintext TCP or TLS,
-//! speaking HTTP/1 and HTTP/2.
+//! HTTP server lifecycle and connection driving over plaintext TCP or TLS, speaking HTTP/1 and
+//! HTTP/2.
 
-use super::{api, context, management_api};
-use axum::{
-    Router,
-    body::Body,
-    http::{Request, Response, StatusCode},
+use super::{api, context::Context, management_api};
+use axum::{Router, body::Body, http::StatusCode};
+use hserver::{
+    ConnectionBuilder, Server as ConnectionDriver, Tls, UpgradableConnection,
+    UpgradableTlsHandshake,
 };
-use host_port_pair::Host;
-use hserver::{ConnectionBuilder, Incoming, Server, Tls};
 use hyper_util::rt::TokioTimer;
 use log::{debug, error, info, warn};
-use rustls::{
-    ServerConfig,
-    crypto::aws_lc_rs,
-    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
-};
 use socket2::{Domain, Protocol, SockAddr, Socket as Socket2, Type};
 use std::{
-    error::Error,
-    net::{SocketAddr, TcpListener as StdTcpListener, ToSocketAddrs as _},
-    sync::Arc,
+    net::{SocketAddr, TcpListener as StdTcpListener},
     time::Duration,
 };
-use tokio::net::{TcpListener, TcpStream};
-use tower::Service;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::{TcpListener, TcpStream},
+};
 
 /// Delay before the first accept retry after a failed accept attempt.
 const ACCEPT_BACKOFF_INITIAL: Duration = Duration::from_millis(10);
 
-/// Maximum delay between accept retries, so a persistently failing listener
-/// retries at most once per second instead of spinning.
+/// Maximum delay between accept retries, so a persistently failing listener retries at most once
+/// per second instead of spinning.
 const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 
-/// Maximum number of pending, not-yet-accepted connections the kernel queues
-/// for the listening socket before it starts refusing new ones.
+/// Maximum number of pending, not-yet-accepted connections the kernel queues for the listening
+/// socket before it starts refusing new ones.
 const LISTEN_BACKLOG: i32 = 32;
-
-/// ALPN protocols offered on TLS listeners, in preference order.
-///
-/// Rustls negotiates one of them with the TLS client, and hyper-util's
-/// protocol auto-detection independently identifies the spoken protocol
-/// from the decrypted stream's leading bytes, so both ALPN-negotiated and
-/// plaintext prior-knowledge HTTP/2 clients are served.
-const ALPN_PROTOCOLS: [&[u8]; 2] = [b"h2", b"http/1.1"];
 
 /// Deadline for an HTTP/1 connection to finish sending request headers.
 ///
-/// Pins hyper's effective 30-second default explicitly: the default is
-/// declared unstable, and the value is part of the documented resource
-/// bounds.
+/// Pins hyper's effective 30-second default explicitly: the default is declared unstable, and the
+/// value is part of the documented resource bounds.
 const HTTP1_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Idle time before an HTTP/2 connection is probed with a keep-alive PING.
 const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Time a peer has to answer a keep-alive PING before the connection is
-/// closed as dead.
+/// Time a peer has to answer a keep-alive PING before the connection is closed as dead.
 const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Maximum number of concurrent request streams one HTTP/2 connection may
-/// hold.
+/// Maximum number of concurrent request streams one HTTP/2 connection may hold.
 ///
-/// Pins hyper's effective default of 200 explicitly: the default is declared
-/// unstable.
+/// Pins hyper's effective default of 200 explicitly: the default is declared unstable.
 const HTTP2_MAX_CONCURRENT_STREAMS: u32 = 200;
 
 /// Maximum HPACK-decompressed header bytes one HTTP/2 request may carry.
 ///
-/// Hyper's default is ~16 MB and declared unstable; 16 KiB bounds
-/// HPACK-bomb memory while leaving generous room for ordinary header sets.
+/// Hyper's default is ~16 MB and declared unstable; 16 KiB bounds HPACK-bomb memory while leaving
+/// generous room for ordinary header sets.
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 16 * 1024;
 
-/// Computes the delay before the next accept attempt after
-/// `consecutive_failures` consecutive accept failures. The delay doubles per
-/// additional failure and saturates at [`ACCEPT_BACKOFF_MAX`].
+/// The gateway's inbound HTTP server.
+///
+/// One instance serves for the whole process lifetime: the TCP listener is bound once from the
+/// global configuration, and the connection driver — carrying the HTTP/1 and HTTP/2 connection
+/// configurations over the root router — is likewise built once and shared by every accepted
+/// connection, so handling a connection clones the driver's shared configuration and the router
+/// instead of rebuilding either.
+pub(crate) struct Server {
+    /// TCP listener bound to the configured address.
+    tcp_listener: TcpListener,
+
+    /// Address the TCP listener is bound to.
+    socket_address: SocketAddr,
+
+    /// Connection driver shared by every accepted connection.
+    connection_driver: ConnectionDriver<Router>,
+}
+
+impl Server {
+    /// Creates the server: binds the TCP listener to the configured address and builds the shared
+    /// connection driver over the root router carrying `context`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the TCP listener fails to initialize.
+    pub(crate) fn new(context: Context) -> Self {
+        let (tcp_listener, socket_address) = bind_tcp_listener();
+
+        Self {
+            tcp_listener,
+            socket_address,
+            connection_driver: ConnectionDriver::new(connection_builder(), router(context)),
+        }
+    }
+
+    /// Serves connections until the process is terminated.
+    ///
+    /// Failed accepts are retried with exponential backoff. Each accepted connection is served —
+    /// over HTTP/1 or HTTP/2, auto-detected per connection by hyper-util's protocol detection — in
+    /// its own task, so the accept loop is never blocked.
+    ///
+    /// This method runs indefinitely and never returns.
+    pub(crate) async fn run(mut self) -> ! {
+        let socket_address = self.socket_address;
+
+        let scheme = if crate::CONFIG.tls().is_some() {
+            "https"
+        } else {
+            "http"
+        };
+
+        info!("listening on {scheme}://{socket_address}");
+
+        let mut consecutive_accept_failures: u32 = 0;
+
+        loop {
+            let (stream, peer_address) = match self.tcp_listener.accept().await {
+                Ok(connection) => {
+                    consecutive_accept_failures = 0;
+
+                    connection
+                }
+
+                Err(error) => {
+                    consecutive_accept_failures = consecutive_accept_failures.saturating_add(1);
+
+                    error!("TCP accept failed: {error}");
+
+                    tokio::time::sleep(accept_backoff_delay(consecutive_accept_failures)).await;
+
+                    continue;
+                }
+            };
+
+            self.serve_connection(stream, peer_address);
+        }
+    }
+
+    /// Serves one accepted connection in its own task, through the TLS handshake first when the
+    /// live configuration carries TLS material.
+    ///
+    /// The TLS configuration is read per connection at accept time, so a configuration or TLS
+    /// material reload reaches new connections while established ones keep serving.
+    fn serve_connection(&mut self, stream: TcpStream, peer_address: SocketAddr) {
+        // Disabling Nagle's algorithm lets small streaming frames, such as SSE events, leave
+        // immediately instead of stalling against the peer's delayed ACK. Best-effort, in the same
+        // log-and-continue style as the accept error above: a socket that keeps the kernel default
+        // merely degrades latency, so the connection is served anyway.
+        if let Err(error) = stream.set_nodelay(true) {
+            warn!("failed to set TCP_NODELAY for {peer_address}: {error}");
+        }
+
+        match crate::CONFIG.tls() {
+            Some(tls_server_config) => {
+                tokio::spawn(drive_tls_connection(
+                    self.connection_driver
+                        .handle_upgradable(Tls(tls_server_config, stream), peer_address),
+                    peer_address,
+                ));
+            }
+
+            None => {
+                tokio::spawn(drive_connection(
+                    self.connection_driver
+                        .handle_upgradable(stream, peer_address),
+                    peer_address,
+                ));
+            }
+        }
+    }
+}
+
+/// Answers a request that matches no route anywhere with an empty 404 response.
+///
+/// The root router owns this response, and the `/api` and `/management-api` parent routers declare
+/// this very handler as their own fallback, so a path that belongs to no domain is answered
+/// identically whichever router catches it; see the TODO in [`api::router`](crate::api::router) for
+/// why the parent routers declare it rather than inherit it.
+pub(crate) async fn fallback() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+/// Computes the delay before the next accept attempt after `consecutive_failures` consecutive
+/// accept failures. The delay doubles per additional failure and saturates at
+/// [`ACCEPT_BACKOFF_MAX`].
 fn accept_backoff_delay(consecutive_failures: u32) -> Duration {
     let doublings = consecutive_failures.saturating_sub(1).min(10);
 
@@ -83,29 +186,23 @@ fn accept_backoff_delay(consecutive_failures: u32) -> Duration {
 
 /// Creates the HTTP connection builder used for every accepted connection.
 ///
-/// HTTP/1 arms hyper's timer and pins its header-read deadline explicitly:
-/// without a timer hyper silently disables its timeouts and a slow client
-/// can park a connection task indefinitely, and the 30-second default is
-/// declared unstable. HTTP/2 pins its stream and header-list bounds (both
-/// defaults are declared unstable as well) and enables PING-based
-/// keep-alive: an idle connection is probed every 30 seconds and closed when
-/// a probe goes unacknowledged for 20 seconds. A PING must be answered by
-/// the peer's HTTP/2 stack — the kernel cannot answer on its behalf, unlike
-/// TCP keep-alive — so live-but-idle clients survive while dead or silent
-/// HTTP/2 peers are reaped. Hyper's maintained rapid-reset mitigation
-/// defaults (pending-accept and local-error reset-stream limits) are left
-/// untouched.
+/// HTTP/1 arms hyper's timer and pins its header-read deadline explicitly: without a timer hyper
+/// silently disables its timeouts and a slow client can park a connection task indefinitely, and
+/// the 30-second default is declared unstable. HTTP/2 pins its stream and header-list bounds (both
+/// defaults are declared unstable as well) and enables PING-based keep-alive: an idle connection is
+/// probed every 30 seconds and closed when a probe goes unacknowledged for 20 seconds. A PING must
+/// be answered by the peer's HTTP/2 stack — the kernel cannot answer on its behalf, unlike TCP
+/// keep-alive — so live-but-idle clients survive while dead or silent HTTP/2 peers are reaped.
+/// Hyper's maintained rapid-reset mitigation defaults (pending-accept and local-error reset-stream
+/// limits) are left untouched.
 ///
-/// No deadline is imposed on the phase before the first request headers —
-/// the TLS handshake, hyper-util's protocol auto-detection, or a client
-/// simply sending nothing. Neither hyper-util nor rustls exposes a hook for
-/// one, and adding one is rejected on the merits: a first-request deadline
-/// burdens legitimately slow clients while failing to bound resource
-/// exhaustion, because an attacker holding sockets with slow request bodies
-/// or slow keep-alive traffic makes the same investment as one holding
-/// sockets silently. The socket-exhaustion threat is answered, if ever, by
-/// connection-count limiting at the accept edge, not by opening-phase
-/// timeouts.
+/// No deadline is imposed on the phase before the first request headers — the TLS handshake,
+/// hyper-util's protocol auto-detection, or a client simply sending nothing. Neither hyper-util nor
+/// rustls exposes a hook for one, and adding one is rejected on the merits: a first-request
+/// deadline burdens legitimately slow clients while failing to bound resource exhaustion, because
+/// an attacker holding sockets with slow request bodies or slow keep-alive traffic makes the same
+/// investment as one holding sockets silently. The socket-exhaustion threat is answered, if ever,
+/// by connection-count limiting at the accept edge, not by opening-phase timeouts.
 fn connection_builder() -> ConnectionBuilder {
     let mut connection_builder = ConnectionBuilder::new();
 
@@ -125,174 +222,39 @@ fn connection_builder() -> ConnectionBuilder {
     connection_builder
 }
 
-/// Builds the inbound TLS server configuration from the `tls` section of the
-/// global application configuration, returning `None` when that section is
-/// absent and the listener serves plaintext HTTP.
+/// Drives one served connection to completion.
 ///
-/// The configuration offers the protocols of [`ALPN_PROTOCOLS`] through ALPN
-/// and performs no client-certificate authentication; inbound access is
-/// governed by the gateway's own token authentication either way.
-///
-/// # Panics
-///
-/// Panics if `CONFIG` is uninitialized or if the certificate or private key
-/// files cannot be read or combined into a TLS server configuration.
-fn tls_server_config() -> Option<Arc<ServerConfig>> {
-    let tls = crate::CONFIG.tls.as_ref()?;
-
-    #[expect(
-        clippy::expect_used,
-        reason = "an unreadable or unparsable TLS certificate chain file is fatal"
-    )]
-    let certificates = CertificateDer::pem_file_iter(&tls.certificate)
-        .expect("cannot read the TLS certificate chain")
-        .collect::<Result<Vec<CertificateDer>, _>>()
-        .expect("cannot parse the TLS certificate chain");
-
-    #[expect(
-        clippy::expect_used,
-        reason = "an unreadable or unparsable TLS private key file is fatal"
-    )]
-    let private_key = PrivateKeyDer::from_pem_file(&tls.private_key)
-        .expect("cannot read or parse the TLS private key");
-
-    #[expect(
-        clippy::expect_used,
-        reason = "an unusable TLS certificate chain or private key is fatal"
-    )]
-    let mut server_config =
-        ServerConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
-            .with_safe_default_protocol_versions()
-            .expect("cannot select TLS protocol versions")
-            .with_no_client_auth()
-            .with_single_cert(certificates, private_key)
-            .expect("cannot build the TLS server configuration");
-
-    server_config.alpn_protocols = ALPN_PROTOCOLS.into_iter().map(Vec::from).collect();
-
-    Some(Arc::new(server_config))
-}
-
-/// Runs the HTTP server, accepting incoming TCP connections and serving
-/// HTTP/1 or HTTP/2 requests using an Axum router over `hserver`, wrapped in
-/// TLS when the `tls` configuration section is present.
-///
-/// This function runs indefinitely and never returns.
-///
-/// # Panics
-///
-/// Panics if the TCP listener or the TLS server configuration fails to
-/// initialize.
-pub(crate) async fn run(context: context::Context) -> ! {
-    let tls_server_config = tls_server_config();
-
-    let (tcp_listener, socket_address) = init_tcp_listener();
-
-    let scheme = if tls_server_config.is_some() {
-        "https"
-    } else {
-        "http"
-    };
-
-    info!("listening on {scheme}://{socket_address}");
-
-    let router = router(context);
-
-    let mut consecutive_failures: u32 = 0;
-
-    loop {
-        let (stream, peer_address) = match tcp_listener.accept().await {
-            Ok(connection) => {
-                consecutive_failures = 0;
-
-                connection
-            }
-
-            Err(error) => {
-                consecutive_failures = consecutive_failures.saturating_add(1);
-
-                error!("TCP accept failed: {error}");
-
-                tokio::time::sleep(accept_backoff_delay(consecutive_failures)).await;
-
-                continue;
-            }
-        };
-
-        // Disabling Nagle's algorithm lets small streaming frames, such as
-        // SSE events, leave immediately instead of stalling against the
-        // peer's delayed ACK. Best-effort, in the same log-and-continue
-        // style as the accept error above: a socket that keeps the kernel
-        // default merely degrades latency, so the connection is served
-        // anyway.
-        if let Err(error) = stream.set_nodelay(true) {
-            warn!("failed to set TCP_NODELAY for {peer_address}: {error}");
-        }
-
-        tokio::spawn(serve_accepted_connection(
-            router.clone(),
-            tls_server_config.clone(),
-            stream,
-            peer_address,
-        ));
-    }
-}
-
-/// Serves one accepted connection — directly, or behind a TLS handshake
-/// first when TLS is configured — with HTTP/1 or HTTP/2 auto-detected per
-/// connection by hyper-util's protocol detection.
-///
-/// This future runs the connection to completion, so callers must execute it
-/// in its own task to keep the accept loop unblocked.
-async fn serve_accepted_connection<S>(
-    service: S,
-    tls_server_config: Option<Arc<ServerConfig>>,
-    stream: TcpStream,
+/// A connection error is routinely the client vanishing mid-request or mid-stream, so it is
+/// recorded at debug level only.
+async fn drive_connection<T>(
+    connection: UpgradableConnection<T, Router, Body>,
     peer_address: SocketAddr,
 ) where
-    S: Service<Request<Incoming>, Response = Response<Body>> + Clone + Send + 'static,
-    S::Future: Send,
-    S::Error: Into<Box<dyn Error + Send + Sync>>,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let mut server = Server::new(connection_builder(), service);
-
-    match tls_server_config {
-        Some(config) => {
-            // A handshake failure is routinely a plaintext or otherwise
-            // TLS-incompatible client, so it is recorded at debug level like
-            // a connection error.
-            match server
-                .handle_upgradable(Tls(config, stream), peer_address)
-                .await
-            {
-                Ok(connection) => {
-                    // A connection error is routinely the client vanishing
-                    // mid-request or mid-stream, so it is recorded at debug
-                    // level only.
-                    if let Err(error) = connection.await {
-                        debug!("{peer_address}: connection ended with error: {error}");
-                    }
-                }
-
-                Err(error) => debug!("{peer_address}: TLS handshake failed: {error}"),
-            }
-        }
-
-        None => {
-            let connection = server.handle_upgradable(stream, peer_address);
-
-            // A connection error is routinely the client vanishing mid-request
-            // or mid-stream, so it is recorded at debug level only.
-            if let Err(error) = connection.await {
-                debug!("{peer_address}: connection ended with error: {error}");
-            }
-        }
+    if let Err(error) = connection.await {
+        debug!("{peer_address}: connection ended with error: {error}");
     }
 }
 
-/// Constructs the Axum root router configured with the shared request
-/// context.
-fn router(context: context::Context) -> Router {
+/// Drives one served TLS connection to completion: the Rustls handshake first, then the connection
+/// over the established TLS stream.
+///
+/// A handshake failure is routinely a plaintext or otherwise TLS-incompatible client, so it is
+/// recorded at debug level like a connection error.
+async fn drive_tls_connection(
+    handshake: UpgradableTlsHandshake<TcpStream, Router, Body>,
+    peer_address: SocketAddr,
+) {
+    match handshake.await {
+        Ok(connection) => drive_connection(connection, peer_address).await,
+
+        Err(error) => debug!("{peer_address}: TLS handshake failed: {error}"),
+    }
+}
+
+/// Constructs the Axum root router configured with the shared request context.
+fn router(context: Context) -> Router {
     Router::new()
         .nest("/api", api::router())
         .nest("/management-api", management_api::router())
@@ -300,47 +262,14 @@ fn router(context: context::Context) -> Router {
         .with_state(context)
 }
 
-/// Answers a request that matches no route anywhere with an empty 404
-/// response.
-///
-/// The root router owns this response, and the `/api` and `/management-api`
-/// parent routers declare this very handler as their own fallback, so a path
-/// that belongs to no domain is answered identically whichever router catches
-/// it; see the TODO in [`api::router`](crate::api::router) for why the parent
-/// routers declare it rather than inherit it.
-pub(crate) async fn fallback() -> StatusCode {
-    StatusCode::NOT_FOUND
-}
-
-/// Initializes the Tokio TCP listener using the global application
-/// configuration, returning the listener with the socket address it is bound
-/// to.
+/// Binds the Tokio TCP listener to the configured address, returning the listener with the address
+/// it is bound to.
 ///
 /// # Panics
 ///
-/// Panics if `CONFIG` is uninitialized, if socket creation, configuration, or
-/// binding fails, or if a DNS name cannot be resolved to a socket address.
-fn init_tcp_listener() -> (TcpListener, SocketAddr) {
-    let socket_address = match crate::CONFIG.listen.host() {
-        Host::IpAddr(ip_address) => SocketAddr::from((*ip_address, crate::CONFIG.listen.port())),
-        Host::DnsName(dns_name) => {
-            #[expect(
-                clippy::expect_used,
-                reason = "binding to an unresolvable listen host is fatal"
-            )]
-            let mut socket_addresses = (dns_name.as_str(), crate::CONFIG.listen.port())
-                .to_socket_addrs()
-                .expect("cannot resolve the listen host");
-
-            #[expect(
-                clippy::expect_used,
-                reason = "binding to an empty address resolution is fatal"
-            )]
-            socket_addresses
-                .next()
-                .expect("the listen host resolved to no addresses")
-        }
-    };
+/// Panics if `CONFIG` is uninitialized, if socket creation, configuration, or binding fails.
+fn bind_tcp_listener() -> (TcpListener, SocketAddr) {
+    let socket_address = crate::CONFIG.listen;
 
     let domain = match socket_address {
         SocketAddr::V4(_) => Domain::IPV4,

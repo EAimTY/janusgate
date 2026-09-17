@@ -12,9 +12,11 @@ const connection: Connection = {
 
 function createStorage(seed?: Connection): Storage {
     const entries = new Map<string, string>();
+
     if (seed !== undefined) {
         entries.set(appConfig.connectionStorageKey, JSON.stringify(seed));
     }
+
     return {
         get length() {
             return entries.size;
@@ -47,6 +49,7 @@ describe("createConnectionService", () => {
             status: "connected",
             connection,
         });
+
         expect(service.currentConnection()).toEqual(connection);
     });
 
@@ -60,12 +63,14 @@ describe("createConnectionService", () => {
             status: "unconnected",
             notice: null,
         });
+
         expect(service.currentConnection()).toBeNull();
     });
 
     it("verifies, persists and accepts a candidate", async () => {
         const storage = createStorage();
         const probed: Connection[] = [];
+
         const service = createConnectionService({
             storage,
             probe: async (candidate) => {
@@ -78,7 +83,9 @@ describe("createConnectionService", () => {
         expect(probed).toEqual([
             connection,
         ]);
+
         expect(readStoredConnection(storage)).toEqual(connection);
+
         expect(service.connectionState()).toEqual({
             status: "connected",
             connection,
@@ -87,6 +94,7 @@ describe("createConnectionService", () => {
 
     it("keeps the visitor on setup with the failure message when the probe fails", async () => {
         const storage = createStorage();
+
         const service = createConnectionService({
             storage,
             probe: async () => {
@@ -97,10 +105,12 @@ describe("createConnectionService", () => {
         await service.connect(connection);
 
         expect(readStoredConnection(storage)).toBeNull();
+
         expect(service.connectionState()).toEqual({
             status: "unconnected",
             notice: "Failed to fetch",
         });
+
         expect(service.currentConnection()).toBeNull();
     });
 
@@ -108,6 +118,7 @@ describe("createConnectionService", () => {
         const storage = createStorage();
         let probeCount = 0;
         let releaseProbe: (() => void) | undefined;
+
         const service = createConnectionService({
             storage,
             probe: async () => {
@@ -119,14 +130,17 @@ describe("createConnectionService", () => {
         });
 
         const firstAttempt = service.connect(connection);
+
         await service.connect({
             baseUrl: "https://other.example.com",
             token: "other",
         });
+
         releaseProbe?.();
         await firstAttempt;
 
         expect(probeCount).toBe(1);
+
         expect(service.connectionState()).toEqual({
             status: "connected",
             connection,
@@ -135,6 +149,7 @@ describe("createConnectionService", () => {
 
     it("forgets the stored pair", () => {
         const storage = createStorage(connection);
+
         const service = createConnectionService({
             storage,
             probe: async () => {},
@@ -144,6 +159,7 @@ describe("createConnectionService", () => {
         flush();
 
         expect(readStoredConnection(storage)).toBeNull();
+
         expect(service.connectionState()).toEqual({
             status: "unconnected",
             notice: null,
@@ -152,6 +168,7 @@ describe("createConnectionService", () => {
 
     it("clears a rejected connection and explains it on setup", () => {
         const storage = createStorage(connection);
+
         const service = createConnectionService({
             storage,
             probe: async () => {},
@@ -161,6 +178,7 @@ describe("createConnectionService", () => {
         flush();
 
         expect(readStoredConnection(storage)).toBeNull();
+
         expect(service.connectionState()).toEqual({
             status: "unconnected",
             notice: "invalid management token",

@@ -35,6 +35,7 @@ export const MANAGEMENT_API_PATH = "/management-api/v0";
  */
 export function normalizeBaseUrl(rawInput: string): BaseUrlNormalization {
     const trimmedInput = rawInput.trim().replace(/\/+$/, "");
+
     if (trimmedInput === "") {
         return {
             ok: false,
@@ -43,6 +44,7 @@ export function normalizeBaseUrl(rawInput: string): BaseUrlNormalization {
     }
 
     let url: URL;
+
     try {
         url = new URL(trimmedInput);
     } catch {
@@ -58,12 +60,14 @@ export function normalizeBaseUrl(rawInput: string): BaseUrlNormalization {
             reason: "Use an http:// or https:// URL.",
         };
     }
+
     if (url.username !== "" || url.password !== "") {
         return {
             ok: false,
             reason: "Remove the credentials from the URL.",
         };
     }
+
     if (url.pathname !== "/" || url.search !== "" || url.hash !== "") {
         return {
             ok: false,
@@ -88,27 +92,32 @@ export function readStoredConnection(storage: Storage | null): Connection | null
     }
 
     let serialized: string | null;
+
     try {
         serialized = storage.getItem(appConfig.connectionStorageKey);
     } catch {
         return null;
     }
+
     if (serialized === null) {
         return null;
     }
 
     let parsed: unknown;
+
     try {
         parsed = JSON.parse(serialized);
     } catch {
         return null;
     }
+
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         return null;
     }
 
     const baseUrl: unknown = Reflect.get(parsed, "baseUrl");
     const token: unknown = Reflect.get(parsed, "token");
+
     if (
         typeof baseUrl !== "string" ||
         baseUrl === "" ||
@@ -132,6 +141,7 @@ export function writeStoredConnection(storage: Storage | null, connection: Conne
     if (storage === null) {
         return;
     }
+
     try {
         storage.setItem(appConfig.connectionStorageKey, JSON.stringify(connection));
     } catch {
@@ -143,6 +153,7 @@ export function clearStoredConnection(storage: Storage | null): void {
     if (storage === null) {
         return;
     }
+
     try {
         storage.removeItem(appConfig.connectionStorageKey);
     } catch {

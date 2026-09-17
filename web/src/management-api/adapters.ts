@@ -51,6 +51,7 @@ export function toUpdateProviderRequest(
                           api_key: edits.api_key,
                       }),
             };
+
         case "openai_oauth":
             return {
                 type: "openai_oauth",
@@ -59,6 +60,7 @@ export function toUpdateProviderRequest(
                 model_prefix: edits.model_prefix ?? provider.model_prefix,
                 is_enabled: edits.is_enabled ?? provider.is_enabled,
             };
+
         case "antigravity_oauth":
             return {
                 type: "antigravity_oauth",
@@ -111,5 +113,6 @@ function canonicalizeThinkingLevels(levels: ThinkingLevel[] | null): ThinkingLev
     if (levels === null) {
         return null;
     }
+
     return THINKING_LEVEL_ORDER.filter((level) => levels.includes(level));
 }

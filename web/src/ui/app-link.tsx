@@ -31,6 +31,7 @@ export function AppLink(props: AppLinkProps): JSX.Element {
                 ) {
                     return;
                 }
+
                 event.preventDefault();
                 navigate(props.href);
             }}

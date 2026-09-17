@@ -1,15 +1,21 @@
-//! Provider, model, and OAuth state persistence, split by entity:
-//! [`providers`], [`models`], and [`oauth_states`] own their tables'
-//! statements, while this module owns the shared error domain, the Turso
-//! value conversions of the provider domain types, the row codecs, and the
-//! public model ID collision checks.
+//! Provider, model, and OAuth state persistence, split by entity: [`providers`], [`models`], and
+//! [`oauth_states`] own their tables' statements, while this module owns the shared error domain,
+//! the Turso value conversions of the provider domain types, the row codecs, and the public model
+//! ID collision checks.
 //!
-//! The entity split interlocks deliberately, mirroring the README §7.1
-//! transaction contracts: `providers:update` recomputes its models' public
-//! IDs from the fresh prefix, so [`providers`] reads model rows through
-//! [`models::find_models_in_transaction`], while `models:update` and model
+//! The entity split interlocks deliberately, mirroring the README §7.1 transaction contracts:
+//! `providers:update` recomputes its models' public IDs from the fresh prefix, so [`providers`]
+//! reads model rows through [`models::find_models_in_transaction`], while `models:update` and model
 //! discovery re-read the provider row inside their transactions through
-//! [`providers::find_provider_by_id_in_transaction`].
+//! [`providers::find_provider_by_id_in_transaction`]..
+
+use super::{Credentials, Model, OAuthProviderType, Provider, ProviderType};
+use crate::{
+    database::{Error as DatabaseError, Row, Transaction, Value, params::IntoValue},
+    format::UpstreamFormat,
+};
+use std::collections::HashMap;
+use turso::Error as TursoError;
 
 mod models;
 mod oauth_states;
@@ -30,24 +36,34 @@ pub(crate) use self::{
         update_provider,
     },
 };
-use super::{Credentials, Model, OAuthProviderType, Provider, ProviderType};
-use crate::{
-    database::{Error as DatabaseError, Row, Transaction, Value, params::IntoValue},
-    format::UpstreamFormat,
-};
-use std::collections::HashMap;
-use turso::Error as TursoError;
+
+/// Column order of provider selects.
+const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, protocol, base_url, credentials, \
+     expires_at, is_enabled";
+
+/// Column order of model selects.
+const MODEL_COLUMNS: &str = "provider_id, upstream_id, id, id_override, is_enabled, \
+     thinking_levels_override";
+
+/// The combined column order of provider-model joins.
+const PROVIDER_MODEL_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.type, p.protocol, \
+     p.base_url, p.credentials, p.expires_at, p.is_enabled, \
+     m.upstream_id, m.id, m.id_override, m.is_enabled, m.thinking_levels_override";
+
+/// The combined column order of the model-entry join, consumed positionally by
+/// [`model_entry_from_row`]: the provider id, name, and enabled flag, then the model columns.
+const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, p.is_enabled, \
+     m.provider_id, m.upstream_id, m.id, m.id_override, m.is_enabled, \
+     m.thinking_levels_override";
 
 /// Provider, model, and OAuth state persistence failures.
 ///
-/// Semantic outcomes the checked operations promise — a missing row, a
-/// conflicting write — are their own variants, while every engine failure is
-/// classified once here so the HTTP surfaces never inspect the database
-/// error domain themselves.
+/// Semantic outcomes the checked operations promise — a missing row, a conflicting write — are
+/// their own variants, while every engine failure is classified once here so the HTTP surfaces
+/// never inspect the database error domain themselves.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    /// A checked lookup or precondition failed: the addressed row does not
-    /// exist.
+    /// A checked lookup or precondition failed: the addressed row does not exist.
     #[error("{message}")]
     NotFound {
         /// Human-readable failure message.
@@ -61,21 +77,20 @@ pub(crate) enum Error {
         message: String,
     },
 
-    /// The engine rejected a write with a constraint violation — the
-    /// concurrent backstop behind a checked conflict.
+    /// The engine rejected a write with a constraint violation — the concurrent backstop behind a
+    /// checked conflict.
     #[error("database constraint violated: {detail}")]
     Constraint {
         /// Engine-provided violation detail.
         detail: String,
     },
 
-    /// Database contention: the file lock was busy or a read-then-write
-    /// upgrade was refused with a stale snapshot.
+    /// Database contention: the file lock was busy or a read-then-write upgrade was refused with a
+    /// stale snapshot.
     ///
-    /// The lease caller that must tell the stale-snapshot refusal apart from
-    /// plain contention classifies the raw [`DatabaseError`] through
-    /// [`DatabaseError::is_stale_snapshot`] before this conversion flattens
-    /// the distinction away; every rendered surface treats `Busy` as an
+    /// The lease caller that must tell the stale-snapshot refusal apart from plain contention
+    /// classifies the raw [`DatabaseError`] through [`DatabaseError::is_stale_snapshot`] before
+    /// this conversion flattens the distinction away; every rendered surface treats `Busy` as an
     /// internal failure.
     #[error("database is busy: {detail}")]
     Busy {
@@ -83,8 +98,7 @@ pub(crate) enum Error {
         detail: String,
     },
 
-    /// Stored data violated an invariant written by the validated management
-    /// path — database drift.
+    /// Stored data violated an invariant written by the validated management path — database drift.
     #[error("{message}")]
     Drift {
         /// Human-readable failure message.
@@ -94,6 +108,15 @@ pub(crate) enum Error {
     /// The database engine failed.
     #[error("database error: {0}")]
     Database(DatabaseError),
+}
+
+/// A provider row joined with a model row.
+struct ProviderModelJoin {
+    /// Owning provider.
+    provider: Provider,
+
+    /// Model row.
+    model: Model,
 }
 
 impl From<TursoError> for Error {
@@ -116,58 +139,9 @@ impl From<DatabaseError> for Error {
     }
 }
 
-/// The documented wire wording for a rejected provider name (README §7.1),
-/// owned once here so the checked rename and both management name-taken
-/// pre-checks render a taken name identically.
-pub(crate) fn provider_name_taken_message(name: &str) -> String {
-    format!("Provider name `{name}` is already taken")
-}
-
-/// The wire wording for an unknown provider id (README §7 404 `not_found`),
-/// owned once here so the transactional writes that re-read the row and the
-/// management lookups that pre-check it render a missing provider
-/// identically.
-pub(crate) fn provider_not_found_message(id: i64) -> String {
-    format!("Provider {id} does not exist")
-}
-
-/// Column order of provider selects.
-const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, protocol, base_url, credentials, \
-     expires_at, is_enabled";
-
-/// Column order of model selects.
-const MODEL_COLUMNS: &str = "provider_id, upstream_id, id, id_override, is_enabled, \
-     thinking_levels_override";
-
-/// The combined column order of provider-model joins.
-const PROVIDER_MODEL_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.type, p.protocol, \
-     p.base_url, p.credentials, p.expires_at, p.is_enabled, \
-     m.upstream_id, m.id, m.id_override, m.is_enabled, m.thinking_levels_override";
-
-/// The combined column order of the model-entry join, consumed positionally by
-/// [`model_entry_from_row`]: the provider id, name, and enabled flag, then the
-/// model columns.
-const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, p.is_enabled, \
-     m.provider_id, m.upstream_id, m.id, m.id_override, m.is_enabled, \
-     m.thinking_levels_override";
-
 impl IntoValue for ProviderType {
     fn into_value(self) -> Result<Value, TursoError> {
         Ok(Value::Text(self.as_str().to_string()))
-    }
-}
-
-/// Reads a provider type column, failing with an internal drift error on an
-/// unknown or non-text value: the column was written through
-/// [`ProviderType::as_str`], so anything else is storage drift.
-fn provider_type_from_value(value: Value) -> Result<ProviderType, Error> {
-    match value {
-        Value::Text(text) => ProviderType::parse(&text).ok_or_else(|| Error::Drift {
-            message: format!("unknown provider type `{text}`"),
-        }),
-        _ => Err(Error::Drift {
-            message: "provider type column must be a text value".to_string(),
-        }),
     }
 }
 
@@ -177,13 +151,41 @@ impl IntoValue for OAuthProviderType {
     }
 }
 
-/// Reads an OAuth state type column; see [`provider_type_from_value`] for
-/// the drift classification.
+/// The documented wire wording for a rejected provider name (README §7.1), owned once here so the
+/// checked rename and both management name-taken pre-checks render a taken name identically.
+pub(crate) fn provider_name_taken_message(name: &str) -> String {
+    format!("Provider name `{name}` is already taken")
+}
+
+/// The wire wording for an unknown provider id (README §7 404 `not_found`), owned once here so the
+/// transactional writes that re-read the row and the management lookups that pre-check it render a
+/// missing provider identically.
+pub(crate) fn provider_not_found_message(id: i64) -> String {
+    format!("Provider {id} does not exist")
+}
+
+/// Reads a provider type column, failing with an internal drift error on an unknown or non-text
+/// value: the column was written through [`ProviderType::as_str`], so anything else is storage
+/// drift.
+fn provider_type_from_value(value: Value) -> Result<ProviderType, Error> {
+    match value {
+        Value::Text(text) => ProviderType::parse(&text).ok_or_else(|| Error::Drift {
+            message: format!("unknown provider type `{text}`"),
+        }),
+
+        _ => Err(Error::Drift {
+            message: "provider type column must be a text value".to_string(),
+        }),
+    }
+}
+
+/// Reads an OAuth state type column; see [`provider_type_from_value`] for the drift classification.
 fn oauth_provider_type_from_value(value: Value) -> Result<OAuthProviderType, Error> {
     match value {
         Value::Text(text) => OAuthProviderType::parse(&text).ok_or_else(|| Error::Drift {
             message: format!("unknown OAuth provider type `{text}`"),
         }),
+
         _ => Err(Error::Drift {
             message: "OAuth state type column must be a text value".to_string(),
         }),
@@ -197,6 +199,7 @@ fn provider_from_row(row: &Row) -> Result<Provider, Error> {
     let protocol =
         match row.get::<Option<String>>(4)? {
             None => None,
+
             Some(protocol_name) => Some(UpstreamFormat::parse(&protocol_name).ok_or_else(
                 || Error::Drift {
                     message: format!("provider row carries unknown protocol `{protocol_name}`"),
@@ -207,9 +210,9 @@ fn provider_from_row(row: &Row) -> Result<Provider, Error> {
     let name: String = row.get(1)?;
     let credentials_json: String = row.get(6)?;
 
-    // The typed parse failure is wrapped exactly once as internal storage
-    // drift: the row was written only through the validated management path,
-    // so a payload failing here is never the requesting client's fault.
+    // The typed parse failure is wrapped exactly once as internal storage drift: the row was
+    // written only through the validated management path, so a payload failing here is never the
+    // requesting client's fault.
     let credentials =
         Credentials::parse(provider_type, &credentials_json).map_err(|error| Error::Drift {
             message: format!("provider `{name}` has malformed credentials: {error}"),
@@ -228,19 +231,10 @@ fn provider_from_row(row: &Row) -> Result<Provider, Error> {
     })
 }
 
-/// A provider row joined with a model row.
-struct ProviderModelJoin {
-    /// Owning provider.
-    provider: Provider,
-
-    /// Model row.
-    model: Model,
-}
-
 /// Parses a provider-model joined row in [`PROVIDER_MODEL_COLUMNS`] order.
 ///
-/// The join projects the provider columns first and the model columns second,
-/// without `models.provider_id`, which is taken from the provider row.
+/// The join projects the provider columns first and the model columns second, without
+/// `models.provider_id`, which is taken from the provider row.
 fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, Error> {
     let provider = provider_from_row(row)?;
 
@@ -273,8 +267,8 @@ fn model_from_row(row: &Row) -> Result<Model, Error> {
     model_from_row_offset(row, 0)
 }
 
-/// Parses a model entry row in [`MODEL_ENTRY_COLUMNS`] order: the provider
-/// id, name, and enabled flag, then the model columns at offset 3.
+/// Parses a model entry row in [`MODEL_ENTRY_COLUMNS`] order: the provider id, name, and enabled
+/// flag, then the model columns at offset 3.
 fn model_entry_from_row(row: &Row) -> Result<ModelEntry, Error> {
     Ok(ModelEntry {
         provider_id: row.get(0)?,
@@ -284,8 +278,8 @@ fn model_entry_from_row(row: &Row) -> Result<ModelEntry, Error> {
     })
 }
 
-/// Rejects one provider's freshly composed public IDs when two of its rows
-/// would converge on one ID.
+/// Rejects one provider's freshly composed public IDs when two of its rows would converge on one
+/// ID.
 ///
 /// `composed` carries `(public_id, upstream_id)` pairs.
 fn ensure_ids_pairwise_distinct(
@@ -308,13 +302,13 @@ fn ensure_ids_pairwise_distinct(
     Ok(())
 }
 
-/// Rejects freshly composed public IDs that are already routed by another
-/// model row — of any provider, including another model of the same provider.
-/// An ID held by the very row being written is not a collision.
+/// Rejects freshly composed public IDs that are already routed by another model row — of any
+/// provider, including another model of the same provider. An ID held by the very row being written
+/// is not a collision.
 ///
-/// `composed` carries `(public_id, upstream_id)` pairs of the provider
-/// identified by `provider_id`. Runs inside the caller's transaction, so the
-/// routed rows it observes cannot interleave with the caller's writes.
+/// `composed` carries `(public_id, upstream_id)` pairs of the provider identified by `provider_id`.
+/// Runs inside the caller's transaction, so the routed rows it observes cannot interleave with the
+/// caller's writes.
 ///
 /// # Errors
 ///
@@ -364,7 +358,7 @@ mod tests {
         format::UpstreamFormat,
         provider::{Credentials, NewProvider, OAuthProviderType, ProviderType},
     };
-    use std::{num::NonZero, path::PathBuf, time::Duration};
+    use std::{error::Error as StdError, num::NonZero, path::PathBuf, time::Duration};
 
     /// File guard cleaning up the temporary SQLite test database on drop.
     struct TempDbGuard(PathBuf);
@@ -383,6 +377,7 @@ mod tests {
     async fn create_test_database() -> (Database, TempDbGuard) {
         let db_path =
             std::env::temp_dir().join(format!("janusgate-test-{}.db", rand::random::<u64>()));
+
         #[expect(clippy::unwrap_used, reason = "non-zero literal")]
         let max_connections = NonZero::new(2).unwrap();
         #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
@@ -393,20 +388,19 @@ mod tests {
         (database, TempDbGuard(db_path))
     }
 
-    /// Verifies the full model ID lifecycle: prefix composition on discovery,
-    /// direct replacement when overridden, invariant preservation on provider
-    /// prefix update, clearing overrides, and routing conflict rejection.
+    /// Verifies the full model ID lifecycle: prefix composition on discovery, direct replacement
+    /// when overridden, invariant preservation on provider prefix update, clearing overrides, and
+    /// routing conflict rejection.
     ///
     /// # Panics
     ///
     /// Panics if database operations or assertions fail.
     #[tokio::test]
-    async fn test_model_id_override_and_prefix_behavior() {
+    async fn test_model_id_override_and_prefix_behavior() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
 
         let credentials = Credentials::ApiKey("test-secret".to_string());
 
-        #[expect(clippy::unwrap_used, reason = "provider inserts cleanly")]
         insert_provider(
             &database,
             &NewProvider {
@@ -420,27 +414,24 @@ mod tests {
                 is_enabled: true,
             },
         )
-        .await
-        .unwrap();
+        .await?;
 
-        #[expect(clippy::unwrap_used, reason = "provider list succeeds")]
-        let providers = list_providers(&database).await.unwrap();
+        let providers = list_providers(&database).await?;
         #[expect(clippy::indexing_slicing, reason = "one provider was inserted")]
         let provider_id = providers[0].id;
 
         // 1. Discover models: "gpt-4" and "claude"
-        #[expect(clippy::unwrap_used, reason = "model discovery succeeds")]
         let discovered = replace_discovered_models(
             &database,
             provider_id,
             &["gpt-4".to_string(), "claude".to_string()],
         )
-        .await
-        .unwrap();
+        .await?;
+
         assert_eq!(discovered.len(), 2);
 
-        #[expect(clippy::unwrap_used, reason = "list models succeeds")]
-        let entries = list_model_entries(&database, None).await.unwrap();
+        let entries = list_model_entries(&database, None).await?;
+
         assert_eq!(entries.len(), 2);
         #[expect(clippy::unwrap_used, reason = "gpt-4 is in discovered entries")]
         let gpt4 = entries
@@ -452,9 +443,8 @@ mod tests {
         assert!(gpt4.model.is_enabled);
         assert!(gpt4.model.is_effectively_enabled(gpt4.is_provider_enabled));
 
-        // 2. Set id_override on "gpt-4" to "top-gpt" (bypasses "p1/" prefix);
-        // the rewrite restates the row's full override state
-        #[expect(clippy::unwrap_used, reason = "override update succeeds")]
+        // 2. Set id_override on "gpt-4" to "top-gpt" (bypasses "p1/" prefix); the rewrite restates
+        //    the row's full override state
         let updated = update_model_overrides_checked(
             &database,
             ModelOverrideUpdate {
@@ -465,15 +455,15 @@ mod tests {
                 thinking_levels_override: None,
             },
         )
-        .await
-        .unwrap();
+        .await?;
+
         assert_eq!(updated.model.id, "top-gpt");
         assert_eq!(updated.model.id_override.as_deref(), Some("top-gpt"));
         assert!(updated.model.is_enabled);
 
         // Routing lookup resolves "top-gpt" to this model
-        #[expect(clippy::unwrap_used, reason = "routing query succeeds")]
-        let routing = find_routing(&database, "top-gpt").await.unwrap();
+        let routing = find_routing(&database, "top-gpt").await?;
+
         assert!(routing.is_some());
         #[expect(clippy::unwrap_used, reason = "routing row is present")]
         let routing = routing.unwrap();
@@ -481,13 +471,12 @@ mod tests {
         assert!(routing.is_effectively_enabled);
 
         // Old prefixed ID "p1/gpt-4" no longer routes
-        #[expect(clippy::unwrap_used, reason = "routing query succeeds")]
-        let old_routing = find_routing(&database, "p1/gpt-4").await.unwrap();
+        let old_routing = find_routing(&database, "p1/gpt-4").await?;
+
         assert!(old_routing.is_none());
 
-        // 3. Update provider's model_prefix to "new-p1/"; the rewrite restates
-        // the compatible provider's full state
-        #[expect(clippy::unwrap_used, reason = "provider prefix update succeeds")]
+        // 3. Update provider's model_prefix to "new-p1/"; the rewrite restates the compatible
+        //    provider's full state
         update_provider(
             &database,
             provider_id,
@@ -500,13 +489,10 @@ mod tests {
                 credentials: None,
             },
         )
-        .await
-        .unwrap();
+        .await?;
 
-        // Check: "gpt-4" retains "top-gpt", while "claude" is recomputed as
-        // "new-p1/claude"
-        #[expect(clippy::unwrap_used, reason = "list models succeeds")]
-        let entries_after_prefix = list_model_entries(&database, None).await.unwrap();
+        // Check: "gpt-4" retains "top-gpt", while "claude" is recomputed as "new-p1/claude"
+        let entries_after_prefix = list_model_entries(&database, None).await?;
         #[expect(clippy::unwrap_used, reason = "gpt-4 is in entries")]
         let gpt4_after = entries_after_prefix
             .iter()
@@ -521,7 +507,6 @@ mod tests {
         assert_eq!(claude_after.model.id, "new-p1/claude");
 
         // 4. Clear id_override on "gpt-4": reverts to "new-p1/gpt-4"
-        #[expect(clippy::unwrap_used, reason = "clearing override succeeds")]
         let cleared = update_model_overrides_checked(
             &database,
             ModelOverrideUpdate {
@@ -532,8 +517,8 @@ mod tests {
                 thinking_levels_override: None,
             },
         )
-        .await
-        .unwrap();
+        .await?;
+
         assert_eq!(cleared.model.id, "new-p1/gpt-4");
         assert_eq!(cleared.model.id_override, None);
 
@@ -552,7 +537,6 @@ mod tests {
         assert!(collision_result.is_err());
 
         // 6. Disable claude individually
-        #[expect(clippy::unwrap_used, reason = "disabling model succeeds")]
         let disabled_claude = update_model_overrides_checked(
             &database,
             ModelOverrideUpdate {
@@ -563,8 +547,8 @@ mod tests {
                 thinking_levels_override: None,
             },
         )
-        .await
-        .unwrap();
+        .await?;
+
         assert!(!disabled_claude.model.is_enabled);
         assert!(
             !disabled_claude
@@ -573,15 +557,14 @@ mod tests {
         );
 
         // Enabled models list includes gpt-4 but excludes claude
-        #[expect(clippy::unwrap_used, reason = "list enabled models succeeds")]
-        let enabled_models = list_enabled_models_with_owner(&database).await.unwrap();
+        let enabled_models = list_enabled_models_with_owner(&database).await?;
+
         assert_eq!(enabled_models.len(), 1);
         #[expect(clippy::indexing_slicing, reason = "length 1 asserted above")]
         let first_enabled = &enabled_models[0];
         assert_eq!(first_enabled.0, "new-p1/gpt-4");
 
         // 7. Master switch test: disable provider -> ALL models effectively disabled
-        #[expect(clippy::unwrap_used, reason = "disabling provider succeeds")]
         update_provider(
             &database,
             provider_id,
@@ -594,39 +577,38 @@ mod tests {
                 credentials: None,
             },
         )
-        .await
-        .unwrap();
+        .await?;
 
         // Routing lookup for gpt-4 reports the effective status as disabled
-        #[expect(clippy::unwrap_used, reason = "routing query succeeds")]
-        let gpt4_routing = find_routing(&database, "new-p1/gpt-4").await.unwrap();
+        let gpt4_routing = find_routing(&database, "new-p1/gpt-4").await?;
+
         assert!(gpt4_routing.is_some());
         #[expect(clippy::unwrap_used, reason = "routing is some")]
         let gpt4_routing = gpt4_routing.unwrap();
         assert!(!gpt4_routing.is_effectively_enabled);
 
         // Enabled models list is now empty because provider is disabled
-        #[expect(clippy::unwrap_used, reason = "list enabled models succeeds")]
         let enabled_models_after_provider_disable =
-            list_enabled_models_with_owner(&database).await.unwrap();
+            list_enabled_models_with_owner(&database).await?;
         assert!(enabled_models_after_provider_disable.is_empty());
+
+        Ok(())
     }
 
-    /// Verifies the OAuth state lifecycle and typed database roundtrips for
-    /// `OAuthProviderType` and `ProviderType`.
+    /// Verifies the OAuth state lifecycle and typed database roundtrips for `OAuthProviderType` and
+    /// `ProviderType`.
     ///
     /// # Panics
     ///
     /// Panics if database operations or assertions fail.
     #[tokio::test]
-    async fn test_oauth_state_and_provider_type_database_lifecycle() {
+    async fn test_oauth_state_and_provider_type_lifecycle() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
 
         let now = 1_000_000;
         let expires_at = now + 600;
 
         // 1. Insert OAuth states with OAuthProviderType
-        #[expect(clippy::unwrap_used, reason = "insert oauth state succeeds")]
         insert_oauth_state(
             &database,
             OAuthProviderType::OpenAiOauth,
@@ -634,10 +616,8 @@ mod tests {
             "openai-verifier-1",
             expires_at,
         )
-        .await
-        .unwrap();
+        .await?;
 
-        #[expect(clippy::unwrap_used, reason = "insert oauth state succeeds")]
         insert_oauth_state(
             &database,
             OAuthProviderType::AntigravityOauth,
@@ -645,37 +625,24 @@ mod tests {
             "",
             expires_at,
         )
-        .await
-        .unwrap();
+        .await?;
 
         // 2. Query type without consuming
-        #[expect(clippy::unwrap_used, reason = "find oauth state type succeeds")]
-        let found_type = find_oauth_state_type(&database, "openai-state-1", now)
-            .await
-            .unwrap();
+        let found_type = find_oauth_state_type(&database, "openai-state-1", now).await?;
         assert_eq!(found_type, Some(OAuthProviderType::OpenAiOauth));
 
-        #[expect(clippy::unwrap_used, reason = "find oauth state type succeeds")]
-        let found_ag = find_oauth_state_type(&database, "antigravity-state-1", now)
-            .await
-            .unwrap();
+        let found_ag = find_oauth_state_type(&database, "antigravity-state-1", now).await?;
         assert_eq!(found_ag, Some(OAuthProviderType::AntigravityOauth));
 
         // 3. Atomically consume
-        #[expect(clippy::unwrap_used, reason = "consume oauth state succeeds")]
-        let consumed = consume_oauth_state(&database, "openai-state-1", now)
-            .await
-            .unwrap();
+        let consumed = consume_oauth_state(&database, "openai-state-1", now).await?;
         #[expect(clippy::unwrap_used, reason = "state is present")]
         let consumed = consumed.unwrap();
         assert_eq!(consumed.state_type, OAuthProviderType::OpenAiOauth);
         assert_eq!(consumed.verifier, "openai-verifier-1");
 
         // Second consume returns None
-        #[expect(clippy::unwrap_used, reason = "second consume succeeds")]
-        let second_consume = consume_oauth_state(&database, "openai-state-1", now)
-            .await
-            .unwrap();
+        let second_consume = consume_oauth_state(&database, "openai-state-1", now).await?;
         assert!(second_consume.is_none());
 
         // 4. Create provider from consumed state and verify typed read back
@@ -684,7 +651,6 @@ mod tests {
             refresh_token: "test-refresh".to_string(),
             account_id: "test-account".to_string(),
         };
-        #[expect(clippy::unwrap_used, reason = "insert provider succeeds")]
         insert_provider(
             &database,
             &NewProvider {
@@ -698,11 +664,9 @@ mod tests {
                 is_enabled: true,
             },
         )
-        .await
-        .unwrap();
+        .await?;
 
-        #[expect(clippy::unwrap_used, reason = "list providers succeeds")]
-        let providers = list_providers(&database).await.unwrap();
+        let providers = list_providers(&database).await?;
         #[expect(clippy::unwrap_used, reason = "provider was inserted")]
         let provider = providers
             .iter()
@@ -711,30 +675,25 @@ mod tests {
         assert_eq!(provider.provider_type, ProviderType::OpenAiOauth);
 
         // 5. Sweep expired states
-        #[expect(clippy::unwrap_used, reason = "delete expired states succeeds")]
-        delete_expired_oauth_states(&database, expires_at + 10)
-            .await
-            .unwrap();
+        delete_expired_oauth_states(&database, expires_at + 10).await?;
 
-        #[expect(clippy::unwrap_used, reason = "find expired state succeeds")]
-        let swept = find_oauth_state_type(&database, "antigravity-state-1", now)
-            .await
-            .unwrap();
+        let swept = find_oauth_state_type(&database, "antigravity-state-1", now).await?;
         assert!(swept.is_none());
+
+        Ok(())
     }
 
-    /// Verifies that the schema itself enforces the `providers.protocol`
-    /// closed domain: a drifted value is rejected at write time and classifies
-    /// as a storage constraint error, instead of surviving until the read-side
-    /// protocol parse turns every dispatch for the provider into drift.
-    /// First-party write paths validate the protocol before inserting, so the
-    /// probe uses a raw statement.
+    /// Verifies that the schema itself enforces the `providers.protocol` closed domain: a drifted
+    /// value is rejected at write time and classifies as a storage constraint error, instead of
+    /// surviving until the read-side protocol parse turns every dispatch for the provider into
+    /// drift. First-party write paths validate the protocol before inserting, so the probe uses a
+    /// raw statement.
     ///
     /// # Panics
     ///
     /// Panics if the drifted insert unexpectedly succeeds.
     #[tokio::test]
-    async fn rejects_unknown_provider_protocol_at_write_time() {
+    async fn rejects_unknown_provider_protocol_at_write_time() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
 
         let outcome = database
@@ -752,6 +711,8 @@ mod tests {
             matches!(Error::from(error), Error::Constraint { .. }),
             "a schema CHECK violation must classify as a storage constraint error"
         );
+
+        Ok(())
     }
 
     /// Verifies value conversions between database values and provider types.
@@ -781,8 +742,7 @@ mod tests {
         assert!(provider_type_from_value(Value::Integer(42)).is_err());
     }
 
-    /// Verifies value conversions between database values and OAuth provider
-    /// types.
+    /// Verifies value conversions between database values and OAuth provider types.
     ///
     /// # Panics
     ///

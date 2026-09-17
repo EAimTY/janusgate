@@ -1,9 +1,8 @@
-//! Upstream-event parsing for the Chat Completions codec: parses upstream SSE
-//! chunks or a complete JSON body into IR events.
+//! Upstream-event parsing for the Chat Completions codec: parses upstream SSE chunks or a complete
+//! JSON body into IR events.
 //!
-//! Upstream payloads are third-party, so the models below carry exactly the
-//! fields the codec reads, ignore every field it does not, and default what
-//! upstreams legitimately omit.
+//! Upstream payloads are third-party, so the models below carry exactly the fields the codec reads,
+//! ignore every field it does not, and default what upstreams legitimately omit.
 
 use crate::{
     format::{self, PayloadError, UpstreamError, UpstreamEventParser},
@@ -11,9 +10,10 @@ use crate::{
     sse::SseFrame,
 };
 use serde::Deserialize;
+use serde_json::Value;
 
-/// Parses upstream Chat Completions responses — streamed chunks or a full
-/// JSON body — into IR events.
+/// Parses upstream Chat Completions responses — streamed chunks or a full JSON body — into IR
+/// events.
 #[derive(Debug, Default)]
 pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
@@ -46,14 +46,13 @@ struct PendingToolCall {
     /// Arguments accumulated so far.
     arguments: String,
 
-    /// Upstream thought signature carried on the delta entries; the gateway
-    /// extension must survive into the completion (README §5.2).
+    /// Upstream thought signature carried on the delta entries; the gateway extension must survive
+    /// into the completion (README §5.2).
     thought_signature: Option<String>,
 }
 
-/// One upstream Chat Completions chunk, or a complete non-streaming body: the
-/// two share this shape, a chunk carrying `choices[].delta` where a body
-/// carries `choices[].message`.
+/// One upstream Chat Completions chunk, or a complete non-streaming body: the two share this shape,
+/// a chunk carrying `choices[].delta` where a body carries `choices[].message`.
 #[derive(Debug, Default, Deserialize)]
 struct UpstreamResponse {
     /// Upstream response identifier, empty when the upstream omits it.
@@ -68,8 +67,7 @@ struct UpstreamResponse {
     #[serde(default)]
     choices: Vec<Choice>,
 
-    /// Token accounting, carried by a complete body and by the terminal
-    /// chunk of a stream.
+    /// Token accounting, carried by a complete body and by the terminal chunk of a stream.
     #[serde(default)]
     usage: Option<UpstreamUsage>,
 
@@ -98,8 +96,8 @@ struct Choice {
     finish_reason: Option<String>,
 }
 
-/// The text-bearing fields shared by a streaming delta and a complete
-/// message, beside the tool calls they carry.
+/// The text-bearing fields shared by a streaming delta and a complete message, beside the tool
+/// calls they carry.
 #[derive(Debug, Default, Deserialize)]
 struct MessageFields {
     /// Assistant text.
@@ -118,8 +116,7 @@ struct MessageFields {
     #[serde(default)]
     refusal: Option<String>,
 
-    /// Tool call entries: argument fragments in a delta, complete calls in a
-    /// message.
+    /// Tool call entries: argument fragments in a delta, complete calls in a message.
     #[serde(default)]
     tool_calls: Vec<ToolCallEntry>,
 }
@@ -139,8 +136,7 @@ struct ToolCallEntry {
     #[serde(default)]
     function: Option<FunctionFields>,
 
-    /// Upstream thought signature the gateway extension carries (README
-    /// §5.2).
+    /// Upstream thought signature the gateway extension carries (README §5.2).
     #[serde(default)]
     thought_signature: Option<String>,
 }
@@ -157,9 +153,8 @@ struct FunctionFields {
     arguments: Option<String>,
 }
 
-/// Upstream token accounting. Only the totals ride the IR: the outward Chat
-/// Completions surface renders nothing else, and the Responses surface
-/// zero-fills an absent breakdown.
+/// Upstream token accounting. Only the totals ride the IR: the outward Chat Completions surface
+/// renders nothing else, and the Responses surface zero-fills an absent breakdown.
 #[derive(Debug, Deserialize)]
 struct UpstreamUsage {
     /// Tokens consumed by the input.
@@ -352,10 +347,7 @@ impl UpstreamEventParser for UpstreamParser {
     ///
     /// Returns [`PayloadError`] for upstream error payloads and malformed
     /// bodies.
-    fn parse_json_response(
-        &mut self,
-        value: serde_json::Value,
-    ) -> Result<Vec<IrEvent>, PayloadError> {
+    fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
         let response = format::parse_body::<UpstreamResponse>(value)?;
 
         Self::reject_embedded_error(&response)?;
@@ -403,10 +395,9 @@ impl UpstreamEventParser for UpstreamParser {
     }
 }
 
-/// Selects the primary entry of an upstream `choices` array: the entry whose
-/// `index` is 0, tolerating index-less upstreams by taking the first entry
-/// instead. Parallel entries beyond the primary are not supported and the
-/// remainder is ignored.
+/// Selects the primary entry of an upstream `choices` array: the entry whose `index` is 0,
+/// tolerating index-less upstreams by taking the first entry instead. Parallel entries beyond the
+/// primary are not supported and the remainder is ignored.
 fn primary_choice(choices: &[Choice]) -> Option<&Choice> {
     choices
         .iter()
@@ -423,15 +414,13 @@ fn usage_event(usage: &UpstreamUsage) -> IrEvent {
     })
 }
 
-/// Emits the text-bearing events of one upstream delta or complete message
-/// object into `events`: reasoning first, then the object's content text,
-/// then its refusal text. Refusal text rides the ordinary text channel
-/// after any content text of the same object (README §6.2); this helper is
+/// Emits the text-bearing events of one upstream delta or complete message object into `events`:
+/// reasoning first, then the object's content text, then its refusal text. Refusal text rides the
+/// ordinary text channel after any content text of the same object (README §6.2); this helper is
 /// the single home of that ordering contract.
 fn push_text_events(fields: &MessageFields, events: &mut Vec<IrEvent>) {
-    // Both `reasoning` (OpenRouter, vLLM) and `reasoning_content` (the
-    // DeepSeek de-facto standard for OpenAI-compatible reasoners) are
-    // accepted; when both keys are present, `reasoning` wins.
+    // Both `reasoning` (OpenRouter, vLLM) and `reasoning_content` (the DeepSeek de-facto standard
+    // for OpenAI-compatible reasoners) are accepted; when both keys are present, `reasoning` wins.
     if let Some(reasoning) = fields
         .reasoning
         .as_deref()
@@ -454,10 +443,9 @@ fn push_text_events(fields: &MessageFields, events: &mut Vec<IrEvent>) {
     }
 }
 
-/// Extracts message text (including refusal text), reasoning, and complete
-/// tool calls from a full upstream message object into IR events. A complete
-/// call carries no index of its own, so its position in the array is its
-/// index.
+/// Extracts message text (including refusal text), reasoning, and complete tool calls from a full
+/// upstream message object into IR events. A complete call carries no index of its own, so its
+/// position in the array is its index.
 fn message_events_from_full(message: &MessageFields) -> Vec<IrEvent> {
     let mut events = Vec::new();
 

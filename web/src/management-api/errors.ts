@@ -32,6 +32,7 @@ export class ManagementApiError extends Error {
         super(message, {
             cause: details.cause,
         });
+
         this.name = "ManagementApiError";
         this.category = category;
         this.httpStatus = details.httpStatus ?? null;
@@ -75,5 +76,6 @@ export function describeManagementFailure(value: unknown): string {
     if (value instanceof Error) {
         return value.message;
     }
+
     return String(value);
 }

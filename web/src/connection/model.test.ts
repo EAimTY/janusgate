@@ -12,6 +12,7 @@ describe("normalizeBaseUrl", () => {
             ok: true,
             baseUrl: "https://gateway.example.com",
         });
+
         expect(normalizeBaseUrl("http://localhost:47182//")).toEqual({
             ok: true,
             baseUrl: "http://localhost:47182",
@@ -23,6 +24,7 @@ describe("normalizeBaseUrl", () => {
             ok: true,
             baseUrl: "http://gateway.example.com:8080",
         });
+
         expect(normalizeBaseUrl("https://gateway.example.com:443")).toEqual({
             ok: true,
             baseUrl: "https://gateway.example.com",
@@ -66,14 +68,17 @@ describe("normalizeBaseUrl", () => {
 
     it("rejects anything but an origin", () => {
         const reason = "Enter only the gateway origin, without a path, query, or fragment.";
+
         expect(normalizeBaseUrl("https://gateway.example.com/management-api/v0")).toEqual({
             ok: false,
             reason,
         });
+
         expect(normalizeBaseUrl("https://gateway.example.com/?debug=1")).toEqual({
             ok: false,
             reason,
         });
+
         expect(normalizeBaseUrl("https://gateway.example.com/#setup")).toEqual({
             ok: false,
             reason,
@@ -84,6 +89,7 @@ describe("normalizeBaseUrl", () => {
 describe("stored connection", () => {
     const createStorage = (): Storage => {
         const entries = new Map<string, string>();
+
         return {
             get length() {
                 return entries.size;
@@ -111,6 +117,7 @@ describe("stored connection", () => {
             baseUrl: "https://gateway.example.com",
             token: "secret",
         });
+
         expect(readStoredConnection(storage)).toEqual({
             baseUrl: "https://gateway.example.com",
             token: "secret",
@@ -128,12 +135,14 @@ describe("stored connection", () => {
 
     it("treats a stored value that is not a connection as absent", () => {
         const storage = createStorage();
+
         storage.setItem(
             "janusgate-web:connection",
             JSON.stringify({
                 baseUrl: 42,
             }),
         );
+
         expect(readStoredConnection(storage)).toBeNull();
 
         storage.setItem(
@@ -143,6 +152,7 @@ describe("stored connection", () => {
                 token: "",
             }),
         );
+
         expect(readStoredConnection(storage)).toBeNull();
 
         storage.setItem(
@@ -152,6 +162,7 @@ describe("stored connection", () => {
                 "token",
             ]),
         );
+
         expect(readStoredConnection(storage)).toBeNull();
     });
 });

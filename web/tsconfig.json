@@ -7,13 +7,16 @@
             "DOM",
             "DOM.Iterable"
         ],
+
         "skipLibCheck": true,
         "moduleResolution": "Bundler",
+
         "paths": {
             "/*": [
                 "./*"
             ]
         },
+
         "isolatedModules": true,
         "moduleDetection": "force",
         "noEmit": true,
@@ -32,10 +35,12 @@
         "jsx": "preserve",
         "jsxImportSource": "@solidjs/web",
         "allowImportingTsExtensions": true,
+
         "types": [
             "vite/client"
         ]
     },
+
     "include": [
         "src",
         "vite.config.ts",

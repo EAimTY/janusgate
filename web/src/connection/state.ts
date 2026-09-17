@@ -64,12 +64,14 @@ export function reduceConnectionState(
                       status: "connected",
                       connection: event.connection,
                   };
+
         case "connectionSubmitted":
             return state.status === "unconnected"
                 ? {
                       status: "verifying",
                   }
                 : state;
+
         case "connectionAccepted":
             return state.status === "verifying"
                 ? {
@@ -77,11 +79,13 @@ export function reduceConnectionState(
                       connection: event.connection,
                   }
                 : state;
+
         case "connectionRejected":
             return {
                 status: "unconnected",
                 notice: event.notice,
             };
+
         case "connectionForgotten":
             return {
                 status: "unconnected",

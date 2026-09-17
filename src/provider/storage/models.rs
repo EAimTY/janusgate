@@ -1,5 +1,4 @@
-//! Model row persistence: routing resolution, listing, discovery
-//! replacement, and override updates.
+//! Model row persistence: routing resolution, listing, discovery replacement, and override updates.
 
 use super::Error;
 use crate::{
@@ -7,6 +6,42 @@ use crate::{
     provider::{Model, ModelRouting},
 };
 use std::collections::HashMap;
+
+/// One model row with the provider facts needed for listing.
+#[derive(Debug, Clone)]
+pub(crate) struct ModelEntry {
+    /// Owning provider row identifier.
+    pub(crate) provider_id: i64,
+
+    /// Owning provider name.
+    pub(crate) provider_name: String,
+
+    /// Whether the owning provider serves traffic.
+    pub(crate) is_provider_enabled: bool,
+
+    /// The model row.
+    pub(crate) model: Model,
+}
+
+/// One `models:update` rewrite about to be applied transactionally: the row's complete desired
+/// override state (README §7.1) — every field total, the two override columns mirroring their
+/// nullable storage as `None` for "no override".
+pub(crate) struct ModelOverrideUpdate<'a> {
+    /// Owning provider's id, the lookup key.
+    pub(crate) provider_id: i64,
+
+    /// Exact upstream model identifier.
+    pub(crate) upstream_id: &'a str,
+
+    /// Public ID override; `None` composes the ID from the provider's prefix.
+    pub(crate) id_override: Option<&'a str>,
+
+    /// Serving state.
+    pub(crate) is_enabled: bool,
+
+    /// Canonical thinking levels override in its stored JSON form; `None` stores no override.
+    pub(crate) thinking_levels_override: Option<&'a str>,
+}
 
 /// Resolves a public model ID to its provider and model row.
 ///
@@ -81,25 +116,9 @@ async fn find_model_in_transaction(
     rows.first().map(super::model_from_row).transpose()
 }
 
-/// One model row with the provider facts needed for listing.
-#[derive(Debug, Clone)]
-pub(crate) struct ModelEntry {
-    /// Owning provider row identifier.
-    pub(crate) provider_id: i64,
-
-    /// Owning provider name.
-    pub(crate) provider_name: String,
-
-    /// Whether the owning provider serves traffic.
-    pub(crate) is_provider_enabled: bool,
-
-    /// The model row.
-    pub(crate) model: Model,
-}
-
-/// Lists the stored models with their provider facts, narrowed to one
-/// provider's rows when `provider_id` is `Some`; an unknown provider yields
-/// an empty list, because a filter addresses no row (README §7.1).
+/// Lists the stored models with their provider facts, narrowed to one provider's rows when
+/// `provider_id` is `Some`; an unknown provider yields an empty list, because a filter addresses no
+/// row (README §7.1).
 ///
 /// # Errors
 ///
@@ -113,6 +132,7 @@ pub(crate) async fn list_model_entries(
             "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id ORDER BY m.id",
             super::MODEL_ENTRY_COLUMNS
         ),
+
         Some(_) => format!(
             "SELECT {} FROM models m JOIN providers p ON p.id = m.provider_id \
              WHERE m.provider_id = ?1 ORDER BY m.id",
@@ -134,11 +154,11 @@ pub(crate) async fn list_model_entries(
     Ok(entries)
 }
 
-/// Lists `(public_id, provider_name)` pairs for every effectively enabled
-/// model, ordered by public ID.
+/// Lists `(public_id, provider_name)` pairs for every effectively enabled model, ordered by public
+/// ID.
 ///
-/// A model is effectively enabled if and only if both its owning provider and
-/// the model itself are enabled (`p.is_enabled != 0 AND m.is_enabled != 0`).
+/// A model is effectively enabled if and only if both its owning provider and the model itself are
+/// enabled (`p.is_enabled != 0 AND m.is_enabled != 0`)..
 ///
 /// # Errors
 ///
@@ -159,28 +179,24 @@ pub(crate) async fn list_enabled_models_with_owner(
         .collect()
 }
 
-/// Replaces the model rows of one provider with a freshly discovered set
-/// inside a single transaction, returning the stored rows with their
-/// provider facts.
+/// Replaces the model rows of one provider with a freshly discovered set inside a single
+/// transaction, returning the stored rows with their provider facts.
 ///
-/// `upstream_ids` must be non-empty: rejecting an empty discovered set is the
-/// caller's precondition, enforced by the management surface with a 502
-/// before this function is reached (README §7.1). This function performs no
-/// emptiness check — an empty set would irreversibly wipe the provider's
-/// curated rows and return an empty list — because an upstream that
-/// legitimately reports no models, a fresh pre-onboarded account, or an
-/// outage answering 200 with an empty payload must fail loudly instead.
+/// `upstream_ids` must be non-empty: rejecting an empty discovered set is the caller's
+/// precondition, enforced by the management surface with a 502 before this function is reached
+/// (README §7.1). This function performs no emptiness check — an empty set would irreversibly wipe
+/// the provider's curated rows and return an empty list — because an upstream that legitimately
+/// reports no models, a fresh pre-onboarded account, or an outage answering 200 with an empty
+/// payload must fail loudly instead.
 ///
-/// The provider row is re-read inside the transaction, so the public IDs are
-/// composed from the provider's current prefix even when a concurrent
-/// `providers:update` changed it after the caller's outer read (README
-/// §7.1). Overrides carry over from the stored rows by `upstream_id`;
+/// The provider row is re-read inside the transaction, so the public IDs are composed from the
+/// provider's current prefix even when a concurrent `providers:update` changed it after the
+/// caller's outer read (README §7.1). Overrides carry over from the stored rows by `upstream_id`;
 /// discovered models absent from the stored set vanish with their overrides.
 ///
-/// The composed public IDs undergo the same collision checks as
-/// [`super::update_provider`]: pairwise distinctness within the provider and
-/// no routing collision with any other model row; both rejections are ID-
-/// specific 409 conflicts that write nothing.
+/// The composed public IDs undergo the same collision checks as [`super::update_provider`]:
+/// pairwise distinctness within the provider and no routing collision with any other model row;
+/// both rejections are ID-specific 409 conflicts that write nothing.
 ///
 /// # Errors
 ///
@@ -290,39 +306,15 @@ async fn replace_provider_models(
     Ok(())
 }
 
-/// One `models:update` rewrite about to be applied transactionally: the
-/// row's complete desired override state (README §7.1) — every field
-/// total, the two override columns mirroring their nullable storage as
-/// `None` for "no override".
-pub(crate) struct ModelOverrideUpdate<'a> {
-    /// Owning provider's id, the lookup key.
-    pub(crate) provider_id: i64,
-
-    /// Exact upstream model identifier.
-    pub(crate) upstream_id: &'a str,
-
-    /// Public ID override; `None` composes the ID from the provider's
-    /// prefix.
-    pub(crate) id_override: Option<&'a str>,
-
-    /// Serving state.
-    pub(crate) is_enabled: bool,
-
-    /// Canonical thinking levels override in its stored JSON form; `None`
-    /// stores no override.
-    pub(crate) thinking_levels_override: Option<&'a str>,
-}
-
-/// Rewrites one model's override state and recomputes its public ID inside a
-/// single transaction, returning the updated row with its provider facts.
+/// Rewrites one model's override state and recomputes its public ID inside a single transaction,
+/// returning the updated row with its provider facts.
 ///
-/// The provider row is re-read inside the transaction, so the recomputed
-/// public ID uses the provider's current prefix even when a concurrent
-/// `providers:update` changed it after the caller's outer read; the stored
-/// model row and the routed-ID collision check observe the same snapshot.
-/// The collision check matches [`super::update_provider`]'s quality tier: an
-/// ID already routed by another model row yields a 409 naming the holder, and
-/// nothing is written. Unknown providers or models yield 404.
+/// The provider row is re-read inside the transaction, so the recomputed public ID uses the
+/// provider's current prefix even when a concurrent `providers:update` changed it after the
+/// caller's outer read; the stored model row and the routed-ID collision check observe the same
+/// snapshot. The collision check matches [`super::update_provider`]'s quality tier: an ID already
+/// routed by another model row yields a 409 naming the holder, and nothing is written. Unknown
+/// providers or models yield 404.
 ///
 /// # Errors
 ///

@@ -56,6 +56,7 @@ describe("toUpdateProviderRequest", () => {
             base_url: "https://upstream.example.com/v1",
             protocol: "openai_chat_completion",
         });
+
         // The row's own `id` is a response field; the gateway's strict parsing
         // rejects a body carrying it (README §4.6).
         expect("id" in request).toBe(false);
@@ -103,6 +104,7 @@ describe("toUpdateProviderRequest", () => {
             model_prefix: "acct-",
             is_enabled: true,
         });
+
         expect(openAiRequest).toEqual({
             type: "openai_oauth",
             provider_id: 5,
@@ -110,11 +112,13 @@ describe("toUpdateProviderRequest", () => {
             model_prefix: "acct-",
             is_enabled: true,
         });
+
         expect("credentials" in openAiRequest).toBe(false);
 
         const antigravityRequest = toUpdateProviderRequest(antigravityOauth, {
             name: "google",
         });
+
         expect(antigravityRequest).toEqual({
             type: "antigravity_oauth",
             provider_id: 6,
@@ -122,6 +126,7 @@ describe("toUpdateProviderRequest", () => {
             model_prefix: "",
             is_enabled: true,
         });
+
         expect("credentials" in antigravityRequest).toBe(false);
         // The OAuth variants carry no upstream fields and no expiry in a request.
         expect("expires_at" in antigravityRequest).toBe(false);

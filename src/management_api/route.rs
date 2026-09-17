@@ -1,41 +1,39 @@
-//! The management API route contract, the `route!` macro that declares every
-//! route in one place, and — under the `management-api-typescript-bindings`
-//! feature — the binding machinery the TypeScript bindings generator consumes.
+//! The management API route contract, the `route!` macro that declares every route in one place,
+//! and — under the `management-api-typescript-bindings` feature — the binding machinery the
+//! TypeScript bindings generator consumes.
 //!
-//! Nothing here belongs to a version: a version module owns its route
-//! registry and wraps `route!` to bind that registry, while this module owns
-//! the contract and the expansion both share. The version routers read the
-//! same [`Route`] constants, so a route's method, path, and payload types are
-//! written exactly once.
+//! Nothing here belongs to a version: a version module owns its route registry and wraps `route!`
+//! to bind that registry, while this module owns the contract and the expansion both share. The
+//! version routers read the same [`Route`] constants, so a route's method, path, and payload types
+//! are written exactly once.
 
-/// The contract of one management API route: the HTTP method and path it is
-/// served at, and the concrete wire payload types it exchanges. Every request
-/// and response payload is a named type unique across its version; a route
-/// that carries no request body declares an empty request struct. Routes are
-/// declared through their version's `route!` macro, never by hand.
+use http::Method;
+#[cfg(feature = "management-api-typescript-bindings")]
+use std::{any, any::TypeId, collections::HashSet};
+#[cfg(feature = "management-api-typescript-bindings")]
+use ts_rs::{Config, Dependency, TS, TypeVisitor};
+
+/// The contract of one management API route: the HTTP method and path it is served at, and the
+/// concrete wire payload types it exchanges. Every request and response payload is a named type
+/// unique across its version; a route that carries no request body declares an empty request
+/// struct. Routes are declared through their version's `route!` macro, never by hand.
 pub trait Route {
     /// HTTP method the route answers.
-    const METHOD: http::Method;
+    const METHOD: Method;
 
-    /// Path within the version's sub-router, such as `/providers:list`; the
-    /// version prefix is not part of it.
+    /// Path within the version's sub-router, such as `/providers:list`; the version prefix is not
+    /// part of it.
     const PATH: &'static str;
 
-    /// Request body type; an empty struct when the route carries no request
-    /// body.
+    /// Request body type; an empty struct when the route carries no request body.
     type Request;
 
     /// Success response body type.
     type Response;
 }
 
-#[cfg(feature = "management-api-typescript-bindings")]
-use std::{any::TypeId, collections::HashSet};
-#[cfg(feature = "management-api-typescript-bindings")]
-use ts_rs::{Config, Dependency, TS, TypeVisitor};
-
-/// One type of a payload's transitive closure as the bindings generator sees
-/// it: identity, TypeScript identifier, and the renderer of its declaration.
+/// One type of a payload's transitive closure as the bindings generator sees it: identity,
+/// TypeScript identifier, and the renderer of its declaration.
 #[cfg(feature = "management-api-typescript-bindings")]
 #[derive(Clone)]
 pub(super) struct ClosureType {
@@ -45,32 +43,31 @@ pub(super) struct ClosureType {
     /// TypeScript identifier of the type.
     pub(crate) ident: String,
 
-    /// Renders the type's declaration — doc comment included — as it appears
-    /// in the version's single bindings file.
+    /// Renders the type's declaration — doc comment included — as it appears in the version's
+    /// single bindings file.
     pub(crate) declaration: fn(&Config) -> String,
 }
 
-/// ts-rs-backed description of one request or response payload type, produced
-/// lazily because `TypeId` and TypeScript identifiers are not computable in a
-/// static initializer.
+/// ts-rs-backed description of one request or response payload type, produced lazily because
+/// `TypeId` and TypeScript identifiers are not computable in a static initializer.
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) struct PayloadBinding {
     /// Identity and TypeScript identifier of the payload type itself.
     pub(crate) root: (TypeId, String),
 
-    /// The payload type plus every type it transitively references; the walk
-    /// mirrors the one ts-rs's exporter performs, so every entry's declaration
-    /// is rendered into the version's bindings file.
+    /// The payload type plus every type it transitively references; the walk mirrors the one
+    /// ts-rs's exporter performs, so every entry's declaration is rendered into the version's
+    /// bindings file.
     pub(crate) closure: Vec<ClosureType>,
 }
 
-/// One route's registration in its version's registry, holding function
-/// pointers because a distributed-slice entry must be a static initializer
-/// and none of the ts-rs values are const-computable.
+/// One route's registration in its version's registry, holding function pointers because a
+/// distributed-slice entry must be a static initializer and none of the ts-rs values are
+/// const-computable.
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) struct RouteBinding {
     /// HTTP method the route answers.
-    pub(crate) method: fn() -> http::Method,
+    pub(crate) method: fn() -> Method,
 
     /// Path within its version's sub-router.
     pub(crate) path: &'static str,
@@ -82,28 +79,31 @@ pub(super) struct RouteBinding {
     pub(crate) response: fn(&Config) -> PayloadBinding,
 }
 
-/// One payload type a version's bindings export besides its route payloads,
-/// such as its error body; instantiated as `payload_binding::<T>`.
+/// One payload type a version's bindings export besides its route payloads, such as its error body;
+/// instantiated as `payload_binding::<T>`.
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) type PayloadSource = fn(&Config) -> PayloadBinding;
 
-/// One ordered vocabulary a version's bindings publish besides their route
-/// payloads: a closed unit-only enum whose variant order is itself a
-/// published fact, such as the canonical thinking levels' order of
-/// increasing reasoning strength. Instantiated as `ordered_vocabulary::<T>`.
+/// One ordered vocabulary a version's bindings publish besides their route payloads: a closed
+/// unit-only enum whose variant order is itself a published fact, such as the canonical thinking
+/// levels' order of increasing reasoning strength. Instantiated as `ordered_vocabulary::<T>`.
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) type OrderedVocabulary = fn(&Config) -> ClosureType;
 
 /// Provides the route's method as an owned value.
 #[cfg(feature = "management-api-typescript-bindings")]
-pub(super) fn route_method<R: Route>() -> http::Method {
+pub(super) fn route_method<R>() -> Method
+where
+    R: Route,
+{
     R::METHOD.clone()
 }
 
 /// Builds the request payload binding for one route.
 #[cfg(feature = "management-api-typescript-bindings")]
-pub(super) fn request_binding<R: Route>(config: &Config) -> PayloadBinding
+pub(super) fn request_binding<R>(config: &Config) -> PayloadBinding
 where
+    R: Route,
     R::Request: TS + 'static,
 {
     payload_binding::<R::Request>(config)
@@ -111,8 +111,9 @@ where
 
 /// Builds the response payload binding for one route.
 #[cfg(feature = "management-api-typescript-bindings")]
-pub(super) fn response_binding<R: Route>(config: &Config) -> PayloadBinding
+pub(super) fn response_binding<R>(config: &Config) -> PayloadBinding
 where
+    R: Route,
     R::Response: TS + 'static,
 {
     payload_binding::<R::Response>(config)
@@ -122,11 +123,13 @@ where
 ///
 /// # Panics
 ///
-/// Panics when the type carries no TypeScript declaration of its own, such as
-/// `()`; every route payload is a declared concrete type, so such a type is a
-/// fatal route-declaration bug.
+/// Panics when the type carries no TypeScript declaration of its own, such as `()`; every route
+/// payload is a declared concrete type, so such a type is a fatal route-declaration bug.
 #[cfg(feature = "management-api-typescript-bindings")]
-pub(super) fn payload_binding<T: TS + 'static>(config: &Config) -> PayloadBinding {
+pub(super) fn payload_binding<T>(config: &Config) -> PayloadBinding
+where
+    T: TS + 'static,
+{
     require_declared_payload::<T>(config);
 
     PayloadBinding {
@@ -135,12 +138,10 @@ pub(super) fn payload_binding<T: TS + 'static>(config: &Config) -> PayloadBindin
     }
 }
 
-/// Requires a payload type to be declarable: a named concrete type ts-rs
-/// renders a declaration for, an empty struct included. An inline-only type —
-/// `()` above all, which every route contract forbids as a payload — has no
-/// declaration and could only be referenced by the route table as an inline
-/// TypeScript spelling, so it is rejected here instead of rendering broken
-/// bindings.
+/// Requires a payload type to be declarable: a named concrete type ts-rs renders a declaration for,
+/// an empty struct included. An inline-only type — `()` above all, which every route contract
+/// forbids as a payload — has no declaration and could only be referenced by the route table as an
+/// inline TypeScript spelling, so it is rejected here instead of rendering broken bindings.
 ///
 /// # Panics
 ///
@@ -150,20 +151,26 @@ pub(super) fn payload_binding<T: TS + 'static>(config: &Config) -> PayloadBindin
     clippy::panic,
     reason = "an undeclarable payload type is a fatal route-declaration bug"
 )]
-fn require_declared_payload<T: TS + 'static>(config: &Config) {
+fn require_declared_payload<T>(config: &Config)
+where
+    T: TS + 'static,
+{
     if Dependency::from_ty::<T>(config).is_none() {
         panic!(
             "management payload type `{}` has no TypeScript declaration; \
              every route declares a concrete request and response type",
-            std::any::type_name::<T>(),
+            any::type_name::<T>(),
         );
     }
 }
 
-/// Collects `T` and every transitively referenced exportable type, as
-/// identities paired with TypeScript identifiers and declaration renderers.
+/// Collects `T` and every transitively referenced exportable type, as identities paired with
+/// TypeScript identifiers and declaration renderers.
 #[cfg(feature = "management-api-typescript-bindings")]
-fn type_closure<T: TS + 'static>(config: &Config) -> Vec<ClosureType> {
+fn type_closure<T>(config: &Config) -> Vec<ClosureType>
+where
+    T: TS + 'static,
+{
     struct Walk<'a> {
         config: &'a Config,
         seen: HashSet<TypeId>,
@@ -171,9 +178,12 @@ fn type_closure<T: TS + 'static>(config: &Config) -> Vec<ClosureType> {
     }
 
     impl TypeVisitor for Walk<'_> {
-        fn visit<T: TS + 'static + ?Sized>(&mut self) {
-            // Inline-only types such as primitives carry no declaration of
-            // their own, so they cannot participate in a name collision.
+        fn visit<T>(&mut self)
+        where
+            T: TS + 'static + ?Sized,
+        {
+            // Inline-only types such as primitives carry no declaration of their own, so they
+            // cannot participate in a name collision.
             if Dependency::from_ty::<T>(self.config).is_none()
                 || !self.seen.insert(TypeId::of::<T>())
             {
@@ -201,13 +211,19 @@ fn type_closure<T: TS + 'static>(config: &Config) -> Vec<ClosureType> {
     walk.visited
 }
 
-/// Builds the renderer of one closure type's declaration: the doc comment
-/// followed by the `export`-prefixed declaration, exactly as ts-rs writes it
-/// into a per-type file, minus the per-file scaffolding — note header and
-/// imports — that the version's single bindings file replaces.
+/// Builds the renderer of one closure type's declaration: the doc comment followed by the
+/// `export`-prefixed declaration, exactly as ts-rs writes it into a per-type file, minus the
+/// per-file scaffolding — note header and imports — that the version's single bindings file
+/// replaces.
 #[cfg(feature = "management-api-typescript-bindings")]
-fn declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
-    fn render<T: TS + 'static + ?Sized>(config: &Config) -> String {
+fn declaration<T>() -> fn(&Config) -> String
+where
+    T: TS + 'static + ?Sized,
+{
+    fn render<T>(config: &Config) -> String
+    where
+        T: TS + 'static + ?Sized,
+    {
         let mut rendered = T::docs().unwrap_or_default();
 
         rendered.push_str("export ");
@@ -219,18 +235,20 @@ fn declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
     render::<T>
 }
 
-/// Builds one ordered vocabulary's replacement declaration: the enum as a
-/// [`ClosureType`] like any payload's, whose declaration renders the
-/// variant-ordered const tuple plus the union derived from the tuple
-/// instead of ts-rs's union, so the Rust enum stays the single source of
-/// truth for both membership and order.
+/// Builds one ordered vocabulary's replacement declaration: the enum as a [`ClosureType`] like any
+/// payload's, whose declaration renders the variant-ordered const tuple plus the union derived from
+/// the tuple instead of ts-rs's union, so the Rust enum stays the single source of truth for both
+/// membership and order.
 ///
 /// # Panics
 ///
-/// Panics naming the type when its ts-rs declaration is not a unit-only
-/// enum's union; see [`union_members`].
+/// Panics naming the type when its ts-rs declaration is not a unit-only enum's union; see
+/// [`union_members`].
 #[cfg(feature = "management-api-typescript-bindings")]
-pub(super) fn ordered_vocabulary<T: TS + 'static>(config: &Config) -> ClosureType {
+pub(super) fn ordered_vocabulary<T>(config: &Config) -> ClosureType
+where
+    T: TS + 'static,
+{
     ClosureType {
         type_id: TypeId::of::<T>(),
         ident: T::ident(config),
@@ -238,20 +256,27 @@ pub(super) fn ordered_vocabulary<T: TS + 'static>(config: &Config) -> ClosureTyp
     }
 }
 
-/// Builds the renderer of one ordered vocabulary's declaration: the doc
-/// comment on the ordered const tuple carrying the vocabulary's canonical
-/// order, then the same doc comment again on the union derived from the
-/// tuple, so hovering either artifact in a client shows the vocabulary's
+/// Builds the renderer of one ordered vocabulary's declaration: the doc comment on the ordered
+/// const tuple carrying the vocabulary's canonical order, then the same doc comment again on the
+/// union derived from the tuple, so hovering either artifact in a client shows the vocabulary's
 /// documentation.
 #[cfg(feature = "management-api-typescript-bindings")]
-fn ordered_declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
-    fn render<T: TS + 'static + ?Sized>(config: &Config) -> String {
+fn ordered_declaration<T>() -> fn(&Config) -> String
+where
+    T: TS + 'static + ?Sized,
+{
+    fn render<T>(config: &Config) -> String
+    where
+        T: TS + 'static + ?Sized,
+    {
         let order_ident = order_const_ident(&T::ident(config));
+
         let order = union_members::<T>(config)
             .iter()
             .map(|member| format!("\"{member}\""))
             .collect::<Vec<_>>()
             .join(", ");
+
         let docs = T::docs().unwrap_or_default();
 
         format!(
@@ -264,9 +289,9 @@ fn ordered_declaration<T: TS + 'static + ?Sized>() -> fn(&Config) -> String {
     render::<T>
 }
 
-/// Derives the TypeScript identifier of one vocabulary's ordered const tuple
-/// from its type identifier: CamelCase becomes SCREAMING_SNAKE_CASE suffixed
-/// with `ORDER` — `ThinkingLevel` renders `THINKING_LEVEL_ORDER`.
+/// Derives the TypeScript identifier of one vocabulary's ordered const tuple from its type
+/// identifier: CamelCase becomes SCREAMING_SNAKE_CASE suffixed with `ORDER` — `ThinkingLevel`
+/// renders `THINKING_LEVEL_ORDER`.
 #[cfg(feature = "management-api-typescript-bindings")]
 fn order_const_ident(ident: &str) -> String {
     let mut rendered = String::with_capacity(ident.len() + "_ORDER".len());
@@ -284,23 +309,24 @@ fn order_const_ident(ident: &str) -> String {
     rendered
 }
 
-/// Extracts a unit-only enum's wire names, in variant order, from its ts-rs
-/// inline rendering — `"a" | "b"`, the union bare of any declaration wrapper;
-/// the union's member order is the variant order, so the tuple built from it
-/// carries the enum's canonical order.
+/// Extracts a unit-only enum's wire names, in variant order, from its ts-rs inline rendering — `"a"
+/// | "b"`, the union bare of any declaration wrapper; the union's member order is the variant
+/// order, so the tuple built from it carries the enum's canonical order.
 ///
 /// # Panics
 ///
-/// Panics naming the type when the inline rendering is not a union of quoted
-/// string literals — a struct, a tagged union, or a `repr(enum)` taxonomy
-/// defines no variant-ordered vocabulary to publish; an ordered vocabulary is
-/// a unit-only enum by contract.
+/// Panics naming the type when the inline rendering is not a union of quoted string literals — a
+/// struct, a tagged union, or a `repr(enum)` taxonomy defines no variant-ordered vocabulary to
+/// publish; an ordered vocabulary is a unit-only enum by contract.
 #[cfg(feature = "management-api-typescript-bindings")]
 #[expect(
     clippy::panic,
     reason = "a vocabulary type that is not a unit-only enum union is a fatal declaration bug"
 )]
-fn union_members<T: TS + 'static + ?Sized>(config: &Config) -> Vec<String> {
+fn union_members<T>(config: &Config) -> Vec<String>
+where
+    T: TS + 'static + ?Sized,
+{
     let inline = T::inline(config);
     let ident = T::ident(config);
 
@@ -324,14 +350,13 @@ fn union_members<T: TS + 'static + ?Sized>(config: &Config) -> Vec<String> {
     members
 }
 
-/// Declares one management API route: a marker type carrying its [`Route`]
-/// implementation and — under the `management-api-typescript-bindings`
-/// feature — its registration in `$registry`, the declaring version's route
-/// slice. The marker type is generated, exists only at the type level, and is
-/// named by `$route`.
+/// Declares one management API route: a marker type carrying its [`Route`] implementation and —
+/// under the `management-api-typescript-bindings` feature — its registration in `$registry`, the
+/// declaring version's route slice. The marker type is generated, exists only at the type level,
+/// and is named by `$route`.
 ///
-/// A version wraps this macro to bind its own registry, so a route
-/// declaration names neither the registry nor the version.
+/// A version wraps this macro to bind its own registry, so a route declaration names neither the
+/// registry nor the version.
 macro_rules! route {
     ($registry:path; $vis:vis impl Route for $route:ident {
         const METHOD: http::Method = $method:expr;

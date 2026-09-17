@@ -32,6 +32,7 @@ describe("reduceConnectionState", () => {
             status: "unconnected",
             notice: "previous failure",
         };
+
         expect(
             reduceConnectionState(stale, {
                 type: "storedConnectionLoaded",
@@ -48,6 +49,7 @@ describe("reduceConnectionState", () => {
             status: "unconnected",
             notice: "bad token",
         };
+
         expect(
             reduceConnectionState(failed, {
                 type: "connectionSubmitted",
@@ -55,6 +57,7 @@ describe("reduceConnectionState", () => {
         ).toEqual({
             status: "verifying",
         });
+
         expect(
             reduceConnectionState(initialConnectionState, {
                 type: "connectionSubmitted",
@@ -68,6 +71,7 @@ describe("reduceConnectionState", () => {
         const verifying: ConnectionState = {
             status: "verifying",
         };
+
         expect(
             reduceConnectionState(verifying, {
                 type: "connectionSubmitted",
@@ -78,6 +82,7 @@ describe("reduceConnectionState", () => {
             status: "connected",
             connection,
         };
+
         expect(
             reduceConnectionState(connected, {
                 type: "connectionSubmitted",
@@ -107,6 +112,7 @@ describe("reduceConnectionState", () => {
                 connection,
             }),
         ).toBe(initialConnectionState);
+
         expect(
             reduceConnectionState(
                 {
@@ -165,6 +171,7 @@ describe("reduceConnectionState", () => {
         const forgetting = {
             type: "connectionForgotten",
         } as const;
+
         expect(
             reduceConnectionState(
                 {
@@ -177,6 +184,7 @@ describe("reduceConnectionState", () => {
             status: "unconnected",
             notice: null,
         });
+
         expect(
             reduceConnectionState(
                 {
@@ -188,6 +196,7 @@ describe("reduceConnectionState", () => {
             status: "unconnected",
             notice: null,
         });
+
         expect(
             reduceConnectionState(
                 {

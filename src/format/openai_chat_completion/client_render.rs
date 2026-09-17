@@ -1,5 +1,5 @@
-//! Client-response rendering for the Chat Completions codec: renders IR
-//! events as Chat Completions SSE frames or an aggregated non-streaming body.
+//! Client-response rendering for the Chat Completions codec: renders IR events as Chat Completions
+//! SSE frames or an aggregated non-streaming body.
 
 use crate::{
     format::{self, ClientSseRenderer, OpenAiErrorBody, OpenAiErrorEnvelope},
@@ -8,6 +8,28 @@ use crate::{
     sse, unix_time,
 };
 use serde::Serialize;
+
+/// The aggregated, non-streaming Chat Completions response body.
+#[derive(Debug, Serialize)]
+pub(crate) struct ChatCompletionResponse {
+    /// Gateway-issued completion identifier.
+    id: String,
+
+    /// Object kind.
+    object: &'static str,
+
+    /// Unix creation timestamp.
+    created: i64,
+
+    /// Public model name the client addressed.
+    model: String,
+
+    /// The single served choice.
+    choices: Vec<ResponseChoice>,
+
+    /// Token accounting.
+    usage: TokenUsage,
+}
 
 /// Streaming client response renderer producing Chat Completions SSE frames.
 #[derive(Debug)]
@@ -24,24 +46,80 @@ pub(super) struct SseRenderer {
     /// Whether the leading role chunk was emitted.
     is_role_sent: bool,
 
-    /// Arguments already streamed, per opened tool-call index. An index's
-    /// presence marks its call as opened by a delta chunk; a done for an
-    /// index outside this map carries the complete call of an upstream
-    /// that never streamed deltas, so it renders as one full tool_calls
-    /// delta chunk. The accumulated prefixes let a conformant done render
-    /// exactly the argument suffix the live deltas did not deliver — a
-    /// done carries the complete arguments while an opening delta may
-    /// carry none of them — and let the renderer recognize a done whose
-    /// arguments the streamed bytes are not a prefix of (README §6.2).
+    /// Arguments already streamed, per opened tool-call index. An index's presence marks its call
+    /// as opened by a delta chunk; a done for an index outside this map carries the complete call
+    /// of an upstream that never streamed deltas, so it renders as one full tool_calls delta
+    /// chunk. The accumulated prefixes let a conformant done render exactly the argument suffix
+    /// the live deltas did not deliver — a done carries the complete arguments while an opening
+    /// delta may carry none of them — and let the renderer recognize a done whose arguments the
+    /// streamed bytes are not a prefix of (README §6.2).
     streamed_arguments: Vec<(usize, String)>,
 
     /// Whether the trailing usage chunk is wanted.
     should_include_usage: bool,
 
-    /// Latest token accounting observed; rendered once as the terminal
-    /// usage chunk, because the official stream shape carries usage only on
-    /// the final chunk before `[DONE]`.
+    /// Latest token accounting observed; rendered once as the terminal usage chunk, because the
+    /// official stream shape carries usage only on the final chunk before `[DONE]`.
     usage: Option<IrUsage>,
+}
+
+/// The single aggregated choice.
+#[derive(Debug, Serialize)]
+struct ResponseChoice {
+    /// Always 0: the gateway serves one choice per request.
+    index: u32,
+
+    /// The complete assistant message.
+    message: AssistantMessage,
+
+    /// Canonical finish reason; `stop` when the upstream reported none.
+    finish_reason: &'static str,
+}
+
+/// The complete aggregated assistant message.
+#[derive(Debug, Serialize)]
+struct AssistantMessage {
+    /// Always `assistant`.
+    role: &'static str,
+
+    /// The full assistant text, `null` for a turn that produced none.
+    content: Option<String>,
+
+    /// The full reasoning text, omitted for a turn that produced none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+
+    /// Completed tool calls, omitted when the turn made none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<MessageToolCall>,
+}
+
+/// One completed tool call of an aggregated message.
+#[derive(Debug, Serialize)]
+struct MessageToolCall {
+    /// Invocation identifier.
+    id: String,
+
+    /// Tool kind, `function`.
+    #[serde(rename = "type")]
+    tool_type: &'static str,
+
+    /// The complete function invocation.
+    function: MessageFunction,
+
+    /// Upstream thought signature the client must replay on the next turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
+}
+
+/// The complete function invocation of an aggregated tool call.
+#[derive(Debug, Serialize)]
+struct MessageFunction {
+    /// Invoked function name.
+    name: String,
+
+    /// Complete JSON-encoded arguments text.
+    arguments: String,
 }
 
 /// One streamed Chat Completions chunk (the `chat.completion.chunk` shape).
@@ -59,8 +137,8 @@ struct ChatCompletionChunk<'a> {
     /// Public model name echoed to the client.
     model: &'a str,
 
-    /// Per-choice deltas; empty on the terminal usage-only chunk, matching
-    /// the official stream shape.
+    /// Per-choice deltas; empty on the terminal usage-only chunk, matching the official stream
+    /// shape.
     choices: Vec<ChunkChoice>,
 
     /// Token accounting, carried only by the terminal usage-only chunk.
@@ -68,8 +146,8 @@ struct ChatCompletionChunk<'a> {
     usage: Option<TokenUsage>,
 }
 
-/// One streamed choice: the incremental delta beside the finish reason, which
-/// only the terminal content chunk carries.
+/// One streamed choice: the incremental delta beside the finish reason, which only the terminal
+/// content chunk carries.
 #[derive(Debug, Serialize)]
 struct ChunkChoice {
     /// Always 0: the gateway serves one choice per request.
@@ -82,9 +160,8 @@ struct ChunkChoice {
     finish_reason: Option<&'static str>,
 }
 
-/// The incremental delta of one chunk. Absent fields are omitted rather than
-/// rendered as `null`, exactly as the official stream shape carries them; the
-/// delta of the finishing chunk is empty.
+/// The incremental delta of one chunk. Absent fields are omitted rather than rendered as `null`,
+/// exactly as the official stream shape carries them; the delta of the finishing chunk is empty.
 #[derive(Debug, Default, Serialize)]
 struct Delta {
     /// Role announcement, carried by the leading chunk only.
@@ -95,9 +172,9 @@ struct Delta {
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
 
-    /// Reasoning text. Chat Completions has no official reasoning delta
-    /// field; `reasoning_content` is the de-facto key that reasoner-aware
-    /// OpenAI-compatible clients read (see DeepSeek's reasoning model guide).
+    /// Reasoning text. Chat Completions has no official reasoning delta field; `reasoning_content`
+    /// is the de-facto key that reasoner-aware OpenAI-compatible clients read (see DeepSeek's
+    /// reasoning model guide).
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
 
@@ -106,9 +183,9 @@ struct Delta {
     tool_calls: Option<Vec<DeltaToolCall>>,
 }
 
-/// One tool call opened or extended by a delta. The identity fields are
-/// carried by the chunk that first reveals the call; an established call
-/// carries only its index beside whatever this chunk adds.
+/// One tool call opened or extended by a delta. The identity fields are carried by the chunk that
+/// first reveals the call; an established call carries only its index beside whatever this chunk
+/// adds.
 #[derive(Debug, Serialize)]
 struct DeltaToolCall {
     /// Stable index of the call within the response.
@@ -131,8 +208,8 @@ struct DeltaToolCall {
     thought_signature: Option<String>,
 }
 
-/// The function fragment of a tool-call delta: the name when this chunk first
-/// reveals it, beside the argument bytes this chunk delivers.
+/// The function fragment of a tool-call delta: the name when this chunk first reveals it, beside
+/// the argument bytes this chunk delivers.
 #[derive(Debug, Serialize)]
 struct DeltaFunction {
     /// Invoked function name, revealed by the opening chunk.
@@ -143,9 +220,9 @@ struct DeltaFunction {
     arguments: String,
 }
 
-/// Token accounting in the flat Chat Completions shape, shared by the streamed
-/// terminal usage chunk and the aggregated response body so streamed and
-/// non-streamed clients observe byte-identical accounting (README §6.3).
+/// Token accounting in the flat Chat Completions shape, shared by the streamed terminal usage chunk
+/// and the aggregated response body so streamed and non-streamed clients observe byte-identical
+/// accounting (README §6.3).
 #[derive(Debug, Serialize)]
 struct TokenUsage {
     /// Tokens consumed by the input.
@@ -201,8 +278,8 @@ impl SseRenderer {
         sse::format_data_frame(&format::render_json(&chunk))
     }
 
-    /// Formats the terminal usage-only chunk carrying an empty choices
-    /// array, matching the official stream shape.
+    /// Formats the terminal usage-only chunk carrying an empty choices array, matching the official
+    /// stream shape.
     fn usage_frame(&self, usage: IrUsage) -> String {
         let chunk = ChatCompletionChunk {
             id: &self.id,
@@ -335,20 +412,15 @@ impl ClientSseRenderer for SseRenderer {
                     Some(streamed) => {
                         let mut frames = Vec::new();
 
-                        // The live deltas may have streamed only a prefix
-                        // of the done's complete arguments — an opening
-                        // delta alone carries none — so the done renders
-                        // exactly the un-streamed suffix; a done whose
-                        // arguments the deltas already streamed in full
-                        // renders no argument chunk. Third-party bytes can
-                        // diverge from that shape, and a residual cut from
-                        // a non-prefix offset would splice onto the
-                        // streamed prefix into arguments matching neither
-                        // the deltas nor the done, so `strip_prefix`
-                        // silently skips the residual argument frame of a
-                        // done whose arguments are not a superstring of
-                        // the streamed bytes (README §6.2); the skipped
-                        // done's other content still renders.
+                        // The live deltas may have streamed only a prefix of the done's complete
+                        // arguments — an opening delta alone carries none — so the done renders
+                        // exactly the un-streamed suffix; a done whose arguments the deltas already
+                        // streamed in full renders no argument chunk. Third-party bytes can diverge
+                        // from that shape, and a residual cut from a non-prefix offset would splice
+                        // onto the streamed prefix into arguments matching neither the deltas nor
+                        // the done, so `strip_prefix` silently skips the residual argument frame of
+                        // a done whose arguments are not a superstring of the streamed bytes
+                        // (README §6.2); the skipped done's other content still renders.
                         if let Some(unstreamed) = arguments.strip_prefix(streamed.as_str())
                             && !unstreamed.is_empty()
                         {
@@ -399,9 +471,8 @@ impl ClientSseRenderer for SseRenderer {
             }
 
             IrEvent::Usage(usage) => {
-                // Gemini upstreams attach cumulative usage to every stream
-                // chunk; the latest observation wins and renders once,
-                // terminally.
+                // Gemini upstreams attach cumulative usage to every stream chunk; the latest
+                // observation wins and renders once, terminally.
                 self.usage = Some(*usage);
 
                 Vec::new()
@@ -423,8 +494,7 @@ impl ClientSseRenderer for SseRenderer {
         }
     }
 
-    /// Renders a mid-stream error as a terminal SSE frame carrying the
-    /// OpenAI error envelope.
+    /// Renders a mid-stream error as a terminal SSE frame carrying the OpenAI error envelope.
     fn error_frame(&mut self, error: &OpenAiErrorBody) -> String {
         let envelope = OpenAiErrorEnvelope {
             error: OpenAiErrorBody {
@@ -439,89 +509,7 @@ impl ClientSseRenderer for SseRenderer {
     }
 }
 
-/// The aggregated, non-streaming Chat Completions response body.
-#[derive(Debug, Serialize)]
-pub(crate) struct ChatCompletionResponse {
-    /// Gateway-issued completion identifier.
-    id: String,
-
-    /// Object kind.
-    object: &'static str,
-
-    /// Unix creation timestamp.
-    created: i64,
-
-    /// Public model name the client addressed.
-    model: String,
-
-    /// The single served choice.
-    choices: Vec<ResponseChoice>,
-
-    /// Token accounting.
-    usage: TokenUsage,
-}
-
-/// The single aggregated choice.
-#[derive(Debug, Serialize)]
-struct ResponseChoice {
-    /// Always 0: the gateway serves one choice per request.
-    index: u32,
-
-    /// The complete assistant message.
-    message: AssistantMessage,
-
-    /// Canonical finish reason; `stop` when the upstream reported none.
-    finish_reason: &'static str,
-}
-
-/// The complete aggregated assistant message.
-#[derive(Debug, Serialize)]
-struct AssistantMessage {
-    /// Always `assistant`.
-    role: &'static str,
-
-    /// The full assistant text, `null` for a turn that produced none.
-    content: Option<String>,
-
-    /// The full reasoning text, omitted for a turn that produced none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_content: Option<String>,
-
-    /// Completed tool calls, omitted when the turn made none.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    tool_calls: Vec<MessageToolCall>,
-}
-
-/// One completed tool call of an aggregated message.
-#[derive(Debug, Serialize)]
-struct MessageToolCall {
-    /// Invocation identifier.
-    id: String,
-
-    /// Tool kind, `function`.
-    #[serde(rename = "type")]
-    tool_type: &'static str,
-
-    /// The complete function invocation.
-    function: MessageFunction,
-
-    /// Upstream thought signature the client must replay on the next turn.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thought_signature: Option<String>,
-}
-
-/// The complete function invocation of an aggregated tool call.
-#[derive(Debug, Serialize)]
-struct MessageFunction {
-    /// Invoked function name.
-    name: String,
-
-    /// Complete JSON-encoded arguments text.
-    arguments: String,
-}
-
-/// Renders an aggregated completion as a non-streaming Chat Completions
-/// response.
+/// Renders an aggregated completion as a non-streaming Chat Completions response.
 pub(super) fn render_json_response(
     model: &str,
     aggregation: &IrAggregation,

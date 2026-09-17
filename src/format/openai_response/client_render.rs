@@ -1,9 +1,8 @@
-//! Client-response rendering for the Responses codec: renders IR events as
-//! Responses SSE events or an aggregated non-streaming body.
+//! Client-response rendering for the Responses codec: renders IR events as Responses SSE events or
+//! an aggregated non-streaming body.
 //!
-//! Every rendered payload is a first-party type in the official Responses
-//! shape (README §6.3), so the wire contract lives in the type system rather
-//! than in assembled JSON.
+//! Every rendered payload is a first-party type in the official Responses shape (README §6.3), so
+//! the wire contract lives in the type system rather than in assembled JSON.
 
 use crate::{
     format::{self, ClientSseRenderer, OpenAiErrorBody},
@@ -13,6 +12,7 @@ use crate::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::mem;
 
 /// Sequence number of the first rendered event.
 const FIRST_SEQUENCE_NUMBER: u64 = 0;
@@ -56,13 +56,13 @@ pub(super) struct SseRenderer {
     /// Token accounting observed before completion.
     usage: Option<IrUsage>,
 
-    /// Finish reason reported before [`IrEvent::Done`], deciding whether the
-    /// terminal event is `response.completed` or `response.incomplete`.
+    /// Finish reason reported before [`IrEvent::Done`], deciding whether the terminal event is
+    /// `response.completed` or `response.incomplete`.
     finish: Option<IrFinishReason>,
 }
 
-/// An open text-bearing item — a reasoning summary or an assistant message —
-/// accumulating its text across deltas.
+/// An open text-bearing item — a reasoning summary or an assistant message — accumulating its text
+/// across deltas.
 #[derive(Debug)]
 struct OpenTextItem {
     /// Gateway-issued item identifier.
@@ -75,8 +75,8 @@ struct OpenTextItem {
     text: String,
 }
 
-/// A function call item tracked while its stream is in flight: the call as
-/// rendered so far beside its position in the output array.
+/// A function call item tracked while its stream is in flight: the call as rendered so far beside
+/// its position in the output array.
 #[derive(Debug)]
 struct TrackedCall {
     /// Position of the item within the output array.
@@ -128,10 +128,10 @@ enum OutputItem {
     FunctionCall(FunctionCallItem),
 }
 
-/// One function call output item. Every identity field is a string in the
-/// official shape (openai-python's `ResponseFunctionToolCallItem` types them
-/// without defaults), so an item opened before its identity is known carries
-/// empty strings until its done event stamps the authoritative values.
+/// One function call output item. Every identity field is a string in the official shape
+/// (openai-python's `ResponseFunctionToolCallItem` types them without defaults), so an item opened
+/// before its identity is known carries empty strings until its done event stamps the authoritative
+/// values.
 #[derive(Debug, Clone, Serialize)]
 struct FunctionCallItem {
     /// Gateway-issued item identifier.
@@ -140,8 +140,7 @@ struct FunctionCallItem {
     /// Item lifecycle status.
     status: ItemStatus,
 
-    /// Identifier of the invocation, round-tripped to the matching tool
-    /// result.
+    /// Identifier of the invocation, round-tripped to the matching tool result.
     call_id: String,
 
     /// Name of the invoked function.
@@ -194,8 +193,7 @@ enum SummaryPart {
     },
 }
 
-/// One content part of a rendered message item; the gateway renders text
-/// only.
+/// One content part of a rendered message item; the gateway renders text only.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum OutputTextPart {
@@ -204,28 +202,27 @@ enum OutputTextPart {
         /// Accumulated assistant text.
         text: String,
 
-        /// Official `annotations` field. The gateway never annotates output
-        /// text, so the array is always empty; its element shape is the
-        /// official OpenAI shape, which the gateway never renders.
+        /// Official `annotations` field. The gateway never annotates output text, so the array is
+        /// always empty; its element shape is the official OpenAI shape, which the gateway never
+        /// renders.
         annotations: Vec<Value>,
 
-        /// Official `logprobs` field. The gateway tracks no token
-        /// probabilities, so the array is always empty; its element shape is
-        /// the official OpenAI shape, which the gateway never renders.
+        /// Official `logprobs` field. The gateway tracks no token probabilities, so the array is
+        /// always empty; its element shape is the official OpenAI shape, which the gateway never
+        /// renders.
         logprobs: Vec<Value>,
     },
 }
 
-/// The official Response object, shared by every rendered response —
-/// streaming and non-streaming — and by the `response.failed` error frame.
+/// The official Response object, shared by every rendered response — streaming and non-streaming —
+/// and by the `response.failed` error frame.
 ///
-/// `parallel_tool_calls`, `tool_choice`, and `tools` are required fields of
-/// the official Response shape (openai-python `Response` types them without
-/// defaults), so the shell always carries the statics describing the gateway
-/// itself: it advertises no parallel tool-call control, tool calls happen
-/// whenever the model decides (`auto`), and no tool definitions are echoed
-/// back to the client. `usage`, `incomplete_details`, and `error` are carried
-/// by the events that report them and omitted elsewhere.
+/// `parallel_tool_calls`, `tool_choice`, and `tools` are required fields of the official Response
+/// shape (openai-python `Response` types them without defaults), so the shell always carries the
+/// statics describing the gateway itself: it advertises no parallel tool-call control, tool calls
+/// happen whenever the model decides (`auto`), and no tool definitions are echoed back to the
+/// client. `usage`, `incomplete_details`, and `error` are carried by the events that report them
+/// and omitted elsewhere.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ResponseObject {
     /// Gateway-issued response identifier.
@@ -252,18 +249,15 @@ pub(crate) struct ResponseObject {
     /// Always `auto`: the model decides whether to call tools.
     tool_choice: &'static str,
 
-    /// Always empty: the gateway echoes no tool definitions back to the
-    /// client. The element shape is the official OpenAI tool shape, which the
-    /// gateway never renders here.
+    /// Always empty: the gateway echoes no tool definitions back to the client. The element shape
+    /// is the official OpenAI tool shape, which the gateway never renders here.
     tools: Vec<Value>,
 
-    /// Token accounting, carried by the terminal event and the aggregated
-    /// body.
+    /// Token accounting, carried by the terminal event and the aggregated body.
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<ResponseUsage>,
 
-    /// Why the response is incomplete, carried only by an incomplete
-    /// response.
+    /// Why the response is incomplete, carried only by an incomplete response.
     #[serde(skip_serializing_if = "Option::is_none")]
     incomplete_details: Option<IncompleteDetails>,
 
@@ -274,11 +268,10 @@ pub(crate) struct ResponseObject {
 
 /// Token accounting in the official Responses shape.
 ///
-/// openai-python's `ResponseUsage` types all five fields as required — the two
-/// detail objects included, their inner integers too (official OpenAPI schema:
-/// `input_tokens_details` requires `cached_tokens` and `cache_write_tokens`,
-/// `output_tokens_details` requires `reasoning_tokens`) — so the details are
-/// always carried, zero-filled when the upstream reported no breakdown.
+/// openai-python's `ResponseUsage` types all five fields as required — the two detail objects
+/// included, their inner integers too (official OpenAPI schema: `input_tokens_details` requires
+/// `cached_tokens` and `cache_write_tokens`, `output_tokens_details` requires `reasoning_tokens`) —
+/// so the details are always carried, zero-filled when the upstream reported no breakdown.
 #[derive(Debug, Clone, Serialize)]
 struct ResponseUsage {
     /// Tokens consumed by the input.
@@ -339,17 +332,15 @@ struct IncompleteDetails {
     reason: &'static str,
 }
 
-/// The envelope every rendered SSE event carries: the event name as the
-/// payload's `type` discriminator and the event's sequence number, wrapped
-/// around the event's own fields.
+/// The envelope every rendered SSE event carries: the event name as the payload's `type`
+/// discriminator and the event's sequence number, wrapped around the event's own fields.
 ///
-/// The payload carries `type` because strict clients — openai-python's
-/// `ResponseStreamEvent` union and openai/codex's serde type-tagged enum —
-/// discriminate events on the JSON payload, not the `event:` line.
+/// The payload carries `type` because strict clients — openai-python's `ResponseStreamEvent` union
+/// and openai/codex's serde type-tagged enum — discriminate events on the JSON payload, not the
+/// `event:` line.
 #[derive(Debug, Serialize)]
 struct EventEnvelope<'a, T> {
-    /// Event name, rendered both on the `event:` line and as the payload's
-    /// `type`.
+    /// Event name, rendered both on the `event:` line and as the payload's `type`.
     #[serde(rename = "type")]
     event_type: &'a str,
 
@@ -361,8 +352,7 @@ struct EventEnvelope<'a, T> {
     payload: T,
 }
 
-/// Payload of the five response-level events: the response object as it
-/// stands.
+/// Payload of the five response-level events: the response object as it stands.
 #[derive(Debug, Serialize)]
 struct ResponseEvent {
     /// The response object.
@@ -379,8 +369,7 @@ struct OutputItemEvent {
     item: OutputItem,
 }
 
-/// Payload of `response.reasoning_summary_part.added` and
-/// `response.reasoning_summary_part.done`.
+/// Payload of `response.reasoning_summary_part.added` and `response.reasoning_summary_part.done`.
 #[derive(Debug, Serialize)]
 struct ReasoningSummaryPartEvent {
     /// Identifier of the reasoning item.
@@ -527,8 +516,8 @@ impl SseRenderer {
         }
     }
 
-    /// Closes any open reasoning or message items, emitting their done event
-    /// sequences and recording the completed items.
+    /// Closes any open reasoning or message items, emitting their done event sequences and
+    /// recording the completed items.
     fn close_open_items(&mut self) -> Vec<String> {
         let mut frames = Vec::new();
 
@@ -646,8 +635,8 @@ impl SseRenderer {
         }
     }
 
-    /// Formats one SSE frame with the given event name and typed payload,
-    /// assigning the next sequence number.
+    /// Formats one SSE frame with the given event name and typed payload, assigning the next
+    /// sequence number.
     fn event_frame<T>(&mut self, event_name: &'static str, payload: T) -> String
     where
         T: Serialize,
@@ -806,9 +795,9 @@ impl ClientSseRenderer for SseRenderer {
                         output_index,
                         content_index: PRIMARY_INDEX,
                         delta: delta.clone(),
-                        // `logprobs` is a required field of the official event
-                        // shape (openai-python `ResponseTextDeltaEvent`), so
-                        // the gateway always carries it, empty when untracked.
+                        // `logprobs` is a required field of the official event shape (openai-python
+                        // `ResponseTextDeltaEvent`), so the gateway always carries it, empty when
+                        // untracked.
                         logprobs: Vec::new(),
                     },
                 ));
@@ -837,18 +826,14 @@ impl ClientSseRenderer for SseRenderer {
 
                         self.next_output_index += 1;
 
-                        // A delta may open the item without revealing its
-                        // identity: a bare
-                        // `response.function_call_arguments.delta`
-                        // with no preceding `output_item.added`, or a Chat
-                        // Completions delta whose first tool-call entry
-                        // carries only arguments, arrives exactly so. Every
-                        // identity field of the official function_call item
-                        // is a required string, so unknown identity renders
-                        // as empty strings — the same defaults the done
-                        // path's recovery branch opens with — until the done
-                        // event stamps the real `call_id`, `name`, and
-                        // `arguments`.
+                        // A delta may open the item without revealing its identity: a bare
+                        // `response.function_call_arguments.delta` with no preceding
+                        // `output_item.added`, or a Chat Completions delta whose first tool-call
+                        // entry carries only arguments, arrives exactly so. Every identity field of
+                        // the official function_call item is a required string, so unknown identity
+                        // renders as empty strings — the same defaults the done path's recovery
+                        // branch opens with — until the done event stamps the real `call_id`,
+                        // `name`, and `arguments`.
                         let item = FunctionCallItem {
                             id: item_id.clone(),
                             status: ItemStatus::InProgress,
@@ -903,14 +888,12 @@ impl ClientSseRenderer for SseRenderer {
                     Some(position) => (self.calls.swap_remove(position).1, Vec::new()),
 
                     None => {
-                        // A third-party upstream may deliver
-                        // `output_item.done` for a call it never revealed
-                        // with `output_item.added` or argument deltas — the
-                        // recovery class of README §6.3. The done payload
-                        // carries the complete call, so the item is opened
-                        // here exactly as a live delta would have opened it;
-                        // dropping it would lose the call only on the
-                        // streaming path, while aggregation keeps it.
+                        // A third-party upstream may deliver `output_item.done` for a call it never
+                        // revealed with `output_item.added` or argument deltas — the recovery class
+                        // of README §6.3. The done payload carries the complete call, so the item
+                        // is opened here exactly as a live delta would have opened it; dropping it
+                        // would lose the call only on the streaming path, while aggregation keeps
+                        // it.
                         let item_id = format!("fc_{}", ids::new_uuid());
                         let output_index = self.next_output_index;
 
@@ -999,7 +982,7 @@ impl ClientSseRenderer for SseRenderer {
             IrEvent::Done => {
                 let mut frames = self.close_open_items();
 
-                let mut completed_items = std::mem::take(&mut self.completed_items);
+                let mut completed_items = mem::take(&mut self.completed_items);
 
                 completed_items.sort_by_key(|tracked| tracked.output_index);
 
@@ -1010,10 +993,9 @@ impl ClientSseRenderer for SseRenderer {
 
                 let usage = self.usage.unwrap_or_default();
 
-                // A Length/ContentFilter finish must surface as
-                // `response.incomplete` with `incomplete_details.reason`, so
-                // strict clients can tell a truncated response from a full
-                // one.
+                // A Length/ContentFilter finish must surface as `response.incomplete` with
+                // `incomplete_details.reason`, so strict clients can tell a truncated response from
+                // a full one.
                 let incomplete_reason = self.finish.and_then(incomplete_details_reason);
 
                 let terminal_event = if incomplete_reason.is_some() {
@@ -1045,9 +1027,8 @@ impl ClientSseRenderer for SseRenderer {
 
     /// Renders a mid-stream error as a terminal `response.failed` event.
     ///
-    /// Strict clients validate the embedded response object like any other,
-    /// so it carries the full required shell rather than a bare
-    /// id/status/error subset.
+    /// Strict clients validate the embedded response object like any other, so it carries the full
+    /// required shell rather than a bare id/status/error subset.
     fn error_frame(&mut self, error: &OpenAiErrorBody) -> String {
         let mut shell = self.response_shell(ResponseStatus::Failed, Vec::new());
 
@@ -1121,8 +1102,8 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
     }
 }
 
-/// Renders the `incomplete_details.reason` string for a finish reason that
-/// marks an incomplete response; [`None`] for complete responses.
+/// Renders the `incomplete_details.reason` string for a finish reason that marks an incomplete
+/// response; [`None`] for complete responses.
 fn incomplete_details_reason(reason: IrFinishReason) -> Option<&'static str> {
     match reason {
         IrFinishReason::Length => Some("max_output_tokens"),
@@ -1135,7 +1116,12 @@ fn incomplete_details_reason(reason: IrFinishReason) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{SseRenderer, render_json_response};
+    use crate::{
+        format::ClientSseRenderer as _,
+        ir::{IrAggregation, IrEvent, IrUsage},
+    };
+    use serde_json::Value;
 
     /// Parses the JSON payload of the last rendered SSE frame.
     ///
@@ -1157,8 +1143,7 @@ mod tests {
         serde_json::from_str(data.trim_end()).expect("frame data is rendered JSON")
     }
 
-    /// Parses the JSON payload of the first rendered frame carrying
-    /// `event_name`.
+    /// Parses the JSON payload of the first rendered frame carrying `event_name`.
     ///
     /// # Panics
     ///
@@ -1179,14 +1164,12 @@ mod tests {
         serde_json::from_str(data.trim_end()).expect("frame data is rendered JSON")
     }
 
-    /// A tool-call delta opening a never-announced item — the recovery shape
-    /// a bare `response.function_call_arguments.delta` upstream event or a
-    /// Chat Completions delta carrying only arguments renders — emits an
-    /// `output_item.added` function_call whose `call_id` and `name` are
-    /// strings, empty when unknown: openai-python's
-    /// `ResponseFunctionToolCallItem` requires both as strings with no
-    /// defaults, so a `null` or missing field would fail a strict typed
-    /// client on the transient item before the done event repairs it.
+    /// A tool-call delta opening a never-announced item — the recovery shape a bare
+    /// `response.function_call_arguments.delta` upstream event or a Chat Completions delta carrying
+    /// only arguments renders — emits an `output_item.added` function_call whose `call_id` and
+    /// `name` are strings, empty when unknown: openai-python's `ResponseFunctionToolCallItem`
+    /// requires both as strings with no defaults, so a `null` or missing field would fail a strict
+    /// typed client on the transient item before the done event repairs it.
     ///
     /// # Panics
     ///
@@ -1235,9 +1218,9 @@ mod tests {
         );
     }
 
-    /// The streaming terminal event renders the full official usage shape:
-    /// openai-python's `ResponseUsage` requires all five fields including both
-    /// detail objects, so upstream-reported breakdowns ride through intact.
+    /// The streaming terminal event renders the full official usage shape: openai-python's
+    /// `ResponseUsage` requires all five fields including both detail objects, so upstream-reported
+    /// breakdowns ride through intact.
     ///
     /// # Panics
     ///
@@ -1281,9 +1264,9 @@ mod tests {
         );
     }
 
-    /// Breakdowns absent from the upstream — every cross-format upstream, and
-    /// any Responses upstream that reports totals only — render zero-filled,
-    /// because strict SDK consumers require the detail fields to be present.
+    /// Breakdowns absent from the upstream — every cross-format upstream, and any Responses
+    /// upstream that reports totals only — render zero-filled, because strict SDK consumers require
+    /// the detail fields to be present.
     ///
     /// # Panics
     ///

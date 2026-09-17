@@ -1,9 +1,9 @@
 //! OpenAI Responses protocol codec.
 //!
-//! Serves the outward `POST /responses` endpoint and speaks the
-//! `openai_response` upstream protocol (including the Codex backend).
+//! Serves the outward `POST /responses` endpoint and speaks the `openai_response` upstream protocol
+//! (including the Codex backend).
 
-use self::client_render::SseRenderer;
+use self::client_render::{ResponseObject, SseRenderer};
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest},
     ir::{InvalidRequest, IrAggregation},
@@ -24,7 +24,7 @@ pub(crate) use self::{
 pub(crate) struct Format;
 
 impl ClientFormat for Format {
-    type JsonResponse = client_render::ResponseObject;
+    type JsonResponse = ResponseObject;
 
     fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
         request_parse::parse_request(body)

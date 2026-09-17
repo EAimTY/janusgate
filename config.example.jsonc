@@ -1,14 +1,19 @@
 {
-    // Minimum log severity emitted to stderr (off, error, warn, info, debug, trace).
+    // Minimum log severity emitted to stderr (off, error, warn, info, debug,
+    // trace). Defaults to "info" when omitted.
     "log_level": "info",
 
-    // Listen address and port (host:port).
+    // Listen IP address and port (IP:port, e.g. "127.0.0.1:8080"). An IP
+    // literal only: DNS names are rejected, because a listener address is a
+    // local binding fact.
     "listen": "0.0.0.0:8080",
 
     // Inbound TLS termination. When present, the listener serves HTTPS using
     // the PEM certificate chain and private key loaded from these paths; when
     // absent, the listener serves plaintext HTTP. Placeholder paths that MUST
-    // be replaced with real files before deployment.
+    // be replaced with real files before deployment. Changes to the
+    // configuration file and to these files are watched and applied without a
+    // restart; see README §8.
     "tls": {
         // PEM certificate chain file path, leaf certificate first.
         "certificate": "certificate.pem",
@@ -20,8 +25,10 @@
         // Path to the in-process Turso SQLite database file.
         "path": "janusgate.db",
         // Maximum number of concurrent database connections in the pool.
+        // Defaults to 4 when omitted.
         "max_connections": 4,
         // Maximum time in milliseconds to wait for a free pool connection.
+        // Defaults to 5000 when omitted.
         "pool_timeout": 5000
     },
 
@@ -30,6 +37,9 @@
         // Placeholder value that MUST be replaced with a real secret before
         // deployment; the gateway performs no placeholder detection.
         "token": "CHANGE_ME_MANAGEMENT_TOKEN",
+        // Both cors fields — and the whole cors object — may be omitted:
+        // allowed_origin then defaults to [] (no cross-origin requests) and
+        // allow_private_network to false.
         "cors": {
             // Origin(s) permitted for cross-origin requests. A single string
             // (e.g. "*", "https://dashboard.example.com") or list of strings
@@ -46,6 +56,9 @@
         // Placeholder value that MUST be replaced with a real secret before
         // deployment; the gateway performs no placeholder detection.
         "key": "CHANGE_ME_API_KEY",
+        // Both cors fields — and the whole cors object — may be omitted:
+        // allowed_origin then defaults to [] (no cross-origin requests) and
+        // allow_private_network to false.
         "cors": {
             // Origin(s) permitted for cross-origin requests. A single string
             // (e.g. "*", "https://chat.example.com") or list of strings

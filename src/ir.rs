@@ -1,59 +1,19 @@
 //! Intermediate representation shared by every protocol translation.
 //!
-//! Client requests parse into an [`IrRequest`]; every upstream response —
-//! streamed or buffered — parses into a sequence of [`IrEvent`] values; every
-//! client response renders from IR.
+//! Client requests parse into an [`IrRequest`]; every upstream response — streamed or buffered —
+//! parses into a sequence of [`IrEvent`] values; every client response renders from IR.
 
-/// A client request failed validation: the request is malformed, carries an
-/// unsupported value, or names an unknown field.
-///
-/// One type shared by every request validator — the format codecs, the IR
-/// parsing helpers, and the management surface's thinking-levels validation
-/// through [`parse_thinking_levels`] — so each HTTP surface renders it in its
-/// own contract. It never carries a status or wire code: those belong to the
-/// surfaces.
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
-pub(crate) struct InvalidRequest {
-    /// Offending request parameter, when the rejection names one.
-    pub(crate) param: Option<String>,
-
-    /// Human-readable rejection message.
-    message: String,
-}
-
-impl InvalidRequest {
-    /// Builds a rejection of the request as a whole.
-    pub(crate) fn request(message: impl Into<String>) -> Self {
-        Self {
-            param: None,
-            message: message.into(),
-        }
-    }
-
-    /// Builds a rejection naming the offending parameter.
-    pub(crate) fn field(param: &str, message: impl Into<String>) -> Self {
-        Self {
-            param: Some(param.to_string()),
-            message: message.into(),
-        }
-    }
-
-    /// Builds a rejection from a body that is not valid JSON.
-    pub(crate) fn from_json(error: serde_json::Error) -> Self {
-        Self::request(format!("Invalid JSON body: {error}"))
-    }
-}
+use serde::{Deserialize, Serialize, Serializer};
+use serde_json::{Error as JsonError, Value};
 
 /// Canonical thinking levels, ordered by increasing reasoning strength.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-// The wire names are the canonical level names rendered by the manual serde
-// implementation below, so the TypeScript union must rename identically. The
-// type itself sheds the module-internal `Ir` prefix under its binding name:
-// it is the one wire type whose Rust name carries one, and the prefix never
-// reaches frontend code.
+// The wire names are the canonical level names rendered by the manual serde implementation below,
+// so the TypeScript union must rename identically. The type itself sheds the module-internal `Ir`
+// prefix under its binding name: it is the one wire type whose Rust name carries one, and the
+// prefix never reaches frontend code.
 #[cfg_attr(
     feature = "management-api-typescript-bindings",
     ts(rename = "ThinkingLevel", rename_all = "lowercase")
@@ -72,12 +32,28 @@ pub enum IrReasoningEffort {
     High,
 }
 
+/// A client request failed validation: the request is malformed, carries an unsupported value, or
+/// names an unknown field.
+///
+/// One type shared by every request validator — the format codecs, the IR parsing helpers, and the
+/// management surface's thinking-levels validation through [`parse_thinking_levels`] — so each HTTP
+/// surface renders it in its own contract. It never carries a status or wire code: those belong to
+/// the surfaces.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub(crate) struct InvalidRequest {
+    /// Offending request parameter, when the rejection names one.
+    pub(crate) param: Option<String>,
+
+    /// Human-readable rejection message.
+    message: String,
+}
+
 impl IrReasoningEffort {
-    /// Parses a client-supplied OpenAI effort string from the closed
-    /// vocabulary `none | minimal | low | medium | high`; `none` and
-    /// `minimal` both map to [`IrReasoningEffort::Off`], the canonical
-    /// no-reasoning level. `xhigh` has no canonical target that would not
-    /// silently downgrade an explicit request, so it stays rejected.
+    /// Parses a client-supplied OpenAI effort string from the closed vocabulary `none | minimal |
+    /// low | medium | high`; `none` and `minimal` both map to [`IrReasoningEffort::Off`], the
+    /// canonical no-reasoning level. `xhigh` has no canonical target that would not silently
+    /// downgrade an explicit request, so it stays rejected.
     pub(crate) fn parse_openai(value: &str) -> Option<Self> {
         match value {
             "none" | "minimal" => Some(Self::Off),
@@ -129,9 +105,8 @@ impl IrReasoningEffort {
         }
     }
 
-    /// Clamps this level into the allowed set: lowered to the nearest allowed
-    /// level at or below it, or raised to the lowest allowed level when none
-    /// is at or below it.
+    /// Clamps this level into the allowed set: lowered to the nearest allowed level at or below it,
+    /// or raised to the lowest allowed level when none is at or below it.
     ///
     /// # Panics
     ///
@@ -159,15 +134,37 @@ impl IrReasoningEffort {
     }
 }
 
-/// Serializes a canonical level as its canonical name, so a level array is
-/// exactly the `thinking_levels_override` wire form rendered by
-/// `render_thinking_levels` and parsed by
+impl InvalidRequest {
+    /// Builds a rejection of the request as a whole.
+    pub(crate) fn request(message: impl Into<String>) -> Self {
+        Self {
+            param: None,
+            message: message.into(),
+        }
+    }
+
+    /// Builds a rejection naming the offending parameter.
+    pub(crate) fn field(param: &str, message: impl Into<String>) -> Self {
+        Self {
+            param: Some(param.to_string()),
+            message: message.into(),
+        }
+    }
+
+    /// Builds a rejection from a body that is not valid JSON.
+    pub(crate) fn from_json(error: JsonError) -> Self {
+        Self::request(format!("Invalid JSON body: {error}"))
+    }
+}
+
+/// Serializes a canonical level as its canonical name, so a level array is exactly the
+/// `thinking_levels_override` wire form rendered by `render_thinking_levels` and parsed by
 /// `parse_stored_thinking_levels_override`. The name is defined once, in
 /// `IrReasoningEffort::to_canonical`.
-impl serde::Serialize for IrReasoningEffort {
+impl Serialize for IrReasoningEffort {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         serializer.serialize_str(self.to_canonical())
     }
@@ -219,13 +216,13 @@ pub(crate) enum IrImage {
 }
 
 impl IrImage {
-    /// Parses a client-supplied image reference: a `data:<mime>;base64,<data>`
-    /// URL becomes inline data, an `http`/`https` URL stays remote.
+    /// Parses a client-supplied image reference: a `data:<mime>;base64,<data>` URL becomes inline
+    /// data, an `http`/`https` URL stays remote.
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidRequest`] for schemes other than `data:`, `http:`, and
-    /// `https:`, and for malformed data URLs.
+    /// Returns [`InvalidRequest`] for schemes other than `data:`, `http:`, and `https:`, and for
+    /// malformed data URLs.
     pub(crate) fn from_url(url: &str) -> Result<Self, InvalidRequest> {
         if let Some(rest) = url.strip_prefix("data:") {
             let (metadata, data) = rest.split_once(',').ok_or_else(|| {
@@ -252,9 +249,8 @@ impl IrImage {
         ))
     }
 
-    /// Renders the image back into the OpenAI `image_url` form shared by the
-    /// Chat Completions and Responses codecs; the inverse of
-    /// [`IrImage::from_url`].
+    /// Renders the image back into the OpenAI `image_url` form shared by the Chat Completions and
+    /// Responses codecs; the inverse of [`IrImage::from_url`]..
     pub(crate) fn to_url(&self) -> String {
         match self {
             Self::Inline {
@@ -284,8 +280,7 @@ pub(crate) enum IrPart {
 
     /// An assistant tool invocation.
     ToolCall {
-        /// Identifier of the invocation, round-tripped to the matching tool
-        /// output.
+        /// Identifier of the invocation, round-tripped to the matching tool output.
         call_id: String,
 
         /// Name of the invoked function.
@@ -328,7 +323,7 @@ pub(crate) struct IrTool {
     pub(crate) description: Option<String>,
 
     /// JSON Schema of the accepted arguments.
-    pub(crate) parameters: Option<serde_json::Value>,
+    pub(crate) parameters: Option<Value>,
 }
 
 /// Restriction on which tool the model may call.
@@ -365,7 +360,7 @@ pub(crate) enum IrResponseFormat {
         name: String,
 
         /// JSON Schema of the response.
-        schema: serde_json::Value,
+        schema: Value,
     },
 }
 
@@ -399,8 +394,8 @@ pub(crate) struct IrRequest {
     /// Response format restriction.
     pub(crate) response_format: Option<IrResponseFormat>,
 
-    /// Canonical reasoning level requested by the client, before any
-    /// `thinking_levels_override` filtering.
+    /// Canonical reasoning level requested by the client, before any `thinking_levels_override`
+    /// filtering.
     pub(crate) reasoning_effort: Option<IrReasoningEffort>,
 }
 
@@ -461,19 +456,18 @@ pub(crate) enum IrEvent {
     /// Token accounting.
     Usage(IrUsage),
 
-    /// Terminal marker; always appended by the gateway after the upstream
-    /// response is fully consumed, never by parsers.
+    /// Terminal marker; always appended by the gateway after the upstream response is fully
+    /// consumed, never by parsers.
     Done,
 }
 
 /// Token accounting of a completion.
 ///
-/// The breakdown values mirror the official Responses usage detail objects:
-/// `cached_tokens` and `cache_write_tokens` detail the input, and
-/// `reasoning_tokens` details the output. They are [`None`] when the upstream
-/// reports no breakdown — every Chat Completions upstream, and any Responses
-/// upstream that reports totals only — so the outward Responses rendering can
-/// zero-fill the SDK-required detail fields.
+/// The breakdown values mirror the official Responses usage detail objects: `cached_tokens` and
+/// `cache_write_tokens` detail the input, and `reasoning_tokens` details the output. They are
+/// [`None`] when the upstream reports no breakdown — every Chat Completions upstream, and any
+/// Responses upstream that reports totals only — so the outward Responses rendering can zero-fill
+/// the SDK-required detail fields.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct IrUsage {
     /// Tokens consumed by the input.
@@ -534,12 +528,11 @@ pub(crate) struct Aggregator {
     aggregation: IrAggregation,
 
     /// Arguments accumulated per in-flight tool call index; consulted when a
-    /// [`IrEvent::ToolCallDone`] arrives without assembled `arguments` of its
-    /// own.
+    /// [`IrEvent::ToolCallDone`] arrives without assembled `arguments` of its own.
     pending_arguments: Vec<(usize, String)>,
 
-    /// Tool call indexes already completed in this aggregation; a repeated
-    /// done for one of them is ignored.
+    /// Tool call indexes already completed in this aggregation; a repeated done for one of them is
+    /// ignored.
     completed_call_indexes: Vec<usize>,
 }
 
@@ -547,10 +540,9 @@ impl Aggregator {
     /// Ingests one event, updating the aggregation in place.
     pub(crate) fn ingest(&mut self, event: &IrEvent) {
         match event {
-            // MessageStart carries the upstream identity only as the
-            // streaming renderers' start signal; aggregation records nothing
-            // from it — the outward responses carry renderer-minted
-            // identifiers.
+            // MessageStart carries the upstream identity only as the streaming renderers' start
+            // signal; aggregation records nothing from it — the outward responses carry
+            // renderer-minted identifiers.
             IrEvent::MessageStart { .. } | IrEvent::Done => {}
 
             IrEvent::TextDelta(delta) => self.aggregation.text.push_str(delta),
@@ -582,17 +574,17 @@ impl Aggregator {
                 arguments,
                 thought_signature,
             } => {
-                // Conformant streams complete each call index exactly once; a
-                // repeated done for an already-completed index is ignored, so
-                // a duplicating upstream cannot double-deliver a call.
+                // Conformant streams complete each call index exactly once; a repeated done for an
+                // already-completed index is ignored, so a duplicating upstream cannot
+                // double-deliver a call.
                 if !self.completed_call_indexes.contains(index) {
                     self.completed_call_indexes.push(*index);
 
                     let accumulated = self.take_pending_arguments(*index);
 
-                    // Upstreams normally assemble the complete arguments in
-                    // the done event itself; when one arrives without them,
-                    // the streamed deltas are the authoritative arguments.
+                    // Upstreams normally assemble the complete arguments in the done event itself;
+                    // when one arrives without them, the streamed deltas are the authoritative
+                    // arguments.
                     let arguments = if arguments.is_empty() {
                         accumulated
                     } else {
@@ -614,14 +606,12 @@ impl Aggregator {
         }
     }
 
-    /// Consumes the accumulator, dropping any unfinished in-flight tool call
-    /// state.
+    /// Consumes the accumulator, dropping any unfinished in-flight tool call state.
     pub(crate) fn finish(self) -> IrAggregation {
         self.aggregation
     }
 
-    /// Removes and returns the arguments accumulated for one in-flight tool
-    /// call index.
+    /// Removes and returns the arguments accumulated for one in-flight tool call index.
     fn take_pending_arguments(&mut self, index: usize) -> String {
         match self
             .pending_arguments
@@ -635,13 +625,11 @@ impl Aggregator {
     }
 }
 
-/// Filters a requested reasoning level against a model's configured
-/// `thinking_levels_override`.
+/// Filters a requested reasoning level against a model's configured `thinking_levels_override`.
 ///
-/// A `None` override is pure passthrough: the requested level (or absence)
-/// flows through untouched. When an override is configured, a requested level
-/// is clamped into the allowed set, and a missing request defaults to the
-/// highest allowed level.
+/// A `None` override is pure passthrough: the requested level (or absence) flows through untouched.
+/// When an override is configured, a requested level is clamped into the allowed set, and a missing
+/// request defaults to the highest allowed level.
 pub(crate) fn apply_thinking_levels(
     requested: Option<IrReasoningEffort>,
     allowed_override: Option<&[IrReasoningEffort]>,
@@ -660,13 +648,12 @@ pub(crate) fn apply_thinking_levels(
     }
 }
 
-/// Parses canonical thinking level names into levels, rejecting unknown
-/// names, duplicates, and empty input; `param` names the offending request
-/// field in every error.
+/// Parses canonical thinking level names into levels, rejecting unknown names, duplicates, and
+/// empty input; `param` names the offending request field in every error.
 ///
-/// This is the single validation path for canonical thinking levels: both the
-/// `models:update` request parser and the stored `thinking_levels_override`
-/// parser delegate here, so the wording can never drift between them.
+/// This is the single validation path for canonical thinking levels: both the `models:update`
+/// request parser and the stored `thinking_levels_override` parser delegate here, so the wording
+/// can never drift between them.
 ///
 /// # Errors
 ///
@@ -705,19 +692,10 @@ pub(crate) fn parse_thinking_levels(
     Ok(levels)
 }
 
-/// Parses a `thinking_levels_override` JSON array into canonical levels,
-/// rejecting malformed JSON, empty arrays, unknown names, and duplicates.
-fn parse_thinking_levels_override(json: &str) -> Result<Vec<IrReasoningEffort>, InvalidRequest> {
-    let values: Vec<String> = serde_json::from_str(json).map_err(InvalidRequest::from_json)?;
-
-    parse_thinking_levels(&values, "thinking_levels_override")
-}
-
 /// Parses a stored `thinking_levels_override` database column through
-/// [`parse_thinking_levels_override`], rejecting a corrupt value with the
-/// drift message both consuming surfaces render verbatim: the gateway
-/// fail-fast maps it onto its internal variant and the management listing
-/// onto its own, so the wording is defined once and can never drift between
+/// [`parse_thinking_levels_override`], rejecting a corrupt value with the drift message both
+/// consuming surfaces render verbatim: the gateway fail-fast maps it onto its internal variant and
+/// the management listing onto its own, so the wording is defined once and can never drift between
 /// the two error domains (README §7.1).
 ///
 /// # Errors
@@ -731,10 +709,9 @@ pub(crate) fn parse_stored_thinking_levels_override(
         .map_err(|error| format!("stored thinking_levels_override is invalid: {error}"))
 }
 
-/// Renders canonical thinking levels into their canonical JSON array: the
-/// exact wire form stored in the `thinking_levels_override` column and
-/// rendered by the management listing, so a saved override always round-trips
-/// through [`parse_stored_thinking_levels_override`].
+/// Renders canonical thinking levels into their canonical JSON array: the exact wire form stored in
+/// the `thinking_levels_override` column and rendered by the management listing, so a saved
+/// override always round-trips through [`parse_stored_thinking_levels_override`]..
 ///
 /// # Panics
 ///
@@ -748,13 +725,20 @@ pub(crate) fn render_thinking_levels(levels: &[IrReasoningEffort]) -> String {
     serde_json::to_string(levels).expect("canonical thinking levels serialize")
 }
 
+/// Parses a `thinking_levels_override` JSON array into canonical levels, rejecting malformed JSON,
+/// empty arrays, unknown names, and duplicates.
+fn parse_thinking_levels_override(json: &str) -> Result<Vec<IrReasoningEffort>, InvalidRequest> {
+    let values: Vec<String> = serde_json::from_str(json).map_err(InvalidRequest::from_json)?;
+
+    parse_thinking_levels(&values, "thinking_levels_override")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Verifies that a corrupt stored override fails with the exact drift
-    /// wording both surfaces render verbatim (README §7.1), so the wire
-    /// message is pinned at its single definition site.
+    /// Verifies that a corrupt stored override fails with the exact drift wording both surfaces
+    /// render verbatim (README §7.1), so the wire message is pinned at its single definition site.
     ///
     /// # Panics
     ///
@@ -774,10 +758,9 @@ mod tests {
         );
     }
 
-    /// Verifies that the canonical render is the stored form: rendering
-    /// levels and parsing them back through the stored-override parser
-    /// reproduces the input, so a saved override can never fail its own
-    /// revalidation.
+    /// Verifies that the canonical render is the stored form: rendering levels and parsing them
+    /// back through the stored-override parser reproduces the input, so a saved override can never
+    /// fail its own revalidation.
     ///
     /// # Panics
     ///

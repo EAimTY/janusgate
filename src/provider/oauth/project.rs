@@ -1,14 +1,31 @@
-//! Google Code Assist project onboarding: resolving the Cloud Code Assist
-//! project ID of the authenticated Google account.
+//! Google Code Assist project onboarding: resolving the Cloud Code Assist project ID of the
+//! authenticated Google account.
 
 use super::{Error, code_assist};
 use crate::provider::endpoints;
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::time as tokio_time;
 
-/// The Antigravity IDE metadata every Code Assist onboarding request carries
-/// (README §5.2).
+/// The single Antigravity IDE metadata value (README §5.2): every onboarding request identifies the
+/// `ANTIGRAVITY` IDE on `PLATFORM_UNSPECIFIED` with the `GEMINI` plugin.
+const CODE_ASSIST_METADATA: CodeAssistMetadata = CodeAssistMetadata {
+    ide_type: "ANTIGRAVITY",
+    platform: "PLATFORM_UNSPECIFIED",
+    plugin_type: "GEMINI",
+};
+
+/// Delay between `onboardUser` polling attempts.
+const ONBOARD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Total wall-clock budget for the `onboardUser` long-running operation, checked before every
+/// attempt. Each attempt is bounded by the control-plane client's total request timeout, but a
+/// fixed attempt count alone bounds nothing, so the poll must also respect a deadline inside one
+/// management request.
+const ONBOARD_TOTAL_BUDGET: Duration = Duration::from_secs(60);
+
+/// The Antigravity IDE metadata every Code Assist onboarding request carries (README §5.2).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CodeAssistMetadata {
@@ -21,15 +38,6 @@ struct CodeAssistMetadata {
     /// Plugin type the request identifies.
     plugin_type: &'static str,
 }
-
-/// The single Antigravity IDE metadata value (README §5.2): every onboarding
-/// request identifies the `ANTIGRAVITY` IDE on `PLATFORM_UNSPECIFIED` with the
-/// `GEMINI` plugin.
-const CODE_ASSIST_METADATA: CodeAssistMetadata = CodeAssistMetadata {
-    ide_type: "ANTIGRAVITY",
-    platform: "PLATFORM_UNSPECIFIED",
-    plugin_type: "GEMINI",
-};
 
 /// The `loadCodeAssist` request body (README §5.2).
 #[derive(Debug, Serialize)]
@@ -49,10 +57,9 @@ struct OnboardUserRequest<'a> {
     metadata: CodeAssistMetadata,
 }
 
-/// The `cloudaicompanionProject` field of a Code Assist response (README
-/// §5.2): `loadCodeAssist` carries the bare project-id string, while the
-/// `onboardUser` operation result wraps it as an `{id}` object. Both shapes
-/// resolve to the same project id.
+/// The `cloudaicompanionProject` field of a Code Assist response (README §5.2): `loadCodeAssist`
+/// carries the bare project-id string, while the `onboardUser` operation result wraps it as an
+/// `{id}` object. Both shapes resolve to the same project id.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum CompanionProject {
@@ -69,30 +76,16 @@ enum CompanionProject {
     Other(IgnoredAny),
 }
 
-impl CompanionProject {
-    /// The project id this field carries. A missing or empty id counts as no
-    /// project, so the caller fails the resolution instead of storing one.
-    fn into_project_id(self) -> Option<String> {
-        let project_id = match self {
-            Self::Id(project_id) => project_id,
-            Self::Descriptor { id } => id?,
-            Self::Other(_) => return None,
-        };
-
-        (!project_id.is_empty()).then_some(project_id)
-    }
-}
-
-/// A Code Assist tier descriptor, as the `paidTier` and `currentTier` fields
-/// carry it (README §5.2).
+/// A Code Assist tier descriptor, as the `paidTier` and `currentTier` fields carry it (README
+/// §5.2).
 #[derive(Debug, Deserialize)]
 struct Tier {
     /// Tier identifier the account holds.
     id: Option<String>,
 }
 
-/// The `loadCodeAssist` response (README §5.2). The payload is upstream-owned,
-/// so unknown fields are ignored.
+/// The `loadCodeAssist` response (README §5.2). The payload is upstream-owned, so unknown fields
+/// are ignored.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LoadCodeAssistResponse {
@@ -106,8 +99,8 @@ struct LoadCodeAssistResponse {
     current_tier: Option<Tier>,
 }
 
-/// The terminal failure of a completed `google.longrunning` operation (README
-/// §5.2). The payload is upstream-owned, so unknown fields are ignored.
+/// The terminal failure of a completed `google.longrunning` operation (README §5.2). The payload is
+/// upstream-owned, so unknown fields are ignored.
 #[derive(Debug, Deserialize)]
 struct OperationError {
     /// Canonical status name of the failure.
@@ -117,8 +110,8 @@ struct OperationError {
     message: Option<String>,
 }
 
-/// The result of a successfully completed `onboardUser` operation (README
-/// §5.2). The payload is upstream-owned, so unknown fields are ignored.
+/// The result of a successfully completed `onboardUser` operation (README §5.2). The payload is
+/// upstream-owned, so unknown fields are ignored.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OnboardResponse {
@@ -126,8 +119,8 @@ struct OnboardResponse {
     cloudaicompanion_project: Option<CompanionProject>,
 }
 
-/// The `onboardUser` long-running operation (README §5.2). The payload is
-/// upstream-owned, so unknown fields are ignored.
+/// The `onboardUser` long-running operation (README §5.2). The payload is upstream-owned, so
+/// unknown fields are ignored.
 #[derive(Debug, Deserialize)]
 struct OnboardOperation {
     /// Whether the operation has completed; absent while it still runs.
@@ -140,24 +133,27 @@ struct OnboardOperation {
     response: Option<OnboardResponse>,
 }
 
-/// Delay between `onboardUser` polling attempts.
-const ONBOARD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+impl CompanionProject {
+    /// The project id this field carries. A missing or empty id counts as no project, so the caller
+    /// fails the resolution instead of storing one.
+    fn into_project_id(self) -> Option<String> {
+        let project_id = match self {
+            Self::Id(project_id) => project_id,
+            Self::Descriptor { id } => id?,
+            Self::Other(_) => return None,
+        };
 
-/// Total wall-clock budget for the `onboardUser` long-running operation,
-/// checked before every attempt. Each attempt is bounded by the control-plane
-/// client's total request timeout, but a fixed attempt count alone bounds
-/// nothing, so the poll must also respect a deadline inside one management
-/// request.
-const ONBOARD_TOTAL_BUDGET: Duration = Duration::from_secs(60);
+        (!project_id.is_empty()).then_some(project_id)
+    }
+}
 
-/// Resolves the Cloud Code Assist project ID for the authenticated Google
-/// account: `loadCodeAssist` first, then the `onboardUser` long-running
-/// operation polled within [`ONBOARD_TOTAL_BUDGET`].
+/// Resolves the Cloud Code Assist project ID for the authenticated Google account: `loadCodeAssist`
+/// first, then the `onboardUser` long-running operation polled within [`ONBOARD_TOTAL_BUDGET`].
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when neither call yields a project, the operation
-/// reports a terminal failure, or the poll budget elapses.
+/// Returns [`Error`] when neither call yields a project, the operation reports a terminal failure,
+/// or the poll budget elapses.
 pub(super) async fn resolve_project_id(http: &Client, access_token: &str) -> Result<String, Error> {
     let load_response: LoadCodeAssistResponse = code_assist::post_code_assist(
         http,
@@ -193,10 +189,10 @@ pub(super) async fn resolve_project_id(http: &Client, access_token: &str) -> Res
         metadata: CODE_ASSIST_METADATA,
     };
 
-    let onboard_deadline = std::time::Instant::now() + ONBOARD_TOTAL_BUDGET;
+    let onboard_deadline = Instant::now() + ONBOARD_TOTAL_BUDGET;
 
     loop {
-        if std::time::Instant::now() >= onboard_deadline {
+        if Instant::now() >= onboard_deadline {
             return Err(Error::Unavailable {
                 detail: "project onboarding did not complete in time".to_string(),
             });
@@ -216,21 +212,19 @@ pub(super) async fn resolve_project_id(http: &Client, access_token: &str) -> Res
             });
         }
 
-        tokio::time::sleep(ONBOARD_POLL_INTERVAL).await;
+        tokio_time::sleep(ONBOARD_POLL_INTERVAL).await;
     }
 }
 
 /// Extracts the project ID from a completed `onboardUser` operation.
 ///
-/// A completed `google.longrunning` operation carries its terminal failure as
-/// an `error` payload (`{code, message, status}`), which is propagated into
-/// the upstream error detail instead of collapsing into a generic
-/// missing-project failure.
+/// A completed `google.longrunning` operation carries its terminal failure as an `error` payload
+/// (`{code, message, status}`), which is propagated into the upstream error detail instead of
+/// collapsing into a generic missing-project failure.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Unavailable`] when the completed operation carries a
-/// terminal failure payload.
+/// Returns [`Error::Unavailable`] when the completed operation carries a terminal failure payload.
 fn onboard_operation_project(operation: OnboardOperation) -> Result<Option<String>, Error> {
     if let Some(error) = operation.error {
         let status = error.status.as_deref().unwrap_or("unknown status");
@@ -252,10 +246,9 @@ fn onboard_operation_project(operation: OnboardOperation) -> Result<Option<Strin
 mod tests {
     use super::*;
 
-    /// The companion-project field arrives as the bare id string from
-    /// `loadCodeAssist` and as an `{id}` object from the `onboardUser`
-    /// operation result (README §5.2); both shapes resolve to the same
-    /// project id, while an unrecognized shape carries none.
+    /// The companion-project field arrives as the bare id string from `loadCodeAssist` and as an
+    /// `{id}` object from the `onboardUser` operation result (README §5.2); both shapes resolve to
+    /// the same project id, while an unrecognized shape carries none.
     ///
     /// # Panics
     ///
@@ -280,12 +273,10 @@ mod tests {
         }
     }
 
-    /// A completed `onboardUser` operation with no usable project id — the
-    /// field missing, empty as a string or as an `{id}` object, or displaced
-    /// by an upstream `error` payload — must not resolve, so the resolution
-    /// fails instead of storing an empty project; a failure payload that
-    /// carries no status or message still names both placeholders in the
-    /// upstream detail.
+    /// A completed `onboardUser` operation with no usable project id — the field missing, empty as
+    /// a string or as an `{id}` object, or displaced by an upstream `error` payload — must not
+    /// resolve, so the resolution fails instead of storing an empty project; a failure payload that
+    /// carries no status or message still names both placeholders in the upstream detail.
     ///
     /// # Panics
     ///
@@ -342,9 +333,9 @@ mod tests {
         );
     }
 
-    /// A successful `onboardUser` operation resolves the project id from both
-    /// the `{id}` object shape the LRO result documents and the plain-string
-    /// shape observed defensively by first-party clients.
+    /// A successful `onboardUser` operation resolves the project id from both the `{id}` object
+    /// shape the LRO result documents and the plain-string shape observed defensively by
+    /// first-party clients.
     ///
     /// # Panics
     ///

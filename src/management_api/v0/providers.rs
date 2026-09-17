@@ -1,9 +1,6 @@
 //! Management routes listing, creating, rewriting, and deleting providers.
 
-use super::{
-    EmptyResponse, Error, ProviderEnvelope, ProviderResponse, absent_keeps, route,
-    validate_identifier,
-};
+use super::{EmptyResponse, Error, ProviderEnvelope, ProviderResponse, absent_keeps, route};
 use crate::{
     context::Context,
     format::UpstreamFormat,
@@ -28,7 +25,7 @@ route! {
         const METHOD: http::Method = http::Method::POST;
         const PATH: &'static str = "/providers:create";
         type Request = CreateProviderRequest;
-        type Response = super::ProviderEnvelope;
+        type Response = ProviderEnvelope;
     }
 }
 
@@ -37,7 +34,7 @@ route! {
         const METHOD: http::Method = http::Method::POST;
         const PATH: &'static str = "/providers:update";
         type Request = UpdateProviderRequest;
-        type Response = super::EmptyResponse;
+        type Response = EmptyResponse;
     }
 }
 
@@ -46,12 +43,11 @@ route! {
         const METHOD: http::Method = http::Method::POST;
         const PATH: &'static str = "/providers:delete";
         type Request = DeleteProviderRequest;
-        type Response = super::EmptyResponse;
+        type Response = EmptyResponse;
     }
 }
 
-/// The `providers:list` request body (README §7.1): the empty request of a
-/// no-argument route.
+/// The `providers:list` request body (README §7.1): the empty request of a no-argument route.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -62,14 +58,13 @@ pub struct ListProvidersRequest {}
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ListProvidersResponse {
     /// Every stored provider, ordered by name.
-    pub providers: Vec<super::ProviderResponse>,
+    pub providers: Vec<ProviderResponse>,
 }
 
-/// Strictly parsed `providers:create` request (README §7.1): the complete
-/// state of one `openai_compatible` provider, every field required — the
-/// request is the row's desired state, so creation has no defaults and no
-/// optional fields (rule 3). OAuth account kinds are not creatable here;
-/// `oauth:complete` is the only path that mints their credentials.
+/// Strictly parsed `providers:create` request (README §7.1): the complete state of one
+/// `openai_compatible` provider, every field required — the request is the row's desired state, so
+/// creation has no defaults and no optional fields (rule 3). OAuth account kinds are not creatable
+/// here; `oauth:complete` is the only path that mints their credentials.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -93,12 +88,11 @@ pub struct CreateProviderRequest {
     pub api_key: String,
 }
 
-/// Strictly parsed `providers:update` request (README §7.1): a union
-/// discriminated by the restated `type`, one variant per stored account
-/// kind, each stating the provider's complete desired readable state (rule
-/// 3). The restated `type` must equal the stored, immutable one. The
-/// write-only credential field is the one absent-keeps exception (rule 2):
-/// absent keeps the stored secret, present replaces it; it is never `null`.
+/// Strictly parsed `providers:update` request (README §7.1): a union discriminated by the restated
+/// `type`, one variant per stored account kind, each stating the provider's complete desired
+/// readable state (rule 3). The restated `type` must equal the stored, immutable one. The
+/// write-only credential field is the one absent-keeps exception (rule 2): absent keeps the stored
+/// secret, present replaces it; it is never `null`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -109,8 +103,8 @@ pub enum UpdateProviderRequest {
         /// Addressed provider row.
         provider_id: i64,
 
-        /// Unique provider name; must be non-empty. Renames the provider
-        /// when it differs from the stored name.
+        /// Unique provider name; must be non-empty. Renames the provider when it differs from the
+        /// stored name.
         name: String,
 
         /// Public model name prefix; may be empty.
@@ -141,8 +135,8 @@ pub enum UpdateProviderRequest {
         /// Addressed provider row.
         provider_id: i64,
 
-        /// Unique provider name; must be non-empty. Renames the provider
-        /// when it differs from the stored name.
+        /// Unique provider name; must be non-empty. Renames the provider when it differs from the
+        /// stored name.
         name: String,
 
         /// Public model name prefix; may be empty.
@@ -167,8 +161,8 @@ pub enum UpdateProviderRequest {
         /// Addressed provider row.
         provider_id: i64,
 
-        /// Unique provider name; must be non-empty. Renames the provider
-        /// when it differs from the stored name.
+        /// Unique provider name; must be non-empty. Renames the provider when it differs from the
+        /// stored name.
         name: String,
 
         /// Public model name prefix; may be empty.
@@ -188,8 +182,8 @@ pub enum UpdateProviderRequest {
     },
 }
 
-/// The `openai_oauth` replacement credentials (README §3): the exact stored
-/// field set, camelCase like the storage form.
+/// The `openai_oauth` replacement credentials (README §3): the exact stored field set, camelCase
+/// like the storage form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -204,8 +198,8 @@ pub struct OpenAiOauthCredentials {
     pub account_id: String,
 }
 
-/// The `antigravity_oauth` replacement credentials (README §3): the exact
-/// stored field set, camelCase like the storage form.
+/// The `antigravity_oauth` replacement credentials (README §3): the exact stored field set,
+/// camelCase like the storage form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -238,7 +232,7 @@ pub(super) async fn list(
     Ok(Json(ListProvidersResponse {
         providers: providers
             .iter()
-            .map(super::ProviderResponse::from_provider)
+            .map(ProviderResponse::from_provider)
             .collect(),
     }))
 }
@@ -248,10 +242,10 @@ pub(super) async fn create(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<CreateProviderRequest>, Error>,
 ) -> Result<Json<ProviderEnvelope>, Error> {
-    validate_identifier("name", &request.name)?;
+    super::validate_identifier("name", &request.name)?;
 
-    // The pre-insert check renders a clean 409; the database's UNIQUE
-    // constraint is the concurrent backstop.
+    // The pre-insert check renders a clean 409; the database's UNIQUE constraint is the concurrent
+    // backstop.
     if storage::find_provider(&context.database, &request.name)
         .await?
         .is_some()
@@ -311,9 +305,8 @@ pub(super) async fn delete(
     Ok(Json(EmptyResponse {}))
 }
 
-/// Rewrites one provider's full state per the management contract (README
-/// §7.1). The request's discriminated variant names the account kind; the
-/// stored row must carry the same one.
+/// Rewrites one provider's full state per the management contract (README §7.1). The request's
+/// discriminated variant names the account kind; the stored row must carry the same one.
 ///
 /// # Errors
 ///
@@ -323,9 +316,8 @@ async fn handle_update(
     database: &crate::database::Database,
     request: UpdateProviderRequest,
 ) -> Result<(), Error> {
-    // One match flattens the union into the full storage state: every
-    // readable field is restated, and the write-only credential is the one
-    // absent-keeps field.
+    // One match flattens the union into the full storage state: every readable field is restated,
+    // and the write-only credential is the one absent-keeps field.
     let (provider_id, name, model_prefix, is_enabled, protocol, base_url, credentials) =
         match &request {
             UpdateProviderRequest::OpenAiCompatible {
@@ -393,19 +385,18 @@ async fn handle_update(
             ),
         };
 
-    validate_identifier("name", name)?;
+    super::validate_identifier("name", name)?;
 
-    // The outer read pins request validation only: the type is immutable, so
-    // it cannot drift before the transactional write, and the update's merge
-    // and checks read the row again inside the transaction.
+    // The outer read pins request validation only: the type is immutable, so it cannot drift before
+    // the transactional write, and the update's merge and checks read the row again inside the
+    // transaction.
     let Some(existing) = storage::find_provider_by_id(database, provider_id).await? else {
         return Err(Error::ProviderNotFound { id: provider_id });
     };
 
-    // The stored row pins the account kind: the restated `type` doubles as
-    // the union's discriminator and a guard against updating the wrong row,
-    // and a mismatch is an invalid request rather than a conflict, because
-    // no concurrent state is overwritten.
+    // The stored row pins the account kind: the restated `type` doubles as the union's
+    // discriminator and a guard against updating the wrong row, and a mismatch is an invalid
+    // request rather than a conflict, because no concurrent state is overwritten.
     let requested_type = match request {
         UpdateProviderRequest::OpenAiCompatible { .. } => ProviderType::OpenAiCompatible,
         UpdateProviderRequest::OpenAiOauth { .. } => ProviderType::OpenAiOauth,
@@ -420,11 +411,10 @@ async fn handle_update(
         });
     }
 
-    // One transactional write owns the provider row — the restated `name`
-    // included, so a different name renames the provider — the optional
-    // credentials replacement, and the recomputed public model names; a
-    // taken name or a prefix change that would collide is rejected with 409
-    // before anything is written.
+    // One transactional write owns the provider row — the restated `name` included, so a different
+    // name renames the provider — the optional credentials replacement, and the recomputed public
+    // model names; a taken name or a prefix change that would collide is rejected with 409 before
+    // anything is written.
     storage::update_provider(
         database,
         provider_id,
@@ -446,14 +436,12 @@ async fn handle_update(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::UpdateProviderRequest;
 
-    /// Verifies the `providers:update` union's strictness (README §7.0
-    /// rules 2-4): the discriminator selects the variant, an unknown field
-    /// is rejected inside it, an unknown discriminator names the closed set,
-    /// a required field's absence is named, and an explicit `null` on the
-    /// write-only credential field is rejected instead of reading as
-    /// absence.
+    /// Verifies the `providers:update` union's strictness (README §7.0 rules 2-4): the
+    /// discriminator selects the variant, an unknown field is rejected inside it, an unknown
+    /// discriminator names the closed set, a required field's absence is named, and an explicit
+    /// `null` on the write-only credential field is rejected instead of reading as absence.
     ///
     /// # Panics
     ///
@@ -477,8 +465,8 @@ mod tests {
             UpdateProviderRequest::OpenAiCompatible { .. }
         ));
 
-        // An unknown field is rejected inside the addressed variant, naming
-        // the variant's own fields.
+        // An unknown field is rejected inside the addressed variant, naming the variant's own
+        // fields.
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
                 r#"{"provider_id":7,"type":"openai_compatible","name":"acme",
@@ -489,8 +477,7 @@ mod tests {
             .is_err()
         );
 
-        // A field of another variant is as unknown as a field no variant
-        // carries.
+        // A field of another variant is as unknown as a field no variant carries.
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
                 r#"{"provider_id":3,"type":"openai_oauth","name":"codex",
@@ -508,8 +495,8 @@ mod tests {
             .is_err()
         );
 
-        // A required field's absence is named by serde's own missing-field
-        // rejection (`model_prefix` is absent here).
+        // A required field's absence is named by serde's own missing-field rejection
+        // (`model_prefix` is absent here).
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
                 r#"{"provider_id":3,"type":"openai_oauth","name":"codex",

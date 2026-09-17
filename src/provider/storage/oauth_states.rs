@@ -6,6 +6,16 @@ use crate::{
     provider::OAuthProviderType,
 };
 
+/// One pending OAuth state row.
+#[derive(Debug, Clone)]
+pub(crate) struct OAuthState {
+    /// Provider type the flow is for.
+    pub(crate) state_type: OAuthProviderType,
+
+    /// PKCE verifier, when the flow uses PKCE.
+    pub(crate) verifier: String,
+}
+
 /// Inserts one pending OAuth state row.
 ///
 /// # Errors
@@ -28,19 +38,8 @@ pub(crate) async fn insert_oauth_state(
     Ok(())
 }
 
-/// One pending OAuth state row.
-#[derive(Debug, Clone)]
-pub(crate) struct OAuthState {
-    /// Provider type the flow is for.
-    pub(crate) state_type: OAuthProviderType,
-
-    /// PKCE verifier, when the flow uses PKCE.
-    pub(crate) verifier: String,
-}
-
-/// Reads the provider type of an unexpired OAuth state row without consuming
-/// it, so a completion that cannot succeed can be rejected before the atomic
-/// consume spends the state.
+/// Reads the provider type of an unexpired OAuth state row without consuming it, so a completion
+/// that cannot succeed can be rejected before the atomic consume spends the state.
 ///
 /// # Errors
 ///
@@ -66,13 +65,12 @@ pub(crate) async fn find_oauth_state_type(
     Ok(Some(state_type))
 }
 
-/// Consumes the OAuth state row for `state`, returning its facts only when it
-/// is unexpired.
+/// Consumes the OAuth state row for `state`, returning its facts only when it is unexpired.
 ///
-/// Consumption is a single atomic `DELETE … RETURNING` statement, so exactly
-/// one concurrent completion can ever observe the row and a state can never
-/// complete twice (README §3). An expired or unknown state consumes nothing
-/// here; expired rows are swept separately by [`delete_expired_oauth_states`].
+/// Consumption is a single atomic `DELETE … RETURNING` statement, so exactly one concurrent
+/// completion can ever observe the row and a state can never complete twice (README §3). An expired
+/// or unknown state consumes nothing here; expired rows are swept separately by
+/// [`delete_expired_oauth_states`]..
 ///
 /// # Errors
 ///

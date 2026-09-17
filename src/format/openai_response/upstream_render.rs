@@ -1,43 +1,14 @@
-//! Upstream-request rendering for the Responses codec: renders an IR request
-//! into the `openai_response` upstream payload.
+//! Upstream-request rendering for the Responses codec: renders an IR request into the
+//! `openai_response` upstream payload.
 //!
-//! The rendered payload is a first-party type in the upstream wire shape, so
-//! field presence per request is declared by `skip_serializing_if` rather than
-//! assembled conditionally.
+//! The rendered payload is a first-party type in the upstream wire shape, so field presence per
+//! request is declared by `skip_serializing_if` rather than assembled conditionally.
 
 use crate::ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice};
 use serde::Serialize;
 use serde_json::Value;
 
-/// Renders the Codex-flavored upstream request URL and payload: streaming is
-/// forced on (README §5.1 invariant 2) and `max_output_tokens` is omitted —
-/// the ChatGPT Codex backend rejects it as an unsupported parameter, and the
-/// model's own output bound applies instead of the client's cap.
-///
-/// `url` is the fixed Codex inference endpoint; the provider layer owns
-/// endpoint knowledge, so it is threaded in rather than owned by the codec.
-pub(crate) fn render_codex_request<'a>(ir: &'a IrRequest, url: &str) -> (String, RequestBody<'a>) {
-    let mut body = render_request_body(ir, true);
-
-    body.max_output_tokens = None;
-
-    (url.to_string(), body)
-}
-
-/// Renders the upstream request URL and payload for an OpenAI-compatible
-/// Responses upstream: `POST <base_url>/responses` (README §5.3).
-pub(crate) fn render_request<'a>(
-    ir: &'a IrRequest,
-    base_url: &str,
-    is_streaming: bool,
-) -> (String, RequestBody<'a>) {
-    let url = format!("{}/responses", base_url.trim_end_matches('/'));
-
-    (url, render_request_body(ir, is_streaming))
-}
-
-/// The upstream Responses request payload, shared by the Codex and compatible
-/// entry points.
+/// The upstream Responses request payload, shared by the Codex and compatible entry points.
 #[derive(Debug, Serialize)]
 pub(crate) struct RequestBody<'a> {
     /// Upstream model name.
@@ -72,8 +43,8 @@ pub(crate) struct RequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f64>,
 
-    /// Output token budget, omitted when the request has none and always
-    /// omitted on the Codex endpoint.
+    /// Output token budget, omitted when the request has none and always omitted on the Codex
+    /// endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u64>,
 
@@ -136,8 +107,8 @@ enum MessageRole {
     Assistant,
 }
 
-/// One content part of a rendered message item: the `input_*` parts a client
-/// turn carries, and the `output_text` part a replayed assistant turn carries.
+/// One content part of a rendered message item: the `input_*` parts a client turn carries, and the
+/// `output_text` part a replayed assistant turn carries.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum MessageContentPart<'a> {
@@ -173,13 +144,12 @@ struct Tool<'a> {
     /// Human-readable description.
     description: Option<&'a str>,
 
-    /// JSON Schema of the accepted arguments, absent for a function that
-    /// takes none.
+    /// JSON Schema of the accepted arguments, absent for a function that takes none.
     parameters: Option<&'a Value>,
 }
 
-/// A `tool_choice` restriction in the upstream shape: a bare mode string or a
-/// named-function object.
+/// A `tool_choice` restriction in the upstream shape: a bare mode string or a named-function
+/// object.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum ToolChoice<'a> {
@@ -249,8 +219,34 @@ struct Reasoning {
     effort: &'static str,
 }
 
-/// Renders an IR request into the upstream Responses payload shared by the
-/// Codex and compatible entry points.
+/// Renders the Codex-flavored upstream request URL and payload: streaming is forced on (README §5.1
+/// invariant 2) and `max_output_tokens` is omitted — the ChatGPT Codex backend rejects it as an
+/// unsupported parameter, and the model's own output bound applies instead of the client's cap.
+///
+/// `url` is the fixed Codex inference endpoint; the provider layer owns endpoint knowledge, so it
+/// is threaded in rather than owned by the codec.
+pub(crate) fn render_codex_request<'a>(ir: &'a IrRequest, url: &str) -> (String, RequestBody<'a>) {
+    let mut body = render_request_body(ir, true);
+
+    body.max_output_tokens = None;
+
+    (url.to_string(), body)
+}
+
+/// Renders the upstream request URL and payload for an OpenAI-compatible Responses upstream: `POST
+/// <base_url>/responses` (README §5.3).
+pub(crate) fn render_request<'a>(
+    ir: &'a IrRequest,
+    base_url: &str,
+    is_streaming: bool,
+) -> (String, RequestBody<'a>) {
+    let url = format!("{}/responses", base_url.trim_end_matches('/'));
+
+    (url, render_request_body(ir, is_streaming))
+}
+
+/// Renders an IR request into the upstream Responses payload shared by the Codex and compatible
+/// entry points.
 fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
     let mut input: Vec<InputItem<'_>> = Vec::new();
 
@@ -267,8 +263,7 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
                             image_url: image.to_url(),
                         }),
 
-                        // The IR type system routes only text and images into
-                        // user content.
+                        // The IR type system routes only text and images into user content.
                         _ => None,
                     })
                     .collect();
@@ -339,6 +334,7 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
             IrToolChoice::Auto => ToolChoice::Mode(ToolChoiceMode::Auto),
             IrToolChoice::None => ToolChoice::Mode(ToolChoiceMode::None),
             IrToolChoice::Required => ToolChoice::Mode(ToolChoiceMode::Required),
+
             IrToolChoice::Function { name } => ToolChoice::Function(NamedToolChoice {
                 tool_type: "function",
                 name,
@@ -352,6 +348,7 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
             format: match response_format {
                 IrResponseFormat::Text => ResponseFormat::Text,
                 IrResponseFormat::Json => ResponseFormat::JsonObject,
+
                 IrResponseFormat::JsonSchema { name, schema } => {
                     ResponseFormat::JsonSchema { name, schema }
                 }

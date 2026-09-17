@@ -8,6 +8,7 @@ export function focusOnMount(element: HTMLElement): void {
         element.focus();
         return;
     }
+
     // A ref runs while the element is still detached, and focusing a detached
     // element does nothing; the pending insertion is complete by the next
     // microtask.

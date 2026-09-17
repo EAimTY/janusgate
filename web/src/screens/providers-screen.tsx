@@ -25,6 +25,7 @@ function providerExpiryText(provider: ProviderResponse): string {
     if (provider.type === "openai_compatible") {
         return "—";
     }
+
     return provider.expires_at === null ? "no expiry" : formatTimestamp(provider.expires_at);
 }
 
@@ -44,21 +45,27 @@ export function ProvidersScreen(props: ProvidersScreenProps): JSX.Element {
     const deleteProvider = async (provider: ProviderResponse): Promise<void> => {
         setActionFailure(null);
         setDeletingId(provider.id);
+
         const outcome = await performManagementCall(() =>
             props.api.deleteProvider({
                 provider_id: provider.id,
             }),
         );
+
         setDeletingId(null);
         setPendingDeleteId(null);
+
         if (outcome.status === "failed") {
             setActionFailure(outcome.message);
+
             if (outcome.errno === ErrorCode.NotFound) {
                 // The row was already gone: the listing is the authority.
                 await providers.reload();
             }
+
             return;
         }
+
         if (outcome.status === "ok") {
             await providers.reload();
         }

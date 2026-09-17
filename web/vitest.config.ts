@@ -10,18 +10,24 @@ export default defineConfig({
             "browser",
             "development",
         ],
+
         tsconfigPaths: true,
     },
+
     cacheDir: "../target/web/cache",
+
     plugins: [
         solid(),
     ],
+
     test: {
         environment: "jsdom",
+
         include: [
             "**/*.test.ts",
             "**/*.test.tsx",
         ],
+
         coverage: {
             reportsDirectory: "../target/web/coverage",
         },

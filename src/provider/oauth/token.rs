@@ -1,31 +1,26 @@
-//! Token lifetime and JWT claim helpers shared by the flow and refresh
-//! paths.
+//! Token lifetime and JWT claim helpers shared by the flow and refresh paths.
 
 use super::Error;
 use crate::unix_time;
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, de::DeserializeOwned};
 
-/// Default token lifetime when a provider reports neither `expires_in` nor a
-/// usable `exp` claim.
+/// Default token lifetime when a provider reports neither `expires_in` nor a usable `exp` claim.
 const DEFAULT_TOKEN_TTL: i64 = 86_400;
 
-/// The `exp` lifetime claim of an access token JWT. The claims set is
-/// upstream-owned, so only the claim the gateway reads is modeled and unknown
-/// claims are ignored.
+/// The `exp` lifetime claim of an access token JWT. The claims set is upstream-owned, so only the
+/// claim the gateway reads is modeled and unknown claims are ignored.
 #[derive(Debug, Deserialize)]
 struct ExpClaim {
     /// Unix timestamp the token expires at.
     exp: Option<i64>,
 }
 
-/// The claims of the OpenAI identity token that the gateway reads (README
-/// §5.1). The claims set is upstream-owned, so only the claim the gateway
-/// reads is modeled and unknown claims are ignored.
+/// The claims of the OpenAI identity token that the gateway reads (README §5.1). The claims set is
+/// upstream-owned, so only the claim the gateway reads is modeled and unknown claims are ignored.
 #[derive(Debug, Deserialize)]
 struct OpenAiIdTokenClaims {
-    /// The OpenAI authorization claim object carrying the ChatGPT account
-    /// identifier.
+    /// The OpenAI authorization claim object carrying the ChatGPT account identifier.
     #[serde(rename = "https://api.openai.com/auth")]
     authorization: Option<OpenAiAuthorizationClaim>,
 }
@@ -37,50 +32,33 @@ struct OpenAiAuthorizationClaim {
     chatgpt_account_id: Option<String>,
 }
 
-/// Reads the ChatGPT account claim of an OpenAI identity token (README §5.1).
-/// `None` means the token is not a decodable JWT or carries no usable account
-/// claim.
+/// Reads the ChatGPT account claim of an OpenAI identity token (README §5.1). `None` means the
+/// token is not a decodable JWT or carries no usable account claim.
 pub(super) fn openai_account_claim(id_token: &str) -> Option<String> {
     jwt_claims::<OpenAiIdTokenClaims>(id_token)?
         .authorization?
         .chatgpt_account_id
 }
 
-/// Decodes the claims a JWT payload carries, or `None` when the token is not a
-/// decodable JWT or its payload does not carry the modeled claims.
-fn jwt_claims<TClaims>(jwt: &str) -> Option<TClaims>
-where
-    TClaims: DeserializeOwned,
-{
-    let payload = jwt.split('.').nth(1)?;
-
-    serde_json::from_slice(&general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?).ok()
-}
-
-/// Computes the expiry of a token set: a reported `expires_in` when present,
-/// else the remaining lifetime of the access token's `exp` claim, else the
-/// default lifetime.
+/// Computes the expiry of a token set: a reported `expires_in` when present, else the remaining
+/// lifetime of the access token's `exp` claim, else the default lifetime.
 ///
-/// A non-positive `expires_in` is a malformed token response and is rejected,
-/// and so is an `exp` claim already in the past: stamping an expiry at or
-/// before `now` would mark the token permanently stale and drive a refresh
-/// grant against the endpoint on every request, while substituting the
-/// default lifetime would present an already-expired access token to the
-/// endpoint. The mirror extreme is the same malformed response: a lifetime so
-/// large that the stamp `now + lifetime` leaves `i64` would wrap to a hugely
-/// negative expiry in a release build — the permanently stale token again —
-/// and panic in a debug one.
+/// A non-positive `expires_in` is a malformed token response and is rejected, and so is an `exp`
+/// claim already in the past: stamping an expiry at or before `now` would mark the token
+/// permanently stale and drive a refresh grant against the endpoint on every request, while
+/// substituting the default lifetime would present an already-expired access token to the endpoint.
+/// The mirror extreme is the same malformed response: a lifetime so large that the stamp `now +
+/// lifetime` leaves `i64` would wrap to a hugely negative expiry in a release build — the
+/// permanently stale token again — and panic in a debug one.
 ///
-/// Google access tokens are opaque (`ya29…`) and carry no `exp` claim, so a
-/// Google refresh response without `expires_in` has no better signal than the
-/// default lifetime; both Google and OpenAI token endpoints report
-/// `expires_in`, which therefore always wins.
+/// Google access tokens are opaque (`ya29…`) and carry no `exp` claim, so a Google refresh response
+/// without `expires_in` has no better signal than the default lifetime; both Google and OpenAI
+/// token endpoints report `expires_in`, which therefore always wins.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the reported `expires_in` is zero or negative or
-/// overflows the token expiry stamp, or when the access token's `exp` claim
-/// is not in the future.
+/// Returns [`Error`] when the reported `expires_in` is zero or negative or overflows the token
+/// expiry stamp, or when the access token's `exp` claim is not in the future.
 pub(super) fn token_expiry_from(
     expires_in: Option<i64>,
     access_token: Option<&str>,
@@ -106,19 +84,28 @@ pub(super) fn token_expiry_from(
             .unwrap_or(DEFAULT_TOKEN_TTL),
     };
 
-    // The plain add would wrap a hostile `expires_in` near `i64::MAX` to a
-    // hugely negative expiry in a release build. Only a reported `expires_in`
-    // can reach that bound — the `exp`-claim fallback leaves at most
-    // `i64::MAX - now` of remaining lifetime — so the error names it.
+    // The plain add would wrap a hostile `expires_in` near `i64::MAX` to a hugely negative expiry
+    // in a release build. Only a reported `expires_in` can reach that bound — the `exp`-claim
+    // fallback leaves at most `i64::MAX - now` of remaining lifetime — so the error names it.
     now.checked_add(lifetime).ok_or_else(|| Error::Unavailable {
         detail: format!("malformed token response: `expires_in` overflow, got {lifetime}"),
     })
 }
 
-/// Remaining lifetime of an access token according to its `exp` claim, or
-/// `None` when the token carries no decodable `exp` claim. A claim not in the
-/// future — including one so far in the past that `exp - now` leaves `i64` —
-/// is a malformed token response.
+/// Decodes the claims a JWT payload carries, or `None` when the token is not a decodable JWT or its
+/// payload does not carry the modeled claims.
+fn jwt_claims<TClaims>(jwt: &str) -> Option<TClaims>
+where
+    TClaims: DeserializeOwned,
+{
+    let payload = jwt.split('.').nth(1)?;
+
+    serde_json::from_slice(&general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?).ok()
+}
+
+/// Remaining lifetime of an access token according to its `exp` claim, or `None` when the token
+/// carries no decodable `exp` claim. A claim not in the future — including one so far in the past
+/// that `exp - now` leaves `i64` — is a malformed token response.
 fn access_token_expires_in(access_token: &str) -> Result<Option<i64>, Error> {
     let Some(exp) = jwt_claims::<ExpClaim>(access_token).and_then(|claims| claims.exp) else {
         return Ok(None);
@@ -126,10 +113,9 @@ fn access_token_expires_in(access_token: &str) -> Result<Option<i64>, Error> {
 
     let now = unix_time::unix_now();
 
-    // The claim is upstream-controlled; the checked subtraction rejects a
-    // value so negative that the remaining lifetime leaves `i64`, which would
-    // otherwise wrap to a huge positive lifetime in a release build and slip
-    // past the non-future guard below.
+    // The claim is upstream-controlled; the checked subtraction rejects a value so negative that
+    // the remaining lifetime leaves `i64`, which would otherwise wrap to a huge positive lifetime
+    // in a release build and slip past the non-future guard below.
     let lifetime = exp.checked_sub(now).ok_or_else(|| Error::Unavailable {
         detail: format!("malformed token response: `exp` claim must be in the future, got {exp}"),
     })?;
@@ -150,9 +136,8 @@ fn access_token_expires_in(access_token: &str) -> Result<Option<i64>, Error> {
 mod tests {
     use super::*;
 
-    /// Encodes a JWT whose payload carries the absolute `exp` claim `exp`, so
-    /// the `exp` fallback of [`token_expiry_from`] can be exercised without a
-    /// token endpoint.
+    /// Encodes a JWT whose payload carries the absolute `exp` claim `exp`, so the `exp` fallback of
+    /// [`token_expiry_from`] can be exercised without a token endpoint.
     ///
     /// # Panics
     ///
@@ -196,8 +181,7 @@ mod tests {
             authorization: TestAuthorizationClaim,
         }
 
-        /// The OpenAI authorization claim object a test identity token
-        /// carries.
+        /// The OpenAI authorization claim object a test identity token carries.
         #[derive(serde::Serialize)]
         struct TestAuthorizationClaim {
             /// ChatGPT account ID the token authenticates as.
@@ -225,10 +209,9 @@ mod tests {
         assert_eq!(openai_account_claim("not-a-jwt"), None);
     }
 
-    /// An `exp` claim already in the past is malformed exactly like a
-    /// non-positive `expires_in`: the response must fail instead of storing a
-    /// permanently stale token or presenting an expired token under a default
-    /// lifetime. A reported `expires_in` still wins and is never overridden
+    /// An `exp` claim already in the past is malformed exactly like a non-positive `expires_in`:
+    /// the response must fail instead of storing a permanently stale token or presenting an expired
+    /// token under a default lifetime. A reported `expires_in` still wins and is never overridden
     /// by the spent claim.
     ///
     /// # Panics
@@ -249,9 +232,9 @@ mod tests {
         assert!(expiry > unix_time::unix_now());
     }
 
-    /// Without `expires_in`, a decodable future `exp` claim supplies the
-    /// lifetime and a token with no usable claim (opaque Google `ya29…`
-    /// tokens) falls through to the default lifetime instead of failing.
+    /// Without `expires_in`, a decodable future `exp` claim supplies the lifetime and a token with
+    /// no usable claim (opaque Google `ya29…` tokens) falls through to the default lifetime instead
+    /// of failing.
     ///
     /// # Panics
     ///
@@ -275,12 +258,11 @@ mod tests {
         assert!((86_399..=86_400).contains(&(expiry - unix_time::unix_now())));
     }
 
-    /// An `expires_in` large enough that the stamp `now + expires_in` leaves
-    /// `i64` is malformed exactly like a non-positive one: a release build
-    /// would wrap the add to a hugely negative expiry — the permanently stale
-    /// token that drives a refresh grant on every request — and a debug build
-    /// would panic. Both bounds overflow for any current timestamp, so the
-    /// rejection is deterministic.
+    /// An `expires_in` large enough that the stamp `now + expires_in` leaves `i64` is malformed
+    /// exactly like a non-positive one: a release build would wrap the add to a hugely negative
+    /// expiry — the permanently stale token that drives a refresh grant on every request — and a
+    /// debug build would panic. Both bounds overflow for any current timestamp, so the rejection is
+    /// deterministic.
     ///
     /// # Panics
     ///
@@ -302,10 +284,9 @@ mod tests {
         }
     }
 
-    /// An `exp` claim so far in the past that the remaining lifetime
-    /// `exp - now` leaves `i64` would wrap to a huge positive lifetime in a
-    /// release build and slip past the non-future guard, so the subtraction is
-    /// checked and the claim is rejected as malformed like an ordinary past
+    /// An `exp` claim so far in the past that the remaining lifetime `exp - now` leaves `i64` would
+    /// wrap to a huge positive lifetime in a release build and slip past the non-future guard, so
+    /// the subtraction is checked and the claim is rejected as malformed like an ordinary past
     /// claim.
     ///
     /// # Panics

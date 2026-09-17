@@ -58,14 +58,17 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
     const route = createMemo(() =>
         matchAppRoute(currentLocation().pathname, currentLocation().search),
     );
+
     const providerDetailRoute = createMemo(() => {
         const current = route();
         return current.name === "providerDetail" ? current : null;
     });
+
     const modelsRoute = createMemo(() => {
         const current = route();
         return current.name === "models" ? current : null;
     });
+
     const oauthRoute = createMemo(() => {
         const current = route();
         return current.name === "oauthStart" ? current : null;

@@ -1,10 +1,12 @@
 import { type Connection, MANAGEMENT_API_PATH } from "/src/connection/model";
+
 import {
     ContractViolationError,
     describeManagementFailure,
     isAbortFailure,
     ManagementApiError,
 } from "/src/management-api/errors";
+
 import {
     type CompleteProviderOauthRequest,
     type CreateProviderRequest,
@@ -26,6 +28,7 @@ import {
     type UpdateModelRequest,
     type UpdateProviderRequest,
 } from "/src/management-api/generated/v0";
+
 import {
     parseDiscoverModelsResponse,
     parseEmptyResponse,
@@ -131,6 +134,7 @@ function decodeResponse<TValue>(payload: unknown, validate: (value: unknown) => 
                 },
             );
         }
+
         throw error;
     }
 }
@@ -143,6 +147,7 @@ export function createManagementApi(
         const url = `${connection.baseUrl}${MANAGEMENT_API_PATH}${path}`;
 
         let response: Response;
+
         try {
             response = await fetch(url, {
                 method: "POST",
@@ -160,6 +165,7 @@ export function createManagementApi(
             if (isAbortFailure(error)) {
                 throw error;
             }
+
             throw new ManagementApiError(
                 "transport",
                 `Network request failed: ${describeManagementFailure(error)}`,
@@ -170,12 +176,14 @@ export function createManagementApi(
         }
 
         let bodyText: string;
+
         try {
             bodyText = await response.text();
         } catch (error) {
             if (isAbortFailure(error)) {
                 throw error;
             }
+
             throw new ManagementApiError(
                 "transport",
                 `Network request failed: ${describeManagementFailure(error)}`,
@@ -187,8 +195,10 @@ export function createManagementApi(
         }
 
         const body = isJsonBody(bodyText);
+
         if (!response.ok) {
             const errorResponse = body.isJson ? parseErrorResponse(body.payload) : null;
+
             if (errorResponse === null) {
                 // Not the management API's error domain: only the status is
                 // reportable (README §4.2).
@@ -196,9 +206,11 @@ export function createManagementApi(
                     httpStatus: response.status,
                 });
             }
+
             if (errorResponse.errno === ErrorCode.Unauthorized) {
                 options.onUnauthorized?.(errorResponse.message);
             }
+
             throw new ManagementApiError("gateway", errorResponse.message, {
                 httpStatus: response.status,
                 errno: errorResponse.errno,
@@ -210,6 +222,7 @@ export function createManagementApi(
                 httpStatus: response.status,
             });
         }
+
         return body.payload;
     }
 

@@ -1,8 +1,7 @@
 //! Build-time database schema fingerprinter.
 //!
-//! This script computes a canonical schema fingerprint for the SQLite database
-//! schema in `SCHEMA.sqlite` and writes it to
-//! `$OUT_DIR/database_schema_fingerprint`.
+//! This script computes a canonical schema fingerprint for the SQLite database schema in
+//! `SCHEMA.sqlite` and writes it to `$OUT_DIR/database_schema_fingerprint`.
 
 use std::{env, error::Error as StdError, fs, path::PathBuf};
 use syntaqlite::{FormatConfig, Formatter, fmt::KeywordCase};
@@ -14,8 +13,8 @@ const DATABASE_SCHEMA_PATH: &str = "src/database/SCHEMA.sqlite";
 ///
 /// # Errors
 ///
-/// Returns an error if reading `SCHEMA.sqlite`, formatting, hashing, or
-/// writing the fingerprint file fails.
+/// Returns an error if reading `SCHEMA.sqlite`, formatting, hashing, or writing the fingerprint
+/// file fails.
 fn main() -> Result<(), Box<dyn StdError>> {
     println!("cargo::rerun-if-changed={DATABASE_SCHEMA_PATH}");
 
@@ -36,13 +35,13 @@ fn main() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-/// Normalizes the SQL schema using `syntaqlite` and hashes it with BLAKE3
-/// into a non-zero 32-bit signed integer.
+/// Normalizes the SQL schema using `syntaqlite` and hashes it with BLAKE3 into a non-zero 32-bit
+/// signed integer.
 ///
 /// # Errors
 ///
-/// Returns an error if schema formatting fails or if the fingerprint collides
-/// with the reserved value 0.
+/// Returns an error if schema formatting fails or if the fingerprint collides with the reserved
+/// value 0.
 fn schema_fingerprint_i32(
     formatter: &mut Formatter,
     schema: &str,

@@ -25,8 +25,10 @@ export type ModelsScreenProps = {
 export function ModelsScreen(props: ModelsScreenProps): JSX.Element {
     const [actionFailure, setActionFailure] = createSignal<string | null>(null);
     const providers = createAsyncResource((signal) => props.api.listProviders(signal));
+
     const models = createAsyncResource((signal) => {
         const providerFilter = props.providerFilter;
+
         return props.api.listModels(
             providerFilter === null
                 ? {}
@@ -58,13 +60,16 @@ export function ModelsScreen(props: ModelsScreenProps): JSX.Element {
                 label: "All providers",
             },
         ];
+
         for (const provider of providers.value()?.providers ?? []) {
             options.push({
                 value: String(provider.id),
                 label: provider.name,
             });
         }
+
         const providerFilter = props.providerFilter;
+
         if (
             providerFilter !== null &&
             !options.some((option) => option.value === String(providerFilter))
@@ -74,6 +79,7 @@ export function ModelsScreen(props: ModelsScreenProps): JSX.Element {
                 label: `Provider #${providerFilter} (not in the listing)`,
             });
         }
+
         return options;
     });
 
@@ -83,9 +89,11 @@ export function ModelsScreen(props: ModelsScreenProps): JSX.Element {
 
     const replaceModel = (updated: ModelResponse): void => {
         const current = models.value();
+
         if (current === null) {
             return;
         }
+
         models.setValue({
             models: current.models.map((row) =>
                 row.provider_id === updated.provider_id && row.upstream_id === updated.upstream_id

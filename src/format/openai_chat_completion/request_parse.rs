@@ -1,8 +1,8 @@
-//! Client-request parsing for the Chat Completions codec: the outward
-//! `POST /chat/completions` body deserialized into the IR request.
+//! Client-request parsing for the Chat Completions codec: the outward `POST /chat/completions` body
+//! deserialized into the IR request.
 
 use crate::{
-    format::{self, ParsedRequest},
+    format::{self, ParsedRequest, StringOrArray},
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningEffort, IrRequest, IrResponseFormat,
         IrRole, IrTool, IrToolChoice,
@@ -62,51 +62,48 @@ struct RequestBody {
     stream_options: Option<StreamOptionsIn>,
 }
 
-/// Chat message, tagged by `role`; a member outside the message's own shape is
-/// rejected.
+/// Chat message, tagged by `role`; a member outside the message's own shape is rejected.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "role", rename_all = "lowercase", deny_unknown_fields)]
 enum MessageIn {
     /// System instruction.
     System {
         /// Instruction text: a plain string or an array of text parts.
-        content: format::StringOrArray<TextPartIn>,
+        content: StringOrArray<TextPartIn>,
     },
 
     /// Developer instruction.
     Developer {
         /// Instruction text: a plain string or an array of text parts.
-        content: format::StringOrArray<TextPartIn>,
+        content: StringOrArray<TextPartIn>,
     },
 
     /// User turn.
     User {
         /// Text or mixed text/image content.
-        content: format::StringOrArray<UserPartIn>,
+        content: StringOrArray<UserPartIn>,
     },
 
-    /// Assistant turn. The `reasoning` and `reasoning_content` fields, when
-    /// present, are accepted and ignored: they carry no replayable state in a
-    /// stateless gateway, and the gateway itself emits `reasoning_content`,
-    /// so clients may replay it.
+    /// Assistant turn. The `reasoning` and `reasoning_content` fields, when present, are accepted
+    /// and ignored: they carry no replayable state in a stateless gateway, and the gateway itself
+    /// emits `reasoning_content`, so clients may replay it.
     Assistant {
         /// Text content, when any.
         #[serde(default)]
-        content: Option<format::StringOrArray<TextPartIn>>,
+        content: Option<StringOrArray<TextPartIn>>,
 
         /// Tool invocations made during the turn.
         #[serde(default)]
         tool_calls: Option<Vec<ToolCallIn>>,
 
-        /// Reasoning text under the OpenRouter/vLLM key; accepted and ignored,
-        /// because the gateway itself emits `reasoning_content` and a stateless
-        /// gateway has no replayable reasoning state (README §6.6).
+        /// Reasoning text under the OpenRouter/vLLM key; accepted and ignored, because the gateway
+        /// itself emits `reasoning_content` and a stateless gateway has no replayable reasoning
+        /// state (README §6.6).
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         reasoning: Option<IgnoredAny>,
 
-        /// Reasoning text under the DeepSeek de-facto key; accepted and
-        /// ignored (README §6.6).
+        /// Reasoning text under the DeepSeek de-facto key; accepted and ignored (README §6.6).
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         reasoning_content: Option<IgnoredAny>,
@@ -115,7 +112,7 @@ enum MessageIn {
     /// Tool result.
     Tool {
         /// Result content: a plain string or an array of text parts.
-        content: format::StringOrArray<TextPartIn>,
+        content: StringOrArray<TextPartIn>,
 
         /// Identifier of the invocation being answered.
         tool_call_id: String,
@@ -124,10 +121,9 @@ enum MessageIn {
 
 /// Content part of a text-only role's array content, tagged by `type`.
 ///
-/// The official wire schema admits only text parts on those roles. The image
-/// kind is modelled so the rejection can name the offending kind, and every
-/// further kind lands in [`TextPartIn::Other`], which the conversion rejects
-/// the same way.
+/// The official wire schema admits only text parts on those roles. The image kind is modelled so
+/// the rejection can name the offending kind, and every further kind lands in
+/// [`TextPartIn::Other`], which the conversion rejects the same way.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum TextPartIn {
@@ -145,28 +141,12 @@ enum TextPartIn {
         image_url: Option<IgnoredAny>,
     },
 
-    /// Any other part kind, of which the tag value the enum machinery consumed
-    /// leaves no trace.
+    /// Any other part kind, of which the tag value the enum machinery consumed leaves no trace.
     #[serde(other)]
     Other,
 }
 
-impl TextPartIn {
-    /// The part's wire type name, for the rejection that names the offending
-    /// kind; [`None`] for a kind [`TextPartIn::Other`] swallowed.
-    fn type_name(&self) -> Option<&'static str> {
-        match self {
-            Self::Text { .. } => Some("text"),
-
-            Self::ImageUrl { .. } => Some("image_url"),
-
-            Self::Other => None,
-        }
-    }
-}
-
-/// User content part, tagged by `type`; a member outside the part's own shape
-/// is rejected.
+/// User content part, tagged by `type`; a member outside the part's own shape is rejected.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum UserPartIn {
@@ -181,8 +161,7 @@ enum UserPartIn {
         /// The image reference.
         image_url: ImageUrlIn,
 
-        /// OpenAI image detail hint beside the reference; accepted and ignored
-        /// (README §6.6).
+        /// OpenAI image detail hint beside the reference; accepted and ignored (README §6.6).
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         detail: Option<IgnoredAny>,
@@ -292,10 +271,9 @@ struct ToolChoiceFunctionIn {
     name: String,
 }
 
-/// Response format restriction, tagged by `type`; a member outside the
-/// format's own shape is rejected, and the fieldless formats are empty struct
-/// variants rather than unit variants because only struct variants reject
-/// unknown members.
+/// Response format restriction, tagged by `type`; a member outside the format's own shape is
+/// rejected, and the fieldless formats are empty struct variants rather than unit variants because
+/// only struct variants reject unknown members.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ResponseFormatIn {
@@ -336,12 +314,26 @@ struct StreamOptionsIn {
     include_usage: bool,
 }
 
+impl TextPartIn {
+    /// The part's wire type name, for the rejection that names the offending kind; [`None`] for a
+    /// kind [`TextPartIn::Other`] swallowed.
+    fn type_name(&self) -> Option<&'static str> {
+        match self {
+            Self::Text { .. } => Some("text"),
+
+            Self::ImageUrl { .. } => Some("image_url"),
+
+            Self::Other => None,
+        }
+    }
+}
+
 /// Parses a Chat Completions request body into IR.
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] for malformed JSON, unknown or unsupported
-/// fields, invalid parameter ranges, and invalid image references.
+/// Returns [`InvalidRequest`] for malformed JSON, unknown or unsupported fields, invalid parameter
+/// ranges, and invalid image references.
 pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
     let request: RequestBody = format::parse_client_request(body)?;
 
@@ -359,14 +351,13 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             }
 
             MessageIn::User { content } => {
-                // Only user content carries image parts, so no text-only
-                // rejection applies here.
+                // Only user content carries image parts, so no text-only rejection applies here.
                 let parts = match content {
-                    format::StringOrArray::Text(text) => {
+                    StringOrArray::Text(text) => {
                         vec![IrPart::Text { text: text.clone() }]
                     }
 
-                    format::StringOrArray::Array(parts) => {
+                    StringOrArray::Array(parts) => {
                         let mut converted = Vec::with_capacity(parts.len());
 
                         for part in parts {
@@ -397,11 +388,11 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
                 if let Some(content) = content {
                     match content {
-                        format::StringOrArray::Text(text) => {
+                        StringOrArray::Text(text) => {
                             parts.push(IrPart::Text { text: text.clone() })
                         }
 
-                        format::StringOrArray::Array(parts_in) => {
+                        StringOrArray::Array(parts_in) => {
                             for part in parts_in {
                                 let TextPartIn::Text { text } = part else {
                                     return Err(text_only_content_rejection(
@@ -551,18 +542,17 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     })
 }
 
-/// Flattens string-or-text-parts content into a single string. Parts join
-/// with the same blank-line separator used to concatenate system/developer
-/// messages into IR instructions, so the array form flattens to exactly what
-/// the equivalent plain-string form carries.
+/// Flattens string-or-text-parts content into a single string. Parts join with the same blank-line
+/// separator used to concatenate system/developer messages into IR instructions, so the array form
+/// flattens to exactly what the equivalent plain-string form carries.
 fn flatten_text_content(
-    content: &format::StringOrArray<TextPartIn>,
+    content: &StringOrArray<TextPartIn>,
     role: &str,
 ) -> Result<String, InvalidRequest> {
     let parts = match content {
-        format::StringOrArray::Text(text) => return Ok(text.clone()),
+        StringOrArray::Text(text) => return Ok(text.clone()),
 
-        format::StringOrArray::Array(parts) => parts,
+        StringOrArray::Array(parts) => parts,
     };
 
     let mut combined = String::new();
@@ -582,8 +572,8 @@ fn flatten_text_content(
     Ok(combined)
 }
 
-/// Rejects a content part on a role whose array content admits only text
-/// parts, naming the offending kind when it is one the codec recognizes.
+/// Rejects a content part on a role whose array content admits only text parts, naming the
+/// offending kind when it is one the codec recognizes.
 fn text_only_content_rejection(role: &str, part_type: Option<&str>) -> InvalidRequest {
     let message = match part_type {
         Some(part_type) => {

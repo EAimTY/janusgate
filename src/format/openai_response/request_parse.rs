@@ -1,8 +1,8 @@
-//! Client-request parsing for the Responses codec: the outward
-//! `POST /responses` body deserialized into the IR request.
+//! Client-request parsing for the Responses codec: the outward `POST /responses` body deserialized
+//! into the IR request.
 
 use crate::{
-    format::{self, ParsedRequest},
+    format::{self, ParsedRequest, StringOrArray},
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningEffort, IrRequest, IrResponseFormat,
         IrRole, IrTool, IrToolChoice,
@@ -20,7 +20,7 @@ struct RequestBody {
     model: String,
 
     /// Conversation input: a plain string or an ordered item array.
-    input: format::StringOrArray<ItemIn>,
+    input: StringOrArray<ItemIn>,
 
     /// System instructions.
     #[serde(default)]
@@ -62,42 +62,39 @@ struct RequestBody {
     #[serde(default)]
     text: Option<TextIn>,
 
-    // The remaining fields are stateless-idempotent envelope controls that
-    // typed clients — the codex CLI serializes every one of them on each
-    // request — always carry, but that a stateless gateway can never honor
-    // downstream; each is accepted and ignored, like the item-level
+    // The remaining fields are stateless-idempotent envelope controls that typed clients — the
+    // codex CLI serializes every one of them on each request — always carry, but that a stateless
+    // gateway can never honor downstream; each is accepted and ignored, like the item-level
     // carve-outs above (README §6.6).
     //
-    // `stream_options` has no Responses-specific schema, and `client_metadata`
-    // and `access_programs` are client-declared free-form values, so the
-    // three are ignored in whatever JSON shape they arrive.
-    /// Parallel tool-call switch; the downstream provider decides
-    /// parallelism, so it is accepted and ignored.
+    // `stream_options` has no Responses-specific schema, and `client_metadata` and
+    // `access_programs` are client-declared free-form values, so the three are ignored in whatever
+    // JSON shape they arrive.
+    /// Parallel tool-call switch; the downstream provider decides parallelism, so it is accepted
+    /// and ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     parallel_tool_calls: Option<bool>,
 
     /// Extra output content the client asks to have included (codex asks for
-    /// `reasoning.encrypted_content`); the gateway renders its own output
-    /// shapes, so it is accepted and ignored.
+    /// `reasoning.encrypted_content`); the gateway renders its own output shapes, so it is
+    /// accepted and ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     include: Option<Vec<String>>,
 
-    /// Upstream prompt-cache placement key; cache placement is a downstream
-    /// concern, so it is accepted and ignored.
+    /// Upstream prompt-cache placement key; cache placement is a downstream concern, so it is
+    /// accepted and ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     prompt_cache_key: Option<String>,
 
-    /// Streaming options; usage is always included, so it is accepted and
-    /// ignored.
+    /// Streaming options; usage is always included, so it is accepted and ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     stream_options: IgnoredAny,
 
-    /// Requested service tier; the gateway has no tier control, so it is
-    /// accepted and ignored.
+    /// Requested service tier; the gateway has no tier control, so it is accepted and ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     service_tier: Option<String>,
@@ -115,17 +112,17 @@ struct RequestBody {
 
 /// Input item, tagged by `type`.
 ///
-/// The shapes are strict: a member outside the item's own shape is rejected.
-/// The exception is a `reasoning` item, whose payload is accepted and ignored
-/// in whatever shape it arrives, because it carries no replayable state — the
-/// variant captures every member beside its tag for exactly that reason.
+/// The shapes are strict: a member outside the item's own shape is rejected. The exception is a
+/// `reasoning` item, whose payload is accepted and ignored in whatever shape it arrives, because it
+/// carries no replayable state — the variant captures every member beside its tag for exactly that
+/// reason.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ItemIn {
     /// Conversation message.
     Message {
-        /// Gateway-rendered item identifier; accepted and ignored, because
-        /// codex replays parsed output items verbatim each turn (README §6.6).
+        /// Gateway-rendered item identifier; accepted and ignored, because codex replays parsed
+        /// output items verbatim each turn (README §6.6).
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         id: Option<IgnoredAny>,
@@ -134,7 +131,7 @@ enum ItemIn {
         role: String,
 
         /// Text or typed content.
-        content: format::StringOrArray<PartIn>,
+        content: StringOrArray<PartIn>,
 
         /// Gateway-rendered item phase; accepted and ignored (README §6.6).
         #[serde(default)]
@@ -149,8 +146,7 @@ enum ItemIn {
 
     /// A past tool invocation.
     FunctionCall {
-        /// Gateway-rendered item identifier; accepted and ignored (README
-        /// §6.6).
+        /// Gateway-rendered item identifier; accepted and ignored (README §6.6).
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         id: Option<IgnoredAny>,
@@ -177,8 +173,7 @@ enum ItemIn {
 
     /// A tool result.
     FunctionCallOutput {
-        /// Gateway-rendered item identifier; accepted and ignored (README
-        /// §6.6).
+        /// Gateway-rendered item identifier; accepted and ignored (README §6.6).
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         id: Option<IgnoredAny>,
@@ -187,7 +182,7 @@ enum ItemIn {
         call_id: String,
 
         /// Result content: a plain string or an array of text parts.
-        output: format::StringOrArray<OutputPartIn>,
+        output: StringOrArray<OutputPartIn>,
 
         /// Gateway-rendered item status; accepted and ignored (README §6.6).
         #[serde(default)]
@@ -195,9 +190,8 @@ enum ItemIn {
         status: Option<IgnoredAny>,
     },
 
-    /// Reasoning items carry no replayable state: the payload is accepted and
-    /// ignored in whatever shape it arrives, so every member beside the tag
-    /// lands here.
+    /// Reasoning items carry no replayable state: the payload is accepted and ignored in whatever
+    /// shape it arrives, so every member beside the tag lands here.
     Reasoning(BTreeMap<String, IgnoredAny>),
 }
 
@@ -207,15 +201,14 @@ impl ItemIn {
         Self::Message {
             id: None,
             role: "user".to_string(),
-            content: format::StringOrArray::Text(text),
+            content: StringOrArray::Text(text),
             phase: None,
             status: None,
         }
     }
 }
 
-/// Content part, tagged by `type`; a member outside the part's own shape is
-/// rejected.
+/// Content part, tagged by `type`; a member outside the part's own shape is rejected.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum PartIn {
@@ -230,15 +223,14 @@ enum PartIn {
         /// The text content.
         text: String,
 
-        /// Gateway-rendered annotations; accepted and ignored, because the
-        /// gateway's own rendered `output_text` parts carry the member and
-        /// replaying an aggregated response verbatim must parse (README §6.6).
+        /// Gateway-rendered annotations; accepted and ignored, because the gateway's own rendered
+        /// `output_text` parts carry the member and replaying an aggregated response verbatim must
+        /// parse (README §6.6).
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         annotations: Option<IgnoredAny>,
 
-        /// Gateway-rendered log probabilities; accepted and ignored (README
-        /// §6.6).
+        /// Gateway-rendered log probabilities; accepted and ignored (README §6.6).
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         logprobs: Option<IgnoredAny>,
@@ -258,10 +250,9 @@ enum PartIn {
 
 /// Content part of a `function_call_output` output array, tagged by `type`.
 ///
-/// Only `input_text` is supported: the IR tool output has no media channel.
-/// The image and file kinds are modelled so the rejection can name the
-/// offending kind, and every further kind lands in [`OutputPartIn::Other`],
-/// which the conversion rejects the same way.
+/// Only `input_text` is supported: the IR tool output has no media channel. The image and file
+/// kinds are modelled so the rejection can name the offending kind, and every further kind lands in
+/// [`OutputPartIn::Other`], which the conversion rejects the same way.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum OutputPartIn {
@@ -302,15 +293,14 @@ enum OutputPartIn {
         filename: Option<IgnoredAny>,
     },
 
-    /// Any other part kind, of which the tag value the enum machinery
-    /// consumed leaves no trace.
+    /// Any other part kind, of which the tag value the enum machinery consumed leaves no trace.
     #[serde(other)]
     Other,
 }
 
 impl OutputPartIn {
-    /// The part's wire type name, for the rejection that names the offending
-    /// kind; [`None`] for a kind [`OutputPartIn::Other`] swallowed.
+    /// The part's wire type name, for the rejection that names the offending kind; [`None`] for a
+    /// kind [`OutputPartIn::Other`] swallowed.
     fn type_name(&self) -> Option<&'static str> {
         match self {
             Self::InputText { .. } => Some("input_text"),
@@ -388,16 +378,16 @@ struct TextIn {
     #[serde(default)]
     format: Option<FormatIn>,
 
-    /// Output verbosity hint (codex `TextControls`); the IR has no verbosity
-    /// channel, so it is accepted and ignored.
+    /// Output verbosity hint (codex `TextControls`); the IR has no verbosity channel, so it is
+    /// accepted and ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     verbosity: Option<String>,
 }
 
-/// Response format, tagged by `type`; a member outside the format's own shape
-/// is rejected, and the fieldless formats are empty struct variants rather
-/// than unit variants because only struct variants reject unknown members.
+/// Response format, tagged by `type`; a member outside the format's own shape is rejected, and the
+/// fieldless formats are empty struct variants rather than unit variants because only struct
+/// variants reject unknown members.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FormatIn {
@@ -426,8 +416,8 @@ enum FormatIn {
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] for malformed JSON, unknown or unsupported
-/// fields, invalid parameter ranges, and invalid image references.
+/// Returns [`InvalidRequest`] for malformed JSON, unknown or unsupported fields, invalid parameter
+/// ranges, and invalid image references.
 pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
     let request: RequestBody = format::parse_client_request(body)?;
 
@@ -454,9 +444,9 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     let mut messages: Vec<IrMessage> = Vec::new();
 
     let input_items: Vec<ItemIn> = match request.input {
-        format::StringOrArray::Text(text) => vec![ItemIn::user_text(text)],
+        StringOrArray::Text(text) => vec![ItemIn::user_text(text)],
 
-        format::StringOrArray::Array(items) => items,
+        StringOrArray::Array(items) => items,
     };
 
     for item in input_items {
@@ -538,6 +528,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     let tool_choice = match &request.tool_choice {
         None => None,
+
         Some(choice) => {
             format::reject_tool_choice_without_tools(tools.is_empty())?;
 
@@ -557,6 +548,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         None => None,
         Some(FormatIn::Text {}) => Some(IrResponseFormat::Text),
         Some(FormatIn::JsonObject {}) => Some(IrResponseFormat::Json),
+
         Some(FormatIn::JsonSchema {
             name,
             schema,
@@ -573,6 +565,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         .and_then(|reasoning| reasoning.effort.as_ref())
     {
         None => None,
+
         Some(effort) => Some(IrReasoningEffort::parse_openai(effort).ok_or_else(|| {
             InvalidRequest::field("effort", format!("Unknown reasoning effort `{effort}`"))
         })?),
@@ -596,8 +589,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     })
 }
 
-/// Combines the `instructions` field with system/developer message texts in
-/// encounter order.
+/// Combines the `instructions` field with system/developer message texts in encounter order.
 fn build_instructions(direct: Option<String>, pushed: Vec<String>) -> Option<String> {
     let mut combined = Vec::with_capacity(pushed.len() + 1);
 
@@ -618,14 +610,14 @@ fn build_instructions(direct: Option<String>, pushed: Vec<String>) -> Option<Str
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] naming the offending content part when the
-/// message carries non-text parts: instructions have no image channel, so
-/// silently dropping parts would lose request content.
-fn message_content_text(content: &format::StringOrArray<PartIn>) -> Result<String, InvalidRequest> {
+/// Returns [`InvalidRequest`] naming the offending content part when the message carries non-text
+/// parts: instructions have no image channel, so silently dropping parts would lose request
+/// content.
+fn message_content_text(content: &StringOrArray<PartIn>) -> Result<String, InvalidRequest> {
     match content {
-        format::StringOrArray::Text(text) => Ok(text.clone()),
+        StringOrArray::Text(text) => Ok(text.clone()),
 
-        format::StringOrArray::Array(parts) => {
+        StringOrArray::Array(parts) => {
             let mut combined = String::new();
 
             for part in parts {
@@ -658,13 +650,11 @@ fn message_content_text(content: &format::StringOrArray<PartIn>) -> Result<Strin
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] for malformed image references.
-fn message_content_parts(
-    content: &format::StringOrArray<PartIn>,
-) -> Result<Vec<IrPart>, InvalidRequest> {
+fn message_content_parts(content: &StringOrArray<PartIn>) -> Result<Vec<IrPart>, InvalidRequest> {
     match content {
-        format::StringOrArray::Text(text) => Ok(vec![IrPart::Text { text: text.clone() }]),
+        StringOrArray::Text(text) => Ok(vec![IrPart::Text { text: text.clone() }]),
 
-        format::StringOrArray::Array(parts) => {
+        StringOrArray::Array(parts) => {
             let mut converted = Vec::with_capacity(parts.len());
 
             for part in parts {
@@ -684,23 +674,19 @@ fn message_content_parts(
     }
 }
 
-/// Extracts plain text from a `function_call_output` item's `output`. Text
-/// parts join with the same blank-line separator the Chat Completions codec
-/// uses for its text-parts content, so the array form flattens to exactly
-/// what the equivalent plain-string form carries.
+/// Extracts plain text from a `function_call_output` item's `output`. Text parts join with the same
+/// blank-line separator the Chat Completions codec uses for its text-parts content, so the array
+/// form flattens to exactly what the equivalent plain-string form carries.
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] naming `output` for a recognized non-text part:
-/// the IR tool output has no media channel, so silently dropping such a part
-/// would lose request content.
-fn tool_output_text(
-    output: &format::StringOrArray<OutputPartIn>,
-) -> Result<String, InvalidRequest> {
+/// Returns [`InvalidRequest`] naming `output` for a recognized non-text part: the IR tool output
+/// has no media channel, so silently dropping such a part would lose request content.
+fn tool_output_text(output: &StringOrArray<OutputPartIn>) -> Result<String, InvalidRequest> {
     let parts = match output {
-        format::StringOrArray::Text(text) => return Ok(text.clone()),
+        StringOrArray::Text(text) => return Ok(text.clone()),
 
-        format::StringOrArray::Array(parts) => parts,
+        StringOrArray::Array(parts) => parts,
     };
 
     let mut combined = String::new();
@@ -731,17 +717,21 @@ fn tool_output_text(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::parse_request;
+    use crate::{
+        format::ParsedRequest,
+        ir::{InvalidRequest, IrPart, IrReasoningEffort, IrResponseFormat, IrRole},
+    };
+    use serde_json::Value;
 
     /// Parses one request body given as JSON.
     fn parse(body: Value) -> Result<ParsedRequest, InvalidRequest> {
         parse_request(body.to_string().as_bytes())
     }
 
-    /// A `message` input item carrying the gateway-rendered `id` and `status`
-    /// fields parses: the gateway's own assistant message output items carry
-    /// both, so replaying a response verbatim as the next request's input —
-    /// the codex replay loop — must parse (README §6.6 history-replay
+    /// A `message` input item carrying the gateway-rendered `id` and `status` fields parses: the
+    /// gateway's own assistant message output items carry both, so replaying a response verbatim as
+    /// the next request's input — the codex replay loop — must parse (README §6.6 history-replay
     /// carve-outs).
     ///
     /// # Panics
@@ -793,10 +783,9 @@ mod tests {
         );
     }
 
-    /// An `input_image` part carrying the official `detail` hint parses to
-    /// the same IR as the part without it: typed SDK clients send `detail`
-    /// on every `input_image`, and the gateway cannot honor it downstream,
-    /// so it is accepted and ignored like `strict` (README §6.6).
+    /// An `input_image` part carrying the official `detail` hint parses to the same IR as the part
+    /// without it: typed SDK clients send `detail` on every `input_image`, and the gateway cannot
+    /// honor it downstream, so it is accepted and ignored like `strict` (README §6.6).
     ///
     /// # Panics
     ///
@@ -841,10 +830,9 @@ mod tests {
         assert_eq!(detailed.ir.messages, plain.ir.messages);
     }
 
-    /// A `function_call_output` item accepts the official plain-string form
-    /// and the content-parts array form, and the text-parts array flattens
-    /// to exactly the string form's tool output with the blank-line
-    /// separator (README §6.6).
+    /// A `function_call_output` item accepts the official plain-string form and the content-parts
+    /// array form, and the text-parts array flattens to exactly the string form's tool output with
+    /// the blank-line separator (README §6.6).
     ///
     /// # Panics
     ///
@@ -895,14 +883,12 @@ mod tests {
         );
     }
 
-    /// The full codex CLI request envelope parses: with `wire_api =
-    /// "responses"` the CLI always serializes `parallel_tool_calls`,
-    /// `include`, `prompt_cache_key`, `text.verbosity`, `service_tier`,
-    /// `client_metadata`, and `access_programs` beside the supported fields,
-    /// and rejecting any of them would 400 the client's first request before
-    /// the item-level carve-outs are ever reached (README §6.6). The
-    /// supported fields inside the envelope — streaming, reasoning effort,
-    /// and `text.format` — keep their semantics.
+    /// The full codex CLI request envelope parses: with `wire_api = "responses"` the CLI always
+    /// serializes `parallel_tool_calls`, `include`, `prompt_cache_key`, `text.verbosity`,
+    /// `service_tier`, `client_metadata`, and `access_programs` beside the supported fields, and
+    /// rejecting any of them would 400 the client's first request before the item-level carve-outs
+    /// are ever reached (README §6.6). The supported fields inside the envelope — streaming,
+    /// reasoning effort, and `text.format` — keep their semantics.
     ///
     /// # Panics
     ///
@@ -940,9 +926,9 @@ mod tests {
         assert_eq!(parsed.ir.response_format, Some(IrResponseFormat::Text));
     }
 
-    /// The envelope control fields are accepted and ignored: the same request
-    /// with and without them parses to identical IR, so their presence never
-    /// changes routing or the upstream render (README §6.6).
+    /// The envelope control fields are accepted and ignored: the same request with and without them
+    /// parses to identical IR, so their presence never changes routing or the upstream render
+    /// (README §6.6).
     ///
     /// # Panics
     ///
@@ -985,9 +971,8 @@ mod tests {
         assert_eq!(decorated.is_streaming, plain.is_streaming);
     }
 
-    /// A non-text part in a `function_call_output` output array is rejected
-    /// naming `output`: the IR tool output has no media channel, so image
-    /// and file parts cannot be carried (README §6.6).
+    /// A non-text part in a `function_call_output` output array is rejected naming `output`: the IR
+    /// tool output has no media channel, so image and file parts cannot be carried (README §6.6).
     ///
     /// # Panics
     ///
@@ -1034,11 +1019,10 @@ mod tests {
         }
     }
 
-    /// Unknown members are rejected wherever the protocol defines a shape: an
-    /// item member outside the item's own shape, a content-part member outside
-    /// the part's own shape, a member beside a fieldless response format, and a
-    /// member beside the request envelope's own fields. serde's rejection names
-    /// the offending member, which is the contract README §6.6 documents.
+    /// Unknown members are rejected wherever the protocol defines a shape: an item member outside
+    /// the item's own shape, a content-part member outside the part's own shape, a member beside a
+    /// fieldless response format, and a member beside the request envelope's own fields. serde's
+    /// rejection names the offending member, which is the contract README §6.6 documents.
     ///
     /// # Panics
     ///
@@ -1096,9 +1080,9 @@ mod tests {
         }
     }
 
-    /// A `reasoning` input item carries no replayable state, so its payload is
-    /// accepted in whatever shape it arrives — unknown members included — while
-    /// every other item shape stays strict (README §6.6).
+    /// A `reasoning` input item carries no replayable state, so its payload is accepted in whatever
+    /// shape it arrives — unknown members included — while every other item shape stays strict
+    /// (README §6.6).
     ///
     /// # Panics
     ///
@@ -1126,11 +1110,10 @@ mod tests {
         assert_eq!(parsed.ir.messages.len(), 1);
     }
 
-    /// The official `none` effort — the OpenAI vocabulary's explicit
-    /// no-reasoning value — parses to the canonical `off` level, the same
-    /// level `minimal` maps to, and the closed vocabulary still rejects
-    /// `xhigh`: the canonical set has no target for it that would not
-    /// silently downgrade an explicit client request (README §6.4).
+    /// The official `none` effort — the OpenAI vocabulary's explicit no-reasoning value — parses to
+    /// the canonical `off` level, the same level `minimal` maps to, and the closed vocabulary still
+    /// rejects `xhigh`: the canonical set has no target for it that would not silently downgrade an
+    /// explicit client request (README §6.4).
     ///
     /// # Panics
     ///

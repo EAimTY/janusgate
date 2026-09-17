@@ -20,6 +20,7 @@ export function ConnectionSetupScreen(): JSX.Element {
 
     const state = connectionService.connectionState;
     const isVerifying = (): boolean => state().status === "verifying";
+
     const notice = (): string | null => {
         const currentState = state();
         return currentState.status === "unconnected" ? currentState.notice : null;
@@ -27,6 +28,7 @@ export function ConnectionSetupScreen(): JSX.Element {
 
     const submit = (event: SubmitEvent): void => {
         event.preventDefault();
+
         if (isVerifying()) {
             return;
         }
@@ -35,6 +37,7 @@ export function ConnectionSetupScreen(): JSX.Element {
         const tokenFailure = token() === "" ? "Enter the management token." : null;
         setBaseUrlError(normalization.ok ? null : normalization.reason);
         setTokenError(tokenFailure);
+
         if (!normalization.ok || tokenFailure !== null) {
             return;
         }

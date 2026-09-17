@@ -1,103 +1,102 @@
-//! Management API version 0: its own route surface, self-contained error
-//! domain, and handling.
+//! Management API version 0: its own route surface, self-contained error domain, and handling.
 //!
-//! A management API version owns everything that can break between versions —
-//! its routes, its request and response payloads, and its error taxonomy —
-//! and nothing else: the management API module mounts this router at
-//! [`PREFIX`] and applies the cross-version CORS policy, while authentication,
-//! the body limit, and the errno-shaped 404 fallback belong to the version
-//! itself.
+//! A management API version owns everything that can break between versions — its routes, its
+//! request and response payloads, and its error taxonomy — and nothing else: the management API
+//! module mounts this router at [`PREFIX`] and applies the cross-version CORS policy, while
+//! authentication, the body limit, and the errno-shaped 404 fallback belong to the version itself.
 //!
-//! Version 0's wire surface follows the seven design rules README §7.0
-//! states: one action per route, two-state fields (never tri-state), full-
-//! state updates, type-discriminated unions, `<entity>_id` request
-//! references, POST-with-a-JSON-body everywhere, and responses that carry
+//! Version 0's wire surface follows the seven design rules README §7.0 states: one action per
+//! route, two-state fields (never tri-state), full-state updates, type-discriminated unions,
+//! `<entity>_id` request references, POST-with-a-JSON-body everywhere, and responses that carry
 //! only facts the caller cannot know.
 //!
-//! Handlers follow axum's own shape: a request body extracts through
-//! `Json` wrapped in `WithRejection` with [`Error`] as the rejection
-//! type, and every handler returns `Result<Json<..>, Error>`, so a failure
-//! leaves through the one [`IntoResponse`] boundary that logs and renders
-//! it — no handler matches on errors or logs them itself.
-
-mod error;
-mod models;
-mod oauth_flow;
+//! Handlers follow axum's own shape: a request body extracts through `Json` wrapped in
+//! `WithRejection` with [`Error`] as the rejection type, and every handler returns
+//! `Result<Json<..>, Error>`, so a failure leaves through the one [`IntoResponse`] boundary that
+//! logs and renders it — no handler matches on errors or logs them itself.
 
 use self::error::Error;
-// This version's public wire surface: every route marker and every route's
-// request and response payload types. Nested wire shapes — provider and model
-// rows, captured credentials — stay private, and the route contract itself is
-// shared at [`crate::management_api::Route`].
-pub use crate::format::UpstreamFormat;
 #[cfg(feature = "management-api-typescript-bindings")]
-use crate::management_api::route::RouteBinding;
+use crate::management_api::route as route_helper;
 #[cfg(feature = "management-api-typescript-bindings")]
-use crate::management_api::route::{
-    OrderedVocabulary, PayloadSource, ordered_vocabulary, payload_binding,
-};
-use crate::{context::Context, management_api::Route, provider::Provider, security};
-pub use crate::{
-    ir::IrReasoningEffort,
-    provider::{OAuthProviderType, ProviderType},
-};
+use crate::management_api::route::{OrderedVocabulary, PayloadSource, RouteBinding};
+use crate::{context::Context, management_api::Route as _, provider::Provider, security};
 use axum::{
     Router,
     extract::{DefaultBodyLimit, OriginalUri, Request},
     http::{Method, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
-    routing::{MethodFilter, on},
+    response::{IntoResponse as _, Response},
+    routing::{self, MethodFilter},
 };
-pub use error::{ErrorCode, ErrorResponse};
-pub use models::{
-    DiscoverModels, DiscoverModelsRequest, DiscoverModelsResponse, ListModels, ListModelsRequest,
-    ListModelsResponse, ModelEnvelope, ModelResponse, UpdateModel, UpdateModelRequest,
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
+    de::{Error as DeError, Visitor},
 };
-pub use oauth_flow::{
-    CompleteProviderOauth, CompleteProviderOauthRequest, ReauthorizeProvider,
-    ReauthorizeProviderRequest, ReauthorizeProviderResponse, StartProviderOauth,
-    StartProviderOauthRequest, StartProviderOauthResponse,
+use std::{
+    fmt::{Error as FmtError, Formatter},
+    marker::PhantomData,
 };
-pub use providers::{
-    CreateProvider, CreateProviderRequest, DeleteProvider, DeleteProviderRequest, ListProviders,
-    ListProvidersRequest, ListProvidersResponse, UpdateProvider, UpdateProviderRequest,
-};
-use serde::{Deserialize, Deserializer, Serialize, de::Visitor};
-use std::marker::PhantomData;
 
+mod error;
+mod models;
+mod oauth_flow;
 mod providers;
 
-/// URL prefix this version is mounted at, relative to the management API
-/// router. Its version segment also names this version's TypeScript bindings
-/// file.
+// This version's public wire surface: every route marker and every route's request and response
+// payload types. Nested wire shapes — provider and model rows, captured credentials — stay private,
+// and the route contract itself is shared at [`crate::management_api::Route`].
+pub use self::{
+    error::{ErrorCode, ErrorResponse},
+    models::{
+        DiscoverModels, DiscoverModelsRequest, DiscoverModelsResponse, ListModels,
+        ListModelsRequest, ListModelsResponse, ModelEnvelope, ModelResponse, UpdateModel,
+        UpdateModelRequest,
+    },
+    oauth_flow::{
+        CompleteProviderOauth, CompleteProviderOauthRequest, ReauthorizeProvider,
+        ReauthorizeProviderRequest, ReauthorizeProviderResponse, StartProviderOauth,
+        StartProviderOauthRequest, StartProviderOauthResponse,
+    },
+    providers::{
+        CreateProvider, CreateProviderRequest, DeleteProvider, DeleteProviderRequest,
+        ListProviders, ListProvidersRequest, ListProvidersResponse, UpdateProvider,
+        UpdateProviderRequest,
+    },
+};
+pub use crate::{
+    format::UpstreamFormat,
+    ir::IrReasoningEffort,
+    provider::{OAuthProviderType, ProviderType},
+};
+
+/// URL prefix this version is mounted at, relative to the management API router. Its version
+/// segment also names this version's TypeScript bindings file.
 pub const PREFIX: &str = "/v0";
 
-/// Every route of this version, collected link-time; iteration order is
-/// unspecified, so the bindings generator sorts before rendering. This
-/// version's `route!` macro registers into it, and the management API module
-/// reads it for bindings generation.
+/// Every route of this version, collected link-time; iteration order is unspecified, so the
+/// bindings generator sorts before rendering. This version's `route!` macro registers into it, and
+/// the management API module reads it for bindings generation.
 #[cfg(feature = "management-api-typescript-bindings")]
 #[linkme::distributed_slice]
 pub(super) static ROUTES: [RouteBinding];
 
-/// Payload types this version's bindings publish besides its route payloads:
-/// the error body, which carries the errno taxonomy this version pins.
+/// Payload types this version's bindings publish besides its route payloads: the error body, which
+/// carries the errno taxonomy this version pins.
 #[cfg(feature = "management-api-typescript-bindings")]
-pub(super) static EXPORTED_TYPES: &[PayloadSource] = &[payload_binding::<ErrorResponse>];
+pub(super) static EXPORTED_TYPES: &[PayloadSource] =
+    &[route_helper::payload_binding::<ErrorResponse>];
 
-/// The closed vocabularies this version's bindings publish whose variant
-/// order is itself a published fact: the canonical thinking levels (§6.4),
-/// ordered by increasing reasoning strength, render as an ordered const tuple
-/// with the level union derived from it.
+/// The closed vocabularies this version's bindings publish whose variant order is itself a
+/// published fact: the canonical thinking levels (§6.4), ordered by increasing reasoning strength,
+/// render as an ordered const tuple with the level union derived from it.
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) static ORDERED_VOCABULARIES: &[OrderedVocabulary] =
-    &[ordered_vocabulary::<IrReasoningEffort>];
+    &[route_helper::ordered_vocabulary::<IrReasoningEffort>];
 
-/// Declares one version 0 route, registering it in [`ROUTES`]. The shared
-/// `route!` macro carries the declaration syntax and the contract a route
-/// must satisfy; this wrapper binds the version's registry, so a declaration
-/// names neither the registry nor the version.
+/// Declares one version 0 route, registering it in [`ROUTES`]. The shared `route!` macro carries
+/// the declaration syntax and the contract a route must satisfy; this wrapper binds the version's
+/// registry, so a declaration names neither the registry nor the version.
 macro_rules! route {
     ($($declaration:tt)*) => {
         $crate::management_api::route::route! {
@@ -111,18 +110,18 @@ pub(super) use route;
 
 /// Maximum accepted request body size for the management API.
 ///
-/// Management payloads are small JSON documents, so 2 MiB — axum's default,
-/// made explicit here so the limit is deliberate and greppable — is generous;
-/// the outward client surface allows 64 MiB for inline image data.
+/// Management payloads are small JSON documents, so 2 MiB — axum's default, made explicit here so
+/// the limit is deliberate and greppable — is generous; the outward client surface allows 64 MiB
+/// for inline image data.
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Converts a route's method constant into axum's method filter.
 ///
 /// # Panics
 ///
-/// Panics when the method is not a standard HTTP method; management routes
-/// declare standard methods only, so this is a route-declaration invariant.
-fn method_filter(method: &http::Method) -> MethodFilter {
+/// Panics when the method is not a standard HTTP method; management routes declare standard methods
+/// only, so this is a route-declaration invariant.
+fn method_filter(method: &Method) -> MethodFilter {
     #[expect(
         clippy::expect_used,
         reason = "management routes declare standard HTTP methods only"
@@ -130,78 +129,62 @@ fn method_filter(method: &http::Method) -> MethodFilter {
     MethodFilter::try_from(method.clone()).expect("non-standard HTTP method")
 }
 
-/// Constructs this version's router with its own token authentication, 404
-/// response, and body limit. Method and path are wired from each route's
-/// [`Route`] constants, so the `route!` declaration is the single place they
-/// are written.
+/// Constructs this version's router with its own token authentication, 404 response, and body
+/// limit. Method and path are wired from each route's [`Route`] constants, so the `route!`
+/// declaration is the single place they are written.
 ///
-/// The router defines no CORS policy of its own: the management API router
-/// applies the cross-version one around it.
+/// The router defines no CORS policy of its own: the management API router applies the
+/// cross-version one around it.
 pub(super) fn router() -> Router<Context> {
     Router::new()
         .route(
-            providers::ListProviders::PATH,
-            on(
-                method_filter(&providers::ListProviders::METHOD),
-                providers::list,
-            ),
+            ListProviders::PATH,
+            routing::on(method_filter(&ListProviders::METHOD), providers::list),
         )
         .route(
-            providers::CreateProvider::PATH,
-            on(
-                method_filter(&providers::CreateProvider::METHOD),
-                providers::create,
-            ),
+            CreateProvider::PATH,
+            routing::on(method_filter(&CreateProvider::METHOD), providers::create),
         )
         .route(
-            providers::UpdateProvider::PATH,
-            on(
-                method_filter(&providers::UpdateProvider::METHOD),
-                providers::update,
-            ),
+            UpdateProvider::PATH,
+            routing::on(method_filter(&UpdateProvider::METHOD), providers::update),
         )
         .route(
-            providers::DeleteProvider::PATH,
-            on(
-                method_filter(&providers::DeleteProvider::METHOD),
-                providers::delete,
-            ),
+            DeleteProvider::PATH,
+            routing::on(method_filter(&DeleteProvider::METHOD), providers::delete),
         )
         .route(
-            oauth_flow::StartProviderOauth::PATH,
-            on(
-                method_filter(&oauth_flow::StartProviderOauth::METHOD),
+            StartProviderOauth::PATH,
+            routing::on(
+                method_filter(&StartProviderOauth::METHOD),
                 oauth_flow::start,
             ),
         )
         .route(
-            oauth_flow::CompleteProviderOauth::PATH,
-            on(
-                method_filter(&oauth_flow::CompleteProviderOauth::METHOD),
+            CompleteProviderOauth::PATH,
+            routing::on(
+                method_filter(&CompleteProviderOauth::METHOD),
                 oauth_flow::complete,
             ),
         )
         .route(
-            oauth_flow::ReauthorizeProvider::PATH,
-            on(
-                method_filter(&oauth_flow::ReauthorizeProvider::METHOD),
+            ReauthorizeProvider::PATH,
+            routing::on(
+                method_filter(&ReauthorizeProvider::METHOD),
                 oauth_flow::reauthorize,
             ),
         )
         .route(
-            models::ListModels::PATH,
-            on(method_filter(&models::ListModels::METHOD), models::list),
+            ListModels::PATH,
+            routing::on(method_filter(&ListModels::METHOD), models::list),
         )
         .route(
-            models::DiscoverModels::PATH,
-            on(
-                method_filter(&models::DiscoverModels::METHOD),
-                models::discover,
-            ),
+            DiscoverModels::PATH,
+            routing::on(method_filter(&DiscoverModels::METHOD), models::discover),
         )
         .route(
-            models::UpdateModel::PATH,
-            on(method_filter(&models::UpdateModel::METHOD), models::update),
+            UpdateModel::PATH,
+            routing::on(method_filter(&UpdateModel::METHOD), models::update),
         )
         .fallback(fallback)
         .method_not_allowed_fallback(method_not_allowed)
@@ -209,9 +192,9 @@ pub(super) fn router() -> Router<Context> {
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
-/// Authenticates the request against the bearer-less management token. A
-/// rejected request renders [`Error::Unauthorized`] through the shared
-/// boundary, which logs it.
+/// Authenticates the request against the bearer-less management token. The token is read from the
+/// live configuration, so a reload rotates it immediately. A rejected request renders
+/// [`Error::Unauthorized`] through the shared boundary, which logs it.
 async fn authenticate(request: Request, next: Next) -> Response {
     let is_authorized = request
         .headers()
@@ -228,9 +211,9 @@ async fn authenticate(request: Request, next: Next) -> Response {
     }
 }
 
-/// Handles a request whose method is not registered on an otherwise-matching
-/// path with the version's error-shaped 405. axum still attaches the `Allow`
-/// header listing the registered methods.
+/// Handles a request whose method is not registered on an otherwise-matching path with the
+/// version's error-shaped 405. axum still attaches the `Allow` header listing the registered
+/// methods.
 async fn method_not_allowed(method: Method, OriginalUri(uri): OriginalUri) -> Error {
     Error::MethodNotAllowed {
         method,
@@ -238,8 +221,7 @@ async fn method_not_allowed(method: Method, OriginalUri(uri): OriginalUri) -> Er
     }
 }
 
-/// Handles this version's unmapped paths with the version's error-shaped
-/// 404.
+/// Handles this version's unmapped paths with the version's error-shaped 404.
 async fn fallback(method: Method, OriginalUri(uri): OriginalUri) -> Error {
     Error::UnmappedPath {
         method,
@@ -247,9 +229,8 @@ async fn fallback(method: Method, OriginalUri(uri): OriginalUri) -> Error {
     }
 }
 
-/// Validates a management request identifier. Identifier content — its
-/// characters, case, and length — is the caller's choice; the backend
-/// enforces only structural non-emptiness (README §7).
+/// Validates a management request identifier. Identifier content — its characters, case, and length
+/// — is the caller's choice; the backend enforces only structural non-emptiness (README §7).
 ///
 /// # Errors
 ///
@@ -262,20 +243,17 @@ fn validate_identifier(param: &'static str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// The success body of a route whose operation produces no fact the caller
-/// cannot know (README §7.0 rule 7): an empty JSON object, shared by
-/// reference like every other response shape.
+/// The success body of a route whose operation produces no fact the caller cannot know (README §7.0
+/// rule 7): an empty JSON object, shared by reference like every other response shape.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct EmptyResponse {}
 
-/// A provider row in its management wire shape (README §7.1): a union
-/// discriminated by `type`, one variant per account kind, each carrying
-/// exactly the fields that kind has — so no response ever renders another
-/// kind's field as a `null` placeholder. Credentials are never returned.
-/// `id` is the provider's public identifier — every management reference to
-/// an existing provider goes through `provider_id` — while `name` is the
-/// unique, renameable label.
+/// A provider row in its management wire shape (README §7.1): a union discriminated by `type`, one
+/// variant per account kind, each carrying exactly the fields that kind has — so no response ever
+/// renders another kind's field as a `null` placeholder. Credentials are never returned. `id` is
+/// the provider's public identifier — every management reference to an existing provider goes
+/// through `provider_id` — while `name` is the unique, renameable label.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -295,9 +273,9 @@ pub enum ProviderResponse {
         /// Whether the provider serves traffic.
         is_enabled: bool,
 
-        /// Unix timestamp when the OAuth access token expires; `null` when
-        /// the stored credentials carry no expiry — the not-fresh state of
-        /// §3, entered only by a hand-replaced credential.
+        /// Unix timestamp when the OAuth access token expires; `null` when the stored credentials
+        /// carry no expiry — the not-fresh state of §3, entered only by a hand-replaced
+        /// credential.
         expires_at: Option<i64>,
     },
 
@@ -316,9 +294,9 @@ pub enum ProviderResponse {
         /// Whether the provider serves traffic.
         is_enabled: bool,
 
-        /// Unix timestamp when the OAuth access token expires; `null` when
-        /// the stored credentials carry no expiry — the not-fresh state of
-        /// §3, entered only by a hand-replaced credential.
+        /// Unix timestamp when the OAuth access token expires; `null` when the stored credentials
+        /// carry no expiry — the not-fresh state of §3, entered only by a hand-replaced
+        /// credential.
         expires_at: Option<i64>,
     },
 
@@ -350,17 +328,15 @@ impl ProviderResponse {
     ///
     /// # Panics
     ///
-    /// Panics when an `openai_compatible` row carries no base URL or
-    /// protocol: creation requires both and update restates both, so a
-    /// missing one is storage drift.
+    /// Panics when an `openai_compatible` row carries no base URL or protocol: creation requires
+    /// both and update restates both, so a missing one is storage drift.
     fn from_provider(provider: &Provider) -> Self {
-        // `expires_at` mirrors the nullable storage column: an OAuth
-        // provider whose credentials an exchange minted carries the
-        // exchange's expiry, while one whose credentials were replaced by
-        // hand through `providers:update` carries none — the not-fresh
-        // state the gateway refreshes on first use (§3).
+        // `expires_at` mirrors the nullable storage column: an OAuth provider whose credentials an
+        // exchange minted carries the exchange's expiry, while one whose credentials were replaced
+        // by hand through `providers:update` carries none — the not-fresh state the gateway
+        // refreshes on first use (§3).
         match provider.provider_type {
-            crate::provider::ProviderType::OpenAiOauth => Self::OpenAiOauth {
+            ProviderType::OpenAiOauth => Self::OpenAiOauth {
                 id: provider.id,
                 name: provider.name.clone(),
                 model_prefix: provider.model_prefix.clone(),
@@ -368,7 +344,7 @@ impl ProviderResponse {
                 expires_at: provider.expires_at,
             },
 
-            crate::provider::ProviderType::AntigravityOauth => Self::AntigravityOauth {
+            ProviderType::AntigravityOauth => Self::AntigravityOauth {
                 id: provider.id,
                 name: provider.name.clone(),
                 model_prefix: provider.model_prefix.clone(),
@@ -376,15 +352,14 @@ impl ProviderResponse {
                 expires_at: provider.expires_at,
             },
 
-            crate::provider::ProviderType::OpenAiCompatible => Self::OpenAiCompatible {
+            ProviderType::OpenAiCompatible => Self::OpenAiCompatible {
                 id: provider.id,
                 name: provider.name.clone(),
                 model_prefix: provider.model_prefix.clone(),
                 is_enabled: provider.is_enabled,
-                // An openai_compatible row without its base URL or protocol
-                // was never writable through the management surface —
-                // creation requires both and update restates both — so a
-                // missing one is storage drift and fails fast.
+                // An openai_compatible row without its base URL or protocol was never writable
+                // through the management surface — creation requires both and update restates both
+                // — so a missing one is storage drift and fails fast.
                 #[expect(
                     clippy::expect_used,
                     reason = "an openai_compatible row pins its base URL at write time"
@@ -405,9 +380,8 @@ impl ProviderResponse {
     }
 }
 
-/// The `providers:create` and `oauth:complete` success body (README §7.1);
-/// the response states the server-assigned row identity and the exchange's
-/// expiry — the facts the caller cannot know.
+/// The `providers:create` and `oauth:complete` success body (README §7.1); the response states the
+/// server-assigned row identity and the exchange's expiry — the facts the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ProviderEnvelope {
@@ -415,24 +389,25 @@ pub struct ProviderEnvelope {
     pub provider: ProviderResponse,
 }
 
-/// A required, nullable wire field (README §7.0 rule 2): its value may be
-/// `null`, mirroring a nullable storage column exactly, and the TypeScript
-/// bindings render the key as required (`T | null`). A field of this type
-/// carries `#[ts(type = "<T's TypeScript spelling> | null")]`, because the
-/// generic parameter has no TypeScript rendering of its own.
+/// A required, nullable wire field (README §7.0 rule 2): its value may be `null`, mirroring a
+/// nullable storage column exactly, and the TypeScript bindings render the key as required (`T |
+/// null`). A field of this type carries `#[ts(type = "<T's TypeScript spelling> | null")]`, because
+/// the generic parameter has no TypeScript rendering of its own.
 ///
-/// One tolerance is documented rather than fought: serde routes both a
-/// missing key and an explicit `null` through the same none path, so the
-/// parser reads an omitted key as `null`. Under full-state update semantics
-/// (rule 3) the two spellings share the one meaning — "no override" — and
-/// the bindings keep well-typed clients honest by requiring the key.
+/// One tolerance is documented rather than fought: serde routes both a missing key and an explicit
+/// `null` through the same none path, so the parser reads an omitted key as `null`. Under
+/// full-state update semantics (rule 3) the two spellings share the one meaning — "no override" —
+/// and the bindings keep well-typed clients honest by requiring the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Nullable<T>(pub Option<T>);
 
-impl<T: Serialize> Serialize for Nullable<T> {
+impl<T> Serialize for Nullable<T>
+where
+    T: Serialize,
+{
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         match &self.0 {
             Some(value) => value.serialize(serializer),
@@ -441,19 +416,24 @@ impl<T: Serialize> Serialize for Nullable<T> {
     }
 }
 
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for Nullable<T> {
+impl<'de, T> Deserialize<'de> for Nullable<T>
+where
+    T: Deserialize<'de>,
+{
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        /// Accepts a value or `null`; see the type's documentation for the
-        /// missing-key tolerance.
+        /// Accepts a value or `null`; see the type's documentation for the missing-key tolerance.
         struct NullableVisitor<T>(PhantomData<T>);
 
-        impl<'de, T: Deserialize<'de>> Visitor<'de> for NullableVisitor<T> {
+        impl<'de, T> Visitor<'de> for NullableVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
             type Value = Nullable<T>;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> Result<(), FmtError> {
                 formatter.write_str("a value or null")
             }
 
@@ -466,14 +446,14 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Nullable<T> {
 
             fn visit_none<E>(self) -> Result<Self::Value, E>
             where
-                E: serde::de::Error,
+                E: DeError,
             {
                 Ok(Nullable(None))
             }
 
             fn visit_unit<E>(self) -> Result<Self::Value, E>
             where
-                E: serde::de::Error,
+                E: DeError,
             {
                 Ok(Nullable(None))
             }
@@ -483,17 +463,21 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Nullable<T> {
     }
 }
 
-/// The field adapter of an absent-keeps field (README §7.0 rule 2): the key
-/// may be omitted, but an explicit `null` is rejected — absence and `null`
-/// are not two spellings of one state. Pair with `#[serde(default)]` so a
-/// missing key defaults rather than errors, and `#[ts(optional)]` so the
+/// The field adapter of an absent-keeps field (README §7.0 rule 2): the key may be omitted, but an
+/// explicit `null` is rejected — absence and `null` are not two spellings of one state. Pair with
+/// `#[serde(default)]` so a missing key defaults rather than errors, and `#[ts(optional)]` so the
 /// bindings render `field?: T`.
 pub(super) mod absent_keeps {
-    use super::{Deserialize, Deserializer, PhantomData, Visitor};
-    use serde::de::Error;
+    use serde::{
+        Deserialize, Deserializer,
+        de::{Error, Visitor},
+    };
+    use std::{
+        fmt::{Error as FmtError, Formatter},
+        marker::PhantomData,
+    };
 
-    /// Deserializes a present value into `Some`, rejecting an explicit
-    /// `null`.
+    /// Deserializes a present value into `Some`, rejecting an explicit `null`.
     ///
     /// # Errors
     ///
@@ -506,10 +490,13 @@ pub(super) mod absent_keeps {
         /// Accepts a value, never `null`.
         struct AbsentKeepsVisitor<T>(PhantomData<T>);
 
-        impl<'de, T: Deserialize<'de>> Visitor<'de> for AbsentKeepsVisitor<T> {
+        impl<'de, T> Visitor<'de> for AbsentKeepsVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
             type Value = Option<T>;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> Result<(), FmtError> {
                 formatter.write_str("a value, not `null` — omit the field to keep the stored one")
             }
 
@@ -545,14 +532,14 @@ pub(super) mod absent_keeps {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::provider::{Credentials, ProviderType};
+    use super::{Nullable, ProviderEnvelope, ProviderResponse, UpstreamFormat, absent_keeps};
+    use crate::provider::{Credentials, Provider, ProviderType};
+    use serde::Deserialize;
 
-    /// Verifies that a rendered provider carries exactly its own account
-    /// kind's fields (README §7.1): the `type` discriminator, no field of
-    /// another kind, and therefore no `null` placeholder anywhere. Pinned as
-    /// rendered strings, so a renamed field, a leaked credential, or a
-    /// cross-kind field fails here rather than at a client.
+    /// Verifies that a rendered provider carries exactly its own account kind's fields (README
+    /// §7.1): the `type` discriminator, no field of another kind, and therefore no `null`
+    /// placeholder anywhere. Pinned as rendered strings, so a renamed field, a leaked credential,
+    /// or a cross-kind field fails here rather than at a client.
     ///
     /// # Panics
     ///
@@ -618,10 +605,9 @@ mod tests {
         );
     }
 
-    /// Verifies the strictness of the provider wire union (README §7.0 rule
-    /// 4): an unknown field is rejected inside the addressed variant, an
-    /// unknown discriminator is rejected naming the closed set, and each
-    /// variant round-trips.
+    /// Verifies the strictness of the provider wire union (README §7.0 rule 4): an unknown field is
+    /// rejected inside the addressed variant, an unknown discriminator is rejected naming the
+    /// closed set, and each variant round-trips.
     ///
     /// # Panics
     ///
@@ -656,10 +642,9 @@ mod tests {
         );
     }
 
-    /// Verifies the two field strictness adapters (README §7.0 rule 2) at
-    /// their poles: a [`Nullable`] field accepts `null` (an omitted key
-    /// reads as `null` — the documented tolerance), while an absent-keeps
-    /// field may be omitted and rejects an explicit `null`.
+    /// Verifies the two field strictness adapters (README §7.0 rule 2) at their poles: a
+    /// [`Nullable`] field accepts `null` (an omitted key reads as `null` — the documented
+    /// tolerance), while an absent-keeps field may be omitted and rejects an explicit `null`.
     ///
     /// # Panics
     ///
@@ -684,10 +669,9 @@ mod tests {
         assert_eq!(null_override.id_override, Nullable(None));
         assert_eq!(null_override.api_key, None);
 
-        // An omitted required-nullable key reads as `null`: serde routes a
-        // missing key and an explicit `null` through the same none path,
-        // and under full-state semantics the two spellings share the one
-        // meaning (README §7.0 rule 2).
+        // An omitted required-nullable key reads as `null`: serde routes a missing key and an
+        // explicit `null` through the same none path, and under full-state semantics the two
+        // spellings share the one meaning (README §7.0 rule 2).
         #[expect(
             clippy::unwrap_used,
             reason = "the probe payloads are constructed to parse"
@@ -705,8 +689,8 @@ mod tests {
         assert_eq!(valued.id_override, Nullable(Some("x".to_string())));
         assert_eq!(valued.api_key, Some("sk".to_string()));
 
-        // An explicit `null` on an absent-keeps field is rejected instead of
-        // silently reading as absence.
+        // An explicit `null` on an absent-keeps field is rejected instead of silently reading as
+        // absence.
         assert!(
             serde_json::from_str::<Probe>(r#"{"id_override":null,"api_key":null}"#).is_err(),
             "an absent-keeps field never accepts null"

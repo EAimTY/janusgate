@@ -1,33 +1,32 @@
-//! The lease-guarded token refresh loop: one request drives the database
-//! refresh lease, the refresh grant, and the lease-conditioned persist, so
-//! concurrent requests never overwrite newer credentials (README §3).
+//! The lease-guarded token refresh loop: one request drives the database refresh lease, the refresh
+//! grant, and the lease-conditioned persist, so concurrent requests never overwrite newer
+//! credentials (README §3).
 
 use super::{Error, flow, token};
 use crate::{
     database::{Database, Error as DatabaseError, Transaction},
-    provider::{Credentials, OAuthProviderType, Provider, storage},
+    http_client,
+    provider::{Credentials, OAuthProviderType, Provider, storage, storage::Error as StorageError},
     unix_time,
 };
 use log::{debug, info, warn};
 use reqwest::Client;
 use std::time::{Duration, Instant};
+use tokio::time as tokio_time;
 
-/// Margin subtracted from the token expiry when deciding freshness, so a
-/// token is never used into its final seconds. The same margin participates
-/// in the refresh-lease predicate, keeping "expired enough to refresh"
-/// consistent with [`is_token_fresh`].
+/// Margin subtracted from the token expiry when deciding freshness, so a token is never used into
+/// its final seconds. The same margin participates in the refresh-lease predicate, keeping "expired
+/// enough to refresh" consistent with [`is_token_fresh`].
 const TOKEN_FRESHNESS_MARGIN: i64 = 60;
 
 /// Lease duration after which an abandoned token refresh is considered dead.
 const REFRESH_LEASE_STALE_AFTER: Duration = Duration::from_secs(90);
 
-/// Upper bound on how long a request waits for a concurrent token refresh to
-/// finish before failing.
+/// Upper bound on how long a request waits for a concurrent token refresh to finish before failing.
 ///
-/// This must exceed [`REFRESH_LEASE_STALE_AFTER`]: a waiter outlives the
-/// stale-lease window and therefore reaches the stale-lease reacquire path
-/// promised by README §3 instead of failing while the lease abandoned by a
-/// crashed holder is still live.
+/// This must exceed [`REFRESH_LEASE_STALE_AFTER`]: a waiter outlives the stale-lease window and
+/// therefore reaches the stale-lease reacquire path promised by README §3 instead of failing while
+/// the lease abandoned by a crashed holder is still live.
 const REFRESH_WAIT_LIMIT: Duration = Duration::from_secs(100);
 
 /// Interval between polls while waiting for a concurrent token refresh.
@@ -36,42 +35,38 @@ const REFRESH_WAIT_INTERVAL: Duration = Duration::from_millis(250);
 // Compile-time guarantee that the wait limit outlives lease staleness.
 const _: () = assert!(REFRESH_WAIT_LIMIT.as_secs() > REFRESH_LEASE_STALE_AFTER.as_secs());
 
-// Compile-time guarantee that a stalled control-plane request aborts — and
-// its lease clears — before the lease is considered stale, so an in-flight
-// grant is never stolen from a live holder.
+// Compile-time guarantee that a stalled control-plane request aborts — and its lease clears —
+// before the lease is considered stale, so an in-flight grant is never stolen from a live holder.
 const _: () = assert!(
-    crate::http_client::CONTROL_PLANE_TOTAL_TIMEOUT.as_secs() < REFRESH_LEASE_STALE_AFTER.as_secs()
+    http_client::CONTROL_PLANE_TOTAL_TIMEOUT.as_secs() < REFRESH_LEASE_STALE_AFTER.as_secs()
 );
 
 /// The result of a lease-owned refresh attempt.
 enum RefreshOutcome {
-    /// The renewed credentials were persisted while the caller still owned
-    /// the lease.
+    /// The renewed credentials were persisted while the caller still owned the lease.
     Renewed(Provider),
 
-    /// The lease was lost while the grant was in flight; the refreshed
-    /// credentials were derived from superseded credentials and were not
-    /// persisted, leaving the newer state — its lease included — untouched.
+    /// The lease was lost while the grant was in flight; the refreshed credentials were derived
+    /// from superseded credentials and were not persisted, leaving the newer state — its lease
+    /// included — untouched.
     LostLease,
 }
 
-/// Returns the provider with a valid access token, refreshing it under the
-/// database lease when expired.
+/// Returns the provider with a valid access token, refreshing it under the database lease when
+/// expired.
 ///
-/// A refresh whose persist observes a lost lease — a concurrent credentials
-/// replacement or a stale-lease reacquisition won the row — discards its
-/// tokens-derived-from-superseded-credentials and re-enters the lease
-/// competition, so the newer state is never overwritten (README §3). The
-/// same holds for a lease acquire whose read snapshot a concurrent commit
-/// invalidated: the engine refuses the read-then-write upgrade with the
-/// stale-snapshot busy error, which is classified as "not acquired" so the
-/// burst of concurrent acquirers takes the poll-and-wait path instead of
+/// A refresh whose persist observes a lost lease — a concurrent credentials replacement or a
+/// stale-lease reacquisition won the row — discards its tokens-derived-from-superseded-credentials
+/// and re-enters the lease competition, so the newer state is never overwritten (README §3). The
+/// same holds for a lease acquire whose read snapshot a concurrent commit invalidated: the engine
+/// refuses the read-then-write upgrade with the stale-snapshot busy error, which is classified as
+/// "not acquired" so the burst of concurrent acquirers takes the poll-and-wait path instead of
 /// failing.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the provider vanished, the refresh fails, or a
-/// concurrent refresh does not finish in time.
+/// Returns [`Error`] when the provider vanished, the refresh fails, or a concurrent refresh does
+/// not finish in time.
 pub(crate) async fn ensure_fresh_token(
     database: &Database,
     http: &Client,
@@ -113,25 +108,23 @@ pub(crate) async fn ensure_fresh_token(
         {
             Ok(lease_started_at) => lease_started_at,
 
-            // The acquire is a read-then-write transaction: the SELECT fixed
-            // the read snapshot and the lease UPDATE upgrades it to a write.
-            // A commit that landed in between invalidates the snapshot, and
-            // the engine refuses the upgrade — that is the lease burst this
-            // loop exists to absorb, not a failed request. The engine
-            // requires a rollback before retrying, and the next iteration is
-            // the retry: it re-reads the newer state and either finds the
-            // token fresh or waits its turn.
+            // The acquire is a read-then-write transaction: the SELECT fixed the read snapshot and
+            // the lease UPDATE upgrades it to a write. A commit that landed in between invalidates
+            // the snapshot, and the engine refuses the upgrade — that is the lease burst this loop
+            // exists to absorb, not a failed request. The engine requires a rollback before
+            // retrying, and the next iteration is the retry: it re-reads the newer state and either
+            // finds the token fresh or waits its turn.
             Err(lease_error) if lease_error.is_stale_snapshot() => {
                 rollback(transaction).await?;
 
-                tokio::time::sleep(REFRESH_WAIT_INTERVAL).await;
+                tokio_time::sleep(REFRESH_WAIT_INTERVAL).await;
 
                 wait_or_fail(wait_deadline)?;
 
                 continue;
             }
 
-            Err(lease_error) => return Err(storage::Error::from(lease_error).into()),
+            Err(lease_error) => return Err(StorageError::from(lease_error).into()),
         };
 
         transaction
@@ -142,23 +135,23 @@ pub(crate) async fn ensure_fresh_token(
             })?;
 
         if let Some(lease_started_at) = lease_started_at {
-            // Grant failures return directly; losing the lease falls through
-            // to re-read the newer state on the next iteration.
+            // Grant failures return directly; losing the lease falls through to re-read the newer
+            // state on the next iteration.
             if let RefreshOutcome::Renewed(renewed) =
                 refresh_and_store(database, http, &current, lease_started_at).await?
             {
                 return Ok(renewed);
             }
         } else {
-            tokio::time::sleep(REFRESH_WAIT_INTERVAL).await;
+            tokio_time::sleep(REFRESH_WAIT_INTERVAL).await;
         }
 
         wait_or_fail(wait_deadline)?;
     }
 }
 
-/// Rolls back the loop's open transaction, consuming the handle. A failed
-/// rollback is classified like every other failed transaction step.
+/// Rolls back the loop's open transaction, consuming the handle. A failed rollback is classified
+/// like every other failed transaction step.
 ///
 /// # Errors
 ///
@@ -172,12 +165,10 @@ async fn rollback(transaction: Transaction) -> Result<(), Error> {
         })
 }
 
-/// Attempts to acquire the token refresh lease inside the loop's open
-/// transaction, binding the storage call to the loop's constants: a lease is
-/// stale — and therefore stealable — when older than
-/// [`REFRESH_LEASE_STALE_AFTER`], and the same [`TOKEN_FRESHNESS_MARGIN`] that
-/// [`is_token_fresh`] applies decides that an expired-but-recently-expiring
-/// token needs a refresh.
+/// Attempts to acquire the token refresh lease inside the loop's open transaction, binding the
+/// storage call to the loop's constants: a lease is stale — and therefore stealable — when older
+/// than [`REFRESH_LEASE_STALE_AFTER`], and the same [`TOKEN_FRESHNESS_MARGIN`] that
+/// [`is_token_fresh`] applies decides that an expired-but-recently-expiring token needs a refresh.
 ///
 /// The raw [`DatabaseError`] is returned so the caller can classify a stale
 /// snapshot as "not acquired" and retry through its poll loop: the acquire
@@ -203,8 +194,8 @@ async fn acquire_refresh_lease(
     .await
 }
 
-/// Fails the request once the poll window for a concurrent token refresh has
-/// elapsed (README §3); otherwise the caller re-enters the poll loop.
+/// Fails the request once the poll window for a concurrent token refresh has elapsed (README §3);
+/// otherwise the caller re-enters the poll loop.
 fn wait_or_fail(wait_deadline: Instant) -> Result<(), Error> {
     if Instant::now() >= wait_deadline {
         return Err(Error::Unavailable {
@@ -215,16 +206,14 @@ fn wait_or_fail(wait_deadline: Instant) -> Result<(), Error> {
     Ok(())
 }
 
-/// Performs the refresh grant and persists the renewed credentials while the
-/// caller still owns the refresh lease stamped `lease_started_at`.
+/// Performs the refresh grant and persists the renewed credentials while the caller still owns the
+/// refresh lease stamped `lease_started_at`.
 ///
-/// Every error after the lease was acquired clears the lease before the
-/// original error is returned, so concurrent waiters can acquire the lease
-/// instead of burning their whole wait behind a refresh that already failed.
-/// A failed lease clear never replaces the original error: the decisive
-/// failure is the refresh or persistence error itself, and an uncleared lease
-/// is bounded by the staleness window (README §3), so waiters still recover
-/// by reacquiring it.
+/// Every error after the lease was acquired clears the lease before the original error is returned,
+/// so concurrent waiters can acquire the lease instead of burning their whole wait behind a refresh
+/// that already failed. A failed lease clear never replaces the original error: the decisive
+/// failure is the refresh or persistence error itself, and an uncleared lease is bounded by the
+/// staleness window (README §3), so waiters still recover by reacquiring it.
 ///
 /// # Errors
 ///
@@ -263,10 +252,9 @@ async fn refresh_and_store(
     .await;
 
     if outcome.is_err() {
-        // The original refresh failure is decisive; a failed lease clear —
-        // typically the same database outage that failed the persist — must
-        // not replace it. The clear failure itself is tolerated and bounded
-        // by the lease staleness window (README §3), so the warning is the
+        // The original refresh failure is decisive; a failed lease clear — typically the same
+        // database outage that failed the persist — must not replace it. The clear failure itself
+        // is tolerated and bounded by the lease staleness window (README §3), so the warning is the
         // only record it ever gets.
         if let Err(clear_error) = storage::clear_refresh_lease(database, provider.id).await {
             warn!(
@@ -276,9 +264,9 @@ async fn refresh_and_store(
         }
     }
 
-    // The refreshed credentials were derived from superseded credentials
-    // and were discarded; the lease competition re-entry that follows is
-    // ordinary contention, so the discard is recorded at debug level.
+    // The refreshed credentials were derived from superseded credentials and were discarded; the
+    // lease competition re-entry that follows is ordinary contention, so the discard is recorded at
+    // debug level.
     if let Ok(RefreshOutcome::LostLease) = &outcome {
         debug!(
             "lost the refresh lease of provider `{}`; discarding the refreshed credentials",
@@ -289,8 +277,7 @@ async fn refresh_and_store(
     outcome
 }
 
-/// Calls the provider's refresh grant and merges the result into new
-/// credentials.
+/// Calls the provider's refresh grant and merges the result into new credentials.
 ///
 /// # Errors
 ///

@@ -94,6 +94,7 @@ function CreateProviderOauthScreen(props: { readonly api: ManagementApi }): JSX.
     const [providerType, setProviderType] = createSignal(
         OAUTH_PROVIDER_TYPE_OPTIONS[0]?.value ?? "openai_oauth",
     );
+
     const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
     const [code, setCode] = createSignal("");
     const [name, setName] = createSignal("");
@@ -106,6 +107,7 @@ function CreateProviderOauthScreen(props: { readonly api: ManagementApi }): JSX.
 
     const start = async (): Promise<void> => {
         const selectedType = findOAuthProviderType(providerType());
+
         if (selectedType === null) {
             setFailure("Choose an account type to authorize.");
             return;
@@ -113,17 +115,20 @@ function CreateProviderOauthScreen(props: { readonly api: ManagementApi }): JSX.
 
         setFailure(null);
         setIsStarting(true);
+
         const outcome = await performManagementCall(() =>
             props.api.startProviderOauth({
                 type: selectedType,
             }),
         );
+
         setIsStarting(false);
 
         if (outcome.status === "ok") {
             setFlow(outcome.result);
             return;
         }
+
         if (outcome.status === "failed") {
             setFailure(outcome.message);
         }
@@ -132,6 +137,7 @@ function CreateProviderOauthScreen(props: { readonly api: ManagementApi }): JSX.
     const complete = async (event: SubmitEvent): Promise<void> => {
         event.preventDefault();
         const currentFlow = flow();
+
         if (currentFlow === null || isCompleting()) {
             return;
         }
@@ -141,11 +147,13 @@ function CreateProviderOauthScreen(props: { readonly api: ManagementApi }): JSX.
         setCodeError(codeFailure);
         setNameError(nameFailure);
         setFailure(null);
+
         if (codeFailure !== null || nameFailure !== null) {
             return;
         }
 
         setIsCompleting(true);
+
         const outcome = await performManagementCall(() =>
             props.api.completeProviderOauth({
                 state: currentFlow.state,
@@ -154,14 +162,17 @@ function CreateProviderOauthScreen(props: { readonly api: ManagementApi }): JSX.
                 model_prefix: modelPrefix(),
             }),
         );
+
         setIsCompleting(false);
 
         if (outcome.status === "ok") {
             navigate(hrefs.providerDetail(outcome.result.provider.id));
             return;
         }
+
         if (outcome.status === "failed") {
             setFailure(outcome.message);
+
             if (outcome.errno === ErrorCode.NotFound) {
                 // Unknown, expired, or already-consumed: this flow is dead.
                 setFlow(null);
@@ -282,6 +293,7 @@ function ReauthorizeProviderOauthScreen(props: {
 
     const provider = createMemo(() => {
         const listing = providers.value();
+
         return listing === null
             ? null
             : (listing.providers.find((row) => row.id === props.providerId) ?? null);
@@ -292,17 +304,20 @@ function ReauthorizeProviderOauthScreen(props: {
     const start = async (accountType: OAuthProviderType): Promise<void> => {
         setFailure(null);
         setIsStarting(true);
+
         const outcome = await performManagementCall(() =>
             props.api.startProviderOauth({
                 type: accountType,
             }),
         );
+
         setIsStarting(false);
 
         if (outcome.status === "ok") {
             setFlow(outcome.result);
             return;
         }
+
         if (outcome.status === "failed") {
             setFailure(outcome.message);
         }
@@ -311,6 +326,7 @@ function ReauthorizeProviderOauthScreen(props: {
     const complete = async (event: SubmitEvent): Promise<void> => {
         event.preventDefault();
         const currentFlow = flow();
+
         if (currentFlow === null || isCompleting()) {
             return;
         }
@@ -318,11 +334,13 @@ function ReauthorizeProviderOauthScreen(props: {
         const codeFailure = code().trim() === "" ? "Paste the authorization code." : null;
         setCodeError(codeFailure);
         setFailure(null);
+
         if (codeFailure !== null) {
             return;
         }
 
         setIsCompleting(true);
+
         const outcome = await performManagementCall(() =>
             props.api.reauthorizeProvider({
                 state: currentFlow.state,
@@ -330,14 +348,17 @@ function ReauthorizeProviderOauthScreen(props: {
                 provider_id: props.providerId,
             }),
         );
+
         setIsCompleting(false);
 
         if (outcome.status === "ok") {
             navigate(hrefs.providerDetail(props.providerId));
             return;
         }
+
         if (outcome.status === "failed") {
             setFailure(outcome.message);
+
             if (outcome.errno === ErrorCode.NotFound) {
                 // The state is consumed, and the provider may be gone too.
                 setFlow(null);

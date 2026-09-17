@@ -1,9 +1,9 @@
 //! OpenAI Chat Completions protocol codec.
 //!
-//! Serves the outward `POST /chat/completions` endpoint and speaks the
-//! `openai_chat_completion` upstream protocol.
+//! Serves the outward `POST /chat/completions` endpoint and speaks the `openai_chat_completion`
+//! upstream protocol.
 
-use self::client_render::SseRenderer;
+use self::client_render::{ChatCompletionResponse, SseRenderer};
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest},
     ir::{InvalidRequest, IrAggregation},
@@ -21,7 +21,7 @@ pub(crate) use self::{upstream_parse::UpstreamParser, upstream_render::render_re
 pub(crate) struct Format;
 
 impl ClientFormat for Format {
-    type JsonResponse = client_render::ChatCompletionResponse;
+    type JsonResponse = ChatCompletionResponse;
 
     fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
         request_parse::parse_request(body)

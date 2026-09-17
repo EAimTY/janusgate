@@ -1,7 +1,7 @@
-//! Gateway execution pipeline: routing resolution, token acquisition, upstream
-//! dispatch, and translation into IR event streams.
+//! Gateway execution pipeline: routing resolution, token acquisition, upstream dispatch, and
+//! translation into IR event streams.
 
-use crate::{
+use super::{
     context::Context,
     database::Database,
     format::{
@@ -21,18 +21,16 @@ use reqwest::{Client, StatusCode};
 use std::pin::Pin;
 use tokio_stream::{Stream, StreamExt as _, wrappers::ReceiverStream};
 
-/// Number of IR events buffered between the upstream pump task and the
-/// response stream.
+/// Number of IR events buffered between the upstream pump task and the response stream.
 const EVENT_CHANNEL_BUFFER: usize = 64;
 
-/// Outward completion pipeline failures, from routing resolution through
-/// upstream dispatch. The client request can fail validation here too — the
-/// upstream renderers reject requests the chosen upstream cannot carry — so
-/// client faults travel in the same type and the surface classifies them.
+/// Outward completion pipeline failures, from routing resolution through upstream dispatch. The
+/// client request can fail validation here too — the upstream renderers reject requests the chosen
+/// upstream cannot carry — so client faults travel in the same type and the surface classifies
+/// them.
 ///
-/// The Displays carry the complete human message the outward surface
-/// renders; the surface only maps each variant onto its status, `type`,
-/// `code`, and `param`.
+/// The Displays carry the complete human message the outward surface renders; the surface only maps
+/// each variant onto its status, `type`, `code`, and `param`.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     /// The client's request was rejected while preparing the upstream call.
@@ -46,10 +44,9 @@ pub(crate) enum Error {
         model: String,
     },
 
-    /// The upstream answered a non-2xx status, which the outward surface
-    /// mirrors verbatim. The status is carried as a [`StatusCode`] taken
-    /// verbatim from the upstream response, so an invalid status is
-    /// unrepresentable and the mirror needs no conversion.
+    /// The upstream answered a non-2xx status, which the outward surface mirrors verbatim. The
+    /// status is carried as a [`StatusCode`] taken verbatim from the upstream response, so an
+    /// invalid status is unrepresentable and the mirror needs no conversion.
     #[error("Upstream request failed: {detail}")]
     Upstream {
         /// Upstream status code, mirrored by the surface.
@@ -59,8 +56,8 @@ pub(crate) enum Error {
         detail: String,
     },
 
-    /// The upstream failed without a usable HTTP response: a transport
-    /// failure, an oversized frame, or a malformed payload.
+    /// The upstream failed without a usable HTTP response: a transport failure, an oversized frame,
+    /// or a malformed payload.
     #[error("Upstream request failed: {detail}")]
     Unavailable {
         /// Human-readable failure detail.
@@ -71,13 +68,13 @@ pub(crate) enum Error {
     #[error(transparent)]
     OAuth(#[from] OAuthError),
 
-    /// Storage failed under the pipeline: routing lookup, lease driving, or
-    /// credentials persistence.
+    /// Storage failed under the pipeline: routing lookup, lease driving, or credentials
+    /// persistence.
     #[error(transparent)]
     Storage(#[from] StorageError),
 
-    /// The gateway violated an invariant — stored configuration drift, never
-    /// a fault of the requesting client.
+    /// The gateway violated an invariant — stored configuration drift, never a fault of the
+    /// requesting client.
     #[error("{message}")]
     Internal {
         /// Human-readable failure message.
@@ -85,16 +82,7 @@ pub(crate) enum Error {
     },
 }
 
-impl From<PayloadError> for Error {
-    fn from(error: PayloadError) -> Self {
-        Self::Unavailable {
-            detail: error.to_string(),
-        }
-    }
-}
-
-/// A stream of translated IR events; always terminates with
-/// [`IrEvent::Done`].
+/// A stream of translated IR events; always terminates with [`IrEvent::Done`].
 pub(crate) type IrEventStream = Pin<Box<dyn Stream<Item = Result<IrEvent, Error>> + Send>>;
 
 /// Resolves a public routing ID (README §3) to its enabled routing row.
@@ -114,25 +102,24 @@ pub(crate) async fn resolve_routing(
     }
 }
 
-/// Executes a completion request end to end, returning the translated IR
-/// event stream.
+/// Executes a completion request end to end, returning the translated IR event stream.
 ///
-/// The stream is pumped by a spawned task reading the upstream response; the
-/// client response is rendered on the handler side from the returned events.
+/// The stream is pumped by a spawned task reading the upstream response; the client response is
+/// rendered on the handler side from the returned events.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for routing, token, and upstream failures detected
-/// before the response stream starts.
+/// Returns [`Error`] for routing, token, and upstream failures detected before the response stream
+/// starts.
 pub(crate) async fn execute(
     context: &Context,
     routing: ModelRouting,
     mut ir: IrRequest,
     is_client_streaming: bool,
 ) -> Result<IrEventStream, Error> {
-    // Creation validates `thinking_levels_override` at the management API, so
-    // a malformed stored value is drift inside the database — an invariant
-    // violation — and never a fault of the requesting client.
+    // Creation validates `thinking_levels_override` at the management API, so a malformed stored
+    // value is drift inside the database — an invariant violation — and never a fault of the
+    // requesting client.
     let thinking_levels = routing
         .model
         .thinking_levels_override
@@ -147,28 +134,26 @@ pub(crate) async fn execute(
         ir::apply_thinking_levels(ir.reasoning_effort, thinking_levels.as_deref());
     ir.model = routing.model.upstream_id.clone();
 
-    // Names the upstream in every error-level record the pump tasks emit.
-    // Which single site logs such a record is partitioned by the client's
-    // streaming mode (README §8): for a streaming client the failure becomes
-    // a terminal mid-stream error frame that never passes a response
-    // boundary, so the detecting pump logs it; for a non-streaming client it
-    // becomes the aggregated HTTP error response, so the response boundary
-    // rendering it logs it and the pumps stay silent. The client's mode is
-    // distinct from the upstream's: the Codex upstream always streams while
+    // Names the upstream in every error-level record the pump tasks emit. Which single site logs
+    // such a record is partitioned by the client's streaming mode (README §8): for a streaming
+    // client the failure becomes a terminal mid-stream error frame that never passes a response
+    // boundary, so the detecting pump logs it; for a non-streaming client it becomes the aggregated
+    // HTTP error response, so the response boundary rendering it logs it and the pumps stay silent.
+    // The client's mode is distinct from the upstream's: the Codex upstream always streams while
     // its client may not (README §5.1).
     let upstream_label = format!(
         "provider `{}` upstream model `{}`",
         routing.provider.name, ir.model
     );
 
-    // The token refresh is a control-plane round-trip, so it rides the
-    // bounded client even though the completion itself is data-plane traffic.
+    // The token refresh is a control-plane round-trip, so it rides the bounded client even though
+    // the completion itself is data-plane traffic.
     let provider =
         oauth::ensure_fresh_token(&context.database, &context.control_plane, &routing.provider)
             .await?;
 
-    // The wire format is resolved once per request and shared by request
-    // building and event parsing.
+    // The wire format is resolved once per request and shared by request building and event
+    // parsing.
     let upstream_format = provider.upstream_format().ok_or_else(|| Error::Internal {
         message: format!(
             "provider `{}` has no upstream protocol configured",
@@ -207,12 +192,11 @@ pub(crate) async fn execute(
 
     debug!("{upstream_label}: upstream responded {status}");
 
-    // The parser is chosen by the upstream streaming mode the gateway
-    // requested, never by response-header sniffing: the Codex upstream
-    // answers its 200 SSE streams without a `Content-Type` header, and a
-    // 200 response to a streaming request is contractually a stream while a
-    // 200 response to a non-streaming request is contractually a JSON
-    // document (README §6.2).
+    // The parser is chosen by the upstream streaming mode the gateway requested, never by
+    // response-header sniffing: the Codex upstream answers its 200 SSE streams without a
+    // `Content-Type` header, and a 200 response to a streaming request is contractually a stream
+    // while a 200 response to a non-streaming request is contractually a JSON document (README
+    // §6.2).
     let is_upstream_streaming =
         is_upstream_streaming(upstream_format, provider.provider_type, is_client_streaming);
 
@@ -243,11 +227,10 @@ pub(crate) async fn execute(
     Ok(Box::pin(ReceiverStream::new(receiver)))
 }
 
-/// Decides the upstream streaming mode the gateway requests: Codex always
-/// streams upstream — the ChatGPT Codex endpoint requires `stream: true`
-/// (README §5.1 invariant 2) — and every other built-in upstream matches the
-/// client's requested mode (README §6.3). The same decision selects the SSE
-/// or JSON response parser.
+/// Decides the upstream streaming mode the gateway requests: Codex always streams upstream — the
+/// ChatGPT Codex endpoint requires `stream: true` (README §5.1 invariant 2) — and every other
+/// built-in upstream matches the client's requested mode (README §6.3). The same decision selects
+/// the SSE or JSON response parser.
 fn is_upstream_streaming(
     upstream_format: UpstreamFormat,
     provider_type: ProviderType,
@@ -263,8 +246,7 @@ fn is_upstream_streaming(
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the provider configuration cannot render a
-/// request.
+/// Returns [`Error`] when the provider configuration cannot render a request.
 fn build_upstream_request(
     http: &Client,
     upstream_format: UpstreamFormat,
@@ -375,10 +357,9 @@ fn build_upstream_request(
 
 /// Resolves the stored base URL of a compatible provider.
 ///
-/// OAuth providers carry fixed endpoints and never consult this. Creation
-/// validates `base_url` at the management API, so a missing value is stored
-/// drift — an invariant violation — and never a fault of the requesting
-/// client.
+/// OAuth providers carry fixed endpoints and never consult this. Creation validates `base_url` at
+/// the management API, so a missing value is stored drift — an invariant violation — and never a
+/// fault of the requesting client.
 fn compatible_base_url(provider: &Provider) -> Result<&str, Error> {
     provider.base_url.as_deref().ok_or_else(|| Error::Internal {
         message: "compatible provider lacks a stored base_url".to_string(),
@@ -396,14 +377,12 @@ fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventPars
     }
 }
 
-/// Delivers an upstream stream failure as the stream's terminal error frame,
-/// marking the stream aborted so no events follow the error frame, and logs
-/// it only when the client is streaming: then the failure renders as a
-/// mid-stream error frame that never passes a response boundary, so the
-/// detecting pump is its single logger (README §8); a non-streaming client
-/// instead renders it as the aggregated HTTP error response, which the
-/// response boundary logs. The send is best-effort: a consumer that already
-/// went away must not fail or block the abort.
+/// Delivers an upstream stream failure as the stream's terminal error frame, marking the stream
+/// aborted so no events follow the error frame, and logs it only when the client is streaming: then
+/// the failure renders as a mid-stream error frame that never passes a response boundary, so the
+/// detecting pump is its single logger (README §8); a non-streaming client instead renders it as
+/// the aggregated HTTP error response, which the response boundary logs. The send is best-effort: a
+/// consumer that already went away must not fail or block the abort.
 async fn abort_stream(
     is_aborted: &mut bool,
     sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
@@ -420,9 +399,9 @@ async fn abort_stream(
     let _ = sender.send(Err(error)).await;
 }
 
-/// Forwards parsed IR events to the consumer, reporting whether the consumer
-/// is still listening. A closed channel ends the forwarding without an error
-/// frame: the consumer left, so nobody is left to receive one.
+/// Forwards parsed IR events to the consumer, reporting whether the consumer is still listening. A
+/// closed channel ends the forwarding without an error frame: the consumer left, so nobody is left
+/// to receive one.
 async fn forward_events(
     sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
     events: Vec<IrEvent>,
@@ -436,12 +415,11 @@ async fn forward_events(
     true
 }
 
-/// Feeds a batch of SSE frames through the upstream parser and forwards the
-/// produced events, reporting whether the stream is still live. A parser
-/// failure aborts the stream through [`abort_stream`]; a departed consumer
-/// stops the forwarding without touching the abort flag, so the caller's
-/// trailing flush still runs exactly as it does for a consumer that leaves
-/// anywhere else mid-stream.
+/// Feeds a batch of SSE frames through the upstream parser and forwards the produced events,
+/// reporting whether the stream is still live. A parser failure aborts the stream through
+/// [`abort_stream`]; a departed consumer stops the forwarding without touching the abort flag, so
+/// the caller's trailing flush still runs exactly as it does for a consumer that leaves anywhere
+/// else mid-stream.
 async fn forward_frames(
     is_aborted: &mut bool,
     parser: &mut Box<dyn UpstreamEventParser + Send>,
@@ -458,9 +436,8 @@ async fn forward_frames(
                 }
             }
 
-            // A malformed frame aborts the stream with an error exactly like
-            // any other upstream failure; the caller's final `Done` still
-            // terminates the event stream.
+            // A malformed frame aborts the stream with an error exactly like any other upstream
+            // failure; the caller's final `Done` still terminates the event stream.
             Err(parser_error) => {
                 abort_stream(
                     is_aborted,
@@ -479,13 +456,12 @@ async fn forward_frames(
     true
 }
 
-/// Relays an upstream SSE stream into the IR event channel, always
-/// terminating with [`IrEvent::Done`].
+/// Relays an upstream SSE stream into the IR event channel, always terminating with
+/// [`IrEvent::Done`].
 ///
-/// `upstream_label` names the upstream in the pump's error records. The pump
-/// logs a failure only for a streaming client, whose terminal error frame
-/// never reaches a response boundary, making the pump the failure's single
-/// logger (README §8); a non-streaming client receives the failure as the
+/// `upstream_label` names the upstream in the pump's error records. The pump logs a failure only
+/// for a streaming client, whose terminal error frame never reaches a response boundary, making the
+/// pump the failure's single logger (README §8); a non-streaming client receives the failure as the
 /// aggregated HTTP error response, which the response boundary logs.
 async fn pump_sse(
     response: reqwest::Response,
@@ -497,8 +473,8 @@ async fn pump_sse(
 ) {
     let mut body = response.bytes_stream();
 
-    // Whether an error aborted the stream; only a clean end of stream lets
-    // the parser flush buffered state before the terminal `Done`.
+    // Whether an error aborted the stream; only a clean end of stream lets the parser flush
+    // buffered state before the terminal `Done`.
     let mut is_aborted = false;
 
     'stream: while let Some(chunk) = body.next().await {
@@ -553,10 +529,9 @@ async fn pump_sse(
         }
     }
 
-    // Trailing frames buffered in the SSE parser are flushed through the
-    // parser only on a clean end of stream: replaying them after an abort
-    // would emit events after the stream's error and break the
-    // error-then-`Done` contract of the event stream.
+    // Trailing frames buffered in the SSE parser are flushed through the parser only on a clean end
+    // of stream: replaying them after an abort would emit events after the stream's error and break
+    // the error-then-`Done` contract of the event stream.
     if !is_aborted {
         match sse_parser.finish() {
             Ok(frames) => {
@@ -571,10 +546,9 @@ async fn pump_sse(
                 .await;
             }
 
-            // A trailing frame the framing layer rejects at flush time aborts
-            // the stream exactly like an oversized frame in the main loop;
-            // silently completing the stream here would drop the trailing
-            // frame on the floor. The final `Done` below still terminates the
+            // A trailing frame the framing layer rejects at flush time aborts the stream exactly
+            // like an oversized frame in the main loop; silently completing the stream here would
+            // drop the trailing frame on the floor. The final `Done` below still terminates the
             // event stream.
             Err(_) => {
                 abort_stream(
@@ -598,13 +572,12 @@ async fn pump_sse(
     let _ = sender.send(Ok(IrEvent::Done)).await;
 }
 
-/// Relays an upstream JSON response into the IR event channel, always
-/// terminating with [`IrEvent::Done`].
+/// Relays an upstream JSON response into the IR event channel, always terminating with
+/// [`IrEvent::Done`].
 ///
-/// `upstream_label` names the upstream in the pump's error records. The pump
-/// logs a failure only for a streaming client, whose terminal error frame
-/// never reaches a response boundary, making the pump the failure's single
-/// logger (README §8); a non-streaming client receives the failure as the
+/// `upstream_label` names the upstream in the pump's error records. The pump logs a failure only
+/// for a streaming client, whose terminal error frame never reaches a response boundary, making the
+/// pump the failure's single logger (README §8); a non-streaming client receives the failure as the
 /// aggregated HTTP error response, which the response boundary logs.
 async fn pump_json(
     response: reqwest::Response,
@@ -643,10 +616,9 @@ async fn pump_json(
     let _ = sender.send(Ok(IrEvent::Done)).await;
 }
 
-/// Builds the upstream error for a non-2xx response through the shared
-/// bounded error-body read ([`http_body::read_error_body`]) and the one
-/// excerpt policy ([`http_body::truncate_excerpt`]): the full body is never
-/// buffered, because a hostile upstream must not be able to stream unbounded
+/// Builds the upstream error for a non-2xx response through the shared bounded error-body read
+/// ([`http_body::read_error_body`]) and the one excerpt policy ([`http_body::truncate_excerpt`]):
+/// the full body is never buffered, because a hostile upstream must not be able to stream unbounded
 /// bytes into gateway memory just to shape an error message.
 async fn upstream_error_of(response: reqwest::Response) -> Error {
     let status = response.status();
@@ -656,5 +628,13 @@ async fn upstream_error_of(response: reqwest::Response) -> Error {
     Error::Upstream {
         status,
         detail: http_body::truncate_excerpt(&body),
+    }
+}
+
+impl From<PayloadError> for Error {
+    fn from(error: PayloadError) -> Self {
+        Self::Unavailable {
+            detail: error.to_string(),
+        }
     }
 }
