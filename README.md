@@ -6,7 +6,7 @@
 
 ## 1. Overview & Scope
 
-**JanusGate** is a self-hosted, lightweight AI gateway written in Rust. It exposes an OpenAI-compatible API (`/api/openai-v1`) backed by heterogeneous upstream accounts, managed via a versioned management JSON API (`/management-api/v0/*`).
+**JanusGate** is a self-hosted, lightweight AI gateway written in Rust. It exposes an OpenAI-compatible API (`/api/openai-v1`) backed by heterogeneous upstream accounts, managed via a versioned management JSON API (`/management-api/v0/*`). The repository additionally hosts [`web/`](web/README.md) — janusgate-web, the standalone statically-hosted administration frontend for that management API; `web/README.md` is the source of truth for the frontend, and this document remains the source of truth for the gateway.
 
 ### Provider Types
 
@@ -23,7 +23,7 @@
 
 ### Design Principles & Non-Goals
 - **Stateless execution**: Zero persistence of prompts, completions, tokens, or usage metrics.
-- **Headless admin**: No frontend SPA. Administration is conducted exclusively through `/management-api/v0/*` JSON endpoints.
+- **Headless server**: The gateway serves no frontend of its own — no SPA, no static assets. Administration is conducted exclusively through `/management-api/v0/*` JSON endpoints; the repository's `web/` frontend is a separately deployed static application that talks to those endpoints over the network and is never served by the gateway.
 - **Strict model passthrough**: Zero automatic or hardcoded model mapping. Upstream calls pass the exact model identifiers yielded by upstream model discovery (`upstream_id`), even for OAuth providers.
 - **Excluded**: Multi-tenancy, dynamic pooling/load balancing, automatic provider fallback, automatic model mapping/aliasing, prompt caching, request logging, billing/rate-limiting, outbound proxying.
 
@@ -453,7 +453,7 @@ The route surface follows seven rules. Every future route is designed against th
 
 ### 7.3 TypeScript Bindings
 
-- The management API's wire surface is published as TypeScript bindings behind the `management-api-typescript-bindings` feature: `cargo run --bin generate-management-api-typescript-bindings --features management-api-typescript-bindings -- <output-directory>` renders every wire payload type declaration plus the route table into one file per version, directly in the output target.
+- The management API's wire surface is published as TypeScript bindings behind the `management-api-typescript-bindings` feature: `cargo run --bin generate-management-api-typescript-bindings --features management-api-typescript-bindings -- <output-directory>` renders every wire payload type declaration plus the route table into one file per version, directly in the output target. The repository's own consumer is the `web/` workspace: `npm run generate-bindings` inside `web/` regenerates `web/src/management-api/generated/` from this working tree's local sources (see `web/README.md` §7.1).
 - Bindings are versioned with the routes they describe: each version's bindings are written into their own `<version>.ts` file in the output target (`<output-directory>/v0.ts`), and every route table key is the route's path within that version (`/providers:list`), so the file name — not the key — carries the version. One file holds everything a client of the version needs: the type declarations and the route table reference each other inside it, with no imports.
 - Each version also publishes the wire types it owns besides its route payloads: its error body (`ErrorResponse`, the flat `{errno, message}` object) and its errno taxonomy (`ErrorCode`), the latter as a numeric TypeScript enum whose values are the errno discriminants tabulated above.
 - A closed unit-only enum whose variant order is itself a published fact is published as an ordered vocabulary: the order renders as a const tuple that the union derives from — `export const THINKING_LEVEL_ORDER = ["off", "low", "medium", "high"] as const` and `type ThinkingLevel = (typeof THINKING_LEVEL_ORDER)[number]` — so membership and canonical order travel in one artifact and a client can enumerate or index the vocabulary at runtime (`THINKING_LEVEL_ORDER.indexOf("low")` is the level's strength). Both artifacts carry the vocabulary's documentation. The variant order is the canonical order; v0's ordered vocabulary is the thinking levels (§6.4), ordered by increasing reasoning strength, published under the binding name `ThinkingLevel` — the Rust type's module-internal `Ir` prefix never reaches the bindings. Closed sets that carry no order — the provider kinds and upstream formats — stay plain unions, and declaring a type that is not a unit-only enum as an ordered vocabulary is a fatal declaration error.

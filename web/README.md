@@ -1,14 +1,14 @@
 # janusgate-web — Standalone Web Frontend for JanusGate
 
-> Single source of truth for this project's design and architecture. Contracts and invariants stated here are **normative** for this repository.
+> Single source of truth for this project's design and architecture. Contracts and invariants stated here are **normative** for the `web/` workspace.
 >
-> The JanusGate gateway is normative for everything wire-level. Its `README.md` §7 defines the management API, and the **generated TypeScript bindings (§7) are that contract's machine-readable form** — payload shapes are deliberately not restated in this document, so the two can never drift. When something here disagrees with the gateway, the gateway wins.
+> The JanusGate gateway is normative for everything wire-level. The repository root's `README.md` §7 defines the management API, and the **generated TypeScript bindings (§7) are that contract's machine-readable form** — payload shapes are deliberately not restated in this document, so the two can never drift. When something here disagrees with the gateway, the gateway wins.
 
 ---
 
 ## 1. Overview & Scope
 
-**janusgate-web** is a standalone, statically-hosted single-page application (SPA) that administers a [JanusGate](https://github.com/EAimTY/janusgate) instance through its versioned management JSON API (`/management-api/v0/*`).
+**janusgate-web** is a standalone, statically-hosted single-page application (SPA) that administers a [JanusGate](https://github.com/EAimTY/janusgate) instance through its versioned management JSON API (`/management-api/v0/*`). It lives in this repository as the `web/` workspace, beside the Rust gateway it administers.
 
 JanusGate itself is **headless**: it exposes an OpenAI-compatible serving API (`/api/openai-v1`) and a management API (`/management-api/v0/*`), and ships no frontend of its own. janusgate-web is the missing control plane UI — deployed **separately, anywhere that serves static files**, talking to any JanusGate instance over the network.
 
@@ -46,9 +46,9 @@ JanusGate itself is **headless**: it exposes an OpenAI-compatible serving API (`
 | **Lint & format** | Biome | `biome.jsonc` (mirrors the JanusGate web stack); `npm run check` / `npm run fix` |
 | **Tests** | Vitest | `npm test`; TDD per `AGENTS.md` |
 | **HTTP** | Native `fetch` | No data-fetching or state library; `AbortController` cancels in-flight calls |
-| **Wire contract** | Generated TypeScript bindings | Produced by the gateway repository itself (§7); never hand-written |
+| **Wire contract** | Generated TypeScript bindings | Produced by the gateway sources in this repository (§7.1); never hand-written |
 
-There is no backend framework, no database, and no ORM in this repository — persistence is the browser's `localStorage` for the connection pair only (§3). All gateway state lives in JanusGate.
+There is no backend framework, no database, and no ORM in this workspace — persistence is the browser's `localStorage` for the connection pair only (§3). All gateway state lives in JanusGate.
 
 ---
 
@@ -88,7 +88,7 @@ This matches JanusGate's management authentication exactly (a `Bearer`-prefixed 
 
 ### 4.1 Where the contract lives
 
-**The generated bindings are the contract's single machine-readable home.** Every request and response payload type, the route table (path → method → request/response type), the errno taxonomy, and the ordered thinking-level vocabulary come from [`EAimTY/janusgate`](https://github.com/EAimTY/janusgate)'s own generator (§7). Application code imports them and never restates a payload shape.
+**The generated bindings are the contract's single machine-readable home.** Every request and response payload type, the route table (path → method → request/response type), the errno taxonomy, and the ordered thinking-level vocabulary come from the gateway's own generator — the Rust sources at the repository root (§7 of the root `README.md`; the generation workflow is §7.1 below). Application code imports them and never restates a payload shape.
 
 This section documents only what the types cannot carry: the transport-level rules, the error taxonomy's client-side meaning, and the semantics that live in the gateway's prose (two-state fields, full-state writes, single-use OAuth states).
 
@@ -218,7 +218,7 @@ Every screen loads through one pattern: one read per mount, cancelled when the s
 ## 7. Project Structure
 
 ```text
-janusgate-web/
+web/                                # the workspace root (this directory)
 ├── index.html                       # HTML entry: #root mount, inline favicon, /src/main.tsx
 ├── src/
 │   ├── main.tsx                     # Entry point: mounts <App /> on #root, imports tailwind.css
@@ -255,10 +255,10 @@ janusgate-web/
 │   └── ui/                          # Presentational primitives: button, link-button, field, banner, card, badge, app-link, page-header, focus-on-mount
 ├── vite.config.ts                   # Vite + SolidJS + Tailwind plugins; output dist/
 ├── vitest.config.ts                 # Vitest: jsdom + Solid's browser resolve conditions + tsconfig paths
-├── tsconfig.json                    # Strict TypeScript; `/` maps to the repository root
+├── tsconfig.json                    # Strict TypeScript; `/` maps to the `web/` root
 ├── biome.jsonc                      # Lint + format (mirrors the JanusGate web stack)
 ├── package.json                     # Scripts and dependencies (no backend, no deploy tooling)
-├── AGENTS.md                        # Agent working rules (this repo's conventions)
+├── AGENTS.md                        # Agent working rules (this workspace's conventions)
 ├── CLAUDE.md                        # Points at AGENTS.md
 └── README.md                        # This file
 ```
@@ -267,7 +267,7 @@ Test modules (`*.test.ts`) live next to the modules they cover and are not liste
 
 ### 7.1 Generated bindings
 
-The wire contract enters this repository as **generated TypeScript**, produced by the gateway repository's own generator — the gateway declares each route once (method, path, request type, response type) and emits the payload declarations plus the route table. Nothing about the management API is hand-written here.
+The wire contract enters this workspace as **generated TypeScript**, produced by the gateway's own generator from the Rust sources at the repository root — the gateway declares each route once (method, path, request type, response type) and emits the payload declarations plus the route table. Nothing about the management API is hand-written here.
 
 ```bash
 npm run generate-bindings
@@ -275,18 +275,15 @@ npm run generate-bindings
 
 The script is one command, inline in `package.json`, and does exactly this:
 
-1. create a temporary directory (`mktemp -d`);
-2. shallow-clone `https://github.com/EAimTY/janusgate` at the `rust` branch (override with `JANUSGATE_REF=<branch|tag|rev>`);
-3. remove the previous output directory, so no stale artifact from an older layout survives;
-4. run the gateway's bindings generator with the `management-api-typescript-bindings` feature, writing `src/management-api/generated/v0.ts`;
-5. remove the temporary directory — on success and on failure alike — and propagate the generator's exit status.
+1. remove the previous output directory, so no stale artifact from an older layout survives;
+2. run the gateway's bindings generator against the repository's local working tree (`cargo run --manifest-path ../Cargo.toml`, with the `management-api-typescript-bindings` feature), writing `src/management-api/generated/v0.ts`.
 
 Properties of this arrangement, all deliberate:
 
 - **The gateway is the only source of truth.** The Rust types are the schema; the generator derives the bindings from them, so the app cannot hold a stale copy of a payload shape without failing to compile against the regenerated file.
 - **The output is a build artifact, not source.** `src/management-api/generated/` is gitignored (and therefore also outside Biome's scope, which reads `.gitignore`). A fresh checkout must run `npm run generate-bindings` before `npm run typecheck`, `npm run build`, or `npm test` once application code imports the bindings.
-- **The clone is the pushed state of the branch.** Bindings mirror the remote branch, never a local working tree: an uncommitted change in a local janusgate checkout is invisible here until it is pushed. Bumping the contract is therefore push-then-regenerate, and `JANUSGATE_REF` can pin a tag or revision when reproducibility matters.
-- **It is a dev-time step, not a build step.** Running it requires `git`, a Rust toolchain, and network access, and a cold run compiles the whole gateway (minutes). It is never wired into `npm run build`, so the deployed artifact is built from TypeScript alone.
+- **The bindings regenerate from the local working tree.** A management-API contract change and its web adaptation are one atomic change: the generator runs against the same tree being edited — no clone, no network, no push-then-regenerate round trip. Regenerating against a different gateway revision means checking out that revision and running the script again.
+- **It is a dev-time step, not a build step.** Running it requires a Rust toolchain; the first invocation compiles the generator, and subsequent ones are incremental. It is never wired into `npm run build`, so the deployed artifact is built from TypeScript alone.
 - **The generator is idempotent and deterministic**: the same gateway revision always renders byte-identical output.
 
 ### 7.2 Implementation status
@@ -302,7 +299,7 @@ There are two kinds of configuration, strictly apart:
 - **Connection (runtime, per browser).** The `{ baseUrl, token }` pair from §3, stored in `localStorage` under the key in `src/config.ts`. No build-time or deployment-time values exist — the same `dist/` artifact administers any instance. Rotating a gateway's management token invalidates stored connections; the app recovers through the 401 path (§3.1).
 - **Tunables (build-time, in code).** Every non-secret configurable value lives in `src/config.ts`, its single home. Changing one means editing the module and rebuilding. No runtime environment variables are read (`import.meta.env` is not a configuration mechanism here) — a static artifact that behaved differently per host via env injection would break the one-artifact-anywhere promise.
 
-No secrets ever appear in code, in `src/config.ts`, or in the repository. The management token exists only in the administrator's browser storage and on the wire to the configured instance.
+No secrets ever appear in code, in `src/config.ts`, or in this workspace. The management token exists only in the administrator's browser storage and on the wire to the configured instance.
 
 ---
 
@@ -310,7 +307,7 @@ No secrets ever appear in code, in `src/config.ts`, or in the repository. The ma
 
 The normative rule list is `AGENTS.md`; this section orients:
 
-- **Imports:** `/` is the repository root. Prefer root imports (`/src/...`) unless the module is in the same folder (`./module`) or a sibling subtree (`../folder/module`). Generated files are exempt from this rule but should be imported through the same root style.
+- **Imports:** `/` is the `web/` root. Prefer root imports (`/src/...`) unless the module is in the same folder (`./module`) or a sibling subtree (`../folder/module`). Generated files are exempt from this rule but should be imported through the same root style.
 - **Types:** strict TypeScript throughout — no `any`, and no assertion a preceding runtime check does not justify; unknown input (notably every management API response) is narrowed through explicit validation; exported functions and component helpers carry explicit return types.
 - **Generics:** all-or-nothing naming per parameter list (single-letter when simple; otherwise every parameter multi-letter with a `T`-prefix for types / `F`-prefix for callbacks describing its role).
 - **Booleans** carry predicate-style prefixes (`is`, `can`, `has`, `should`); names are unabbreviated (`id` and the usual short auxiliaries excepted).
@@ -335,13 +332,13 @@ The normative rule list is `AGENTS.md`; this section orients:
 ### Prerequisites
 
 - Node.js and npm for the app itself.
-- `git` and a Rust toolchain (cargo) for `npm run generate-bindings` only — required once per checkout and again after every gateway contract bump.
+- A Rust toolchain (cargo) for `npm run generate-bindings` only — required once per checkout and again after every management-API contract change in the gateway.
 
 ### Scripts
 
 | Script | Purpose |
 | :--- | :--- |
-| `npm run generate-bindings` | Clone janusgate and regenerate `src/management-api/generated/v0.ts` (§7.1) |
+| `npm run generate-bindings` | Regenerate `src/management-api/generated/v0.ts` from the local gateway sources (§7.1) |
 | `npm run dev` | Local dev server with hot reload |
 | `npm run build` | Production static build into `dist/` |
 | `npm run preview` | Serve the production build locally |
@@ -354,7 +351,7 @@ The normative rule list is `AGENTS.md`; this section orients:
 
 ```bash
 npm install
-npm run generate-bindings   # once per checkout; needs git + cargo
+npm run generate-bindings   # once per checkout; needs cargo, regenerates from the local gateway
 npm run dev                 # iterate against a real JanusGate instance
 npm run check               # lint + types, after every change
 npm run build               # produce dist/ for static hosting
@@ -375,7 +372,7 @@ Rendering is verified against a real JanusGate instance in a browser: connecting
 1. The same static artifact administers any JanusGate instance; no instance address or token is ever baked into a build.
 2. The connection pair exists only in the browser (`localStorage` + memory) and on the wire to the configured instance — never in code, config, URLs, or logs.
 3. Every management request is a `POST` to `{baseUrl}/management-api/v0/<path>` carrying `Authorization: <token>` verbatim (no `Bearer` prefix) and `Content-Type: application/json`; any 401 clears the stored pair and returns to setup.
-4. Payload shapes are never restated in this repository: the generated bindings are the contract, and application code compiles against them. A body that violates the expected shape is reported as an error, never partially rendered.
+4. Payload shapes are never restated in this workspace: the generated bindings are the contract, and application code compiles against them. A body that violates the expected shape is reported as an error, never partially rendered.
 5. Reads that mutate (updates, deletions) follow the gateway's full-state and two-state rules: complete desired state on update, omission — never `null` — for write-only secrets, explicit field-by-field construction rather than spreading a row into a request.
 6. No request, response, token, or usage data is persisted anywhere except the connection pair in `localStorage`.
-7. The wire contract is owned by JanusGate's `README.md` §7 and its generated bindings; on any conflict with this document, they win.
+7. The wire contract is owned by the gateway's `README.md` §7 (the repository root) and its generated bindings; on any conflict with this document, they win.
