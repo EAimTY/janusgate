@@ -18,7 +18,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 - Keep folder-local `AGENTS.md` files focused on stable guidance. Do not include implementation details that must be updated after code changes.
 - Every `AGENTS.md` must have a sibling `CLAUDE.md` containing exactly `@AGENTS.md`.
 - Follow test-driven development (TDD): write tests before implementing functionality.
-- Quality gates are per-area: the Rust sources require the cargo matrix below, and the `web/` workspace requires `npm run check` and `npm test` run from `web/` (see `web/AGENTS.md`).
+- Quality gates are per-area: the Rust sources require the cargo matrix below, and the `web/` workspace's gates live in `web/AGENTS.md`.
 - Do not write trivial tests. Tests exist to protect complex logic, invariants, edge cases, and failure-prone paths, never to satisfy a ritual or verify self-evident modifications (such as mechanically asserting the presence or absence of a newly added or removed field). Keep coverage cohesive rather than inflating test counts: when functionality changes, update and consolidate existing tests where appropriate instead of accumulating redundant cases. Test only first-party domain logic; never test upstream dependencies, libraries, or standard-library primitives (such as string formatting or basic macro expansion) unless explicitly relying on fragile, unspecified external behavior. In TDD, apply the same restraint: write tests first only when designing non-trivial logic, not for boilerplate or compiler-guaranteed mechanics.
 
 ### Rust
