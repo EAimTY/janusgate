@@ -2,6 +2,7 @@
 name = "janusgate"
 version = "0.0.0"
 edition = "2024"
+default-run = "janusgate"
 
 [profile.release]
 lto = true
@@ -63,7 +64,7 @@ uuid = { version = "1.26.1", default-features = false, features = ["v4"] }
 
 [build-dependencies]
 blake3 = { version = "1.8.7", default-features = false }
-syntaqlite = { version = "0.10.0", default-features = false, features = ["fmt", "sqlite"] }
+syntaqlite = { version = "0.10.1", default-features = false, features = ["fmt", "sqlite"] }
 
 [lints.rust]
 missing_docs = "deny"
