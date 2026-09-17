@@ -342,7 +342,6 @@ All scripts below run from `web/`. The repository root is an npm workspace wrapp
 | `npm run generate-bindings` | Regenerate `src/management-api/generated/v0.ts` from the local gateway sources (§7.1) |
 | `npm run dev` | Local dev server with hot reload |
 | `npm run build` | Production static build into `target/web/dist/` |
-| `npm run preview` | Serve the production build locally |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Vitest run (domain-logic suites, §11) |
 

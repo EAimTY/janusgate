@@ -19,7 +19,6 @@
         "generate-bindings": "rm -rf $PWD/src/management-api/generated && cargo run --locked --manifest-path ../Cargo.toml --bin generate-management-api-typescript-bindings --features management-api-typescript-bindings -- $PWD/src/management-api/generated",
         "dev": "vite",
         "build": "vite build",
-        "preview": "vite preview",
         "typecheck": "tsc --noEmit",
         "test": "vitest run"
     }
