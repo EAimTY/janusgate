@@ -33,7 +33,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 
 ### SQL (SQLite)
 
-- Treat `src/database/SCHEMA.sqlite` as the only source of truth for the SQLite schema.
+- The database schema lives in `src/database/schema/`: every schema modification is a new `version_x.rs` module (its only item is `const SCHEMA: Schema`) whose DDL is constructed with `turso-ddl-builder` inside a `crabtime` compile-time expression, together with the migration text upgrading the previous version, registered in `SCHEMAS` in `src/database/schema/mod.rs`. Never edit an existing version module; existing versions are immutable history.
 - Explicitly declare nullability, uniqueness, and foreign keys.
 - Reserve `CHECK` constraints for closed domain invariants (such as enum value sets); delegate all input and format validation to the application layer.
 - Use `STRICT` in table definitions.

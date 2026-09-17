@@ -1,5 +1,5 @@
 //! The tower-http CORS layers derived from the schema's CORS sections, and the live CORS accessors
-//! of [`ConfigLoader`](super::ConfigLoader).
+//! of [`ConfigLoader`].
 
 use super::{ConfigLoader, schema::CorsConfig};
 use tower_http::cors::{Any, CorsLayer};

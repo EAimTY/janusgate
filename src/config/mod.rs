@@ -1,5 +1,5 @@
 //! Gateway configuration: the parsed schema
-//! ([`schema`](self::schema)::[`Config`](self::schema::Config)), the reloadable owner
+//! ([`schema::Config`]), the reloadable owner
 //! ([`ConfigLoader`]), and the loading, hot-reload, TLS, and CORS machinery.
 //!
 //! [`ConfigLoader`] owns the live state — the applied schema and the resolved TLS server

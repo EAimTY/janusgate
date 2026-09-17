@@ -32,7 +32,7 @@ pub(crate) mod openai_response;
 /// Wire formats an upstream provider may speak.
 ///
 /// The serde and TypeScript names are the management wire names, shared with
-/// [`UpstreamFormat::as_str`] — the storage form and the wire form are one vocabulary.
+/// `UpstreamFormat::as_str` — the storage form and the wire form are one vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum UpstreamFormat {

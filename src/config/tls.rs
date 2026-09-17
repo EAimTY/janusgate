@@ -1,5 +1,5 @@
 //! TLS server configuration resolution from the schema's TLS material, and the live TLS accessor of
-//! [`ConfigLoader`](super::ConfigLoader).
+//! [`ConfigLoader`].
 
 use super::{ConfigLoader, Error, schema::Config};
 use rustls::{

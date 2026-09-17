@@ -12,7 +12,7 @@ use std::time::Duration;
 ///
 /// Control-plane traffic is short JSON round-trips, so a stall is bounded outright instead of
 /// per-read. The value must stay below the OAuth refresh-lease staleness window
-/// ([`REFRESH_LEASE_STALE_AFTER`], 90 s), so a stalled refresh attempt aborts — and its lease
+/// (`REFRESH_LEASE_STALE_AFTER`, 90 s), so a stalled refresh attempt aborts — and its lease
 /// clears — before another worker may consider the lease abandoned.
 pub(crate) const CONTROL_PLANE_TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 

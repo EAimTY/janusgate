@@ -11,8 +11,9 @@
 //! only facts the caller cannot know.
 //!
 //! Handlers follow axum's own shape: a request body extracts through `Json` wrapped in
-//! `WithRejection` with [`Error`] as the rejection type, and every handler returns
-//! `Result<Json<..>, Error>`, so a failure leaves through the one [`IntoResponse`] boundary that
+//! `WithRejection` with `Error` as the rejection type, and every handler returns
+//! `Result<Json<..>, Error>`, so a failure leaves through the one
+//! [`IntoResponse`](axum::response::IntoResponse) boundary that
 //! logs and renders it — no handler matches on errors or logs them itself.
 
 use self::error::Error;
@@ -94,7 +95,7 @@ pub(super) static EXPORTED_TYPES: &[PayloadSource] =
 pub(super) static ORDERED_VOCABULARIES: &[OrderedVocabulary] =
     &[route_helper::ordered_vocabulary::<IrReasoningEffort>];
 
-/// Declares one version 0 route, registering it in [`ROUTES`]. The shared `route!` macro carries
+/// Declares one version 0 route, registering it in `ROUTES`. The shared `route!` macro carries
 /// the declaration syntax and the contract a route must satisfy; this wrapper binds the version's
 /// registry, so a declaration names neither the registry nor the version.
 macro_rules! route {
@@ -130,8 +131,8 @@ fn method_filter(method: &Method) -> MethodFilter {
 }
 
 /// Constructs this version's router with its own token authentication, 404 response, and body
-/// limit. Method and path are wired from each route's [`Route`] constants, so the `route!`
-/// declaration is the single place they are written.
+/// limit. Method and path are wired from each route's [`Route`](crate::management_api::Route)
+/// constants, so the `route!` declaration is the single place they are written.
 ///
 /// The router defines no CORS policy of its own: the management API router applies the
 /// cross-version one around it.

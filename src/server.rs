@@ -169,7 +169,7 @@ impl Server {
 ///
 /// The root router owns this response, and the `/api` and `/management-api` parent routers declare
 /// this very handler as their own fallback, so a path that belongs to no domain is answered
-/// identically whichever router catches it; see the TODO in [`api::router`](crate::api::router) for
+/// identically whichever router catches it; see the TODO in [`api::router`] for
 /// why the parent routers declare it rather than inherit it.
 pub(crate) async fn fallback() -> StatusCode {
     StatusCode::NOT_FOUND

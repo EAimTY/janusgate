@@ -17,7 +17,7 @@ pub(crate) mod storage;
 /// Kinds of upstream provider accounts.
 ///
 /// The serde and TypeScript names are the management wire names, shared with
-/// [`ProviderType::as_str`] — the storage form and the wire form are one vocabulary.
+/// `ProviderType::as_str` — the storage form and the wire form are one vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum ProviderType {
@@ -67,7 +67,7 @@ impl ProviderType {
 /// Kinds of upstream provider accounts that use OAuth authorization flows.
 ///
 /// The serde and TypeScript names are the management wire names, shared with
-/// [`OAuthProviderType::as_str`].
+/// `OAuthProviderType::as_str`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum OAuthProviderType {

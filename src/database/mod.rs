@@ -7,21 +7,13 @@ use deadpool::{
         RecycleResult,
     },
 };
-use log::{debug, info};
 use std::{fs, io::Error as IoError, num::NonZero, path::Path, time::Duration};
 use turso::{Builder as TursoBuilder, Connection, Database as TursoDatabase, Error as TursoError};
 
 #[rustfmt::skip]
 pub(crate) use turso::{IntoParams, Row, Value, params};
 
-/// Non-zero 32-bit big-endian schema fingerprint computed at compile time.
-const DATABASE_SCHEMA_FINGERPRINT: i32 = i32::from_be_bytes(*include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/database_schema_fingerprint"
-)));
-
-/// Canonical SQLite DDL schema embedded at compile time.
-const DATABASE_SCHEMA: &str = include_str!("SCHEMA.sqlite");
+mod schema;
 
 /// Maximum duration a database write waits for the database file lock held by another connection
 /// before failing.
@@ -103,10 +95,10 @@ impl Database {
     /// with at most `max_connections` concurrent connections, waiting at most `pool_timeout` for a
     /// free connection when every connection is checked out.
     ///
-    /// Verifies the schema fingerprint stored in `PRAGMA user_version`. If the database is fresh
-    /// (`user_version == 0`), applies the canonical schema and stores the compile-time schema
-    /// fingerprint. If the fingerprint matches [`DATABASE_SCHEMA_FINGERPRINT`], initialization
-    /// succeeds. Otherwise, panics.
+    /// Before the pool is created, the schema version stored in `PRAGMA user_version` is verified
+    /// and the database is migrated forward to the latest schema version: a fresh database
+    /// receives the initial schema, an outdated one is migrated step by step, and an unknown
+    /// version is fatal. See the [`schema`] module for the versioning and migration design.
     ///
     /// # Errors
     ///
@@ -114,8 +106,8 @@ impl Database {
     ///
     /// # Panics
     ///
-    /// Panics if database verification connection fails, schema application fails, or the schema
-    /// fingerprint does not match [`DATABASE_SCHEMA_FINGERPRINT`]..
+    /// Panics if the schema bootstrap connection fails, the migration workflow fails, or the
+    /// stored schema version is unknown.
     pub(crate) async fn open(
         path: impl AsRef<Path>,
         max_connections: NonZero<usize>,
@@ -452,124 +444,30 @@ async fn configure_connection(connection: &Connection) -> Result<(), TursoError>
     Ok(())
 }
 
-/// Verifies that the database schema matches [`DATABASE_SCHEMA_FINGERPRINT`], applying the
-/// canonical schema if the database is newly created. The bootstrap outcome is logged: a fresh
-/// schema application at info level, a verified existing schema at debug level.
+/// Brings the database schema up to the latest version before the connection pool is created,
+/// logging progress under the database's path. See the [`schema`] module for the versioning and
+/// migration design.
 ///
 /// # Panics
 ///
-/// Panics if connecting fails, setting pragmas fails, querying the fingerprint fails, applying the
-/// schema fails, or if an incompatible schema fingerprint is detected.
+/// Panics if connecting fails, configuring the bootstrap connection fails, or the migration
+/// workflow fails.
 async fn bootstrap_schema(database: &TursoDatabase, path: &str) {
     #[expect(
         clippy::expect_used,
-        reason = "opening initial connection to verify schema is fatal on failure"
+        reason = "opening the bootstrap connection for schema migration is fatal on failure"
     )]
     let connection = database
         .connect()
-        .expect("failed to connect to database for schema verification");
+        .expect("failed to connect to the database for schema migration");
 
     #[expect(
         clippy::expect_used,
-        reason = "configuring the schema verification connection is fatal on failure"
+        reason = "configuring the schema migration connection is fatal on failure"
     )]
     configure_connection(&connection)
         .await
         .expect("failed to configure database connection");
 
-    match query_schema_fingerprint(&connection).await {
-        DATABASE_SCHEMA_FINGERPRINT => {
-            debug!("verified the schema fingerprint of database {path}");
-        }
-
-        0 => {
-            apply_canonical_schema(&connection).await;
-
-            info!("applied the canonical schema to fresh database {path}");
-        }
-
-        other => {
-            #[expect(
-                clippy::panic,
-                reason = "incompatible database schema fingerprint is fatal"
-            )]
-            {
-                panic!(
-                    "database schema fingerprint mismatch: expected \
-                     {DATABASE_SCHEMA_FINGERPRINT}, got {other}"
-                );
-            }
-        }
-    }
-}
-
-/// Retrieves the current schema fingerprint stored in `PRAGMA user_version`.
-///
-/// # Panics
-///
-/// Panics if executing `PRAGMA user_version` or extracting its value fails.
-async fn query_schema_fingerprint(connection: &Connection) -> i32 {
-    #[expect(
-        clippy::expect_used,
-        reason = "querying PRAGMA user_version is fatal on failure"
-    )]
-    let mut rows = connection
-        .query("PRAGMA user_version", ())
-        .await
-        .expect("failed to query user_version");
-
-    #[expect(
-        clippy::expect_used,
-        reason = "PRAGMA user_version query always produces a row"
-    )]
-    let row = rows
-        .next()
-        .await
-        .expect("failed to read user_version row")
-        .expect("missing user_version row");
-
-    #[expect(
-        clippy::expect_used,
-        reason = "user_version column is an integer value"
-    )]
-    let user_version: i64 = row
-        .get(0)
-        .expect("failed to get user_version integer value");
-
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "SQLite user_version is a 32-bit signed integer"
-    )]
-    let user_version = user_version as i32;
-
-    user_version
-}
-
-/// Applies the canonical SQLite DDL schema in batch and records the compile-time fingerprint in
-/// `PRAGMA user_version` inside a single transaction.
-///
-/// The DDL and the fingerprint write must commit atomically: a crash that persisted only part of
-/// the schema would leave `user_version` at zero, and the next startup would reapply the DDL and
-/// fail on the existing tables.
-///
-/// # Panics
-///
-/// Panics if executing the schema batch fails.
-async fn apply_canonical_schema(connection: &Connection) {
-    // Header writes such as `PRAGMA user_version` participate in the
-    // transaction, so wrapping the DDL in BEGIN/COMMIT makes the whole batch
-    // all-or-nothing.
-    let batch_sql = format!(
-        "BEGIN IMMEDIATE;\n{}PRAGMA user_version = {DATABASE_SCHEMA_FINGERPRINT};\nCOMMIT;",
-        DATABASE_SCHEMA
-    );
-
-    #[expect(
-        clippy::expect_used,
-        reason = "applying the canonical schema batch is fatal on failure"
-    )]
-    connection
-        .execute_batch(batch_sql)
-        .await
-        .expect("failed to apply database schema");
+    schema::migrate(&connection, path).await;
 }

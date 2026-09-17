@@ -33,6 +33,7 @@ as_http_status_code = { version = "0.1.0", default-features = false }
 axum = { version = "0.8.9", default-features = false, features = ["json", "original-uri"] }
 axum-extra = { version = "0.12", default-features = false, features = ["with-rejection"] }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+crabtime = { version = "1.1.4", default-features = false }
 deadpool = { version = "0.13.1", default-features = false, features = ["managed", "rt_tokio_1"] }
 deref-once-lock = { version = "0.1.0", default-features = false }
 env_logger = { version = "0.11.11", default-features = false, features = ["humantime"] }
@@ -63,9 +64,20 @@ ts-rs = { version = "12.0.1", default-features = false, features = ["no-serde-wa
 turso = { version = "0.8.0-pre.11", default-features = false }
 uuid = { version = "1.26.1", default-features = false, features = ["v4"] }
 
+[dev-dependencies]
+turso_parser = { version = "0.8.0-pre.11", default-features = false }
+
+# Compile-time DDL construction inside the `crabtime` macros of `src/database/schema/`. Crabtime
+# discovers these through the manifest on the nightly channel, where the gateway is developed;
+# they are not consumed by any build script.
 [build-dependencies]
-blake3 = { version = "1.8.7", default-features = false }
-syntaqlite = { version = "0.10.1", default-features = false, features = ["fmt", "sqlite"] }
+turso-ddl-builder = { version = "0.1.0", default-features = false }
+turso_parser = { version = "0.8.0-pre.11", default-features = false }
+
+# The build dependencies above have no build script consuming them — the crabtime macro projects
+# read them at expansion time — so cargo's shape-based unused-dependency detection is off.
+[lints.cargo]
+unused_dependencies = "allow"
 
 [lints.rust]
 missing_docs = "deny"

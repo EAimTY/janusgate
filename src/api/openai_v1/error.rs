@@ -1,6 +1,6 @@
 //! The outward format surface's own error domain: rendering OpenAI error bodies (README §6.7).
 //!
-//! Domain failures arrive through [`From`](std::convert::From) conversions and are classified here
+//! Domain failures arrive through [`From`] conversions and are classified here
 //! onto their contract rows: the surface owns the status, the OpenAI `type`, `code`, and `param`,
 //! while the human message rides on the domain error's [`Display`](std::fmt::Display).
 
