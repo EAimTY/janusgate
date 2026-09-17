@@ -4,16 +4,16 @@
     "private": true,
     "type": "module",
     "dependencies": {
-        "@solidjs/web": "^2.0.0-rc.6",
-        "solid-js": "^2.0.0-rc.6"
+        "@solidjs/web": "^2.0.0-rc.8",
+        "solid-js": "^2.0.0-rc.8"
     },
     "devDependencies": {
-        "@biomejs/biome": "^2.5.12",
+        "@biomejs/biome": "^2.5.14",
         "@solidjs/vite-plugin": "^3.0.0-next.35",
         "@tailwindcss/vite": "^4.3.3",
-        "jsdom": "^30.0.1",
+        "jsdom": "^30.1.0",
         "typescript": "^7.0.2",
-        "vite": "^8.2.2",
+        "vite": "^8.3.0",
         "vitest": "^4.1.11"
     },
     "scripts": {
@@ -24,6 +24,6 @@
         "typecheck": "tsc --noEmit",
         "check": "biome check && npm run typecheck",
         "fix": "biome check --write --unsafe && npm run typecheck",
-        "test": "vitest run --passWithNoTests"
+        "test": "vitest run"
     }
 }

@@ -13,4 +13,6 @@
 
 # Local environment files
 /.env
-/.env.*
+
+# Pi
+/.pi/npm

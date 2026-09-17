@@ -1,6 +1,20 @@
+import solid from "@solidjs/vite-plugin";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+    resolve: {
+        // Tests run the DOM-oriented application code, so resolve packages the
+        // way the browser build does — including the development condition, so
+        // Solid's development-time invariants are enforced in tests.
+        conditions: [
+            "browser",
+            "development",
+        ],
+        tsconfigPaths: true,
+    },
+    plugins: [
+        solid(),
+    ],
     test: {
         environment: "jsdom",
         include: [
