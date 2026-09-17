@@ -60,7 +60,7 @@ struct CodexModelEntry {
     slug: Option<String>,
 }
 
-/// A Cloud Code Assist `fetchAvailableModels` response (README §5.2): the available models keyed by
+/// An Antigravity `fetchAvailableModels` response (README §5.2): the available models keyed by
 /// model name. The payload is upstream-owned, so unknown fields are ignored.
 #[derive(Debug, Deserialize)]
 struct AvailableModelsResponse {
@@ -177,13 +177,13 @@ async fn discover_codex(
         .collect()
 }
 
-/// Discovers Antigravity models from Cloud Code Assist.
+/// Discovers Antigravity models.
 ///
 /// The reference (`fetchAvailableModels` in `src/plugin/quota.ts` at rev `16e0056`) posts
 /// `{project}` to the production base URL; the gateway posts the empty object to the daily base
 /// URL — both shapes are accepted, and the discovery is verified live.
 async fn discover_antigravity(http: &Client, secret: &str) -> Result<Vec<String>, Error> {
-    let response: AvailableModelsResponse = oauth::post_code_assist(
+    let response: AvailableModelsResponse = oauth::post_antigravity(
         http,
         endpoints::ANTIGRAVITY_FETCH_AVAILABLE_MODELS_ACTION,
         secret,

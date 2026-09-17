@@ -1,4 +1,4 @@
-//! Google Code Assist project onboarding: resolving the Cloud Code Assist project ID of the
+//! Antigravity project onboarding: resolving the Antigravity project ID of the
 //! authenticated Google account.
 //!
 //! Mirrors the reference port (`NoeFabris/opencode-antigravity-auth` at rev `16e0056`):
@@ -11,7 +11,7 @@
 //! fixed attempt count, and fails the resolution outright instead of falling back to the
 //! reference's hardcoded project id — every shape on the wire itself is identical.
 
-use super::{Error, code_assist};
+use super::{Error, antigravity};
 use crate::provider::endpoints;
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
@@ -20,7 +20,7 @@ use tokio::time as tokio_time;
 
 /// The single Antigravity IDE metadata value (README §5.2): every onboarding request identifies the
 /// `ANTIGRAVITY` IDE on `PLATFORM_UNSPECIFIED` with the `GEMINI` plugin.
-const CODE_ASSIST_METADATA: CodeAssistMetadata = CodeAssistMetadata {
+const ANTIGRAVITY_METADATA: AntigravityMetadata = AntigravityMetadata {
     ide_type: "ANTIGRAVITY",
     platform: "PLATFORM_UNSPECIFIED",
     plugin_type: "GEMINI",
@@ -35,10 +35,10 @@ const ONBOARD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// management request.
 const ONBOARD_TOTAL_BUDGET: Duration = Duration::from_secs(60);
 
-/// The Antigravity IDE metadata every Code Assist onboarding request carries (README §5.2).
+/// The Antigravity IDE metadata every Antigravity onboarding request carries (README §5.2).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CodeAssistMetadata {
+struct AntigravityMetadata {
     /// IDE the request identifies.
     ide_type: &'static str,
 
@@ -51,9 +51,9 @@ struct CodeAssistMetadata {
 
 /// The `loadCodeAssist` request body (README §5.2).
 #[derive(Debug, Serialize)]
-struct LoadCodeAssistRequest {
+struct AntigravityLoadRequest {
     /// Antigravity IDE metadata.
-    metadata: CodeAssistMetadata,
+    metadata: AntigravityMetadata,
 }
 
 /// The `onboardUser` request body (README §5.2).
@@ -64,10 +64,10 @@ struct OnboardUserRequest<'a> {
     tier_id: &'a str,
 
     /// Antigravity IDE metadata.
-    metadata: CodeAssistMetadata,
+    metadata: AntigravityMetadata,
 }
 
-/// The `cloudaicompanionProject` field of a Code Assist response (README §5.2): `loadCodeAssist`
+/// The `cloudaicompanionProject` field of an Antigravity response (README §5.2): `loadCodeAssist`
 /// carries the bare project-id string, while the `onboardUser` operation result wraps it as an
 /// `{id}` object. Both shapes resolve to the same project id.
 #[derive(Debug, Deserialize)]
@@ -86,7 +86,7 @@ enum CompanionProject {
     Other(IgnoredAny),
 }
 
-/// A Code Assist tier descriptor, as the `paidTier` and `currentTier` fields carry it (README
+/// An Antigravity tier descriptor, as the `paidTier` and `currentTier` fields carry it (README
 /// §5.2).
 #[derive(Debug, Deserialize)]
 struct Tier {
@@ -98,8 +98,8 @@ struct Tier {
 /// are ignored.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LoadCodeAssistResponse {
-    /// Cloud Code Assist project of the account, when it already has one.
+struct AntigravityLoadResponse {
+    /// Antigravity project of the account, when it already has one.
     cloudaicompanion_project: Option<CompanionProject>,
 
     /// Paid tier of the account, when it holds one.
@@ -125,7 +125,7 @@ struct OperationError {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OnboardResponse {
-    /// Cloud Code Assist project the account was onboarded onto.
+    /// Antigravity project the account was onboarded onto.
     cloudaicompanion_project: Option<CompanionProject>,
 }
 
@@ -157,7 +157,7 @@ impl CompanionProject {
     }
 }
 
-/// Resolves the Cloud Code Assist project ID for the authenticated Google account: `loadCodeAssist`
+/// Resolves the Antigravity project ID for the authenticated Google account: `loadCodeAssist`
 /// first, then the `onboardUser` long-running operation polled within [`ONBOARD_TOTAL_BUDGET`]
 /// (README §5.2; the reference `fetchProjectID`/`onboardManagedProject` at rev `16e0056`).
 ///
@@ -166,12 +166,12 @@ impl CompanionProject {
 /// Returns [`Error`] when neither call yields a project, the operation reports a terminal failure,
 /// or the poll budget elapses.
 pub(super) async fn resolve_project_id(http: &Client, access_token: &str) -> Result<String, Error> {
-    let load_response: LoadCodeAssistResponse = code_assist::post_code_assist(
+    let load_response: AntigravityLoadResponse = antigravity::post_antigravity(
         http,
-        endpoints::ANTIGRAVITY_LOAD_CODE_ASSIST_ACTION,
+        endpoints::ANTIGRAVITY_LOAD_ACTION,
         access_token,
-        &LoadCodeAssistRequest {
-            metadata: CODE_ASSIST_METADATA,
+        &AntigravityLoadRequest {
+            metadata: ANTIGRAVITY_METADATA,
         },
     )
     .await?;
@@ -197,7 +197,7 @@ pub(super) async fn resolve_project_id(http: &Client, access_token: &str) -> Res
 
     let onboard_request = OnboardUserRequest {
         tier_id,
-        metadata: CODE_ASSIST_METADATA,
+        metadata: ANTIGRAVITY_METADATA,
     };
 
     let onboard_deadline = Instant::now() + ONBOARD_TOTAL_BUDGET;
@@ -209,7 +209,7 @@ pub(super) async fn resolve_project_id(http: &Client, access_token: &str) -> Res
             });
         }
 
-        let response: OnboardOperation = code_assist::post_code_assist(
+        let response: OnboardOperation = antigravity::post_antigravity(
             http,
             endpoints::ANTIGRAVITY_ONBOARD_USER_ACTION,
             access_token,

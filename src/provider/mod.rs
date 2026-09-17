@@ -25,7 +25,7 @@ pub enum ProviderType {
     #[serde(rename = "openai_oauth")]
     OpenAiOauth,
 
-    /// Google account speaking Gemini GenerateContent via Code Assist.
+    /// Google account speaking Gemini GenerateContent via Antigravity.
     #[serde(rename = "antigravity_oauth")]
     AntigravityOauth,
 
@@ -75,7 +75,7 @@ pub enum OAuthProviderType {
     #[serde(rename = "openai_oauth")]
     OpenAiOauth,
 
-    /// Google account speaking Gemini GenerateContent via Code Assist.
+    /// Google account speaking Gemini GenerateContent via Antigravity.
     #[serde(rename = "antigravity_oauth")]
     AntigravityOauth,
 }
@@ -125,7 +125,7 @@ pub(crate) enum Credentials {
         account_id: String,
     },
 
-    /// Google OAuth credentials; the Cloud Code Assist project ID accompanies the Antigravity
+    /// Google OAuth credentials; the Antigravity project ID accompanies the Antigravity
     /// envelope.
     AntigravityOauth {
         /// OAuth access token.
@@ -134,7 +134,7 @@ pub(crate) enum Credentials {
         /// OAuth refresh token.
         refresh_token: String,
 
-        /// Cloud Code Assist project ID.
+        /// Antigravity project ID.
         project_id: String,
     },
 
@@ -169,7 +169,7 @@ struct StoredAntigravityOauthCredentials<'a> {
     /// OAuth refresh token.
     refresh_token: &'a str,
 
-    /// Cloud Code Assist project ID.
+    /// Antigravity project ID.
     project_id: &'a str,
 }
 

@@ -155,7 +155,7 @@ pub enum UpdateProviderRequest {
         credentials: Option<OpenAiOauthCredentials>,
     },
 
-    /// Google account speaking Gemini GenerateContent via Code Assist.
+    /// Google account speaking Gemini GenerateContent via Antigravity.
     #[serde(rename = "antigravity_oauth")]
     AntigravityOauth {
         /// Addressed provider row.
@@ -210,7 +210,7 @@ pub struct AntigravityOauthCredentials {
     /// OAuth refresh token.
     pub refresh_token: String,
 
-    /// Cloud Code Assist project ID.
+    /// Antigravity project ID.
     pub project_id: String,
 }
 

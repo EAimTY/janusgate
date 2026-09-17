@@ -279,7 +279,7 @@ pub enum ProviderResponse {
         expires_at: Option<i64>,
     },
 
-    /// Google account speaking Gemini GenerateContent via Code Assist.
+    /// Google account speaking Gemini GenerateContent via Antigravity.
     #[serde(rename = "antigravity_oauth")]
     AntigravityOauth {
         /// Provider row identifier.

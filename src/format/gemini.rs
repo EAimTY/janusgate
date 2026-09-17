@@ -1,6 +1,6 @@
 //! Gemini GenerateContent protocol codec.
 //!
-//! Speaks the `gemini_generate_content` upstream protocol, both in the Antigravity Code Assist
+//! Speaks the `gemini_generate_content` upstream protocol, both in the Antigravity
 //! envelope (§5.2) and as a bare OpenAI-compatible upstream protocol (§5.3).
 //!
 //! Rendered payloads are first-party types in the upstream wire shape, so field presence per
@@ -23,7 +23,7 @@ const JSON_MIME_TYPE: &str = "application/json";
 
 /// Renders the upstream request URL and payload for an Antigravity provider.
 ///
-/// `base_url` and `user_agent` are the provider's Code Assist endpoint and the `User-Agent` value
+/// `base_url` and `user_agent` are the provider's Antigravity endpoint and the `User-Agent` value
 /// it requires; the provider layer owns endpoint knowledge, so both are threaded in rather than
 /// owned by the codec.
 ///
@@ -52,10 +52,10 @@ pub(crate) fn render_antigravity_request<'a>(
     Ok((url, envelope))
 }
 
-/// The Code Assist envelope wrapping one GenerateContentRequest (README §5.2).
+/// The Antigravity envelope wrapping one GenerateContentRequest (README §5.2).
 #[derive(Debug, Serialize)]
 pub(crate) struct AntigravityEnvelope<'a> {
-    /// Cloud Code Assist project the request bills to.
+    /// Antigravity project the request bills to.
     project: &'a str,
 
     /// Upstream model name.
@@ -68,7 +68,7 @@ pub(crate) struct AntigravityEnvelope<'a> {
     #[serde(rename = "requestType")]
     request_type: &'static str,
 
-    /// `User-Agent` value the Code Assist endpoint requires, echoed in the
+    /// `User-Agent` value the Antigravity endpoint requires, echoed in the
     /// body.
     #[serde(rename = "userAgent")]
     user_agent: &'a str,
@@ -96,7 +96,7 @@ pub(crate) fn render_compatible_request<'a>(
 }
 
 /// Renders the GenerateContent URL for one call, the single place where the action segment
-/// (including its leading colon) is assembled: enveloped Code Assist upstreams take the action
+/// (including its leading colon) is assembled: enveloped Antigravity upstreams take the action
 /// directly on the base URL, compatible upstreams insert `/models/<upstream_id>` before it.
 fn render_request_url(
     base_url: &str,
@@ -634,9 +634,9 @@ pub(crate) struct UpstreamParser {
     is_finished: bool,
 }
 
-/// One upstream GenerateContentResponse, or the Cloud Code Assist envelope wrapping one.
+/// One upstream GenerateContentResponse, or the Antigravity envelope wrapping one.
 ///
-/// The Cloud Code Assist API wraps every GenerateContentResponse — `:generateContent` JSON bodies
+/// The Antigravity API wraps every GenerateContentResponse — `:generateContent` JSON bodies
 /// and `alt=sse` frames alike — in a `response` member beside `traceId` and `metadata` (README
 /// §5.2), while Gemini-compatible upstreams carry the bare response, which has no top-level
 /// `response` member of its own. Every member is optional because the body is either the envelope
@@ -644,7 +644,7 @@ pub(crate) struct UpstreamParser {
 /// ignored.
 #[derive(Debug, Default, Deserialize)]
 struct UpstreamBody {
-    /// The response wrapped by the Code Assist envelope.
+    /// The response wrapped by the Antigravity envelope.
     #[serde(default)]
     response: Option<Box<UpstreamBody>>,
 

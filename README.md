@@ -13,7 +13,7 @@
 | Type | Identity | Upstream Wire Format |
 | :--- | :--- | :--- |
 | `openai_oauth` | ChatGPT Account | OpenAI Responses (`openai_response`) via Codex endpoint |
-| `antigravity_oauth` | Google Account | Gemini GenerateContent (`gemini_generate_content`) via Google Code Assist |
+| `antigravity_oauth` | Google Account | Gemini GenerateContent (`gemini_generate_content`) via Antigravity |
 | `openai_compatible` | Static API Key | `openai_response`, `openai_chat_completion`, or `gemini_generate_content` |
 
 ### Outward Protocols
@@ -232,7 +232,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   - Scopes: `https://www.googleapis.com/auth/cloud-platform`, `https://www.googleapis.com/auth/userinfo.email`, `https://www.googleapis.com/auth/userinfo.profile`, `https://www.googleapis.com/auth/cclog`, `https://www.googleapis.com/auth/experimentsandconfigs`. Both authorize URLs percent-encode the space-joined scope list as `%20` (RFC 3986 forbids raw spaces in a query).
   - Token exchange: `POST https://oauth2.googleapis.com/token` with form body `code=<code>&client_id=<client_id>&client_secret=<secret>&redirect_uri=<redirect>&grant_type=authorization_code`; response is JSON `{access_token, refresh_token, expires_in, ...}`.
   - Token refresh: same endpoint with form body `refresh_token=<refresh_token>&client_id=<client_id>&client_secret=<secret>&grant_type=refresh_token`.
-- **Project ID Resolution**: The Google Cloud Code Assist project ID (`projectId` credential) is resolved once during OAuth completion:
+- **Project ID Resolution**: The Antigravity project ID (`projectId` credential) is resolved once during OAuth completion:
   1. `POST https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` with JSON body `{"metadata": {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}}`. If the response carries `cloudaicompanionProject` — the bare project-id string — that is the project ID.
   2. Otherwise `POST https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser` with JSON body `{"tierId": <tier>, "metadata": {...}}` where `<tier>` is `paidTier.id` when present, else `currentTier.id`, else `free-tier`. The long-running operation is polled by repeating the request until `done` is true, within a 60-second total wall-clock budget checked before every attempt (each attempt is bounded by the control-plane client's total timeout, but a fixed attempt count alone bounds nothing); an exhausted budget fails the resolution. A completed operation carrying a terminal `error` payload (`google.longrunning` failure shape `{code, message, status}`) fails the resolution with that status and message. The project ID is `response.cloudaicompanionProject`, which the operation result wraps as an `{id}` object (a bare string is also accepted defensively); a missing or empty id fails the resolution.
   - Failure to resolve a project ID fails the OAuth completion.
@@ -241,7 +241,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 - **Upstream Actions**:
   - Non-streaming: `:generateContent`
   - Streaming: `:streamGenerateContent?alt=sse`
-- **Headers**: `Authorization: Bearer <accessToken>`, `Content-Type: application/json`, `User-Agent: antigravity`. Every Antigravity Code Assist call — project resolution (`loadCodeAssist`, `onboardUser`), model discovery (`fetchAvailableModels`), and inference — sends this header set.
+- **Headers**: `Authorization: Bearer <accessToken>`, `Content-Type: application/json`, `User-Agent: antigravity`. Every Antigravity call — project resolution (`loadCodeAssist`, `onboardUser`), model discovery (`fetchAvailableModels`), and inference — sends this header set.
 - **Envelope**:
   ```json
   {
@@ -254,7 +254,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   }
   ```
 - **Upstream Invariants**:
-  - Every Code Assist response — `:generateContent` JSON bodies and `alt=sse` SSE frames alike — wraps the GenerateContentResponse in a `response` envelope beside `traceId` and `metadata`; the gateway unwraps the envelope when present and equally accepts bare GenerateContentResponse payloads (as sent by Gemini-compatible upstreams).
+  - Every Antigravity response — `:generateContent` JSON bodies and `alt=sse` SSE frames alike — wraps the GenerateContentResponse in a `response` envelope beside `traceId` and `metadata`; the gateway unwraps the envelope when present and equally accepts bare GenerateContentResponse payloads (as sent by Gemini-compatible upstreams).
   - `thoughtSignature` blobs on function-call parts must be preserved and reattached across turns; text-part signatures are not carried — the outward OpenAI surfaces have no wire slot for them — and are dropped at parse time.
   - `functionCall.id` values are preserved across turns like `thoughtSignature`: a populated upstream call id seeds the IR `call_id` (an id-less call mints `call_<uuid>`, the same id the outward OpenAI surfaces expose as the tool-call id), and the replayed history emits it as the `FunctionCall.id` of the call and the matching `FunctionResponse.id` of its tool result, so parallel calls to one function name resolve by id rather than by name.
   - Image parts carrying a public `http`/`https` URL render to Gemini upstreams — `antigravity_oauth` here and `gemini_generate_content` (§5.3) alike — as `fileData.fileUri`: the current Gemini API accepts any publicly accessible web URL there and infers the MIME type upstream. The gateway neither fetches nor inlines images; delivering the URL is the upstream's job, and a URL it cannot fetch mirrors its upstream error per §6.7.

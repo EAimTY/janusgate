@@ -23,7 +23,7 @@ pub(crate) const CODEX_ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
 /// on model discovery and is embedded in the `User-Agent` value below.
 pub(crate) const CODEX_CLIENT_VERSION: &str = "0.147.0";
 
-/// Base URL of the Antigravity Code Assist API.
+/// Base URL of the Antigravity API.
 ///
 /// Personal/consumer accounts must use `daily-cloudcode-pa.googleapis.com`;
 /// `cloudcode-pa.googleapis.com` returns `429 RESOURCE_EXHAUSTED`. The reference port infers
@@ -34,7 +34,7 @@ pub(crate) const ANTIGRAVITY_BASE_URL: &str =
     "https://daily-cloudcode-pa.googleapis.com/v1internal";
 
 /// `loadCodeAssist` action suffix on the Antigravity base URL.
-pub(crate) const ANTIGRAVITY_LOAD_CODE_ASSIST_ACTION: &str = ":loadCodeAssist";
+pub(crate) const ANTIGRAVITY_LOAD_ACTION: &str = ":loadCodeAssist";
 
 /// `onboardUser` action suffix on the Antigravity base URL.
 pub(crate) const ANTIGRAVITY_ONBOARD_USER_ACTION: &str = ":onboardUser";
@@ -42,7 +42,7 @@ pub(crate) const ANTIGRAVITY_ONBOARD_USER_ACTION: &str = ":onboardUser";
 /// `fetchAvailableModels` action suffix on the Antigravity base URL.
 pub(crate) const ANTIGRAVITY_FETCH_AVAILABLE_MODELS_ACTION: &str = ":fetchAvailableModels";
 
-/// `User-Agent` header value required by the Antigravity Code Assist endpoint.
+/// `User-Agent` header value required by the Antigravity endpoint.
 pub(crate) const ANTIGRAVITY_USER_AGENT: &str = "antigravity";
 
 /// Header name carrying the API key of a compatible Gemini upstream (README §5.3); the

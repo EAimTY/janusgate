@@ -1,10 +1,10 @@
-//! OAuth authorization flows, token exchange, refresh leasing, and Google Code Assist project
+//! OAuth authorization flows, token exchange, refresh leasing, and Antigravity project
 //! resolution for OAuth-backed providers.
 //!
 //! The submodule layout mirrors the concerns: [`flow`] is the OAuth protocol (authorization begin,
-//! code exchange, refresh grant), [`project`] is the Google Code Assist project onboarding,
-//! [`refresh`] is the lease-guarded refresh loop, [`code_assist`] is the shared Antigravity Code
-//! Assist transport, and [`token`] holds the JWT claim and token-lifetime helpers shared by the
+//! code exchange, refresh grant), [`project`] is the Antigravity project onboarding,
+//! [`refresh`] is the lease-guarded refresh loop, [`antigravity`] is the shared Antigravity
+//! transport, and [`token`] holds the JWT claim and token-lifetime helpers shared by the
 //! flow and refresh paths.
 //!
 //! # Reference implementations
@@ -38,25 +38,25 @@
 //! reference.
 //!
 //! End to end: [`flow::begin_flow`] mints the authorize URL (client-secret style, no PKCE); the
-//! pasted code is redeemed by [`flow::exchange_code`], which resolves the Code Assist project id
+//! pasted code is redeemed by [`flow::exchange_code`], which resolves the Antigravity project id
 //! via [`project::resolve_project_id`] (`loadCodeAssist`, then `onboardUser`); the credentials
 //! then serve inference and [`refresh::ensure_fresh_token`] renews them under the database
 //! lease.
 
 use super::{http_body, http_body::ExchangeFailure, storage::Error as StorageError};
 
-mod code_assist;
+mod antigravity;
 mod flow;
 mod project;
 mod refresh;
 mod token;
 
-pub(in crate::provider) use code_assist::post_code_assist;
+pub(in crate::provider) use antigravity::post_antigravity;
 pub(crate) use flow::{OAuthFlow, begin_flow, exchange_code};
 pub(crate) use refresh::ensure_fresh_token;
 
-/// OAuth token acquisition failures: authorization code exchange, refresh grants, Google Code
-/// Assist project resolution, and the lease-guarded refresh loop over them.
+/// OAuth token acquisition failures: authorization code exchange, refresh grants, Antigravity
+/// project resolution, and the lease-guarded refresh loop over them.
 ///
 /// Every upstream-facing variant renders the complete human message both HTTP surfaces display; the
 /// surfaces only decide the status and the machine-readable code. Upstream rejections on these
