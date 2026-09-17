@@ -45,6 +45,33 @@ const LISTEN_BACKLOG: i32 = 32;
 /// plaintext prior-knowledge HTTP/2 clients are served.
 const ALPN_PROTOCOLS: [&[u8]; 2] = [b"h2", b"http/1.1"];
 
+/// Deadline for an HTTP/1 connection to finish sending request headers.
+///
+/// Pins hyper's effective 30-second default explicitly: the default is
+/// declared unstable, and the value is part of the documented resource
+/// bounds.
+const HTTP1_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Idle time before an HTTP/2 connection is probed with a keep-alive PING.
+const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Time a peer has to answer a keep-alive PING before the connection is
+/// closed as dead.
+const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Maximum number of concurrent request streams one HTTP/2 connection may
+/// hold.
+///
+/// Pins hyper's effective default of 200 explicitly: the default is declared
+/// unstable.
+const HTTP2_MAX_CONCURRENT_STREAMS: u32 = 200;
+
+/// Maximum HPACK-decompressed header bytes one HTTP/2 request may carry.
+///
+/// Hyper's default is ~16 MB and declared unstable; 16 KiB bounds
+/// HPACK-bomb memory while leaving generous room for ordinary header sets.
+const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 16 * 1024;
+
 /// Computes the delay before the next accept attempt after
 /// `consecutive_failures` consecutive accept failures. The delay doubles per
 /// additional failure and saturates at [`ACCEPT_BACKOFF_MAX`].
@@ -56,9 +83,18 @@ fn accept_backoff_delay(consecutive_failures: u32) -> Duration {
 
 /// Creates the HTTP connection builder used for every accepted connection.
 ///
-/// Hyper's HTTP/1 timer is armed so its default 30-second header-read
-/// deadline takes effect: without a timer, hyper silently disables its
-/// timeouts and a slow client can park a connection task indefinitely.
+/// HTTP/1 arms hyper's timer and pins its header-read deadline explicitly:
+/// without a timer hyper silently disables its timeouts and a slow client
+/// can park a connection task indefinitely, and the 30-second default is
+/// declared unstable. HTTP/2 pins its stream and header-list bounds (both
+/// defaults are declared unstable as well) and enables PING-based
+/// keep-alive: an idle connection is probed every 30 seconds and closed when
+/// a probe goes unacknowledged for 20 seconds. A PING must be answered by
+/// the peer's HTTP/2 stack — the kernel cannot answer on its behalf, unlike
+/// TCP keep-alive — so live-but-idle clients survive while dead or silent
+/// HTTP/2 peers are reaped. Hyper's maintained rapid-reset mitigation
+/// defaults (pending-accept and local-error reset-stream limits) are left
+/// untouched.
 ///
 /// No deadline is imposed on the phase before the first request headers —
 /// the TLS handshake, hyper-util's protocol auto-detection, or a client
@@ -73,7 +109,18 @@ fn accept_backoff_delay(consecutive_failures: u32) -> Duration {
 fn connection_builder() -> ConnectionBuilder {
     let mut connection_builder = ConnectionBuilder::new();
 
-    connection_builder.http1().timer(TokioTimer::new());
+    connection_builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(HTTP1_HEADER_READ_TIMEOUT);
+
+    connection_builder
+        .http2()
+        .timer(TokioTimer::new())
+        .keep_alive_interval(HTTP2_KEEP_ALIVE_INTERVAL)
+        .keep_alive_timeout(HTTP2_KEEP_ALIVE_TIMEOUT)
+        .max_concurrent_streams(HTTP2_MAX_CONCURRENT_STREAMS)
+        .max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
 
     connection_builder
 }
