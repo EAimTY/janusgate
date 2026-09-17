@@ -22,7 +22,7 @@ JanusGate itself is **headless**: it exposes an OpenAI-compatible serving API (`
 └─────────────────────────┘   Content-Type: application/json    └──────────────────────────┘
 ```
 
-- **Deploy anywhere.** The build output (`dist/`) is plain static files (`index.html` + JS + CSS). Any static host works; no server-side rendering, no edge functions, no backend of its own.
+- **Deploy anywhere.** The build output (`target/web/dist/` from the repository root) is plain static files (`index.html` + JS + CSS). Any static host works; no server-side rendering, no edge functions, no backend of its own.
 - **Public by default.** Anyone who can reach the deployed URL can open the app. Opening it grants nothing by itself: every management call requires the target instance's management token, which the app never ships with.
 - **First-visit connection setup.** The app holds no connection on first entry, so it presents a connection screen asking for exactly two values: the JanusGate **management API base URL** (e.g. `https://gateway.example.com`) and its **management token** (matching `management_api.token` in that instance's configuration). The pair is verified with one probe call (`POST /management-api/v0/providers:list`) before it is accepted and persisted.
 - **Connection persists locally.** The accepted pair lives only in the browser's `localStorage` (key in `src/config.ts`). Returning visits skip setup; a "forget" action clears the stored pair and returns to setup. The app administers one instance at a time.
@@ -39,11 +39,11 @@ JanusGate itself is **headless**: it exposes an OpenAI-compatible serving API (`
 
 | Layer | Choice | Notes |
 | :--- | :--- | :--- |
-| **Language** | TypeScript (strict) | `tsc --noEmit` is part of `npm run check`; strict flags per `tsconfig.json` |
+| **Language** | TypeScript (strict) | `tsc --noEmit`, run through the repository root's `npm run check`; strict flags per `tsconfig.json` |
 | **UI framework** | SolidJS v2 (`solid-js` + `@solidjs/web`) | Fine-grained reactivity, no virtual DOM; JSX with `jsxImportSource: @solidjs/web` |
 | **Styling** | Tailwind CSS v4 (via `@tailwindcss/vite`) | Utility-first; single entry `src/tailwind.css` (`@import "tailwindcss"`) |
-| **Build / dev server** | Vite | Static output to `dist/`; the host needs an SPA fallback (§5) |
-| **Lint & format** | Biome | `biome.jsonc` (mirrors the JanusGate web stack); `npm run check` / `npm run fix` |
+| **Build / dev server** | Vite | Static output to `target/web/dist/`; the host needs an SPA fallback (§5) |
+| **Lint & format** | Biome | `biome.jsonc` at the repository root, covering the whole repository; `npm run check` / `npm run fix` from the root |
 | **Tests** | Vitest | `npm test`; TDD per `AGENTS.md` |
 | **HTTP** | Native `fetch` | No data-fetching or state library; `AbortController` cancels in-flight calls |
 | **Wire contract** | Generated TypeScript bindings | Produced by the gateway sources in this repository (§7.1); never hand-written |
@@ -253,10 +253,9 @@ web/                                # the workspace root (this directory)
 │   ├── components/
 │   │   └── model-list.tsx           # Model rows and their inline editor, shared by two screens
 │   └── ui/                          # Presentational primitives: button, link-button, field, banner, card, badge, app-link, page-header, focus-on-mount
-├── vite.config.ts                   # Vite + SolidJS + Tailwind plugins; output dist/
+├── vite.config.ts                   # Vite + SolidJS + Tailwind plugins; output and caches under ../target/web
 ├── vitest.config.ts                 # Vitest: jsdom + Solid's browser resolve conditions + tsconfig paths
 ├── tsconfig.json                    # Strict TypeScript; `/` maps to the `web/` root
-├── biome.jsonc                      # Lint + format (mirrors the JanusGate web stack)
 ├── package.json                     # Scripts and dependencies (no backend, no deploy tooling)
 ├── AGENTS.md                        # Agent working rules (this workspace's conventions)
 ├── CLAUDE.md                        # Points at AGENTS.md
@@ -296,7 +295,7 @@ The app is implemented end to end: the connection lifecycle (§3), all ten manag
 
 There are two kinds of configuration, strictly apart:
 
-- **Connection (runtime, per browser).** The `{ baseUrl, token }` pair from §3, stored in `localStorage` under the key in `src/config.ts`. No build-time or deployment-time values exist — the same `dist/` artifact administers any instance. Rotating a gateway's management token invalidates stored connections; the app recovers through the 401 path (§3.1).
+- **Connection (runtime, per browser).** The `{ baseUrl, token }` pair from §3, stored in `localStorage` under the key in `src/config.ts`. No build-time or deployment-time values exist — the same `target/web/dist/` artifact administers any instance. Rotating a gateway's management token invalidates stored connections; the app recovers through the 401 path (§3.1).
 - **Tunables (build-time, in code).** Every non-secret configurable value lives in `src/config.ts`, its single home. Changing one means editing the module and rebuilding. No runtime environment variables are read (`import.meta.env` is not a configuration mechanism here) — a static artifact that behaved differently per host via env injection would break the one-artifact-anywhere promise.
 
 No secrets ever appear in code, in `src/config.ts`, or in this workspace. The management token exists only in the administrator's browser storage and on the wire to the configured instance.
@@ -311,7 +310,7 @@ The normative rule list is `AGENTS.md`; this section orients:
 - **Types:** strict TypeScript throughout — no `any`, and no assertion a preceding runtime check does not justify; unknown input (notably every management API response) is narrowed through explicit validation; exported functions and component helpers carry explicit return types.
 - **Generics:** all-or-nothing naming per parameter list (single-letter when simple; otherwise every parameter multi-letter with a `T`-prefix for types / `F`-prefix for callbacks describing its role).
 - **Booleans** carry predicate-style prefixes (`is`, `can`, `has`, `should`); names are unabbreviated (`id` and the usual short auxiliaries excepted).
-- **Quality gates:** after every code change run `npm run check` (Biome + `tsc --noEmit`) and `npm test`. TDD: write tests first for non-trivial logic; keep tests cohesive and aimed at first-party domain logic (URL normalization, response validation, read-modify-write adapters, connection state transitions), never at framework primitives.
+- **Quality gates:** after every code change run `npm run check` (Biome over the whole repository, plus this workspace's `tsc --noEmit`) and `npm run test:web` from the repository root. TDD: write tests first for non-trivial logic; keep tests cohesive and aimed at first-party domain logic (URL normalization, response validation, read-modify-write adapters, connection state transitions), never at framework primitives.
 - **Docs first:** `README.md` is the source of truth — every behavior change updates it alongside the code.
 
 ---
@@ -336,25 +335,25 @@ The normative rule list is `AGENTS.md`; this section orients:
 
 ### Scripts
 
+All scripts below run from `web/`. The repository root is an npm workspace wrapping this package: `npm run dev:web`, `build:web`, and `test:web` at the root delegate here, and the root `npm run check` / `npm run fix` run Biome (root `biome.jsonc`, whole repository) followed by this package's typecheck.
+
 | Script | Purpose |
 | :--- | :--- |
 | `npm run generate-bindings` | Regenerate `src/management-api/generated/v0.ts` from the local gateway sources (§7.1) |
 | `npm run dev` | Local dev server with hot reload |
-| `npm run build` | Production static build into `dist/` |
+| `npm run build` | Production static build into `target/web/dist/` |
 | `npm run preview` | Serve the production build locally |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run check` | Biome check + typecheck (run after every change) |
-| `npm run fix` | Biome auto-fix (unsafe) + typecheck |
 | `npm test` | Vitest run (domain-logic suites, §11) |
 
 ### First run and workflow
 
 ```bash
-npm install
-npm run generate-bindings   # once per checkout; needs cargo, regenerates from the local gateway
-npm run dev                 # iterate against a real JanusGate instance
-npm run check               # lint + types, after every change
-npm run build               # produce dist/ for static hosting
+npm install                     # at the repository root — installs every workspace
+npm run generate-bindings -w web   # once per checkout; needs cargo, regenerates from the local gateway
+npm run dev:web                 # iterate against a real JanusGate instance
+npm run check                   # Biome over the repository + web typecheck, after every change
+npm run build:web               # produce target/web/dist/ for static hosting
 ```
 
 Local development talks to a real JanusGate instance: enter its base URL and token in the setup screen. Ensure that instance's `management_api.cors.allowed_origin` includes the dev server's origin (or `"*"`), or the browser will block the probe call. Deep links in dev are served by Vite's history fallback; the static host needs the equivalent (§5).

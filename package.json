@@ -1,0 +1,18 @@
+{
+    "name": "janusgate",
+    "version": "0.0.0",
+    "private": true,
+    "workspaces": [
+        "web"
+    ],
+    "scripts": {
+        "dev:web": "npm run dev -w web",
+        "build:web": "npm run build -w web",
+        "test:web": "npm test -w web",
+        "check": "biome check && npm run typecheck -w web",
+        "fix": "biome check --write --unsafe && npm run typecheck -w web"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.14"
+    }
+}

@@ -6,3 +6,10 @@
 
 # dev config
 /config.dev.jsonc
+
+# Node.js
+node_modules/
+
+# Web workspace local state
+/web/.env
+/web/.pi/npm

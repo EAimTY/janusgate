@@ -12,6 +12,7 @@ export default defineConfig({
         ],
         tsconfigPaths: true,
     },
+    cacheDir: "../target/web/cache",
     plugins: [
         solid(),
     ],
@@ -21,5 +22,8 @@ export default defineConfig({
             "**/*.test.ts",
             "**/*.test.tsx",
         ],
+        coverage: {
+            reportsDirectory: "../target/web/coverage",
+        },
     },
 });
