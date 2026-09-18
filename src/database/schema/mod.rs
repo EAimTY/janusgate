@@ -7,8 +7,17 @@
 //! `migration` field carries the SQL that transforms the previous version's database into it.
 //!
 //! [`migrate`] runs at startup: it reads `PRAGMA user_version`, applies the first version's DDL to
-//! a fresh database, and walks forward applying one migration per version, each committed
-//! atomically together with its `user_version` advance.
+//! a fresh database and walks forward from there, applying one migration per version, each
+//! committed atomically together with its `user_version` advance — so a fresh database and an
+//! outdated one both end at the latest version.
+//!
+//! Migration texts run under foreign key enforcement: the bootstrap connection enables
+//! `PRAGMA foreign_keys` before the walk, and each text executes inside its own transaction, where
+//! SQLite defines the pragma as a no-op (Turso currently accepting it mid-transaction is a
+//! divergence from SQLite that may be aligned at any time). No migration may therefore rely on
+//! disabling enforcement; every migration must be authored to hold under it statement by
+//! statement — a table rebuild, for instance, orders its steps so referential integrity holds at
+//! every intermediate state.
 
 mod version_1;
 
@@ -35,6 +44,10 @@ struct Schema {
     ///
     /// The empty string for version 1, which has no predecessor: a fresh database receives
     /// [`Schema::schema`] directly instead.
+    ///
+    /// The statements run under foreign key enforcement and must be authored to hold under it —
+    /// see the module documentation; never rely on `PRAGMA foreign_keys` to disable enforcement
+    /// mid-migration.
     migration: &'static str,
 }
 
@@ -47,54 +60,72 @@ const SCHEMAS: &[Schema] = &[version_1::SCHEMA];
 /// Brings the schema of the database behind `connection` up to the latest known version, logging
 /// progress under the database's `path`.
 ///
+/// Delegates to [`bring_up_to_latest`] over [`SCHEMAS`]; see that function for the workflow.
+///
+/// # Panics
+///
+/// Panics under the same conditions as [`bring_up_to_latest`].
+pub(super) async fn migrate(connection: &Connection, path: &str) {
+    bring_up_to_latest(connection, SCHEMAS, path).await;
+}
+
+/// Walks `schemas` — schema versions in ascending order — forward from the database's stored
+/// version, bringing the database behind `connection` to `schemas`' latest version and logging
+/// progress under the database's `path`.
+///
 /// The current version is read from `PRAGMA user_version`. A fresh database (`0`) receives the
-/// first version's DDL and continues from there; a database at a known version applies the
-/// migrations of every later version in order; a database already at the latest version does
-/// nothing. Each step — one schema or migration text plus its `user_version` write — commits
-/// atomically, so a crash mid-chain leaves the database on its last committed version and the next
-/// startup resumes from there.
+/// first version's DDL and joins the walk from there — so a fresh database ends at the latest
+/// version, however many exist, through the same later migrations an outdated database applies.
+/// A database at a known version applies the migrations of every later version in order; a
+/// database already at the latest version does nothing. Each step — one schema or migration text
+/// plus its `user_version` write — commits atomically, so a crash mid-chain leaves the database
+/// on its last committed version and the next startup resumes from there.
+///
+/// The schema table is a parameter rather than [`SCHEMAS`] itself so tests can exercise the walk
+/// over chains with more versions than the registry currently contains.
 ///
 /// # Panics
 ///
 /// Panics if reading `user_version`, applying a schema or migration batch, or advancing
 /// `user_version` fails, or if the stored version is negative or newer than the latest known
 /// version — a database this build cannot interpret.
-pub(super) async fn migrate(connection: &Connection, path: &str) {
-    let current_version = query_user_version(connection).await;
+async fn bring_up_to_latest(connection: &Connection, schemas: &[Schema], path: &str) {
+    let mut current_version = query_user_version(connection).await;
 
     if current_version == 0 {
-        let first = first_schema();
+        // A fresh database receives the first version's DDL and joins the walk from there, exactly
+        // like a database already at version 1 — whatever later versions exist still apply.
+        let first = first_schema(schemas);
         apply(connection, first.schema, first.version, path).await;
-    } else {
-        match SCHEMAS.binary_search_by(|schema| schema.version.cmp(&current_version)) {
-            Ok(index) => {
-                for schema in SCHEMAS.iter().skip(index + 1) {
-                    apply(connection, schema.migration, schema.version, path).await;
-                }
+        current_version = first.version;
+    }
 
-                if current_version == last_schema().version {
-                    debug!(
-                        "database {path} is at schema version {current_version}, the latest known"
-                    );
-                }
+    match schemas.binary_search_by(|schema| schema.version.cmp(&current_version)) {
+        Ok(index) => {
+            for schema in schemas.iter().skip(index + 1) {
+                apply(connection, schema.migration, schema.version, path).await;
             }
 
-            Err(_) => {
-                // Versions are contiguous from 1, so a binary-search miss among positive versions
-                // can only be a version newer than the latest this build knows.
-                let latest_version = last_schema().version;
+            if current_version == last_schema(schemas).version {
+                debug!("database {path} is at schema version {current_version}, the latest known");
+            }
+        }
 
-                #[expect(
-                    clippy::panic,
-                    reason = "an unknown schema version is fatal: this build cannot interpret \
-                              the database"
-                )]
-                {
-                    panic!(
-                        "database {path} has unknown schema version {current_version}; this build \
-                         knows versions 1..={latest_version}"
-                    );
-                }
+        Err(_) => {
+            // Versions are contiguous from 1, so a binary-search miss among positive versions
+            // can only be a version newer than the latest this build knows.
+            let latest_version = last_schema(schemas).version;
+
+            #[expect(
+                clippy::panic,
+                reason = "an unknown schema version is fatal: this build cannot interpret \
+                          the database"
+            )]
+            {
+                panic!(
+                    "database {path} has unknown schema version {current_version}; this build \
+                     knows versions 1..={latest_version}"
+                );
             }
         }
     }
@@ -157,27 +188,36 @@ async fn query_user_version(connection: &Connection) -> i64 {
         .expect("failed to get the user_version integer value")
 }
 
-/// Returns the first schema version.
+/// Returns the first schema version of `schemas`.
 ///
 /// # Panics
 ///
-/// Panics if [`SCHEMAS`] is empty — the registry always contains at least version 1.
-fn first_schema() -> &'static Schema {
-    #[expect(clippy::expect_used, reason = "SCHEMAS always contains version 1")]
-    SCHEMAS.first().expect("SCHEMAS always contains version 1")
-}
-
-/// Returns the latest schema version.
-///
-/// # Panics
-///
-/// Panics if [`SCHEMAS`] is empty — the registry always contains at least version 1.
-fn last_schema() -> &'static Schema {
+/// Panics if `schemas` is empty — the registry always contains at least version 1, and every
+/// other table the workflow sees follows the same shape.
+fn first_schema(schemas: &[Schema]) -> &Schema {
     #[expect(
         clippy::expect_used,
-        reason = "SCHEMAS always contains version 1, so a latest version exists"
+        reason = "the schema registry always contains version 1, so a first version exists"
     )]
-    SCHEMAS.last().expect("SCHEMAS always contains version 1")
+    schemas
+        .first()
+        .expect("the schema registry always contains version 1")
+}
+
+/// Returns the last schema version of `schemas`.
+///
+/// # Panics
+///
+/// Panics if `schemas` is empty — the registry always contains at least version 1, and every
+/// other table the workflow sees follows the same shape.
+fn last_schema(schemas: &[Schema]) -> &Schema {
+    #[expect(
+        clippy::expect_used,
+        reason = "the schema registry always contains version 1, so a latest version exists"
+    )]
+    schemas
+        .last()
+        .expect("the schema registry always contains version 1")
 }
 
 #[cfg(test)]
@@ -203,7 +243,11 @@ mod tests {
     /// Panics if an assertion fails.
     #[test]
     fn schema_versions_are_contiguous_from_one() {
-        assert_eq!(first_schema().version, 1, "schema versions must start at 1",);
+        assert_eq!(
+            first_schema(SCHEMAS).version,
+            1,
+            "schema versions must start at 1",
+        );
 
         for (previous, schema) in SCHEMAS.iter().zip(SCHEMAS.iter().skip(1)) {
             assert_eq!(
@@ -227,7 +271,7 @@ mod tests {
     async fn migrations_produce_their_target_schemas() -> Result<(), Box<dyn StdError>> {
         let connection = open_memory_connection().await;
 
-        let first = first_schema();
+        let first = first_schema(SCHEMAS);
         connection.execute_batch(first.schema).await?;
         assert_declared_schema(&connection, first).await?;
 
@@ -250,10 +294,59 @@ mod tests {
         let connection = open_memory_connection().await;
 
         migrate(&connection, ":memory:").await;
-        assert_eq!(query_user_version(&connection).await, last_schema().version);
+        assert_eq!(
+            query_user_version(&connection).await,
+            last_schema(SCHEMAS).version,
+        );
 
         migrate(&connection, ":memory:").await;
-        assert_eq!(query_user_version(&connection).await, last_schema().version);
+        assert_eq!(
+            query_user_version(&connection).await,
+            last_schema(SCHEMAS).version,
+        );
+
+        Ok(())
+    }
+
+    /// Verifies that a fresh database is brought to the latest version through the whole chain —
+    /// the first version's DDL, then every later migration — over a synthetic two-version chain,
+    /// because the real registry holds a single version and cannot exercise the walk past it. A
+    /// second run over the now-current database is a no-op.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the workflow fails, the database does not end at the latest version's declared
+    /// schema, or the second run changes anything.
+    #[tokio::test]
+    async fn fresh_database_walks_the_whole_chain_to_the_latest_version()
+    -> Result<(), Box<dyn StdError>> {
+        let connection = open_memory_connection().await;
+
+        let schemas = [
+            Schema {
+                version: 1,
+                schema: "CREATE TABLE synthetic (value INTEGER) STRICT;\n",
+                migration: "",
+            },
+            Schema {
+                version: 2,
+                schema: "CREATE TABLE synthetic (value INTEGER, label TEXT) STRICT;\n",
+                migration: "ALTER TABLE synthetic ADD COLUMN label TEXT;\n",
+            },
+        ];
+
+        bring_up_to_latest(&connection, &schemas, ":memory:").await;
+        assert_eq!(
+            query_user_version(&connection).await,
+            last_schema(&schemas).version,
+        );
+        assert_declared_schema(&connection, last_schema(&schemas)).await?;
+
+        bring_up_to_latest(&connection, &schemas, ":memory:").await;
+        assert_eq!(
+            query_user_version(&connection).await,
+            last_schema(&schemas).version,
+        );
 
         Ok(())
     }

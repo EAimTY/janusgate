@@ -431,7 +431,9 @@ async fn query(
 }
 
 /// Applies the pragmas and timeouts required by every JanusGate database connection, whether pooled
-/// or used for schema bootstrap.
+/// or used for schema bootstrap. Foreign key enforcement is therefore also on while the schema
+/// migration workflow runs; see the [`schema`] module's documentation for the constraint this puts
+/// on migration texts.
 ///
 /// # Errors
 ///
