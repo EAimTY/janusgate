@@ -2,9 +2,9 @@
 //!
 //! The schema is versioned linearly: every modification to the database schema is a new version,
 //! defined by one `version_x.rs` submodule whose only item is `const SCHEMA: Schema` and
-//! registered in [`SCHEMAS`]. A version's `schema` field carries the complete DDL of that version,
-//! constructed at compile time by `turso-ddl-builder` evaluated through `crabtime`, and its
-//! `migration` field carries the SQL that transforms the previous version's database into it.
+//! registered in [`SCHEMAS`]. A version's `schema` field carries the complete DDL of that version
+//! as hand-written SQL, and its `migration` field carries the SQL that transforms the previous
+//! version's database into it.
 //!
 //! [`migrate`] runs at startup: it reads `PRAGMA user_version`, applies the first version's DDL to
 //! a fresh database and walks forward from there, applying one migration per version, each
@@ -22,6 +22,8 @@
 mod version_1;
 
 use log::{debug, info};
+#[cfg(test)]
+use turso::Builder as TursoBuilder;
 use turso::Connection;
 
 /// One version of the SQLite database schema.
@@ -35,8 +37,8 @@ struct Schema {
     /// this over [`SCHEMAS`].
     version: i64,
 
-    /// The complete DDL creating the version's schema from an empty database, built at compile
-    /// time by `turso-ddl-builder` inside a `crabtime` expression.
+    /// The complete DDL creating the version's schema from an empty database, hand-written
+    /// in the version's module.
     schema: &'static str,
 
     /// The statements that transform a database of the previous version into this version. The
@@ -220,11 +222,38 @@ fn last_schema(schemas: &[Schema]) -> &Schema {
         .expect("the schema registry always contains version 1")
 }
 
+/// Opens a connection to a fresh in-memory test database, shared by the per-version schema
+/// tests in the `version_x` modules and the workflow tests below.
+///
+/// # Panics
+///
+/// Panics if building or connecting to the in-memory database fails.
+#[cfg(test)]
+pub(super) async fn open_memory_connection() -> Connection {
+    #[expect(
+        clippy::expect_used,
+        reason = "an in-memory test database always builds"
+    )]
+    let database = TursoBuilder::new_local(":memory:")
+        .build()
+        .await
+        .expect("failed to build an in-memory test database");
+
+    #[expect(
+        clippy::expect_used,
+        reason = "a fresh in-memory database always connects"
+    )]
+    let connection = database
+        .connect()
+        .expect("failed to connect to the in-memory test database");
+
+    connection
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{collections::BTreeSet, error::Error as StdError};
-    use turso::Builder as TursoBuilder;
     use turso_parser::{
         ast::{
             Cmd, ColumnConstraint, ColumnDefinition, CreateTableBody, ForeignKeyClause,
@@ -258,24 +287,48 @@ mod tests {
         }
     }
 
-    /// Verifies that applying the migration chain — version 1's DDL, then every later version's
-    /// migration in order — leaves the database at exactly each version's declared schema. This is
-    /// the contract [`migrate`] relies on: any database, however far behind, is only ever walked
-    /// forward through the same texts this test applies.
+    /// Verifies that version 1's migration is empty: a fresh database receives the first
+    /// version's DDL directly and joins the walk from there, so there is no previous version
+    /// to migrate from.
     ///
     /// # Panics
     ///
-    /// Panics if a schema or migration text fails to apply or the resulting database schema does
-    /// not match the declared schema of its version.
+    /// Panics if an assertion fails.
+    #[test]
+    fn first_migration_is_empty() {
+        assert_eq!(
+            first_schema(SCHEMAS).migration,
+            "",
+            "version 1 has no predecessor, so its migration must be empty",
+        );
+    }
+
+    /// Verifies that every version's declared schema is exactly what a database built for it
+    /// holds: version 1's DDL applies cleanly to a fresh database, and for every later version,
+    /// applying its predecessor's DDL followed by its migration to a fresh database yields its
+    /// declared schema. Each version builds on its own fresh database, so versions never leak
+    /// state into each other. This is the contract [`migrate`] relies on: any database, however
+    /// far behind, only ever walks forward through texts this test applies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resulting database schema does not match the declared schema of its
+    /// version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a schema or migration text fails to apply, or a stored object's
+    /// DDL fails to parse.
     #[tokio::test]
     async fn migrations_produce_their_target_schemas() -> Result<(), Box<dyn StdError>> {
-        let connection = open_memory_connection().await;
-
         let first = first_schema(SCHEMAS);
+        let connection = open_memory_connection().await;
         connection.execute_batch(first.schema).await?;
         assert_declared_schema(&connection, first).await?;
 
-        for schema in SCHEMAS.iter().skip(1) {
+        for (previous, schema) in SCHEMAS.iter().zip(SCHEMAS.iter().skip(1)) {
+            let connection = open_memory_connection().await;
+            connection.execute_batch(previous.schema).await?;
             connection.execute_batch(schema.migration).await?;
             assert_declared_schema(&connection, schema).await?;
         }
@@ -368,32 +421,6 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    /// Opens a connection to a fresh in-memory test database.
-    ///
-    /// # Panics
-    ///
-    /// Panics if building or connecting to the in-memory database fails.
-    async fn open_memory_connection() -> Connection {
-        #[expect(
-            clippy::expect_used,
-            reason = "an in-memory test database always builds"
-        )]
-        let database = TursoBuilder::new_local(":memory:")
-            .build()
-            .await
-            .expect("failed to build an in-memory test database");
-
-        #[expect(
-            clippy::expect_used,
-            reason = "a fresh in-memory database always connects"
-        )]
-        let connection = database
-            .connect()
-            .expect("failed to connect to the in-memory test database");
-
-        connection
     }
 
     /// Renders a DDL text into its canonical object lines.
