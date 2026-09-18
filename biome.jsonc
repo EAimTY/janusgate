@@ -8,8 +8,14 @@
     },
     "files": {
         "ignoreUnknown": false,
+        // The agent-skill bundle under `.agents/skills/` and its lockfile are
+        // vendored tooling — the launcher, its data files, and its generated
+        // assets — not first-party source, so the repository's rules do not
+        // apply to them.
         "includes": [
-            "**"
+            "**",
+            "!**/.agents/skills",
+            "!skills-lock.json"
         ]
     },
     "formatter": {

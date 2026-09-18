@@ -11,7 +11,8 @@ import {
     initialConnectionState,
     reduceConnectionState,
 } from "/src/connection/state";
-import { describeManagementFailure } from "/src/management-api/errors";
+import { describeManagementFailure, ManagementApiError } from "/src/management-api/errors";
+import { ErrorCode } from "/src/management-api/generated/v0";
 
 export type ConnectionServiceDependencies = {
     readonly storage: Storage | null;
@@ -72,7 +73,11 @@ export function createConnectionService(
         } catch (error) {
             dispatch({
                 type: "connectionRejected",
-                notice: describeManagementFailure(error),
+                failure: {
+                    message: describeManagementFailure(error),
+                    cause: error,
+                    baseUrl: candidate.baseUrl,
+                },
             });
             return;
         }
@@ -98,7 +103,17 @@ export function createConnectionService(
 
         dispatch({
             type: "connectionRejected",
-            notice,
+            failure: {
+                message: notice,
+                // The only failure this path sees is the version's 401, so the
+                // cause carries that category rather than nothing: the panel's
+                // diagnosis can then read it like any other rejection.
+                cause: new ManagementApiError("gateway", notice, {
+                    errno: ErrorCode.Unauthorized,
+                    httpStatus: 401,
+                }),
+                baseUrl: null,
+            },
         });
     };
 

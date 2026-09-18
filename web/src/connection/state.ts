@@ -1,13 +1,25 @@
 import type { Connection } from "/src/connection/model";
 
 /**
+ * A refused connection attempt, kept whole so the setup screen can explain it
+ * (README §3.1): the message is what a person reads, `cause` is what the
+ * diagnosis needs, and `baseUrl` is the address the rejected candidate
+ * carried, so a later edit of the field cannot misattribute the failure.
+ */
+export type ConnectionFailure = {
+    readonly message: string;
+    readonly cause: unknown;
+    readonly baseUrl: string | null;
+};
+
+/**
  * The lifecycle of the connection pair (README §3.1). State is a value; events
  * are the only way it changes, and every transition is stated explicitly.
  */
 export type ConnectionState =
     | {
           readonly status: "unconnected";
-          readonly notice: string | null;
+          readonly failure: ConnectionFailure | null;
       }
     | {
           readonly status: "verifying";
@@ -31,7 +43,7 @@ export type ConnectionEvent =
       }
     | {
           readonly type: "connectionRejected";
-          readonly notice: string;
+          readonly failure: ConnectionFailure;
       }
     | {
           readonly type: "connectionForgotten";
@@ -39,7 +51,7 @@ export type ConnectionEvent =
 
 export const initialConnectionState: ConnectionState = {
     status: "unconnected",
-    notice: null,
+    failure: null,
 };
 
 /**
@@ -47,7 +59,7 @@ export const initialConnectionState: ConnectionState = {
  * leave it untouched: a submission is only meaningful without a connection, an
  * acceptance only while verifying, and a rejection (a failed probe or a 401
  * answering a management call) always lands on setup with the gateway's
- * message.
+ * failure.
  */
 export function reduceConnectionState(
     state: ConnectionState,
@@ -58,7 +70,7 @@ export function reduceConnectionState(
             return event.connection === null
                 ? {
                       status: "unconnected",
-                      notice: null,
+                      failure: null,
                   }
                 : {
                       status: "connected",
@@ -83,13 +95,13 @@ export function reduceConnectionState(
         case "connectionRejected":
             return {
                 status: "unconnected",
-                notice: event.notice,
+                failure: event.failure,
             };
 
         case "connectionForgotten":
             return {
                 status: "unconnected",
-                notice: null,
+                failure: null,
             };
     }
 }

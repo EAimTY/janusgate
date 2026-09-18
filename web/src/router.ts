@@ -1,16 +1,20 @@
 import { type Accessor, createSignal } from "solid-js";
 
 /**
- * The client-side routes of the app (README §6). The host serves `index.html`
- * for unknown paths, so every route here is also a deep link; anything the
- * matcher does not recognize renders the not-found screen.
+ * The client-side routes. Each page does one job: the overview reads the
+ * gateway's health, the providers pages administer providers, and the models
+ * pages administer models. The OAuth flows are steps inside the provider
+ * creation and reauthorization forms, not destinations of their own.
  */
 export type AppRoute =
+    | {
+          readonly name: "home";
+      }
     | {
           readonly name: "providers";
       }
     | {
-          readonly name: "providerCreate";
+          readonly name: "providerNew";
       }
     | {
           readonly name: "providerDetail";
@@ -21,8 +25,9 @@ export type AppRoute =
           readonly providerFilter: number | null;
       }
     | {
-          readonly name: "oauthStart";
-          readonly reauthorizeProviderId: number | null;
+          readonly name: "modelDetail";
+          readonly providerId: number;
+          readonly upstreamId: string;
       }
     | {
           readonly name: "notFound";
@@ -35,15 +40,14 @@ export type AppLocation = {
 
 /** Builders for every link the app renders, so no href is written twice. */
 export const hrefs = {
+    home: (): string => "/",
     providers: (): string => "/providers",
-    providerCreate: (): string => "/providers/new",
+    providerNew: (): string => "/providers/new",
     providerDetail: (providerId: number): string => `/providers/${providerId}`,
     models: (providerFilter: number | null): string =>
         providerFilter === null ? "/models" : `/models?provider=${providerFilter}`,
-    oauthStart: (reauthorizeProviderId: number | null): string =>
-        reauthorizeProviderId === null
-            ? "/oauth/start"
-            : `/oauth/start?provider=${reauthorizeProviderId}`,
+    modelDetail: (providerId: number, upstreamId: string): string =>
+        `/models/${providerId}/${encodeURIComponent(upstreamId)}`,
 } as const;
 
 /**
@@ -63,26 +67,46 @@ function readQueryParameter(search: string, name: string): string | null {
     return new URLSearchParams(search).get(name);
 }
 
+/** Reads an upstream ID out of the path's tail; anything blank is absent. */
+function parseUpstreamId(segments: ReadonlyArray<string>): string | null {
+    const joined = segments.join("/");
+
+    let decoded: string;
+    try {
+        decoded = decodeURIComponent(joined);
+    } catch {
+        return null;
+    }
+
+    return decoded === "" ? null : decoded;
+}
+
 export function matchAppRoute(pathname: string, search: string): AppRoute {
     // A trailing slash addresses the same resource.
     const normalizedPath = pathname !== "/" ? pathname.replace(/\/+$/, "") : pathname;
 
-    if (normalizedPath === "/" || normalizedPath === "/providers") {
+    if (normalizedPath === "/") {
         return {
-            name: "providers",
+            name: "home",
         };
     }
 
     if (normalizedPath === "/providers/new") {
         return {
-            name: "providerCreate",
+            name: "providerNew",
         };
     }
 
-    const providerDetailMatch = /^\/providers\/([^/]+)$/.exec(normalizedPath);
+    if (normalizedPath === "/providers") {
+        return {
+            name: "providers",
+        };
+    }
 
-    if (providerDetailMatch !== null) {
-        const providerId = parseRowIdentifier(providerDetailMatch[1] ?? null);
+    const providerMatch = /^\/providers\/([^/]+)$/.exec(normalizedPath);
+
+    if (providerMatch !== null) {
+        const providerId = parseRowIdentifier(providerMatch[1] ?? null);
 
         return providerId === null
             ? {
@@ -101,11 +125,23 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
         };
     }
 
-    if (normalizedPath === "/oauth/start") {
-        return {
-            name: "oauthStart",
-            reauthorizeProviderId: parseRowIdentifier(readQueryParameter(search, "provider")),
-        };
+    const modelMatch = /^\/models\/([^/]+)\/(.+)$/.exec(normalizedPath);
+
+    if (modelMatch !== null) {
+        const providerId = parseRowIdentifier(modelMatch[1] ?? null);
+        const upstreamId = parseUpstreamId([
+            modelMatch[2] ?? "",
+        ]);
+
+        return providerId === null || upstreamId === null
+            ? {
+                  name: "notFound",
+              }
+            : {
+                  name: "modelDetail",
+                  providerId,
+                  upstreamId,
+              };
     }
 
     return {

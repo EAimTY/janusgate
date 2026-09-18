@@ -1,201 +1,241 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createMemo, createSignal, Show } from "solid-js";
-import { ModelList } from "/src/components/model-list";
+import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ModelResponse } from "/src/management-api/generated/v0";
-import { hrefs, navigate, parseRowIdentifier } from "/src/router";
-import { createAsyncResource } from "/src/screens/resource";
-import { Banner } from "/src/ui/banner";
-import { Button } from "/src/ui/button";
-import { Card } from "/src/ui/card";
-import { SelectField, type SelectOption } from "/src/ui/field";
-import { LinkButton } from "/src/ui/link-button";
-import { PageHeader } from "/src/ui/page-header";
-
-export type ModelsScreenProps = {
-    readonly api: ManagementApi;
-    readonly providerFilter: number | null;
-};
+import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { performManagementCall } from "/src/management-api/outcome";
+import { refreshRequest, reportRefresh } from "/src/refresh-state";
+import { hrefs, navigate } from "/src/router";
+import { describeCallFailure } from "/src/screens/failure";
+import { SelectField } from "/src/ui/controls";
+import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Glyph } from "/src/ui/glyph";
+import { PageHeader } from "/src/ui/layout";
+import { ModelList } from "/src/ui/models-table";
 
 /**
- * The model listing (README §4.4 `models:list`), optionally filtered to one
- * provider, with inline override editing. Model rows exist only through
- * `models:discover`, so creation happens on the owning provider's screen.
+ * Every synced model on one page, filterable by provider and searchable by
+ * ID. Rows state the two facts a model has — serving and thinking levels —
+ * and each row opens the model's own page, where those facts are edited.
+ * Models are never created here: new rows arrive through a provider's sync.
  */
-export function ModelsScreen(props: ModelsScreenProps): JSX.Element {
-    const [actionFailure, setActionFailure] = createSignal<string | null>(null);
-    const providers = createAsyncResource((signal) => props.api.listProviders(signal));
+export function ModelsScreen(props: {
+    readonly api: ManagementApi;
+    readonly providerFilter: number | null;
+}): JSX.Element {
+    const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
+    const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
+    const [hasRead, setHasRead] = createSignal(false);
+    const [isReading, setIsReading] = createSignal(true);
+    const [search, setSearch] = createSignal("");
+    const [failure, setFailure] = createSignal<{
+        readonly title: string;
+        readonly detail: string;
+        readonly fix: string | null;
+    } | null>(null);
 
-    const models = createAsyncResource((signal) => {
-        const providerFilter = props.providerFilter;
+    let controller: AbortController | null = null;
 
-        return props.api.listModels(
-            providerFilter === null
-                ? {}
-                : {
-                      provider_id: providerFilter,
-                  },
-            signal,
-        );
-    });
+    const read = async (): Promise<void> => {
+        controller?.abort();
 
-    // The filter rides the URL; a change reloads the listing even when the
-    // screen itself is not remounted.
-    createEffect(
-        () => props.providerFilter,
-        () => {
-            void models.reload();
-        },
-        {
-            defer: true,
-        },
-    );
+        const call = new AbortController();
+        controller = call;
+        setIsReading(true);
 
-    const rows = (): ModelResponse[] | null => models.value()?.models ?? null;
+        const [providersOutcome, modelsOutcome] = await Promise.all([
+            performManagementCall(() => props.api.listProviders(call.signal)),
+            performManagementCall(() =>
+                props.api.listModels(
+                    props.providerFilter === null
+                        ? {}
+                        : {
+                              provider_id: props.providerFilter,
+                          },
+                    call.signal,
+                ),
+            ),
+        ]);
 
-    const filterOptions = createMemo<SelectOption[]>(() => {
-        const options: SelectOption[] = [
-            {
-                value: "",
-                label: "All providers",
-            },
-        ];
-
-        for (const provider of providers.value()?.providers ?? []) {
-            options.push({
-                value: String(provider.id),
-                label: provider.name,
-            });
-        }
-
-        const providerFilter = props.providerFilter;
-
-        if (
-            providerFilter !== null &&
-            !options.some((option) => option.value === String(providerFilter))
-        ) {
-            options.push({
-                value: String(providerFilter),
-                label: `Provider #${providerFilter} (not in the listing)`,
-            });
-        }
-
-        return options;
-    });
-
-    const selectProvider = (value: string): void => {
-        navigate(hrefs.models(parseRowIdentifier(value)));
-    };
-
-    const replaceModel = (updated: ModelResponse): void => {
-        const current = models.value();
-
-        if (current === null) {
+        if (providersOutcome.status === "aborted" || modelsOutcome.status === "aborted") {
             return;
         }
 
-        models.setValue({
-            models: current.models.map((row) =>
-                row.provider_id === updated.provider_id && row.upstream_id === updated.upstream_id
-                    ? updated
-                    : row,
-            ),
-        });
+        setIsReading(false);
+
+        const failed =
+            providersOutcome.status === "failed"
+                ? providersOutcome
+                : modelsOutcome.status === "failed"
+                  ? modelsOutcome
+                  : null;
+
+        if (failed !== null) {
+            const diagnosis = describeCallFailure(failed.cause);
+
+            setFailure({
+                title: diagnosis.headline,
+                detail: diagnosis.detail,
+                fix: diagnosis.fix,
+            });
+            return;
+        }
+
+        setFailure(null);
+        setProviders(providersOutcome.status === "ok" ? providersOutcome.result.providers : []);
+        setModels(modelsOutcome.status === "ok" ? modelsOutcome.result.models : []);
+        setHasRead(true);
+        reportRefresh();
     };
 
+    createTrackedEffect(() => {
+        // Re-reads when the route's filter changes and when Refresh is pressed.
+        props.providerFilter;
+        refreshRequest();
+        void read();
+
+        return () => controller?.abort();
+    });
+
+    const providersById = createMemo(
+        () =>
+            new Map<number, ProviderResponse>(
+                providers().map((row) => [
+                    row.id,
+                    row,
+                ]),
+            ),
+    );
+
+    const filterOptions = createMemo(() => [
+        {
+            value: "",
+            label: "All providers",
+        },
+        ...providers().map((row) => ({
+            value: String(row.id),
+            label: row.name,
+        })),
+    ]);
+
+    const visibleModels = createMemo(() => {
+        const needle = search().trim().toLowerCase();
+
+        if (needle === "") {
+            return models();
+        }
+
+        return models().filter(
+            (model) =>
+                model.id.toLowerCase().includes(needle) ||
+                model.upstream_id.toLowerCase().includes(needle),
+        );
+    });
+
     return (
-        <div class="flex flex-col gap-6">
+        <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="Models"
-                description="Every routed model and its overrides. A model's public ID is the name serving clients resolve; overrides are rewritten as read-modify-write."
+                description="Every synced model, everywhere. Open one to edit its overrides."
             />
 
-            <Show when={actionFailure()}>
-                {(message) => <Banner variant="error">{message()}</Banner>}
-            </Show>
-
-            <Show when={models.failure()}>
-                {(message) => (
-                    <Banner variant="error">
-                        <p>{message()}</p>
-                        <div class="mt-2">
-                            <Button
-                                variant="secondary"
-                                onClick={() => void models.reload()}
-                            >
-                                Retry
-                            </Button>
-                        </div>
-                    </Banner>
+            <Show when={failure()}>
+                {(current) => (
+                    <Notice
+                        tone="bad"
+                        title={current().title}
+                        detail={current().detail}
+                        fix={current().fix}
+                    />
                 )}
             </Show>
 
-            <div class="max-w-sm">
-                <SelectField
-                    id="models-provider-filter"
-                    label="Provider filter"
-                    value={props.providerFilter === null ? "" : String(props.providerFilter)}
-                    options={filterOptions()}
-                    onChange={selectProvider}
-                    hint="A filter narrows the listing; an unknown provider yields an empty list."
-                />
-            </div>
-
-            <Show when={models.isLoading()}>
-                <p
-                    role="status"
-                    class="text-sm text-slate-500"
-                >
-                    Loading models…
-                </p>
+            <Show when={isReading() && !hasRead() && failure() === null}>
+                <div class="flex flex-col gap-2">
+                    <For
+                        each={[
+                            0,
+                            1,
+                            2,
+                        ]}
+                    >
+                        {() => <Skeleton class="h-16 w-full rounded-xl" />}
+                    </For>
+                </div>
             </Show>
 
-            <Show when={rows()}>
-                {(modelRows) => (
+            <Show when={hasRead()}>
+                <Show
+                    when={models().length > 0 || providers().length > 0}
+                    fallback={
+                        <EmptyState
+                            glyph="stack"
+                            title="No models yet"
+                            description="Models arrive when a provider syncs with its upstream. Add a provider first, then sync — there is no other way to create a model."
+                        />
+                    }
+                >
+                    <div class="flex flex-wrap items-end gap-3">
+                        <div class="min-w-0 flex-1 basis-56 sm:max-w-xs">
+                            <label
+                                for="models-search"
+                                class="block text-[13px] font-medium text-ink"
+                            >
+                                Search
+                            </label>
+                            <div class="relative mt-1.5">
+                                <Glyph
+                                    name="search"
+                                    class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint"
+                                />
+                                <input
+                                    id="models-search"
+                                    type="search"
+                                    placeholder="Public or upstream ID"
+                                    value={search()}
+                                    onInput={(event) => setSearch(event.currentTarget.value)}
+                                    class="w-full rounded-lg border border-rule-strong bg-surface py-2 pr-3 pl-9 text-ink placeholder:text-ink-faint transition-colors duration-150 ease-out hover:border-ink-faint focus:border-accent focus:outline-none"
+                                />
+                            </div>
+                        </div>
+                        <SelectField
+                            label="Provider"
+                            value={
+                                props.providerFilter === null ? "" : String(props.providerFilter)
+                            }
+                            options={filterOptions()}
+                            onChange={(value) =>
+                                navigate(hrefs.models(value === "" ? null : Number(value)))
+                            }
+                            class="min-w-44"
+                        />
+                    </div>
+
                     <Show
-                        when={modelRows().length > 0}
+                        when={visibleModels().length > 0}
                         fallback={
-                            <Card title="No models here">
-                                <Show
-                                    when={props.providerFilter}
-                                    fallback={
-                                        <p class="text-sm text-slate-600">
-                                            No provider has been discovered yet. Open a provider to
-                                            refresh its model rows from its upstream.
-                                        </p>
-                                    }
-                                >
-                                    {(providerId) => (
-                                        <div class="flex flex-col items-start gap-3">
-                                            <p class="text-sm text-slate-600">
-                                                Provider #{providerId()} has no model rows yet.
-                                                Discovery replaces them from that provider's
-                                                upstream.
-                                            </p>
-                                            <LinkButton
-                                                href={hrefs.providerDetail(providerId())}
-                                                variant="secondary"
-                                            >
-                                                Open provider #{providerId()}
-                                            </LinkButton>
-                                        </div>
-                                    )}
-                                </Show>
-                            </Card>
+                            <Notice
+                                tone="info"
+                                title={
+                                    search().trim() === ""
+                                        ? "This provider holds no models."
+                                        : `No models match "${search().trim()}".`
+                                }
+                            />
                         }
                     >
+                        <p
+                            class="text-[12.5px] text-ink-faint"
+                            role="status"
+                        >
+                            {`${visibleModels().length} of ${models().length} ${models().length === 1 ? "model" : "models"}`}
+                        </p>
                         <ModelList
-                            api={props.api}
-                            models={modelRows()}
-                            shouldShowProvider
-                            onModelUpdated={replaceModel}
-                            onModelVanished={(message) => {
-                                setActionFailure(message);
-                                void models.reload();
-                            }}
+                            models={visibleModels()}
+                            providersById={providersById()}
+                            showProvider={props.providerFilter === null}
                         />
                     </Show>
-                )}
+                </Show>
             </Show>
         </div>
     );

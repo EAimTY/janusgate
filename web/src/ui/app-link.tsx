@@ -4,9 +4,9 @@ import { navigate } from "/src/router";
 export type AppLinkProps = {
     readonly href: string;
     readonly children: JSX.Element;
-    readonly class?: JSX.ClassValue;
+    readonly class?: JSX.ClassValue | undefined;
     /** Marks the link as the current page for assistive technology. */
-    readonly isCurrent?: boolean;
+    readonly isCurrent?: boolean | undefined;
 };
 
 /**

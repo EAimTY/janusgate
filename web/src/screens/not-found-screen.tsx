@@ -1,25 +1,23 @@
 import type { JSX } from "@solidjs/web";
 import { hrefs } from "/src/router";
-import { Card } from "/src/ui/card";
-import { LinkButton } from "/src/ui/link-button";
-import { PageHeader } from "/src/ui/page-header";
+import { ButtonLink } from "/src/ui/controls";
+import { EmptyState } from "/src/ui/feedback";
 
-/** Anything the router does not recognize (README §5). */
+/** An address this app has no page for, with the ways back. */
 export function NotFoundScreen(): JSX.Element {
     return (
-        <div class="flex flex-col gap-6">
-            <PageHeader
-                title="Page not found"
-                description="This app has no route for the address that was opened."
-            />
-            <Card title="Nothing here">
-                <LinkButton
-                    href={hrefs.providers()}
-                    variant="secondary"
-                >
-                    Back to providers
-                </LinkButton>
-            </Card>
-        </div>
+        <EmptyState
+            title="Page not found"
+            description={`Nothing lives at ${window.location.pathname}. It may have been deleted, or the address was typed wrong.`}
+        >
+            <ButtonLink
+                href={hrefs.home()}
+                tone="primary"
+            >
+                Go to Overview
+            </ButtonLink>
+            <ButtonLink href={hrefs.providers()}>Providers</ButtonLink>
+            <ButtonLink href={hrefs.models(null)}>Models</ButtonLink>
+        </EmptyState>
     );
 }

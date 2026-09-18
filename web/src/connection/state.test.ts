@@ -8,10 +8,10 @@ const connection: Connection = {
 };
 
 describe("reduceConnectionState", () => {
-    it("starts unconnected without a notice", () => {
+    it("starts unconnected without a failure", () => {
         expect(initialConnectionState).toEqual({
             status: "unconnected",
-            notice: null,
+            failure: null,
         });
     });
 
@@ -30,7 +30,11 @@ describe("reduceConnectionState", () => {
     it("loads absent storage into a clean unconnected state", () => {
         const stale: ConnectionState = {
             status: "unconnected",
-            notice: "previous failure",
+            failure: {
+                message: "previous failure",
+                cause: null,
+                baseUrl: null,
+            },
         };
 
         expect(
@@ -40,14 +44,18 @@ describe("reduceConnectionState", () => {
             }),
         ).toEqual({
             status: "unconnected",
-            notice: null,
+            failure: null,
         });
     });
 
-    it("submits a candidate only from the unconnected state, clearing any notice", () => {
+    it("submits a candidate only from the unconnected state, clearing any failure", () => {
         const failed: ConnectionState = {
             status: "unconnected",
-            notice: "bad token",
+            failure: {
+                message: "bad token",
+                cause: null,
+                baseUrl: null,
+            },
         };
 
         expect(
@@ -133,7 +141,10 @@ describe("reduceConnectionState", () => {
         });
     });
 
-    it("rejects into an unconnected state carrying the gateway's message", () => {
+    it("rejects into an unconnected state carrying the failure whole", () => {
+        const probeFailure = new TypeError("Failed to fetch");
+        const attempted = "https://gateway.example.com";
+
         expect(
             reduceConnectionState(
                 {
@@ -141,12 +152,20 @@ describe("reduceConnectionState", () => {
                 },
                 {
                     type: "connectionRejected",
-                    notice: "HTTP 401",
+                    failure: {
+                        message: "Network request failed: Failed to fetch",
+                        cause: probeFailure,
+                        baseUrl: attempted,
+                    },
                 },
             ),
         ).toEqual({
             status: "unconnected",
-            notice: "HTTP 401",
+            failure: {
+                message: "Network request failed: Failed to fetch",
+                cause: probeFailure,
+                baseUrl: attempted,
+            },
         });
 
         // The lazy revalidation path: a 401 answering a management call while connected.
@@ -158,12 +177,20 @@ describe("reduceConnectionState", () => {
                 },
                 {
                     type: "connectionRejected",
-                    notice: "invalid management token",
+                    failure: {
+                        message: "invalid management token",
+                        cause: null,
+                        baseUrl: null,
+                    },
                 },
             ),
         ).toEqual({
             status: "unconnected",
-            notice: "invalid management token",
+            failure: {
+                message: "invalid management token",
+                cause: null,
+                baseUrl: null,
+            },
         });
     });
 
@@ -182,7 +209,7 @@ describe("reduceConnectionState", () => {
             ),
         ).toEqual({
             status: "unconnected",
-            notice: null,
+            failure: null,
         });
 
         expect(
@@ -194,20 +221,24 @@ describe("reduceConnectionState", () => {
             ),
         ).toEqual({
             status: "unconnected",
-            notice: null,
+            failure: null,
         });
 
         expect(
             reduceConnectionState(
                 {
                     status: "unconnected",
-                    notice: "boom",
+                    failure: {
+                        message: "boom",
+                        cause: null,
+                        baseUrl: null,
+                    },
                 },
                 forgetting,
             ),
         ).toEqual({
             status: "unconnected",
-            notice: null,
+            failure: null,
         });
     });
 });

@@ -41,12 +41,13 @@ JanusGate itself is **headless**: it exposes an OpenAI-compatible serving API (`
 | :--- | :--- | :--- |
 | **Language** | TypeScript (strict) | `tsc --noEmit`, run through the repository root's `npm run check`; strict flags per `tsconfig.json` |
 | **UI framework** | SolidJS v2 (`solid-js` + `@solidjs/web`) | Fine-grained reactivity, no virtual DOM; JSX with `jsxImportSource: @solidjs/web` |
-| **Styling** | Tailwind CSS v4 (via `@tailwindcss/vite`) | Utility-first; single entry `src/tailwind.css` (`@import "tailwindcss"`) |
+| **Styling** | Tailwind CSS v4 (via `@tailwindcss/vite`) | Utility-first over the token set defined in `src/tailwind.css` (`@theme`): light/dark neutrals, one accent, three status hues. `DESIGN.md` documents the world those tokens build |
 | **Build / dev server** | Vite | Static output to `target/web/dist/`; the host needs an SPA fallback (§5) |
 | **Lint & format** | Biome | `biome.jsonc` at the repository root, covering the whole repository; `npm run check` / `npm run fix` from the root |
 | **Tests** | Vitest | `npm test`; TDD per `AGENTS.md` |
 | **HTTP** | Native `fetch` | No data-fetching or state library; `AbortController` cancels in-flight calls |
 | **Wire contract** | Generated TypeScript bindings | Produced by the gateway sources in this repository (§7.1); never hand-written |
+| **Drawn marks** | Authored inline SVG | `src/ui/glyph.tsx` and the inline icon in `index.html`: one stroke weight, one grid. The workspace ships no image, icon-font, or webfont files |
 
 There is no backend framework, no database, and no ORM in this workspace — persistence is the browser's `localStorage` for the connection pair only (§3). All gateway state lives in JanusGate.
 
@@ -172,95 +173,71 @@ Cross-origin calls are the normal operating mode, and they impose exactly one re
 ## 6. Application Shell, Routes & Screens
 
 ### 6.1 The shell
-
 The app has exactly two top-level states, chosen by the connection state (§3.1):
 
-- **Unconnected** — the setup screen fills the viewport; nothing else exists.
-- **Connected** — the administration shell: a sticky header (the app name, the Providers and Models sections, the configured base URL, and a confirmed *Forget connection* action) above the routed main region. The token is never rendered; the base URL is the only connection fact the shell shows.
+- **Unconnected** — the connection screen fills the viewport; nothing else exists. It states what JanusGate is, what the visitor needs before connecting, and — when the probe is refused — the app's own diagnosis of why. That screen is the first contact most operators have with the product, and a cross-origin refusal is the failure they are most likely to meet.
+- **Connected** — the admin shell: a top bar (the mark, a theme switch, and a confirmed *disconnect* action), a context bar (the `Overview` / `Providers` / `Models` navigation, the instance address, the validity stamp of the last read, and *refresh*), the routed screen, and a quiet footer naming the connected instance.
 
-The shell is created per connection: the connection object keys the boundary, so a different instance gets a fresh shell, a fresh management API client, and fresh screen state — nothing can leak across instances.
+The shell is created per connection: the connection object keys the boundary, so a different instance gets a fresh shell, a fresh management API client, and fresh screen state — nothing can leak across instances. The token is never rendered; the address and the read's timestamp are the only connection facts the shell shows.
+
+*Refresh* bumps one counter in `src/refresh-state.ts`; the mounted screen re-runs its read when it moves, and reports the moment a read succeeded, which is what the validity stamp prints.
 
 ### 6.2 Routes
-
-The app owns five client-side routes; every other path renders the not-found screen. All of them are deep links, so the static host must serve `index.html` for unknown paths (§5).
+The app owns six client-side routes; every other path renders the not-found screen. All of them are deep links, so the static host must serve `index.html` for unknown paths (§5). The OAuth flows are steps inside the provider creation and reauthorization forms, not destinations of their own.
 
 | Path | Screen |
 | :--- | :--- |
-| `/`, `/providers` | Provider listing |
-| `/providers/new` | `openai_compatible` creation form |
-| `/providers/<provider_id>` | One provider: state, discovery, deletion |
-| `/models`, `/models?provider=<provider_id>` | Model listing, optionally filtered to one provider |
-| `/oauth/start`, `/oauth/start?provider=<provider_id>` | OAuth flow: create a provider, or reauthorize one |
+| `/` | The overview: gateway health at a glance |
+| `/providers` | The provider list — rows only, no details |
+| `/providers/new` | One creation page for every provider kind |
+| `/providers/<provider_id>` | One provider: details, credentials, models, deletion |
+| `/models`, `/models?provider=<provider_id>` | Every synced model, optionally filtered to one provider |
+| `/models/<provider_id>/<upstream_id>` | One model: facts and overrides |
 
-Routing is strict about identifiers: a query value that is not a row identifier reads as absent (the unfiltered listing; a flow that creates a provider), and a path segment that is not a row identifier is not-found. A trailing slash addresses the same resource.
+Routing is strict about identifiers: a provider filter that is not a row identifier reads as absent (the unfiltered table), a model address without a decodable upstream ID is not-found, and a path segment that is not a row identifier is not-found. A trailing slash addresses the same resource. `src/router.test.ts` keeps every `hrefs` builder and the matcher in agreement.
 
 ### 6.3 Screens
+Every screen loads through one pattern: one read per mount — repeated when *refresh* is pressed — cancelled when the screen goes away, and an explicit reload after a mutation that does not answer with the affected rows. Failures render the app's diagnosis of the failure (§6.4); nothing is swallowed and no field is defaulted. A failed first read replaces the skeleton with the failure, never stacks under it.
 
-Every screen loads through one pattern: one read per mount, cancelled when the screen goes away, and an explicit reload after a mutation that does not answer with the affected rows. Failures render the gateway's `message` (§4.3); nothing is swallowed and no field is defaulted.
-
-- **Connection setup** — base URL and token, with the base URL normalized before it is used (§3) and the token revealable while typing. A rejected probe returns to the form with the failure reason.
-- **Providers** — one row per provider (name and id, type, model prefix, serving state, OAuth token expiry) plus both creation paths and per-row deletion, confirmed inline. Deleting a provider deletes its models by cascade, so the listing is the only thing that needs to catch up.
-- **Provider create** — the `openai_compatible` form (§4.4). OAuth account kinds are created by the OAuth flow instead, and the screen links there.
-- **Provider detail** — the provider's complete readable state as a form (name, prefix, serving switch, and, for compatible providers, upstream URL, protocol, and an optional API-key replacement), its model rows, and *Discover models*. Saving is a read-modify-write through the adapter (§4.6); because `providers:update` answers `{}`, the provider and its models are refetched — a changed prefix recomposes unoverridden model IDs. OAuth providers offer reauthorization in place of a static API key.
-- **Models** — the listing, optionally filtered by provider, with inline override editing: public ID override, serving switch, and thinking levels in the contract's canonical order (§4.5). A saved override installs the row the gateway returned instead of refetching. Model rows are never created or deleted here — discovery belongs to the owning provider.
-- **OAuth start** — `oauth:start` yields the authorize URL and the single-use state; the administrator opens the URL in a new tab and pastes the code it returns. Without a provider, completion creates one with the entered name and prefix; with `?provider=`, it replaces that provider's credentials. A state the gateway reports as unknown, expired, or consumed resets the flow instead of retrying it (§4.5).
-- **Not found** — any unrecognized path.
+- **Connection screen** — what JanusGate is, what the visitor must have (a running instance, its `management_api.token`, and this origin in `management_api.cors.allowed_origin` or a same-origin gateway), then the address and token fields. The token is revealable while typing. A refused probe stays on the screen with its diagnosis.
+- **Overview** — gateway health at a glance: provider, model, serving, and needs-attention counts; the providers whose credentials need a human and the providers with no models yet, each linking to the page that fixes it; and, on a gateway with no providers, the four steps from here to a working endpoint. Request-level figures live nowhere here — the gateway keeps no per-request data (§1).
+- **Providers** — one row per upstream account: name, type, model count, serving state, and credential state. Rows are links; nothing about one provider is shown or edited here. A search box narrows the list client-side.
+- **New provider** — one creation page for every kind. The kind picker (API key, ChatGPT account, Google account) only swaps the credential path that follows the shared identity fields: an API-key provider is created by `providers:create`, while a login account runs `oauth:start` into the authorize step and completes with the pasted code. Both land on the new provider's page.
+- **Provider detail** — the provider's page, in four cards. *Details* is the edit form: it opens prefilled, tracks dirt, and saves the row's complete state back (a changed prefix recomposes unoverridden public IDs, so the models below are read again). *Credentials* states an OAuth account's expiry and runs the reauthorization flow inline (API-key replacement lives in the details form, write-only as ever). *Models* lists the provider's models and syncs them from upstream, carrying overrides forward and refusing to wipe curated rows when upstream reports nothing. *Delete* states its cascade count and confirms in place.
+- **Models** — every synced model on one page: public ID, upstream ID, serving state, and thinking levels, searchable by ID and filterable by provider (the filter is the route, `?provider=`). Rows are links; nothing is edited here. There is no model creation page: model rows exist only through a provider's sync (§4.5).
+- **Model detail** — one model's facts (public ID, upstream ID, provider, thinking levels) and its three overrides: the public ID override with a live preview of the composed ID, the serving switch, and the allowed thinking levels. Saving installs the row the gateway returns, because the public ID is recomposed inside that write. Clearing the override or the last level returns the row to its unfiltered state.
+- **Not found** — the attempted address and the ways back.
 
 ### 6.4 Failure handling
-
-- **401 (errno 2)** — the client hands the message to the connection service, which clears the stored pair; setup explains it (§3.1). Nothing is retried with the dead token.
-- **404 (errno 3)** — the addressed row is gone: the message is rendered and the listing that showed the row is reloaded, so the screen stops showing state the gateway no longer holds.
-- **Any other failure** — the message is rendered beside the action that failed, and the screen stays usable.
+- **401 (errno 2)** — the client hands the gateway's message to the connection service, which clears the stored pair; the connection screen explains it (§3.1). Nothing is retried with the dead token. The failure is stored whole — message, cause, and the address it addressed — so the screen can diagnose a rejection that happened while another screen was mounted.
+- **Every other failure** — the message is rendered where the action was taken, in the app's own diagnosis (`src/management-api/diagnosis.ts`). The gateway's message is always kept verbatim as the detail; the app adds only what it can be certain of, and only one recovery line per case: an unauthorized answer names `management_api.token`, an upstream refusal during discovery names reauthorization, an internal failure names the gateway's stderr log, and a conflict names the identifier that collided.
+- **A call the browser refused before it left** is the one case the gateway cannot explain, so the connection screen probes the instance's origin with a no-CORS request (`probeReachability`): a resolved opaque response proves the network path, which makes the failure a CORS block, and a rejected probe makes it an address nothing answers. Without that proof the diagnosis states both causes rather than guessing.
+- **404 (errno 3)** — the addressed row is gone: the message is rendered and the listing that showed the row is reloaded, so the screen stops showing state the gateway no longer holds; the detail screens say so in place and offer the routes back.
 - **Aborts** — navigating away cancels in-flight calls; an aborted call renders nothing.
-
----
 
 ## 7. Project Structure
 
 ```text
 web/                                # the workspace root (this directory)
-├── index.html                       # HTML entry: #root mount, inline favicon, /src/main.tsx
+├── index.html                       # HTML entry: #root mount, theme bootstrap, /src/main.tsx
+├── DESIGN.md                        # The built visual world: tokens, materials, and rules
+├── .impeccable/                     # Development-only: the surface brief and the review captures
 ├── src/
-│   ├── main.tsx                     # Entry point: mounts <App /> on #root, imports tailwind.css
-│   ├── app.tsx                      # Connection gate, admin shell, route dispatch, forget action
+│   ├── main.tsx                     # Entry point: inits the theme, mounts <App />, imports tailwind.css
+│   ├── app.tsx                      # Connection gate, admin shell, navigation, route dispatch
 │   ├── router.ts                    # Route matching, link builders, history navigation
-│   ├── format.ts                    # Timestamp formatting
-│   ├── config.ts                    # Single home for non-secret tunables (e.g. storage key)
-│   ├── tailwind.css                 # Tailwind v4 entry (@import "tailwindcss")
+│   ├── refresh-state.ts             # The refresh stamp and the refresh request every screen shares
+│   ├── theme.ts                     # Light/dark/system preference, resolution, persistence
+│   ├── format.ts                    # Timestamps, credential validity, allowed-level phrasing
+│   ├── config.ts                    # Single home for non-secret tunables (e.g. storage keys)
+│   ├── tailwind.css                 # Tailwind v4 entry: the console's light/dark tokens and base styles
 │   ├── vite-env.d.ts                # Vite client types reference
-│   ├── connection/
-│   │   ├── model.ts                 # Connection type, base URL normalization, storage
-│   │   ├── state.ts                 # Connection lifecycle reducer
-│   │   ├── service.ts               # Connection service factory (state, probe, forget, 401)
-│   │   └── app-service.ts           # The app's single instance, wired to storage and the probe
-│   ├── management-api/
-│   │   ├── client.ts                # One method per route: transport, headers, error mapping
-│   │   ├── errors.ts                # Failure taxonomy, guards, administrator-facing messages
-│   │   ├── validation.ts            # Narrowing every response into the binding types
-│   │   ├── adapters.ts              # Read-modify-write request builders
-│   │   ├── vocabulary.ts            # Runtime vocabularies (protocols, OAuth kinds, levels)
-│   │   ├── outcome.ts               # One call's outcome, as a screen consumes it
-│   │   └── generated/               # GENERATED, gitignored — `npm run generate-bindings` writes v0.ts here
-│   ├── screens/
-│   │   ├── resource.ts              # The screens' shared read pattern
-│   │   ├── connection-setup-screen.tsx
-│   │   ├── providers-screen.tsx
-│   │   ├── provider-create-screen.tsx
-│   │   ├── provider-detail-screen.tsx
-│   │   ├── models-screen.tsx
-│   │   ├── oauth-start-screen.tsx
-│   │   └── not-found-screen.tsx
-│   ├── components/
-│   │   └── model-list.tsx           # Model rows and their inline editor, shared by two screens
-│   └── ui/                          # Presentational primitives: button, link-button, field, banner, card, badge, app-link, page-header, focus-on-mount
-├── vite.config.ts                   # Vite + SolidJS + Tailwind plugins; output and caches under ../target/web
-├── vitest.config.ts                 # Vitest: jsdom + Solid's browser resolve conditions + tsconfig paths
-├── tsconfig.json                    # Strict TypeScript; `/` maps to the `web/` root
-├── package.json                     # Scripts and dependencies (no backend, no deploy tooling)
-├── AGENTS.md                        # Agent working rules (this workspace's conventions)
-├── CLAUDE.md                        # Points at AGENTS.md
-└── README.md                        # This file
+│   ├── connection/                  # The connection pair: model, storage, reducer, service
+│   ├── management-api/              # The wire contract and its use: client, validation, adapters, outcome, errors, diagnosis, generated bindings
+│   ├── ui/                          # The console's parts: controls, feedback, layout, glyphs, tables, shared form pieces
+│   └── screens/                     # One module per route
 ```
+
 
 Test modules (`*.test.ts`) live next to the modules they cover and are not listed above.
 
@@ -296,6 +273,7 @@ The app is implemented end to end: the connection lifecycle (§3), all ten manag
 There are two kinds of configuration, strictly apart:
 
 - **Connection (runtime, per browser).** The `{ baseUrl, token }` pair from §3, stored in `localStorage` under the key in `src/config.ts`. No build-time or deployment-time values exist — the same `target/web/dist/` artifact administers any instance. Rotating a gateway's management token invalidates stored connections; the app recovers through the 401 path (§3.1).
+- **Theme preference (runtime, per browser).** Light, dark, or the operating system's — stored in `localStorage` under its own key in `src/config.ts`, painted before the first frame by the inline bootstrap in `index.html`, and holding no secret.
 - **Tunables (build-time, in code).** Every non-secret configurable value lives in `src/config.ts`, its single home. Changing one means editing the module and rebuilding. No runtime environment variables are read (`import.meta.env` is not a configuration mechanism here) — a static artifact that behaved differently per host via env injection would break the one-artifact-anywhere promise.
 
 No secrets ever appear in code, in `src/config.ts`, or in this workspace. The management token exists only in the administrator's browser storage and on the wire to the configured instance.
@@ -310,14 +288,15 @@ The normative rule list is `AGENTS.md`; this section orients:
 - **Types:** strict TypeScript throughout — no `any`, and no assertion a preceding runtime check does not justify; unknown input (notably every management API response) is narrowed through explicit validation; exported functions and component helpers carry explicit return types.
 - **Generics:** all-or-nothing naming per parameter list (single-letter when simple; otherwise every parameter multi-letter with a `T`-prefix for types / `F`-prefix for callbacks describing its role).
 - **Booleans** carry predicate-style prefixes (`is`, `can`, `has`, `should`); names are unabbreviated (`id` and the usual short auxiliaries excepted).
-- **Quality gates:** after every code change run `npm run check` (Biome over the whole repository, plus this workspace's `tsc --noEmit`) and `npm run test:web` from the repository root. TDD: write tests first for non-trivial logic; keep tests cohesive and aimed at first-party domain logic (URL normalization, response validation, read-modify-write adapters, connection state transitions), never at framework primitives.
+- **Quality gates:** after every code change run `npm run check` (Biome over the whole repository, plus this workspace's `tsc --noEmit`) and `npm run test:web` from the repository root. TDD: write tests first for non-trivial logic; keep tests cohesive and aimed at first-party domain logic (URL normalization, response validation, read-modify-write adapters, connection state transitions, failure diagnosis, formatting), never at framework primitives.
+- **Visual language:** every colour comes from the token set in `src/tailwind.css` (light by default, dark on demand); no ad-hoc values, no shadows, no state carried by colour alone (every status is icon plus words). `web/DESIGN.md` is the world's rulebook.
 - **Docs first:** `README.md` is the source of truth — every behavior change updates it alongside the code.
 
 ---
 
 ## 10. Security Notes
 
-- **Public app, secret-gated control.** Anyone opening the deployed URL sees the setup screen (or the admin shell); controlling an instance additionally requires its management token. The app's hosting needs no access control of its own for this to hold — but the token lives in that browser's `localStorage`, so only open the app in browsers you trust (any script running on the app's origin could read it; the app therefore ships zero third-party assets beyond its bundled code).
+- **Public app, secret-gated control.** Anyone opening the deployed URL sees the connection screen (or the admin shell); controlling an instance additionally requires its management token. The app's hosting needs no access control of its own for this to hold — but the token lives in that browser's `localStorage`, so only open the app in browsers you trust (any script running on the app's origin could read it; the app therefore ships zero third-party assets beyond its bundled code).
 - **Token handling.** The token is sent only to the configured `baseUrl` (plus its `/management-api/v0/*` paths) and nowhere else; it never appears in URLs, logs, or error reports. A 401 anywhere clears it from storage immediately rather than retrying with it.
 - **No sessions, no cookies** — none are set, sent, or read anywhere, matching the gateway; cross-origin calls explicitly opt out of credentials.
 - **Transport.** Serve janusgate-web over HTTPS and point it at HTTPS gateway instances; otherwise the token crosses the network in cleartext. The app does not warn or enforce this — the deployment does.
@@ -358,12 +337,9 @@ npm run build:web               # produce target/web/dist/ for static hosting
 Local development talks to a real JanusGate instance: enter its base URL and token in the setup screen. Ensure that instance's `management_api.cors.allowed_origin` includes the dev server's origin (or `"*"`), or the browser will block the probe call. Deep links in dev are served by Vite's history fallback; the static host needs the equivalent (§5).
 
 ### What the tests cover
+Vitest protects the parts a browser-level check cannot pin down precisely: base URL normalization and storage validation, the connection reducer and its service transitions (including a submission that must not race another), response validation for every route's payload, the read-modify-write adapters, routing (including every `hrefs` builder against the matcher), the client's request construction and error classification against a stubbed `fetch`, the failure diagnosis (each errno, the contract mismatch, and the three reachability readings), and the formatting of credential validity and allowed-level phrasing.
 
-Vitest protects the parts a browser-level check cannot pin down precisely: base URL normalization and storage validation, the connection reducer and its service transitions (including a submission that must not race another), response validation for every route's payload, the read-modify-write adapters, routing, and the client's request construction and error classification against a stubbed `fetch`. Tests run in jsdom with Solid's browser resolve conditions, so the reactive primitives under test are the DOM build's, development-time invariants included.
-
-Rendering is verified against a real JanusGate instance in a browser: connecting and resuming, the probe's failure paths, provider creation and its conflicts, model discovery (including an upstream that reports no models), override edits, prefix changes that recompose model IDs, serving-state changes, OAuth start and reauthorization, 401 recovery, rows deleted behind a screen's back, browser history, deep links, the not-found screen, and the connection's storage lifecycle.
-
----
+Rendering and behavior are verified against a real JanusGate instance in a browser: connecting and resuming, the probe's failure paths, the overview with live counts, the provider list and its search, creating each provider kind, opening and editing a provider, discovery, a prefix change that recomposes model IDs, setting and clearing serving, reauthorization, 401 recovery, rows deleted behind a screen's back, browser history, deep links, the not-found screen, the models table's search and filter, the model editor, and both light and dark themes at desktop and phone widths.
 
 ## 12. Invariants
 
@@ -374,3 +350,5 @@ Rendering is verified against a real JanusGate instance in a browser: connecting
 5. Reads that mutate (updates, deletions) follow the gateway's full-state and two-state rules: complete desired state on update, omission — never `null` — for write-only secrets, explicit field-by-field construction rather than spreading a row into a request.
 6. No request, response, token, or usage data is persisted anywhere except the connection pair in `localStorage`.
 7. The wire contract is owned by the gateway's `README.md` §7 (the repository root) and its generated bindings; on any conflict with this document, they win.
+8. The artifact carries no asset files — no fonts, images, or third-party scripts — so the token in this origin's storage is reachable by no code the app did not ship; the app's marks are drawn SVG and its type is the platform's own stack.
+9. Every failure is explained where it happened: the gateway's message is rendered verbatim, the app's own diagnosis adds only what it can prove, and no failure is swallowed or replaced with a generic notice.

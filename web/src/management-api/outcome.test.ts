@@ -13,18 +13,21 @@ describe("performManagementCall", () => {
         });
     });
 
-    it("keeps the gateway's message and errno for a rendered failure", async () => {
+    it("keeps the gateway's message, errno and cause for a rendered failure", async () => {
+        const failure = new ManagementApiError("gateway", "model row not found", {
+            httpStatus: 404,
+            errno: ErrorCode.NotFound,
+        });
+
         const outcome = await performManagementCall(async () => {
-            throw new ManagementApiError("gateway", "model row not found", {
-                httpStatus: 404,
-                errno: ErrorCode.NotFound,
-            });
+            throw failure;
         });
 
         expect(outcome).toEqual({
             status: "failed",
             message: "model row not found",
             errno: ErrorCode.NotFound,
+            cause: failure,
         });
     });
 
@@ -37,6 +40,7 @@ describe("performManagementCall", () => {
             status: "failed",
             message: "Failed to fetch",
             errno: null,
+            cause: expect.any(Error),
         });
     });
 

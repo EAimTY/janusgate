@@ -5,4 +5,5 @@
  */
 export const appConfig = {
     connectionStorageKey: "janusgate-web:connection",
+    themeStorageKey: "janusgate-web:theme",
 } as const;

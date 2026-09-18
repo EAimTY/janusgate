@@ -61,7 +61,7 @@ describe("createConnectionService", () => {
 
         expect(service.connectionState()).toEqual({
             status: "unconnected",
-            notice: null,
+            failure: null,
         });
 
         expect(service.currentConnection()).toBeNull();
@@ -108,7 +108,9 @@ describe("createConnectionService", () => {
 
         expect(service.connectionState()).toEqual({
             status: "unconnected",
-            notice: "Failed to fetch",
+            failure: expect.objectContaining({
+                message: expect.stringContaining("Failed to fetch"),
+            }),
         });
 
         expect(service.currentConnection()).toBeNull();
@@ -162,7 +164,7 @@ describe("createConnectionService", () => {
 
         expect(service.connectionState()).toEqual({
             status: "unconnected",
-            notice: null,
+            failure: null,
         });
     });
 
@@ -181,7 +183,9 @@ describe("createConnectionService", () => {
 
         expect(service.connectionState()).toEqual({
             status: "unconnected",
-            notice: "invalid management token",
+            failure: expect.objectContaining({
+                message: "invalid management token",
+            }),
         });
     });
 });

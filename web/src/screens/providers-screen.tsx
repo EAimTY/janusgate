@@ -1,245 +1,286 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, For, Show } from "solid-js";
-import { formatTimestamp } from "/src/format";
+import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { describeValidity } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import { ErrorCode, type ProviderResponse } from "/src/management-api/generated/v0";
+import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
-import { providerTypeLabel } from "/src/management-api/vocabulary";
+import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { createAsyncResource } from "/src/screens/resource";
+import { describeCallFailure } from "/src/screens/failure";
 import { AppLink } from "/src/ui/app-link";
-import { Badge } from "/src/ui/badge";
-import { Banner } from "/src/ui/banner";
-import { Button } from "/src/ui/button";
-import { Card } from "/src/ui/card";
-import { focusOnMount } from "/src/ui/focus-on-mount";
-import { LinkButton } from "/src/ui/link-button";
-import { PageHeader } from "/src/ui/page-header";
+import { ButtonLink } from "/src/ui/controls";
+import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Glyph } from "/src/ui/glyph";
+import { PageHeader } from "/src/ui/layout";
+import { providerKindTitle } from "/src/ui/provider-form";
 
-export type ProvidersScreenProps = {
-    readonly api: ManagementApi;
-};
-
-/** How a provider's token expiry reads in a listing row. */
-function providerExpiryText(provider: ProviderResponse): string {
+/** The one readable statement of a provider's credential state. */
+export function credentialBadge(provider: ProviderResponse): {
+    readonly tone: BadgeTone;
+    readonly label: string;
+} {
     if (provider.type === "openai_compatible") {
-        return "—";
+        return {
+            tone: "muted",
+            label: "API key",
+        };
     }
 
-    return provider.expires_at === null ? "no expiry" : formatTimestamp(provider.expires_at);
+    if (provider.expires_at === null) {
+        return {
+            tone: "warn",
+            label: "Stale",
+        };
+    }
+
+    const validity = describeValidity(provider.expires_at, Math.floor(Date.now() / 1000));
+
+    return validity.isExpired
+        ? {
+              tone: "warn",
+              label: "Expired",
+          }
+        : {
+              tone: "ok",
+              label: "Valid",
+          };
 }
 
 /**
- * The provider listing (README §4.4 `providers:list`) with the two creation
- * paths — the `openai_compatible` form and the OAuth flow — and per-row
- * deletion.
+ * The provider list: one row per upstream account. Rows carry identity,
+ * type, model count, and the two states — nothing else, and no model's
+ * details. Everything about one provider lives on its own page.
  */
-export function ProvidersScreen(props: ProvidersScreenProps): JSX.Element {
-    const providers = createAsyncResource((signal) => props.api.listProviders(signal));
-    const [actionFailure, setActionFailure] = createSignal<string | null>(null);
-    const [pendingDeleteId, setPendingDeleteId] = createSignal<number | null>(null);
-    const [deletingId, setDeletingId] = createSignal<number | null>(null);
+export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Element {
+    const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
+    const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
+    const [hasRead, setHasRead] = createSignal(false);
+    const [isReading, setIsReading] = createSignal(true);
+    const [search, setSearch] = createSignal("");
+    const [failure, setFailure] = createSignal<{
+        readonly title: string;
+        readonly detail: string;
+        readonly fix: string | null;
+    } | null>(null);
 
-    const rows = (): ProviderResponse[] | null => providers.value()?.providers ?? null;
+    let controller: AbortController | null = null;
 
-    const deleteProvider = async (provider: ProviderResponse): Promise<void> => {
-        setActionFailure(null);
-        setDeletingId(provider.id);
+    const read = async (): Promise<void> => {
+        controller?.abort();
 
-        const outcome = await performManagementCall(() =>
-            props.api.deleteProvider({
-                provider_id: provider.id,
-            }),
-        );
+        const call = new AbortController();
+        controller = call;
+        setIsReading(true);
 
-        setDeletingId(null);
-        setPendingDeleteId(null);
+        const [providersOutcome, modelsOutcome] = await Promise.all([
+            performManagementCall(() => props.api.listProviders(call.signal)),
+            performManagementCall(() => props.api.listModels({}, call.signal)),
+        ]);
 
-        if (outcome.status === "failed") {
-            setActionFailure(outcome.message);
-
-            if (outcome.errno === ErrorCode.NotFound) {
-                // The row was already gone: the listing is the authority.
-                await providers.reload();
-            }
-
+        if (providersOutcome.status === "aborted" || modelsOutcome.status === "aborted") {
             return;
         }
 
-        if (outcome.status === "ok") {
-            await providers.reload();
+        setIsReading(false);
+
+        const failed =
+            providersOutcome.status === "failed"
+                ? providersOutcome
+                : modelsOutcome.status === "failed"
+                  ? modelsOutcome
+                  : null;
+
+        if (failed !== null) {
+            const diagnosis = describeCallFailure(failed.cause);
+
+            setFailure({
+                title: diagnosis.headline,
+                detail: diagnosis.detail,
+                fix: diagnosis.fix,
+            });
+            return;
         }
+
+        setFailure(null);
+        setProviders(providersOutcome.status === "ok" ? providersOutcome.result.providers : []);
+        setModels(modelsOutcome.status === "ok" ? modelsOutcome.result.models : []);
+        setHasRead(true);
+        reportRefresh();
     };
 
+    createTrackedEffect(() => {
+        refreshRequest();
+        void read();
+
+        return () => controller?.abort();
+    });
+
+    const modelCounts = createMemo(() => {
+        const counts = new Map<number, number>();
+
+        for (const model of models()) {
+            counts.set(model.provider_id, (counts.get(model.provider_id) ?? 0) + 1);
+        }
+
+        return counts;
+    });
+
+    const visibleProviders = createMemo(() => {
+        const needle = search().trim().toLowerCase();
+
+        if (needle === "") {
+            return providers();
+        }
+
+        return providers().filter(
+            (provider) =>
+                provider.name.toLowerCase().includes(needle) ||
+                providerTypeLabelOf(provider).toLowerCase().includes(needle),
+        );
+    });
+
     return (
-        <div class="flex flex-col gap-6">
+        <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="Providers"
-                description="Upstream accounts the gateway serves models from. Deleting a provider also deletes its models."
-                actions={
-                    <>
-                        <LinkButton
-                            href={hrefs.oauthStart(null)}
-                            variant="secondary"
-                        >
-                            Connect OAuth account
-                        </LinkButton>
-                        <LinkButton href={hrefs.providerCreate()}>Create provider</LinkButton>
-                    </>
-                }
-            />
+                description="Upstream accounts. Open one to edit it, sync its models, or fix its credentials."
+            >
+                <ButtonLink
+                    href={hrefs.providerNew()}
+                    tone="primary"
+                    glyph="plus"
+                >
+                    New provider
+                </ButtonLink>
+            </PageHeader>
 
-            <Show when={actionFailure()}>
-                {(message) => <Banner variant="error">{message()}</Banner>}
-            </Show>
-
-            <Show when={providers.failure()}>
-                {(message) => (
-                    <Banner variant="error">
-                        <p>{message()}</p>
-                        <div class="mt-2">
-                            <Button
-                                variant="secondary"
-                                onClick={() => void providers.reload()}
-                            >
-                                Retry
-                            </Button>
-                        </div>
-                    </Banner>
+            <Show when={failure()}>
+                {(current) => (
+                    <Notice
+                        tone="bad"
+                        title={current().title}
+                        detail={current().detail}
+                        fix={current().fix}
+                    />
                 )}
             </Show>
 
-            <Show when={providers.isLoading()}>
-                <p
-                    role="status"
-                    class="text-sm text-slate-500"
-                >
-                    Loading providers…
-                </p>
+            <Show when={isReading() && !hasRead() && failure() === null}>
+                <div class="flex flex-col gap-2">
+                    <For
+                        each={[
+                            0,
+                            1,
+                            2,
+                        ]}
+                    >
+                        {() => <Skeleton class="h-16 w-full rounded-xl" />}
+                    </For>
+                </div>
             </Show>
 
-            <Show when={rows()}>
-                {(providerRows) => (
+            <Show when={hasRead()}>
+                <Show
+                    when={providers().length > 0}
+                    fallback={
+                        <EmptyState
+                            glyph="plug"
+                            title="No providers yet"
+                            description="A provider is one upstream account — a ChatGPT or Google login, or a static key on any OpenAI-compatible service."
+                        >
+                            <ButtonLink
+                                href={hrefs.providerNew()}
+                                tone="primary"
+                                glyph="plus"
+                            >
+                                New provider
+                            </ButtonLink>
+                        </EmptyState>
+                    }
+                >
+                    <div class="relative">
+                        <Glyph
+                            name="search"
+                            class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint"
+                        />
+                        <input
+                            type="search"
+                            aria-label="Search providers"
+                            placeholder="Search by name or type"
+                            value={search()}
+                            onInput={(event) => setSearch(event.currentTarget.value)}
+                            class="w-full rounded-lg border border-rule-strong bg-surface py-2 pr-3 pl-9 text-ink placeholder:text-ink-faint transition-colors duration-150 ease-out hover:border-ink-faint focus:border-accent focus:outline-none sm:max-w-xs"
+                        />
+                    </div>
+
                     <Show
-                        when={providerRows().length > 0}
+                        when={visibleProviders().length > 0}
                         fallback={
-                            <Card title="No providers yet">
-                                <p class="text-sm text-slate-600">
-                                    Create an OpenAI-compatible provider, or connect an OAuth
-                                    account to have the gateway mint its credentials.
-                                </p>
-                            </Card>
+                            <Notice
+                                tone="info"
+                                title={`No providers match "${search().trim()}".`}
+                            />
                         }
                     >
-                        <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-                            <table class="w-full text-left text-sm">
-                                <thead class="border-b border-slate-200 bg-slate-50 text-xs tracking-wide text-slate-500 uppercase">
-                                    <tr>
-                                        <th class="px-4 py-3 font-medium">Name</th>
-                                        <th class="px-4 py-3 font-medium">Type</th>
-                                        <th class="hidden px-4 py-3 font-medium sm:table-cell">
-                                            Model prefix
-                                        </th>
-                                        <th class="px-4 py-3 font-medium">Status</th>
-                                        <th class="hidden px-4 py-3 font-medium sm:table-cell">
-                                            Token expiry
-                                        </th>
-                                        <th class="px-4 py-3" />
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <For each={providerRows()}>
-                                        {(provider) => (
-                                            <tr class="border-b border-slate-100 last:border-b-0">
-                                                <td class="px-4 py-3">
-                                                    <AppLink
-                                                        href={hrefs.providerDetail(provider.id)}
-                                                        class="font-medium text-slate-900 hover:underline"
-                                                    >
-                                                        {provider.name}
-                                                    </AppLink>
-                                                    <span class="ml-2 font-mono text-xs text-slate-400">
-                                                        #{provider.id}
-                                                    </span>
-                                                </td>
-                                                <td class="px-4 py-3 text-slate-600">
-                                                    {providerTypeLabel(provider.type)}
-                                                </td>
-                                                <td class="hidden px-4 py-3 font-mono text-xs text-slate-600 sm:table-cell">
-                                                    {provider.model_prefix === ""
-                                                        ? "—"
-                                                        : provider.model_prefix}
-                                                </td>
-                                                <td class="px-4 py-3">
-                                                    <Badge
-                                                        tone={
-                                                            provider.is_enabled
-                                                                ? "positive"
-                                                                : "neutral"
-                                                        }
-                                                    >
-                                                        {provider.is_enabled
-                                                            ? "Enabled"
-                                                            : "Disabled"}
-                                                    </Badge>
-                                                </td>
-                                                <td class="hidden px-4 py-3 text-slate-600 sm:table-cell">
-                                                    {providerExpiryText(provider)}
-                                                </td>
-                                                <td class="px-4 py-3">
-                                                    <div class="flex justify-end gap-2">
-                                                        <Show
-                                                            when={pendingDeleteId() === provider.id}
-                                                            fallback={
-                                                                <Button
-                                                                    variant="secondary"
-                                                                    onClick={() =>
-                                                                        setPendingDeleteId(
-                                                                            provider.id,
-                                                                        )
-                                                                    }
-                                                                >
-                                                                    Delete
-                                                                </Button>
-                                                            }
-                                                        >
-                                                            <Button
-                                                                variant="danger"
-                                                                ref={focusOnMount}
-                                                                disabled={
-                                                                    deletingId() === provider.id
-                                                                }
-                                                                onClick={() =>
-                                                                    void deleteProvider(provider)
-                                                                }
-                                                            >
-                                                                {deletingId() === provider.id
-                                                                    ? "Deleting…"
-                                                                    : "Confirm delete"}
-                                                            </Button>
-                                                            <Button
-                                                                variant="secondary"
-                                                                disabled={
-                                                                    deletingId() === provider.id
-                                                                }
-                                                                onClick={() =>
-                                                                    setPendingDeleteId(null)
-                                                                }
-                                                            >
-                                                                Cancel
-                                                            </Button>
-                                                        </Show>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        )}
-                                    </For>
-                                </tbody>
-                            </table>
-                        </div>
+                        <ul class="flex flex-col gap-2">
+                            <For each={visibleProviders()}>
+                                {(provider) => (
+                                    <ProviderRow
+                                        provider={provider}
+                                        modelCount={modelCounts().get(provider.id) ?? 0}
+                                    />
+                                )}
+                            </For>
+                        </ul>
                     </Show>
-                )}
+                </Show>
             </Show>
         </div>
+    );
+}
+
+function providerTypeLabelOf(provider: ProviderResponse): string {
+    return providerKindTitle(provider.type);
+}
+
+function ProviderRow(props: {
+    readonly provider: ProviderResponse;
+    readonly modelCount: number;
+}): JSX.Element {
+    const credential = (): {
+        readonly tone: BadgeTone;
+        readonly label: string;
+    } => credentialBadge(props.provider);
+
+    return (
+        <li>
+            <AppLink
+                href={hrefs.providerDetail(props.provider.id)}
+                class="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3.5 transition-colors duration-150 ease-out hover:border-ink-faint"
+            >
+                <span class="min-w-0 flex-1 basis-48">
+                    <span class="block truncate text-[14.5px] font-semibold">
+                        {props.provider.name}
+                    </span>
+                    <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
+                        {`#${props.provider.id} · ${providerKindTitle(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
+                    </span>
+                </span>
+                <span class="flex items-center gap-2">
+                    <Badge
+                        tone={props.provider.is_enabled ? "ok" : "muted"}
+                        label={props.provider.is_enabled ? "Serving" : "Off"}
+                    />
+                    <Badge
+                        tone={credential().tone}
+                        label={credential().label}
+                    />
+                </span>
+                <Glyph
+                    name="chev-right"
+                    class="text-ink-faint transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink-dim"
+                />
+            </AppLink>
+        </li>
     );
 }

@@ -1,592 +1,776 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, Show } from "solid-js";
-import { ModelList } from "/src/components/model-list";
-import { formatTimestamp } from "/src/format";
-import { type ProviderEdits, toUpdateProviderRequest } from "/src/management-api/adapters";
+import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
+import { describeValidity, formatTimestamp } from "/src/format";
+import { toUpdateProviderRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
-import {
-    ErrorCode,
-    type ModelResponse,
-    type ProviderResponse,
+import type {
+    ModelResponse,
+    OAuthProviderType,
+    ProviderResponse,
+    ReauthorizeProviderResponse,
+    StartProviderOauthResponse,
+    UpstreamFormat,
 } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
-import {
-    findUpstreamFormat,
-    providerTypeLabel,
-    UPSTREAM_FORMAT_OPTIONS,
-} from "/src/management-api/vocabulary";
+import { findOAuthProviderType, findUpstreamFormat } from "/src/management-api/vocabulary";
+import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
-import { createAsyncResource } from "/src/screens/resource";
-import { Banner } from "/src/ui/banner";
-import { Button } from "/src/ui/button";
-import { Card } from "/src/ui/card";
-import { CheckboxField, SelectField, TextField } from "/src/ui/field";
-import { focusOnMount } from "/src/ui/focus-on-mount";
-import { LinkButton } from "/src/ui/link-button";
-import { PageHeader } from "/src/ui/page-header";
+import { describeCallFailure } from "/src/screens/failure";
+import { credentialBadge } from "/src/screens/providers-screen";
+import { Button, ButtonLink, TextField } from "/src/ui/controls";
+import { Badge, EmptyState, Notice, type NoticeTone, Skeleton } from "/src/ui/feedback";
+import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { ModelList } from "/src/ui/models-table";
+import { AuthorizeStep } from "/src/ui/oauth-flow";
+import {
+    CompatibleConnectionFields,
+    ProviderIdentityFields,
+    ProviderServingSwitch,
+    providerKindTitle,
+} from "/src/ui/provider-form";
 
-export type ProviderDetailScreenProps = {
-    readonly api: ManagementApi;
-    readonly providerId: number;
+type ScreenNotice = {
+    readonly tone: NoticeTone;
+    readonly title: string;
+    readonly detail?: string | null | undefined;
+    readonly fix?: string | null | undefined;
 };
 
-function providerDescription(provider: ProviderResponse | null, providerId: number): string {
-    if (provider === null) {
-        return `Provider #${providerId}`;
-    }
-
-    return `${providerTypeLabel(provider.type)} · #${provider.id}`;
-}
-
-function discoveryNotice(modelCount: number): string {
-    return `Discovered ${modelCount} ${modelCount === 1 ? "model" : "models"}.`;
-}
-
 /**
- * One provider's screen: its complete state as an editable form
- * (`providers:update` is a full-state write, README §4.5), its model rows with
- * `models:discover`, and deletion with its model cascade.
+ * One provider's page: its details, its credentials, its models, and its
+ * deletion — each in its own card, each stating what it did where it did it.
+ * The details card is the edit form: it opens prefilled, tracks dirt, and
+ * saves the row's complete state back.
  */
-export function ProviderDetailScreen(props: ProviderDetailScreenProps): JSX.Element {
-    const providers = createAsyncResource((signal) => props.api.listProviders(signal));
+export function ProviderDetailScreen(props: {
+    readonly api: ManagementApi;
+    readonly providerId: number;
+}): JSX.Element {
+    const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
+    const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
+    const [hasRead, setHasRead] = createSignal(false);
+    const [isReading, setIsReading] = createSignal(true);
+    const [notice, setNotice] = createSignal<ScreenNotice | null>(null);
 
-    const models = createAsyncResource((signal) =>
-        props.api.listModels(
-            {
-                provider_id: props.providerId,
-            },
-            signal,
-        ),
-    );
+    let controller: AbortController | null = null;
 
-    const [actionFailure, setActionFailure] = createSignal<string | null>(null);
-    const [notice, setNotice] = createSignal<string | null>(null);
-    const [isDiscovering, setIsDiscovering] = createSignal(false);
-    const [isConfirmingDelete, setIsConfirmingDelete] = createSignal(false);
-    const [isDeleting, setIsDeleting] = createSignal(false);
+    const read = async (): Promise<void> => {
+        controller?.abort();
 
-    const provider = createMemo(() => {
-        const listing = providers.value();
+        const call = new AbortController();
+        controller = call;
+        setIsReading(true);
 
-        return listing === null
-            ? null
-            : (listing.providers.find((row) => row.id === props.providerId) ?? null);
-    });
+        const [providersOutcome, modelsOutcome] = await Promise.all([
+            performManagementCall(() => props.api.listProviders(call.signal)),
+            performManagementCall(() =>
+                props.api.listModels(
+                    {
+                        provider_id: props.providerId,
+                    },
+                    call.signal,
+                ),
+            ),
+        ]);
 
-    const modelRows = (): ModelResponse[] | null => models.value()?.models ?? null;
-
-    const replaceModel = (updated: ModelResponse): void => {
-        const current = models.value();
-
-        if (current === null) {
+        if (providersOutcome.status === "aborted" || modelsOutcome.status === "aborted") {
             return;
         }
 
-        models.setValue({
-            models: current.models.map((row) =>
-                row.provider_id === updated.provider_id && row.upstream_id === updated.upstream_id
-                    ? updated
-                    : row,
+        setIsReading(false);
+
+        const failed =
+            providersOutcome.status === "failed"
+                ? providersOutcome
+                : modelsOutcome.status === "failed"
+                  ? modelsOutcome
+                  : null;
+
+        if (failed !== null) {
+            const diagnosis = describeCallFailure(failed.cause);
+
+            setNotice({
+                tone: "bad",
+                title: diagnosis.headline,
+                detail: diagnosis.detail,
+                fix: diagnosis.fix,
+            });
+            return;
+        }
+
+        setProviders(providersOutcome.status === "ok" ? providersOutcome.result.providers : []);
+        setModels(modelsOutcome.status === "ok" ? modelsOutcome.result.models : []);
+        setHasRead(true);
+        reportRefresh();
+    };
+
+    createTrackedEffect(() => {
+        props.providerId;
+        refreshRequest();
+        void read();
+
+        return () => controller?.abort();
+    });
+
+    const provider = createMemo(
+        () => providers().find((candidate) => candidate.id === props.providerId) ?? null,
+    );
+
+    const providersById = createMemo(
+        () =>
+            new Map<number, ProviderResponse>(
+                providers().map((row) => [
+                    row.id,
+                    row,
+                ]),
             ),
+    );
+
+    const reportFailure = (
+        cause: unknown,
+        action:
+            | "update-provider"
+            | "delete-provider"
+            | "discover-models"
+            | "start-oauth"
+            | "reauthorize",
+    ): void => {
+        const diagnosis = describeCallFailure(cause, action);
+
+        setNotice({
+            tone: "bad",
+            title: diagnosis.headline,
+            detail: diagnosis.detail,
+            fix: diagnosis.fix,
         });
     };
 
-    const discoverModels = async (): Promise<void> => {
-        setActionFailure(null);
-        setNotice(null);
-        setIsDiscovering(true);
-
-        const outcome = await performManagementCall(() =>
-            props.api.discoverModels({
-                provider_id: props.providerId,
-            }),
-        );
-
-        setIsDiscovering(false);
-
-        if (outcome.status === "ok") {
-            // The discovery response is the provider's complete fresh rows
-            // (README §4.5): install them instead of refetching.
-            models.setValue({
-                models: outcome.result.models,
-            });
-
-            setNotice(discoveryNotice(outcome.result.models.length));
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            setActionFailure(outcome.message);
-
-            if (outcome.errno === ErrorCode.NotFound) {
-                // The provider is gone, so the listing no longer shows it.
-                await providers.reload();
-            }
-        }
-    };
-
-    const deleteProvider = async (): Promise<void> => {
-        setActionFailure(null);
-        setNotice(null);
-        setIsDeleting(true);
-
-        const outcome = await performManagementCall(() =>
-            props.api.deleteProvider({
-                provider_id: props.providerId,
-            }),
-        );
-
-        setIsDeleting(false);
-
-        if (outcome.status === "ok") {
-            navigate(hrefs.providers());
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            setIsConfirmingDelete(false);
-            setActionFailure(outcome.message);
-
-            if (outcome.errno === ErrorCode.NotFound) {
-                await providers.reload();
-            }
-        }
-    };
-
-    const rowsChangedByAnotherWriter = async (): Promise<void> => {
-        await Promise.all([
-            providers.reload(),
-            models.reload(),
-        ]);
-    };
-
-    const providerSaved = async (): Promise<void> => {
-        setNotice("Provider updated.");
-
-        // `providers:update` answers an empty object (README §4.5), and a
-        // changed prefix recomposes unoverridden model IDs — so both listings
-        // this screen shows are refetched.
-        await Promise.all([
-            providers.reload(),
-            models.reload(),
-        ]);
-    };
-
     return (
-        <div class="flex flex-col gap-6">
-            <PageHeader
-                title={provider()?.name ?? `Provider #${props.providerId}`}
-                description={providerDescription(provider(), props.providerId)}
-                actions={
-                    <Show
-                        when={isConfirmingDelete()}
-                        fallback={
-                            <Button
-                                variant="danger"
-                                onClick={() => setIsConfirmingDelete(true)}
-                            >
-                                Delete provider
-                            </Button>
-                        }
-                    >
-                        <Button
-                            variant="danger"
-                            ref={focusOnMount}
-                            disabled={isDeleting()}
-                            onClick={() => void deleteProvider()}
-                        >
-                            {isDeleting() ? "Deleting…" : "Confirm delete"}
-                        </Button>
-                        <Button
-                            variant="secondary"
-                            disabled={isDeleting()}
-                            onClick={() => setIsConfirmingDelete(false)}
-                        >
-                            Cancel
-                        </Button>
-                    </Show>
-                }
-            />
-
-            <Show when={actionFailure()}>
-                {(message) => <Banner variant="error">{message()}</Banner>}
-            </Show>
-            <Show when={notice()}>
-                {(message) => <Banner variant="success">{message()}</Banner>}
+        <div class="rise-in flex flex-col gap-5">
+            <Show when={isReading() && !hasRead() && notice() === null}>
+                <PageHeader
+                    title="Provider"
+                    backHref={hrefs.providers()}
+                    backLabel="Providers"
+                />
+                <Skeleton class="h-64 w-full rounded-2xl" />
             </Show>
 
-            <Show when={providers.failure()}>
-                {(message) => (
-                    <Banner variant="error">
-                        <p>{message()}</p>
-                        <div class="mt-2">
-                            <Button
-                                variant="secondary"
-                                onClick={() => void providers.reload()}
-                            >
-                                Retry
-                            </Button>
-                        </div>
-                    </Banner>
-                )}
-            </Show>
-
-            <Show when={providers.isLoading()}>
-                <p
-                    role="status"
-                    class="text-sm text-slate-500"
+            <Show when={hasRead() && provider() === null}>
+                <PageHeader
+                    title="Provider"
+                    backHref={hrefs.providers()}
+                    backLabel="Providers"
+                />
+                <EmptyState
+                    title="Provider not found"
+                    description={`The gateway holds no provider #${props.providerId}. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back.`}
                 >
-                    Loading provider…
-                </p>
+                    <ButtonLink
+                        href={hrefs.providers()}
+                        tone="primary"
+                    >
+                        Back to providers
+                    </ButtonLink>
+                    <ButtonLink href={hrefs.providerNew()}>New provider</ButtonLink>
+                </EmptyState>
             </Show>
 
             <Show
                 when={provider()}
                 keyed
-                fallback={
-                    <Show when={providers.value() !== null}>
-                        <Card title="Provider not found">
-                            <div class="flex flex-col items-start gap-3">
-                                <p class="text-sm text-slate-600">
-                                    Provider #{props.providerId} is not in the listing any more. It
-                                    may have been deleted.
-                                </p>
-                                <div class="flex gap-2">
-                                    <LinkButton
-                                        href={hrefs.providers()}
-                                        variant="secondary"
-                                    >
-                                        Back to providers
-                                    </LinkButton>
-                                    <Button
-                                        variant="secondary"
-                                        onClick={() => void providers.reload()}
-                                    >
-                                        Refresh
-                                    </Button>
-                                </div>
-                            </div>
-                        </Card>
-                    </Show>
-                }
             >
                 {(row) => (
-                    <div class="flex flex-col gap-6">
-                        <Card title="Provider state">
-                            <ProviderEditForm
-                                api={props.api}
-                                provider={row}
-                                onSaved={() => void providerSaved()}
-                                onSaveStarted={() => {
-                                    setNotice(null);
-                                    setActionFailure(null);
-                                }}
-                                onRowVanished={(message) => {
-                                    setActionFailure(message);
-                                    void rowsChangedByAnotherWriter();
-                                }}
-                            />
-                        </Card>
-
-                        <Card
-                            title="Models"
-                            description={
-                                modelRows() === null
-                                    ? "Model rows are refreshed from the provider's upstream."
-                                    : `${modelRows()?.length ?? 0} model rows`
-                            }
-                            actions={
-                                <Button
-                                    variant="secondary"
-                                    disabled={isDiscovering()}
-                                    onClick={() => void discoverModels()}
-                                >
-                                    {isDiscovering() ? "Discovering…" : "Discover models"}
-                                </Button>
-                            }
+                    <>
+                        <PageHeader
+                            title={row.name}
+                            description={`#${row.id} · ${providerKindTitle(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
+                            backHref={hrefs.providers()}
+                            backLabel="Providers"
                         >
-                            <div class="flex flex-col gap-4">
-                                <Show when={models.failure()}>
-                                    {(message) => (
-                                        <Banner variant="error">
-                                            <p>{message()}</p>
-                                            <div class="mt-2">
-                                                <Button
-                                                    variant="secondary"
-                                                    onClick={() => void models.reload()}
-                                                >
-                                                    Retry
-                                                </Button>
-                                            </div>
-                                        </Banner>
-                                    )}
-                                </Show>
+                            <Badge
+                                tone={row.is_enabled ? "ok" : "muted"}
+                                label={row.is_enabled ? "Serving" : "Off"}
+                            />
+                            <Badge
+                                tone={credentialBadge(row).tone}
+                                label={credentialBadge(row).label}
+                            />
+                        </PageHeader>
 
-                                <Show when={models.isLoading()}>
-                                    <p
-                                        role="status"
-                                        class="text-sm text-slate-500"
-                                    >
-                                        Loading models…
-                                    </p>
-                                </Show>
+                        <Show when={notice()}>
+                            {(current) => (
+                                <Notice
+                                    tone={current().tone}
+                                    title={current().title}
+                                    detail={current().detail}
+                                    fix={current().fix}
+                                />
+                            )}
+                        </Show>
 
-                                <Show when={modelRows()}>
-                                    {(rows) => (
-                                        <Show
-                                            when={rows().length > 0}
-                                            fallback={
-                                                <p class="text-sm text-slate-600">
-                                                    This provider has no model rows yet. Discover
-                                                    them from its upstream to start routing them.
-                                                </p>
-                                            }
-                                        >
-                                            <ModelList
-                                                api={props.api}
-                                                models={rows()}
-                                                onModelUpdated={replaceModel}
-                                                onModelVanished={() =>
-                                                    void rowsChangedByAnotherWriter()
-                                                }
-                                            />
-                                        </Show>
-                                    )}
-                                </Show>
-                            </div>
-                        </Card>
-                    </div>
+                        <DetailsCard
+                            api={props.api}
+                            provider={row}
+                            onReload={() => void read()}
+                            onNotice={setNotice}
+                            onFailure={reportFailure}
+                        />
+
+                        <Show
+                            when={findOAuthProviderType(row.type)}
+                            keyed
+                        >
+                            {(accountType) => (
+                                <CredentialsCard
+                                    api={props.api}
+                                    provider={row}
+                                    accountType={accountType}
+                                    onReload={() => void read()}
+                                    onNotice={setNotice}
+                                    onFailure={reportFailure}
+                                />
+                            )}
+                        </Show>
+
+                        <ModelsCard
+                            api={props.api}
+                            provider={row}
+                            models={models()}
+                            providersById={providersById()}
+                            onReload={() => void read()}
+                            onNotice={setNotice}
+                            onFailure={reportFailure}
+                        />
+
+                        <DangerCard
+                            api={props.api}
+                            provider={row}
+                            modelCount={models().length}
+                            onFailure={reportFailure}
+                        />
+                    </>
                 )}
             </Show>
         </div>
     );
 }
 
-type ProviderEditFormProps = {
+/** The provider's editable state. Saving writes the complete readable state. */
+function DetailsCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
-    readonly onSaved: () => void;
-    /** Called as a save begins, so the screen drops a notice it has superseded. */
-    readonly onSaveStarted: () => void;
-    /**
-     * Called with the gateway's message when it reports the row gone (errno 3):
-     * the screen renders the message and reloads its listings.
-     */
-    readonly onRowVanished: (message: string) => void;
-};
-
-/**
- * The provider's complete readable state, edited as a read-modify-write
- * (README §4.5). The form is mounted per row identity, so its fields start
- * from the row and pick up a changed row after a save.
- */
-function ProviderEditForm(props: ProviderEditFormProps): JSX.Element {
+    readonly onReload: () => void;
+    readonly onNotice: (notice: ScreenNotice) => void;
+    readonly onFailure: (cause: unknown, action: "update-provider") => void;
+}): JSX.Element {
     const [name, setName] = createSignal(props.provider.name);
     const [modelPrefix, setModelPrefix] = createSignal(props.provider.model_prefix);
     const [isEnabled, setIsEnabled] = createSignal(props.provider.is_enabled);
     const [baseUrl, setBaseUrl] = createSignal(
         props.provider.type === "openai_compatible" ? props.provider.base_url : "",
     );
-
-    const [protocol, setProtocol] = createSignal(
+    const [protocol, setProtocol] = createSignal<UpstreamFormat>(
         props.provider.type === "openai_compatible" ? props.provider.protocol : "openai_response",
     );
-
     const [apiKey, setApiKey] = createSignal("");
-    const [nameError, setNameError] = createSignal<string | null>(null);
-    const [baseUrlError, setBaseUrlError] = createSignal<string | null>(null);
-    const [protocolError, setProtocolError] = createSignal<string | null>(null);
-    const [failure, setFailure] = createSignal<string | null>(null);
     const [isSaving, setIsSaving] = createSignal(false);
 
-    const save = async (event: SubmitEvent): Promise<void> => {
-        event.preventDefault();
+    const isCompatible = (): boolean => props.provider.type === "openai_compatible";
 
+    const isDirty = createMemo(
+        () =>
+            name() !== props.provider.name ||
+            modelPrefix() !== props.provider.model_prefix ||
+            isEnabled() !== props.provider.is_enabled ||
+            (isCompatible() &&
+                (baseUrl() !==
+                    (props.provider.type === "openai_compatible" ? props.provider.base_url : "") ||
+                    protocol() !==
+                        (props.provider.type === "openai_compatible"
+                            ? props.provider.protocol
+                            : "openai_response") ||
+                    apiKey() !== "")),
+    );
+
+    const revert = (): void => {
+        setName(props.provider.name);
+        setModelPrefix(props.provider.model_prefix);
+        setIsEnabled(props.provider.is_enabled);
+        setBaseUrl(props.provider.type === "openai_compatible" ? props.provider.base_url : "");
+        setProtocol(
+            props.provider.type === "openai_compatible"
+                ? props.provider.protocol
+                : "openai_response",
+        );
+        setApiKey("");
+    };
+
+    const save = async (): Promise<void> => {
         if (isSaving()) {
             return;
         }
 
-        const nameFailure = name().trim() === "" ? "Enter a provider name." : null;
-        const isCompatible = props.provider.type === "openai_compatible";
-
-        const baseUrlFailure =
-            isCompatible && baseUrl().trim() === "" ? "Enter the upstream base URL." : null;
-
-        const parsedProtocol = findUpstreamFormat(protocol());
-
-        const protocolFailure =
-            isCompatible && parsedProtocol === null ? "Choose a protocol." : null;
-
-        setNameError(nameFailure);
-        setBaseUrlError(baseUrlFailure);
-        setProtocolError(protocolFailure);
-        setFailure(null);
-
-        if (
-            nameFailure !== null ||
-            baseUrlFailure !== null ||
-            protocolFailure !== null ||
-            parsedProtocol === null
-        ) {
-            return;
-        }
-
-        const edits: ProviderEdits = {
-            name: name(),
-            model_prefix: modelPrefix(),
-            is_enabled: isEnabled(),
-            ...(isCompatible
-                ? {
-                      base_url: baseUrl(),
-                      protocol: parsedProtocol,
-                      // An empty field keeps the stored secret: the API key is
-                      // write-only and never rendered back.
-                      ...(apiKey().trim() === ""
-                          ? {}
-                          : {
-                                api_key: apiKey(),
-                            }),
-                  }
-                : {}),
-        };
-
         setIsSaving(true);
-        props.onSaveStarted();
 
         const outcome = await performManagementCall(() =>
-            props.api.updateProvider(toUpdateProviderRequest(props.provider, edits)),
+            props.api.updateProvider(
+                toUpdateProviderRequest(props.provider, {
+                    name: name(),
+                    model_prefix: modelPrefix(),
+                    is_enabled: isEnabled(),
+                    ...(isCompatible()
+                        ? {
+                              base_url: baseUrl(),
+                              protocol: protocol(),
+                              ...(apiKey() === ""
+                                  ? {}
+                                  : {
+                                        api_key: apiKey(),
+                                    }),
+                          }
+                        : {}),
+                }),
+            ),
         );
 
         setIsSaving(false);
 
-        if (outcome.status === "ok") {
-            props.onSaved();
+        if (outcome.status === "aborted") {
             return;
         }
 
         if (outcome.status === "failed") {
-            setFailure(outcome.message);
-
-            if (outcome.errno === ErrorCode.NotFound) {
-                props.onRowVanished(outcome.message);
-            }
+            props.onFailure(outcome.cause, "update-provider");
+            return;
         }
+
+        const prefixChanged = modelPrefix() !== props.provider.model_prefix;
+        setApiKey("");
+        props.onNotice({
+            tone: "ok",
+            title: `${name()} saved.`,
+            detail: prefixChanged
+                ? "The new prefix recomposes the public ID of every model without an override; the list below was read again."
+                : null,
+        });
+        props.onReload();
     };
 
-    const isCompatible = (): boolean => props.provider.type === "openai_compatible";
+    const submit = (event: SubmitEvent): void => {
+        event.preventDefault();
+        void save();
+    };
 
     return (
-        <form
-            novalidate={true}
-            class="flex max-w-xl flex-col gap-4"
-            onSubmit={save}
-        >
-            <Show when={failure()}>
-                {(message) => <Banner variant="error">{message()}</Banner>}
-            </Show>
+        <Card>
+            <CardHeader
+                title="Details"
+                description="Everything the gateway stores about this provider, except its credentials."
+            />
+            <form
+                novalidate={true}
+                class="mt-4 flex max-w-2xl flex-col gap-4"
+                onSubmit={submit}
+            >
+                <ProviderIdentityFields
+                    name={name()}
+                    modelPrefix={modelPrefix()}
+                    onNameInput={setName}
+                    onModelPrefixInput={setModelPrefix}
+                    isDisabled={isSaving()}
+                />
 
-            <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-                <span>
-                    Type:{" "}
-                    <span class="text-slate-700">{providerTypeLabel(props.provider.type)}</span>{" "}
-                    <span class="font-mono text-slate-500">({props.provider.type})</span>
-                </span>
-                <Show when={props.provider.type !== "openai_compatible"}>
-                    <span>
-                        Token expiry:{" "}
-                        <span class="text-slate-700">
-                            {props.provider.type === "openai_compatible"
-                                ? "—"
-                                : props.provider.expires_at === null
-                                  ? "no expiry"
-                                  : formatTimestamp(props.provider.expires_at)}
+                <Show when={isCompatible()}>
+                    <CompatibleConnectionFields
+                        baseUrl={baseUrl()}
+                        protocol={protocol()}
+                        apiKey={apiKey()}
+                        onBaseUrlInput={setBaseUrl}
+                        onProtocolChange={(value) => {
+                            const format = findUpstreamFormat(value);
+
+                            if (format !== null) {
+                                setProtocol(format);
+                            }
+                        }}
+                        onApiKeyInput={setApiKey}
+                        apiKeyLabel="Replace the API key"
+                        apiKeyHint="Write-only: the gateway never returns it, so leaving this empty keeps what is stored."
+                        isDisabled={isSaving()}
+                    />
+                </Show>
+
+                <ProviderServingSwitch
+                    isEnabled={isEnabled()}
+                    onToggle={setIsEnabled}
+                    isDisabled={isSaving()}
+                />
+
+                <div class="flex flex-wrap items-center gap-2">
+                    <Button
+                        type="submit"
+                        tone="primary"
+                        isDisabled={!isDirty()}
+                        isBusy={isSaving()}
+                    >
+                        {isSaving() ? "Saving…" : "Save changes"}
+                    </Button>
+                    <Button
+                        isDisabled={!isDirty() || isSaving()}
+                        onClick={revert}
+                    >
+                        Revert
+                    </Button>
+                    <Show when={isDirty() && !isSaving()}>
+                        <span
+                            class="text-[13px] font-medium text-warn"
+                            role="status"
+                        >
+                            Unsaved changes
                         </span>
-                    </span>
+                    </Show>
+                </div>
+            </form>
+        </Card>
+    );
+}
+
+/** An OAuth account's credential health and its reauthorization flow. */
+function CredentialsCard(props: {
+    readonly api: ManagementApi;
+    readonly provider: ProviderResponse;
+    readonly accountType: OAuthProviderType;
+    readonly onReload: () => void;
+    readonly onNotice: (notice: ScreenNotice) => void;
+    readonly onFailure: (cause: unknown, action: "start-oauth" | "reauthorize") => void;
+}): JSX.Element {
+    const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
+    const [code, setCode] = createSignal("");
+    const [isStarting, setIsStarting] = createSignal(false);
+    const [isCompleting, setIsCompleting] = createSignal(false);
+
+    const expiryLine = (): string => {
+        if (props.provider.type === "openai_compatible" || props.provider.expires_at === null) {
+            return "No expiry is stored for this account.";
+        }
+
+        const validity = describeValidity(props.provider.expires_at, Math.floor(Date.now() / 1000));
+
+        return validity.isExpired
+            ? `Expired ${validity.text.replace(/^expired /, "")} ago.`
+            : `Valid for ${validity.text.replace(/^in /, "")}.`;
+    };
+
+    const start = async (): Promise<void> => {
+        if (isStarting()) {
+            return;
+        }
+
+        setIsStarting(true);
+
+        const outcome = await performManagementCall(() =>
+            props.api.startProviderOauth({
+                type: props.accountType,
+            }),
+        );
+
+        setIsStarting(false);
+
+        if (outcome.status === "aborted") {
+            return;
+        }
+
+        if (outcome.status === "failed") {
+            props.onFailure(outcome.cause, "start-oauth");
+            return;
+        }
+
+        setFlow(outcome.result);
+    };
+
+    const complete = async (): Promise<void> => {
+        const startedFlow = flow();
+
+        if (startedFlow === null || isCompleting()) {
+            return;
+        }
+
+        setIsCompleting(true);
+
+        const outcome = await performManagementCall(() =>
+            props.api.reauthorizeProvider({
+                state: startedFlow.state,
+                code: code().trim(),
+                provider_id: props.provider.id,
+            }),
+        );
+
+        setIsCompleting(false);
+
+        if (outcome.status === "aborted") {
+            return;
+        }
+
+        if (outcome.status === "failed") {
+            const diagnosis = describeCallFailure(outcome.cause, "reauthorize");
+
+            if (diagnosis.kind === "gone") {
+                // The state is consumed; the flow resets and the listing
+                // re-reads instead of either being retried.
+                setFlow(null);
+                setCode("");
+                props.onReload();
+            }
+
+            props.onFailure(outcome.cause, "reauthorize");
+            return;
+        }
+
+        const replacement: ReauthorizeProviderResponse = outcome.result;
+        setFlow(null);
+        setCode("");
+        props.onNotice({
+            tone: "ok",
+            title: "Credentials replaced.",
+            detail: `The new credentials expire ${formatTimestamp(replacement.expires_at)}.`,
+        });
+        props.onReload();
+    };
+
+    const submit = (event: SubmitEvent): void => {
+        event.preventDefault();
+        void complete();
+    };
+
+    return (
+        <Card>
+            <CardHeader
+                title="Credentials"
+                description="OAuth credentials expire. Reconnecting replaces what the gateway stores; nothing else about the provider changes."
+            />
+            <div class="mt-4 flex max-w-2xl flex-col gap-4">
+                <p class="text-[13.5px] text-ink-dim">{expiryLine()}</p>
+
+                <Show
+                    when={flow()}
+                    keyed
+                    fallback={
+                        <div>
+                            <Button
+                                tone="primary"
+                                glyph="key"
+                                isBusy={isStarting()}
+                                onClick={() => void start()}
+                            >
+                                {isStarting() ? "Starting…" : "Reconnect the account"}
+                            </Button>
+                        </div>
+                    }
+                >
+                    {(startedFlow) => (
+                        <form
+                            novalidate={true}
+                            class="flex flex-col gap-4"
+                            onSubmit={submit}
+                        >
+                            <AuthorizeStep
+                                flow={startedFlow}
+                                onStartOver={() => {
+                                    setFlow(null);
+                                    setCode("");
+                                }}
+                            >
+                                <TextField
+                                    label="Authorization code"
+                                    value={code()}
+                                    onInput={setCode}
+                                    placeholder="Paste the code from the callback URL"
+                                    isDisabled={isCompleting()}
+                                    hint="Single-use, like the state it completes, and never stored."
+                                />
+                                <div>
+                                    <Button
+                                        type="submit"
+                                        tone="primary"
+                                        isBusy={isCompleting()}
+                                    >
+                                        {isCompleting() ? "Replacing…" : "Replace the credentials"}
+                                    </Button>
+                                </div>
+                            </AuthorizeStep>
+                        </form>
+                    )}
                 </Show>
             </div>
+        </Card>
+    );
+}
 
-            <TextField
-                id="provider-detail-name"
-                label="Name"
-                value={name()}
-                onInput={setName}
-                required
-                disabled={isSaving()}
-                error={nameError()}
-                hint="Renaming keeps the provider's identity and every model routing."
-            />
-            <TextField
-                id="provider-detail-model-prefix"
-                label="Model prefix"
-                value={modelPrefix()}
-                onInput={setModelPrefix}
-                disabled={isSaving()}
-                isMonospace
-                hint="Prepended to every model ID that has no override of its own."
-            />
-            <CheckboxField
-                id="provider-detail-enabled"
-                label="Serve traffic"
-                checked={isEnabled()}
-                onChange={setIsEnabled}
-                disabled={isSaving()}
-                hint="When disabled, none of this provider's models serve traffic."
-            />
+/** The provider's models and the sync that refreshes them from upstream. */
+function ModelsCard(props: {
+    readonly api: ManagementApi;
+    readonly provider: ProviderResponse;
+    readonly models: ReadonlyArray<ModelResponse>;
+    readonly providersById: ReadonlyMap<number, ProviderResponse>;
+    readonly onReload: () => void;
+    readonly onNotice: (notice: ScreenNotice) => void;
+    readonly onFailure: (cause: unknown, action: "discover-models") => void;
+}): JSX.Element {
+    const [isSyncing, setIsSyncing] = createSignal(false);
 
-            <Show when={isCompatible()}>
-                <TextField
-                    id="provider-detail-base-url"
-                    label="Upstream base URL"
-                    value={baseUrl()}
-                    onInput={setBaseUrl}
-                    disabled={isSaving()}
-                    error={baseUrlError()}
-                    isMonospace
-                />
-                <SelectField
-                    id="provider-detail-protocol"
-                    label="Protocol"
-                    value={protocol()}
-                    options={UPSTREAM_FORMAT_OPTIONS}
-                    onChange={setProtocol}
-                    disabled={isSaving()}
-                    error={protocolError()}
-                />
-                <TextField
-                    id="provider-detail-api-key"
-                    label="Replace API key"
-                    type="password"
-                    value={apiKey()}
-                    onInput={setApiKey}
-                    disabled={isSaving()}
-                    autocomplete="off"
-                    hint="Leave empty to keep the stored key; the stored key is never readable."
-                />
-            </Show>
+    const sync = async (): Promise<void> => {
+        if (isSyncing()) {
+            return;
+        }
 
-            <Show when={!isCompatible()}>
-                <div class="flex flex-col items-start gap-2 rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
-                    <p class="text-sm text-slate-700">
-                        Credentials of an OAuth provider are replaced by authorizing the account
-                        again.
+        setIsSyncing(true);
+
+        const outcome = await performManagementCall(() =>
+            props.api.discoverModels({
+                provider_id: props.provider.id,
+            }),
+        );
+
+        setIsSyncing(false);
+
+        if (outcome.status === "aborted") {
+            return;
+        }
+
+        if (outcome.status === "failed") {
+            props.onFailure(outcome.cause, "discover-models");
+            return;
+        }
+
+        const discovered = outcome.result.models;
+
+        props.onNotice(
+            discovered.length === 0
+                ? {
+                      tone: "info",
+                      title: "Upstream reports no models.",
+                      detail: "Nothing changed — your curated list was kept.",
+                  }
+                : {
+                      tone: "ok",
+                      title: `${discovered.length} ${discovered.length === 1 ? "model" : "models"} synced from ${props.provider.name}.`,
+                      detail: "Overrides on models that returned were kept; models the account no longer reports are gone.",
+                  },
+        );
+        props.onReload();
+    };
+
+    return (
+        <Card>
+            <CardHeader
+                title={`Models · ${props.models.length}`}
+                description="Synced from upstream. Open one to edit its overrides."
+            >
+                <Button
+                    glyph="refresh"
+                    isBusy={isSyncing()}
+                    onClick={() => void sync()}
+                >
+                    {isSyncing() ? "Syncing…" : "Sync models"}
+                </Button>
+            </CardHeader>
+            <div class="mt-4">
+                <Show
+                    when={props.models.length > 0}
+                    fallback={
+                        <p class="rounded-lg bg-canvas px-3.5 py-3 text-[13.5px] text-ink-dim dark:bg-muted">
+                            No models on this provider yet — sync to read what the account reports.
+                        </p>
+                    }
+                >
+                    <ModelList
+                        models={props.models}
+                        providersById={props.providersById}
+                    />
+                </Show>
+            </div>
+        </Card>
+    );
+}
+
+/** Deletion, confirmed where it states its blast radius. */
+function DangerCard(props: {
+    readonly api: ManagementApi;
+    readonly provider: ProviderResponse;
+    readonly modelCount: number;
+    readonly onFailure: (cause: unknown, action: "delete-provider") => void;
+}): JSX.Element {
+    const [isArmed, setIsArmed] = createSignal(false);
+    const [isDeleting, setIsDeleting] = createSignal(false);
+
+    const remove = async (): Promise<void> => {
+        if (isDeleting()) {
+            return;
+        }
+
+        setIsDeleting(true);
+
+        const outcome = await performManagementCall(() =>
+            props.api.deleteProvider({
+                provider_id: props.provider.id,
+            }),
+        );
+
+        setIsDeleting(false);
+
+        if (outcome.status === "aborted") {
+            return;
+        }
+
+        if (outcome.status === "failed") {
+            props.onFailure(outcome.cause, "delete-provider");
+            setIsArmed(false);
+            return;
+        }
+
+        navigate(hrefs.providers());
+    };
+
+    return (
+        <Card class="border-bad/30">
+            <CardHeader
+                title="Delete this provider"
+                description={`Deleting removes the provider and, by cascade, its ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}.`}
+            />
+            <Show
+                when={isArmed()}
+                fallback={
+                    <div class="mt-4">
+                        <Button
+                            tone="danger"
+                            glyph="trash"
+                            onClick={() => setIsArmed(true)}
+                        >
+                            Delete…
+                        </Button>
+                    </div>
+                }
+            >
+                <div class="mt-4 flex flex-wrap items-center gap-2">
+                    <p class="w-full text-[13.5px] text-ink-dim">
+                        {`Delete ${props.provider.name}? Clients calling those public IDs will start getting 404s.`}
                     </p>
-                    <LinkButton
-                        href={hrefs.oauthStart(props.provider.id)}
-                        variant="secondary"
+                    <Button
+                        tone="danger"
+                        isBusy={isDeleting()}
+                        onClick={() => void remove()}
                     >
-                        Reauthorize
-                    </LinkButton>
+                        {isDeleting() ? "Deleting…" : "Delete for good"}
+                    </Button>
+                    <Button
+                        isDisabled={isDeleting()}
+                        onClick={() => setIsArmed(false)}
+                    >
+                        Keep it
+                    </Button>
                 </div>
             </Show>
-
-            <div class="flex items-center gap-2">
-                <Button
-                    type="submit"
-                    disabled={isSaving()}
-                >
-                    {isSaving() ? "Saving…" : "Save provider"}
-                </Button>
-            </div>
-        </form>
+        </Card>
     );
 }
