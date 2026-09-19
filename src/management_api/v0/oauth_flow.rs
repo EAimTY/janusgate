@@ -13,29 +13,29 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 route! {
-    pub impl Route for StartProviderOauth {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/oauth:start";
-        type Request = StartProviderOauthRequest;
-        type Response = StartProviderOauthResponse;
+    pub StartProviderOauth: {
+        path: "/oauth:start",
+        method: http::Method::POST,
+        request: StartProviderOauthRequest,
+        response: StartProviderOauthResponse,
     }
 }
 
 route! {
-    pub impl Route for CompleteProviderOauth {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/oauth:complete";
-        type Request = CompleteProviderOauthRequest;
-        type Response = ProviderEnvelope;
+    pub CompleteProviderOauth: {
+        path: "/oauth:complete",
+        method: http::Method::POST,
+        request: CompleteProviderOauthRequest,
+        response: ProviderEnvelope,
     }
 }
 
 route! {
-    pub impl Route for ReauthorizeProvider {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/oauth:reauthorize";
-        type Request = ReauthorizeProviderRequest;
-        type Response = ReauthorizeProviderResponse;
+    pub ReauthorizeProvider: {
+        path: "/oauth:reauthorize",
+        method: http::Method::POST,
+        request: ReauthorizeProviderRequest,
+        response: ReauthorizeProviderResponse,
     }
 }
 

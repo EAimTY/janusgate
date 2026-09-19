@@ -5,8 +5,8 @@
 //!
 //! The entity split interlocks deliberately, mirroring the README §7.1 transaction contracts:
 //! `providers:update` recomputes its models' public IDs from the fresh prefix, so [`providers`]
-//! reads model rows through [`models::find_models_in_transaction`], while `models:update` and model
-//! discovery re-read the provider row inside their transactions through
+//! reads model rows through [`models::find_models_in_transaction`], while `models:create`,
+//! `models:update`, and model discovery re-read the provider row inside their transactions through
 //! [`providers::find_provider_by_id_in_transaction`]..
 
 use super::{Credentials, Model, OAuthProviderType, Provider, ProviderType};
@@ -23,8 +23,9 @@ mod providers;
 
 pub(crate) use self::{
     models::{
-        ModelEntry, ModelOverrideUpdate, find_routing, list_enabled_models_with_owner,
-        list_model_entries, replace_discovered_models, update_model_overrides_checked,
+        ModelEntry, ModelOverrideUpdate, find_routing, insert_model_checked,
+        list_enabled_models_with_owner, list_model_entries, replace_discovered_models,
+        update_model_overrides_checked,
     },
     oauth_states::{
         consume_oauth_state, delete_expired_oauth_states, find_oauth_state_type, insert_oauth_state,
@@ -591,6 +592,165 @@ mod tests {
         let enabled_models_after_provider_disable =
             list_enabled_models_with_owner(&database).await?;
         assert!(enabled_models_after_provider_disable.is_empty());
+
+        Ok(())
+    }
+
+    /// Verifies the manual model lifecycle: insertion composes the public ID from the provider's
+    /// current prefix, a repeated `upstream_id` and a routed public ID each conflict without
+    /// writing, and a later discovery carries the manual row's overrides over by `upstream_id`
+    /// — dropping the row only when the identifier no longer appears.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn test_manual_model_insert_and_discovery_carry_over() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = create_test_database().await;
+
+        let credentials = Credentials::ApiKey("test-secret".to_string());
+
+        insert_provider(
+            &database,
+            &NewProvider {
+                name: "provider-1",
+                model_prefix: "p1/",
+                provider_type: ProviderType::OpenAiCompatible,
+                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+                base_url: Some("http://localhost:8080"),
+                credentials: &credentials,
+                expires_at: None,
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        let providers = list_providers(&database).await?;
+        #[expect(clippy::indexing_slicing, reason = "one provider was inserted")]
+        let provider_id = providers[0].id;
+
+        // 1. Insert a manual row: the public ID composes from the current prefix.
+        let created = insert_model_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_id,
+                upstream_id: "manual-1",
+                id_override: None,
+                is_enabled: false,
+                thinking_levels_override: Some(r#"["low"]"#),
+            },
+        )
+        .await?;
+
+        assert_eq!(created.model.id, "p1/manual-1");
+        assert!(!created.model.is_enabled);
+        assert_eq!(
+            created.model.thinking_levels_override.as_deref(),
+            Some(r#"["low"]"#)
+        );
+
+        // 2. A repeated `upstream_id` on the same provider conflicts and writes nothing.
+        let duplicate = insert_model_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_id,
+                upstream_id: "manual-1",
+                id_override: Some("other-id"),
+                is_enabled: true,
+                thinking_levels_override: None,
+            },
+        )
+        .await;
+        assert!(matches!(duplicate, Err(Error::Conflict { .. })));
+
+        // The failed insert left the stored row untouched.
+        let entries = list_model_entries(&database, Some(provider_id)).await?;
+        assert_eq!(entries.len(), 1);
+
+        // 3. A public ID already routed by another provider's row conflicts and writes nothing.
+        insert_provider(
+            &database,
+            &NewProvider {
+                name: "provider-2",
+                model_prefix: "p2/",
+                provider_type: ProviderType::OpenAiCompatible,
+                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+                base_url: Some("http://localhost:8080"),
+                credentials: &credentials,
+                expires_at: None,
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        let providers = list_providers(&database).await?;
+        #[expect(clippy::unwrap_used, reason = "provider-2 was inserted")]
+        let other_provider_id = providers
+            .iter()
+            .find(|provider| provider.name == "provider-2")
+            .unwrap()
+            .id;
+
+        let colliding = insert_model_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_id: other_provider_id,
+                upstream_id: "manual-1",
+                id_override: Some("p1/manual-1"),
+                is_enabled: true,
+                thinking_levels_override: None,
+            },
+        )
+        .await;
+        assert!(matches!(colliding, Err(Error::Conflict { .. })));
+
+        let other_entries = list_model_entries(&database, Some(other_provider_id)).await?;
+        assert!(other_entries.is_empty());
+
+        // 4. An unknown provider yields not-found.
+        let missing = insert_model_checked(
+            &database,
+            ModelOverrideUpdate {
+                provider_id: other_provider_id + 1000,
+                upstream_id: "ghost",
+                id_override: None,
+                is_enabled: true,
+                thinking_levels_override: None,
+            },
+        )
+        .await;
+        assert!(matches!(missing, Err(Error::NotFound { .. })));
+
+        // 5. A later discovery carrying the manual identifier keeps its overrides; a fresh
+        //    identifier defaults to enabled with no overrides.
+        let rediscovered = replace_discovered_models(
+            &database,
+            provider_id,
+            &["manual-1".to_string(), "fresh-1".to_string()],
+        )
+        .await?;
+
+        assert_eq!(rediscovered.len(), 2);
+        #[expect(clippy::unwrap_used, reason = "manual-1 is re-discovered")]
+        let carried = rediscovered
+            .iter()
+            .find(|entry| entry.model.upstream_id == "manual-1")
+            .unwrap();
+        assert_eq!(carried.model.id, "p1/manual-1");
+        assert!(!carried.model.is_enabled);
+        assert_eq!(
+            carried.model.thinking_levels_override.as_deref(),
+            Some(r#"["low"]"#)
+        );
+
+        // 6. A discovery no longer listing the manual identifier drops the row.
+        let pruned =
+            replace_discovered_models(&database, provider_id, &["fresh-1".to_string()]).await?;
+
+        assert_eq!(pruned.len(), 1);
+        #[expect(clippy::indexing_slicing, reason = "length 1 asserted above")]
+        let survivor = &pruned[0];
+        assert_eq!(survivor.model.upstream_id, "fresh-1");
 
         Ok(())
     }

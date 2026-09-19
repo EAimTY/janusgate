@@ -1,4 +1,5 @@
-//! Model row persistence: routing resolution, listing, discovery replacement, and override updates.
+//! Model row persistence: routing resolution, listing, discovery replacement, manual creation, and
+//! override updates.
 
 use super::Error;
 use crate::{
@@ -23,9 +24,9 @@ pub(crate) struct ModelEntry {
     pub(crate) model: Model,
 }
 
-/// One `models:update` rewrite about to be applied transactionally: the row's complete desired
-/// override state (README §7.1) — every field total, the two override columns mirroring their
-/// nullable storage as `None` for "no override".
+/// One `models:create` insertion or `models:update` rewrite about to be applied transactionally:
+/// the row's complete desired override state (README §7.1) — every field total, the two override
+/// columns mirroring their nullable storage as `None` for "no override".
 pub(crate) struct ModelOverrideUpdate<'a> {
     /// Owning provider's id, the lookup key.
     pub(crate) provider_id: i64,
@@ -304,6 +305,92 @@ async fn replace_provider_models(
     }
 
     Ok(())
+}
+
+/// Inserts one manually created model row and composes its public ID inside a single transaction,
+/// returning the stored row with its provider facts.
+///
+/// The inserted row is indistinguishable from a discovered row: a later discovery carries its
+/// overrides over by `upstream_id` when the identifier reappears, and drops the row when it does
+/// not (README §7.1).
+///
+/// The provider row is re-read inside the transaction, so the composed public ID uses the
+/// provider's current prefix even when a concurrent `providers:update` changed it after the
+/// caller's outer read. The collision check matches [`update_model_overrides_checked`]'s quality
+/// tier: an `upstream_id` the provider already holds and an ID already routed by another model
+/// row each yield a 409 naming the holder, and nothing is written. An unknown provider yields 404.
+/// The table's primary key and unique ID are the concurrent backstop behind both checked
+/// conflicts.
+///
+/// # Errors
+///
+/// Returns [`Error`] for an unknown provider, an already-stored model,
+/// failed statements, or a public ID collision.
+pub(crate) async fn insert_model_checked(
+    database: &Database,
+    update: ModelOverrideUpdate<'_>,
+) -> Result<ModelEntry, Error> {
+    let mut transaction = database.transaction().await?;
+
+    let Some(provider) =
+        super::find_provider_by_id_in_transaction(&mut transaction, update.provider_id).await?
+    else {
+        return Err(Error::NotFound {
+            message: super::provider_not_found_message(update.provider_id),
+        });
+    };
+
+    if find_model_in_transaction(&mut transaction, provider.id, update.upstream_id)
+        .await?
+        .is_some()
+    {
+        return Err(Error::Conflict {
+            message: format!(
+                "Model `{}` already exists on provider `{}`",
+                update.upstream_id, provider.name
+            ),
+        });
+    }
+
+    let new_id = Model::public_id(
+        &provider.model_prefix,
+        update.upstream_id,
+        update.id_override,
+    );
+
+    super::ensure_ids_routable(
+        &mut transaction,
+        provider.id,
+        &[(new_id.as_str(), update.upstream_id)],
+    )
+    .await?;
+
+    transaction
+        .execute(
+            "INSERT INTO models (provider_id, upstream_id, id, id_override, \
+             is_enabled, thinking_levels_override) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                provider.id,
+                update.upstream_id,
+                new_id,
+                update.id_override,
+                i64::from(update.is_enabled),
+                update.thinking_levels_override,
+            ],
+        )
+        .await?;
+
+    // The read-back entry carries the provider facts the response renders,
+    // observed on the write's own snapshot.
+    let entry = find_model_entry_in_transaction(&mut transaction, provider.id, update.upstream_id)
+        .await?
+        .ok_or_else(|| Error::Drift {
+            message: "model vanished after insert".to_string(),
+        })?;
+
+    transaction.commit().await?;
+
+    Ok(entry)
 }
 
 /// Rewrites one model's override state and recomputes its public ID inside a single transaction,

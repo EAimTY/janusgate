@@ -1,4 +1,4 @@
-//! Management routes listing, discovering, and overriding models.
+//! Management routes listing, discovering, creating, and overriding models.
 
 use super::{Error, IrReasoningEffort, Nullable, route};
 use crate::{
@@ -16,29 +16,38 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 route! {
-    pub impl Route for ListModels {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/models:list";
-        type Request = ListModelsRequest;
-        type Response = ListModelsResponse;
+    pub ListModels: {
+        path: "/models:list",
+        method: http::Method::POST,
+        request: ListModelsRequest,
+        response: ListModelsResponse,
     }
 }
 
 route! {
-    pub impl Route for DiscoverModels {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/models:discover";
-        type Request = DiscoverModelsRequest;
-        type Response = DiscoverModelsResponse;
+    pub DiscoverModels: {
+        path: "/models:discover",
+        method: http::Method::POST,
+        request: DiscoverModelsRequest,
+        response: DiscoverModelsResponse,
     }
 }
 
 route! {
-    pub impl Route for UpdateModel {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/models:update";
-        type Request = UpdateModelRequest;
-        type Response = ModelEnvelope;
+    pub CreateModel: {
+        path: "/models:create",
+        method: http::Method::POST,
+        request: CreateModelRequest,
+        response: ModelEnvelope,
+    }
+}
+
+route! {
+    pub UpdateModel: {
+        path: "/models:update",
+        method: http::Method::POST,
+        request: UpdateModelRequest,
+        response: ModelEnvelope,
     }
 }
 
@@ -144,11 +153,46 @@ pub struct DiscoverModelsRequest {
     pub provider_id: i64,
 }
 
+/// Strictly parsed `models:create` request (README §7.1): the complete desired initial state of
+/// one manually added row, every field required (README §7.0 rule 3). The shape mirrors
+/// [`UpdateModelRequest`] field for field: the two override fields are the required-nullable
+/// mirror columns (rule 2) — `null` means no override, exactly like the storage columns. A created
+/// row is indistinguishable from a discovered row: a later discovery carries its overrides over by
+/// `upstream_id` when the identifier reappears, and drops the row when it does not.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct CreateModelRequest {
+    /// Owning provider row identifier.
+    pub provider_id: i64,
+
+    /// Exact upstream model identifier; must be non-empty.
+    pub upstream_id: String,
+
+    /// Public ID override; `null` composes the ID from the provider's prefix.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "string | null")
+    )]
+    pub id_override: Nullable<String>,
+
+    /// Serving state.
+    pub is_enabled: bool,
+
+    /// Canonical thinking level override; `null` disables filtering.
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<ThinkingLevel> | null")
+    )]
+    pub thinking_levels_override: Nullable<Vec<IrReasoningEffort>>,
+}
+
 /// Strictly parsed `models:update` request (README §7.1): the complete desired override state of
 /// the row, every field required (README §7.0 rule 3). The two override fields are the
 /// required-nullable mirror columns (rule 2) — `null` means no override, exactly like the storage
 /// columns — so the request is the row's mirror: a client renders the row, edits it, and sends the
-/// same shape back. Model rows are never created or deleted here; discovery is their only source.
+/// same shape back. Model rows are never deleted here; an undiscovered row vanishes only through
+/// discovery (or with its provider).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -177,8 +221,9 @@ pub struct UpdateModelRequest {
     pub thinking_levels_override: Nullable<Vec<IrReasoningEffort>>,
 }
 
-/// The `models:update` success body (README §7.1): the recomposed `id` and `is_effectively_enabled`
-/// derive from transaction-time provider state, so they are not client-computable.
+/// The `models:create` and `models:update` success body (README §7.1): the composed `id` and
+/// `is_effectively_enabled` derive from transaction-time provider state, so they are not
+/// client-computable.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ModelEnvelope {
@@ -214,6 +259,18 @@ pub(super) async fn discover(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Json(DiscoverModelsResponse { models }))
+}
+
+/// Handles `POST /models:create`.
+pub(super) async fn create(
+    State(context): State<Context>,
+    WithRejection(Json(request), _): WithRejection<Json<CreateModelRequest>, Error>,
+) -> Result<Json<ModelEnvelope>, Error> {
+    let entry = handle_create(&context.database, request).await?;
+
+    Ok(Json(ModelEnvelope {
+        model: ModelResponse::from_entry(&entry)?,
+    }))
 }
 
 /// Handles `POST /models:update`.
@@ -284,6 +341,44 @@ async fn handle_discover(
     Ok(entries)
 }
 
+/// Inserts one manually added model row and composes its public ID.
+///
+/// # Errors
+///
+/// Returns [`Error`] for empty identifiers, unknown providers,
+/// already-stored models, invalid thinking levels, and public ID collisions.
+async fn handle_create(
+    database: &crate::database::Database,
+    request: CreateModelRequest,
+) -> Result<ModelEntry, Error> {
+    validate_model_identifiers(&request.upstream_id, &request.id_override)?;
+
+    let thinking_levels_override =
+        render_request_thinking_levels(&request.thinking_levels_override)?;
+
+    // The checked insert re-reads the provider row inside its transaction, so the composed
+    // public ID uses the provider's current prefix and the collision check applies atomically
+    // with the write (README §7.1).
+    let entry = storage::insert_model_checked(
+        database,
+        storage::ModelOverrideUpdate {
+            provider_id: request.provider_id,
+            upstream_id: &request.upstream_id,
+            id_override: request.id_override.0.as_deref(),
+            is_enabled: request.is_enabled,
+            thinking_levels_override: thinking_levels_override.as_deref(),
+        },
+    )
+    .await?;
+
+    info!(
+        "created model `{}`/`{}`",
+        request.provider_id, request.upstream_id
+    );
+
+    Ok(entry)
+}
+
 /// Rewrites one model's full override state and recomputes its public ID.
 ///
 /// # Errors
@@ -294,28 +389,10 @@ async fn handle_update(
     database: &crate::database::Database,
     request: UpdateModelRequest,
 ) -> Result<ModelEntry, Error> {
-    super::validate_identifier("upstream_id", &request.upstream_id)?;
+    validate_model_identifiers(&request.upstream_id, &request.id_override)?;
 
-    if let Some(id_override) = &request.id_override.0 {
-        super::validate_identifier("id_override", id_override)?;
-    }
-
-    let thinking_levels_override = match &request.thinking_levels_override.0 {
-        // The request field is already the canonical level set; only the
-        // documented non-emptiness needs enforcing here.
-        None => None,
-
-        Some(levels) => {
-            if levels.is_empty() {
-                return Err(Error::from(InvalidRequest::field(
-                    "thinking_levels_override",
-                    "must be a non-empty array",
-                )));
-            }
-
-            Some(ir::render_thinking_levels(levels))
-        }
-    };
+    let thinking_levels_override =
+        render_request_thinking_levels(&request.thinking_levels_override)?;
 
     // The checked update re-reads the provider and model rows inside its transaction, so the
     // recomputed public ID uses the provider's current prefix and the collision check applies
@@ -340,6 +417,50 @@ async fn handle_update(
     Ok(entry)
 }
 
+/// Validates the identifiers both `models:create` and `models:update` share: every name is
+/// non-empty, and content beyond that is the caller's choice (README §7).
+///
+/// # Errors
+///
+/// Returns [`Error`] when `upstream_id` or a present `id_override` is empty.
+fn validate_model_identifiers(
+    upstream_id: &str,
+    id_override: &Nullable<String>,
+) -> Result<(), Error> {
+    super::validate_identifier("upstream_id", upstream_id)?;
+
+    if let Some(id_override) = &id_override.0 {
+        super::validate_identifier("id_override", id_override)?;
+    }
+
+    Ok(())
+}
+
+/// Renders the request's thinking-level override into its stored JSON form: the request field is
+/// already the canonical level set, so only the documented non-emptiness needs enforcing here.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the override is present but empty.
+fn render_request_thinking_levels(
+    thinking_levels_override: &Nullable<Vec<IrReasoningEffort>>,
+) -> Result<Option<String>, Error> {
+    match &thinking_levels_override.0 {
+        None => Ok(None),
+
+        Some(levels) => {
+            if levels.is_empty() {
+                return Err(Error::from(InvalidRequest::field(
+                    "thinking_levels_override",
+                    "must be a non-empty array",
+                )));
+            }
+
+            Ok(Some(ir::render_thinking_levels(levels)))
+        }
+    }
+}
+
 /// Renders the stored thinking-level override for listing as canonical levels, validating it
 /// through the shared stored-override parser: a corrupt stored value is drift inside the database —
 /// an invariant violation, symmetric with the gateway's fail-fast — and is never masked as an
@@ -362,7 +483,7 @@ fn thinking_levels_override(
 
 #[cfg(test)]
 mod tests {
-    use super::UpdateModelRequest;
+    use super::{CreateModelRequest, UpdateModelRequest};
     use crate::{ir::IrReasoningEffort, management_api::v0::Nullable};
 
     /// Verifies that a stored `thinking_levels_override` renders as canonical level names, that an
@@ -439,6 +560,40 @@ mod tests {
 
         assert!(
             serde_json::from_str::<UpdateModelRequest>(
+                r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,
+                    "is_enabled":true,"thinking_levels_override":null,"bogus":1}"#
+            )
+            .is_err()
+        );
+    }
+
+    /// Verifies the `models:create` request carries the same full-state shape as `models:update`
+    /// (README §7.1): every field required, both override fields nullable, and an unknown field
+    /// rejected — so the two routes' payloads cannot drift apart.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the request parses or rejects outside its contract.
+    #[test]
+    fn parses_the_create_request_like_the_update() {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the documented payload is constructed to parse"
+        )]
+        let parsed: CreateModelRequest = serde_json::from_str(
+            r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":"custom",
+                "is_enabled":false,"thinking_levels_override":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.provider_id, 7);
+        assert_eq!(parsed.upstream_id, "gpt-4o");
+        assert_eq!(parsed.id_override, Nullable(Some("custom".to_string())));
+        assert!(!parsed.is_enabled);
+        assert_eq!(parsed.thinking_levels_override, Nullable(None));
+
+        assert!(
+            serde_json::from_str::<CreateModelRequest>(
                 r#"{"provider_id":7,"upstream_id":"gpt-4o","id_override":null,
                     "is_enabled":true,"thinking_levels_override":null,"bogus":1}"#
             )

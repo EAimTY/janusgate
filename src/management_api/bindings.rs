@@ -261,24 +261,29 @@ fn render_route_table(routes: &[CollectedRoute]) -> String {
 mod tests {
     use super::{ClosureType, CollectedRoute};
     use crate::management_api::{route as route_contract, v0, v0::route};
+    use http::Method;
     use std::{any::TypeId, collections::HashMap, env, fs, path::PathBuf, process};
     use ts_rs::Config;
 
     route! {
-        impl Route for BindingsTestAlpha {
-            const METHOD: http::Method = http::Method::POST;
-            const PATH: &'static str = "/bindings-test-alpha";
-            type Request = BindingsTestAlphaRequest;
-            type Response = BindingsTestAlphaResponse;
+        BindingsTestAlpha: {
+            path: "/bindings-test-alpha",
+            method: Method::POST,
+            request: BindingsTestAlphaRequest,
+            response: BindingsTestAlphaResponse,
         }
     }
 
+    /// Path of the beta bindings-test route, held in a constant so the suite covers
+    /// constant-phrased `path` declarations alongside inline literals.
+    const BINDINGS_TEST_BETA_PATH: &str = "/bindings-test-beta";
+
     route! {
-        impl Route for BindingsTestBeta {
-            const METHOD: http::Method = http::Method::GET;
-            const PATH: &'static str = "/bindings-test-beta";
-            type Request = BindingsTestBetaRequest;
-            type Response = BindingsTestBetaResponse;
+        BindingsTestBeta: {
+            path: BINDINGS_TEST_BETA_PATH,
+            method: http::Method::GET,
+            request: BindingsTestBetaRequest,
+            response: BindingsTestBetaResponse,
         }
     }
 

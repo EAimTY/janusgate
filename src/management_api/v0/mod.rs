@@ -50,9 +50,9 @@ mod providers;
 pub use self::{
     error::{ErrorCode, ErrorResponse},
     models::{
-        DiscoverModels, DiscoverModelsRequest, DiscoverModelsResponse, ListModels,
-        ListModelsRequest, ListModelsResponse, ModelEnvelope, ModelResponse, UpdateModel,
-        UpdateModelRequest,
+        CreateModel, CreateModelRequest, DiscoverModels, DiscoverModelsRequest,
+        DiscoverModelsResponse, ListModels, ListModelsRequest, ListModelsResponse, ModelEnvelope,
+        ModelResponse, UpdateModel, UpdateModelRequest,
     },
     oauth_flow::{
         CompleteProviderOauth, CompleteProviderOauthRequest, ReauthorizeProvider,
@@ -182,6 +182,10 @@ pub(super) fn router() -> Router<Context> {
         .route(
             DiscoverModels::PATH,
             routing::on(method_filter(&DiscoverModels::METHOD), models::discover),
+        )
+        .route(
+            CreateModel::PATH,
+            routing::on(method_filter(&CreateModel::METHOD), models::create),
         )
         .route(
             UpdateModel::PATH,

@@ -356,14 +356,22 @@ where
 /// and is named by `$route`.
 ///
 /// A version wraps this macro to bind its own registry, so a route declaration names neither the
-/// registry nor the version.
+/// registry nor the version. The declaration names `path`, `method`, `request`, and `response`
+/// in that order, each exactly once, with a trailing comma; `method` accepts any method
+/// expression, so both `http::Method::POST` and an imported `Method::POST` spell the same route,
+/// while `path` accepts a string literal or a constant. Anything else fails with
+/// `compile_error!` showing the expected shape.
 macro_rules! route {
-    ($registry:path; $vis:vis impl Route for $route:ident {
-        const METHOD: http::Method = $method:expr;
-        const PATH: &'static str = $path:expr;
-        type Request = $request:ty;
-        type Response = $response:ty;
-    }) => {
+    // Declares the route whose `path` is a literal, so the documentation embeds its value.
+    (
+        $registry:path ;
+        $vis:vis $route:ident : {
+            path : $path:literal ,
+            method : $method:expr ,
+            request : $request:ty ,
+            response : $response:ty ,
+        }
+    ) => {
         #[doc = concat!(
             "Route marker for `",
             $path,
@@ -400,6 +408,67 @@ macro_rules! route {
             #[doc = "Success response body type."]
             type Response = $response;
         }
+    };
+
+    // Declares the route whose `path` is a constant or other non-literal expression; the
+    // documentation names the constant, whose value is not computable at expansion time.
+    (
+        $registry:path ;
+        $vis:vis $route:ident : {
+            path : $path:expr ,
+            method : $method:expr ,
+            request : $request:ty ,
+            response : $response:ty ,
+        }
+    ) => {
+        #[doc = concat!(
+            "Route marker for `",
+            stringify!($path),
+            "`; the type exists only at the type level, carrying the route's",
+            " `Route` implementation, and is never constructed.",
+        )]
+        $vis struct $route {}
+
+        #[doc = concat!(
+            "Registers the `",
+            stringify!($path),
+            "` route in the version's registry."
+        )]
+        #[expect(
+            non_upper_case_globals,
+            reason = "the binding static is named after its route marker type"
+        )]
+        #[cfg(feature = "management-api-typescript-bindings")]
+        #[linkme::distributed_slice($registry)]
+        static $route: $crate::management_api::route::RouteBinding =
+            $crate::management_api::route::RouteBinding {
+                method: $crate::management_api::route::route_method::<$route>,
+                path: <$route as $crate::management_api::route::Route>::PATH,
+                request: $crate::management_api::route::request_binding::<$route>,
+                response: $crate::management_api::route::response_binding::<$route>,
+            };
+
+        impl $crate::management_api::route::Route for $route {
+            #[doc = "HTTP method the route answers."]
+            const METHOD: ::http::Method = $method;
+
+            #[doc = concat!("Path `", stringify!($path), "` within the version's sub-router.")]
+            const PATH: &'static str = $path;
+
+            #[doc = "Request body type; empty when the route carries no body."]
+            type Request = $request;
+
+            #[doc = "Success response body type."]
+            type Response = $response;
+        }
+    };
+
+    // Anything else, including a misordered declaration, with the expected shape.
+    ($($junk:tt)*) => {
+        compile_error!(concat!(
+            "invalid route! declaration; expected `Name: { path, method, ",
+            "request, response }` with a trailing comma",
+        ));
     };
 }
 

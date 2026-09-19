@@ -12,38 +12,38 @@ use log::info;
 use serde::{Deserialize, Serialize};
 
 route! {
-    pub impl Route for ListProviders {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/providers:list";
-        type Request = ListProvidersRequest;
-        type Response = ListProvidersResponse;
+    pub ListProviders: {
+        path: "/providers:list",
+        method: http::Method::POST,
+        request: ListProvidersRequest,
+        response: ListProvidersResponse,
     }
 }
 
 route! {
-    pub impl Route for CreateProvider {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/providers:create";
-        type Request = CreateProviderRequest;
-        type Response = ProviderEnvelope;
+    pub CreateProvider: {
+        path: "/providers:create",
+        method: http::Method::POST,
+        request: CreateProviderRequest,
+        response: ProviderEnvelope,
     }
 }
 
 route! {
-    pub impl Route for UpdateProvider {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/providers:update";
-        type Request = UpdateProviderRequest;
-        type Response = EmptyResponse;
+    pub UpdateProvider: {
+        path: "/providers:update",
+        method: http::Method::POST,
+        request: UpdateProviderRequest,
+        response: EmptyResponse,
     }
 }
 
 route! {
-    pub impl Route for DeleteProvider {
-        const METHOD: http::Method = http::Method::POST;
-        const PATH: &'static str = "/providers:delete";
-        type Request = DeleteProviderRequest;
-        type Response = EmptyResponse;
+    pub DeleteProvider: {
+        path: "/providers:delete",
+        method: http::Method::POST,
+        request: DeleteProviderRequest,
+        response: EmptyResponse,
     }
 }
 
