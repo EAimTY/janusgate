@@ -49,8 +49,8 @@ const ANTIGRAVITY_SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform
      https://www.googleapis.com/auth/cclog \
      https://www.googleapis.com/auth/experimentsandconfigs";
 
-/// Lifetime of a pending OAuth state row.
-const OAUTH_STATE_TTL: i64 = 600;
+/// Lifetime of a pending OAuth state row, in database-clock microseconds.
+const OAUTH_STATE_TTL: i64 = 600 * unix_time::MICROS_PER_SEC;
 
 /// A freshly begun OAuth authorization flow.
 #[derive(Debug, Clone)]
@@ -64,7 +64,7 @@ pub(crate) struct OAuthFlow {
     /// URL the administrator opens to authorize.
     pub(crate) authorize_url: String,
 
-    /// Unix timestamp when the flow expires.
+    /// Unix timestamp in microseconds when the flow expires.
     pub(crate) expires_at: i64,
 }
 
@@ -74,7 +74,7 @@ pub(crate) struct ExchangedTokens {
     /// Credentials built from the exchanged tokens.
     pub(crate) credentials: Credentials,
 
-    /// Unix timestamp when the access token expires.
+    /// Unix timestamp in microseconds when the access token expires.
     pub(crate) expires_at: i64,
 }
 
@@ -270,7 +270,7 @@ pub(crate) fn begin_flow(oauth_type: OAuthProviderType) -> OAuthFlow {
         state,
         verifier,
         authorize_url,
-        expires_at: unix_time::unix_now() + OAUTH_STATE_TTL,
+        expires_at: unix_time::unix_now_micros() + OAUTH_STATE_TTL,
     }
 }
 

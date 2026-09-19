@@ -7,6 +7,7 @@ use lexopt::{Arg as Argument, Parser as ArgumentsParser};
 use std::{ffi::OsString, path::PathBuf};
 
 mod api;
+mod api_keys;
 mod config;
 mod context;
 mod database;

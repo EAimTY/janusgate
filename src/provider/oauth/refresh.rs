@@ -14,10 +14,11 @@ use reqwest::Client;
 use std::time::{Duration, Instant};
 use tokio::time as tokio_time;
 
-/// Margin subtracted from the token expiry when deciding freshness, so a token is never used into
-/// its final seconds. The same margin participates in the refresh-lease predicate, keeping "expired
-/// enough to refresh" consistent with [`is_token_fresh`].
-const TOKEN_FRESHNESS_MARGIN: i64 = 60;
+/// Margin subtracted from the token expiry when deciding freshness, in database-clock
+/// microseconds, so a token is never used into its final seconds. The same margin participates in
+/// the refresh-lease predicate, keeping "expired enough to refresh" consistent with
+/// [`is_token_fresh`].
+const TOKEN_FRESHNESS_MARGIN: i64 = 60 * unix_time::MICROS_PER_SEC;
 
 /// Lease duration after which an abandoned token refresh is considered dead.
 const REFRESH_LEASE_STALE_AFTER: Duration = Duration::from_secs(90);
@@ -79,7 +80,7 @@ pub(crate) async fn ensure_fresh_token(
     let wait_deadline = Instant::now() + REFRESH_WAIT_LIMIT;
 
     loop {
-        let now = unix_time::unix_now();
+        let now = unix_time::unix_now_micros();
 
         let mut transaction = database
             .transaction()
@@ -188,7 +189,7 @@ async fn acquire_refresh_lease(
         transaction,
         provider_id,
         now,
-        now - i64::try_from(REFRESH_LEASE_STALE_AFTER.as_secs()).unwrap_or(i64::MAX),
+        now - i64::try_from(REFRESH_LEASE_STALE_AFTER.as_micros()).unwrap_or(i64::MAX),
         TOKEN_FRESHNESS_MARGIN,
     )
     .await
@@ -348,7 +349,7 @@ async fn refresh_and_build_credentials(
 
 /// Whether the provider's OAuth token is still valid long enough to use.
 fn is_token_fresh(provider: &Provider) -> bool {
-    provider
-        .expires_at
-        .is_some_and(|expires_at| expires_at > unix_time::unix_now() + TOKEN_FRESHNESS_MARGIN)
+    provider.expires_at.is_some_and(|expires_at| {
+        expires_at > unix_time::unix_now_micros() + TOKEN_FRESHNESS_MARGIN
+    })
 }

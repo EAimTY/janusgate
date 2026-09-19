@@ -1,9 +1,9 @@
 //! Schema version 1: the initial database layout.
 //!
-//! Version 1 creates every current object — the `providers`, `models`, and `oauth_states` tables
-//! and the `idx_oauth_states_expires_at` index — so its [`Schema::migration`] is empty: there is no
-//! previous version to migrate from. A fresh database receives this version's DDL directly, and
-//! every later version's migration transforms it.
+//! Version 1 creates every current object — the `providers`, `models`, `oauth_states`, and
+//! `api_keys` tables and the `idx_oauth_states_expires_at` index — so its [`Schema::migration`]
+//! is empty: there is no previous version to migrate from. A fresh database receives this
+//! version's DDL directly, and every later version's migration transforms it.
 
 use super::Schema;
 
@@ -58,6 +58,14 @@ CREATE TABLE oauth_states (
 ) STRICT;
 
 CREATE INDEX idx_oauth_states_expires_at ON oauth_states (expires_at);
+
+CREATE TABLE api_keys (
+    id INTEGER PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL CHECK (name <> ''),
+    key TEXT NOT NULL UNIQUE CHECK (key <> ''),
+    is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
+    created_at INTEGER NOT NULL
+) STRICT;
 "###;
 
 /// Migration upgrading the previous version into version 1: empty, as version 1 has no

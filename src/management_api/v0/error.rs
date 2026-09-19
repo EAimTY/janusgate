@@ -241,6 +241,19 @@ pub(super) enum Error {
         name: String,
     },
 
+    /// The addressed API key row does not exist.
+    #[error("API key {id} does not exist")]
+    ApiKeyNotFound {
+        /// Identifier of the missing API key row.
+        id: i64,
+    },
+
+    /// A creation or rewrite names an API key secret another key already holds. The secret itself
+    /// is never named: it is a bearer credential and must stay out of rendered bodies and log
+    /// records.
+    #[error("API key is already taken")]
+    ApiKeyTaken,
+
     /// The completion's state token is unknown, expired, or already consumed.
     #[error("OAuth state is unknown, expired, or already consumed")]
     UnknownOauthState,
@@ -327,6 +340,7 @@ impl Error {
 
             Self::UnmappedPath { .. }
             | Self::ProviderNotFound { .. }
+            | Self::ApiKeyNotFound { .. }
             | Self::UnknownOauthState
             | Self::ProviderVanishedDuringReauthorization { .. } => ErrorCode::NotFound,
 
@@ -337,9 +351,9 @@ impl Error {
             | Self::ProviderTypeMismatch { .. }
             | Self::Validation(_) => ErrorCode::InvalidRequest,
 
-            Self::OauthStateTypeMismatch { .. } | Self::ProviderNameTaken { .. } => {
-                ErrorCode::Conflict
-            }
+            Self::OauthStateTypeMismatch { .. }
+            | Self::ProviderNameTaken { .. }
+            | Self::ApiKeyTaken => ErrorCode::Conflict,
 
             Self::UpstreamReportedNoModels => ErrorCode::UpstreamError,
 
@@ -578,6 +592,18 @@ mod tests {
             rendered,
             r#"{"errno":3,"message":"Provider 7 does not exist"}"#
         );
+
+        // The taken-key conflict names no secret: the value is a bearer credential and must never
+        // reach a rendered body.
+        let body = ErrorResponse::from(Error::ApiKeyTaken);
+
+        #[expect(clippy::expect_used, reason = "the error body always serializes")]
+        let rendered = serde_json::to_string(&body).expect("the error body serializes");
+
+        assert_eq!(
+            rendered,
+            r#"{"errno":4,"message":"API key is already taken"}"#
+        );
     }
 
     /// Verifies that the response carries the category's derived status, in particular the pinned
@@ -692,6 +718,8 @@ mod tests {
                 Error::ProviderVanishedDuringReauthorization { id: 7 },
                 ErrorCode::NotFound,
             ),
+            (Error::ApiKeyNotFound { id: 7 }, ErrorCode::NotFound),
+            (Error::ApiKeyTaken, ErrorCode::Conflict),
             (Error::UnknownOauthState, ErrorCode::NotFound),
             (Error::MalformedAuthorizationCode, ErrorCode::InvalidRequest),
             (
@@ -744,6 +772,8 @@ mod tests {
                 },
                 true,
             ),
+            (Error::ApiKeyNotFound { id: 7 }, true),
+            (Error::ApiKeyTaken, true),
             (
                 Error::MethodNotAllowed {
                     method: Method::PATCH,

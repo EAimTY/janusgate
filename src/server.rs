@@ -256,7 +256,7 @@ async fn drive_tls_connection(
 /// Constructs the Axum root router configured with the shared request context.
 fn router(context: Context) -> Router {
     Router::new()
-        .nest("/api", api::router())
+        .nest("/api", api::router(context.database.clone()))
         .nest("/management-api", management_api::router())
         .fallback(fallback)
         .with_state(context)

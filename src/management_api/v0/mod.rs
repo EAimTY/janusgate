@@ -39,6 +39,7 @@ use std::{
     marker::PhantomData,
 };
 
+mod api_keys;
 mod error;
 mod models;
 mod oauth_flow;
@@ -48,6 +49,11 @@ mod providers;
 // payload types. Nested wire shapes — provider and model rows, captured credentials — stay private,
 // and the route contract itself is shared at [`crate::management_api::Route`].
 pub use self::{
+    api_keys::{
+        ApiKeyEnvelope, ApiKeyResponse, CreateApiKey, CreateApiKeyRequest, DeleteApiKey,
+        DeleteApiKeyRequest, ListApiKeys, ListApiKeysRequest, ListApiKeysResponse, UpdateApiKey,
+        UpdateApiKeyRequest,
+    },
     error::{ErrorCode, ErrorResponse},
     models::{
         CreateModel, CreateModelRequest, DiscoverModels, DiscoverModelsRequest,
@@ -176,6 +182,22 @@ pub(super) fn router() -> Router<Context> {
             ),
         )
         .route(
+            ListApiKeys::PATH,
+            routing::on(method_filter(&ListApiKeys::METHOD), api_keys::list),
+        )
+        .route(
+            CreateApiKey::PATH,
+            routing::on(method_filter(&CreateApiKey::METHOD), api_keys::create),
+        )
+        .route(
+            UpdateApiKey::PATH,
+            routing::on(method_filter(&UpdateApiKey::METHOD), api_keys::update),
+        )
+        .route(
+            DeleteApiKey::PATH,
+            routing::on(method_filter(&DeleteApiKey::METHOD), api_keys::delete),
+        )
+        .route(
             ListModels::PATH,
             routing::on(method_filter(&ListModels::METHOD), models::list),
         )
@@ -278,9 +300,9 @@ pub enum ProviderResponse {
         /// Whether the provider serves traffic.
         is_enabled: bool,
 
-        /// Unix timestamp when the OAuth access token expires; `null` when the stored credentials
-        /// carry no expiry — the not-fresh state of §3, entered only by a hand-replaced
-        /// credential.
+        /// Unix timestamp in microseconds when the OAuth access token expires; `null` when the
+        /// stored credentials carry no expiry — the not-fresh state of §3, entered only by
+        /// a hand-replaced credential.
         expires_at: Option<i64>,
     },
 
@@ -299,9 +321,9 @@ pub enum ProviderResponse {
         /// Whether the provider serves traffic.
         is_enabled: bool,
 
-        /// Unix timestamp when the OAuth access token expires; `null` when the stored credentials
-        /// carry no expiry — the not-fresh state of §3, entered only by a hand-replaced
-        /// credential.
+        /// Unix timestamp in microseconds when the OAuth access token expires; `null` when the
+        /// stored credentials carry no expiry — the not-fresh state of §3, entered only by
+        /// a hand-replaced credential.
         expires_at: Option<i64>,
     },
 
@@ -591,7 +613,7 @@ mod tests {
                 refresh_token: "refresh".to_string(),
                 account_id: "account".to_string(),
             },
-            expires_at: Some(1_800_000_000),
+            expires_at: Some(1_800_000_000_000_000),
             is_enabled: false,
         };
 
@@ -605,7 +627,7 @@ mod tests {
             rendered,
             concat!(
                 r#"{"provider":{"type":"openai_oauth","id":3,"name":"codex","#,
-                r#""model_prefix":"codex/","is_enabled":false,"expires_at":1800000000}}"#,
+                r#""model_prefix":"codex/","is_enabled":false,"expires_at":1800000000000000}}"#,
             )
         );
     }
@@ -625,7 +647,7 @@ mod tests {
         )]
         let parsed: ProviderResponse = serde_json::from_str(
             r#"{"id":3,"name":"codex","model_prefix":"codex/","type":"openai_oauth",
-                "expires_at":1800000000,"is_enabled":true}"#,
+                "expires_at":1800000000000000,"is_enabled":true}"#,
         )
         .unwrap();
 
@@ -634,7 +656,7 @@ mod tests {
         assert!(
             serde_json::from_str::<ProviderResponse>(
                 r#"{"id":3,"name":"codex","model_prefix":"codex/","type":"openai_oauth",
-                "expires_at":1800000000,"is_enabled":true,"base_url":"https://x"}"#
+                "expires_at":1800000000000000,"is_enabled":true,"base_url":"https://x"}"#
             )
             .is_err()
         );

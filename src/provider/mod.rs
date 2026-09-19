@@ -475,7 +475,7 @@ pub(crate) struct NewProvider<'a> {
     /// Parsed plaintext credentials.
     pub(crate) credentials: &'a Credentials,
 
-    /// Unix timestamp when the OAuth access token expires.
+    /// Unix timestamp in microseconds when the OAuth access token expires.
     pub(crate) expires_at: Option<i64>,
 
     /// Whether the provider serves traffic.
@@ -507,7 +507,7 @@ pub(crate) struct Provider {
     /// Parsed plaintext credentials.
     pub(crate) credentials: Credentials,
 
-    /// Unix timestamp when the OAuth access token expires.
+    /// Unix timestamp in microseconds when the OAuth access token expires.
     pub(crate) expires_at: Option<i64>,
 
     /// Whether the provider serves traffic.

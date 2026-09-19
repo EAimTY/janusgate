@@ -10,8 +10,9 @@ use tower_http::cors::AllowOrigin;
 /// Root gateway configuration schema.
 ///
 /// Required fields state operational facts or secrets the gateway must
-/// never invent: `listen`, `database.path`, `management_api.token`, and
-/// `api.key`. Every other field carries the default documented on it and
+/// never invent: `listen`, `database.path`, and `management_api.token`.
+/// Gateway API keys live in the database and are managed through the
+/// management API. Every other field carries the default documented on it and
 /// may be omitted. Unknown fields are strictly rejected.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -119,13 +120,11 @@ pub(crate) struct CorsConfig {
     pub(crate) allow_private_network: bool,
 }
 
-/// Outward client protocol configuration.
+/// Outward client protocol configuration: CORS only. Client authorization
+/// secrets are database-managed API keys, not configuration.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApiConfig {
-    /// Shared API key for outward protocol endpoints under `/api/*`.
-    pub(crate) key: String,
-
     /// Cross-Origin Resource Sharing (CORS) configuration for `/api/*`.
     /// Defaults to no cross-origin requests and no Private Network Access.
     #[serde(default)]
@@ -186,7 +185,7 @@ mod tests {
                 "listen": "127.0.0.1:8080",
                 "database": {"path": "janusgate.db"},
                 "management_api": {"token": "management-token"},
-                "api": {"key": "api-key"}
+                "api": {}
             }"#,
         );
 
@@ -202,7 +201,7 @@ mod tests {
                 "listen": "127.0.0.1:8080",
                 "database": {"path": "janusgate.db"},
                 "management_api": {"token": "t", "cors": {"allow_private_network": true}},
-                "api": {"key": "k"}
+                "api": {}
             }"#,
         );
 

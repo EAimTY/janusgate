@@ -61,7 +61,7 @@ pub struct StartProviderOauthResponse {
     /// Opaque state token identifying the flow.
     pub state: String,
 
-    /// Unix timestamp when the flow expires.
+    /// Unix timestamp in microseconds when the flow expires.
     pub expires_at: i64,
 }
 
@@ -107,7 +107,7 @@ pub struct ReauthorizeProviderRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ReauthorizeProviderResponse {
-    /// Unix timestamp when the new OAuth access token expires.
+    /// Unix timestamp in microseconds when the new OAuth access token expires.
     pub expires_at: i64,
 }
 
@@ -183,7 +183,7 @@ async fn handle_start(
 ) -> Result<oauth::OAuthFlow, Error> {
     let flow = oauth::begin_flow(provider_type);
 
-    storage::delete_expired_oauth_states(database, unix_time::unix_now()).await?;
+    storage::delete_expired_oauth_states(database, unix_time::unix_now_micros()).await?;
 
     storage::insert_oauth_state(
         database,
@@ -229,7 +229,7 @@ async fn handle_complete(
         });
     }
 
-    let now = unix_time::unix_now();
+    let now = unix_time::unix_now_micros();
 
     // An unknown or expired state is left to the consume, which yields the 404.
     let state = storage::consume_oauth_state(database, &request.state, now)
@@ -286,7 +286,7 @@ async fn handle_reauthorize(
 
     let code = pasted_authorization_code(&request.code)?;
 
-    let now = unix_time::unix_now();
+    let now = unix_time::unix_now_micros();
 
     // State rows are immutable, so a provider-type mismatch is computable before the atomic
     // consume: the rejection must not burn the pending flow or spend the token exchange. An unknown

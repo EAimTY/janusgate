@@ -2,7 +2,9 @@
 
 use self::error::Error;
 use crate::{
+    api_keys,
     context::Context,
+    database::Database,
     format::{
         ClientFormat, ClientSseRenderer, openai_chat_completion::Format as ChatCompletionFormat,
         openai_response::Format as ResponseFormat,
@@ -65,34 +67,59 @@ struct ModelObject<'a> {
 }
 
 /// Constructs the format sub-router with OpenAI bearer authentication and its own 404 response.
-pub(super) fn router() -> Router<Context> {
+///
+/// `database` feeds the authentication middleware its own state, so every request checks the
+/// presented key against the live database rather than the router state.
+pub(super) fn router(database: Database) -> Router<Context> {
     Router::new()
         .route("/chat/completions", post(chat_completions))
         .route("/responses", post(responses))
         .route("/models", get(models))
         .fallback(fallback)
-        .layer(middleware::from_fn(authenticate))
+        .layer(middleware::from_fn_with_state(database, authenticate))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
-/// Authenticates the request against the shared gateway API key using the OpenAI `Authorization:
-/// Bearer <key>` convention. The key is read from the live configuration, so a reload rotates it
-/// immediately.
-async fn authenticate(request: Request, next: Next) -> Response {
-    let is_authorized = request
+/// Authenticates the request against the enabled gateway API keys using the OpenAI
+/// `Authorization: Bearer <key>` convention. The secrets are read from the live database, so a
+/// created, rotated, or disabled key takes effect on the next request; a database failure renders
+/// the surface's internal error instead of an authentication rejection.
+async fn authenticate(State(database): State<Database>, request: Request, next: Next) -> Response {
+    let presented = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(bearer_token)
-        .is_some_and(|key| security::constant_time_eq(key, &crate::CONFIG.api.key));
+        .and_then(bearer_token);
 
-    if !is_authorized {
+    let Some(presented) = presented else {
         debug!("rejected an unauthorized API request");
 
         return Error::InvalidApiKey.into_response();
-    }
+    };
 
-    next.run(request).await
+    match api_keys::list_enabled_api_key_secrets(&database).await {
+        Ok(secrets)
+            if secrets
+                .iter()
+                .any(|secret| security::constant_time_eq(presented, secret)) =>
+        {
+            next.run(request).await
+        }
+
+        Ok(_) => {
+            debug!("rejected an unauthorized API request");
+
+            Error::InvalidApiKey.into_response()
+        }
+
+        Err(error) => {
+            let error = Error::Storage(error);
+
+            error::log_error("request", &error);
+
+            error.into_response()
+        }
+    }
 }
 
 /// Extracts the bearer token from an `Authorization` header value.

@@ -765,8 +765,8 @@ mod tests {
     async fn test_oauth_state_and_provider_type_lifecycle() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
 
-        let now = 1_000_000;
-        let expires_at = now + 600;
+        let now = 1_700_000_000_000_000;
+        let expires_at = now + 600_000_000;
 
         // 1. Insert OAuth states with OAuthProviderType
         insert_oauth_state(
@@ -835,7 +835,7 @@ mod tests {
         assert_eq!(provider.provider_type, ProviderType::OpenAiOauth);
 
         // 5. Sweep expired states
-        delete_expired_oauth_states(&database, expires_at + 10).await?;
+        delete_expired_oauth_states(&database, expires_at + 10_000).await?;
 
         let swept = find_oauth_state_type(&database, "antigravity-state-1", now).await?;
         assert!(swept.is_none());

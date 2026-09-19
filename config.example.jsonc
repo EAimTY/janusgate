@@ -52,10 +52,8 @@
     },
 
     "api": {
-        // Shared API key for outward protocol endpoints (under /api/*).
-        // Placeholder value that MUST be replaced with a real secret before
-        // deployment; the gateway performs no placeholder detection.
-        "key": "CHANGE_ME_API_KEY",
+        // Outward protocol endpoints (under /api/*) authorize against database-managed API
+        // keys (see the management api-keys routes); no secret lives in this section.
         // Both cors fields — and the whole cors object — may be omitted:
         // allowed_origin then defaults to [] (no cross-origin requests) and
         // allow_private_network to false.

@@ -412,7 +412,7 @@ mod tests {
                 "listen": "127.0.0.1:8080",
                 "database": {{"path": "janusgate.db"}},
                 "management_api": {{"token": "{token}"}},
-                "api": {{"key": "api-key"}}
+                "api": {{}}
             }}"#
         )
     }
@@ -502,7 +502,7 @@ mod tests {
                 String::from(
                     "{\"listen\": \"127.0.0.1:8080\", \"database\": {\"path\": \"x.db\", \
                      \"conections\": 4}, \"management_api\": {\"token\": \"t\"}, \
-                     \"api\": {\"key\": \"k\"}}",
+                     \"api\": {}}",
                 ),
                 |failure| matches!(failure, Error::Parse { .. }),
             ),
@@ -510,7 +510,7 @@ mod tests {
                 "DNS listen host",
                 String::from(
                     "{\"listen\": \"localhost:8080\", \"database\": {\"path\": \"x.db\"}, \
-                     \"management_api\": {\"token\": \"t\"}, \"api\": {\"key\": \"k\"}}",
+                     \"management_api\": {\"token\": \"t\"}, \"api\": {}}}",
                 ),
                 |failure| matches!(failure, Error::Parse { .. }),
             ),
@@ -566,7 +566,7 @@ mod tests {
                 "listen": "127.0.0.1:8080",
                 "database": {"path": "janusgate.db", "conections": 4},
                 "management_api": {"token": "t"},
-                "api": {"key": "k"}
+                "api": {}
             }"#,
         );
 
