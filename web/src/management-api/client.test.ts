@@ -119,7 +119,7 @@ describe("createManagementApi", () => {
                 model_prefix: "",
                 is_enabled: true,
                 base_url: "https://upstream.example.com",
-                protocol: "openai_response",
+                type: "openai_response",
                 api_key: "key",
             })
             .catch((failure: unknown) => failure);
@@ -225,12 +225,83 @@ describe("createManagementApi", () => {
         expect(apiError.message).toBe("HTTP 200");
     });
 
+    it("addresses the api-keys and model creation routes", async () => {
+        const calls = stubFetch((call) => {
+            if (call.url.endsWith("/api-keys:list")) {
+                return jsonResponse(200, {
+                    api_keys: [],
+                });
+            }
+
+            if (call.url.endsWith("/models:create")) {
+                return jsonResponse(200, {
+                    model: {
+                        provider_id: 4,
+                        provider: "local",
+                        upstream_id: "gpt-4o",
+                        id: "local/gpt-4o",
+                        id_override: null,
+                        is_enabled: true,
+                        is_effectively_enabled: true,
+                        thinking_levels_override: null,
+                    },
+                });
+            }
+
+            if (call.url.endsWith("/api-keys:create")) {
+                return jsonResponse(200, {
+                    api_key: {
+                        id: 7,
+                        name: "service-a",
+                        key: "sk-live",
+                        is_enabled: true,
+                        created_at: 1_700_000_000_000_000,
+                    },
+                });
+            }
+
+            return jsonResponse(200, {});
+        });
+
+        const api = createManagementApi(connection);
+        await api.listApiKeys();
+        await api.createModel({
+            provider_id: 4,
+            upstream_id: "gpt-4o",
+            id_override: null,
+            is_enabled: true,
+            thinking_levels_override: null,
+        });
+        await api.createApiKey({
+            name: "service-a",
+            key: "sk-live",
+            is_enabled: true,
+        });
+        await api.updateApiKey({
+            api_key_id: 7,
+            name: "service-a",
+            key: "sk-live",
+            is_enabled: false,
+        });
+        await api.deleteApiKey({
+            api_key_id: 7,
+        });
+
+        expect(calls.map((call) => call.url)).toEqual([
+            "http://127.0.0.1:47182/management-api/v0/api-keys:list",
+            "http://127.0.0.1:47182/management-api/v0/models:create",
+            "http://127.0.0.1:47182/management-api/v0/api-keys:create",
+            "http://127.0.0.1:47182/management-api/v0/api-keys:update",
+            "http://127.0.0.1:47182/management-api/v0/api-keys:delete",
+        ]);
+    });
+
     it("resolves a route whose response carries no fact as void", async () => {
         stubFetch(() => jsonResponse(200, {}));
 
         await expect(
             createManagementApi(connection).updateProvider({
-                type: "openai_oauth",
+                type: "codex_oauth",
                 provider_id: 5,
                 name: "chatgpt",
                 model_prefix: "",

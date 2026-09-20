@@ -114,11 +114,13 @@ pub(crate) async fn discover_upstream_models(
     let secret = provider.credentials.secret();
 
     match provider.provider_type {
-        ProviderType::OpenAiOauth => discover_codex(http, provider, secret).await,
+        ProviderType::CodexOauth => discover_codex(http, provider, secret).await,
 
         ProviderType::AntigravityOauth => discover_antigravity(http, secret).await,
 
-        ProviderType::OpenAiCompatible => discover_compatible(http, provider, secret).await,
+        ProviderType::OpenAiResponse
+        | ProviderType::OpenAiChatCompletion
+        | ProviderType::GeminiGenerateContent => discover_compatible(http, provider, secret).await,
     }
 }
 
@@ -146,7 +148,7 @@ async fn discover_codex(
     secret: &str,
 ) -> Result<Vec<String>, Error> {
     let account_id = match &provider.credentials {
-        Credentials::OpenAiOauth { account_id, .. } => account_id.clone(),
+        Credentials::CodexOauth { account_id, .. } => account_id.clone(),
 
         _ => {
             return Err(Error::Internal {
@@ -198,26 +200,25 @@ async fn discover_antigravity(http: &Client, secret: &str) -> Result<Vec<String>
     Ok(models.into_keys().collect())
 }
 
-/// Discovers models from an OpenAI-compatible upstream, shaped by its protocol.
+/// Discovers models from a static-key upstream, shaped by the wire format its type pins.
 async fn discover_compatible(
     http: &Client,
     provider: &Provider,
     secret: &str,
 ) -> Result<Vec<String>, Error> {
-    let protocol = provider.protocol.ok_or_else(|| Error::Internal {
-        message: "openai_compatible provider lacks an upstream protocol".to_string(),
-    })?;
-
     let base_url = provider
         .base_url
         .as_deref()
         .ok_or_else(|| Error::Internal {
-            message: "openai_compatible provider lacks a base URL".to_string(),
+            message: format!(
+                "static-key provider `{}` lacks a stored base URL",
+                provider.name
+            ),
         })?;
 
     let base_url = base_url.trim_end_matches('/');
 
-    match protocol {
+    match provider.upstream_format() {
         UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
             let request = http.get(format!("{base_url}/models")).bearer_auth(secret);
 

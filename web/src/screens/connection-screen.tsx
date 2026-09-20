@@ -107,9 +107,9 @@ export function ConnectionScreen(): JSX.Element {
                     </h1>
                     <p class="mt-2 text-ink-dim">
                         JanusGate is a headless gateway: an OpenAI-compatible API in front, several
-                        upstream accounts behind it — a ChatGPT or Google login, or a static key on
-                        any compatible service. This app administers those accounts, their models,
-                        and their credentials. The gateway itself serves no interface.
+                        upstream accounts behind it — a Codex OAuth or Antigravity OAuth login, or a
+                        key on any OpenAI-compatible API. This app administers those accounts, their
+                        models, and their credentials. The gateway itself serves no interface.
                     </p>
                 </div>
 

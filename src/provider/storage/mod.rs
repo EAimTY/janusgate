@@ -10,10 +10,7 @@
 //! [`providers::find_provider_by_id_in_transaction`]..
 
 use super::{Credentials, Model, OAuthProviderType, Provider, ProviderType};
-use crate::{
-    database::{Error as DatabaseError, Row, Transaction, Value, params::IntoValue},
-    format::UpstreamFormat,
-};
+use crate::database::{Error as DatabaseError, Row, Transaction, Value, params::IntoValue};
 use std::collections::HashMap;
 use turso::Error as TursoError;
 
@@ -39,7 +36,7 @@ pub(crate) use self::{
 };
 
 /// Column order of provider selects.
-const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, protocol, base_url, credentials, \
+const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, base_url, credentials, \
      expires_at, is_enabled";
 
 /// Column order of model selects.
@@ -47,7 +44,7 @@ const MODEL_COLUMNS: &str = "provider_id, upstream_id, id, id_override, is_enabl
      thinking_levels_override";
 
 /// The combined column order of provider-model joins.
-const PROVIDER_MODEL_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.type, p.protocol, \
+const PROVIDER_MODEL_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.type, \
      p.base_url, p.credentials, p.expires_at, p.is_enabled, \
      m.upstream_id, m.id, m.id_override, m.is_enabled, m.thinking_levels_override";
 
@@ -197,19 +194,8 @@ fn oauth_provider_type_from_value(value: Value) -> Result<OAuthProviderType, Err
 fn provider_from_row(row: &Row) -> Result<Provider, Error> {
     let provider_type = provider_type_from_value(row.get_value(3)?)?;
 
-    let protocol =
-        match row.get::<Option<String>>(4)? {
-            None => None,
-
-            Some(protocol_name) => Some(UpstreamFormat::parse(&protocol_name).ok_or_else(
-                || Error::Drift {
-                    message: format!("provider row carries unknown protocol `{protocol_name}`"),
-                },
-            )?),
-        };
-
     let name: String = row.get(1)?;
-    let credentials_json: String = row.get(6)?;
+    let credentials_json: String = row.get(5)?;
 
     // The typed parse failure is wrapped exactly once as internal storage drift: the row was
     // written only through the validated management path, so a payload failing here is never the
@@ -224,11 +210,10 @@ fn provider_from_row(row: &Row) -> Result<Provider, Error> {
         name,
         model_prefix: row.get(2)?,
         provider_type,
-        protocol,
-        base_url: row.get(5)?,
+        base_url: row.get(4)?,
         credentials,
-        expires_at: row.get(7)?,
-        is_enabled: row.get::<i64>(8)? != 0,
+        expires_at: row.get(6)?,
+        is_enabled: row.get::<i64>(7)? != 0,
     })
 }
 
@@ -241,11 +226,11 @@ fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, Error> {
 
     let model = Model {
         provider_id: provider.id,
-        upstream_id: row.get(9)?,
-        id: row.get(10)?,
-        id_override: row.get(11)?,
-        is_enabled: row.get::<i64>(12)? != 0,
-        thinking_levels_override: row.get(13)?,
+        upstream_id: row.get(8)?,
+        id: row.get(9)?,
+        id_override: row.get(10)?,
+        is_enabled: row.get::<i64>(11)? != 0,
+        thinking_levels_override: row.get(12)?,
     };
 
     Ok(ProviderModelJoin { provider, model })
@@ -356,7 +341,6 @@ mod tests {
     use super::*;
     use crate::{
         database::Database,
-        format::UpstreamFormat,
         provider::{Credentials, NewProvider, OAuthProviderType, ProviderType},
     };
     use std::{error::Error as StdError, num::NonZero, path::PathBuf, time::Duration};
@@ -407,8 +391,7 @@ mod tests {
             &NewProvider {
                 name: "provider-1",
                 model_prefix: "p1/",
-                provider_type: ProviderType::OpenAiCompatible,
-                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+                provider_type: ProviderType::OpenAiChatCompletion,
                 base_url: Some("http://localhost:8080"),
                 credentials: &credentials,
                 expires_at: None,
@@ -484,7 +467,6 @@ mod tests {
             ProviderUpdate {
                 name: "provider-1",
                 model_prefix: "new-p1/",
-                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
                 base_url: Some("http://localhost:8080"),
                 is_enabled: true,
                 credentials: None,
@@ -572,7 +554,6 @@ mod tests {
             ProviderUpdate {
                 name: "provider-1",
                 model_prefix: "new-p1/",
-                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
                 base_url: Some("http://localhost:8080"),
                 is_enabled: false,
                 credentials: None,
@@ -615,8 +596,7 @@ mod tests {
             &NewProvider {
                 name: "provider-1",
                 model_prefix: "p1/",
-                provider_type: ProviderType::OpenAiCompatible,
-                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+                provider_type: ProviderType::OpenAiChatCompletion,
                 base_url: Some("http://localhost:8080"),
                 credentials: &credentials,
                 expires_at: None,
@@ -673,8 +653,7 @@ mod tests {
             &NewProvider {
                 name: "provider-2",
                 model_prefix: "p2/",
-                provider_type: ProviderType::OpenAiCompatible,
-                protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+                provider_type: ProviderType::OpenAiChatCompletion,
                 base_url: Some("http://localhost:8080"),
                 credentials: &credentials,
                 expires_at: None,
@@ -771,9 +750,9 @@ mod tests {
         // 1. Insert OAuth states with OAuthProviderType
         insert_oauth_state(
             &database,
-            OAuthProviderType::OpenAiOauth,
-            "openai-state-1",
-            "openai-verifier-1",
+            OAuthProviderType::CodexOauth,
+            "codex-state-1",
+            "codex-verifier-1",
             expires_at,
         )
         .await?;
@@ -788,25 +767,25 @@ mod tests {
         .await?;
 
         // 2. Query type without consuming
-        let found_type = find_oauth_state_type(&database, "openai-state-1", now).await?;
-        assert_eq!(found_type, Some(OAuthProviderType::OpenAiOauth));
+        let found_type = find_oauth_state_type(&database, "codex-state-1", now).await?;
+        assert_eq!(found_type, Some(OAuthProviderType::CodexOauth));
 
         let found_ag = find_oauth_state_type(&database, "antigravity-state-1", now).await?;
         assert_eq!(found_ag, Some(OAuthProviderType::AntigravityOauth));
 
         // 3. Atomically consume
-        let consumed = consume_oauth_state(&database, "openai-state-1", now).await?;
+        let consumed = consume_oauth_state(&database, "codex-state-1", now).await?;
         #[expect(clippy::unwrap_used, reason = "state is present")]
         let consumed = consumed.unwrap();
-        assert_eq!(consumed.state_type, OAuthProviderType::OpenAiOauth);
-        assert_eq!(consumed.verifier, "openai-verifier-1");
+        assert_eq!(consumed.state_type, OAuthProviderType::CodexOauth);
+        assert_eq!(consumed.verifier, "codex-verifier-1");
 
         // Second consume returns None
-        let second_consume = consume_oauth_state(&database, "openai-state-1", now).await?;
+        let second_consume = consume_oauth_state(&database, "codex-state-1", now).await?;
         assert!(second_consume.is_none());
 
         // 4. Create provider from consumed state and verify typed read back
-        let credentials = Credentials::OpenAiOauth {
+        let credentials = Credentials::CodexOauth {
             access_token: "test-token".to_string(),
             refresh_token: "test-refresh".to_string(),
             account_id: "test-account".to_string(),
@@ -817,7 +796,6 @@ mod tests {
                 name: "oauth-provider",
                 model_prefix: "openai/",
                 provider_type: consumed.state_type.as_provider_type(),
-                protocol: None,
                 base_url: None,
                 credentials: &credentials,
                 expires_at: Some(expires_at),
@@ -832,7 +810,7 @@ mod tests {
             .iter()
             .find(|p| p.name == "oauth-provider")
             .unwrap();
-        assert_eq!(provider.provider_type, ProviderType::OpenAiOauth);
+        assert_eq!(provider.provider_type, ProviderType::CodexOauth);
 
         // 5. Sweep expired states
         delete_expired_oauth_states(&database, expires_at + 10_000).await?;
@@ -843,29 +821,29 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies that the schema itself enforces the `providers.protocol` closed domain: a drifted
+    /// Verifies that the schema itself enforces the `providers.type` closed domain: a drifted
     /// value is rejected at write time and classifies as a storage constraint error, instead of
-    /// surviving until the read-side protocol parse turns every dispatch for the provider into
-    /// drift. First-party write paths validate the protocol before inserting, so the probe uses a
+    /// surviving until the read-side type parse turns every dispatch for the provider into
+    /// drift. First-party write paths only ever insert parsed types, so the probe uses a
     /// raw statement.
     ///
     /// # Panics
     ///
     /// Panics if the drifted insert unexpectedly succeeds.
     #[tokio::test]
-    async fn rejects_unknown_provider_protocol_at_write_time() -> Result<(), Box<dyn StdError>> {
+    async fn rejects_unknown_provider_type_at_write_time() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
 
         let outcome = database
             .execute(
-                "INSERT INTO providers (name, model_prefix, type, protocol, credentials) \
-                 VALUES ('drifted', 'd/', 'openai_compatible', 'responses_api', '{}')",
+                "INSERT INTO providers (name, model_prefix, type, base_url, credentials) \
+                 VALUES ('drifted', 'd/', 'openai_compatible', 'https://x.example', '{}')",
                 (),
             )
             .await;
 
         #[expect(clippy::expect_used, reason = "the schema CHECK rejects the drift")]
-        let error = outcome.expect_err("drifted protocol must violate the schema CHECK");
+        let error = outcome.expect_err("drifted type must violate the schema CHECK");
 
         assert!(
             matches!(Error::from(error), Error::Constraint { .. }),
@@ -883,9 +861,11 @@ mod tests {
     #[test]
     fn converts_provider_type_database_values() {
         for provider_type in [
-            ProviderType::OpenAiOauth,
+            ProviderType::OpenAiResponse,
+            ProviderType::OpenAiChatCompletion,
+            ProviderType::GeminiGenerateContent,
+            ProviderType::CodexOauth,
             ProviderType::AntigravityOauth,
-            ProviderType::OpenAiCompatible,
         ] {
             #[expect(clippy::unwrap_used, reason = "into_value returns Ok for ProviderType")]
             let value = provider_type.into_value().unwrap();
@@ -910,7 +890,7 @@ mod tests {
     #[test]
     fn converts_oauth_provider_type_database_values() {
         for oauth_type in [
-            OAuthProviderType::OpenAiOauth,
+            OAuthProviderType::CodexOauth,
             OAuthProviderType::AntigravityOauth,
         ] {
             #[expect(

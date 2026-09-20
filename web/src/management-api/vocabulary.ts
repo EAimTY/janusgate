@@ -3,9 +3,9 @@ import { ContractViolationError } from "/src/management-api/errors";
 import {
     type OAuthProviderType,
     type ProviderResponse,
+    type ProviderType,
     THINKING_LEVEL_ORDER,
     type ThinkingLevel,
-    type UpstreamFormat,
 } from "/src/management-api/generated/v0";
 
 export type VocabularyOption<TValue extends string> = {
@@ -14,34 +14,35 @@ export type VocabularyOption<TValue extends string> = {
 };
 
 /**
- * The upstream wire formats with the label each is presented under. The record
- * type is exhaustive, so a variant added to the generated union fails to
- * compile until it is listed here.
+ * Every provider kind with the label each is presented under. The record type
+ * is exhaustive, so a kind added to the generated union fails to compile
+ * until it is listed here.
  */
-const UPSTREAM_FORMAT_LABELS: Record<UpstreamFormat, string> = {
+const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
     openai_response: "OpenAI Responses API",
     openai_chat_completion: "OpenAI Chat Completions API",
     gemini_generate_content: "Gemini generateContent API",
+    codex_oauth: "Codex OAuth",
+    antigravity_oauth: "Antigravity OAuth",
 };
 
 /**
  * The same vocabulary as options. The record type makes the key set exactly the
  * union, so the enumerated keys are members of it by construction.
  */
-export const UPSTREAM_FORMAT_OPTIONS: ReadonlyArray<VocabularyOption<UpstreamFormat>> =
-    Object.entries(UPSTREAM_FORMAT_LABELS).map(([value, label]) => ({
-        value: value as UpstreamFormat,
-        label,
-    }));
+export const PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<ProviderType>> = Object.entries(
+    PROVIDER_TYPE_LABELS,
+).map(([value, label]) => ({
+    value: value as ProviderType,
+    label,
+}));
 
 const OAUTH_PROVIDER_TYPE_LABELS: Record<OAuthProviderType, string> = {
-    openai_oauth: "OpenAI (ChatGPT account)",
-    antigravity_oauth: "Google Antigravity",
+    codex_oauth: "Codex OAuth",
+    antigravity_oauth: "Antigravity OAuth",
 };
 
-const OPENAI_COMPATIBLE_LABEL = "OpenAI compatible";
-
-/** The OAuth account kinds as options; the record type is exhaustive as above. */
+/** The OAuth provider kinds as options; the record type is exhaustive as above. */
 export const OAUTH_PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<OAuthProviderType>> =
     Object.entries(OAUTH_PROVIDER_TYPE_LABELS).map(([value, label]) => ({
         value: value as OAuthProviderType,
@@ -50,9 +51,7 @@ export const OAUTH_PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<OAuthPr
 
 /** The label a provider row's own `type` is presented under. */
 export function providerTypeLabel(type: ProviderResponse["type"]): string {
-    return type === "openai_compatible"
-        ? OPENAI_COMPATIBLE_LABEL
-        : OAUTH_PROVIDER_TYPE_LABELS[type];
+    return PROVIDER_TYPE_LABELS[type];
 }
 
 /** Looks a value up in a vocabulary, returning `null` when it is not a member. */
@@ -69,12 +68,21 @@ function findOption<TValue extends string>(
     return null;
 }
 
-export function findUpstreamFormat(value: unknown): UpstreamFormat | null {
-    return findOption(UPSTREAM_FORMAT_OPTIONS, value);
-}
-
 export function findOAuthProviderType(value: unknown): OAuthProviderType | null {
     return findOption(OAUTH_PROVIDER_TYPE_OPTIONS, value);
+}
+
+/**
+ * Whether a stored row is an OAuth login: exactly the variants carrying
+ * `expires_at`. Narrows the row, so the expiry is readable past the guard.
+ */
+export function isOAuthProviderRow(provider: ProviderResponse): provider is Extract<
+    ProviderResponse,
+    {
+        type: OAuthProviderType;
+    }
+> {
+    return findOAuthProviderType(provider.type) !== null;
 }
 
 export function findThinkingLevel(value: unknown): ThinkingLevel | null {
@@ -87,19 +95,6 @@ export function findThinkingLevel(value: unknown): ThinkingLevel | null {
     }
 
     return null;
-}
-
-/** Narrows a wire value that must be one of the known upstream formats. */
-export function parseUpstreamFormat(value: unknown, context: string): UpstreamFormat {
-    const format = findUpstreamFormat(value);
-
-    if (format === null) {
-        throw new ContractViolationError(
-            `${context} is not a known upstream format: ${String(value)}`,
-        );
-    }
-
-    return format;
 }
 
 /** Narrows a wire value that must be one of the canonical thinking levels. */

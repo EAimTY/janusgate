@@ -27,11 +27,13 @@ CREATE TABLE providers (
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
     model_prefix TEXT NOT NULL,
     type TEXT NOT NULL CHECK (
-        type IN ('openai_oauth', 'antigravity_oauth', 'openai_compatible')
-    ),
-    protocol TEXT NULL CHECK (
-        protocol ISNULL
-        OR protocol IN ('openai_response', 'openai_chat_completion', 'gemini_generate_content')
+        type IN (
+            'openai_response',
+            'openai_chat_completion',
+            'gemini_generate_content',
+            'codex_oauth',
+            'antigravity_oauth'
+        )
     ),
     base_url TEXT NULL,
     credentials TEXT NOT NULL,
@@ -51,7 +53,7 @@ CREATE TABLE models (
 
 CREATE TABLE oauth_states (
     id INTEGER PRIMARY KEY NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('openai_oauth', 'antigravity_oauth')),
+    type TEXT NOT NULL CHECK (type IN ('codex_oauth', 'antigravity_oauth')),
     state TEXT NOT NULL UNIQUE,
     verifier TEXT NOT NULL,
     expires_at INTEGER NOT NULL

@@ -1,19 +1,27 @@
 import { describe, expect, it } from "vitest";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { toUpdateModelRequest, toUpdateProviderRequest } from "./adapters";
+import type {
+    ApiKeyResponse,
+    ModelResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
+import {
+    toCreateModelRequest,
+    toUpdateApiKeyRequest,
+    toUpdateModelRequest,
+    toUpdateProviderRequest,
+} from "./adapters";
 
 const compatible: ProviderResponse = {
-    type: "openai_compatible",
+    type: "openai_chat_completion",
     id: 4,
     name: "local",
     model_prefix: "local/",
     is_enabled: true,
     base_url: "https://upstream.example.com/v1",
-    protocol: "openai_chat_completion",
 };
 
-const openaiOauth: ProviderResponse = {
-    type: "openai_oauth",
+const codexOauth: ProviderResponse = {
+    type: "codex_oauth",
     id: 5,
     name: "chatgpt",
     model_prefix: "gpt-",
@@ -48,13 +56,12 @@ describe("toUpdateProviderRequest", () => {
         const request = toUpdateProviderRequest(compatible);
 
         expect(request).toEqual({
-            type: "openai_compatible",
+            type: "openai_chat_completion",
             provider_id: 4,
             name: "local",
             model_prefix: "local/",
             is_enabled: true,
             base_url: "https://upstream.example.com/v1",
-            protocol: "openai_chat_completion",
         });
 
         // The row's own `id` is a response field; the gateway's strict parsing
@@ -70,13 +77,12 @@ describe("toUpdateProviderRequest", () => {
         });
 
         expect(request).toEqual({
-            type: "openai_compatible",
+            type: "openai_chat_completion",
             provider_id: 4,
             name: "renamed",
             model_prefix: "local/",
             is_enabled: false,
             base_url: "https://other.example.com",
-            protocol: "openai_chat_completion",
         });
     });
 
@@ -100,13 +106,13 @@ describe("toUpdateProviderRequest", () => {
     });
 
     it("maps OAuth variants without a credentials field", () => {
-        const openAiRequest = toUpdateProviderRequest(openaiOauth, {
+        const openAiRequest = toUpdateProviderRequest(codexOauth, {
             model_prefix: "acct-",
             is_enabled: true,
         });
 
         expect(openAiRequest).toEqual({
-            type: "openai_oauth",
+            type: "codex_oauth",
             provider_id: 5,
             name: "chatgpt",
             model_prefix: "acct-",
@@ -206,5 +212,77 @@ describe("toUpdateModelRequest", () => {
         expect(request.upstream_id).toBe("qwen3:32b");
         expect("id" in request).toBe(false);
         expect("provider" in request).toBe(false);
+    });
+});
+
+const apiKey: ApiKeyResponse = {
+    id: 7,
+    name: "service-a",
+    key: "sk-live",
+    is_enabled: true,
+    created_at: 1_700_000_000_000_000,
+};
+
+describe("toUpdateApiKeyRequest", () => {
+    it("restates the complete row state and addresses it by api_key_id", () => {
+        expect(toUpdateApiKeyRequest(apiKey)).toEqual({
+            api_key_id: 7,
+            name: "service-a",
+            key: "sk-live",
+            is_enabled: true,
+        });
+    });
+
+    it("applies only the edits it is given", () => {
+        expect(
+            toUpdateApiKeyRequest(apiKey, {
+                name: "renamed",
+                is_enabled: false,
+            }),
+        ).toEqual({
+            api_key_id: 7,
+            name: "renamed",
+            key: "sk-live",
+            is_enabled: false,
+        });
+    });
+
+    it("never carries the server-assigned created_at", () => {
+        expect("created_at" in toUpdateApiKeyRequest(apiKey)).toBe(false);
+        expect("id" in toUpdateApiKeyRequest(apiKey)).toBe(false);
+    });
+});
+
+describe("toCreateModelRequest", () => {
+    it("mirrors the update shape for a fresh identifier pair", () => {
+        expect(toCreateModelRequest(4, "gpt-4o")).toEqual({
+            provider_id: 4,
+            upstream_id: "gpt-4o",
+            id_override: null,
+            is_enabled: true,
+            thinking_levels_override: null,
+        });
+    });
+
+    it("carries explicit overrides and canonicalizes thinking levels", () => {
+        const request = toCreateModelRequest(4, "gpt-4o", {
+            id_override: "custom",
+            is_enabled: false,
+            thinking_levels_override: [
+                "high",
+                "off",
+            ],
+        });
+
+        expect(request).toEqual({
+            provider_id: 4,
+            upstream_id: "gpt-4o",
+            id_override: "custom",
+            is_enabled: false,
+            thinking_levels_override: [
+                "off",
+                "high",
+            ],
+        });
     });
 });

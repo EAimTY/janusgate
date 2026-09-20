@@ -14,7 +14,7 @@
 //! documented where they occur, and every mirrored fact was verified live against the real
 //! endpoints.
 //!
-//! ## OpenAI Codex (`openai_oauth`)
+//! ## OpenAI Codex (`codex_oauth`)
 //!
 //! Mirrors `openai/codex` at rev `fcf05456bb27e6c3d5677550f54011db6a2a0817` (main, 2026-09-17):
 //! `codex-rs/login/src/server.rs` (authorize URL, code exchange, token-endpoint error shapes),

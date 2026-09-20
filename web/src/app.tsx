@@ -6,9 +6,13 @@ import { formatClock } from "/src/format";
 import { createManagementApi } from "/src/management-api/client";
 import { refreshStamp, requestRefresh } from "/src/refresh-state";
 import { currentLocation, hrefs, matchAppRoute, navigate } from "/src/router";
+import { ApiKeyDetailScreen } from "/src/screens/api-key-detail-screen";
+import { ApiKeyNewScreen } from "/src/screens/api-key-new-screen";
+import { ApiKeysScreen } from "/src/screens/api-keys-screen";
 import { ConnectionScreen } from "/src/screens/connection-screen";
 import { HomeScreen } from "/src/screens/home-screen";
 import { ModelDetailScreen } from "/src/screens/model-detail-screen";
+import { ModelNewScreen } from "/src/screens/model-new-screen";
 import { ModelsScreen } from "/src/screens/models-screen";
 import { NotFoundScreen } from "/src/screens/not-found-screen";
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
@@ -43,7 +47,7 @@ export function App(): JSX.Element {
     );
 }
 
-type NavKey = "overview" | "providers" | "models";
+type NavKey = "overview" | "providers" | "models" | "keys";
 
 const NAV_ITEMS: ReadonlyArray<{
     readonly key: NavKey;
@@ -69,6 +73,12 @@ const NAV_ITEMS: ReadonlyArray<{
         glyph: "stack",
         href: hrefs.models(null),
     },
+    {
+        key: "keys",
+        label: "API keys",
+        glyph: "key",
+        href: hrefs.apiKeys(),
+    },
 ];
 
 function navKeyOfRoute(name: string): NavKey | null {
@@ -80,8 +90,12 @@ function navKeyOfRoute(name: string): NavKey | null {
         return "providers";
     }
 
-    if (name === "models" || name === "modelDetail") {
+    if (name === "models" || name === "modelNew" || name === "modelDetail") {
         return "models";
+    }
+
+    if (name === "apiKeys" || name === "apiKeyNew" || name === "apiKeyDetail") {
+        return "keys";
     }
 
     return null;
@@ -110,6 +124,16 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
     const modelsRoute = createMemo(() => {
         const current = route();
         return current.name === "models" ? current : null;
+    });
+
+    const modelNewRoute = createMemo(() => {
+        const current = route();
+        return current.name === "modelNew" ? current : null;
+    });
+
+    const apiKeyDetailRoute = createMemo(() => {
+        const current = route();
+        return current.name === "apiKeyDetail" ? current : null;
     });
 
     const modelDetailRoute = createMemo(() => {
@@ -164,6 +188,34 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                                 <ModelsScreen
                                     api={api}
                                     providerFilter={models.providerFilter}
+                                />
+                            )}
+                        </Match>
+                        <Match
+                            when={modelNewRoute()}
+                            keyed
+                        >
+                            {(created) => (
+                                <ModelNewScreen
+                                    api={api}
+                                    providerFilter={created.providerFilter}
+                                />
+                            )}
+                        </Match>
+                        <Match when={route().name === "apiKeys"}>
+                            <ApiKeysScreen api={api} />
+                        </Match>
+                        <Match when={route().name === "apiKeyNew"}>
+                            <ApiKeyNewScreen api={api} />
+                        </Match>
+                        <Match
+                            when={apiKeyDetailRoute()}
+                            keyed
+                        >
+                            {(detail) => (
+                                <ApiKeyDetailScreen
+                                    api={api}
+                                    apiKeyId={detail.apiKeyId}
                                 />
                             )}
                         </Match>

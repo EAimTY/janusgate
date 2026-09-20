@@ -3,7 +3,6 @@
 use super::{EmptyResponse, Error, ProviderEnvelope, ProviderResponse, absent_keeps, route};
 use crate::{
     context::Context,
-    format::UpstreamFormat,
     provider::{Credentials, NewProvider, ProviderType, storage},
 };
 use axum::{Json, extract::State};
@@ -62,13 +61,17 @@ pub struct ListProvidersResponse {
 }
 
 /// Strictly parsed `providers:create` request (README §7.1): the complete state of one
-/// `openai_compatible` provider, every field required — the request is the row's desired state, so
-/// creation has no defaults and no optional fields (rule 3). OAuth account kinds are not creatable
-/// here; `oauth:complete` is the only path that mints their credentials.
+/// static-key provider, every field required — the request is the row's desired state, so
+/// creation has no defaults and no optional fields (rule 3). The `type` names the provider's
+/// static-key kind outright; an OAuth kind is rejected below — `oauth:complete` is the only
+/// path that mints its credentials.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct CreateProviderRequest {
+    /// Provider type: one of the three static-key kinds.
+    pub r#type: ProviderType,
+
     /// Unique provider name; must be non-empty.
     pub name: String,
 
@@ -81,15 +84,12 @@ pub struct CreateProviderRequest {
     /// Upstream base URL.
     pub base_url: String,
 
-    /// Upstream wire format.
-    pub protocol: UpstreamFormat,
-
     /// Static API key.
     pub api_key: String,
 }
 
 /// Strictly parsed `providers:update` request (README §7.1): a union discriminated by the restated
-/// `type`, one variant per stored account kind, each stating the provider's complete desired
+/// `type`, one variant per provider kind, each stating the provider's complete desired
 /// readable state (rule 3). The restated `type` must equal the stored, immutable one. The
 /// write-only credential field is the one absent-keeps exception (rule 2): absent keeps the stored
 /// secret, present replaces it; it is never `null`.
@@ -97,9 +97,9 @@ pub struct CreateProviderRequest {
 #[serde(tag = "type", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum UpdateProviderRequest {
-    /// Static API key account speaking a configured protocol.
-    #[serde(rename = "openai_compatible")]
-    OpenAiCompatible {
+    /// Static API key speaking the OpenAI Responses protocol.
+    #[serde(rename = "openai_response")]
+    OpenAiResponse {
         /// Addressed provider row.
         provider_id: i64,
 
@@ -116,8 +116,63 @@ pub enum UpdateProviderRequest {
         /// Upstream base URL.
         base_url: String,
 
-        /// Upstream wire format.
-        protocol: UpstreamFormat,
+        /// Replacement static API key; absent keeps the stored one.
+        #[serde(
+            default,
+            deserialize_with = "absent_keeps::deserialize",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
+        api_key: Option<String>,
+    },
+
+    /// Static API key speaking the OpenAI Chat Completions protocol.
+    #[serde(rename = "openai_chat_completion")]
+    OpenAiChatCompletion {
+        /// Addressed provider row.
+        provider_id: i64,
+
+        /// Unique provider name; must be non-empty. Renames the provider when it differs from the
+        /// stored name.
+        name: String,
+
+        /// Public model name prefix; may be empty.
+        model_prefix: String,
+
+        /// Serving state.
+        is_enabled: bool,
+
+        /// Upstream base URL.
+        base_url: String,
+
+        /// Replacement static API key; absent keeps the stored one.
+        #[serde(
+            default,
+            deserialize_with = "absent_keeps::deserialize",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
+        api_key: Option<String>,
+    },
+
+    /// Static API key speaking the bare Gemini GenerateContent protocol.
+    #[serde(rename = "gemini_generate_content")]
+    GeminiGenerateContent {
+        /// Addressed provider row.
+        provider_id: i64,
+
+        /// Unique provider name; must be non-empty. Renames the provider when it differs from the
+        /// stored name.
+        name: String,
+
+        /// Public model name prefix; may be empty.
+        model_prefix: String,
+
+        /// Serving state.
+        is_enabled: bool,
+
+        /// Upstream base URL.
+        base_url: String,
 
         /// Replacement static API key; absent keeps the stored one.
         #[serde(
@@ -130,8 +185,8 @@ pub enum UpdateProviderRequest {
     },
 
     /// ChatGPT account speaking the Codex Responses protocol.
-    #[serde(rename = "openai_oauth")]
-    OpenAiOauth {
+    #[serde(rename = "codex_oauth")]
+    CodexOauth {
         /// Addressed provider row.
         provider_id: i64,
 
@@ -152,7 +207,7 @@ pub enum UpdateProviderRequest {
             skip_serializing_if = "Option::is_none"
         )]
         #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-        credentials: Option<OpenAiOauthCredentials>,
+        credentials: Option<CodexOauthCredentials>,
     },
 
     /// Google account speaking Gemini GenerateContent via Antigravity.
@@ -182,12 +237,12 @@ pub enum UpdateProviderRequest {
     },
 }
 
-/// The `openai_oauth` replacement credentials (README §3): the exact stored field set, camelCase
+/// The `codex_oauth` replacement credentials (README §3): the exact stored field set, camelCase
 /// like the storage form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct OpenAiOauthCredentials {
+pub struct CodexOauthCredentials {
     /// OAuth access token.
     pub access_token: String,
 
@@ -244,6 +299,14 @@ pub(super) async fn create(
 ) -> Result<Json<ProviderEnvelope>, Error> {
     super::validate_identifier("name", &request.name)?;
 
+    // OAuth kinds are minted only by `oauth:complete`: a creation naming one is a client
+    // fault, rejected before the name-taken check.
+    if request.r#type.is_oauth() {
+        return Err(Error::OAuthTypeNotCreatable {
+            requested: request.r#type,
+        });
+    }
+
     // The pre-insert check renders a clean 409; the database's UNIQUE constraint is the concurrent
     // backstop.
     if storage::find_provider(&context.database, &request.name)
@@ -262,8 +325,7 @@ pub(super) async fn create(
         &NewProvider {
             name: &request.name,
             model_prefix: &request.model_prefix,
-            provider_type: ProviderType::OpenAiCompatible,
-            protocol: Some(request.protocol),
+            provider_type: request.r#type,
             base_url: Some(&request.base_url),
             credentials: &credentials,
             expires_at: None,
@@ -318,72 +380,83 @@ async fn handle_update(
 ) -> Result<(), Error> {
     // One match flattens the union into the full storage state: every readable field is restated,
     // and the write-only credential is the one absent-keeps field.
-    let (provider_id, name, model_prefix, is_enabled, protocol, base_url, credentials) =
-        match &request {
-            UpdateProviderRequest::OpenAiCompatible {
-                provider_id,
-                name,
-                model_prefix,
-                is_enabled,
-                base_url,
-                protocol,
-                api_key,
-            } => (
-                *provider_id,
-                name,
-                model_prefix,
-                *is_enabled,
-                Some(*protocol),
-                Some(base_url.as_str()),
-                api_key
-                    .as_ref()
-                    .map(|api_key| Credentials::ApiKey(api_key.clone())),
-            ),
+    let (provider_id, name, model_prefix, is_enabled, base_url, credentials) = match &request {
+        UpdateProviderRequest::OpenAiResponse {
+            provider_id,
+            name,
+            model_prefix,
+            is_enabled,
+            base_url,
+            api_key,
+        }
+        | UpdateProviderRequest::OpenAiChatCompletion {
+            provider_id,
+            name,
+            model_prefix,
+            is_enabled,
+            base_url,
+            api_key,
+        }
+        | UpdateProviderRequest::GeminiGenerateContent {
+            provider_id,
+            name,
+            model_prefix,
+            is_enabled,
+            base_url,
+            api_key,
+        } => (
+            *provider_id,
+            name,
+            model_prefix,
+            *is_enabled,
+            Some(base_url.as_str()),
+            api_key
+                .as_ref()
+                .map(|api_key| Credentials::ApiKey(api_key.clone())),
+        ),
 
-            UpdateProviderRequest::OpenAiOauth {
-                provider_id,
-                name,
-                model_prefix,
-                is_enabled,
-                credentials,
-            } => (
-                *provider_id,
-                name,
-                model_prefix,
-                *is_enabled,
-                None,
-                None,
-                credentials
-                    .as_ref()
-                    .map(|credentials| Credentials::OpenAiOauth {
-                        access_token: credentials.access_token.clone(),
-                        refresh_token: credentials.refresh_token.clone(),
-                        account_id: credentials.account_id.clone(),
-                    }),
-            ),
+        UpdateProviderRequest::CodexOauth {
+            provider_id,
+            name,
+            model_prefix,
+            is_enabled,
+            credentials,
+        } => (
+            *provider_id,
+            name,
+            model_prefix,
+            *is_enabled,
+            None,
+            credentials
+                .as_ref()
+                .map(|credentials| Credentials::CodexOauth {
+                    access_token: credentials.access_token.clone(),
+                    refresh_token: credentials.refresh_token.clone(),
+                    account_id: credentials.account_id.clone(),
+                }),
+        ),
 
-            UpdateProviderRequest::AntigravityOauth {
-                provider_id,
-                name,
-                model_prefix,
-                is_enabled,
-                credentials,
-            } => (
-                *provider_id,
-                name,
-                model_prefix,
-                *is_enabled,
-                None,
-                None,
-                credentials
-                    .as_ref()
-                    .map(|credentials| Credentials::AntigravityOauth {
-                        access_token: credentials.access_token.clone(),
-                        refresh_token: credentials.refresh_token.clone(),
-                        project_id: credentials.project_id.clone(),
-                    }),
-            ),
-        };
+        UpdateProviderRequest::AntigravityOauth {
+            provider_id,
+            name,
+            model_prefix,
+            is_enabled,
+            credentials,
+        } => (
+            *provider_id,
+            name,
+            model_prefix,
+            *is_enabled,
+            None,
+            credentials
+                .as_ref()
+                .map(|credentials| Credentials::AntigravityOauth {
+                    access_token: credentials.access_token.clone(),
+                    refresh_token: credentials.refresh_token.clone(),
+                    project_id: credentials.project_id.clone(),
+                }),
+        ),
+    };
 
     super::validate_identifier("name", name)?;
 
@@ -398,8 +471,10 @@ async fn handle_update(
     // discriminator and a guard against updating the wrong row, and a mismatch is an invalid
     // request rather than a conflict, because no concurrent state is overwritten.
     let requested_type = match request {
-        UpdateProviderRequest::OpenAiCompatible { .. } => ProviderType::OpenAiCompatible,
-        UpdateProviderRequest::OpenAiOauth { .. } => ProviderType::OpenAiOauth,
+        UpdateProviderRequest::OpenAiResponse { .. } => ProviderType::OpenAiResponse,
+        UpdateProviderRequest::OpenAiChatCompletion { .. } => ProviderType::OpenAiChatCompletion,
+        UpdateProviderRequest::GeminiGenerateContent { .. } => ProviderType::GeminiGenerateContent,
+        UpdateProviderRequest::CodexOauth { .. } => ProviderType::CodexOauth,
         UpdateProviderRequest::AntigravityOauth { .. } => ProviderType::AntigravityOauth,
     };
 
@@ -421,7 +496,6 @@ async fn handle_update(
         storage::ProviderUpdate {
             name,
             model_prefix,
-            protocol,
             base_url,
             is_enabled,
             credentials: credentials.as_ref(),
@@ -453,26 +527,24 @@ mod tests {
             reason = "the documented payload is constructed to parse"
         )]
         let parsed: UpdateProviderRequest = serde_json::from_str(
-            r#"{"provider_id":7,"type":"openai_compatible","name":"acme",
+            r#"{"provider_id":7,"type":"openai_chat_completion","name":"acme",
                 "model_prefix":"acme/","is_enabled":true,
-                "base_url":"https://upstream.example",
-                "protocol":"openai_chat_completion","api_key":"sk"}"#,
+                "base_url":"https://upstream.example","api_key":"sk"}"#,
         )
         .unwrap();
 
         assert!(matches!(
             parsed,
-            UpdateProviderRequest::OpenAiCompatible { .. }
+            UpdateProviderRequest::OpenAiChatCompletion { .. }
         ));
 
         // An unknown field is rejected inside the addressed variant, naming the variant's own
         // fields.
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
-                r#"{"provider_id":7,"type":"openai_compatible","name":"acme",
+                r#"{"provider_id":7,"type":"openai_chat_completion","name":"acme",
                     "model_prefix":"acme/","is_enabled":true,
-                    "base_url":"https://upstream.example",
-                    "protocol":"openai_chat_completion","expires_at":1}"#
+                    "base_url":"https://upstream.example","expires_at":1}"#
             )
             .is_err()
         );
@@ -480,7 +552,7 @@ mod tests {
         // A field of another variant is as unknown as a field no variant carries.
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
-                r#"{"provider_id":3,"type":"openai_oauth","name":"codex",
+                r#"{"provider_id":3,"type":"codex_oauth","name":"codex",
                     "model_prefix":"codex/","is_enabled":true,"base_url":"x"}"#
             )
             .is_err()
@@ -499,7 +571,7 @@ mod tests {
         // (`model_prefix` is absent here).
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
-                r#"{"provider_id":3,"type":"openai_oauth","name":"codex",
+                r#"{"provider_id":3,"type":"codex_oauth","name":"codex",
                     "is_enabled":true}"#
             )
             .is_err()
@@ -508,7 +580,7 @@ mod tests {
         // The write-only credential field never accepts `null`.
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
-                r#"{"provider_id":3,"type":"openai_oauth","name":"codex",
+                r#"{"provider_id":3,"type":"codex_oauth","name":"codex",
                     "model_prefix":"codex/","is_enabled":true,"credentials":null}"#
             )
             .is_err()

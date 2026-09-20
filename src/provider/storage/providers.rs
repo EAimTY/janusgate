@@ -3,7 +3,6 @@
 use super::{Error, models};
 use crate::{
     database::{Database, Error as DatabaseError, Transaction, params},
-    format::UpstreamFormat,
     provider::{Credentials, Model, NewProvider, Provider},
 };
 
@@ -17,9 +16,6 @@ pub(crate) struct ProviderUpdate<'a> {
 
     /// Prefix prepended to every public model name; may be empty.
     pub(crate) model_prefix: &'a str,
-
-    /// Upstream wire format; `None` for the OAuth account kinds, which pin their own.
-    pub(crate) protocol: Option<UpstreamFormat>,
 
     /// Upstream base URL; `None` for the OAuth account kinds.
     pub(crate) base_url: Option<&'a str>,
@@ -44,13 +40,12 @@ pub(crate) async fn insert_provider(
 ) -> Result<Provider, Error> {
     let rows = database
         .query(
-            "INSERT INTO providers (name, model_prefix, type, protocol, base_url, credentials, \
-             expires_at, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id",
+            "INSERT INTO providers (name, model_prefix, type, base_url, credentials, \
+             expires_at, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
             params![
                 provider.name,
                 provider.model_prefix,
                 provider.provider_type,
-                provider.protocol.map(UpstreamFormat::as_str),
                 provider.base_url,
                 provider.credentials.to_json(),
                 provider.expires_at,
@@ -70,7 +65,6 @@ pub(crate) async fn insert_provider(
         name: provider.name.to_string(),
         model_prefix: provider.model_prefix.to_string(),
         provider_type: provider.provider_type,
-        protocol: provider.protocol,
         base_url: provider.base_url.map(str::to_string),
         credentials: provider.credentials.clone(),
         expires_at: provider.expires_at,
@@ -278,12 +272,11 @@ pub(crate) async fn update_provider(
 
     transaction
         .execute(
-            "UPDATE providers SET name = ?1, model_prefix = ?2, protocol = ?3, base_url = ?4, \
-             is_enabled = ?5 WHERE id = ?6",
+            "UPDATE providers SET name = ?1, model_prefix = ?2, base_url = ?3, \
+             is_enabled = ?4 WHERE id = ?5",
             params![
                 update.name,
                 update.model_prefix,
-                update.protocol.map(UpstreamFormat::as_str),
                 update.base_url,
                 i64::from(update.is_enabled),
                 provider.id,

@@ -288,8 +288,8 @@ async fn refresh_and_build_credentials(
     provider: &Provider,
 ) -> Result<(Credentials, i64), Error> {
     let refreshed = match &provider.credentials {
-        Credentials::OpenAiOauth { refresh_token, .. } => {
-            flow::refresh_tokens(http, OAuthProviderType::OpenAiOauth, refresh_token).await?
+        Credentials::CodexOauth { refresh_token, .. } => {
+            flow::refresh_tokens(http, OAuthProviderType::CodexOauth, refresh_token).await?
         }
 
         Credentials::AntigravityOauth { refresh_token, .. } => {
@@ -309,11 +309,11 @@ async fn refresh_and_build_credentials(
     let expires_at = token::token_expiry_from(refreshed.expires_in, Some(&access_token))?;
 
     let credentials = match &provider.credentials {
-        Credentials::OpenAiOauth {
+        Credentials::CodexOauth {
             account_id,
             refresh_token: stored_refresh_token,
             ..
-        } => Credentials::OpenAiOauth {
+        } => Credentials::CodexOauth {
             account_id: refreshed
                 .id_token
                 .as_deref()

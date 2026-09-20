@@ -29,10 +29,12 @@ pub(crate) mod gemini;
 pub(crate) mod openai_chat_completion;
 pub(crate) mod openai_response;
 
-/// Wire formats an upstream provider may speak.
+/// Wire formats an upstream provider may speak: the codec vocabulary behind
+/// [`ProviderType`](crate::provider::ProviderType). Static-key provider types reuse
+/// these same names as their own type names, so a static provider's type is its
+/// wire format outright.
 ///
-/// The serde and TypeScript names are the management wire names, shared with
-/// `UpstreamFormat::as_str` — the storage form and the wire form are one vocabulary.
+/// The serde and TypeScript names are the management wire names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum UpstreamFormat {
@@ -47,6 +49,18 @@ pub enum UpstreamFormat {
     /// Gemini GenerateContent protocol.
     #[serde(rename = "gemini_generate_content")]
     GeminiGenerateContent,
+}
+
+impl UpstreamFormat {
+    /// Renders the canonical wire-format name.
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiResponse => "openai_response",
+            Self::OpenAiChatCompletion => "openai_chat_completion",
+            Self::GeminiGenerateContent => "gemini_generate_content",
+        }
+    }
 }
 
 /// An upstream payload the codec could not parse: malformed JSON, a missing required field, or an
@@ -213,27 +227,6 @@ pub(in crate::format) enum UpstreamError {
     /// Any other JSON shape, rendered verbatim: an upstream error member is third-party data whose
     /// shape the gateway does not define.
     Raw(Value),
-}
-
-impl UpstreamFormat {
-    /// Parses the canonical wire-format name stored in the provider `protocol` column.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "openai_response" => Some(Self::OpenAiResponse),
-            "openai_chat_completion" => Some(Self::OpenAiChatCompletion),
-            "gemini_generate_content" => Some(Self::GeminiGenerateContent),
-            _ => None,
-        }
-    }
-
-    /// Renders the canonical wire-format name.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::OpenAiResponse => "openai_response",
-            Self::OpenAiChatCompletion => "openai_chat_completion",
-            Self::GeminiGenerateContent => "gemini_generate_content",
-        }
-    }
 }
 
 impl UpstreamError {

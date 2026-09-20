@@ -2,9 +2,10 @@ import { type Accessor, createSignal } from "solid-js";
 
 /**
  * The client-side routes. Each page does one job: the overview reads the
- * gateway's health, the providers pages administer providers, and the models
- * pages administer models. The OAuth flows are steps inside the provider
- * creation and reauthorization forms, not destinations of their own.
+ * gateway's health, the providers pages administer providers, the models
+ * pages administer models, and the api-keys pages administer serving keys.
+ * The OAuth flows are steps inside the provider creation and reauthorization
+ * forms, not destinations of their own.
  */
 export type AppRoute =
     | {
@@ -25,9 +26,23 @@ export type AppRoute =
           readonly providerFilter: number | null;
       }
     | {
+          readonly name: "modelNew";
+          readonly providerFilter: number | null;
+      }
+    | {
           readonly name: "modelDetail";
           readonly providerId: number;
           readonly upstreamId: string;
+      }
+    | {
+          readonly name: "apiKeys";
+      }
+    | {
+          readonly name: "apiKeyNew";
+      }
+    | {
+          readonly name: "apiKeyDetail";
+          readonly apiKeyId: number;
       }
     | {
           readonly name: "notFound";
@@ -46,8 +61,13 @@ export const hrefs = {
     providerDetail: (providerId: number): string => `/providers/${providerId}`,
     models: (providerFilter: number | null): string =>
         providerFilter === null ? "/models" : `/models?provider=${providerFilter}`,
+    modelNew: (providerFilter: number | null): string =>
+        providerFilter === null ? "/models/new" : `/models/new?provider=${providerFilter}`,
     modelDetail: (providerId: number, upstreamId: string): string =>
         `/models/${providerId}/${encodeURIComponent(upstreamId)}`,
+    apiKeys: (): string => "/api-keys",
+    apiKeyNew: (): string => "/api-keys/new",
+    apiKeyDetail: (apiKeyId: number): string => `/api-keys/${apiKeyId}`,
 } as const;
 
 /**
@@ -123,6 +143,40 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
             name: "models",
             providerFilter: parseRowIdentifier(readQueryParameter(search, "provider")),
         };
+    }
+
+    if (normalizedPath === "/models/new") {
+        return {
+            name: "modelNew",
+            providerFilter: parseRowIdentifier(readQueryParameter(search, "provider")),
+        };
+    }
+
+    if (normalizedPath === "/api-keys") {
+        return {
+            name: "apiKeys",
+        };
+    }
+
+    if (normalizedPath === "/api-keys/new") {
+        return {
+            name: "apiKeyNew",
+        };
+    }
+
+    const apiKeyMatch = /^\/api-keys\/([^/]+)$/.exec(normalizedPath);
+
+    if (apiKeyMatch !== null) {
+        const apiKeyId = parseRowIdentifier(apiKeyMatch[1] ?? null);
+
+        return apiKeyId === null
+            ? {
+                  name: "notFound",
+              }
+            : {
+                  name: "apiKeyDetail",
+                  apiKeyId,
+              };
     }
 
     const modelMatch = /^\/models\/([^/]+)\/(.+)$/.exec(normalizedPath);

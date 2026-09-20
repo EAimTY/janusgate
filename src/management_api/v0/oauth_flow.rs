@@ -40,15 +40,14 @@ route! {
 }
 
 /// Strictly parsed `oauth:start` request: the account kind the flow authorizes. The field's own
-/// parsing rejects values outside the two OAuth account kinds — `openai_compatible` authorizes
+/// parsing rejects values outside the two OAuth account kinds — static-key types authorize
 /// nothing.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct StartProviderOauthRequest {
     /// OAuth account kind to authorize.
-    #[serde(rename = "type")]
-    pub provider_type: OAuthProviderType,
+    pub r#type: OAuthProviderType,
 }
 
 /// The `oauth:start` success body (README §7.1): three server-derived facts.
@@ -116,7 +115,7 @@ pub(super) async fn start(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<StartProviderOauthRequest>, Error>,
 ) -> Result<Json<StartProviderOauthResponse>, Error> {
-    let flow = handle_start(&context.database, request.provider_type).await?;
+    let flow = handle_start(&context.database, request.r#type).await?;
 
     Ok(Json(StartProviderOauthResponse {
         authorize_url: flow.authorize_url,
@@ -245,7 +244,6 @@ async fn handle_complete(
             name: &request.name,
             model_prefix: &request.model_prefix,
             provider_type: state.state_type.as_provider_type(),
-            protocol: None,
             base_url: None,
             credentials: &exchanged.credentials,
             expires_at: Some(exchanged.expires_at),

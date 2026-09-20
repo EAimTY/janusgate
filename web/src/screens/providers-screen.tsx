@@ -4,6 +4,7 @@ import { describeValidity } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
+import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
@@ -12,14 +13,13 @@ import { ButtonLink } from "/src/ui/controls";
 import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
-import { providerKindTitle } from "/src/ui/provider-form";
 
 /** The one readable statement of a provider's credential state. */
 export function credentialBadge(provider: ProviderResponse): {
     readonly tone: BadgeTone;
     readonly label: string;
 } {
-    if (provider.type === "openai_compatible") {
+    if (!isOAuthProviderRow(provider)) {
         return {
             tone: "muted",
             label: "API key",
@@ -186,7 +186,7 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                         <EmptyState
                             glyph="plug"
                             title="No providers yet"
-                            description="A provider is one upstream account — a ChatGPT or Google login, or a static key on any OpenAI-compatible service."
+                            description="A provider is one upstream account — a Codex OAuth or Antigravity OAuth login, or a key on any OpenAI-compatible API."
                         >
                             <ButtonLink
                                 href={hrefs.providerNew()}
@@ -240,7 +240,7 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
 }
 
 function providerTypeLabelOf(provider: ProviderResponse): string {
-    return providerKindTitle(provider.type);
+    return providerTypeLabel(provider.type);
 }
 
 function ProviderRow(props: {
@@ -263,7 +263,7 @@ function ProviderRow(props: {
                         {props.provider.name}
                     </span>
                     <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
-                        {`#${props.provider.id} · ${providerKindTitle(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
+                        {`#${props.provider.id} · ${providerTypeLabel(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
                     </span>
                 </span>
                 <span class="flex items-center gap-2">

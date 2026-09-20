@@ -153,13 +153,8 @@ pub(crate) async fn execute(
             .await?;
 
     // The wire format is resolved once per request and shared by request building and event
-    // parsing.
-    let upstream_format = provider.upstream_format().ok_or_else(|| Error::Internal {
-        message: format!(
-            "provider `{}` has no upstream protocol configured",
-            routing.provider.name
-        ),
-    })?;
+    // parsing: the provider type pins it outright.
+    let upstream_format = provider.upstream_format();
 
     debug!(
         "dispatching public model `{}` via {upstream_label} ({}, streaming: {})",
@@ -170,7 +165,6 @@ pub(crate) async fn execute(
 
     let request_builder = build_upstream_request(
         &context.data_plane,
-        upstream_format,
         &provider,
         &routing,
         &ir,
@@ -197,8 +191,7 @@ pub(crate) async fn execute(
     // `Content-Type` header, and a 200 response to a streaming request is contractually a stream
     // while a 200 response to a non-streaming request is contractually a JSON document (README
     // §6.2).
-    let is_upstream_streaming =
-        is_upstream_streaming(upstream_format, provider.provider_type, is_client_streaming);
+    let is_upstream_streaming = is_upstream_streaming(provider.provider_type, is_client_streaming);
 
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<Result<IrEvent, Error>>(EVENT_CHANNEL_BUFFER);
@@ -231,15 +224,8 @@ pub(crate) async fn execute(
 /// ChatGPT Codex endpoint requires `stream: true` (README §5.1 invariant 2) — and every other
 /// built-in upstream matches the client's requested mode (README §6.3). The same decision selects
 /// the SSE or JSON response parser.
-fn is_upstream_streaming(
-    upstream_format: UpstreamFormat,
-    provider_type: ProviderType,
-    is_client_streaming: bool,
-) -> bool {
-    matches!(
-        (upstream_format, provider_type),
-        (UpstreamFormat::OpenAiResponse, ProviderType::OpenAiOauth)
-    ) || is_client_streaming
+fn is_upstream_streaming(provider_type: ProviderType, is_client_streaming: bool) -> bool {
+    matches!(provider_type, ProviderType::CodexOauth) || is_client_streaming
 }
 
 /// Builds the upstream HTTP request for the provider's wire format.
@@ -249,15 +235,14 @@ fn is_upstream_streaming(
 /// Returns [`Error`] when the provider configuration cannot render a request.
 fn build_upstream_request(
     http: &Client,
-    upstream_format: UpstreamFormat,
     provider: &Provider,
     routing: &ModelRouting,
     ir: &IrRequest,
     is_client_streaming: bool,
 ) -> Result<reqwest::RequestBuilder, Error> {
-    match (upstream_format, provider.provider_type) {
-        (UpstreamFormat::OpenAiResponse, ProviderType::OpenAiOauth) => {
-            let Credentials::OpenAiOauth {
+    match provider.provider_type {
+        ProviderType::CodexOauth => {
+            let Credentials::CodexOauth {
                 access_token,
                 account_id,
                 ..
@@ -282,7 +267,7 @@ fn build_upstream_request(
                 .json(&body))
         }
 
-        (UpstreamFormat::OpenAiResponse, _) => {
+        ProviderType::OpenAiResponse => {
             let (url, body) = openai_response::render_request(
                 ir,
                 compatible_base_url(provider)?,
@@ -295,7 +280,7 @@ fn build_upstream_request(
                 .json(&body))
         }
 
-        (UpstreamFormat::OpenAiChatCompletion, _) => {
+        ProviderType::OpenAiChatCompletion => {
             let (url, body) = openai_chat_completion::render_request(
                 ir,
                 compatible_base_url(provider)?,
@@ -308,7 +293,7 @@ fn build_upstream_request(
                 .json(&body))
         }
 
-        (UpstreamFormat::GeminiGenerateContent, ProviderType::AntigravityOauth) => {
+        ProviderType::AntigravityOauth => {
             let Credentials::AntigravityOauth {
                 access_token,
                 project_id,
@@ -336,7 +321,7 @@ fn build_upstream_request(
                 .json(&envelope))
         }
 
-        (UpstreamFormat::GeminiGenerateContent, _) => {
+        ProviderType::GeminiGenerateContent => {
             let (url, body) = gemini::render_compatible_request(
                 ir,
                 compatible_base_url(provider)?,
@@ -355,7 +340,7 @@ fn build_upstream_request(
     }
 }
 
-/// Resolves the stored base URL of a compatible provider.
+/// Resolves the stored base URL of a static-key provider.
 ///
 /// OAuth providers carry fixed endpoints and never consult this. Creation validates `base_url` at
 /// the management API, so a missing value is stored drift — an invariant violation — and never a

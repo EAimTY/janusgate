@@ -14,33 +14,45 @@ pub(crate) mod http_body;
 pub(crate) mod oauth;
 pub(crate) mod storage;
 
-/// Kinds of upstream provider accounts.
+/// Kinds of upstream providers: one per upstream product — a static-key wire
+/// format or an OAuth login — so the type pins the wire format outright and no
+/// second column qualifies it.
 ///
 /// The serde and TypeScript names are the management wire names, shared with
 /// `ProviderType::as_str` — the storage form and the wire form are one vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum ProviderType {
+    /// Static API key speaking the OpenAI Responses protocol.
+    #[serde(rename = "openai_response")]
+    OpenAiResponse,
+
+    /// Static API key speaking the OpenAI Chat Completions protocol.
+    #[serde(rename = "openai_chat_completion")]
+    OpenAiChatCompletion,
+
+    /// Static API key speaking the bare Gemini GenerateContent protocol.
+    #[serde(rename = "gemini_generate_content")]
+    GeminiGenerateContent,
+
     /// ChatGPT account speaking the Codex Responses protocol.
-    #[serde(rename = "openai_oauth")]
-    OpenAiOauth,
+    #[serde(rename = "codex_oauth")]
+    CodexOauth,
 
     /// Google account speaking Gemini GenerateContent via Antigravity.
     #[serde(rename = "antigravity_oauth")]
     AntigravityOauth,
-
-    /// Static API key account speaking a configured protocol.
-    #[serde(rename = "openai_compatible")]
-    OpenAiCompatible,
 }
 
 impl ProviderType {
     /// Parses the canonical provider type name.
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
-            "openai_oauth" => Some(Self::OpenAiOauth),
+            "openai_response" => Some(Self::OpenAiResponse),
+            "openai_chat_completion" => Some(Self::OpenAiChatCompletion),
+            "gemini_generate_content" => Some(Self::GeminiGenerateContent),
+            "codex_oauth" => Some(Self::CodexOauth),
             "antigravity_oauth" => Some(Self::AntigravityOauth),
-            "openai_compatible" => Some(Self::OpenAiCompatible),
             _ => None,
         }
     }
@@ -48,18 +60,35 @@ impl ProviderType {
     /// Renders the canonical provider type name.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::OpenAiOauth => "openai_oauth",
+            Self::OpenAiResponse => "openai_response",
+            Self::OpenAiChatCompletion => "openai_chat_completion",
+            Self::GeminiGenerateContent => "gemini_generate_content",
+            Self::CodexOauth => "codex_oauth",
             Self::AntigravityOauth => "antigravity_oauth",
-            Self::OpenAiCompatible => "openai_compatible",
         }
     }
 
-    /// The upstream wire format the provider type always speaks, when fixed.
-    fn upstream_format(self) -> Option<UpstreamFormat> {
+    /// Whether the provider authorizes through an OAuth flow with gateway-fixed
+    /// endpoints, as opposed to a static key against a caller-supplied base URL.
+    #[must_use]
+    pub(crate) const fn is_oauth(self) -> bool {
         match self {
-            Self::OpenAiOauth => Some(UpstreamFormat::OpenAiResponse),
-            Self::AntigravityOauth => Some(UpstreamFormat::GeminiGenerateContent),
-            Self::OpenAiCompatible => None,
+            Self::CodexOauth | Self::AntigravityOauth => true,
+            Self::OpenAiResponse | Self::OpenAiChatCompletion | Self::GeminiGenerateContent => {
+                false
+            }
+        }
+    }
+
+    /// The upstream wire format the provider type speaks.
+    #[must_use]
+    pub(crate) const fn upstream_format(self) -> UpstreamFormat {
+        match self {
+            Self::OpenAiResponse | Self::CodexOauth => UpstreamFormat::OpenAiResponse,
+            Self::OpenAiChatCompletion => UpstreamFormat::OpenAiChatCompletion,
+            Self::GeminiGenerateContent | Self::AntigravityOauth => {
+                UpstreamFormat::GeminiGenerateContent
+            }
         }
     }
 }
@@ -72,8 +101,8 @@ impl ProviderType {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum OAuthProviderType {
     /// ChatGPT account speaking the Codex Responses protocol.
-    #[serde(rename = "openai_oauth")]
-    OpenAiOauth,
+    #[serde(rename = "codex_oauth")]
+    CodexOauth,
 
     /// Google account speaking Gemini GenerateContent via Antigravity.
     #[serde(rename = "antigravity_oauth")]
@@ -85,7 +114,7 @@ impl OAuthProviderType {
     #[must_use]
     pub(crate) const fn as_provider_type(self) -> ProviderType {
         match self {
-            Self::OpenAiOauth => ProviderType::OpenAiOauth,
+            Self::CodexOauth => ProviderType::CodexOauth,
             Self::AntigravityOauth => ProviderType::AntigravityOauth,
         }
     }
@@ -93,7 +122,7 @@ impl OAuthProviderType {
     /// Parses the canonical OAuth provider type name.
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
-            "openai_oauth" => Some(Self::OpenAiOauth),
+            "codex_oauth" => Some(Self::CodexOauth),
             "antigravity_oauth" => Some(Self::AntigravityOauth),
             _ => None,
         }
@@ -103,7 +132,7 @@ impl OAuthProviderType {
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::OpenAiOauth => "openai_oauth",
+            Self::CodexOauth => "codex_oauth",
             Self::AntigravityOauth => "antigravity_oauth",
         }
     }
@@ -114,7 +143,7 @@ impl OAuthProviderType {
 pub(crate) enum Credentials {
     /// ChatGPT OAuth credentials; the account ID accompanies every upstream request as the
     /// `chatgpt-account-id` header.
-    OpenAiOauth {
+    CodexOauth {
         /// OAuth access token.
         access_token: String,
 
@@ -142,12 +171,12 @@ pub(crate) enum Credentials {
     ApiKey(String),
 }
 
-/// The plaintext storage form of `openai_oauth` credentials (README §3): `{"accessToken",
+/// The plaintext storage form of `codex_oauth` credentials (README §3): `{"accessToken",
 /// "refreshToken", "accountId"}` and nothing else, so a stored payload can never drift from the
 /// documented shape.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredOpenAiOauthCredentials<'a> {
+struct StoredCodexOauthCredentials<'a> {
     /// OAuth access token.
     access_token: &'a str,
 
@@ -173,7 +202,7 @@ struct StoredAntigravityOauthCredentials<'a> {
     project_id: &'a str,
 }
 
-/// The plaintext storage form of `openai_compatible` credentials (README §3): `{"apiKey"}` and
+/// The plaintext storage form of static-key credentials (README §3): `{"apiKey"}` and
 /// nothing else.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,13 +248,13 @@ enum StoredCredentialsPayload<T> {
     NonObject(IgnoredAny),
 }
 
-/// The lenient read form of `openai_oauth` credentials (README §3): each stored field's string
+/// The lenient read form of `codex_oauth` credentials (README §3): each stored field's string
 /// value — absent, `null`, and non-string values all reading as absent — plus every key the payload
 /// carries outside the exact field set. Collecting never rejects anything; the verdict is
 /// [`Credentials::parse`]'s.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredOpenAiOauthFields {
+struct StoredCodexOauthFields {
     /// `accessToken` string value, when the payload carries one.
     #[serde(default, deserialize_with = "string_or_absent")]
     access_token: Option<String>,
@@ -244,7 +273,7 @@ struct StoredOpenAiOauthFields {
 }
 
 /// The lenient read form of `antigravity_oauth` credentials (README §3); see
-/// [`StoredOpenAiOauthFields`] for the reading rules.
+/// [`StoredCodexOauthFields`] for the reading rules.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredAntigravityOauthFields {
@@ -265,8 +294,8 @@ struct StoredAntigravityOauthFields {
     extra: BTreeMap<String, IgnoredAny>,
 }
 
-/// The lenient read form of `openai_compatible` credentials (README §3); see
-/// [`StoredOpenAiOauthFields`] for the reading rules.
+/// The lenient read form of static-key credentials (README §3); see
+/// [`StoredCodexOauthFields`] for the reading rules.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredApiKeyFields {
@@ -325,12 +354,12 @@ impl Credentials {
     /// type.
     pub(crate) fn parse(provider_type: ProviderType, json: &str) -> Result<Self, ParseError> {
         match provider_type {
-            ProviderType::OpenAiOauth => {
-                let fields = read_lenient_fields::<StoredOpenAiOauthFields>(json)?;
+            ProviderType::CodexOauth => {
+                let fields = read_lenient_fields::<StoredCodexOauthFields>(json)?;
 
                 reject_extra_key(&fields.extra, &["accessToken", "refreshToken", "accountId"])?;
 
-                Ok(Self::OpenAiOauth {
+                Ok(Self::CodexOauth {
                     access_token: fields.access_token.ok_or_else(|| missing("accessToken"))?,
                     refresh_token: fields
                         .refresh_token
@@ -353,7 +382,9 @@ impl Credentials {
                 })
             }
 
-            ProviderType::OpenAiCompatible => {
+            ProviderType::OpenAiResponse
+            | ProviderType::OpenAiChatCompletion
+            | ProviderType::GeminiGenerateContent => {
                 let fields = read_lenient_fields::<StoredApiKeyFields>(json)?;
 
                 reject_extra_key(&fields.extra, &["apiKey"])?;
@@ -370,8 +401,9 @@ impl Credentials {
     /// as a bearer token or as an API key header.
     pub(crate) fn secret(&self) -> &str {
         match self {
-            Self::OpenAiOauth { access_token, .. }
-            | Self::AntigravityOauth { access_token, .. } => access_token,
+            Self::CodexOauth { access_token, .. } | Self::AntigravityOauth { access_token, .. } => {
+                access_token
+            }
 
             Self::ApiKey(api_key) => api_key,
         }
@@ -385,11 +417,11 @@ impl Credentials {
     /// a shape serde_json always renders.
     pub(crate) fn to_json(&self) -> String {
         match self {
-            Self::OpenAiOauth {
+            Self::CodexOauth {
                 access_token,
                 refresh_token,
                 account_id,
-            } => serialize_stored_credentials(&StoredOpenAiOauthCredentials {
+            } => serialize_stored_credentials(&StoredCodexOauthCredentials {
                 access_token,
                 refresh_token,
                 account_id,
@@ -466,10 +498,7 @@ pub(crate) struct NewProvider<'a> {
     /// Account kind.
     pub(crate) provider_type: ProviderType,
 
-    /// Upstream wire format; required for `openai_compatible`.
-    pub(crate) protocol: Option<UpstreamFormat>,
-
-    /// Upstream base URL; required for `openai_compatible`.
+    /// Upstream base URL; required for static-key providers, absent for OAuth logins.
     pub(crate) base_url: Option<&'a str>,
 
     /// Parsed plaintext credentials.
@@ -498,10 +527,7 @@ pub(crate) struct Provider {
     /// Account kind.
     pub(crate) provider_type: ProviderType,
 
-    /// Upstream wire format; required for `openai_compatible`.
-    pub(crate) protocol: Option<UpstreamFormat>,
-
-    /// Upstream base URL; required for `openai_compatible`.
+    /// Upstream base URL; required for static-key providers, absent for OAuth logins.
     pub(crate) base_url: Option<String>,
 
     /// Parsed plaintext credentials.
@@ -515,14 +541,9 @@ pub(crate) struct Provider {
 }
 
 impl Provider {
-    /// The upstream wire format the provider speaks: the type-fixed format when the account kind
-    /// pins one, otherwise the configured `protocol`. `None` means an `openai_compatible` provider
-    /// carries no protocol, which is a configuration invariant violation the caller fails fast on.
-    pub(crate) fn upstream_format(&self) -> Option<UpstreamFormat> {
-        match self.provider_type.upstream_format() {
-            Some(format) => Some(format),
-            None => self.protocol,
-        }
+    /// The upstream wire format the provider speaks, pinned by its type.
+    pub(crate) fn upstream_format(&self) -> UpstreamFormat {
+        self.provider_type.upstream_format()
     }
 }
 
@@ -619,9 +640,11 @@ mod tests {
     #[test]
     fn round_trips_type_names_with_their_storage_forms() {
         for provider_type in [
-            ProviderType::OpenAiOauth,
+            ProviderType::OpenAiResponse,
+            ProviderType::OpenAiChatCompletion,
+            ProviderType::GeminiGenerateContent,
+            ProviderType::CodexOauth,
             ProviderType::AntigravityOauth,
-            ProviderType::OpenAiCompatible,
         ] {
             #[expect(clippy::expect_used, reason = "a unit enum always serializes")]
             let rendered =
@@ -640,7 +663,7 @@ mod tests {
         }
 
         for oauth_type in [
-            OAuthProviderType::OpenAiOauth,
+            OAuthProviderType::CodexOauth,
             OAuthProviderType::AntigravityOauth,
         ] {
             #[expect(clippy::expect_used, reason = "a unit enum always serializes")]
@@ -711,8 +734,8 @@ mod tests {
     #[test]
     fn maps_oauth_provider_type_to_provider_type() {
         assert_eq!(
-            OAuthProviderType::OpenAiOauth.as_provider_type(),
-            ProviderType::OpenAiOauth
+            OAuthProviderType::CodexOauth.as_provider_type(),
+            ProviderType::CodexOauth
         );
         assert_eq!(
             OAuthProviderType::AntigravityOauth.as_provider_type(),
@@ -731,8 +754,8 @@ mod tests {
     fn round_trips_stored_credentials() {
         let cases = [
             (
-                ProviderType::OpenAiOauth,
-                Credentials::OpenAiOauth {
+                ProviderType::CodexOauth,
+                Credentials::CodexOauth {
                     access_token: "access".to_string(),
                     refresh_token: "refresh".to_string(),
                     account_id: "account".to_string(),
@@ -749,7 +772,17 @@ mod tests {
                 r#"{"accessToken":"access","refreshToken":"refresh","projectId":"project"}"#,
             ),
             (
-                ProviderType::OpenAiCompatible,
+                ProviderType::OpenAiChatCompletion,
+                Credentials::ApiKey("sk-secret".to_string()),
+                r#"{"apiKey":"sk-secret"}"#,
+            ),
+            (
+                ProviderType::OpenAiResponse,
+                Credentials::ApiKey("sk-secret".to_string()),
+                r#"{"apiKey":"sk-secret"}"#,
+            ),
+            (
+                ProviderType::GeminiGenerateContent,
                 Credentials::ApiKey("sk-secret".to_string()),
                 r#"{"apiKey":"sk-secret"}"#,
             ),
@@ -785,7 +818,7 @@ mod tests {
             reason = "the unknown field is constructed to be rejected"
         )]
         let error = Credentials::parse(
-            ProviderType::OpenAiOauth,
+            ProviderType::CodexOauth,
             r#"{"accessToken":"a","refreshToken":"r","accountId":"x","expiresAt":123}"#,
         )
         .unwrap_err();
@@ -821,7 +854,7 @@ mod tests {
             reason = "the unknown fields are constructed to be rejected"
         )]
         let error = Credentials::parse(
-            ProviderType::OpenAiCompatible,
+            ProviderType::OpenAiChatCompletion,
             r#"{"apiKey":"sk","expiresAt":1,"clientId":2}"#,
         )
         .unwrap_err();
@@ -846,7 +879,7 @@ mod tests {
                 clippy::unwrap_used,
                 reason = "every payload is constructed to fail on the access token field"
             )]
-            let error = Credentials::parse(ProviderType::OpenAiOauth, payload).unwrap_err();
+            let error = Credentials::parse(ProviderType::CodexOauth, payload).unwrap_err();
 
             assert_eq!(
                 error.to_string(),
@@ -859,7 +892,7 @@ mod tests {
             clippy::unwrap_used,
             reason = "the non-object payload is constructed to be rejected"
         )]
-        let error = Credentials::parse(ProviderType::OpenAiOauth, "{").unwrap_err();
+        let error = Credentials::parse(ProviderType::CodexOauth, "{").unwrap_err();
 
         assert!(
             error

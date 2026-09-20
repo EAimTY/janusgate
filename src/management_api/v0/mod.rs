@@ -72,7 +72,6 @@ pub use self::{
     },
 };
 pub use crate::{
-    format::UpstreamFormat,
     ir::IrReasoningEffort,
     provider::{OAuthProviderType, ProviderType},
 };
@@ -286,8 +285,8 @@ pub struct EmptyResponse {}
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum ProviderResponse {
     /// ChatGPT account speaking the Codex Responses protocol.
-    #[serde(rename = "openai_oauth")]
-    OpenAiOauth {
+    #[serde(rename = "codex_oauth")]
+    CodexOauth {
         /// Provider row identifier.
         id: i64,
 
@@ -327,9 +326,9 @@ pub enum ProviderResponse {
         expires_at: Option<i64>,
     },
 
-    /// Static API key account speaking a configured protocol.
-    #[serde(rename = "openai_compatible")]
-    OpenAiCompatible {
+    /// Static API key speaking the OpenAI Responses protocol.
+    #[serde(rename = "openai_response")]
+    OpenAiResponse {
         /// Provider row identifier.
         id: i64,
 
@@ -344,9 +343,44 @@ pub enum ProviderResponse {
 
         /// Upstream base URL.
         base_url: String,
+    },
 
-        /// Upstream wire format.
-        protocol: UpstreamFormat,
+    /// Static API key speaking the OpenAI Chat Completions protocol.
+    #[serde(rename = "openai_chat_completion")]
+    OpenAiChatCompletion {
+        /// Provider row identifier.
+        id: i64,
+
+        /// Unique, renameable label.
+        name: String,
+
+        /// Prefix prepended to every public model name.
+        model_prefix: String,
+
+        /// Whether the provider serves traffic.
+        is_enabled: bool,
+
+        /// Upstream base URL.
+        base_url: String,
+    },
+
+    /// Static API key speaking the bare Gemini GenerateContent protocol.
+    #[serde(rename = "gemini_generate_content")]
+    GeminiGenerateContent {
+        /// Provider row identifier.
+        id: i64,
+
+        /// Unique, renameable label.
+        name: String,
+
+        /// Prefix prepended to every public model name.
+        model_prefix: String,
+
+        /// Whether the provider serves traffic.
+        is_enabled: bool,
+
+        /// Upstream base URL.
+        base_url: String,
     },
 }
 
@@ -355,15 +389,15 @@ impl ProviderResponse {
     ///
     /// # Panics
     ///
-    /// Panics when an `openai_compatible` row carries no base URL or protocol: creation requires
-    /// both and update restates both, so a missing one is storage drift.
+    /// Panics when a static-key row carries no base URL: creation requires it and update restates
+    /// it, so a missing one is storage drift.
     fn from_provider(provider: &Provider) -> Self {
         // `expires_at` mirrors the nullable storage column: an OAuth provider whose credentials an
         // exchange minted carries the exchange's expiry, while one whose credentials were replaced
         // by hand through `providers:update` carries none — the not-fresh state the gateway
         // refreshes on first use (§3).
         match provider.provider_type {
-            ProviderType::OpenAiOauth => Self::OpenAiOauth {
+            ProviderType::CodexOauth => Self::CodexOauth {
                 id: provider.id,
                 name: provider.name.clone(),
                 model_prefix: provider.model_prefix.clone(),
@@ -379,32 +413,49 @@ impl ProviderResponse {
                 expires_at: provider.expires_at,
             },
 
-            ProviderType::OpenAiCompatible => Self::OpenAiCompatible {
+            ProviderType::OpenAiResponse => Self::OpenAiResponse {
                 id: provider.id,
                 name: provider.name.clone(),
                 model_prefix: provider.model_prefix.clone(),
                 is_enabled: provider.is_enabled,
-                // An openai_compatible row without its base URL or protocol was never writable
-                // through the management surface — creation requires both and update restates both
-                // — so a missing one is storage drift and fails fast.
-                #[expect(
-                    clippy::expect_used,
-                    reason = "an openai_compatible row pins its base URL at write time"
-                )]
-                base_url: provider
-                    .base_url
-                    .clone()
-                    .expect("a compatible row carries a base URL"),
-                #[expect(
-                    clippy::expect_used,
-                    reason = "an openai_compatible row pins its protocol at write time"
-                )]
-                protocol: provider
-                    .protocol
-                    .expect("a compatible row carries a protocol"),
+                base_url: stored_base_url(provider),
+            },
+
+            ProviderType::OpenAiChatCompletion => Self::OpenAiChatCompletion {
+                id: provider.id,
+                name: provider.name.clone(),
+                model_prefix: provider.model_prefix.clone(),
+                is_enabled: provider.is_enabled,
+                base_url: stored_base_url(provider),
+            },
+
+            ProviderType::GeminiGenerateContent => Self::GeminiGenerateContent {
+                id: provider.id,
+                name: provider.name.clone(),
+                model_prefix: provider.model_prefix.clone(),
+                is_enabled: provider.is_enabled,
+                base_url: stored_base_url(provider),
             },
         }
     }
+}
+
+/// Reads the stored base URL of a static-key provider row: creation requires it and update
+/// restates it, so a missing one was never writable through the management surface and fails
+/// fast as storage drift.
+///
+/// # Panics
+///
+/// Panics when the row carries no base URL.
+fn stored_base_url(provider: &Provider) -> String {
+    #[expect(
+        clippy::expect_used,
+        reason = "a static-key row pins its base URL at write time"
+    )]
+    provider
+        .base_url
+        .clone()
+        .expect("a static-key row carries a base URL")
 }
 
 /// The `providers:create` and `oauth:complete` success body (README §7.1); the response states the
@@ -559,7 +610,7 @@ pub(super) mod absent_keeps {
 
 #[cfg(test)]
 mod tests {
-    use super::{Nullable, ProviderEnvelope, ProviderResponse, UpstreamFormat, absent_keeps};
+    use super::{Nullable, ProviderEnvelope, ProviderResponse, absent_keeps};
     use crate::provider::{Credentials, Provider, ProviderType};
     use serde::Deserialize;
 
@@ -573,12 +624,11 @@ mod tests {
     /// Panics if a rendered provider diverges from the documented shape.
     #[test]
     fn renders_the_documented_provider_shapes() {
-        let compatible = Provider {
+        let static_provider = Provider {
             id: 7,
             name: "acme".to_string(),
             model_prefix: "acme/".to_string(),
-            provider_type: ProviderType::OpenAiCompatible,
-            protocol: Some(UpstreamFormat::OpenAiChatCompletion),
+            provider_type: ProviderType::OpenAiChatCompletion,
             base_url: Some("https://upstream.example".to_string()),
             credentials: Credentials::ApiKey("sk-secret".to_string()),
             expires_at: None,
@@ -587,17 +637,16 @@ mod tests {
 
         #[expect(clippy::expect_used, reason = "the provider body always serializes")]
         let rendered = serde_json::to_string(&ProviderEnvelope {
-            provider: ProviderResponse::from_provider(&compatible),
+            provider: ProviderResponse::from_provider(&static_provider),
         })
         .expect("the provider body serializes");
 
         assert_eq!(
             rendered,
             concat!(
-                r#"{"provider":{"type":"openai_compatible","id":7,"name":"acme","#,
+                r#"{"provider":{"type":"openai_chat_completion","id":7,"name":"acme","#,
                 r#""model_prefix":"acme/","is_enabled":true,"#,
-                r#""base_url":"https://upstream.example","#,
-                r#""protocol":"openai_chat_completion"}}"#,
+                r#""base_url":"https://upstream.example"}}"#,
             )
         );
 
@@ -605,10 +654,9 @@ mod tests {
             id: 3,
             name: "codex".to_string(),
             model_prefix: "codex/".to_string(),
-            provider_type: ProviderType::OpenAiOauth,
-            protocol: None,
+            provider_type: ProviderType::CodexOauth,
             base_url: None,
-            credentials: Credentials::OpenAiOauth {
+            credentials: Credentials::CodexOauth {
                 access_token: "access".to_string(),
                 refresh_token: "refresh".to_string(),
                 account_id: "account".to_string(),
@@ -626,7 +674,7 @@ mod tests {
         assert_eq!(
             rendered,
             concat!(
-                r#"{"provider":{"type":"openai_oauth","id":3,"name":"codex","#,
+                r#"{"provider":{"type":"codex_oauth","id":3,"name":"codex","#,
                 r#""model_prefix":"codex/","is_enabled":false,"expires_at":1800000000000000}}"#,
             )
         );
@@ -646,16 +694,16 @@ mod tests {
             reason = "the documented payloads are constructed to parse"
         )]
         let parsed: ProviderResponse = serde_json::from_str(
-            r#"{"id":3,"name":"codex","model_prefix":"codex/","type":"openai_oauth",
+            r#"{"id":3,"name":"codex","model_prefix":"codex/","type":"codex_oauth",
                 "expires_at":1800000000000000,"is_enabled":true}"#,
         )
         .unwrap();
 
-        assert!(matches!(parsed, ProviderResponse::OpenAiOauth { .. }));
+        assert!(matches!(parsed, ProviderResponse::CodexOauth { .. }));
 
         assert!(
             serde_json::from_str::<ProviderResponse>(
-                r#"{"id":3,"name":"codex","model_prefix":"codex/","type":"openai_oauth",
+                r#"{"id":3,"name":"codex","model_prefix":"codex/","type":"codex_oauth",
                 "expires_at":1800000000000000,"is_enabled":true,"base_url":"https://x"}"#
             )
             .is_err()

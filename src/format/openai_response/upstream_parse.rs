@@ -401,7 +401,7 @@ impl UpstreamParser {
                 // no usage, and the delivered-calls flag alone deciding the finish.
                 let response = event.response.unwrap_or_default();
 
-                // A third-party `openai_compatible` upstream may carry items only in the terminal
+                // A third-party static-key upstream may carry items only in the terminal
                 // response object; when no live event delivered a kind, recover it from the output
                 // array exactly as from a JSON response body. Text and reasoning recovery is
                 // decided per item inside `ingest_output_item` against the live-delivery flags and
@@ -475,7 +475,7 @@ impl UpstreamParser {
     ///
     /// Conformant upstreams deliver message text, reasoning text, and tool calls as live events, so
     /// streamed and terminal items are fallback sources consulted only when no live event delivered
-    /// that kind of item — third-party `openai_compatible` upstreams may stream complete items
+    /// that kind of item — third-party static-key upstreams may stream complete items
     /// without deltas, and their items must still reach the client exactly once. Fallback recovery
     /// of text and reasoning is keyed by the item's output index: a recovery delivery for one index
     /// never silences another item of the same kind, and one index is never delivered twice, so the

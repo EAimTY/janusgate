@@ -209,6 +209,16 @@ pub(super) enum Error {
         requested: ProviderType,
     },
 
+    /// A creation names an OAuth provider type, which `oauth:complete` alone mints.
+    #[error(
+        "Provider type `{}` cannot be created here; OAuth providers are minted by `oauth:complete`",
+        requested.as_str()
+    )]
+    OAuthTypeNotCreatable {
+        /// The rejected OAuth provider type.
+        requested: ProviderType,
+    },
+
     /// A reauthorization's OAuth state carries a provider type that differs from the provider's
     /// stored one.
     #[error(
@@ -349,6 +359,7 @@ impl Error {
             Self::EmptyIdentifier { .. }
             | Self::MalformedAuthorizationCode
             | Self::ProviderTypeMismatch { .. }
+            | Self::OAuthTypeNotCreatable { .. }
             | Self::Validation(_) => ErrorCode::InvalidRequest,
 
             Self::OauthStateTypeMismatch { .. }
@@ -723,9 +734,15 @@ mod tests {
             (Error::UnknownOauthState, ErrorCode::NotFound),
             (Error::MalformedAuthorizationCode, ErrorCode::InvalidRequest),
             (
+                Error::OAuthTypeNotCreatable {
+                    requested: ProviderType::CodexOauth,
+                },
+                ErrorCode::InvalidRequest,
+            ),
+            (
                 Error::OauthStateTypeMismatch {
                     name: "acme".to_string(),
-                    provider_type: ProviderType::OpenAiOauth,
+                    provider_type: ProviderType::CodexOauth,
                     state_type: OAuthProviderType::AntigravityOauth,
                 },
                 ErrorCode::Conflict,
@@ -764,6 +781,12 @@ mod tests {
         let cases = [
             (Error::EmptyIdentifier { param: "name" }, true),
             (Error::MalformedAuthorizationCode, true),
+            (
+                Error::OAuthTypeNotCreatable {
+                    requested: ProviderType::CodexOauth,
+                },
+                true,
+            ),
             (Error::Unauthorized, true),
             (Error::ProviderNotFound { id: 7 }, true),
             (

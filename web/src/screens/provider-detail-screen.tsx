@@ -9,10 +9,13 @@ import type {
     ProviderResponse,
     ReauthorizeProviderResponse,
     StartProviderOauthResponse,
-    UpstreamFormat,
 } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
-import { findOAuthProviderType, findUpstreamFormat } from "/src/management-api/vocabulary";
+import {
+    findOAuthProviderType,
+    isOAuthProviderRow,
+    providerTypeLabel,
+} from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
@@ -26,7 +29,6 @@ import {
     CompatibleConnectionFields,
     ProviderIdentityFields,
     ProviderServingSwitch,
-    providerKindTitle,
 } from "/src/ui/provider-form";
 
 type ScreenNotice = {
@@ -184,7 +186,7 @@ export function ProviderDetailScreen(props: {
                     <>
                         <PageHeader
                             title={row.name}
-                            description={`#${row.id} · ${providerKindTitle(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
+                            description={`#${row.id} · ${providerTypeLabel(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
                             backHref={hrefs.providers()}
                             backLabel="Providers"
                         >
@@ -221,11 +223,11 @@ export function ProviderDetailScreen(props: {
                             when={findOAuthProviderType(row.type)}
                             keyed
                         >
-                            {(accountType) => (
+                            {(oauthType) => (
                                 <CredentialsCard
                                     api={props.api}
                                     provider={row}
-                                    accountType={accountType}
+                                    oauthType={oauthType}
                                     onReload={() => void read()}
                                     onNotice={setNotice}
                                     onFailure={reportFailure}
@@ -256,6 +258,20 @@ export function ProviderDetailScreen(props: {
     );
 }
 
+/** The stored base URL of a static-key provider row, or empty for OAuth logins. */
+function staticBaseUrlOf(provider: ProviderResponse): string {
+    switch (provider.type) {
+        case "openai_response":
+        case "openai_chat_completion":
+        case "gemini_generate_content":
+            return provider.base_url;
+
+        case "codex_oauth":
+        case "antigravity_oauth":
+            return "";
+    }
+}
+
 /** The provider's editable state. Saving writes the complete readable state. */
 function DetailsCard(props: {
     readonly api: ManagementApi;
@@ -267,42 +283,25 @@ function DetailsCard(props: {
     const [name, setName] = createSignal(props.provider.name);
     const [modelPrefix, setModelPrefix] = createSignal(props.provider.model_prefix);
     const [isEnabled, setIsEnabled] = createSignal(props.provider.is_enabled);
-    const [baseUrl, setBaseUrl] = createSignal(
-        props.provider.type === "openai_compatible" ? props.provider.base_url : "",
-    );
-    const [protocol, setProtocol] = createSignal<UpstreamFormat>(
-        props.provider.type === "openai_compatible" ? props.provider.protocol : "openai_response",
-    );
+    const [baseUrl, setBaseUrl] = createSignal(staticBaseUrlOf(props.provider));
     const [apiKey, setApiKey] = createSignal("");
     const [isSaving, setIsSaving] = createSignal(false);
 
-    const isCompatible = (): boolean => props.provider.type === "openai_compatible";
+    const isStatic = (): boolean => findOAuthProviderType(props.provider.type) === null;
 
     const isDirty = createMemo(
         () =>
             name() !== props.provider.name ||
             modelPrefix() !== props.provider.model_prefix ||
             isEnabled() !== props.provider.is_enabled ||
-            (isCompatible() &&
-                (baseUrl() !==
-                    (props.provider.type === "openai_compatible" ? props.provider.base_url : "") ||
-                    protocol() !==
-                        (props.provider.type === "openai_compatible"
-                            ? props.provider.protocol
-                            : "openai_response") ||
-                    apiKey() !== "")),
+            (isStatic() && (baseUrl() !== staticBaseUrlOf(props.provider) || apiKey() !== "")),
     );
 
     const revert = (): void => {
         setName(props.provider.name);
         setModelPrefix(props.provider.model_prefix);
         setIsEnabled(props.provider.is_enabled);
-        setBaseUrl(props.provider.type === "openai_compatible" ? props.provider.base_url : "");
-        setProtocol(
-            props.provider.type === "openai_compatible"
-                ? props.provider.protocol
-                : "openai_response",
-        );
+        setBaseUrl(staticBaseUrlOf(props.provider));
         setApiKey("");
     };
 
@@ -319,10 +318,9 @@ function DetailsCard(props: {
                     name: name(),
                     model_prefix: modelPrefix(),
                     is_enabled: isEnabled(),
-                    ...(isCompatible()
+                    ...(isStatic()
                         ? {
                               base_url: baseUrl(),
-                              protocol: protocol(),
                               ...(apiKey() === ""
                                   ? {}
                                   : {
@@ -381,19 +379,11 @@ function DetailsCard(props: {
                     isDisabled={isSaving()}
                 />
 
-                <Show when={isCompatible()}>
+                <Show when={isStatic()}>
                     <CompatibleConnectionFields
                         baseUrl={baseUrl()}
-                        protocol={protocol()}
                         apiKey={apiKey()}
                         onBaseUrlInput={setBaseUrl}
-                        onProtocolChange={(value) => {
-                            const format = findUpstreamFormat(value);
-
-                            if (format !== null) {
-                                setProtocol(format);
-                            }
-                        }}
                         onApiKeyInput={setApiKey}
                         apiKeyLabel="Replace the API key"
                         apiKeyHint="Write-only: the gateway never returns it, so leaving this empty keeps what is stored."
@@ -436,11 +426,11 @@ function DetailsCard(props: {
     );
 }
 
-/** An OAuth account's credential health and its reauthorization flow. */
+/** An OAuth provider's credential health and its reauthorization flow. */
 function CredentialsCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
-    readonly accountType: OAuthProviderType;
+    readonly oauthType: OAuthProviderType;
     readonly onReload: () => void;
     readonly onNotice: (notice: ScreenNotice) => void;
     readonly onFailure: (cause: unknown, action: "start-oauth" | "reauthorize") => void;
@@ -451,8 +441,8 @@ function CredentialsCard(props: {
     const [isCompleting, setIsCompleting] = createSignal(false);
 
     const expiryLine = (): string => {
-        if (props.provider.type === "openai_compatible" || props.provider.expires_at === null) {
-            return "No expiry is stored for this account.";
+        if (!isOAuthProviderRow(props.provider) || props.provider.expires_at === null) {
+            return "No expiry is stored for this provider.";
         }
 
         const validity = describeValidity(props.provider.expires_at, Math.floor(Date.now() / 1000));
@@ -471,7 +461,7 @@ function CredentialsCard(props: {
 
         const outcome = await performManagementCall(() =>
             props.api.startProviderOauth({
-                type: props.accountType,
+                type: props.oauthType,
             }),
         );
 
@@ -655,7 +645,7 @@ function ModelsCard(props: {
                 : {
                       tone: "ok",
                       title: `${discovered.length} ${discovered.length === 1 ? "model" : "models"} synced from ${props.provider.name}.`,
-                      detail: "Overrides on models that returned were kept; models the account no longer reports are gone.",
+                      detail: "Overrides on models that returned were kept; models the provider no longer reports are gone.",
                   },
         );
         props.onReload();
@@ -665,8 +655,14 @@ function ModelsCard(props: {
         <Card>
             <CardHeader
                 title={`Models · ${props.models.length}`}
-                description="Synced from upstream. Open one to edit its overrides."
+                description="Synced from upstream, or added by hand. Open one to edit its overrides."
             >
+                <ButtonLink
+                    href={hrefs.modelNew(props.provider.id)}
+                    glyph="plus"
+                >
+                    Add model
+                </ButtonLink>
                 <Button
                     glyph="refresh"
                     isBusy={isSyncing()}
@@ -680,7 +676,8 @@ function ModelsCard(props: {
                     when={props.models.length > 0}
                     fallback={
                         <p class="rounded-lg bg-canvas px-3.5 py-3 text-[13.5px] text-ink-dim dark:bg-muted">
-                            No models on this provider yet — sync to read what the account reports.
+                            No models on this provider yet — sync to read what the provider reports,
+                            or add one by hand.
                         </p>
                     }
                 >

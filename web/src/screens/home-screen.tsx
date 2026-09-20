@@ -2,9 +2,13 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
 import { describeValidity } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import type {
+    ApiKeyResponse,
+    ModelResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
-import { providerTypeLabel } from "/src/management-api/vocabulary";
+import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
@@ -16,6 +20,7 @@ import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 type HomeData = {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
+    readonly apiKeys: ReadonlyArray<ApiKeyResponse>;
 };
 
 /**
@@ -28,6 +33,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
     const [data, setData] = createSignal<HomeData>({
         providers: [],
         models: [],
+        apiKeys: [],
     });
     const [hasRead, setHasRead] = createSignal(false);
     const [isReading, setIsReading] = createSignal(true);
@@ -46,12 +52,17 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
         controller = call;
         setIsReading(true);
 
-        const [providersOutcome, modelsOutcome] = await Promise.all([
+        const [providersOutcome, modelsOutcome, apiKeysOutcome] = await Promise.all([
             performManagementCall(() => props.api.listProviders(call.signal)),
             performManagementCall(() => props.api.listModels({}, call.signal)),
+            performManagementCall(() => props.api.listApiKeys(call.signal)),
         ]);
 
-        if (providersOutcome.status === "aborted" || modelsOutcome.status === "aborted") {
+        if (
+            providersOutcome.status === "aborted" ||
+            modelsOutcome.status === "aborted" ||
+            apiKeysOutcome.status === "aborted"
+        ) {
             return;
         }
 
@@ -62,7 +73,9 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                 ? providersOutcome
                 : modelsOutcome.status === "failed"
                   ? modelsOutcome
-                  : null;
+                  : apiKeysOutcome.status === "failed"
+                    ? apiKeysOutcome
+                    : null;
 
         if (failed !== null) {
             const diagnosis = describeCallFailure(failed.cause);
@@ -79,6 +92,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
         setData({
             providers: providersOutcome.status === "ok" ? providersOutcome.result.providers : [],
             models: modelsOutcome.status === "ok" ? modelsOutcome.result.models : [],
+            apiKeys: apiKeysOutcome.status === "ok" ? apiKeysOutcome.result.api_keys : [],
         });
         setHasRead(true);
         reportRefresh();
@@ -94,6 +108,8 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
     const servingModels = createMemo(
         () => data().models.filter((model) => model.is_effectively_enabled).length,
     );
+
+    const enabledApiKeys = createMemo(() => data().apiKeys.filter((row) => row.is_enabled).length);
 
     const attentionProviders = createMemo(() =>
         data().providers.filter((provider) => credentialAttention(provider) !== null),
@@ -136,13 +152,14 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
             </Show>
 
             <Show when={isReading() && !hasRead() && failure() === null}>
-                <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                     <For
                         each={[
                             0,
                             1,
                             2,
                             3,
+                            4,
                         ]}
                     >
                         {() => (
@@ -160,7 +177,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                     when={data().providers.length > 0}
                     fallback={<GettingStarted />}
                 >
-                    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                         <Card>
                             <Stat
                                 value={String(data().providers.length)}
@@ -172,7 +189,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                             <Stat
                                 value={String(data().models.length)}
                                 label="Models"
-                                hint="Synced from upstream"
+                                hint="Synced or added by hand"
                             />
                         </Card>
                         <Card>
@@ -180,6 +197,13 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                                 value={`${servingModels()} / ${data().models.length}`}
                                 label="Serving"
                                 hint="Provider and model both on"
+                            />
+                        </Card>
+                        <Card>
+                            <Stat
+                                value={String(data().apiKeys.length)}
+                                label="API keys"
+                                hint={`${enabledApiKeys()} enabled`}
                             />
                         </Card>
                         <Card>
@@ -192,7 +216,10 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                     </div>
 
                     <Show
-                        when={attentionProviders().length + emptyProviders().length > 0}
+                        when={
+                            attentionProviders().length + emptyProviders().length > 0 ||
+                            data().apiKeys.length === 0
+                        }
                         fallback={
                             <Notice
                                 tone="ok"
@@ -205,6 +232,23 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                         <Card>
                             <CardHeader title="Needs attention" />
                             <ul class="mt-4 flex flex-col divide-y divide-rule">
+                                <Show when={data().apiKeys.length === 0}>
+                                    <li class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
+                                        <Glyph
+                                            name="key"
+                                            class="shrink-0 text-ink-faint"
+                                        />
+                                        <p class="min-w-0 flex-1 text-[13.5px]">
+                                            <span class="font-medium">No API keys yet.</span>
+                                            <span class="text-ink-dim">
+                                                {
+                                                    " Serving clients authenticate with one — without it, the gateway serves nothing."
+                                                }
+                                            </span>
+                                        </p>
+                                        <ButtonLink href={hrefs.apiKeyNew()}>New key</ButtonLink>
+                                    </li>
+                                </Show>
                                 <For each={attentionProviders()}>
                                     {(provider) => <AttentionRow provider={provider} />}
                                 </For>
@@ -241,14 +285,14 @@ function credentialAttention(provider: ProviderResponse): {
     readonly label: string;
     readonly detail: string;
 } | null {
-    if (provider.type === "openai_compatible") {
+    if (!isOAuthProviderRow(provider)) {
         return null;
     }
 
     if (provider.expires_at === null) {
         return {
             label: "Credential not fresh",
-            detail: "No expiry is stored for this account.",
+            detail: "No expiry is stored for this provider.",
         };
     }
 
@@ -289,13 +333,13 @@ function AttentionRow(props: { readonly provider: ProviderResponse }): JSX.Eleme
     );
 }
 
-/** A fresh gateway: the four steps from here to a working endpoint. */
+/** A fresh gateway: the five steps from here to a working endpoint. */
 function GettingStarted(): JSX.Element {
     return (
         <EmptyState
             glyph="plug"
             title="No providers yet"
-            description="A provider is one upstream account — a ChatGPT or Google login, or a static key on any OpenAI-compatible service. Its models arrive when you sync, and each becomes a public model ID your clients can call."
+            description="A provider is one upstream account — a Codex OAuth or Antigravity OAuth login, or a key on any OpenAI-compatible API. Its models arrive when you sync, and each becomes a public model ID your clients can call."
         >
             <ButtonLink
                 href={hrefs.providerNew()}
@@ -321,6 +365,10 @@ function GettingStarted(): JSX.Element {
                 <GettingStartedStep
                     index={4}
                     title="Turn on serving"
+                />
+                <GettingStartedStep
+                    index={5}
+                    title="Issue an API key for serving clients"
                 />
             </ol>
         </EmptyState>

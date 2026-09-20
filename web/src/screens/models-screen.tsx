@@ -6,7 +6,7 @@ import { performManagementCall } from "/src/management-api/outcome";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
-import { SelectField } from "/src/ui/controls";
+import { ButtonLink, SelectField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
@@ -136,7 +136,15 @@ export function ModelsScreen(props: {
             <PageHeader
                 title="Models"
                 description="Every synced model, everywhere. Open one to edit its overrides."
-            />
+            >
+                <ButtonLink
+                    href={hrefs.modelNew(props.providerFilter)}
+                    tone="primary"
+                    glyph="plus"
+                >
+                    New model
+                </ButtonLink>
+            </PageHeader>
 
             <Show when={failure()}>
                 {(current) => (
@@ -170,8 +178,16 @@ export function ModelsScreen(props: {
                         <EmptyState
                             glyph="stack"
                             title="No models yet"
-                            description="Models arrive when a provider syncs with its upstream. Add a provider first, then sync — there is no other way to create a model."
-                        />
+                            description="Models usually arrive when a provider syncs with its upstream. Add a provider first, then sync — or add one by hand when sync would not produce it."
+                        >
+                            <ButtonLink
+                                href={hrefs.modelNew(props.providerFilter)}
+                                tone="primary"
+                                glyph="plus"
+                            >
+                                New model
+                            </ButtonLink>
+                        </EmptyState>
                     }
                 >
                     <div class="flex flex-wrap items-end gap-3">

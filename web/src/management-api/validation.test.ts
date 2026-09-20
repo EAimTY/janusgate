@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { ContractViolationError } from "./errors";
 
 import {
+    parseApiKeyEnvelope,
     parseDiscoverModelsResponse,
     parseEmptyResponse,
     parseErrorResponse,
+    parseListApiKeysResponse,
     parseListModelsResponse,
     parseListProvidersResponse,
     parseModelEnvelope,
@@ -14,17 +16,16 @@ import {
 } from "./validation";
 
 const compatibleProvider = {
-    type: "openai_compatible",
+    type: "openai_chat_completion",
     id: 1,
     name: "local",
     model_prefix: "local/",
     is_enabled: true,
     base_url: "https://upstream.example.com",
-    protocol: "openai_chat_completion",
 };
 
 const oauthProvider = {
-    type: "openai_oauth",
+    type: "codex_oauth",
     id: 2,
     name: "chatgpt",
     model_prefix: "",
@@ -222,6 +223,47 @@ describe("response validation", () => {
         ).toEqual({
             expires_at: 1_800_000_600,
         });
+    });
+
+    it("parses the api-keys listing and its envelope", () => {
+        const row = {
+            id: 7,
+            name: "service-a",
+            key: "sk-live",
+            is_enabled: true,
+            created_at: 1_700_000_000_000_000,
+        };
+
+        expect(
+            parseListApiKeysResponse({
+                api_keys: [
+                    row,
+                ],
+            }),
+        ).toEqual({
+            api_keys: [
+                row,
+            ],
+        });
+
+        expect(
+            parseApiKeyEnvelope({
+                api_key: row,
+            }),
+        ).toEqual({
+            api_key: row,
+        });
+
+        expect(() =>
+            parseListApiKeysResponse({
+                api_keys: [
+                    {
+                        ...row,
+                        key: 7,
+                    },
+                ],
+            }),
+        ).toThrow(/response\.api_keys\[0\]\.key must be a string/);
     });
 
     it("accepts only an object as an empty response", () => {

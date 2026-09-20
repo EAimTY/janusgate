@@ -72,6 +72,37 @@ describe("matchAppRoute", () => {
         });
     });
 
+    it("addresses model creation before the identifier route", () => {
+        expect(match("/models/new")).toEqual({
+            name: "modelNew",
+            providerFilter: null,
+        });
+        expect(match("/models/new?provider=4")).toEqual({
+            name: "modelNew",
+            providerFilter: 4,
+        });
+        expect(match("/models/new?provider=codex")).toEqual({
+            name: "modelNew",
+            providerFilter: null,
+        });
+    });
+
+    it("addresses the api-keys list, creation, and detail", () => {
+        expect(match("/api-keys")).toEqual({
+            name: "apiKeys",
+        });
+        expect(match("/api-keys/new")).toEqual({
+            name: "apiKeyNew",
+        });
+        expect(match("/api-keys/7")).toEqual({
+            name: "apiKeyDetail",
+            apiKeyId: 7,
+        });
+        expect(match("/api-keys/codex")).toEqual({
+            name: "notFound",
+        });
+    });
+
     it("addresses one model by its provider and upstream identifiers", () => {
         expect(match("/models/4/gpt-4o")).toEqual({
             name: "modelDetail",
@@ -141,6 +172,24 @@ describe("matchAppRoute", () => {
         expect(match(hrefs.models(7))).toEqual({
             name: "models",
             providerFilter: 7,
+        });
+        expect(match(hrefs.modelNew(null))).toEqual({
+            name: "modelNew",
+            providerFilter: null,
+        });
+        expect(match(hrefs.modelNew(7))).toEqual({
+            name: "modelNew",
+            providerFilter: 7,
+        });
+        expect(match(hrefs.apiKeys())).toEqual({
+            name: "apiKeys",
+        });
+        expect(match(hrefs.apiKeyNew())).toEqual({
+            name: "apiKeyNew",
+        });
+        expect(match(hrefs.apiKeyDetail(7))).toEqual({
+            name: "apiKeyDetail",
+            apiKeyId: 7,
         });
         expect(match(hrefs.modelDetail(7, "gpt-4o"))).toEqual({
             name: "modelDetail",

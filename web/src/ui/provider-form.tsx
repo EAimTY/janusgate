@@ -1,45 +1,38 @@
 import type { JSX } from "@solidjs/web";
 import { For } from "solid-js";
-import type {
-    OAuthProviderType,
-    ProviderResponse,
-    UpstreamFormat,
-} from "/src/management-api/generated/v0";
-import {
-    OAUTH_PROVIDER_TYPE_OPTIONS,
-    providerTypeLabel,
-    UPSTREAM_FORMAT_OPTIONS,
-} from "/src/management-api/vocabulary";
+import type { ProviderType } from "/src/management-api/generated/v0";
+import { PROVIDER_TYPE_OPTIONS } from "/src/management-api/vocabulary";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
-import { SelectField, Switch, TextField } from "/src/ui/controls";
+import { Switch, TextField } from "/src/ui/controls";
 
-/** The account kinds the creation form offers, in one vocabulary. */
-export type ProviderKind = ProviderResponse["type"];
+/** The five creatable provider kinds, exactly the wire contract's five provider types. */
+export type ProviderKind = ProviderType;
+
+const PROVIDER_KIND_DESCRIPTIONS: Record<ProviderKind, string> = {
+    openai_response:
+        "Any service speaking the OpenAI Responses API, authenticated with a static key.",
+    openai_chat_completion:
+        "Any service speaking the OpenAI Chat Completions API, authenticated with a static key.",
+    gemini_generate_content:
+        "Any service speaking the Gemini generateContent API, authenticated with a static key.",
+    codex_oauth: "A ChatGPT account, connected with Codex OAuth through its login page.",
+    antigravity_oauth: "A Google account, connected with Antigravity OAuth through its login page.",
+};
 
 export const PROVIDER_KIND_OPTIONS: ReadonlyArray<{
     readonly value: ProviderKind;
     readonly title: string;
     readonly description: string;
-}> = [
-    {
-        value: "openai_compatible",
-        title: "API key",
-        description: "Any OpenAI-compatible service, authenticated with a static key.",
-    },
-    ...OAUTH_PROVIDER_TYPE_OPTIONS.map((option) => ({
-        value: option.value as OAuthProviderType,
-        title: option.value === "openai_oauth" ? "ChatGPT account" : "Google account",
-        description:
-            option.value === "openai_oauth"
-                ? "An OpenAI account, connected through its login page."
-                : "A Google account, connected through its login page.",
-    })),
-];
+}> = PROVIDER_TYPE_OPTIONS.map((option) => ({
+    value: option.value,
+    title: option.label,
+    description: PROVIDER_KIND_DESCRIPTIONS[option.value],
+}));
 
 /**
- * The provider kind as three plain options. OAuth kinds and the static key
- * are one choice here — not two different creations — because they are all
- * providers whose credential paths merely differ.
+ * The provider kind as five plain options. The three static-key wire formats
+ * and the two OAuth logins are one choice here — not different creations —
+ * because they are all providers whose credential paths merely differ.
  */
 export function ProviderKindPicker(props: {
     readonly value: ProviderKind;
@@ -111,13 +104,15 @@ export function ProviderIdentityFields(props: {
     );
 }
 
-/** Address, wire format, and key of an API-key provider. */
+/**
+ * Address and key of a static-key provider. The wire format is the
+ * provider's own type and never an editable field, so this card carries no
+ * format control.
+ */
 export function CompatibleConnectionFields(props: {
     readonly baseUrl: string;
-    readonly protocol: UpstreamFormat;
     readonly apiKey: string;
     readonly onBaseUrlInput: (value: string) => void;
-    readonly onProtocolChange: (value: UpstreamFormat) => void;
     readonly onApiKeyInput: (value: string) => void;
     readonly apiKeyLabel?: string | undefined;
     readonly apiKeyHint?: string | undefined;
@@ -125,25 +120,15 @@ export function CompatibleConnectionFields(props: {
 }): JSX.Element {
     return (
         <div class="flex flex-col gap-4">
-            <div class="grid gap-4 sm:grid-cols-2">
-                <TextField
-                    label="Upstream base URL"
-                    type="url"
-                    value={props.baseUrl}
-                    onInput={props.onBaseUrlInput}
-                    placeholder="https://upstream.example.com/v1"
-                    isDisabled={props.isDisabled ?? false}
-                    hint="Where this provider's traffic is sent."
-                />
-                <SelectField
-                    label="Upstream protocol"
-                    value={props.protocol}
-                    options={UPSTREAM_FORMAT_OPTIONS}
-                    onChange={props.onProtocolChange}
-                    isDisabled={props.isDisabled ?? false}
-                    hint="The wire format this upstream speaks."
-                />
-            </div>
+            <TextField
+                label="Upstream base URL"
+                type="url"
+                value={props.baseUrl}
+                onInput={props.onBaseUrlInput}
+                placeholder="https://upstream.example.com/v1"
+                isDisabled={props.isDisabled ?? false}
+                hint="Where this provider's traffic is sent."
+            />
             <TextField
                 label={props.apiKeyLabel ?? "API key"}
                 type="password"
@@ -177,9 +162,4 @@ export function ProviderServingSwitch(props: {
             onToggle={props.onToggle}
         />
     );
-}
-
-/** The label a stored provider row's own type is shown under. */
-export function providerKindTitle(type: ProviderKind): string {
-    return type === "openai_compatible" ? "API key" : providerTypeLabel(type);
 }

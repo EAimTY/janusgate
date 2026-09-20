@@ -1,0 +1,221 @@
+import type { JSX } from "@solidjs/web";
+import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { formatCreatedAt } from "/src/format";
+import type { ManagementApi } from "/src/management-api/client";
+import type { ApiKeyResponse } from "/src/management-api/generated/v0";
+import { performManagementCall } from "/src/management-api/outcome";
+import { refreshRequest, reportRefresh } from "/src/refresh-state";
+import { hrefs } from "/src/router";
+import { describeCallFailure } from "/src/screens/failure";
+import { CopyButton } from "/src/ui/api-key-form";
+import { AppLink } from "/src/ui/app-link";
+import { ButtonLink } from "/src/ui/controls";
+import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Glyph } from "/src/ui/glyph";
+import { PageHeader } from "/src/ui/layout";
+
+/**
+ * Every serving key on one page. Rows carry identity, the full secret with a
+ * copy action, serving state, and creation time — each row opens the key's
+ * own page, where those facts are edited. Nothing is edited here.
+ */
+export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Element {
+    const [keys, setKeys] = createSignal<ReadonlyArray<ApiKeyResponse>>([]);
+    const [hasRead, setHasRead] = createSignal(false);
+    const [isReading, setIsReading] = createSignal(true);
+    const [search, setSearch] = createSignal("");
+    const [failure, setFailure] = createSignal<{
+        readonly title: string;
+        readonly detail: string;
+        readonly fix: string | null;
+    } | null>(null);
+
+    let controller: AbortController | null = null;
+
+    const read = async (): Promise<void> => {
+        controller?.abort();
+
+        const call = new AbortController();
+        controller = call;
+        setIsReading(true);
+
+        const outcome = await performManagementCall(() => props.api.listApiKeys(call.signal));
+
+        if (outcome.status === "aborted") {
+            return;
+        }
+
+        setIsReading(false);
+
+        if (outcome.status === "failed") {
+            const diagnosis = describeCallFailure(outcome.cause);
+
+            setFailure({
+                title: diagnosis.headline,
+                detail: diagnosis.detail,
+                fix: diagnosis.fix,
+            });
+            return;
+        }
+
+        setFailure(null);
+        setKeys(outcome.result.api_keys);
+        setHasRead(true);
+        reportRefresh();
+    };
+
+    createTrackedEffect(() => {
+        refreshRequest();
+        void read();
+
+        return () => controller?.abort();
+    });
+
+    const visibleKeys = createMemo(() => {
+        const needle = search().trim().toLowerCase();
+
+        if (needle === "") {
+            return keys();
+        }
+
+        return keys().filter(
+            (row) =>
+                row.name.toLowerCase().includes(needle) || row.key.toLowerCase().includes(needle),
+        );
+    });
+
+    const enabledCount = createMemo(() => keys().filter((row) => row.is_enabled).length);
+
+    return (
+        <div class="rise-in flex flex-col gap-5">
+            <PageHeader
+                title="API keys"
+                description="Serving keys. Clients send one as Authorization: Bearer <key>; open one to rename, rotate, or revoke it."
+            >
+                <ButtonLink
+                    href={hrefs.apiKeyNew()}
+                    tone="primary"
+                    glyph="plus"
+                >
+                    New key
+                </ButtonLink>
+            </PageHeader>
+
+            <Show when={failure()}>
+                {(current) => (
+                    <Notice
+                        tone="bad"
+                        title={current().title}
+                        detail={current().detail}
+                        fix={current().fix}
+                    />
+                )}
+            </Show>
+
+            <Show when={isReading() && !hasRead() && failure() === null}>
+                <div class="flex flex-col gap-2">
+                    <For
+                        each={[
+                            0,
+                            1,
+                            2,
+                        ]}
+                    >
+                        {() => <Skeleton class="h-16 w-full rounded-xl" />}
+                    </For>
+                </div>
+            </Show>
+
+            <Show when={hasRead()}>
+                <Show
+                    when={keys().length > 0}
+                    fallback={
+                        <EmptyState
+                            glyph="key"
+                            title="No API keys yet"
+                            description="Serving clients authenticate with these keys, and a fresh gateway serves nothing until the first one exists. Issue one, copy the secret into client configuration, and serving starts."
+                        >
+                            <ButtonLink
+                                href={hrefs.apiKeyNew()}
+                                tone="primary"
+                                glyph="plus"
+                            >
+                                New key
+                            </ButtonLink>
+                        </EmptyState>
+                    }
+                >
+                    <div class="relative">
+                        <Glyph
+                            name="search"
+                            class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint"
+                        />
+                        <input
+                            type="search"
+                            aria-label="Search API keys"
+                            placeholder="Search by name or key"
+                            value={search()}
+                            onInput={(event) => setSearch(event.currentTarget.value)}
+                            class="w-full rounded-lg border border-rule-strong bg-surface py-2 pr-3 pl-9 text-ink placeholder:text-ink-faint transition-colors duration-150 ease-out hover:border-ink-faint focus:border-accent focus:outline-none sm:max-w-xs"
+                        />
+                    </div>
+
+                    <p
+                        class="text-[12.5px] text-ink-faint"
+                        role="status"
+                    >
+                        {`${enabledCount()} of ${keys().length} ${keys().length === 1 ? "key" : "keys"} enabled`}
+                    </p>
+
+                    <Show
+                        when={visibleKeys().length > 0}
+                        fallback={
+                            <Notice
+                                tone="info"
+                                title={`No API keys match "${search().trim()}".`}
+                            />
+                        }
+                    >
+                        <ul class="flex flex-col gap-2">
+                            <For each={visibleKeys()}>{(row) => <ApiKeyRow apiKey={row} />}</For>
+                        </ul>
+                    </Show>
+                </Show>
+            </Show>
+        </div>
+    );
+}
+
+function ApiKeyRow(props: { readonly apiKey: ApiKeyResponse }): JSX.Element {
+    return (
+        <li class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3.5">
+            <AppLink
+                href={hrefs.apiKeyDetail(props.apiKey.id)}
+                class="group flex min-w-0 flex-1 basis-48 items-center gap-4"
+            >
+                <span class="min-w-0 flex-1">
+                    <span class="block truncate text-[14.5px] font-semibold">
+                        {props.apiKey.name}
+                    </span>
+                    <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
+                        {`#${props.apiKey.id} · created ${formatCreatedAt(props.apiKey.created_at)}`}
+                    </span>
+                    <span class="tnum mt-1 block truncate text-[12.5px] text-ink-dim">
+                        {props.apiKey.key}
+                    </span>
+                </span>
+                <span class="flex shrink-0 items-center gap-2">
+                    <Badge
+                        tone={props.apiKey.is_enabled ? "ok" : "muted"}
+                        label={props.apiKey.is_enabled ? "On" : "Off"}
+                    />
+                    <Glyph
+                        name="chev-right"
+                        class="text-ink-faint transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink-dim"
+                    />
+                </span>
+            </AppLink>
+            <CopyButton value={props.apiKey.key} />
+        </li>
+    );
+}

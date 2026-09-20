@@ -5,10 +5,9 @@ import type { Diagnosis } from "/src/management-api/diagnosis";
 import type {
     OAuthProviderType,
     StartProviderOauthResponse,
-    UpstreamFormat,
 } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
-import { findUpstreamFormat, UPSTREAM_FORMAT_OPTIONS } from "/src/management-api/vocabulary";
+import { findOAuthProviderType } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
 import { Button, TextField } from "/src/ui/controls";
@@ -23,22 +22,19 @@ import {
     ProviderServingSwitch,
 } from "/src/ui/provider-form";
 
-/** The protocol new API-key providers start with. */
-const DEFAULT_PROTOCOL: UpstreamFormat = UPSTREAM_FORMAT_OPTIONS[0]?.value ?? "openai_response";
-
 /**
- * One creation page for every provider kind. API-key and login accounts are
- * the same creation — the kind picker only swaps the credential path that
- * follows the shared identity fields. OAuth completions mint the account and
- * land on its page, like a key creation does.
+ * One creation page for every provider kind. The three static-key wire
+ * formats and the two OAuth logins are the same creation — the kind picker
+ * only swaps the credential path that follows the shared identity fields.
+ * A static-key kind is created under its own `type`; OAuth completions mint
+ * the provider and land on its page, like a key creation does.
  */
 export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.Element {
-    const [kind, setKind] = createSignal<ProviderKind>("openai_compatible");
+    const [kind, setKind] = createSignal<ProviderKind>("openai_response");
     const [name, setName] = createSignal("");
     const [modelPrefix, setModelPrefix] = createSignal("");
     const [isEnabled, setIsEnabled] = createSignal(true);
     const [baseUrl, setBaseUrl] = createSignal("");
-    const [protocol, setProtocol] = createSignal<UpstreamFormat>(DEFAULT_PROTOCOL);
     const [apiKey, setApiKey] = createSignal("");
 
     const pickKind = (next: ProviderKind): void => {
@@ -57,7 +53,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     const isBusy = (): boolean => isCreating() || isStarting() || isCompleting();
 
-    /** Creates an API-key provider. The gateway refuses nothing itself: a
+    /** Creates a static-key provider. The gateway refuses nothing itself: a
      * taken name or an unparsable value comes back as its own message. */
     const create = async (): Promise<void> => {
         if (isBusy()) {
@@ -73,7 +69,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 model_prefix: modelPrefix(),
                 is_enabled: isEnabled(),
                 base_url: baseUrl(),
-                protocol: protocol(),
+                type: kind(),
                 api_key: apiKey(),
             }),
         );
@@ -92,7 +88,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         navigate(hrefs.providerDetail(outcome.result.provider.id));
     };
 
-    const start = async (accountType: OAuthProviderType): Promise<void> => {
+    const start = async (oauthType: OAuthProviderType): Promise<void> => {
         if (isBusy()) {
             return;
         }
@@ -102,7 +98,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
         const outcome = await performManagementCall(() =>
             props.api.startProviderOauth({
-                type: accountType,
+                type: oauthType,
             }),
         );
 
@@ -178,16 +174,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         setDiagnosis(null);
     };
 
-    const oauthKind = (): OAuthProviderType | null => {
-        const current = kind();
-        return current === "openai_compatible" ? null : current;
-    };
+    const oauthKind = (): OAuthProviderType | null => findOAuthProviderType(kind());
 
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="New provider"
-                description="One upstream account. Pick the kind — the credential path follows."
+                description="One upstream provider. Pick the kind — the credential path follows."
                 backHref={hrefs.providers()}
                 backLabel="Providers"
             />
@@ -237,7 +230,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
             <Switch>
                 <Match when={oauthKind()}>
-                    {(accountType) => (
+                    {(oauthType) => (
                         <Card>
                             <CardHeader
                                 title="Connect the account"
@@ -251,7 +244,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                         <Button
                                             tone="primary"
                                             isBusy={isStarting()}
-                                            onClick={() => void start(accountType())}
+                                            onClick={() => void start(oauthType())}
                                         >
                                             {isStarting() ? "Starting…" : "Start the authorization"}
                                         </Button>
@@ -307,16 +300,8 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         >
                             <CompatibleConnectionFields
                                 baseUrl={baseUrl()}
-                                protocol={protocol()}
                                 apiKey={apiKey()}
                                 onBaseUrlInput={setBaseUrl}
-                                onProtocolChange={(value) => {
-                                    const format = findUpstreamFormat(value);
-
-                                    if (format !== null) {
-                                        setProtocol(format);
-                                    }
-                                }}
                                 onApiKeyInput={setApiKey}
                                 isDisabled={isCreating()}
                             />

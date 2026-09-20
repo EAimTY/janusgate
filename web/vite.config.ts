@@ -16,6 +16,13 @@ export default defineConfig({
     // the Rust build artifacts: the dev-server cache and the build output.
     cacheDir: "../target/web/cache",
 
+    // The dev server listens on a fixed high port to avoid collisions with
+    // the Vite defaults (5173/5174) commonly used by other projects.
+    server: {
+        port: 56625,
+        strictPort: true,
+    },
+
     build: {
         outDir: "../target/web/dist",
         emptyOutDir: true,

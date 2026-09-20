@@ -60,7 +60,27 @@ describe("diagnoseFailure", () => {
         expect(diagnosis.fix).not.toBeNull();
     });
 
-    it("points an upstream refusal at the account's credentials when discovering models", () => {
+    it("names the colliding public ID for a model creation conflict", () => {
+        const diagnosis = diagnoseFailure(gatewayFailure(ErrorCode.Conflict, "public id taken"), {
+            ...context,
+            action: "create-model",
+        });
+
+        expect(diagnosis.kind).toBe("conflict");
+        expect(diagnosis.fix).toContain("public ID");
+    });
+
+    it("points a taken key secret at generating a fresh one", () => {
+        const diagnosis = diagnoseFailure(gatewayFailure(ErrorCode.Conflict, "api key taken"), {
+            ...context,
+            action: "create-api-key",
+        });
+
+        expect(diagnosis.kind).toBe("conflict");
+        expect(diagnosis.fix).toContain("fresh one");
+    });
+
+    it("points an upstream refusal at the provider's credentials when discovering models", () => {
         const diagnosis = diagnoseFailure(
             gatewayFailure(ErrorCode.UpstreamError, "upstream answered 502"),
             {

@@ -19,7 +19,11 @@ export type ActionName =
     | "update-provider"
     | "delete-provider"
     | "discover-models"
+    | "create-model"
     | "update-model"
+    | "create-api-key"
+    | "update-api-key"
+    | "delete-api-key"
     | "start-oauth"
     | "complete-oauth"
     | "reauthorize";
@@ -72,13 +76,18 @@ function isCrossOrigin(baseUrl: string, pageOrigin: string): boolean {
 
 function conflictFix(action: ActionName | undefined): string {
     switch (action) {
+        case "create-model":
         case "update-model":
             return "Another model already routes that public ID.";
+
+        case "create-api-key":
+        case "update-api-key":
+            return "Another key already holds that secret; generate a fresh one.";
 
         case "create-provider":
         case "update-provider":
         case "complete-oauth":
-            return "Choose account naming no other row holds; a changed model prefix can also collide with an existing model ID.";
+            return "Choose provider naming no other row holds; a changed model prefix can also collide with an existing model ID.";
 
         default:
             return "Choose an identifier no other row holds.";
@@ -88,7 +97,7 @@ function conflictFix(action: ActionName | undefined): string {
 function upstreamFix(action: ActionName | undefined): string {
     switch (action) {
         case "discover-models":
-            return "Check the account's state; a session that ran out needs reauthorizing.";
+            return "Check the provider's state; a session that ran out needs reauthorizing.";
 
         case "start-oauth":
         case "complete-oauth":
@@ -96,7 +105,7 @@ function upstreamFix(action: ActionName | undefined): string {
             return "The provider refused the exchange; start the flow again from this page.";
 
         default:
-            return "Check the account's credentials and reachability.";
+            return "Check the provider's credentials and reachability.";
     }
 }
 
@@ -179,7 +188,7 @@ function fromGatewayError(error: ManagementApiError, context: ActionContext): Di
         case ErrorCode.UpstreamError:
             return {
                 kind: "upstream",
-                headline: "The upstream account refused the call or was unreachable.",
+                headline: "The upstream provider refused the call or was unreachable.",
                 detail: message,
                 fix: upstreamFix(context.action),
             };

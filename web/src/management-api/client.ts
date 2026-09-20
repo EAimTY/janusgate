@@ -8,12 +8,17 @@ import {
 } from "/src/management-api/errors";
 
 import {
+    type ApiKeyEnvelope,
     type CompleteProviderOauthRequest,
+    type CreateApiKeyRequest,
+    type CreateModelRequest,
     type CreateProviderRequest,
+    type DeleteApiKeyRequest,
     type DeleteProviderRequest,
     type DiscoverModelsRequest,
     type DiscoverModelsResponse,
     ErrorCode,
+    type ListApiKeysResponse,
     type ListModelsRequest,
     type ListModelsResponse,
     type ListProvidersRequest,
@@ -25,14 +30,17 @@ import {
     type ReauthorizeProviderResponse,
     type StartProviderOauthRequest,
     type StartProviderOauthResponse,
+    type UpdateApiKeyRequest,
     type UpdateModelRequest,
     type UpdateProviderRequest,
 } from "/src/management-api/generated/v0";
 
 import {
+    parseApiKeyEnvelope,
     parseDiscoverModelsResponse,
     parseEmptyResponse,
     parseErrorResponse,
+    parseListApiKeysResponse,
     parseListModelsResponse,
     parseListProvidersResponse,
     parseModelEnvelope,
@@ -85,6 +93,17 @@ import {
         request: UpdateModelRequest,
         signal?: AbortSignal,
     ) => Promise<ModelEnvelope>;
+    readonly createModel: (
+        request: CreateModelRequest,
+        signal?: AbortSignal,
+    ) => Promise<ModelEnvelope>;
+    readonly listApiKeys: (signal?: AbortSignal) => Promise<ListApiKeysResponse>;
+    readonly createApiKey: (
+        request: CreateApiKeyRequest,
+        signal?: AbortSignal,
+    ) => Promise<ApiKeyEnvelope>;
+    readonly updateApiKey: (request: UpdateApiKeyRequest, signal?: AbortSignal) => Promise<void>;
+    readonly deleteApiKey: (request: DeleteApiKeyRequest, signal?: AbortSignal) => Promise<void>;
 };
 
 export type ManagementApiOptions = {
@@ -261,5 +280,20 @@ export function createManagementApi(
             ),
         updateModel: async (request, signal) =>
             decodeResponse(await post("/models:update", request, signal), parseModelEnvelope),
+        createModel: async (request, signal) =>
+            decodeResponse(await post("/models:create", request, signal), parseModelEnvelope),
+        listApiKeys: async (signal) =>
+            decodeResponse(
+                await post("/api-keys:list", emptyRequest, signal),
+                parseListApiKeysResponse,
+            ),
+        createApiKey: async (request, signal) =>
+            decodeResponse(await post("/api-keys:create", request, signal), parseApiKeyEnvelope),
+        updateApiKey: async (request, signal) => {
+            decodeResponse(await post("/api-keys:update", request, signal), parseEmptyResponse);
+        },
+        deleteApiKey: async (request, signal) => {
+            decodeResponse(await post("/api-keys:delete", request, signal), parseEmptyResponse);
+        },
     };
 }

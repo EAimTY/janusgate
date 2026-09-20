@@ -3,6 +3,11 @@ export function formatTimestamp(unixSeconds: number): string {
     return new Date(unixSeconds * 1000).toLocaleString();
 }
 
+/** A gateway-stamped creation time (UTC microseconds) in the browser's locale. */
+export function formatCreatedAt(createdAtMicros: number): string {
+    return new Date(createdAtMicros / 1000).toLocaleString();
+}
+
 /** A wall clock of hours, minutes and seconds, as the panel's validity stamp. */
 export function formatClock(date: Date): string {
     return date.toLocaleTimeString(undefined, {

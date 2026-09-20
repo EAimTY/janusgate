@@ -1,10 +1,13 @@
 import { ContractViolationError } from "/src/management-api/errors";
 
 import {
+    type ApiKeyEnvelope,
+    type ApiKeyResponse,
     type DiscoverModelsResponse,
     type EmptyResponse,
     ErrorCode,
     type ErrorResponse,
+    type ListApiKeysResponse,
     type ListModelsResponse,
     type ListProvidersResponse,
     type ModelEnvelope,
@@ -16,7 +19,7 @@ import {
     type ThinkingLevel,
 } from "/src/management-api/generated/v0";
 
-import { parseThinkingLevel, parseUpstreamFormat } from "/src/management-api/vocabulary";
+import { parseThinkingLevel } from "/src/management-api/vocabulary";
 
 /**
  * Response validation (README §4.6): every management response enters the app
@@ -114,29 +117,45 @@ export function parseProviderResponse(value: unknown, context: string): Provider
 
     const isEnabled = expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`);
 
-    // A closure: the compatible variant has no `expires_at`, so its absence is
+    // A closure: the static-key variants have no `expires_at`, so its absence is
     // only an error where the union variant declares the field.
     const readExpiresAt = () =>
         expectNullableInteger(Reflect.get(record, "expires_at"), `${context}.expires_at`);
 
     switch (type) {
-        case "openai_compatible":
+        case "openai_response":
             return {
-                type: "openai_compatible",
+                type: "openai_response",
                 id,
                 name,
                 model_prefix: modelPrefix,
                 is_enabled: isEnabled,
                 base_url: expectString(Reflect.get(record, "base_url"), `${context}.base_url`),
-                protocol: parseUpstreamFormat(
-                    Reflect.get(record, "protocol"),
-                    `${context}.protocol`,
-                ),
             };
 
-        case "openai_oauth":
+        case "openai_chat_completion":
             return {
-                type: "openai_oauth",
+                type: "openai_chat_completion",
+                id,
+                name,
+                model_prefix: modelPrefix,
+                is_enabled: isEnabled,
+                base_url: expectString(Reflect.get(record, "base_url"), `${context}.base_url`),
+            };
+
+        case "gemini_generate_content":
+            return {
+                type: "gemini_generate_content",
+                id,
+                name,
+                model_prefix: modelPrefix,
+                is_enabled: isEnabled,
+                base_url: expectString(Reflect.get(record, "base_url"), `${context}.base_url`),
+            };
+
+        case "codex_oauth":
+            return {
+                type: "codex_oauth",
                 id,
                 name,
                 model_prefix: modelPrefix,
@@ -225,6 +244,38 @@ export function parseModelEnvelope(value: unknown): ModelEnvelope {
 
     return {
         model: parseModelResponse(Reflect.get(record, "model"), "response.model"),
+    };
+}
+
+/** One gateway API key row: the complete readable state, plaintext secret included. */
+export function parseApiKeyResponse(value: unknown, context: string): ApiKeyResponse {
+    const record = expectRecord(value, context);
+
+    return {
+        id: expectInteger(Reflect.get(record, "id"), `${context}.id`),
+        name: expectString(Reflect.get(record, "name"), `${context}.name`),
+        key: expectString(Reflect.get(record, "key"), `${context}.key`),
+        is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
+        created_at: expectInteger(Reflect.get(record, "created_at"), `${context}.created_at`),
+    };
+}
+
+export function parseListApiKeysResponse(value: unknown): ListApiKeysResponse {
+    const record = expectRecord(value, "response");
+    const apiKeys = expectArray(Reflect.get(record, "api_keys"), "response.api_keys");
+
+    return {
+        api_keys: apiKeys.map((entry, index) =>
+            parseApiKeyResponse(entry, `response.api_keys[${index}]`),
+        ),
+    };
+}
+
+export function parseApiKeyEnvelope(value: unknown): ApiKeyEnvelope {
+    const record = expectRecord(value, "response");
+
+    return {
+        api_key: parseApiKeyResponse(Reflect.get(record, "api_key"), "response.api_key"),
     };
 }
 

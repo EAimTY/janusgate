@@ -228,7 +228,7 @@ pub(crate) fn begin_flow(oauth_type: OAuthProviderType) -> OAuthFlow {
     let state = random_url_safe(32);
 
     let (verifier, authorize_url) = match oauth_type {
-        OAuthProviderType::OpenAiOauth => {
+        OAuthProviderType::CodexOauth => {
             let verifier = random_url_safe(64);
 
             let challenge = pkce_challenge(&verifier);
@@ -299,7 +299,7 @@ pub(crate) async fn exchange_code(
     verifier: &str,
 ) -> Result<ExchangedTokens, Error> {
     let request = match oauth_type {
-        OAuthProviderType::OpenAiOauth => {
+        OAuthProviderType::CodexOauth => {
             // Lengths only: the values are secrets, but their shapes diagnose paste mistakes
             // (a truncated or URL-pasted code) without leaking them.
             debug!(
@@ -342,7 +342,7 @@ pub(crate) async fn exchange_code(
     })?;
 
     let credentials = match oauth_type {
-        OAuthProviderType::OpenAiOauth => {
+        OAuthProviderType::CodexOauth => {
             let id_token = response
                 .id_token
                 .clone()
@@ -355,7 +355,7 @@ pub(crate) async fn exchange_code(
                     detail: "id token lacks a ChatGPT account claim".to_string(),
                 })?;
 
-            Credentials::OpenAiOauth {
+            Credentials::CodexOauth {
                 access_token,
                 refresh_token,
                 account_id,
@@ -393,7 +393,7 @@ pub(super) async fn refresh_tokens(
     refresh_token: &str,
 ) -> Result<RefreshedTokens, Error> {
     let request = match oauth_type {
-        OAuthProviderType::OpenAiOauth => {
+        OAuthProviderType::CodexOauth => {
             http.post(format!("{OPENAI_ISSUER}/oauth/token"))
                 .json(&OpenAiRefreshGrantRequest {
                     client_id: OPENAI_CLIENT_ID,
@@ -674,7 +674,7 @@ mod tests {
     /// Panics if the authorize URL diverges from the CLI's parameters.
     #[test]
     fn builds_the_codex_authorize_url_like_the_cli() {
-        let flow = begin_flow(OAuthProviderType::OpenAiOauth);
+        let flow = begin_flow(OAuthProviderType::CodexOauth);
 
         assert!(
             flow.authorize_url.contains(concat!(
