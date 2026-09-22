@@ -644,9 +644,10 @@ impl Model {
         }
     }
 
-    /// The model's effective serving status — the one definition routing, the enabled-model
-    /// listing, and the management rendering all share (README §3): true if and only if the owning
-    /// provider is enabled, the model itself is enabled, and the row is not `vanished`. The
+    /// The model's effective serving status — the one definition routing and the enabled-model
+    /// listing share (README §3), and the definition a management client derives from the row's
+    /// exposed inputs rather than reading it off the wire (§7.0 rule 7): true if and only if the
+    /// owning provider is enabled, the model itself is enabled, and the row is not `vanished`. The
     /// provider's `enabled` flag serves as the master switch, and a vanished row has its service
     /// suspended regardless of its configured switch — without the switch ever being written
     /// (discovery only writes `discovery_state`).

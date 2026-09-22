@@ -61,11 +61,10 @@ route! {
 
 /// One model listing entry in its management wire shape (README §7.1). `id` is the row identifier
 /// (`AUTOINCREMENT`, never recycled) that every row-addressed write goes through, while
-/// `public_id` is the routing string clients address. `is_enabled` is the model's configured
-/// switch; `discovery_state` is what the badge shows; `is_effectively_enabled` is the one
-/// three-input definition the outward surfaces share (`provider.is_enabled && model.is_enabled &&
-/// discovery_state != vanished`) — a vanished row can carry `is_enabled: true` and still report
-/// `false` here.
+/// `public_id` is the routing string clients address. The row carries only its own inputs —
+/// `is_enabled`, `discovery_state` — and never the three-input effective verdict: the caller
+/// derives that from these plus the provider's `is_enabled`, which `providers:list` already
+/// returns (README §7.0 rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ModelResponse {
@@ -93,9 +92,6 @@ pub struct ModelResponse {
 
     /// Discovery lifecycle state of the row.
     pub discovery_state: DiscoveryState,
-
-    /// Whether the model currently serves traffic — the three-input definition.
-    pub is_effectively_enabled: bool,
 }
 
 impl ModelResponse {
@@ -110,9 +106,6 @@ impl ModelResponse {
             id_override: entry.model.id_override.clone(),
             is_enabled: entry.model.is_enabled,
             discovery_state: entry.model.discovery_state,
-            is_effectively_enabled: entry
-                .model
-                .is_effectively_enabled(entry.is_provider_enabled),
         }
     }
 }
@@ -134,8 +127,9 @@ pub struct ListModelsRequest {
     pub provider_id: Option<i64>,
 }
 
-/// The `models:list` success body (README §7.1): every row, `vanished` ones included — each
-/// carrying its own `is_effectively_enabled`.
+/// The `models:list` success body (README §7.1): every row, `vanished` ones included; the caller
+/// derives the three-input effective status from the row's inputs and the provider's switch
+/// (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ListModelsResponse {
@@ -221,8 +215,8 @@ pub struct DeleteModelRequest {
 }
 
 /// The `models:create` and `models:update` success body (README §7.1): the composed `public_id`
-/// and the three-input `is_effectively_enabled` derive from transaction-time provider and
-/// discovery state, so they are not client-computable (rule 7).
+/// derives from transaction-time provider state — the current prefix under the collision check —
+/// so it is not client-computable (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ModelEnvelope {
@@ -447,9 +441,11 @@ mod tests {
     };
 
     /// Pins the `models` wire row at the JSON level: the row identifier under `id`, the routing
-    /// string under `public_id`, the discovery state, and the three-input effective flag — and,
-    /// positively, that no thinking-level field of any kind rides along (README §7.1). A vanished
-    /// row renders `is_effectively_enabled: false` even with `is_enabled: true`.
+    /// string under `public_id`, and the row's own inputs `is_enabled` and `discovery_state` — and,
+    /// positively, that no thinking-level field and no derived effective verdict rides along: the
+    /// row carries its inputs and the caller derives the three-input status (README §7.0 rule 7).
+    /// The `vanished` row is pinned beside `is_enabled: true`, so the derivation has everything it
+    /// needs right in the row.
     ///
     /// # Panics
     ///
@@ -459,7 +455,6 @@ mod tests {
         let entry = |discovery_state, is_enabled| ModelEntry {
             provider_id: 7,
             provider_name: "acme".to_string(),
-            is_provider_enabled: true,
             model: Model {
                 id: 42,
                 upstream_id: "gpt-4".to_string(),
@@ -488,7 +483,6 @@ mod tests {
                 "id_override": null,
                 "is_enabled": true,
                 "discovery_state": "discovered",
-                "is_effectively_enabled": true,
             })
         );
 
@@ -500,10 +494,17 @@ mod tests {
         .expect("the row body serializes");
 
         assert_eq!(
-            vanished
-                .get("is_effectively_enabled")
-                .and_then(|value| value.as_bool()),
-            Some(false)
+            vanished,
+            serde_json::json!({
+                "id": 42,
+                "provider_id": 7,
+                "provider": "acme",
+                "upstream_id": "gpt-4",
+                "public_id": "acme/gpt-4",
+                "id_override": null,
+                "is_enabled": true,
+                "discovery_state": "vanished",
+            })
         );
     }
 

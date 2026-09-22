@@ -50,8 +50,8 @@ const PROVIDER_MODEL_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.type, \
      m.id, m.upstream_id, m.public_id, m.id_override, m.is_enabled, m.discovery_state";
 
 /// The combined column order of the model-entry join, consumed positionally by
-/// [`model_entry_from_row`]: the provider id, name, and enabled flag, then the model columns.
-const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, p.is_enabled, \
+/// [`model_entry_from_row`]: the provider id and name, then the model columns.
+const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, \
      m.id, m.upstream_id, m.public_id, m.id_override, m.is_enabled, m.discovery_state";
 
 /// Provider, model, and OAuth state persistence failures.
@@ -280,14 +280,13 @@ fn model_from_row(row: &Row) -> Result<Model, Error> {
     model_from_row_offset(row, 0)
 }
 
-/// Parses a model entry row in [`MODEL_ENTRY_COLUMNS`] order: the provider id, name, and enabled
-/// flag, then the model columns at offset 3.
+/// Parses a model entry row in [`MODEL_ENTRY_COLUMNS`] order: the provider id and name, then the
+/// model columns at offset 2.
 fn model_entry_from_row(row: &Row) -> Result<ModelEntry, Error> {
     Ok(ModelEntry {
         provider_id: row.get(0)?,
         provider_name: row.get(1)?,
-        is_provider_enabled: row.get::<i64>(2)? != 0,
-        model: model_from_row_offset(row, 3)?,
+        model: model_from_row_offset(row, 2)?,
     })
 }
 
@@ -449,7 +448,7 @@ mod tests {
         assert_eq!(gpt4.model.id_override, None);
         assert!(gpt4.model.is_enabled);
         assert_eq!(gpt4.model.discovery_state, DiscoveryState::Discovered);
-        assert!(gpt4.model.is_effectively_enabled(gpt4.is_provider_enabled));
+        assert!(gpt4.model.is_effectively_enabled(true));
 
         // 2. An override applied by row id replaces the composed ID; routing resolves it.
         let gpt4_id = gpt4.model.id;
@@ -549,11 +548,10 @@ mod tests {
         let claude = entry(&entries, "claude");
 
         assert!(!claude.model.is_enabled);
-        assert!(
-            !claude
-                .model
-                .is_effectively_enabled(claude.is_provider_enabled)
-        );
+
+        // The provider master switch is still on here; the model's own switch is what fails the
+        // three-input status.
+        assert!(!claude.model.is_effectively_enabled(true));
 
         let enabled_models = list_enabled_models_with_owner(&database).await?;
 
@@ -825,7 +823,9 @@ mod tests {
         let c = entry(&entries, "c");
 
         assert!(c.model.is_enabled);
-        assert!(!c.model.is_effectively_enabled(c.is_provider_enabled));
+
+        // Vanish suspends service even with the provider and the row's own switch both on.
+        assert!(!c.model.is_effectively_enabled(true));
 
         // Reappearance flips only the state column back: identity and curation survive, the
         // enabled switch is exactly what the administrator left behind.

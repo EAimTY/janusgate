@@ -12,7 +12,7 @@ use crate::{
     provider::{DiscoveryState, Model, ModelRouting},
 };
 
-/// One model row with the provider facts needed for listing.
+/// One model row with the provider identity needed for listing.
 #[derive(Debug, Clone)]
 pub(crate) struct ModelEntry {
     /// Owning provider row identifier.
@@ -20,9 +20,6 @@ pub(crate) struct ModelEntry {
 
     /// Owning provider name.
     pub(crate) provider_name: String,
-
-    /// Whether the owning provider serves traffic.
-    pub(crate) is_provider_enabled: bool,
 
     /// The model row.
     pub(crate) model: Model,
@@ -208,10 +205,11 @@ async fn find_model_entry_in_transaction(
     rows.first().map(super::model_entry_from_row).transpose()
 }
 
-/// Lists the stored models with their provider facts, narrowed to one provider's rows when
+/// Lists the stored models with their provider identity, narrowed to one provider's rows when
 /// `provider_id` is `Some`; an unknown provider yields an empty list, because a filter addresses no
-/// row (README §7.1). Every row is listed — `vanished` included — ordered by public ID; the
-/// three-input `is_effectively_enabled` the response renders tells serving rows apart.
+/// row (README §7.1). Every row is listed — `vanished` included — ordered by public ID; the row's
+/// own inputs let the caller derive the three-input status (rule 7), which tells serving rows
+/// apart.
 ///
 /// # Errors
 ///
