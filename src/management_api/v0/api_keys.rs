@@ -105,7 +105,8 @@ pub struct CreateApiKeyRequest {
     /// Human label; must be non-empty, need not be unique.
     pub name: String,
 
-    /// Plaintext shared secret; must be non-empty and not held by another key.
+    /// Plaintext shared secret; non-empty printable ASCII without whitespace, and not held
+    /// by another key.
     pub key: String,
 
     /// Serving state.
@@ -125,7 +126,8 @@ pub struct UpdateApiKeyRequest {
     /// Human label; must be non-empty, need not be unique.
     pub name: String,
 
-    /// Plaintext shared secret; must be non-empty and not held by another key.
+    /// Plaintext shared secret; non-empty printable ASCII without whitespace, and not held
+    /// by another key.
     pub key: String,
 
     /// Serving state.
@@ -168,7 +170,7 @@ pub(super) async fn create(
     WithRejection(Json(request), _): WithRejection<Json<CreateApiKeyRequest>, Error>,
 ) -> Result<Json<ApiKeyEnvelope>, Error> {
     super::validate_identifier("name", &request.name)?;
-    super::validate_identifier("key", &request.key)?;
+    super::validate_composition("key", &request.key)?;
 
     // The pre-insert check renders a clean conflict without naming the secret; the schema's UNIQUE
     // constraint is the concurrent backstop.
@@ -202,7 +204,7 @@ pub(super) async fn update(
     WithRejection(Json(request), _): WithRejection<Json<UpdateApiKeyRequest>, Error>,
 ) -> Result<Json<EmptyResponse>, Error> {
     super::validate_identifier("name", &request.name)?;
-    super::validate_identifier("key", &request.key)?;
+    super::validate_composition("key", &request.key)?;
 
     // The outer read pins request validation only; the transactional write re-reads the row for
     // the missing-row and taken-secret checks.

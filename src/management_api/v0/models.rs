@@ -167,7 +167,8 @@ pub struct CreateModelRequest {
     /// Owning provider row identifier.
     pub provider_id: i64,
 
-    /// Exact upstream model identifier; must be non-empty.
+    /// Exact upstream model identifier; routing-safe: non-empty printable ASCII without
+    /// whitespace.
     pub upstream_id: String,
 
     /// Public ID override; `null` composes the ID from the provider's prefix.
@@ -332,6 +333,18 @@ async fn handle_discover(
     let unique_ids =
         unique_upstream_ids(discovery::discover_upstream_models(control_plane, &fresh).await?)?;
 
+    // An upstream reporting an identifier the gateway cannot route fails the refresh before any
+    // row is written: the composed public ID would carry the same characters, and the schema
+    // would reject the write as a constraint violation — a storage conflict instead of the
+    // upstream failure it is (README §7.1).
+    for upstream_id in &unique_ids {
+        if super::validate_composition("upstream_id", upstream_id).is_err() {
+            return Err(Error::UpstreamReportedInvalidModelId {
+                upstream_id: upstream_id.clone(),
+            });
+        }
+    }
+
     // The apply re-reads the provider row inside its transaction, so the public IDs are composed
     // from the provider's current prefix and checked for collisions atomically with the write
     // (README §7.1).
@@ -392,7 +405,7 @@ async fn handle_update(
     request: UpdateModelRequest,
 ) -> Result<ModelEntry, Error> {
     if let Some(id_override) = &request.id_override.0 {
-        super::validate_identifier("id_override", id_override)?;
+        super::validate_composition("id_override", id_override)?;
     }
 
     // The checked update re-reads the row and its provider inside its transaction, so the
@@ -413,20 +426,22 @@ async fn handle_update(
     Ok(entry)
 }
 
-/// Validates the identifiers `models:create` carries: every name is non-empty, and content beyond
-/// that is the caller's choice (README §7).
+/// Validates the identifiers `models:create` carries: `upstream_id` is always a routing token,
+/// and a present `id_override` composes the public routing ID directly, so both carry the same
+/// composition — while human labels stay free-form (README §7).
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when `upstream_id` or a present `id_override` is empty.
+/// Returns [`Error`] when `upstream_id` or a present `id_override` is empty or carries a
+/// character outside the allowed set.
 fn validate_model_identifiers(
     upstream_id: &str,
     id_override: &Nullable<String>,
 ) -> Result<(), Error> {
-    super::validate_identifier("upstream_id", upstream_id)?;
+    super::validate_composition("upstream_id", upstream_id)?;
 
     if let Some(id_override) = &id_override.0 {
-        super::validate_identifier("id_override", id_override)?;
+        super::validate_composition("id_override", id_override)?;
     }
 
     Ok(())

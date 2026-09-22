@@ -3,6 +3,7 @@ import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
 import { toCreateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
+import { compositionMessage, isModelIdentifier } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
@@ -186,6 +187,19 @@ function ModelCreateForm(props: {
     const normalizedOverride = (): string | null =>
         !hasAlias() || idOverride().trim() === "" ? null : idOverride().trim();
 
+    /** Inline composition errors, shown where the value was typed (gateway README §7). */
+    const upstreamError = (): string | null =>
+        trimmedUpstream() === "" || isModelIdentifier(trimmedUpstream())
+            ? null
+            : compositionMessage("Upstream ID");
+
+    const overrideError = (): string | null => {
+        const override = normalizedOverride();
+        return override === null || isModelIdentifier(override)
+            ? null
+            : compositionMessage("Public ID override");
+    };
+
     const composedId = (): string => {
         const provider = selectedProvider();
 
@@ -197,12 +211,22 @@ function ModelCreateForm(props: {
     };
 
     const canCreate = (): boolean =>
-        selectedProvider() !== null && trimmedUpstream() !== "" && !isCreating();
+        selectedProvider() !== null &&
+        trimmedUpstream() !== "" &&
+        upstreamError() === null &&
+        overrideError() === null &&
+        !isCreating();
 
     const create = async (): Promise<void> => {
         const provider = selectedProvider();
 
-        if (provider === null || trimmedUpstream() === "" || isCreating()) {
+        if (
+            provider === null ||
+            trimmedUpstream() === "" ||
+            upstreamError() !== null ||
+            overrideError() !== null ||
+            isCreating()
+        ) {
             return;
         }
 
@@ -301,7 +325,8 @@ function ModelCreateForm(props: {
                         onInput={setUpstreamId}
                         placeholder="gpt-4o"
                         isDisabled={isCreating()}
-                        hint="Sent upstream verbatim."
+                        error={upstreamError()}
+                        hint="Sent upstream verbatim — letters, numbers, and symbols only."
                     />
                 </div>
             </Card>
@@ -328,6 +353,7 @@ function ModelCreateForm(props: {
                         alias={idOverride()}
                         onAliasInput={setIdOverride}
                         composedId={composedId()}
+                        aliasError={overrideError()}
                         isDisabled={isCreating()}
                     />
 

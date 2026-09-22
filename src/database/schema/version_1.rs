@@ -42,6 +42,15 @@
 //! today. The bookkeeping tables AUTOINCREMENT introduces — SQLite's `sqlite_sequence` and
 //! Turso's `__turso_internal_*` sequence tables — are internal objects excluded from the
 //! structural schema comparison.
+//!
+//! Machine-consumed text carries composition `CHECK`s (README §7): every routing token —
+//! `providers.model_prefix` (empty means no prefix), `models.upstream_id`, `models.public_id`, a
+//! present `models.id_override` — every bearer secret (`api_keys.key`), and every static-key
+//! `providers.base_url` holds only printable ASCII without whitespace (`U+0021–U+007E`), matched
+//! as `NOT GLOB '*[^!-~]*'`, with non-emptiness pinned wherever empty is not a state. Human labels
+//! (`providers.name`, `api_keys.name`) stay free-form behind their non-empty `CHECK`s, and opaque
+//! upstream credential JSON is validated at the management layer instead — its shape is not a
+//! column invariant.
 
 use super::Schema;
 
@@ -63,7 +72,7 @@ CREATE TABLE providers (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     name TEXT NOT NULL UNIQUE CHECK (name != ''),
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
-    model_prefix TEXT NOT NULL,
+    model_prefix TEXT NOT NULL CHECK (model_prefix NOT GLOB '*[^!-~]*'),
     type TEXT NOT NULL CHECK (
         type IN (
             'openai_response',
@@ -73,7 +82,9 @@ CREATE TABLE providers (
             'antigravity_oauth'
         )
     ),
-    base_url TEXT NULL,
+    base_url TEXT NULL CHECK (
+        base_url IS NULL OR (base_url <> '' AND base_url NOT GLOB '*[^!-~]*')
+    ),
     credentials TEXT NOT NULL,
     expires_at INTEGER NULL,
     refresh_started_at INTEGER NULL
@@ -82,13 +93,19 @@ CREATE TABLE providers (
 CREATE TABLE models (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     provider_id INTEGER NOT NULL REFERENCES providers (id) ON DELETE CASCADE,
-    upstream_id TEXT NOT NULL,
+    upstream_id TEXT NOT NULL CHECK (
+        upstream_id <> '' AND upstream_id NOT GLOB '*[^!-~]*'
+    ),
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
     discovery_state TEXT NOT NULL CHECK (
         discovery_state IN ('discovered', 'vanished', 'manual')
     ),
-    public_id TEXT NOT NULL UNIQUE,
-    id_override TEXT NULL,
+    public_id TEXT NOT NULL UNIQUE CHECK (
+        public_id <> '' AND public_id NOT GLOB '*[^!-~]*'
+    ),
+    id_override TEXT NULL CHECK (
+        id_override IS NULL OR (id_override <> '' AND id_override NOT GLOB '*[^!-~]*')
+    ),
     UNIQUE (provider_id, upstream_id)
 ) STRICT;
 
@@ -105,7 +122,7 @@ CREATE INDEX idx_oauth_states_expires_at ON oauth_states (expires_at);
 CREATE TABLE api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     name TEXT NOT NULL CHECK (name <> ''),
-    key TEXT NOT NULL UNIQUE CHECK (key <> ''),
+    key TEXT NOT NULL UNIQUE CHECK (key <> '' AND key NOT GLOB '*[^!-~]*'),
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
     created_at INTEGER NOT NULL
 ) STRICT;
@@ -374,7 +391,138 @@ mod tests {
         Ok(())
     }
 
-    /// Asserts that a rejected write failed with the engine's constraint classification — not with
+    /// Verifies the routing-token composition `CHECK`s (README §7): a model prefix, an upstream
+    /// identifier, a public ID, or a present override carrying a space, CJK text, or a control
+    /// character — or an empty identifier where empty is not a state — is rejected at write time.
+    /// An empty prefix stays writable: it means no prefix. First-party write paths validate before
+    /// the write, so the probes use raw statements.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a statement fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an unroutable value is not rejected as a constraint violation.
+    #[tokio::test]
+    async fn routing_tokens_reject_values_outside_printable_ascii() -> Result<(), Box<dyn StdError>>
+    {
+        let connection = open_fresh().await?;
+        connection
+            .execute_batch(
+                "INSERT INTO providers (name, model_prefix, type, credentials) \
+                 VALUES ('p', 'p/', 'openai_chat_completion', '{}');",
+            )
+            .await?;
+
+        // One attempt per probe: a rejected write leaves no row behind, so the public-ID UNIQUE
+        // never collides across probes.
+        let probes = [
+            (
+                "model_prefix",
+                "INSERT INTO providers (name, model_prefix, type, credentials) \
+                 VALUES ('q-%ID%', 'has space', 'openai_chat_completion', '{}');",
+            ),
+            (
+                "model_prefix",
+                "INSERT INTO providers (name, model_prefix, type, credentials) \
+                 VALUES ('q-%ID%', '前缀', 'openai_chat_completion', '{}');",
+            ),
+            (
+                "upstream_id",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
+                 VALUES (1, 'has space', 'manual', 'p/has-%ID%');",
+            ),
+            (
+                "upstream_id",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
+                 VALUES (1, '', 'manual', 'p/empty-%ID%');",
+            ),
+            (
+                "upstream_id",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
+                 VALUES (1, '模型', 'manual', 'p/cjk-%ID%');",
+            ),
+            (
+                "public_id",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
+                 VALUES (1, 'm-%ID%', 'manual', 'has space');",
+            ),
+            (
+                "id_override",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id, \
+                 id_override) VALUES (1, 'm-%ID%', 'manual', 'p/m-%ID%', 'has space');",
+            ),
+            (
+                "id_override",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id, \
+                 id_override) VALUES (1, 'm-%ID%', 'manual', 'p/m-%ID%', '');",
+            ),
+        ];
+
+        for (index, (column, template)) in probes.iter().enumerate() {
+            let statement = template.replace("%ID%", &index.to_string());
+            let outcome = connection.execute_batch(&statement).await;
+            assert_constraint_violation(outcome, column);
+        }
+
+        // An empty prefix means no prefix and stays writable.
+        open_fresh()
+            .await?
+            .execute_batch(
+                "INSERT INTO providers (name, model_prefix, type, credentials) \
+                 VALUES ('bare', '', 'openai_chat_completion', '{}');",
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Verifies the bearer-secret and base-URL composition `CHECK`s (README §7): a gateway key
+    /// carrying a space or CJK text, and a static-key base URL carrying either, are rejected at
+    /// write time; a `NULL` base URL stays writable for OAuth rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a statement fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an unroutable value is not rejected as a constraint violation.
+    #[tokio::test]
+    async fn secrets_and_urls_reject_values_outside_printable_ascii()
+    -> Result<(), Box<dyn StdError>> {
+        let connection = open_fresh().await?;
+
+        for (index, key) in ["has space", "密钥", ""].iter().enumerate() {
+            let outcome = connection
+                .execute_batch(&format!(
+                    "INSERT INTO api_keys (name, key, created_at) VALUES ('k-{index}', '{key}', 1);"
+                ))
+                .await;
+            assert_constraint_violation(outcome, "key");
+        }
+
+        for (index, base_url) in ["has space", "https://例子.example"].iter().enumerate() {
+            let outcome = connection
+                .execute_batch(&format!(
+                    "INSERT INTO providers (name, model_prefix, type, base_url, credentials) \
+                     VALUES ('u-{index}', 'u/', 'openai_chat_completion', '{base_url}', '{{}}');"
+                ))
+                .await;
+            assert_constraint_violation(outcome, "base_url");
+        }
+
+        // A `NULL` base URL is the OAuth state and stays writable.
+        connection
+            .execute_batch(
+                "INSERT INTO providers (name, model_prefix, type, base_url, credentials) \
+                 VALUES ('oauth', 'o/', 'codex_oauth', NULL, '{}');",
+            )
+            .await?;
+
+        Ok(())
+    }
     /// a missing-table or syntax failure, which would make the rejection meaningless.
     ///
     /// # Panics

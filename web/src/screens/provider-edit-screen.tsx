@@ -10,6 +10,13 @@ import type {
     ReauthorizeProviderResponse,
     StartProviderOauthResponse,
 } from "/src/management-api/generated/v0";
+import {
+    baseUrlMessage,
+    compositionMessage,
+    isBaseUrl,
+    isBearerSecret,
+    isModelPrefix,
+} from "/src/management-api/identifiers";
 import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
 import { defaultModelPrefix, normalizeModelPrefix } from "/src/management-api/provider-defaults";
@@ -262,13 +269,36 @@ function DetailsCard(props: {
         isCustomPrefix() ? normalizeModelPrefix(customPrefix()) : defaultModelPrefix(name()),
     );
 
+    const trimmedBaseUrl = (): string => baseUrl().trim();
+
+    /** Inline composition errors, shown where the value was typed (gateway README §7). */
+    const prefixError = (): string | null =>
+        isModelPrefix(effectivePrefix()) ? null : compositionMessage("Model prefix");
+
+    const baseUrlError = (): string | null => {
+        const trimmed = trimmedBaseUrl();
+        return trimmed === "" || isBaseUrl(trimmed) ? null : baseUrlMessage();
+    };
+
+    const apiKeyError = (): string | null =>
+        apiKey() === "" || isBearerSecret(apiKey()) ? null : compositionMessage("API key");
+
+    /** The connection fields are submittable when every typed value is routable. The key stays
+     * empty to keep the stored secret; the URL is required. */
+    const isConnectionValid = (): boolean =>
+        !isStatic() ||
+        (isBaseUrl(trimmedBaseUrl()) && (apiKey() === "" || isBearerSecret(apiKey())));
+
     const isDirty = createMemo(
         () =>
             isEnabled() !== props.provider.is_enabled ||
             name() !== props.provider.name ||
             effectivePrefix() !== props.provider.model_prefix ||
-            (isStatic() && (baseUrl() !== staticBaseUrlOf(props.provider) || apiKey() !== "")),
+            (isStatic() &&
+                (trimmedBaseUrl() !== staticBaseUrlOf(props.provider) || apiKey() !== "")),
     );
+
+    const canSave = (): boolean => isDirty() && prefixError() === null && isConnectionValid();
 
     const revert = (): void => {
         setIsEnabled(props.provider.is_enabled);
@@ -284,7 +314,7 @@ function DetailsCard(props: {
     };
 
     const save = async (): Promise<void> => {
-        if (isSaving()) {
+        if (isSaving() || !canSave()) {
             return;
         }
 
@@ -298,7 +328,7 @@ function DetailsCard(props: {
                     is_enabled: isEnabled(),
                     ...(isStatic()
                         ? {
-                              base_url: baseUrl(),
+                              base_url: trimmedBaseUrl(),
                               ...(apiKey() === ""
                                   ? {}
                                   : {
@@ -361,6 +391,7 @@ function DetailsCard(props: {
                     customPrefix={customPrefix()}
                     onCustomPrefixInput={setCustomPrefix}
                     defaultPrefix={defaultModelPrefix(name())}
+                    prefixError={prefixError()}
                     isDisabled={isSaving()}
                 />
 
@@ -372,6 +403,8 @@ function DetailsCard(props: {
                         onApiKeyInput={setApiKey}
                         apiKeyLabel="Replace the API key"
                         apiKeyHint="Write-only: the gateway never returns it, so leaving this empty keeps what is stored."
+                        baseUrlError={baseUrlError()}
+                        apiKeyError={apiKeyError()}
                         isDisabled={isSaving()}
                     />
                 </Show>
@@ -380,7 +413,7 @@ function DetailsCard(props: {
                     <Button
                         type="submit"
                         tone="primary"
-                        isDisabled={!isDirty()}
+                        isDisabled={!canSave()}
                         isBusy={isSaving()}
                     >
                         {isSaving() ? "Saving…" : "Save changes"}

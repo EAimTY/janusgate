@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
+import { compositionMessage, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
@@ -25,8 +26,14 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
         readonly fix: string | null;
     } | null>(null);
 
+    /** Inline composition error for the secret, shown where it was typed. */
+    const secretError = (): string | null =>
+        secret() === "" || isBearerSecret(secret()) ? null : compositionMessage("Key");
+
+    const canCreate = (): boolean => isBearerSecret(secret()) && !isCreating();
+
     const create = async (): Promise<void> => {
-        if (isCreating()) {
+        if (isCreating() || !isBearerSecret(secret())) {
             return;
         }
 
@@ -89,7 +96,7 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
             <Card>
                 <CardHeader
                     title="Key"
-                    description="The secret must be non-empty and held by no other key."
+                    description="The secret holds letters, numbers, and symbols only — no spaces — and is held by no other key."
                 />
                 <form
                     novalidate={true}
@@ -113,11 +120,13 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                         secret={secret()}
                         onSecretInput={setSecret}
                         isDisabled={isCreating()}
+                        error={secretError()}
                     />
                     <div>
                         <Button
                             type="submit"
                             tone="primary"
+                            isDisabled={!canCreate()}
                             isBusy={isCreating()}
                         >
                             {isCreating() ? "Creating…" : "Create API key"}

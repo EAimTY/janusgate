@@ -191,6 +191,20 @@ pub(super) enum Error {
         param: &'static str,
     },
 
+    /// A machine-consumed identifier or secret carries a character outside printable ASCII
+    /// without whitespace: spaces, control characters, and non-ASCII text such as CJK are never
+    /// valid in routing IDs, model prefixes, or bearer secrets (README §7).
+    #[error("`{param}` must contain only printable ASCII without whitespace")]
+    InvalidIdentifier {
+        /// Name of the rejected field.
+        param: &'static str,
+    },
+
+    /// A static-key provider's base URL is not an `http(s)` URL of printable ASCII without
+    /// whitespace (README §7).
+    #[error("`base_url` must be an http:// or https:// URL of printable ASCII without whitespace")]
+    InvalidBaseUrl,
+
     /// A `providers:update` request restates a provider type that differs from the stored,
     /// immutable one.
     #[error(
@@ -292,6 +306,18 @@ pub(super) enum Error {
     )]
     UpstreamReportedNoModels,
 
+    /// Upstream model discovery reported an identifier the gateway cannot route: the refresh fails
+    /// before any row is written instead of storing an unroutable ID (README §7.1). The identifier
+    /// is routing data, never request content, so naming it is safe.
+    #[error(
+        "Upstream reported model `{upstream_id}` the gateway cannot route: identifiers must \
+         contain only printable ASCII without whitespace"
+    )]
+    UpstreamReportedInvalidModelId {
+        /// The unroutable upstream identifier.
+        upstream_id: String,
+    },
+
     /// The shared request validation rejected the request, exactly as the outward API renders it in
     /// its own contract.
     #[error(transparent)]
@@ -350,6 +376,8 @@ impl Error {
             Self::MethodNotAllowed { .. } => ErrorCode::MethodNotAllowed,
 
             Self::EmptyIdentifier { .. }
+            | Self::InvalidIdentifier { .. }
+            | Self::InvalidBaseUrl
             | Self::MalformedAuthorizationCode
             | Self::ProviderTypeMismatch { .. }
             | Self::OAuthTypeNotCreatable { .. }
@@ -359,7 +387,9 @@ impl Error {
             | Self::ProviderNameTaken { .. }
             | Self::ApiKeyTaken => ErrorCode::Conflict,
 
-            Self::UpstreamReportedNoModels => ErrorCode::UpstreamError,
+            Self::UpstreamReportedNoModels | Self::UpstreamReportedInvalidModelId { .. } => {
+                ErrorCode::UpstreamError
+            }
 
             Self::OAuth(error) => match error {
                 OAuthError::NotFound { .. } => ErrorCode::NotFound,
@@ -724,6 +754,13 @@ mod tests {
             (Error::UnknownOauthState, ErrorCode::NotFound),
             (Error::MalformedAuthorizationCode, ErrorCode::InvalidRequest),
             (
+                Error::InvalidIdentifier {
+                    param: "upstream_id",
+                },
+                ErrorCode::InvalidRequest,
+            ),
+            (Error::InvalidBaseUrl, ErrorCode::InvalidRequest),
+            (
                 Error::OAuthTypeNotCreatable {
                     requested: ProviderType::CodexOauth,
                 },
@@ -764,6 +801,13 @@ mod tests {
     fn classifies_client_faults() {
         let cases = [
             (Error::EmptyIdentifier { param: "name" }, true),
+            (
+                Error::InvalidIdentifier {
+                    param: "upstream_id",
+                },
+                true,
+            ),
+            (Error::InvalidBaseUrl, true),
             (Error::MalformedAuthorizationCode, true),
             (
                 Error::OAuthTypeNotCreatable {
@@ -795,6 +839,12 @@ mod tests {
                 true,
             ),
             (Error::UpstreamReportedNoModels, false),
+            (
+                Error::UpstreamReportedInvalidModelId {
+                    upstream_id: "gpt 4o".to_string(),
+                },
+                false,
+            ),
         ];
 
         for (error, is_client_fault) in cases {

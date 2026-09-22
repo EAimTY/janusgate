@@ -75,16 +75,16 @@ pub struct CreateProviderRequest {
     /// Unique provider name; must be non-empty.
     pub name: String,
 
-    /// Public model name prefix; may be empty.
+    /// Public model name prefix; may be empty, otherwise routing-safe (README §7).
     pub model_prefix: String,
 
     /// Serving state.
     pub is_enabled: bool,
 
-    /// Upstream base URL.
+    /// Upstream base URL; a non-empty http(s) URL of printable ASCII without whitespace.
     pub base_url: String,
 
-    /// Static API key.
+    /// Static API key; non-empty printable ASCII without whitespace.
     pub api_key: String,
 }
 
@@ -107,16 +107,17 @@ pub enum UpdateProviderRequest {
         /// stored name.
         name: String,
 
-        /// Public model name prefix; may be empty.
+        /// Public model name prefix; may be empty, otherwise routing-safe (README §7).
         model_prefix: String,
 
         /// Serving state.
         is_enabled: bool,
 
-        /// Upstream base URL.
+        /// Upstream base URL; a non-empty http(s) URL of printable ASCII without whitespace.
         base_url: String,
 
-        /// Replacement static API key; absent keeps the stored one.
+        /// Replacement static API key; absent keeps the stored one, present must be non-empty
+        /// printable ASCII without whitespace.
         #[serde(
             default,
             deserialize_with = "absent_keeps::deserialize",
@@ -136,16 +137,17 @@ pub enum UpdateProviderRequest {
         /// stored name.
         name: String,
 
-        /// Public model name prefix; may be empty.
+        /// Public model name prefix; may be empty, otherwise routing-safe (README §7).
         model_prefix: String,
 
         /// Serving state.
         is_enabled: bool,
 
-        /// Upstream base URL.
+        /// Upstream base URL; a non-empty http(s) URL of printable ASCII without whitespace.
         base_url: String,
 
-        /// Replacement static API key; absent keeps the stored one.
+        /// Replacement static API key; absent keeps the stored one, present must be non-empty
+        /// printable ASCII without whitespace.
         #[serde(
             default,
             deserialize_with = "absent_keeps::deserialize",
@@ -165,16 +167,17 @@ pub enum UpdateProviderRequest {
         /// stored name.
         name: String,
 
-        /// Public model name prefix; may be empty.
+        /// Public model name prefix; may be empty, otherwise routing-safe (README §7).
         model_prefix: String,
 
         /// Serving state.
         is_enabled: bool,
 
-        /// Upstream base URL.
+        /// Upstream base URL; a non-empty http(s) URL of printable ASCII without whitespace.
         base_url: String,
 
-        /// Replacement static API key; absent keeps the stored one.
+        /// Replacement static API key; absent keeps the stored one, present must be non-empty
+        /// printable ASCII without whitespace.
         #[serde(
             default,
             deserialize_with = "absent_keeps::deserialize",
@@ -194,13 +197,14 @@ pub enum UpdateProviderRequest {
         /// stored name.
         name: String,
 
-        /// Public model name prefix; may be empty.
+        /// Public model name prefix; may be empty, otherwise routing-safe (README §7).
         model_prefix: String,
 
         /// Serving state.
         is_enabled: bool,
 
-        /// Replacement credentials; absent keeps the stored ones.
+        /// Replacement credentials; absent keeps the stored ones, present fields must be non-empty
+        /// printable ASCII without whitespace.
         #[serde(
             default,
             deserialize_with = "absent_keeps::deserialize",
@@ -220,13 +224,14 @@ pub enum UpdateProviderRequest {
         /// stored name.
         name: String,
 
-        /// Public model name prefix; may be empty.
+        /// Public model name prefix; may be empty, otherwise routing-safe (README §7).
         model_prefix: String,
 
         /// Serving state.
         is_enabled: bool,
 
-        /// Replacement credentials; absent keeps the stored ones.
+        /// Replacement credentials; absent keeps the stored ones, present fields must be non-empty
+        /// printable ASCII without whitespace.
         #[serde(
             default,
             deserialize_with = "absent_keeps::deserialize",
@@ -298,6 +303,9 @@ pub(super) async fn create(
     WithRejection(Json(request), _): WithRejection<Json<CreateProviderRequest>, Error>,
 ) -> Result<Json<ProviderEnvelope>, Error> {
     super::validate_identifier("name", &request.name)?;
+    super::validate_model_prefix(&request.model_prefix)?;
+    super::validate_base_url(&request.base_url)?;
+    super::validate_composition("api_key", &request.api_key)?;
 
     // OAuth kinds are minted only by `oauth:complete`: a creation naming one is a client
     // fault, rejected before the name-taken check.
@@ -365,6 +373,40 @@ pub(super) async fn delete(
     info!("deleted provider {}", request.provider_id);
 
     Ok(Json(EmptyResponse {}))
+}
+
+/// Validates hand-replaced credentials (README §7): every field a `providers:update` may carry is a
+/// machine-consumed secret or identifier — non-empty printable ASCII without whitespace — because
+/// an empty or unroutable value would fail only later, at the next upstream request.
+///
+/// # Errors
+///
+/// Returns [`Error`] when any carried field is empty or carries a character outside the allowed
+/// set.
+fn validate_credentials_composition(credentials: &Credentials) -> Result<(), Error> {
+    match credentials {
+        Credentials::ApiKey(api_key) => super::validate_composition("api_key", api_key),
+
+        Credentials::CodexOauth {
+            access_token,
+            refresh_token,
+            account_id,
+        } => {
+            super::validate_composition("credentials.accessToken", access_token)?;
+            super::validate_composition("credentials.refreshToken", refresh_token)?;
+            super::validate_composition("credentials.accountId", account_id)
+        }
+
+        Credentials::AntigravityOauth {
+            access_token,
+            refresh_token,
+            project_id,
+        } => {
+            super::validate_composition("credentials.accessToken", access_token)?;
+            super::validate_composition("credentials.refreshToken", refresh_token)?;
+            super::validate_composition("credentials.projectId", project_id)
+        }
+    }
 }
 
 /// Rewrites one provider's full state per the management contract (README §7.1). The request's
@@ -459,6 +501,15 @@ async fn handle_update(
     };
 
     super::validate_identifier("name", name)?;
+    super::validate_model_prefix(model_prefix)?;
+
+    if let Some(base_url) = base_url {
+        super::validate_base_url(base_url)?;
+    }
+
+    if let Some(credentials) = &credentials {
+        validate_credentials_composition(credentials)?;
+    }
 
     // The outer read pins request validation only: the type is immutable, so it cannot drift before
     // the transactional write, and the update's merge and checks read the row again inside the

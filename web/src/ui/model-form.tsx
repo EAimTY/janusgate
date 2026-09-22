@@ -13,6 +13,7 @@ export function ModelAliasFields(props: {
     readonly alias: string;
     readonly onAliasInput: (value: string) => void;
     readonly composedId: string;
+    readonly aliasError?: string | null | undefined;
     readonly isDisabled?: boolean;
 }): JSX.Element {
     const offHint = (): string =>
@@ -37,6 +38,7 @@ export function ModelAliasFields(props: {
                     value={props.alias}
                     onInput={props.onAliasInput}
                     isDisabled={props.isDisabled ?? false}
+                    error={props.aliasError}
                     hint="Replaces the composed ID. Renaming breaks clients on the old ID."
                 />
             </Show>

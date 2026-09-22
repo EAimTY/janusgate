@@ -3,6 +3,7 @@ import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { compositionMessage, isModelIdentifier } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
@@ -219,8 +220,18 @@ function ModelSettingsForm(props: {
     const normalizedOverride = (): string | null =>
         !hasAlias() || idOverride().trim() === "" ? null : idOverride().trim();
 
+    /** Inline composition error for the override, shown where it was typed. */
+    const overrideError = (): string | null => {
+        const override = normalizedOverride();
+        return override === null || isModelIdentifier(override)
+            ? null
+            : compositionMessage("Public ID override");
+    };
+
     const isDirty = (): boolean =>
         isEnabled() !== current().is_enabled || normalizedOverride() !== current().id_override;
+
+    const canSave = (): boolean => isDirty() && overrideError() === null;
 
     const revert = (): void => {
         setIsEnabled(current().is_enabled);
@@ -229,7 +240,7 @@ function ModelSettingsForm(props: {
     };
 
     const save = async (): Promise<void> => {
-        if (isSaving()) {
+        if (isSaving() || !canSave()) {
             return;
         }
 
@@ -299,6 +310,7 @@ function ModelSettingsForm(props: {
                     alias={idOverride()}
                     onAliasInput={setIdOverride}
                     composedId={composedId()}
+                    aliasError={overrideError()}
                     isDisabled={isSaving()}
                 />
 
@@ -306,7 +318,7 @@ function ModelSettingsForm(props: {
                     <Button
                         type="submit"
                         tone="primary"
-                        isDisabled={!isDirty()}
+                        isDisabled={!canSave()}
                         isBusy={isSaving()}
                     >
                         {isSaving() ? "Saving…" : "Save changes"}

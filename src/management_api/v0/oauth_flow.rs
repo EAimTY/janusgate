@@ -81,7 +81,8 @@ pub struct CompleteProviderOauthRequest {
     /// Name of the provider being created; must be non-empty.
     pub name: String,
 
-    /// Public model name prefix of the provider being created; may be empty.
+    /// Public model name prefix of the provider being created; may be empty, otherwise
+    /// routing-safe (README §7).
     pub model_prefix: String,
 }
 
@@ -214,6 +215,7 @@ async fn handle_complete(
     // Pre-consume validations, computed from the still-unconsumed state so the pending flow
     // survives every rejection.
     super::validate_identifier("name", &request.name)?;
+    super::validate_model_prefix(&request.model_prefix)?;
 
     let code = pasted_authorization_code(&request.code)?;
 

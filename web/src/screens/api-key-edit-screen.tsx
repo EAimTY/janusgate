@@ -3,6 +3,7 @@ import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
 import { toUpdateApiKeyRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
+import { compositionMessage, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
@@ -188,6 +189,12 @@ function SettingsCard(props: {
         name() !== props.apiKey.name ||
         secret() !== props.apiKey.key;
 
+    /** Inline composition error for the secret, shown where it was typed. */
+    const secretError = (): string | null =>
+        secret() === "" || isBearerSecret(secret()) ? null : compositionMessage("Key");
+
+    const canSave = (): boolean => isDirty() && isBearerSecret(secret());
+
     const revert = (): void => {
         setIsEnabled(props.apiKey.is_enabled);
         setName(props.apiKey.name);
@@ -195,7 +202,7 @@ function SettingsCard(props: {
     };
 
     const save = async (): Promise<void> => {
-        if (isSaving()) {
+        if (isSaving() || !canSave()) {
             return;
         }
 
@@ -267,12 +274,13 @@ function SettingsCard(props: {
                     onSecretInput={setSecret}
                     isDisabled={isSaving()}
                     hint="Replacing the secret revokes the old value on save."
+                    error={secretError()}
                 />
                 <div class="flex flex-wrap items-center gap-2">
                     <Button
                         type="submit"
                         tone="primary"
-                        isDisabled={!isDirty()}
+                        isDisabled={!canSave()}
                         isBusy={isSaving()}
                     >
                         {isSaving() ? "Saving…" : "Save changes"}

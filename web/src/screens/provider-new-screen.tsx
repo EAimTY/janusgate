@@ -6,6 +6,13 @@ import type {
     OAuthProviderType,
     StartProviderOauthResponse,
 } from "/src/management-api/generated/v0";
+import {
+    baseUrlMessage,
+    compositionMessage,
+    isBaseUrl,
+    isBearerSecret,
+    isModelPrefix,
+} from "/src/management-api/identifiers";
 import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
 import {
@@ -73,6 +80,24 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             : defaultModelPrefix(resolvedName()),
     );
 
+    /** Inline composition errors, shown where the value was typed (gateway README §7). */
+    const prefixError = (): string | null =>
+        isModelPrefix(resolvedPrefix()) ? null : compositionMessage("Model prefix");
+
+    const trimmedBaseUrl = (): string => baseUrl().trim();
+
+    const baseUrlError = (): string | null => {
+        const trimmed = trimmedBaseUrl();
+        return trimmed === "" || isBaseUrl(trimmed) ? null : baseUrlMessage();
+    };
+
+    const apiKeyError = (): string | null =>
+        apiKey() === "" || isBearerSecret(apiKey()) ? null : compositionMessage("API key");
+
+    /** A static-key creation is submittable with a complete, routable connection. */
+    const canCreateStatic = (): boolean =>
+        prefixError() === null && isBaseUrl(trimmedBaseUrl()) && isBearerSecret(apiKey());
+
     const pickKind = (next: ProviderKind): void => {
         setKind(next);
         setDiagnosis(null);
@@ -118,7 +143,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     /** Creates a static-key provider. A taken name comes back as its own message. */
     const create = async (): Promise<void> => {
-        if (isBusy()) {
+        if (isBusy() || !canCreateStatic()) {
             return;
         }
 
@@ -130,7 +155,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 name: resolvedName(),
                 model_prefix: resolvedPrefix(),
                 is_enabled: true,
-                base_url: baseUrl(),
+                base_url: trimmedBaseUrl(),
                 type: kind(),
                 api_key: apiKey(),
             }),
@@ -181,7 +206,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const complete = async (): Promise<void> => {
         const startedFlow = flow();
 
-        if (startedFlow === null || isBusy()) {
+        if (startedFlow === null || isBusy() || prefixError() !== null) {
             return;
         }
 
@@ -287,6 +312,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         customPrefix={customPrefix()}
                         onCustomPrefixInput={setCustomPrefix}
                         defaultPrefix={defaultModelPrefix(resolvedName())}
+                        prefixError={prefixError()}
                         isDisabled={isBusy()}
                     />
                 </div>
@@ -366,12 +392,15 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                 apiKey={apiKey()}
                                 onBaseUrlInput={setBaseUrl}
                                 onApiKeyInput={setApiKey}
+                                baseUrlError={baseUrlError()}
+                                apiKeyError={apiKeyError()}
                                 isDisabled={isCreating()}
                             />
                             <div>
                                 <Button
                                     type="submit"
                                     tone="primary"
+                                    isDisabled={!canCreateStatic()}
                                     isBusy={isCreating()}
                                 >
                                     {isCreating() ? "Creating…" : "Create provider"}

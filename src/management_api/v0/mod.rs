@@ -279,6 +279,67 @@ fn validate_identifier(param: &'static str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether `value` holds only routing-safe characters: printable ASCII without whitespace
+/// (`U+0021–U+007E`) — no spaces, no control characters, no non-ASCII text such as CJK (README
+/// §7). The database schema pins the same predicate as `CHECK` constraints, so the application
+/// layer and the storage layer reject exactly the same values.
+fn is_valid_composition(value: &str) -> bool {
+    value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+/// Validates a machine-consumed identifier or secret (README §7): `upstream_id`, a present
+/// `id_override`, gateway API key secrets, upstream static keys, and hand-replaced OAuth
+/// credential fields. The value must be non-empty printable ASCII without whitespace — an empty
+/// value is [`Error::EmptyIdentifier`], any other composition failure
+/// [`Error::InvalidIdentifier`].
+///
+/// # Errors
+///
+/// Returns [`Error`] when the value is empty or carries a character outside the allowed set.
+fn validate_composition(param: &'static str, value: &str) -> Result<(), Error> {
+    validate_identifier(param, value)?;
+
+    if !is_valid_composition(value) {
+        return Err(Error::InvalidIdentifier { param });
+    }
+
+    Ok(())
+}
+
+/// Validates a model prefix (README §7): empty means no prefix, otherwise the same composition
+/// every other routing token carries.
+///
+/// # Errors
+///
+/// Returns [`Error`] when a non-empty prefix carries a character outside the allowed set.
+fn validate_model_prefix(value: &str) -> Result<(), Error> {
+    if !value.is_empty() && !is_valid_composition(value) {
+        return Err(Error::InvalidIdentifier {
+            param: "model_prefix",
+        });
+    }
+
+    Ok(())
+}
+
+/// Validates a static-key provider's base URL (README §7): a non-empty `http://` or `https://`
+/// URL of printable ASCII without whitespace.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the value has no `http(s)` scheme, has nothing after it, or carries a
+/// character outside the allowed set.
+fn validate_base_url(value: &str) -> Result<(), Error> {
+    let after_scheme = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"));
+
+    match after_scheme {
+        Some(rest) if !rest.is_empty() && is_valid_composition(value) => Ok(()),
+        _ => Err(Error::InvalidBaseUrl),
+    }
+}
+
 /// The success body of a route whose operation produces no fact the caller cannot know (README §7.0
 /// rule 7): an empty JSON object, shared by reference like every other response shape.
 #[derive(Debug, Serialize, Deserialize)]
@@ -620,7 +681,10 @@ pub(super) mod absent_keeps {
 
 #[cfg(test)]
 mod tests {
-    use super::{Nullable, ProviderEnvelope, ProviderResponse, absent_keeps};
+    use super::{
+        Error as ManagementError, Nullable, ProviderEnvelope, ProviderResponse, absent_keeps,
+        validate_base_url, validate_composition, validate_model_prefix,
+    };
     use crate::provider::{Credentials, Provider, ProviderType};
     use serde::Deserialize;
 
@@ -780,5 +844,125 @@ mod tests {
             serde_json::from_str::<Probe>(r#"{"id_override":null,"api_key":null}"#).is_err(),
             "an absent-keeps field never accepts null"
         );
+    }
+
+    /// Verifies the identifier composition rule (README §7): routing tokens and secrets accept
+    /// printable ASCII without whitespace — including the punctuation real model IDs carry (`-`,
+    /// `_`, `.`, `:`, `/`) — while spaces, control characters, and non-ASCII text such as CJK or
+    /// emoji are rejected; an empty value fails as [`ManagementError::EmptyIdentifier`], any other
+    /// composition failure as [`ManagementError::InvalidIdentifier`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if a value parses or rejects outside the composition contract.
+    #[test]
+    fn enforces_the_identifier_composition() {
+        for valid in [
+            "gpt-4o",
+            "qwen3:32b",
+            "meta-llama/Llama-3.1-8B",
+            "text-embedding-3-small",
+            "codex/",
+            "agy-",
+            "sk-live-123_~",
+            "!",
+        ] {
+            assert!(
+                validate_composition("upstream_id", valid).is_ok(),
+                "routing-safe value rejected: {valid}"
+            );
+        }
+
+        assert!(matches!(
+            validate_composition("upstream_id", ""),
+            Err(ManagementError::EmptyIdentifier {
+                param: "upstream_id"
+            })
+        ));
+
+        for invalid in [
+            "gpt 4o",
+            " leading",
+            "trailing ",
+            "\ttab",
+            "new\nline",
+            "模型",
+            "gpt-4o💥",
+            "caf\u{7f}e",
+        ] {
+            assert!(
+                matches!(
+                    validate_composition("upstream_id", invalid),
+                    Err(ManagementError::InvalidIdentifier { .. })
+                ),
+                "unroutable value accepted: {invalid:?}"
+            );
+        }
+    }
+
+    /// Verifies the model prefix composition (README §7): empty means no prefix, otherwise the
+    /// same character set every routing token carries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a prefix parses or rejects outside its contract.
+    #[test]
+    fn enforces_the_model_prefix_composition() {
+        assert!(validate_model_prefix("").is_ok());
+        assert!(validate_model_prefix("codex/").is_ok());
+        assert!(validate_model_prefix("agy-").is_ok());
+
+        assert!(matches!(
+            validate_model_prefix("codex /"),
+            Err(ManagementError::InvalidIdentifier {
+                param: "model_prefix"
+            })
+        ));
+
+        assert!(matches!(
+            validate_model_prefix("前缀/"),
+            Err(ManagementError::InvalidIdentifier {
+                param: "model_prefix"
+            })
+        ));
+    }
+
+    /// Verifies the base URL composition (README §7): a non-empty `http://` or `https://` URL of
+    /// printable ASCII without whitespace — any other scheme, a bare scheme, or whitespace/CJK
+    /// anywhere is rejected.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a URL parses or rejects outside its contract.
+    #[test]
+    fn enforces_the_base_url_composition() {
+        for valid in [
+            "https://upstream.example.com/v1",
+            "http://localhost:8080",
+            "https://x.example/models?q=1",
+        ] {
+            assert!(
+                validate_base_url(valid).is_ok(),
+                "routable base URL rejected: {valid}"
+            );
+        }
+
+        for invalid in [
+            "",
+            "https://",
+            "http://",
+            "ftp://upstream.example.com",
+            "upstream.example.com/v1",
+            "https://upstream.example.com/v 1",
+            "https://例子.example.com",
+        ] {
+            assert!(
+                matches!(
+                    validate_base_url(invalid),
+                    Err(ManagementError::InvalidBaseUrl)
+                ),
+                "unroutable base URL accepted: {invalid:?}"
+            );
+        }
     }
 }

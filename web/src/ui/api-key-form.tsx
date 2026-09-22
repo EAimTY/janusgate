@@ -95,6 +95,7 @@ export function ApiKeySecretField(props: {
     readonly onSecretInput: (value: string) => void;
     readonly isDisabled?: boolean;
     readonly hint?: string | null | undefined;
+    readonly error?: string | null | undefined;
 }): JSX.Element {
     return (
         <div>
@@ -104,6 +105,7 @@ export function ApiKeySecretField(props: {
                 onInput={props.onSecretInput}
                 isDisabled={props.isDisabled ?? false}
                 placeholder="sk-… or Generate one"
+                error={props.error}
                 hint={props.hint ?? "Sent as Authorization: Bearer <key> by serving clients."}
             />
             <div class="mt-2 flex flex-wrap gap-2">

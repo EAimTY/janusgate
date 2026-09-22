@@ -117,6 +117,7 @@ export function ProviderIdentityFields(props: {
     readonly customPrefix: string;
     readonly onCustomPrefixInput: (value: string) => void;
     readonly defaultPrefix: string;
+    readonly prefixError?: string | null | undefined;
     readonly isDisabled?: boolean;
 }): JSX.Element {
     return (
@@ -149,6 +150,7 @@ export function ProviderIdentityFields(props: {
                     onInput={props.onCustomPrefixInput}
                     placeholder="Empty for none"
                     isDisabled={props.isDisabled ?? false}
+                    error={props.prefixError}
                     hint='Used exactly as typed — no "/" is added.'
                 />
             </Show>
@@ -168,6 +170,8 @@ export function CompatibleConnectionFields(props: {
     readonly onApiKeyInput: (value: string) => void;
     readonly apiKeyLabel?: string | undefined;
     readonly apiKeyHint?: string | undefined;
+    readonly baseUrlError?: string | null | undefined;
+    readonly apiKeyError?: string | null | undefined;
     readonly isDisabled?: boolean;
 }): JSX.Element {
     return (
@@ -179,6 +183,7 @@ export function CompatibleConnectionFields(props: {
                 onInput={props.onBaseUrlInput}
                 placeholder="https://upstream.example.com/v1"
                 isDisabled={props.isDisabled ?? false}
+                error={props.baseUrlError}
             />
             <TextField
                 label={props.apiKeyLabel ?? "API key"}
@@ -187,6 +192,7 @@ export function CompatibleConnectionFields(props: {
                 onInput={props.onApiKeyInput}
                 isDisabled={props.isDisabled ?? false}
                 autocomplete="off"
+                error={props.apiKeyError}
                 hint={
                     props.apiKeyHint ??
                     "Sent upstream with every request. Never returned by the gateway."
