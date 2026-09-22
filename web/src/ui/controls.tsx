@@ -142,7 +142,7 @@ const BUTTON_TONE_CLASS: Record<ButtonTone, string> = {
     primary: "bg-accent text-accent-ink hover:bg-accent-strong",
     secondary:
         "border border-rule-strong bg-surface text-ink hover:border-ink-faint hover:bg-hover",
-    danger: "bg-bad text-white hover:brightness-95 dark:text-[#1a0b09]",
+    danger: "bg-bad text-bad-ink hover:brightness-95",
     ghost: "text-ink-dim hover:bg-hover hover:text-ink",
 };
 
@@ -240,7 +240,7 @@ export function Switch(props: {
                 <span
                     aria-hidden="true"
                     class={joinClass(
-                        "absolute top-0.5 left-0.5 block size-5 rounded-full bg-white shadow transition-transform duration-150 ease-out dark:bg-ink",
+                        "absolute top-0.5 left-0.5 block size-5 rounded-full bg-surface transition-transform duration-150 ease-out dark:bg-ink",
                         props.isOn ? "translate-x-5" : "translate-x-0",
                     )}
                 />

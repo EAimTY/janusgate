@@ -33,6 +33,7 @@
     --color-warn-soft: #faeedb;
     --color-bad: #c92a1e;
     --color-bad-soft: #fdecea;
+    --color-bad-ink: #ffffff;
 
     --color-scroll-thumb: #c2cdc7;
     --color-scroll-thumb-hover: #a9b6b0;
@@ -67,6 +68,7 @@
     --color-warn-soft: #3d2c12;
     --color-bad: #f26d5f;
     --color-bad-soft: #431b16;
+    --color-bad-ink: #1a0b09;
 
     --color-scroll-thumb: #33443c;
     --color-scroll-thumb-hover: #43564d;

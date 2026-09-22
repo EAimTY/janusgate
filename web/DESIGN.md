@@ -22,6 +22,7 @@ colors:
   warn-soft: "#faeedb"
   bad: "#c92a1e"
   bad-soft: "#fdecea"
+  bad-ink: "#ffffff"
   # Dark: the same roles, re-inked
   dark-canvas: "#0d1412"
   dark-surface: "#151e1b"
@@ -42,6 +43,7 @@ colors:
   dark-warn-soft: "#3d2c12"
   dark-bad: "#f26d5f"
   dark-bad-soft: "#431b16"
+  dark-bad-ink: "#1a0b09"
 typography:
   family: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif'
   data: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace with tabular-nums'
@@ -59,7 +61,7 @@ motion:
 components:
   button-primary: "accent fill, white text"
   button-secondary: "surface, strong-rule border, ink text"
-  button-danger: "bad fill, white text"
+  button-danger: "bad fill, bad-ink text"
   button-ghost: "transparent, dim text"
   badge: "soft tint ground, icon plus words, pill"
   notice: "soft tint ground, thin tinted border, icon plus title plus the gateway's verbatim detail"
@@ -108,14 +110,15 @@ kept nowhere and referenced by nothing.
 - Motion is CSS only and means state: switch flips, notices land, screens
   settle once. Everything parks under `prefers-reduced-motion`.
 - Plain English copy. Domain words are provider, model, public ID, upstream
-  ID, prefix, enabled, serving, discover, reconnect — nothing else needs a
-  glossary.
+  ID, prefix, enabled, serving, discover, reconnect, override — nothing else
+  needs a glossary.
 
 ## Colors
 
-Twenty-eight tokens, fourteen roles in two themes. Every color the app
-paints comes from this set; the only literals elsewhere are the authored
-SVG geometry and the themed browser surfaces.
+Forty-four tokens: twenty color roles themed twice, plus the scrollbar's
+scroll-thumb pair in both themes — the themed browser surfaces, tokenized.
+Every color the app paints comes from this set; the only literals elsewhere
+are the authored SVG geometry.
 
 ### Primary
 
@@ -136,7 +139,8 @@ SVG geometry and the themed browser surfaces.
   expired or stale credentials, held-by-provider models, unsaved-changes
   stamps. Always with an alert mark or plain words.
 - **Bad** (light `#c92a1e` on `#fdecea`, dark `#f26d5f` on `#431b16`):
-  failures, destructive actions. Always with an alert mark.
+  failures, destructive actions. Always with an alert mark. Danger buttons
+  set their label in **bad ink** (light `#ffffff`, dark `#1a0b09`).
 
 ### Neutral
 
@@ -144,7 +148,7 @@ SVG geometry and the themed browser surfaces.
   ground inputs sit on so their boundary reads on a card.
 - **Surface** (light `#ffffff`, dark `#151e1b`): cards, rows, the nav bar.
 - **Muted** (light `#e9efec`, dark `#1d2925`): quiet fills — skeletons,
-  search-count pills, level summaries, dark-theme input grounds.
+  search-count pills, dark-theme input grounds.
 - **Ink / Dim / Faint**: the three text inks. Faint carries hints, counts,
   captions, and placeholders — all of which still clear 4.5:1.
 - **Rule / Strong rule**: 1px borders; strong rule bounds inputs and
@@ -156,11 +160,11 @@ Measured pairs (WCAG 2.x relative luminance).
 
 Light, on surface `#ffffff` unless noted: ink 16.5, dim 7.3, faint 5.5
 (5.0 on canvas), accent 6.2, white on accent 6.2, accent on soft 5.2,
-ok 5.2, warn 5.2, bad 4.8, white on danger fill 4.8.
+ok 5.2, warn 5.2, bad 4.8, bad-ink on danger fill 4.8.
 
 Dark, on surface `#151e1b`: ink 14.4, dim 8.1, faint 4.9, accent 8.7,
 accent-strong on soft 7.5, dark text on accent fill 8.0, ok 5.9,
-warn 6.1, bad 5.1, danger-button text on bad fill 6.5.
+warn 6.1, bad 5.1, bad-ink on bad fill 6.5.
 
 **The Badge Rule.** A status is a pill carrying an icon and words on a
 soft tint. A badge that is only a colored dot does not exist.
@@ -201,7 +205,7 @@ about the data stays in the sans.
   A failed first read replaces the skeleton with the failure, never stacks
   under it.
 - **Empty states** teach: what this is, and the one way forward. The
-  gateway-wide empty state carries the four steps from here to a working
+  gateway-wide empty state carries the five steps from here to a working
   endpoint, with the finished steps checked off.
 - **Armed confirms** replace modals: Delete… arms, "Delete for good" plus
   "Keep it" decide, and the blast radius (cascade count, 404 warning) is
@@ -220,7 +224,7 @@ conveys state — a flip, a landing, a settling — and nothing else.
 Controls name their action; errors name the problem and the recovery; the
 gateway's message is always kept verbatim as the detail. The fixed
 vocabulary: provider, model, public ID, upstream ID, prefix, enabled,
-serving, discover, reconnect, override, thinking levels. Setup copy assumes a
+serving, discover, reconnect, override. Setup copy assumes a
 stranger who read only the READMEs; in-app copy assumes an operator mid-task.
 
 ## What this world refuses
