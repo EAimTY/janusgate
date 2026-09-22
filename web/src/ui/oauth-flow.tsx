@@ -4,6 +4,7 @@ import { formatTimestamp } from "/src/format";
 import type { StartProviderOauthResponse } from "/src/management-api/generated/v0";
 import { Button } from "/src/ui/controls";
 import { Glyph } from "/src/ui/glyph";
+import { copyText } from "./clipboard";
 
 /** Whether the authorize address reached the clipboard, and how that went. */
 type CopyState = "idle" | "copied" | "refused";
@@ -23,16 +24,10 @@ export function AuthorizeStep(props: {
     const [copyState, setCopyState] = createSignal<CopyState>("idle");
 
     const copyAuthorizeUrl = async (): Promise<void> => {
-        try {
-            await navigator.clipboard.writeText(props.flow.authorize_url);
-            setCopyState("copied");
-        } catch {
-            // A browser may refuse the clipboard — an insecure context, a
-            // denied permission. The flow is untouched: the address stays
-            // selectable in its box, and the app says so rather than
-            // pretending.
-            setCopyState("refused");
-        }
+        // A browser may refuse the clipboard — an insecure context, a denied
+        // permission. The flow is untouched: the address stays selectable in
+        // its box, and the app says so rather than pretending.
+        setCopyState((await copyText(props.flow.authorize_url)) ? "copied" : "refused");
     };
 
     return (

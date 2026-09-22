@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
 import { Button, TextField } from "/src/ui/controls";
+import { copyText } from "./clipboard";
 
 /**
  * Mints one serving-key secret locally: 32 random bytes, base64url without
@@ -20,13 +21,20 @@ export function generateApiKey(): string {
     return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** Copies one value to the clipboard; the label confirms where it was taken. */
+/** Whether the copy attempt reached the clipboard, and how that went. */
+type CopyState = "idle" | "copied" | "refused";
+
+/**
+ * Copies one value to the clipboard; the label confirms where it was taken.
+ * A clipboard the browser refuses is stated — the value stays selectable
+ * beside the button, so the operator can copy it by hand.
+ */
 export function CopyButton(props: {
     readonly value: string;
     readonly isDisabled?: boolean;
     readonly label?: string | undefined;
 }): JSX.Element {
-    const [isCopied, setIsCopied] = createSignal(false);
+    const [copyState, setCopyState] = createSignal<CopyState>("idle");
     let timer: number | undefined;
 
     const copy = async (): Promise<void> => {
@@ -34,35 +42,35 @@ export function CopyButton(props: {
             return;
         }
 
-        try {
-            if (navigator.clipboard !== undefined) {
-                await navigator.clipboard.writeText(props.value);
-            } else {
-                const area = document.createElement("textarea");
-                area.value = props.value;
-                document.body.appendChild(area);
-                area.select();
-                document.execCommand("copy");
-                area.remove();
-            }
+        window.clearTimeout(timer);
 
-            setIsCopied(true);
-            window.clearTimeout(timer);
-            timer = window.setTimeout(() => setIsCopied(false), 1500);
-        } catch {
-            setIsCopied(false);
+        if (await copyText(props.value)) {
+            setCopyState("copied");
+            timer = window.setTimeout(() => setCopyState("idle"), 1500);
+        } else {
+            setCopyState("refused");
         }
     };
 
     return (
-        <Button
-            glyph="copy"
-            title={props.label ?? "Copy to clipboard"}
-            isDisabled={(props.isDisabled ?? false) || props.value === ""}
-            onClick={() => void copy()}
-        >
-            {isCopied() ? "Copied" : (props.label ?? "Copy")}
-        </Button>
+        <>
+            <Button
+                glyph="copy"
+                title={props.label ?? "Copy to clipboard"}
+                isDisabled={(props.isDisabled ?? false) || props.value === ""}
+                onClick={() => void copy()}
+            >
+                {copyState() === "copied" ? "Copied" : (props.label ?? "Copy")}
+            </Button>
+            <Show when={copyState() === "refused"}>
+                <span
+                    class="text-[13px] font-medium text-bad"
+                    role="status"
+                >
+                    This browser refused the clipboard — select the secret here and copy it by hand.
+                </span>
+            </Show>
+        </>
     );
 }
 
