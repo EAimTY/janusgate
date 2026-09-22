@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
-import { describeValidity, formatTimestamp } from "/src/format";
+import { credentialExpiryLine, formatTimestamp, nowMicros } from "/src/format";
 import { toUpdateProviderRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
@@ -26,6 +26,7 @@ import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
 import { Button, ButtonLink, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, type NoticeTone, Skeleton } from "/src/ui/feedback";
+import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { AuthorizeStep } from "/src/ui/oauth-flow";
 import {
@@ -137,6 +138,17 @@ export function ProviderEditScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
+            <Show when={notice()}>
+                {(current) => (
+                    <Notice
+                        tone={current().tone}
+                        title={current().title}
+                        detail={current().detail}
+                        fix={current().fix}
+                    />
+                )}
+            </Show>
+
             <Show when={isReading() && !hasRead() && notice() === null}>
                 <PageHeader
                     title="Edit provider"
@@ -176,17 +188,6 @@ export function ProviderEditScreen(props: {
                             backHref={hrefs.providerDetail(row.id)}
                             backLabel="Provider"
                         />
-
-                        <Show when={notice()}>
-                            {(current) => (
-                                <Notice
-                                    tone={current().tone}
-                                    title={current().title}
-                                    detail={current().detail}
-                                    fix={current().fix}
-                                />
-                            )}
-                        </Show>
 
                         <DetailsCard
                             api={props.api}
@@ -298,7 +299,12 @@ function DetailsCard(props: {
                 (trimmedBaseUrl() !== staticBaseUrlOf(props.provider) || apiKey() !== "")),
     );
 
-    const canSave = (): boolean => isDirty() && prefixError() === null && isConnectionValid();
+    // A name is a human label, but the contract still requires it to hold
+    // something: an emptied field must not reach the gateway as a 400.
+    const isNamePresent = (): boolean => name().trim() !== "";
+
+    const canSave = (): boolean =>
+        isDirty() && isNamePresent() && prefixError() === null && isConnectionValid();
 
     const revert = (): void => {
         setIsEnabled(props.provider.is_enabled);
@@ -395,6 +401,19 @@ function DetailsCard(props: {
                     isDisabled={isSaving()}
                 />
 
+                <Show when={!isNamePresent()}>
+                    <p
+                        class="flex items-start gap-1.5 text-[13px] text-bad"
+                        role="alert"
+                    >
+                        <Glyph
+                            name="alert"
+                            class="mt-0.5 shrink-0"
+                        />
+                        A provider needs a name.
+                    </p>
+                </Show>
+
                 <Show when={isStatic()}>
                     <CompatibleConnectionFields
                         baseUrl={baseUrl()}
@@ -457,11 +476,7 @@ function CredentialsCard(props: {
             return "No expiry is stored for this provider.";
         }
 
-        const validity = describeValidity(props.provider.expires_at, Math.floor(Date.now() / 1000));
-
-        return validity.isExpired
-            ? `Expired ${validity.text.replace(/^expired /, "")} ago.`
-            : `Valid for ${validity.text.replace(/^in /, "")}.`;
+        return credentialExpiryLine(props.provider.expires_at, nowMicros());
     };
 
     const start = async (): Promise<void> => {

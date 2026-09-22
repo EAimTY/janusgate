@@ -1,0 +1,237 @@
+import { render } from "@solidjs/web";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ManagementApi } from "/src/management-api/client";
+import type {
+    DiscoverModelsRequest,
+    DiscoverModelsResponse,
+    ListModelsRequest,
+    ModelResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
+import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
+
+const provider: ProviderResponse = {
+    type: "openai_chat_completion",
+    id: 5,
+    name: "local",
+    model_prefix: "local/",
+    is_enabled: true,
+    base_url: "https://upstream.example.com",
+};
+
+const discoveredModel: ModelResponse = {
+    id: 9,
+    provider_id: 5,
+    provider: "local",
+    upstream_id: "qwen3:32b",
+    public_id: "local/qwen3:32b",
+    id_override: null,
+    is_enabled: true,
+    discovery_state: "discovered",
+};
+
+/**
+ * A management API whose reads answer from fixtures and whose write surface
+ * records every call. Routes this screen never touches reject, so an
+ * unexpected call fails the test loudly instead of hanging it.
+ */
+function screenApi(options: {
+    readonly providers: ReadonlyArray<ProviderResponse>;
+    readonly models: ReadonlyArray<ModelResponse>;
+    readonly onDiscover: (request: DiscoverModelsRequest) => void;
+    readonly onListProviders?: () => void;
+    readonly discoveryAnswer?: Promise<DiscoverModelsResponse>;
+}): ManagementApi {
+    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
+
+    return {
+        listProviders: (signal) => {
+            options.onListProviders?.();
+            signal?.throwIfAborted();
+            return Promise.resolve({
+                providers: [
+                    ...options.providers,
+                ],
+            });
+        },
+        listModels: (request: ListModelsRequest, signal) => {
+            signal?.throwIfAborted();
+            const filtered =
+                request.provider_id === undefined
+                    ? options.models
+                    : options.models.filter((model) => model.provider_id === request.provider_id);
+            return Promise.resolve({
+                models: [
+                    ...filtered,
+                ],
+            });
+        },
+        discoverModels: (request) => {
+            options.onDiscover(request);
+
+            return (
+                options.discoveryAnswer ??
+                Promise.resolve({
+                    models: [
+                        {
+                            ...discoveredModel,
+                        },
+                    ],
+                })
+            );
+        },
+        queryUsage: () =>
+            Promise.resolve({
+                buckets: [],
+            }),
+        createProvider: refused,
+        updateProvider: refused,
+        deleteProvider: refused,
+        startProviderOauth: refused,
+        completeProviderOauth: refused,
+        reauthorizeProvider: refused,
+        updateModel: refused,
+        createModel: refused,
+        deleteModel: refused,
+        listUsage: refused,
+        listApiKeys: refused,
+        createApiKey: refused,
+        updateApiKey: refused,
+        deleteApiKey: refused,
+    };
+}
+
+/** Drains the pending promises and scheduled work of one screen exchange. */
+async function settle(): Promise<void> {
+    for (let round = 0; round < 10; round += 1) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+}
+
+/** A discovery answer held back until the test resolves it by hand. */
+function deferredDiscoveryAnswer(): {
+    readonly answer: Promise<DiscoverModelsResponse>;
+    readonly resolve: (result: DiscoverModelsResponse) => void;
+} {
+    let resolve: (result: DiscoverModelsResponse) => void = () => undefined;
+    const answer = new Promise<DiscoverModelsResponse>((settleResolve) => {
+        resolve = settleResolve;
+    });
+
+    return {
+        answer,
+        resolve,
+    };
+}
+
+describe("ProviderDetailScreen automatic discovery", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("starts one discovery on its own when the provider reports no models", async () => {
+        const onDiscover = vi.fn();
+        const api = screenApi({
+            providers: [
+                provider,
+            ],
+            models: [],
+            onDiscover,
+        });
+
+        disposes.push(
+            render(
+                () => (
+                    <ProviderDetailScreen
+                        api={api}
+                        providerId={5}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        expect(onDiscover).toHaveBeenCalledTimes(1);
+        expect(onDiscover).toHaveBeenCalledWith({
+            provider_id: 5,
+        });
+    });
+
+    it("does not discover when the provider already reports models", async () => {
+        const onDiscover = vi.fn();
+        const api = screenApi({
+            providers: [
+                provider,
+            ],
+            models: [
+                discoveredModel,
+            ],
+            onDiscover,
+        });
+
+        disposes.push(
+            render(
+                () => (
+                    <ProviderDetailScreen
+                        api={api}
+                        providerId={5}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        expect(onDiscover).not.toHaveBeenCalled();
+    });
+
+    it("does not read again when the discovery settles after the screen is gone", async () => {
+        let listCount = 0;
+        const onDiscover = vi.fn();
+        const discovery = deferredDiscoveryAnswer();
+        const api = screenApi({
+            providers: [
+                provider,
+            ],
+            models: [],
+            onDiscover,
+            onListProviders: () => {
+                listCount += 1;
+            },
+            discoveryAnswer: discovery.answer,
+        });
+
+        const dispose = render(
+            () => (
+                <ProviderDetailScreen
+                    api={api}
+                    providerId={5}
+                />
+            ),
+            document.body,
+        );
+        await settle();
+
+        expect(onDiscover).toHaveBeenCalledTimes(1);
+        expect(listCount).toBe(1);
+
+        // The visitor navigates away before the upstream answers.
+        dispose();
+        discovery.resolve({
+            models: [
+                {
+                    ...discoveredModel,
+                },
+            ],
+        });
+        await settle();
+
+        expect(listCount).toBe(1);
+    });
+});

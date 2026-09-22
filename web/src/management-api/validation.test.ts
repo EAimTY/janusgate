@@ -32,7 +32,7 @@ const oauthProvider = {
     name: "chatgpt",
     model_prefix: "",
     is_enabled: false,
-    expires_at: 1_800_000_000,
+    expires_at: 1_800_000_000_000_000,
 };
 
 const antigravityProvider = {
@@ -251,20 +251,20 @@ describe("response validation", () => {
             parseStartProviderOauthResponse({
                 authorize_url: "https://auth.example.com/authorize",
                 state: "opaque",
-                expires_at: 1_800_000_600,
+                expires_at: 1_800_000_600_000_000,
             }),
         ).toEqual({
             authorize_url: "https://auth.example.com/authorize",
             state: "opaque",
-            expires_at: 1_800_000_600,
+            expires_at: 1_800_000_600_000_000,
         });
 
         expect(
             parseReauthorizeProviderResponse({
-                expires_at: 1_800_000_600,
+                expires_at: 1_800_000_600_000_000,
             }),
         ).toEqual({
-            expires_at: 1_800_000_600,
+            expires_at: 1_800_000_600_000_000,
         });
     });
 

@@ -1,11 +1,16 @@
-/** A unix timestamp (seconds) in the browser's locale. */
-export function formatTimestamp(unixSeconds: number): string {
-    return new Date(unixSeconds * 1000).toLocaleString();
+/** A unix timestamp (microseconds) in the browser's locale. */
+export function formatTimestamp(unixMicros: number): string {
+    return new Date(unixMicros / 1000).toLocaleString();
 }
 
 /** A gateway-stamped creation time (UTC microseconds) in the browser's locale. */
 export function formatCreatedAt(createdAtMicros: number): string {
     return new Date(createdAtMicros / 1000).toLocaleString();
+}
+
+/** The current moment as a unix timestamp in microseconds, matching the gateway's stamps. */
+export function nowMicros(): number {
+    return Date.now() * 1000;
 }
 
 /** A wall clock of hours, minutes and seconds, as the panel's validity stamp. */
@@ -19,46 +24,49 @@ export function formatClock(date: Date): string {
 }
 
 /**
- * How long a stored credential still holds, in the panel's words: a distance
- * in the largest units that say something, and whether it has already run out.
+ * How far an instant sits from the current moment, in the largest units that
+ * say something: `"<1m"`, `"42m"`, `"4h 12m"`, `"3d 4h"`. Zero remainders
+ * are dropped rather than printed.
  */
-export function describeValidity(
-    expiresAt: number,
-    nowSeconds: number,
-): {
-    readonly isExpired: boolean;
-    readonly text: string;
-} {
-    const delta = expiresAt - nowSeconds;
-    const isExpired = delta <= 0;
-    const magnitude = Math.abs(delta);
+function validityDistance(expiresAtMicros: number, nowMicros: number): string {
+    const magnitudeSeconds = Math.floor(Math.abs(expiresAtMicros - nowMicros) / 1_000_000);
 
-    if (magnitude < 60) {
-        return {
-            isExpired,
-            text: isExpired ? "expired <1m ago" : "in <1m",
-        };
+    if (magnitudeSeconds < 60) {
+        return "<1m";
     }
 
-    const minutes = Math.floor(magnitude / 60);
+    const minutes = Math.floor(magnitudeSeconds / 60);
     const hours = Math.floor(minutes / 60);
     const days = Math.floor(hours / 24);
 
-    const distance =
-        days > 0
-            ? hours % 24 === 0
-                ? `${days}d`
-                : `${days}d ${hours % 24}h`
-            : hours > 0
-              ? minutes % 60 === 0
-                  ? `${hours}h`
-                  : `${hours}h ${minutes % 60}m`
-              : `${minutes}m`;
+    if (days > 0) {
+        return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
+    }
 
-    return {
-        isExpired,
-        text: isExpired ? `expired ${distance} ago` : `in ${distance}`,
-    };
+    if (hours > 0) {
+        return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
+    }
+
+    return `${minutes}m`;
+}
+
+/**
+ * Whether a stored credential's expiry instant has already passed. An expiry
+ * exactly now counts as expired: there is nothing left to hold.
+ */
+export function isCredentialExpired(expiresAtMicros: number, nowMicros: number): boolean {
+    return expiresAtMicros <= nowMicros;
+}
+
+/**
+ * A stored credential's expiry as one sentence: how long it still holds, or
+ * how long ago it ran out. An expiry the credential does not carry (`null`
+ * on the wire) is the caller's concern — this only phrases a known instant.
+ */
+export function credentialExpiryLine(expiresAtMicros: number, nowMicros: number): string {
+    return isCredentialExpired(expiresAtMicros, nowMicros)
+        ? `Expired ${validityDistance(expiresAtMicros, nowMicros)} ago.`
+        : `Valid for ${validityDistance(expiresAtMicros, nowMicros)}.`;
 }
 
 /**
@@ -68,17 +76,6 @@ export function describeValidity(
  */
 export function formatTokenCount(value: number | null): string {
     return value === null ? "—" : value.toLocaleString();
-}
-
-/**
- * A UTC-microsecond instant as a `datetime-local` value in this browser's
- * zone, at the input's minute precision.
- */
-export function formatMicrosForDateTimeInput(micros: number): string {
-    const date = new Date(micros / 1000);
-    const pad = (part: number): string => String(part).padStart(2, "0");
-
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /**

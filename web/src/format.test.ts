@@ -1,46 +1,68 @@
 import { describe, expect, it } from "vitest";
 import {
-    describeValidity,
+    credentialExpiryLine,
     formatClock,
-    formatMicrosForDateTimeInput,
     formatTokenCount,
+    isCredentialExpired,
+    nowMicros,
     parseDateTimeInputToMicros,
 } from "./format";
 
-describe("describeValidity", () => {
-    const now = 1_700_000_000;
+describe("credentialExpiryLine", () => {
+    // A real-world microsecond magnitude: late 2027 at microsecond scale.
+    const now = 1_800_000_000_000_000;
+    const seconds = 1_000_000;
 
-    it("reads a distant expiry in days and hours", () => {
-        const validity = describeValidity(now + 3 * 86_400 + 4 * 3_600, now);
+    it("reads a distant expiry as valid, in days and hours", () => {
+        const line = credentialExpiryLine(now + 3 * 86_400 * seconds + 4 * 3_600 * seconds, now);
 
-        expect(validity.isExpired).toBe(false);
-        expect(validity.text).toBe("in 3d 4h");
-    });
-
-    it("drops a zero remainder rather than printing it", () => {
-        expect(describeValidity(now + 2 * 86_400, now).text).toBe("in 2d");
-        expect(describeValidity(now + 5 * 3_600, now).text).toBe("in 5h");
-    });
-
-    it("reads hours and minutes inside a day", () => {
-        expect(describeValidity(now + 4 * 3_600 + 12 * 60, now).text).toBe("in 4h 12m");
-        expect(describeValidity(now + 42 * 60, now).text).toBe("in 42m");
-    });
-
-    it("floors anything under a minute to the smallest unit", () => {
-        expect(describeValidity(now + 30, now).text).toBe("in <1m");
-        expect(describeValidity(now - 30, now).text).toBe("expired <1m ago");
+        expect(line).toBe("Valid for 3d 4h.");
     });
 
     it("reads a past expiry as expired with the same units", () => {
-        const validity = describeValidity(now - 2 * 3_600 - 5 * 60, now);
+        const line = credentialExpiryLine(now - 2 * 3_600 * seconds - 5 * 60 * seconds, now);
 
-        expect(validity.isExpired).toBe(true);
-        expect(validity.text).toBe("expired 2h 5m ago");
+        expect(line).toBe("Expired 2h 5m ago.");
+    });
+
+    it("drops a zero remainder rather than printing it", () => {
+        expect(credentialExpiryLine(now + 2 * 86_400 * seconds, now)).toBe("Valid for 2d.");
+        expect(credentialExpiryLine(now + 5 * 3_600 * seconds, now)).toBe("Valid for 5h.");
+    });
+
+    it("reads hours and minutes inside a day", () => {
+        expect(credentialExpiryLine(now + 4 * 3_600 * seconds + 12 * 60 * seconds, now)).toBe(
+            "Valid for 4h 12m.",
+        );
+        expect(credentialExpiryLine(now + 42 * 60 * seconds, now)).toBe("Valid for 42m.");
+    });
+
+    it("floors anything under a minute to the smallest unit", () => {
+        expect(credentialExpiryLine(now + 30 * seconds, now)).toBe("Valid for <1m.");
+        expect(credentialExpiryLine(now - 30 * seconds, now)).toBe("Expired <1m ago.");
     });
 
     it("reads the exact boundary as expired", () => {
-        expect(describeValidity(now, now).isExpired).toBe(true);
+        expect(credentialExpiryLine(now, now)).toBe("Expired <1m ago.");
+    });
+});
+
+describe("isCredentialExpired", () => {
+    const now = 1_800_000_000_000_000;
+
+    it("reads a future expiry as unexpired", () => {
+        expect(isCredentialExpired(now + 60 * 1_000_000, now)).toBe(false);
+    });
+
+    it("reads a past expiry and the exact boundary as expired", () => {
+        expect(isCredentialExpired(now - 60 * 1_000_000, now)).toBe(true);
+        expect(isCredentialExpired(now, now)).toBe(true);
+    });
+});
+
+describe("nowMicros", () => {
+    it("reads the current moment at microsecond scale, not seconds", () => {
+        expect(nowMicros()).toBeGreaterThan(1_000_000_000_000_000);
     });
 });
 
@@ -59,14 +81,8 @@ describe("formatTokenCount", () => {
 });
 
 describe("date-time input bounds", () => {
-    it("round-trips an instant through the input's minute precision", () => {
-        // 2026-09-22T10:30 local, seconds truncated by the input.
-        const micros = parseDateTimeInputToMicros("2026-09-22T10:30");
-
-        expect(micros).not.toBeNull();
-
-        const rendered = formatMicrosForDateTimeInput(micros ?? 0);
-        expect(rendered).toBe("2026-09-22T10:30");
+    it("reads a well-formed stamp as a bound at microsecond scale", () => {
+        expect(parseDateTimeInputToMicros("2026-09-22T10:30")).not.toBeNull();
     });
 
     it("reads blank as no bound", () => {

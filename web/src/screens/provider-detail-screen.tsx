@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
-import { describeValidity } from "/src/format";
+import { createMemo, createSignal, createTrackedEffect, onCleanup, Show } from "solid-js";
+import { credentialExpiryLine, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
@@ -8,12 +8,12 @@ import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocab
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
-import { credentialBadge } from "/src/screens/providers-screen";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, type NoticeTone, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
+import { credentialBadge } from "/src/ui/providers-table";
 
 type ScreenNotice = {
     readonly tone: NoticeTone;
@@ -40,6 +40,16 @@ export function ProviderDetailScreen(props: {
     const [notice, setNotice] = createSignal<ScreenNotice | null>(null);
 
     let controller: AbortController | null = null;
+    let discoveryController: AbortController | null = null;
+    // Set when the screen goes away: a discovery answering afterwards must
+    // neither state anything nor start its follow-up read on a dead screen.
+    let isDisposed = false;
+
+    onCleanup(() => {
+        isDisposed = true;
+        discoveryController?.abort();
+    });
+
     // The provider whose empty list already triggered its one automatic
     // discovery. A plain variable, not a signal: it guards an action, and it
     // lives as long as this screen does.
@@ -89,30 +99,35 @@ export function ProviderDetailScreen(props: {
             return;
         }
 
+        const freshProviders =
+            providersOutcome.status === "ok" ? providersOutcome.result.providers : [];
         const freshModels = modelsOutcome.status === "ok" ? modelsOutcome.result.models : [];
-        setProviders(providersOutcome.status === "ok" ? providersOutcome.result.providers : []);
+        setProviders(freshProviders);
         setModels(freshModels);
         setHasRead(true);
         reportRefresh();
 
         if (freshModels.length === 0 && autoDiscoveredFor !== props.providerId) {
-            autoDiscoveredFor = props.providerId;
-            void discover();
+            // The decision reads the fetched arrays, not the signals: a write
+            // from this continuation stages until the next flush, so a
+            // read-back here would still see the previous listing.
+            const current = freshProviders.find((candidate) => candidate.id === props.providerId);
+
+            if (current !== undefined) {
+                autoDiscoveredFor = props.providerId;
+                void discover(current);
+            }
         }
     };
 
     /** Reads the provider's models from upstream, stating each step where it was taken. */
-    const discover = async (): Promise<void> => {
-        if (isDiscovering()) {
+    const discover = async (current: ProviderResponse): Promise<void> => {
+        if (isDiscovering() || isDisposed) {
             return;
         }
 
-        const current = providers().find((candidate) => candidate.id === props.providerId);
-
-        if (current === null || current === undefined) {
-            return;
-        }
-
+        const call = new AbortController();
+        discoveryController = call;
         setIsDiscovering(true);
         setNotice({
             tone: "info",
@@ -121,9 +136,12 @@ export function ProviderDetailScreen(props: {
         });
 
         const outcome = await performManagementCall(() =>
-            props.api.discoverModels({
-                provider_id: props.providerId,
-            }),
+            props.api.discoverModels(
+                {
+                    provider_id: current.id,
+                },
+                call.signal,
+            ),
         );
 
         setIsDiscovering(false);
@@ -145,16 +163,38 @@ export function ProviderDetailScreen(props: {
         }
 
         const rows = outcome.result.models;
-        const missing = rows.filter((row) => row.discovery_state === "vanished").length;
+        const discovered = rows.filter((row) => row.discovery_state === "discovered").length;
+        const vanished = rows.filter((row) => row.discovery_state === "vanished").length;
+        const manual = rows.length - discovered - vanished;
+
+        const facts = [
+            "Custom names were kept.",
+        ];
+
+        if (manual > 0) {
+            facts.push(`${manual} added by hand ${manual === 1 ? "was" : "were"} left untouched.`);
+        }
+
+        if (vanished > 0) {
+            facts.push(
+                `${vanished} ${vanished === 1 ? "model is" : "models are"} now listed as no longer reported.`,
+            );
+        }
 
         setNotice({
             tone: "ok",
-            title: `${rows.length} ${rows.length === 1 ? "model" : "models"} discovered from ${current.name}.`,
-            detail:
-                missing === 0
-                    ? "Custom names on returning models were kept."
-                    : `Custom names were kept; ${missing} ${missing === 1 ? "model" : "models"} the upstream no longer reports ${missing === 1 ? "is" : "are"} listed as no longer reported.`,
+            title:
+                discovered > 0
+                    ? `${discovered} ${discovered === 1 ? "model" : "models"} discovered from ${current.name}.`
+                    : `Nothing new discovered from ${current.name}.`,
+            detail: facts.join(" "),
         });
+
+        // A discovery answering after the visitor left must not read again.
+        if (isDisposed) {
+            return;
+        }
+
         void read();
     };
 
@@ -182,6 +222,17 @@ export function ProviderDetailScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
+            <Show when={notice()}>
+                {(current) => (
+                    <Notice
+                        tone={current().tone}
+                        title={current().title}
+                        detail={current().detail}
+                        fix={current().fix}
+                    />
+                )}
+            </Show>
+
             <Show when={isReading() && !hasRead() && notice() === null}>
                 <PageHeader
                     title="Provider"
@@ -234,17 +285,6 @@ export function ProviderDetailScreen(props: {
                             <ButtonLink href={hrefs.providerEdit(row.id)}>Edit provider</ButtonLink>
                         </PageHeader>
 
-                        <Show when={notice()}>
-                            {(current) => (
-                                <Notice
-                                    tone={current().tone}
-                                    title={current().title}
-                                    detail={current().detail}
-                                    fix={current().fix}
-                                />
-                            )}
-                        </Show>
-
                         <FactsCard provider={row} />
 
                         <ModelsCard
@@ -252,7 +292,7 @@ export function ProviderDetailScreen(props: {
                             models={models()}
                             providersById={providersById()}
                             isDiscovering={isDiscovering()}
-                            onDiscover={() => void discover()}
+                            onDiscover={() => void discover(row)}
                         />
 
                         <EntityUsageCard
@@ -289,11 +329,7 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
             return null;
         }
 
-        const validity = describeValidity(props.provider.expires_at, Math.floor(Date.now() / 1000));
-
-        return validity.isExpired
-            ? `Expired ${validity.text.replace(/^expired /, "")} ago.`
-            : `Valid for ${validity.text.replace(/^in /, "")}.`;
+        return credentialExpiryLine(props.provider.expires_at, nowMicros());
     };
 
     return (

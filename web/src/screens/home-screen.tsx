@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
-import { describeValidity } from "/src/format";
+import { credentialExpiryLine, isCredentialExpired, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ApiKeyResponse,
@@ -139,6 +139,16 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
         return data().providers.filter((provider) => (modelCounts.get(provider.id) ?? 0) === 0);
     });
 
+    // Exactly what the list below counts: every item the section can show —
+    // credential problems, providers without models, the missing first key —
+    // so the headline number and the list can never contradict each other.
+    const attentionCount = createMemo(
+        () =>
+            attentionProviders().length +
+            emptyProviders().length +
+            (data().apiKeys.length === 0 ? 1 : 0),
+    );
+
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
@@ -222,18 +232,15 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                         </Card>
                         <Card>
                             <Stat
-                                value={String(attentionProviders().length)}
+                                value={String(attentionCount())}
                                 label="Need attention"
-                                hint="Credentials to reconnect"
+                                hint="Listed below"
                             />
                         </Card>
                     </div>
 
                     <Show
-                        when={
-                            attentionProviders().length + emptyProviders().length > 0 ||
-                            data().apiKeys.length === 0
-                        }
+                        when={attentionCount() > 0}
                         fallback={
                             <Notice
                                 tone="ok"
@@ -312,15 +319,13 @@ function credentialAttention(provider: ProviderResponse): {
         };
     }
 
-    const validity = describeValidity(provider.expires_at, Math.floor(Date.now() / 1000));
-
-    if (!validity.isExpired) {
+    if (!isCredentialExpired(provider.expires_at, nowMicros())) {
         return null;
     }
 
     return {
         label: "Credential expired",
-        detail: `Expired ${validity.text.replace(/^expired /, "")} ago.`,
+        detail: credentialExpiryLine(provider.expires_at, nowMicros()),
     };
 }
 

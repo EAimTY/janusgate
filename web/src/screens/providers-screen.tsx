@@ -1,50 +1,17 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
-import { describeValidity } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
-import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
+import { providerTypeLabel } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
-import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
-import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
-
-/** The one readable statement of a provider's credential state. */
-export function credentialBadge(provider: ProviderResponse): {
-    readonly tone: BadgeTone;
-    readonly label: string;
-} {
-    if (!isOAuthProviderRow(provider)) {
-        return {
-            tone: "muted",
-            label: "API key",
-        };
-    }
-
-    if (provider.expires_at === null) {
-        return {
-            tone: "warn",
-            label: "Stale",
-        };
-    }
-
-    const validity = describeValidity(provider.expires_at, Math.floor(Date.now() / 1000));
-
-    return validity.isExpired
-        ? {
-              tone: "warn",
-              label: "Expired",
-          }
-        : {
-              tone: "ok",
-              label: "Valid",
-          };
-}
+import { ProviderList } from "/src/ui/providers-table";
 
 /**
  * The provider list: one row per upstream account. Rows carry identity,
@@ -136,7 +103,7 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
         return providers().filter(
             (provider) =>
                 provider.name.toLowerCase().includes(needle) ||
-                providerTypeLabelOf(provider).toLowerCase().includes(needle),
+                providerTypeLabel(provider.type).toLowerCase().includes(needle),
         );
     });
 
@@ -223,65 +190,13 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                             />
                         }
                     >
-                        <ul class="flex flex-col gap-2">
-                            <For each={visibleProviders()}>
-                                {(provider) => (
-                                    <ProviderRow
-                                        provider={provider}
-                                        modelCount={modelCounts().get(provider.id) ?? 0}
-                                    />
-                                )}
-                            </For>
-                        </ul>
+                        <ProviderList
+                            providers={visibleProviders()}
+                            modelCounts={modelCounts()}
+                        />
                     </Show>
                 </Show>
             </Show>
         </div>
-    );
-}
-
-function providerTypeLabelOf(provider: ProviderResponse): string {
-    return providerTypeLabel(provider.type);
-}
-
-function ProviderRow(props: {
-    readonly provider: ProviderResponse;
-    readonly modelCount: number;
-}): JSX.Element {
-    const credential = (): {
-        readonly tone: BadgeTone;
-        readonly label: string;
-    } => credentialBadge(props.provider);
-
-    return (
-        <li>
-            <AppLink
-                href={hrefs.providerDetail(props.provider.id)}
-                class="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3.5 transition-colors duration-150 ease-out hover:border-ink-faint"
-            >
-                <span class="min-w-0 flex-1 basis-48">
-                    <span class="block truncate text-[14.5px] font-semibold">
-                        {props.provider.name}
-                    </span>
-                    <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
-                        {`${providerTypeLabel(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
-                    </span>
-                </span>
-                <span class="flex items-center gap-2">
-                    <Badge
-                        tone={props.provider.is_enabled ? "ok" : "muted"}
-                        label={props.provider.is_enabled ? "Enabled" : "Disabled"}
-                    />
-                    <Badge
-                        tone={credential().tone}
-                        label={credential().label}
-                    />
-                </span>
-                <Glyph
-                    name="chev-right"
-                    class="text-ink-faint transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink-dim"
-                />
-            </AppLink>
-        </li>
     );
 }
