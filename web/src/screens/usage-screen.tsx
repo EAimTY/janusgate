@@ -18,9 +18,7 @@ import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
-
-/** One `usage:list` page: the gateway's default of 100 rows. */
-const PAGE_SIZE = 100;
+import { nextUsagePage, USAGE_PAGE_SIZE, usageCursor } from "./usage-pagination";
 
 /**
  * Every dispatched request, newest first. The listing carries no filters —
@@ -45,7 +43,10 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
         readonly fix: string | null;
     } | null>(null);
 
-    let controller: AbortController | null = null;
+    // The read that owns the stream and the loader that extends it. Each async
+    // continuation checks that its controller is still the current one and
+    // discards its result otherwise: a superseded call must write nothing.
+    let reader: AbortController | null = null;
     let loader: AbortController | null = null;
 
     const readEntities = async (signal: AbortSignal): Promise<boolean> => {
@@ -99,10 +100,10 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
             props.api.listUsage(
                 beforeId === null
                     ? {
-                          limit: PAGE_SIZE,
+                          limit: USAGE_PAGE_SIZE,
                       }
                     : {
-                          limit: PAGE_SIZE,
+                          limit: USAGE_PAGE_SIZE,
                           before_id: beforeId,
                       },
                 signal,
@@ -128,42 +129,57 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
     };
 
     const read = async (): Promise<void> => {
-        controller?.abort();
+        reader?.abort();
+        loader?.abort();
+        loader = null;
 
         const call = new AbortController();
-        controller = call;
+        reader = call;
         setIsReading(true);
+        // The aborted loader will never land; the refresh owns the stream now.
+        setIsLoadingMore(false);
 
-        if (!(await readEntities(call.signal))) {
+        const entitiesRead = await readEntities(call.signal);
+
+        if (call !== reader) {
+            return;
+        }
+
+        if (!entitiesRead) {
             setIsReading(false);
             return;
         }
 
         const page = await readPage(call.signal, null);
 
+        if (call !== reader) {
+            return;
+        }
+
         if (page === null) {
             setIsReading(false);
             return;
         }
 
+        const continuation = nextUsagePage([], page);
         setFailure(null);
-        setRows(page);
-        setHasMore(page.length === PAGE_SIZE);
+        setRows(continuation.rows);
+        setHasMore(continuation.hasMore);
         setHasRead(true);
         setIsReading(false);
         reportRefresh();
     };
 
     const loadMore = async (): Promise<void> => {
-        const current = rows();
-
-        if (isLoadingMore() || current.length === 0) {
+        // A refresh in flight is about to replace the stream wholesale;
+        // extending it would resurrect rows the replacement invalidates.
+        if (isLoadingMore() || isReading()) {
             return;
         }
 
-        const cursor = current[current.length - 1]?.id;
+        const cursor = usageCursor(rows());
 
-        if (cursor === undefined) {
+        if (cursor === null) {
             return;
         }
 
@@ -175,18 +191,22 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
 
         const page = await readPage(call.signal, cursor);
 
-        setIsLoadingMore(false);
-
-        if (page === null || page.length === 0) {
-            setHasMore(page !== null && page.length === PAGE_SIZE);
+        if (call !== loader) {
             return;
         }
 
-        setRows([
-            ...current,
-            ...page,
-        ]);
-        setHasMore(page.length === PAGE_SIZE);
+        setIsLoadingMore(false);
+
+        if (page === null) {
+            // A failed load is not the end of the stream: the failure notice
+            // above is the signal, and the continuation stays available.
+            return;
+        }
+
+        const continuation = nextUsagePage(rows(), page);
+        setFailure(null);
+        setRows(continuation.rows);
+        setHasMore(continuation.hasMore);
     };
 
     createTrackedEffect(() => {
@@ -194,7 +214,7 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
         void read();
 
         return () => {
-            controller?.abort();
+            reader?.abort();
             loader?.abort();
         };
     });
