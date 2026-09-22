@@ -44,6 +44,7 @@ mod error;
 mod models;
 mod oauth_flow;
 mod providers;
+mod usage;
 
 // This version's public wire surface: every route marker and every route's request and response
 // payload types. Nested wire shapes — provider and model rows, captured credentials — stay private,
@@ -70,8 +71,15 @@ pub use self::{
         ListProviders, ListProvidersRequest, ListProvidersResponse, UpdateProvider,
         UpdateProviderRequest,
     },
+    usage::{
+        ApiLogResponse, ListUsage, ListUsageRequest, ListUsageResponse, QueryUsage,
+        QueryUsageRequest, QueryUsageResponse, UsageBucket,
+    },
 };
-pub use crate::provider::{DiscoveryState, OAuthProviderType, ProviderType};
+pub use crate::{
+    api_logs::{ApiLogEndpointType, ApiLogOutcome, UsageBucketKey, UsageGroupBy},
+    provider::{DiscoveryState, OAuthProviderType, ProviderType},
+};
 
 /// URL prefix this version is mounted at, relative to the management API router. Its version
 /// segment also names this version's TypeScript bindings file.
@@ -205,6 +213,14 @@ pub(super) fn router() -> Router<Context> {
         .route(
             DeleteModel::PATH,
             routing::on(method_filter(&DeleteModel::METHOD), models::delete),
+        )
+        .route(
+            ListUsage::PATH,
+            routing::on(method_filter(&ListUsage::METHOD), usage::list),
+        )
+        .route(
+            QueryUsage::PATH,
+            routing::on(method_filter(&QueryUsage::METHOD), usage::query),
         )
         .fallback(fallback)
         .method_not_allowed_fallback(method_not_allowed)

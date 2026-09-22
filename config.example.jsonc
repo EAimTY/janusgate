@@ -66,5 +66,14 @@
             // Whether to allow requests from private networks (Private Network Access).
             "allow_private_network": false
         }
+    },
+
+    "api_logs": {
+        // Record one accounting row per dispatched inference request (README §3
+        // ApiLog). Off means no row is ever written while the usage reads keep
+        // serving existing rows; takes effect on the next dispatch after a
+        // reload. The whole section — and this field — may be omitted,
+        // defaulting to true.
+        "is_enabled": true
     }
 }

@@ -11,6 +11,7 @@
 //! request renderers, but no outward client format.
 
 use crate::{
+    api_logs::ApiLogEndpointType,
     ir::{InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrRequest, IrToolChoice},
     sse::SseFrame,
 };
@@ -157,6 +158,10 @@ pub(crate) struct OpenAiErrorEnvelope {
 pub(crate) trait ClientFormat {
     /// The non-streaming success body this format renders.
     type JsonResponse;
+
+    /// The outward completion endpoint this format is served on, recorded in the request
+    /// accounting row (README §3 *ApiLog*); each endpoint names itself.
+    const ENDPOINT_TYPE: ApiLogEndpointType;
 
     /// Parses one client request body.
     ///

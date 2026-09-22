@@ -5,6 +5,7 @@
 
 use self::client_render::{ChatCompletionResponse, SseRenderer};
 use crate::{
+    api_logs::ApiLogEndpointType,
     format::{ClientFormat, ClientSseRenderer, ParsedRequest},
     ir::{InvalidRequest, IrAggregation},
 };
@@ -22,6 +23,8 @@ pub(crate) struct Format;
 
 impl ClientFormat for Format {
     type JsonResponse = ChatCompletionResponse;
+
+    const ENDPOINT_TYPE: ApiLogEndpointType = ApiLogEndpointType::OpenaiChatCompletions;
 
     fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest> {
         request_parse::parse_request(body)

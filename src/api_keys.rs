@@ -132,9 +132,10 @@ pub(crate) async fn find_api_key_by_id(
     rows.first().map(api_key_from_row).transpose()
 }
 
-/// Lists the secrets of every enabled API key, for the outward authentication middleware.
+/// Lists the identities and secrets of every enabled API key, for the outward authentication
+/// middleware: each pair is the row's never-recycled id beside its secret value.
 ///
-/// Only the secret values cross this boundary — no row reads them back — so a disabled key stops
+/// Only these pairs cross this boundary — no row reads them back — so a disabled key stops
 /// authorizing traffic as soon as its row is rewritten.
 ///
 /// # Errors
@@ -142,18 +143,18 @@ pub(crate) async fn find_api_key_by_id(
 /// Returns [`Error`] when the query fails.
 pub(crate) async fn list_enabled_api_key_secrets(
     database: &Database,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<(i64, String)>, Error> {
     let rows = database
-        .query("SELECT key FROM api_keys WHERE is_enabled = 1", ())
+        .query("SELECT id, key FROM api_keys WHERE is_enabled = 1", ())
         .await?;
 
-    let mut secrets = Vec::with_capacity(rows.len());
+    let mut keys = Vec::with_capacity(rows.len());
 
     for row in &rows {
-        secrets.push(row.get(0)?);
+        keys.push((row.get(0)?, row.get(1)?));
     }
 
-    Ok(secrets)
+    Ok(keys)
 }
 
 /// Inserts one API key row, stamping the creation time from the database clock, and returns the
@@ -370,9 +371,9 @@ mod tests {
 
         assert_eq!(listed, vec![first.clone(), second.clone()]);
 
-        let secrets = list_enabled_api_key_secrets(&database).await?;
+        let keys = list_enabled_api_key_secrets(&database).await?;
 
-        assert_eq!(secrets, vec!["sk-first".to_string()]);
+        assert_eq!(keys, vec![(first.id, "sk-first".to_string())]);
 
         let found = find_api_key_by_key(&database, "sk-second").await?;
 

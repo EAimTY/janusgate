@@ -2,6 +2,7 @@
 //! translation into IR event streams.
 
 use super::{
+    api_logs::{ApiLogDraft, ApiLogOutcome, finalize_api_log},
     context::Context,
     database::Database,
     format::{
@@ -31,6 +32,15 @@ const EVENT_CHANNEL_BUFFER: usize = 64;
 ///
 /// The Displays carry the complete human message the outward surface renders; the surface only maps
 /// each variant onto its status, `type`, `code`, and `param`.
+///
+/// **Dispatch timing invariant**: only [`Error::Upstream`] (a mirrored non-2xx status) and
+/// [`Error::Unavailable`] (a transport or payload failure) can be produced *after* dispatch —
+/// after the upstream `send()` inside [`execute`] — because every other variant arises strictly
+/// before it (routing, validation, token refresh, payload rendering). The set of post-dispatch
+/// variants therefore contains every failure [`execute`] can report after it stamped the
+/// accounting draft, which is what lets [`execute`] finalize the request's accounting row itself,
+/// exactly once, and lets every later finalization point classify a stream failure through
+/// [`classify_failure`] (README §3 *ApiLog*).
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     /// The client's request was rejected while preparing the upstream call.
@@ -82,6 +92,46 @@ pub(crate) enum Error {
     },
 }
 
+/// Classifies a pipeline failure onto its accounting outcome and the HTTP status the client is (or
+/// would be) served — the one classification the three finalization points share (README §3
+/// *ApiLog*, §6.7):
+///
+/// - a mirrored upstream non-2xx [`Error::Upstream`] records `upstream_error` with that very
+///   status;
+/// - [`Error::Unavailable`] — a transport failure or malformed upstream payload — records
+///   `upstream_error` with 502;
+/// - every other variant — a gateway-side failure — records `internal` with 500.
+///
+/// Post-dispatch, only the first two variants can occur (the invariant on [`Error`]); the third
+/// branch keeps the classification total for stream failures rendered under an already-declared
+/// status, where only the outcome is consumed.
+pub(crate) fn classify_failure(error: &Error) -> (ApiLogOutcome, i64) {
+    match error {
+        Error::Upstream { status, .. } => {
+            (ApiLogOutcome::UpstreamError, i64::from(status.as_u16()))
+        }
+
+        Error::Unavailable { .. } => (
+            ApiLogOutcome::UpstreamError,
+            i64::from(StatusCode::BAD_GATEWAY.as_u16()),
+        ),
+
+        _ => (
+            ApiLogOutcome::Internal,
+            i64::from(StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
+        ),
+    }
+}
+
+/// Finalizes the accounting row of a post-dispatch failure inside [`execute`]: classifies the
+/// failure and hands the draft to [`finalize_api_log`], which never reports back — accounting
+/// failures stay out of the HTTP error domain (README §8).
+async fn finalize_dispatch_failure(context: &Context, log: &ApiLogDraft, error: &Error) {
+    let (outcome, http_status) = classify_failure(error);
+
+    finalize_api_log(&context.database, log, outcome, Some(http_status), None).await;
+}
+
 /// A stream of translated IR events; always terminates with [`IrEvent::Done`].
 pub(crate) type IrEventStream = Pin<Box<dyn Stream<Item = Result<IrEvent, Error>> + Send>>;
 
@@ -111,15 +161,21 @@ pub(crate) async fn resolve_routing(
 /// The stream is pumped by a spawned task reading the upstream response; the client response is
 /// rendered on the handler side from the returned events.
 ///
+/// `log` is the request's accounting draft: this function stamps its dispatch instant the moment
+/// before `send()` leaves and — should it then fail after dispatch — finalizes the row itself,
+/// leaving an unstamped draft untouched for every pre-dispatch failure (README §3 *ApiLog*).
+///
 /// # Errors
 ///
 /// Returns [`Error`] for routing, token, and upstream failures detected before the response stream
-/// starts.
+/// starts, and — per the dispatch timing invariant on [`Error`] — for the two post-dispatch
+/// failures it finalizes itself.
 pub(crate) async fn execute(
     context: &Context,
     routing: ModelRouting,
     mut ir: IrRequest,
     is_client_streaming: bool,
+    log: &mut ApiLogDraft,
 ) -> Result<IrEventStream, Error> {
     // The client's reasoning effort string needs no interpretation here: it is opaque end to end
     // (README §6.4) — no stored override is consulted, nothing is filtered or clamped — and the
@@ -163,17 +219,33 @@ pub(crate) async fn execute(
         is_client_streaming,
     )?;
 
-    let response = request_builder
-        .send()
-        .await
-        .map_err(|error| Error::Unavailable {
-            detail: format!("upstream unreachable: {error}"),
-        })?;
+    // The dispatch mark: everything above ran before dispatch (no accounting row exists yet for
+    // any failure above), and everything below ran after it. With accounting disabled the stamp
+    // is skipped, and the request stays unrecordable end to end (README §3 *ApiLog*).
+    log.stamp();
+
+    let response = match request_builder.send().await {
+        Ok(response) => response,
+
+        Err(error) => {
+            let error = Error::Unavailable {
+                detail: format!("upstream unreachable: {error}"),
+            };
+
+            finalize_dispatch_failure(context, log, &error).await;
+
+            return Err(error);
+        }
+    };
 
     let status = response.status();
 
     if !status.is_success() {
-        return Err(upstream_error_of(response).await);
+        let error = upstream_error_of(response).await;
+
+        finalize_dispatch_failure(context, log, &error).await;
+
+        return Err(error);
     }
 
     debug!("{upstream_label}: upstream responded {status}");
@@ -613,5 +685,41 @@ impl From<PayloadError> for Error {
         Self::Unavailable {
             detail: error.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    /// Verifies the three branches of the one classification every accounting finalization point
+    /// shares (README §3 *ApiLog*, §6.7): a mirrored upstream non-2xx records `upstream_error`
+    /// with that very status, a transport failure records `upstream_error` with 502, and a
+    /// gateway-side failure records `internal` with 500.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a branch classifies differently from the documented mapping.
+    #[test]
+    fn classifies_failures_in_three_branches() {
+        let (outcome, http_status) = classify_failure(&Error::Upstream {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            detail: "rate limited".to_string(),
+        });
+
+        assert_eq!((outcome, http_status), (ApiLogOutcome::UpstreamError, 429));
+
+        let (outcome, http_status) = classify_failure(&Error::Unavailable {
+            detail: "upstream unreachable".to_string(),
+        });
+
+        assert_eq!((outcome, http_status), (ApiLogOutcome::UpstreamError, 502));
+
+        let (outcome, http_status) = classify_failure(&Error::Internal {
+            message: "stored configuration drift".to_string(),
+        });
+
+        assert_eq!((outcome, http_status), (ApiLogOutcome::Internal, 500));
     }
 }

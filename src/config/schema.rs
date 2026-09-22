@@ -42,6 +42,12 @@ pub(crate) struct Config {
 
     /// Outward client API configuration.
     pub(crate) api: ApiConfig,
+
+    /// Request accounting (`api_logs`) configuration. The write path reads `is_enabled` live per
+    /// dispatched request, so a reload takes effect on the next dispatch; the management reads
+    /// are never gated by it and keep reading existing rows.
+    #[serde(default)]
+    pub(crate) api_logs: ApiLogsConfig,
 }
 
 /// Inbound TLS termination schema.
@@ -131,6 +137,30 @@ pub(crate) struct ApiConfig {
     pub(crate) cors: CorsConfig,
 }
 
+/// Request accounting configuration (`api_logs`, README §3 *ApiLog*).
+///
+/// Unknown fields are strictly rejected. The section and its field may both be omitted: the
+/// whole section defaults through [`Default`], and `is_enabled` defaults to `true`.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApiLogsConfig {
+    /// Whether dispatched inference requests are recorded as `api_logs` rows. When recording is
+    /// off no row is ever written, while the management reads keep serving existing rows.
+    /// Defaults to `true`.
+    #[serde(default = "super::defaults::api_logs_enabled")]
+    pub(crate) is_enabled: bool,
+}
+
+/// The default request-accounting state — recording on — which the omitted `api_logs` section
+/// falls back to; a single source of truth with the field's own serde default.
+impl Default for ApiLogsConfig {
+    fn default() -> Self {
+        Self {
+            is_enabled: super::defaults::api_logs_enabled(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Config;
@@ -145,10 +175,15 @@ mod tests {
     /// Panics if parsing fails; the tests feed valid configurations only.
     fn parse(bytes: &[u8]) -> Config {
         #[expect(clippy::expect_used, reason = "the tested body parses")]
-        let schema: Config =
-            serde_json::from_reader(StripComments::new(bytes)).expect("the tested body parses");
+        let schema: Config = parse_result(bytes).expect("the tested body parses");
 
         schema
+    }
+
+    /// Parses a schema from JSONC bytes, yielding the deserializer's rejection instead of
+    /// panicking, for bodies whose rejection is what the test asserts.
+    fn parse_result(bytes: &[u8]) -> Result<Config, serde_json::Error> {
+        serde_json::from_reader(StripComments::new(bytes))
     }
 
     /// Verifies that `config.example.jsonc` parses into a schema with the TLS
@@ -168,6 +203,7 @@ mod tests {
 
         assert_eq!(schema.log_level, LevelFilter::Info);
         assert!(schema.tls.is_some());
+        assert!(schema.api_logs.is_enabled);
     }
 
     /// Verifies that every documented default applies when only the required
@@ -195,6 +231,38 @@ mod tests {
         assert_eq!(schema.database.pool_timeout, Duration::from_millis(5000));
         assert!(!schema.management_api.cors.allow_private_network);
         assert!(!schema.api.cors.allow_private_network);
+        assert!(
+            schema.api_logs.is_enabled,
+            "request accounting defaults to on"
+        );
+
+        // The section may state the switch itself, and only that field: an unknown member of the
+        // strictly rejected section is a rejected schema (README §8).
+        let schema = parse(
+            br#"{
+                "listen": "127.0.0.1:8080",
+                "database": {"path": "janusgate.db"},
+                "management_api": {"token": "management-token"},
+                "api": {},
+                "api_logs": {"is_enabled": false}
+            }"#,
+        );
+
+        assert!(!schema.api_logs.is_enabled);
+
+        assert!(
+            parse_result(
+                br#"{
+                    "listen": "127.0.0.1:8080",
+                    "database": {"path": "janusgate.db"},
+                    "management_api": {"token": "management-token"},
+                    "api": {},
+                    "api_logs": {"enabled": false}
+                }"#
+            )
+            .is_err(),
+            "an unknown api_logs field must be rejected"
+        );
 
         let schema = parse(
             br#"{

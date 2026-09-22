@@ -35,7 +35,7 @@ The gateway it fronts carries the same posture: strict model passthrough (no aut
 - **Connection is per browser.** The pair `{baseUrl, token}` is entered on first visit, verified by one probe call (`providers:list`), then kept only in the browser's `localStorage`. Returning visits skip setup; a 401 clears the pair and returns to setup. One instance at a time; another instance means forgetting the current connection.
 - **Real deployment constraints.** The build output is plain static files, so the host needs an SPA fallback for deep links; HTTPS on both sides is expected because the management token crosses the network; there is no server-side component to configure.
 - **Development.** `npm run dev:web` (Vite) drives the app against a real gateway instance; `npm run generate-bindings` (requires cargo) regenerates the wire types from the local gateway sources. Tests run in jsdom; rendering is verified in a browser against a real instance.
-- **Gateway non-goals that bound the UI's scope:** no multi-tenancy, no billing or rate limiting, no request logging, no automatic provider fallback, no automatic model mapping, no outbound proxying.
+- **Gateway non-goals that bound the UI's scope:** no multi-tenancy, no billing or rate limiting, no content logging, no automatic provider fallback, no automatic model mapping, no outbound proxying.
 
 ## Capabilities and Constraints
 
@@ -50,7 +50,7 @@ The gateway it fronts carries the same posture: strict model passthrough (no aut
 **Planned, confirmed by the user, mechanism not yet decided:**
 
 - **Serving-API key issuance and revocation** — multiple API keys, each issued and revoked individually. Today `api.key` is a single static value in the gateway's configuration file.
-- **Observability**, covering both gateway-state and credential health (OAuth expiry and refresh state, upstream reachability, discovery results, model counts, serving state) and request-level insight (counts, latency, error rates, usage). Request-level telemetry requires the gateway to start retaining per-request data, which its current stateless-execution principle forbids (zero persistence of prompts, completions, tokens, or usage metrics); the gateway-side mechanism is undecided, so no UI design for it is committed.
+- **Observability**, covering both gateway-state and credential health (OAuth expiry and refresh state, upstream reachability, discovery results, model counts, serving state) and request-level insight (counts, latency, error rates, usage). Request-level insight now has a gateway-side source: request accounting retains one numeric row per dispatched request (README §3 *ApiLog*, governed by `api_logs.is_enabled`), while content — prompts, completions, headers, upstream error bodies — remains forbidden by the stateless-execution principle; no UI design for it is committed yet.
 
 **Explicitly out of scope, confirmed:**
 

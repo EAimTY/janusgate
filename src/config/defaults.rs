@@ -25,3 +25,8 @@ pub(super) fn log_level() -> LevelFilter {
 pub(super) fn pool_timeout() -> Duration {
     Duration::from_millis(5000)
 }
+
+/// Default request-accounting switch: recording is on unless the configuration says otherwise.
+pub(super) fn api_logs_enabled() -> bool {
+    true
+}

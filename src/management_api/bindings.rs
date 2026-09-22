@@ -404,6 +404,33 @@ mod tests {
         assert!(first.contains("request: DeleteModelRequest;"));
         assert!(first.contains("response: EmptyResponse;"));
 
+        // The usage read surface ships its two routes with both payload types declared in the
+        // same file (README §7.3), and its row and bucket shapes alongside them.
+        assert!(first.contains("\"/usage:list\""));
+        assert!(first.contains("\"/usage:query\""));
+        assert!(first.contains("request: ListUsageRequest;"));
+        assert!(first.contains("response: ListUsageResponse;"));
+        assert!(first.contains("request: QueryUsageRequest;"));
+        assert!(first.contains("response: QueryUsageResponse;"));
+        assert!(first.contains("export type ApiLogResponse"));
+        assert!(
+            first.contains("export type UsageBucket ")
+                || first.contains("export type UsageBucket =")
+        );
+
+        // The two accounting vocabularies publish as plain unions carrying exactly their closed
+        // member sets — no ordering or enumeration artifact (README §7.3).
+        assert!(first.contains(
+            "export type ApiLogEndpointType = \"openai_chat_completions\" | \"openai_responses\";"
+        ));
+        assert!(first.contains(
+            "export type ApiLogOutcome = \"completed\" | \"client_aborted\" | \
+             \"upstream_error\" | \"internal\";"
+        ));
+        assert!(first.contains(
+            "export type UsageGroupBy = \"day\" | \"model\" | \"provider\" | \"api_key\";"
+        ));
+
         assert!(first.contains("export type ErrorResponse"));
         assert!(first.contains("export enum ErrorCode"));
         assert!(!first.contains("import "), "a single file needs no imports");

@@ -8,6 +8,7 @@ use std::{ffi::OsString, path::PathBuf};
 
 mod api;
 mod api_keys;
+mod api_logs;
 mod config;
 mod context;
 mod database;

@@ -329,3 +329,832 @@ fn bind_tcp_listener() -> (TcpListener, SocketAddr) {
 
     (tcp_listener, socket_address)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        api_keys::{self, NewApiKey},
+        config::ConfigLoader,
+        database::Database,
+        provider::{
+            Credentials, NewProvider, ProviderType,
+            storage::{self, ModelCreate},
+        },
+    };
+    use std::{
+        error::Error as StdError,
+        io::Error as IoError,
+        num::NonZero,
+        path::{Path, PathBuf},
+        sync::{
+            Arc,
+            atomic::{AtomicU8, Ordering},
+        },
+        time::Duration,
+    };
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio_stream::StreamExt as _;
+
+    /// The mock answers one chat completion JSON carrying usage (prompt 11, completion 7, no
+    /// detail breakdown).
+    const MOCK_JSON_SUCCESS: u8 = 0;
+
+    /// The mock answers `429` — an upstream failure the gateway mirrors verbatim.
+    const MOCK_UPSTREAM_429: u8 = 1;
+
+    /// The mock accepts and closes without answering — a transport failure the gateway maps to
+    /// 502 (README §6.7).
+    const MOCK_CLOSE_ON_ARRIVAL: u8 = 2;
+
+    /// The mock streams one complete SSE completion and closes cleanly.
+    const MOCK_SSE_COMPLETE: u8 = 3;
+
+    /// The mock streams forever, so the client can abort mid-stream.
+    const MOCK_SSE_FOREVER: u8 = 4;
+
+    /// The mock holds its first frame back, so a client can leave before any frame was enqueued.
+    const MOCK_SSE_DELAYED: u8 = 5;
+
+    /// File guard removing the temporary end-to-end directory on drop.
+    struct TempDirGuard(PathBuf);
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// One recorded row as the scenario assertions read it.
+    #[derive(Debug)]
+    struct RecordedRow {
+        /// Recorded outcome.
+        outcome: String,
+
+        /// Status delivered to the client, `NULL` when none was.
+        http_status: Option<i64>,
+
+        /// Whether the client requested streaming.
+        is_stream: bool,
+
+        /// Recorded outward endpoint.
+        endpoint_type: String,
+
+        /// Attributed API key row id.
+        api_key_id: i64,
+
+        /// Attributed provider row id.
+        provider_id: i64,
+
+        /// Attributed model row id.
+        model_id: i64,
+
+        /// Recorded input tokens.
+        input_tokens: Option<i64>,
+
+        /// Recorded output tokens.
+        output_tokens: Option<i64>,
+
+        /// Recorded cached input tokens.
+        cached_tokens: Option<i64>,
+
+        /// Recorded cache-write input tokens.
+        cache_write_tokens: Option<i64>,
+
+        /// Recorded reasoning output tokens.
+        reasoning_tokens: Option<i64>,
+    }
+
+    /// The success completion the mock answers with, carrying totals without a detail breakdown —
+    /// so the recorded row pins partial-usage semantics (README §3 *ApiLog*).
+    const MOCK_COMPLETION_BODY: &str = concat!(
+        r#"{"id":"chatcmpl-mock","object":"chat.completion","created":1700000000,"#,
+        r#""model":"mock","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"#,
+        r#""finish_reason":"stop"}],"#,
+        r#""usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}"#,
+    );
+
+    /// The upstream error body the mock's 429 carries.
+    const MOCK_ERROR_BODY: &str = r#"{"error":{"message":"rate limited","type":"server_error"}}"#;
+
+    /// One complete mock SSE completion: a delta, a terminal chunk with usage, and `[DONE]`.
+    const MOCK_SSE_COMPLETION: &str = concat!(
+        "data: {\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion.chunk\",",
+        "\"created\":1700000000,\"model\":\"mock\",\"choices\":[{\"index\":0,",
+        "\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},",
+        "\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion.chunk\",",
+        "\"created\":1700000000,\"model\":\"mock\",\"choices\":[{\"index\":0,",
+        "\"delta\":{},\"finish_reason\":\"stop\"}],",
+        "\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    /// The single frame the forever-streaming mock repeats until the client leaves.
+    const MOCK_SSE_HEARTBEAT: &str = concat!(
+        "data: {\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion.chunk\",",
+        "\"created\":1700000000,\"model\":\"mock\",\"choices\":[{\"index\":0,",
+        "\"delta\":{\"content\":\"tick\"},\"finish_reason\":null}]}\n\n",
+    );
+
+    /// Renders one fixed-length HTTP/1.1 response.
+    fn http_response(status_line: &str, content_type: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Renders the head of an EOF-framed SSE response; the frames follow and the connection close
+    /// delimits the body.
+    fn sse_head() -> &'static str {
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+    }
+
+    /// Starts the mock upstream on an ephemeral port, returning its address and the shared mode
+    /// selector the test flips between scenarios.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when binding or addressing the mock listener fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the bound listener reports no address.
+    async fn spawn_mock_upstream() -> Result<(std::net::SocketAddr, Arc<AtomicU8>), IoError> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+
+        #[expect(clippy::expect_used, reason = "a bound listener reports its address")]
+        let address = listener
+            .local_addr()
+            .expect("a bound listener reports its address");
+
+        let mode = Arc::new(AtomicU8::new(MOCK_JSON_SUCCESS));
+        let shared = Arc::clone(&mode);
+
+        tokio::spawn(async move {
+            while let Ok((stream, _peer)) = listener.accept().await {
+                tokio::spawn(serve_mock(stream, Arc::clone(&shared)));
+            }
+        });
+
+        Ok((address, mode))
+    }
+
+    /// Serves one mock upstream connection: reads the request head and body, then applies the
+    /// currently selected mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket read or write fails — including the write against a
+    /// client that already left, which is how the forever-streaming mode terminates.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a mode the test never sets, which would be a harness bug.
+    async fn serve_mock(
+        mut stream: tokio::net::TcpStream,
+        mode: Arc<AtomicU8>,
+    ) -> std::io::Result<()> {
+        read_mock_request(&mut stream).await?;
+
+        match mode.load(Ordering::SeqCst) {
+            MOCK_JSON_SUCCESS => {
+                stream
+                    .write_all(
+                        http_response("200 OK", "application/json", MOCK_COMPLETION_BODY)
+                            .as_bytes(),
+                    )
+                    .await
+            }
+
+            MOCK_UPSTREAM_429 => {
+                stream
+                    .write_all(
+                        http_response("429 Too Many Requests", "application/json", MOCK_ERROR_BODY)
+                            .as_bytes(),
+                    )
+                    .await
+            }
+
+            // Dropping the accepted socket without answering fails the gateway's send(): the
+            // transport-failure scenario.
+            MOCK_CLOSE_ON_ARRIVAL => Ok(()),
+
+            MOCK_SSE_COMPLETE => {
+                stream.write_all(sse_head().as_bytes()).await?;
+                stream.write_all(MOCK_SSE_COMPLETION.as_bytes()).await
+            }
+
+            MOCK_SSE_FOREVER => {
+                stream.write_all(sse_head().as_bytes()).await?;
+
+                loop {
+                    stream.write_all(MOCK_SSE_HEARTBEAT.as_bytes()).await?;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+
+            MOCK_SSE_DELAYED => {
+                stream.write_all(sse_head().as_bytes()).await?;
+
+                // The frame arrives long after the gateway handed its response to the client, so
+                // a client that already left has enqueued nothing — and the frame's arrival is
+                // what makes the render task notice the broken channel.
+                tokio::time::sleep(Duration::from_millis(1_200)).await;
+                stream.write_all(MOCK_SSE_HEARTBEAT.as_bytes()).await
+            }
+
+            other => {
+                #[expect(
+                    clippy::panic,
+                    reason = "the test only ever selects the six declared mock modes"
+                )]
+                {
+                    panic!("unknown mock mode {other}");
+                }
+            }
+        }
+    }
+
+    /// Reads one HTTP/1.1 request head plus its `Content-Length` body off the mock connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    async fn read_mock_request(stream: &mut tokio::net::TcpStream) -> std::io::Result<()> {
+        let mut collected: Vec<u8> = Vec::new();
+
+        let head_end = loop {
+            let read = stream.read_buf(&mut collected).await?;
+
+            if read == 0 {
+                return Ok(());
+            }
+
+            if let Some(position) = head_end(&collected) {
+                break position;
+            }
+        };
+
+        let body_length = {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "head_end is an in-bounds offset into the same buffer"
+            )]
+            let head = String::from_utf8_lossy(&collected[..head_end]).into_owned();
+
+            head.lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+
+                    if name.eq_ignore_ascii_case("content-length") {
+                        value.trim().parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0)
+        };
+
+        let mut body_read = collected.len() - head_end;
+
+        while body_read < body_length {
+            let read = stream.read_buf(&mut collected).await?;
+
+            if read == 0 {
+                break;
+            }
+
+            body_read += read;
+        }
+
+        Ok(())
+    }
+
+    /// Returns the byte offset just past the request head's terminating blank line.
+    fn head_end(collected: &[u8]) -> Option<usize> {
+        collected
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+    }
+
+    /// Renders the end-to-end configuration with the given recording switch, pointed at the
+    /// temporary database and an ephemeral listen port.
+    fn configuration_body(database_path: &Path, is_enabled: bool) -> String {
+        let database_path = database_path.to_string_lossy().replace('\\', "/");
+
+        format!(
+            r#"{{
+                "listen": "127.0.0.1:0",
+                "database": {{"path": "{database_path}"}},
+                "management_api": {{"token": "e2e-token"}},
+                "api": {{}},
+                "api_logs": {{"is_enabled": {is_enabled}}}
+            }}"#
+        )
+    }
+
+    /// Sends one completion request to the gateway under the given key.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport failure when the gateway cannot be reached.
+    async fn send_completion(
+        client: &reqwest::Client,
+        base: &str,
+        api_key: &str,
+        model: &str,
+        is_streaming: bool,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        let stream_clause = if is_streaming {
+            r#", "stream":true"#
+        } else {
+            ""
+        };
+
+        let body = format!(
+            r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]{stream_clause}}}"#
+        );
+
+        client
+            .post(format!("{base}/api/openai-v1/chat/completions"))
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await
+    }
+
+    /// Reads every recorded row in insertion order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query fails.
+    async fn recorded_rows(database: &Database) -> Result<Vec<RecordedRow>, Box<dyn StdError>> {
+        let rows = database
+            .query(
+                "SELECT outcome, http_status, is_stream, endpoint_type, api_key_id, provider_id, \
+                 model_id, input_tokens, output_tokens, cached_tokens, cache_write_tokens, \
+                 reasoning_tokens FROM api_logs ORDER BY id",
+                (),
+            )
+            .await?;
+
+        let mut recorded = Vec::with_capacity(rows.len());
+
+        for row in &rows {
+            recorded.push(RecordedRow {
+                outcome: row.get(0)?,
+                http_status: row.get(1)?,
+                is_stream: row.get::<i64>(2)? != 0,
+                endpoint_type: row.get(3)?,
+                api_key_id: row.get(4)?,
+                provider_id: row.get(5)?,
+                model_id: row.get(6)?,
+                input_tokens: row.get(7)?,
+                output_tokens: row.get(8)?,
+                cached_tokens: row.get(9)?,
+                cache_write_tokens: row.get(10)?,
+                reasoning_tokens: row.get(11)?,
+            });
+        }
+
+        Ok(recorded)
+    }
+
+    /// Waits until at least `count` rows are recorded — the only asynchronous finalization is the
+    /// streaming task's — polling for five seconds before failing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the rows never appear or the query fails.
+    async fn wait_for_rows(
+        database: &Database,
+        count: usize,
+    ) -> Result<Vec<RecordedRow>, Box<dyn StdError>> {
+        for _ in 0..100 {
+            let rows = recorded_rows(database).await?;
+
+            if rows.len() >= count {
+                return Ok(rows);
+            }
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        Err(std::io::Error::other(format!(
+            "expected at least {count} recorded rows within five seconds"
+        ))
+        .into())
+    }
+
+    /// Asserts exactly one new row beyond `baseline`, with the expected outcome and status.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the row count or the newest row's outcome or status diverges.
+    fn assert_one_new_row(
+        rows: &[RecordedRow],
+        baseline: usize,
+        outcome: &str,
+        http_status: Option<i64>,
+    ) {
+        assert_eq!(
+            rows.len(),
+            baseline + 1,
+            "exactly one row per dispatched request"
+        );
+
+        #[expect(clippy::expect_used, reason = "the row was just asserted present")]
+        let newest = rows.last().expect("the newest row exists");
+
+        assert_eq!(newest.outcome, outcome);
+        assert_eq!(newest.http_status, http_status);
+    }
+
+    /// End-to-end accounting smoke over a real server start and a mock upstream (README §3
+    /// *ApiLog*): one — and only one — row per dispatched request across the documented outcomes
+    /// (a success, a mirrored upstream non-2xx, a transport failure mapped to 502, a clean
+    /// streaming completion, and a mid-stream client abort); zero rows for every pre-dispatch
+    /// failure (authentication, routing, token refresh, upstream payload rendering); and, after a
+    /// live configuration reload switches recording off, a successful dispatch writes nothing
+    /// while the management reads keep serving the rows already stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a setup, database, or HTTP operation fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a scenario records the wrong number or shape of rows, or the reload never
+    /// applies.
+    #[tokio::test]
+    async fn records_exactly_one_row_per_dispatch_end_to_end() -> Result<(), Box<dyn StdError>> {
+        let directory = std::env::temp_dir().join(format!("janusgate-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory)?;
+        let _guard = TempDirGuard(directory.clone());
+
+        let database_path = directory.join("e2e.db");
+        let config_path = directory.join("config.jsonc");
+
+        let (mock_address, mock_mode) = spawn_mock_upstream().await?;
+
+        std::fs::write(&config_path, configuration_body(&database_path, true))?;
+
+        let (loader, watcher) = ConfigLoader::new(config_path.clone())?;
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the global configuration is initialized exactly once, in this single \
+                      end-to-end test"
+        )]
+        crate::CONFIG
+            .set(loader)
+            .expect("the global configuration initializes exactly once");
+
+        tokio::spawn(watcher);
+
+        #[expect(clippy::unwrap_used, reason = "non-zero literal")]
+        let max_connections = NonZero::new(4).unwrap();
+
+        let database =
+            Database::open(&database_path, max_connections, Duration::from_secs(5)).await?;
+
+        // Seed: the authenticated key, a mock-backed provider and model, a drift provider whose
+        // missing base URL fails rendering before dispatch, and a stale OAuth provider whose
+        // refresh fails before dispatch.
+        let api_key = api_keys::insert_api_key(
+            &database,
+            &NewApiKey {
+                name: "e2e",
+                key: "sk-e2e",
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        let mock_base = format!("http://{mock_address}");
+
+        let provider = storage::insert_provider(
+            &database,
+            &NewProvider {
+                name: "mock",
+                model_prefix: "e2e/",
+                provider_type: ProviderType::OpenAiChatCompletion,
+                base_url: Some(mock_base.as_str()),
+                credentials: &Credentials::ApiKey("upstream-secret".to_string()),
+                expires_at: None,
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        let model = storage::insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id: provider.id,
+                upstream_id: "model",
+                id_override: None,
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        let drift_provider = storage::insert_provider(
+            &database,
+            &NewProvider {
+                name: "drift",
+                model_prefix: "drift/",
+                provider_type: ProviderType::OpenAiChatCompletion,
+                base_url: None,
+                credentials: &Credentials::ApiKey("drift-secret".to_string()),
+                expires_at: None,
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        storage::insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id: drift_provider.id,
+                upstream_id: "model",
+                id_override: None,
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        let refresh_provider = storage::insert_provider(
+            &database,
+            &NewProvider {
+                name: "refresh",
+                model_prefix: "rf/",
+                provider_type: ProviderType::AntigravityOauth,
+                base_url: None,
+                credentials: &Credentials::AntigravityOauth {
+                    access_token: "stale".to_string(),
+                    refresh_token: "garbage".to_string(),
+                    project_id: "project".to_string(),
+                },
+                expires_at: Some(1),
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        storage::insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id: refresh_provider.id,
+                upstream_id: "model",
+                id_override: None,
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        // Real startup: the server binds its own ephemeral port from the loaded configuration.
+        let server = Server::new(Context {
+            database: database.clone(),
+            data_plane: crate::http_client::data_plane(),
+            control_plane: crate::http_client::control_plane(),
+        });
+
+        #[expect(clippy::expect_used, reason = "the listener is bound by Server::new")]
+        let address = server
+            .tcp_listener
+            .local_addr()
+            .expect("the listener is bound by Server::new");
+
+        tokio::spawn(async move {
+            server.run().await;
+        });
+
+        let base = format!("http://{address}");
+        let client = reqwest::Client::new();
+
+        // Pre-dispatch failures: authentication, routing, rendering, refresh — zero rows each.
+        let response = send_completion(&client, &base, "sk-wrong", "e2e/model", false).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(recorded_rows(&database).await?.len(), 0);
+
+        let response = send_completion(&client, &base, "sk-e2e", "ghost", false).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(recorded_rows(&database).await?.len(), 0);
+
+        let response = send_completion(&client, &base, "sk-e2e", "drift/model", false).await?;
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(recorded_rows(&database).await?.len(), 0);
+
+        // The failed refresh happens before dispatch; whichever transport shape the token
+        // endpoint rejection takes, no row may exist once the response is rendered.
+        let response = send_completion(&client, &base, "sk-e2e", "rf/model", false).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+        assert_eq!(recorded_rows(&database).await?.len(), 0);
+
+        // Dispatched scenarios, one row each.
+        let mut baseline = recorded_rows(&database).await?.len();
+
+        // Success (non-streaming): completed + 200, attributed ids, totals with a NULL breakdown.
+        mock_mode.store(MOCK_JSON_SUCCESS, Ordering::SeqCst);
+        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", false).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let _body = response.text().await?;
+
+        let rows = recorded_rows(&database).await?;
+        assert_one_new_row(&rows, baseline, "completed", Some(200));
+
+        #[expect(clippy::expect_used, reason = "the row was just asserted present")]
+        let success = rows.last().expect("the success row exists");
+        assert!(!success.is_stream);
+        assert_eq!(success.endpoint_type, "openai_chat_completions");
+        assert_eq!(success.api_key_id, api_key.id);
+        assert_eq!(success.provider_id, provider.id);
+        assert_eq!(success.model_id, model.model.id);
+        assert_eq!(success.input_tokens, Some(11));
+        assert_eq!(success.output_tokens, Some(7));
+        assert_eq!(success.cached_tokens, None);
+        assert_eq!(success.cache_write_tokens, None);
+        assert_eq!(success.reasoning_tokens, None);
+
+        baseline = rows.len();
+
+        // Upstream non-2xx mirrored: upstream_error with the very status, no usage reported.
+        mock_mode.store(MOCK_UPSTREAM_429, Ordering::SeqCst);
+        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", false).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+
+        let rows = recorded_rows(&database).await?;
+        assert_one_new_row(&rows, baseline, "upstream_error", Some(429));
+
+        #[expect(clippy::expect_used, reason = "the row was just asserted present")]
+        let mirrored = rows.last().expect("the mirrored row exists");
+        assert_eq!(mirrored.input_tokens, None);
+        assert_eq!(mirrored.output_tokens, None);
+
+        baseline = rows.len();
+
+        // Transport failure: the client receives 502 and the row mirrors that 502 (README §6.7).
+        mock_mode.store(MOCK_CLOSE_ON_ARRIVAL, Ordering::SeqCst);
+        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", false).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+
+        let rows = recorded_rows(&database).await?;
+        assert_one_new_row(&rows, baseline, "upstream_error", Some(502));
+
+        baseline = rows.len();
+
+        // A clean streaming completion: completed + 200, recorded once the body ends — and the
+        // body end happens strictly after the row landed.
+        mock_mode.store(MOCK_SSE_COMPLETE, Ordering::SeqCst);
+        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", true).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        let stream_body = response.text().await?;
+        assert!(stream_body.contains("data: [DONE]"));
+
+        let rows = recorded_rows(&database).await?;
+        assert_one_new_row(&rows, baseline, "completed", Some(200));
+
+        #[expect(clippy::expect_used, reason = "the row was just asserted present")]
+        let streamed = rows.last().expect(" the streaming row exists");
+        assert!(streamed.is_stream);
+        assert_eq!(streamed.input_tokens, Some(11));
+        assert_eq!(streamed.output_tokens, Some(7));
+
+        baseline = rows.len();
+
+        // A client that aborts after the first delivered frame: client_aborted under the
+        // already-declared 200, with no usage ever reported — five NULL token columns.
+        mock_mode.store(MOCK_SSE_FOREVER, Ordering::SeqCst);
+        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", true).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        let mut stream = response.bytes_stream();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the forever-streaming mock delivers its first frame"
+        )]
+        stream
+            .next()
+            .await
+            .expect("the forever-streaming mock delivers its first frame")
+            .expect("the first frame arrives over a healthy transport");
+
+        drop(stream);
+
+        let rows = wait_for_rows(&database, baseline + 1).await?;
+        assert_one_new_row(&rows, baseline, "client_aborted", Some(200));
+
+        #[expect(clippy::expect_used, reason = "the row was just asserted present")]
+        let aborted = rows.last().expect(" the aborted row exists");
+        assert!(aborted.is_stream);
+        assert_eq!(aborted.input_tokens, None);
+        assert_eq!(aborted.output_tokens, None);
+        assert_eq!(aborted.cached_tokens, None);
+        assert_eq!(aborted.cache_write_tokens, None);
+        assert_eq!(aborted.reasoning_tokens, None);
+
+        baseline = rows.len();
+
+        // Leaving before the first frame was enqueued: client_aborted with a NULL status — no
+        // response ever reached the client (README §3 *ApiLog* streaming rules).
+        mock_mode.store(MOCK_SSE_DELAYED, Ordering::SeqCst);
+
+        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", true).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        drop(response);
+
+        let rows = wait_for_rows(&database, baseline + 1).await?;
+        assert_one_new_row(&rows, baseline, "client_aborted", None);
+
+        #[expect(clippy::expect_used, reason = "the row was just asserted present")]
+        let silent = rows.last().expect("the silent abort row exists");
+        assert!(silent.is_stream);
+
+        // The switch: a live reload turns recording off, so the next successful dispatch writes
+        // nothing — while both management reads keep serving everything already stored.
+        std::fs::write(&config_path, configuration_body(&database_path, false))?;
+
+        for _ in 0..300 {
+            if !crate::CONFIG.api_logs.is_enabled {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        assert!(
+            !crate::CONFIG.api_logs.is_enabled,
+            "the reload must apply within fifteen seconds"
+        );
+
+        let baseline = rows.len();
+
+        mock_mode.store(MOCK_JSON_SUCCESS, Ordering::SeqCst);
+        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", false).await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        let rows = recorded_rows(&database).await?;
+        assert_eq!(
+            rows.len(),
+            baseline,
+            "a dispatch under a disabled switch writes no row"
+        );
+
+        let listed = client
+            .post(format!("{base}/management-api/v0/usage:list"))
+            .header("Authorization", "e2e-token")
+            .header("Content-Type", "application/json")
+            .body(r#"{"limit":1000}"#)
+            .send()
+            .await?;
+
+        assert_eq!(listed.status(), reqwest::StatusCode::OK);
+
+        let listed: serde_json::Value = listed.json().await?;
+
+        assert_eq!(
+            listed
+                .get("api_logs")
+                .and_then(|logs| logs.as_array())
+                .map(|logs| logs.len()),
+            Some(baseline),
+            "usage:list keeps serving stored rows while recording is off"
+        );
+
+        let queried = client
+            .post(format!("{base}/management-api/v0/usage:query"))
+            .header("Authorization", "e2e-token")
+            .header("Content-Type", "application/json")
+            .body(r#"{"group_by":"provider"}"#)
+            .send()
+            .await?;
+
+        assert_eq!(queried.status(), reqwest::StatusCode::OK);
+
+        let queried: serde_json::Value = queried.json().await?;
+
+        assert_eq!(
+            queried
+                .get("buckets")
+                .and_then(|buckets| buckets.as_array())
+                .and_then(|buckets| buckets.first())
+                .and_then(|bucket| bucket.get("requests"))
+                .and_then(|requests| requests.as_i64()),
+            Some(baseline as i64),
+            "usage:query counts every stored row of the sole provider"
+        );
+
+        Ok(())
+    }
+}
