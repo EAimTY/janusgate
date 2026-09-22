@@ -2,10 +2,10 @@ import { createSignal } from "solid-js";
 import { appConfig } from "/src/config";
 
 /** What the operator chose: an explicit theme, or the operating system's. */
-export type ThemePreference = "light" | "dark" | "system";
+type ThemePreference = "light" | "dark" | "system";
 
 /** What the app paints: the preference resolved against the media query. */
-export type ResolvedTheme = "light" | "dark";
+type ResolvedTheme = "light" | "dark";
 
 function readPreference(): ThemePreference {
     try {
@@ -54,18 +54,13 @@ export function initTheme(): void {
     }
 }
 
-/** The operator's preference signal, for the toggle control. */
-export function themePreference(): ThemePreference {
-    return preference();
-}
-
 /** The resolved theme signal, for theme-aware chrome. */
 export function resolvedTheme(): ResolvedTheme {
     return resolved();
 }
 
 /** Stores a new preference and repaints immediately. */
-export function setThemePreference(next: ThemePreference): void {
+function setThemePreference(next: ThemePreference): void {
     setPreferenceSignal(next);
 
     try {

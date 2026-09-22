@@ -1,19 +1,12 @@
 import type { JSX } from "@solidjs/web";
 import { For, Show } from "solid-js";
 import type { ProviderType } from "/src/management-api/generated/v0";
+import { providerTypeLabel } from "/src/management-api/vocabulary";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Switch, TextField } from "/src/ui/controls";
 
 /** The five creatable provider kinds, exactly the wire contract's five provider types. */
 export type ProviderKind = ProviderType;
-
-const PROVIDER_KIND_TITLES: Record<ProviderKind, string> = {
-    openai_response: "OpenAI Responses",
-    openai_chat_completion: "OpenAI Chat Completions",
-    gemini_generate_content: "Gemini generateContent",
-    codex_oauth: "Codex OAuth",
-    antigravity_oauth: "Antigravity OAuth",
-};
 
 const PROVIDER_KIND_DESCRIPTIONS: Record<ProviderKind, string> = {
     openai_response: "Any Responses API with a static key.",
@@ -85,7 +78,7 @@ export function ProviderKindPicker(props: {
                                             )}
                                         >
                                             <span class="block text-[13.5px] font-semibold">
-                                                {PROVIDER_KIND_TITLES[kind]}
+                                                {providerTypeLabel(kind)}
                                             </span>
                                             <span class="mt-1 block text-[12.5px] leading-snug text-ink-dim">
                                                 {PROVIDER_KIND_DESCRIPTIONS[kind]}

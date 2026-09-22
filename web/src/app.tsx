@@ -1,11 +1,11 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
+import { type Accessor, createMemo, createSignal, Match, Show, Switch } from "solid-js";
 import { connectionService } from "/src/connection/app-service";
 import type { Connection } from "/src/connection/model";
 import { formatClock } from "/src/format";
 import { createManagementApi } from "/src/management-api/client";
 import { refreshStamp, requestRefresh } from "/src/refresh-state";
-import { currentLocation, hrefs, matchAppRoute, navigate } from "/src/router";
+import { type AppRoute, currentLocation, hrefs, matchAppRoute, navigate } from "/src/router";
 import { ApiKeyDetailScreen } from "/src/screens/api-key-detail-screen";
 import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
 import { ApiKeyNewScreen } from "/src/screens/api-key-new-screen";
@@ -131,6 +131,35 @@ function navKeyOfRoute(name: string): NavKey | null {
     return null;
 }
 
+/**
+ * The current route when it carries the named variant's payload, else `null`.
+ * The equality check alone cannot narrow through the generic name, so a type
+ * predicate carries the narrowing.
+ */
+function routeNamed<TName extends AppRoute["name"]>(
+    route: Accessor<AppRoute>,
+    name: TName,
+): Accessor<Extract<
+    AppRoute,
+    {
+        name: TName;
+    }
+> | null> {
+    const isNamed = (
+        candidate: AppRoute,
+    ): candidate is Extract<
+        AppRoute,
+        {
+            name: TName;
+        }
+    > => candidate.name === name;
+
+    return createMemo(() => {
+        const current = route();
+        return isNamed(current) ? current : null;
+    });
+}
+
 function AdminShell(props: { readonly connection: Connection }): JSX.Element {
     const api = createManagementApi(props.connection, {
         onUnauthorized: (notice) => {
@@ -146,45 +175,14 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
         matchAppRoute(currentLocation().pathname, currentLocation().search),
     );
 
-    const providerDetailRoute = createMemo(() => {
-        const current = route();
-        return current.name === "providerDetail" ? current : null;
-    });
-
-    const providerEditRoute = createMemo(() => {
-        const current = route();
-        return current.name === "providerEdit" ? current : null;
-    });
-
-    const modelsRoute = createMemo(() => {
-        const current = route();
-        return current.name === "models" ? current : null;
-    });
-
-    const modelNewRoute = createMemo(() => {
-        const current = route();
-        return current.name === "modelNew" ? current : null;
-    });
-
-    const apiKeyDetailRoute = createMemo(() => {
-        const current = route();
-        return current.name === "apiKeyDetail" ? current : null;
-    });
-
-    const apiKeyEditRoute = createMemo(() => {
-        const current = route();
-        return current.name === "apiKeyEdit" ? current : null;
-    });
-
-    const modelDetailRoute = createMemo(() => {
-        const current = route();
-        return current.name === "modelDetail" ? current : null;
-    });
-
-    const modelEditRoute = createMemo(() => {
-        const current = route();
-        return current.name === "modelEdit" ? current : null;
-    });
+    const providerDetailRoute = routeNamed(route, "providerDetail");
+    const providerEditRoute = routeNamed(route, "providerEdit");
+    const modelsRoute = routeNamed(route, "models");
+    const modelNewRoute = routeNamed(route, "modelNew");
+    const apiKeyDetailRoute = routeNamed(route, "apiKeyDetail");
+    const apiKeyEditRoute = routeNamed(route, "apiKeyEdit");
+    const modelDetailRoute = routeNamed(route, "modelDetail");
+    const modelEditRoute = routeNamed(route, "modelEdit");
 
     return (
         <div class="flex min-h-screen flex-col">
@@ -195,7 +193,7 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                 Skip to content
             </a>
 
-            <TopBar connection={props.connection} />
+            <TopBar />
 
             <div class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 pt-4 pb-10 sm:px-6">
                 <ContextBar
@@ -328,9 +326,7 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
 }
 
 /** The product bar: identity on the left, theme and disconnect on the right. */
-function TopBar(props: { readonly connection: Connection }): JSX.Element {
-    void props;
-
+function TopBar(): JSX.Element {
     return (
         <header class="sticky top-0 z-10 border-b border-rule bg-canvas/90 backdrop-blur">
             <div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-2 px-4 sm:px-6">
@@ -406,7 +402,7 @@ function ContextBar(props: {
                 <span>
                     <Show
                         when={refreshStamp()}
-                        fallback="Not read yet"
+                        fallback="Not refreshed yet"
                     >
                         {(stamp) => `Updated ${formatClock(stamp())}`}
                     </Show>
@@ -459,7 +455,7 @@ function DisconnectControl(): JSX.Element {
                         goHome();
                     }}
                 >
-                    Forget this token?
+                    Forget token
                 </Button>
                 <Button
                     tone="ghost"
