@@ -445,6 +445,10 @@ mod tests {
 
     /// Reads the database's schema objects and renders them into canonical object lines.
     ///
+    /// Internal bookkeeping objects are excluded: SQLite's own `sqlite_%` tables and Turso's
+    /// `__turso_internal_*` bookkeeping tables (which its AUTOINCREMENT implementation
+    /// materializes beside the declared tables), neither of which the declared DDL spells.
+    ///
     /// # Errors
     ///
     /// Returns an error if querying `sqlite_schema` or parsing a stored object's DDL fails.
@@ -452,16 +456,19 @@ mod tests {
         connection: &Connection,
     ) -> Result<BTreeSet<String>, Box<dyn StdError>> {
         let mut rows = connection
-            .query(
-                "SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
-                (),
-            )
+            .query("SELECT name, sql FROM sqlite_schema ORDER BY name", ())
             .await?;
 
         let mut lines = BTreeSet::new();
 
         while let Some(row) = rows.next().await? {
-            let sql: String = row.get(0)?;
+            let name: String = row.get(0)?;
+
+            if name.starts_with("sqlite_") || name.starts_with("__turso_internal_") {
+                continue;
+            }
+
+            let sql: String = row.get(1)?;
             lines.extend(statement_lines(&parse_single_statement(&sql)?));
         }
 

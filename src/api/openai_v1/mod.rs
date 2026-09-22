@@ -212,10 +212,10 @@ where
 
     let operation = format!(
         "completion for model `{}` via provider `{}`",
-        routing.model.id, routing.provider.name
+        routing.model.public_id, routing.provider.name
     );
 
-    let public_id = routing.model.id.clone();
+    let public_id = routing.model.public_id.clone();
 
     let is_streaming = parsed.is_streaming;
 

@@ -3,42 +3,14 @@
 //! Client requests parse into an [`IrRequest`]; every upstream response — streamed or buffered —
 //! parses into a sequence of [`IrEvent`] values; every client response renders from IR.
 
-use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Error as JsonError, Value};
-
-/// Canonical thinking levels, ordered by increasing reasoning strength.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-#[serde(rename_all = "lowercase")]
-#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-// The wire names are the canonical level names rendered by the manual serde implementation below,
-// so the TypeScript union must rename identically. The type itself sheds the module-internal `Ir`
-// prefix under its binding name: it is the one wire type whose Rust name carries one, and the
-// prefix never reaches frontend code.
-#[cfg_attr(
-    feature = "management-api-typescript-bindings",
-    ts(rename = "ThinkingLevel", rename_all = "lowercase")
-)]
-pub enum IrReasoningEffort {
-    /// No reasoning (OpenAI `minimal`, Gemini budget `0`).
-    Off,
-
-    /// Light reasoning.
-    Low,
-
-    /// Moderate reasoning.
-    Medium,
-
-    /// Strong reasoning.
-    High,
-}
 
 /// A client request failed validation: the request is malformed, carries an unsupported value, or
 /// names an unknown field.
 ///
-/// One type shared by every request validator — the format codecs, the IR parsing helpers, and the
-/// management surface's thinking-levels validation through [`parse_thinking_levels`] — so each HTTP
-/// surface renders it in its own contract. It never carries a status or wire code: those belong to
-/// the surfaces.
+/// One type shared by every request validator — the format codecs and the IR parsing helpers —
+/// so each HTTP surface renders it in its own contract. It never carries a status or wire code:
+/// those belong to the surfaces.
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 pub(crate) struct InvalidRequest {
@@ -47,91 +19,6 @@ pub(crate) struct InvalidRequest {
 
     /// Human-readable rejection message.
     message: String,
-}
-
-impl IrReasoningEffort {
-    /// Parses a client-supplied OpenAI effort string from the closed vocabulary `none | minimal |
-    /// low | medium | high`; `none` and `minimal` both map to [`IrReasoningEffort::Off`], the
-    /// canonical no-reasoning level. `xhigh` has no canonical target that would not silently
-    /// downgrade an explicit request, so it stays rejected.
-    pub(crate) fn parse_openai(value: &str) -> Option<Self> {
-        match value {
-            "none" | "minimal" => Some(Self::Off),
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            _ => None,
-        }
-    }
-
-    /// Renders the OpenAI reasoning effort string.
-    pub(crate) fn to_openai(self) -> &'static str {
-        match self {
-            Self::Off => "minimal",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
-
-    /// Renders the Gemini thinking budget.
-    pub(crate) fn to_thinking_budget(self) -> u32 {
-        match self {
-            Self::Off => 0,
-            Self::Low => 1024,
-            Self::Medium => 8192,
-            Self::High => 24576,
-        }
-    }
-
-    /// Parses the canonical level name used in `thinking_levels_override`.
-    pub(crate) fn parse_canonical(value: &str) -> Option<Self> {
-        match value {
-            "off" => Some(Self::Off),
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            _ => None,
-        }
-    }
-
-    /// Renders the canonical level name used in `thinking_levels_override`.
-    pub(crate) fn to_canonical(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
-
-    /// Clamps this level into the allowed set: lowered to the nearest allowed level at or below it,
-    /// or raised to the lowest allowed level when none is at or below it.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `allowed` is empty, violating the non-empty contract.
-    pub(crate) fn clamp_into(self, allowed: &[Self]) -> Self {
-        let mut below: Option<Self> = None;
-        let mut lowest: Option<Self> = None;
-
-        for candidate in allowed {
-            if *candidate <= self && below.is_none_or(|current| *candidate > current) {
-                below = Some(*candidate);
-            }
-
-            if lowest.is_none_or(|current| *candidate < current) {
-                lowest = Some(*candidate);
-            }
-        }
-
-        // `allowed` is validated non-empty, so a lowest level always exists.
-        #[expect(
-            clippy::expect_used,
-            reason = "allowed thinking levels are validated non-empty"
-        )]
-        below.unwrap_or_else(|| lowest.expect("allowed thinking levels are non-empty"))
-    }
 }
 
 impl InvalidRequest {
@@ -154,19 +41,6 @@ impl InvalidRequest {
     /// Builds a rejection from a body that is not valid JSON.
     pub(crate) fn from_json(error: JsonError) -> Self {
         Self::request(format!("Invalid JSON body: {error}"))
-    }
-}
-
-/// Serializes a canonical level as its canonical name, so a level array is exactly the
-/// `thinking_levels_override` wire form rendered by `render_thinking_levels` and parsed by
-/// `parse_stored_thinking_levels_override`. The name is defined once, in
-/// `IrReasoningEffort::to_canonical`.
-impl Serialize for IrReasoningEffort {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.to_canonical())
     }
 }
 
@@ -394,9 +268,13 @@ pub(crate) struct IrRequest {
     /// Response format restriction.
     pub(crate) response_format: Option<IrResponseFormat>,
 
-    /// Canonical reasoning level requested by the client, before any `thinking_levels_override`
-    /// filtering.
-    pub(crate) reasoning_effort: Option<IrReasoningEffort>,
+    /// Reasoning effort string the client sent, opaque to the gateway: carried verbatim from the
+    /// client's own parameter into the upstream's own parameter (README §6.4). The gateway
+    /// constrains only the type — a non-string value is a 400 malformed request, enforced by the
+    /// inbound parsers' string-typed fields — and never validates, maps, enumerates, clamps, or
+    /// defaults the value itself. `None` means the client omitted the field, and then no upstream
+    /// parameter is rendered.
+    pub(crate) reasoning_effort: Option<String>,
 }
 
 /// One event of a completion, in upstream-agnostic form.
@@ -622,159 +500,5 @@ impl Aggregator {
 
             None => String::new(),
         }
-    }
-}
-
-/// Filters a requested reasoning level against a model's configured `thinking_levels_override`.
-///
-/// A `None` override is pure passthrough: the requested level (or absence) flows through untouched.
-/// When an override is configured, a requested level is clamped into the allowed set, and a missing
-/// request defaults to the highest allowed level.
-pub(crate) fn apply_thinking_levels(
-    requested: Option<IrReasoningEffort>,
-    allowed_override: Option<&[IrReasoningEffort]>,
-) -> Option<IrReasoningEffort> {
-    match allowed_override {
-        None => requested,
-
-        Some(allowed) => {
-            let highest = allowed.iter().max().copied();
-
-            match requested {
-                Some(requested) => Some(requested.clamp_into(allowed)),
-                None => highest,
-            }
-        }
-    }
-}
-
-/// Parses canonical thinking level names into levels, rejecting unknown names, duplicates, and
-/// empty input; `param` names the offending request field in every error.
-///
-/// This is the single validation path for canonical thinking levels: both the `models:update`
-/// request parser and the stored `thinking_levels_override` parser delegate here, so the wording
-/// can never drift between them.
-///
-/// # Errors
-///
-/// Returns [`InvalidRequest`] naming `param` for any violation.
-pub(crate) fn parse_thinking_levels(
-    values: &[String],
-    param: &str,
-) -> Result<Vec<IrReasoningEffort>, InvalidRequest> {
-    let mut levels = Vec::with_capacity(values.len());
-
-    for value in values {
-        let level = IrReasoningEffort::parse_canonical(value).ok_or_else(|| {
-            InvalidRequest::field(
-                param,
-                format!("Unknown thinking level `{value}`; expected one of off, low, medium, high"),
-            )
-        })?;
-
-        if levels.contains(&level) {
-            return Err(InvalidRequest::field(
-                param,
-                format!("Duplicate thinking level `{value}`"),
-            ));
-        }
-
-        levels.push(level);
-    }
-
-    if levels.is_empty() {
-        return Err(InvalidRequest::field(
-            param,
-            format!("{param} must be a non-empty array"),
-        ));
-    }
-
-    Ok(levels)
-}
-
-/// Parses a stored `thinking_levels_override` database column through
-/// [`parse_thinking_levels_override`], rejecting a corrupt value with the drift message both
-/// consuming surfaces render verbatim: the gateway fail-fast maps it onto its internal variant and
-/// the management listing onto its own, so the wording is defined once and can never drift between
-/// the two error domains (README §7.1).
-///
-/// # Errors
-///
-/// Returns `stored thinking_levels_override is invalid: {error}` for any
-/// stored-value violation.
-pub(crate) fn parse_stored_thinking_levels_override(
-    json: &str,
-) -> Result<Vec<IrReasoningEffort>, String> {
-    parse_thinking_levels_override(json)
-        .map_err(|error| format!("stored thinking_levels_override is invalid: {error}"))
-}
-
-/// Renders canonical thinking levels into their canonical JSON array: the exact wire form stored in
-/// the `thinking_levels_override` column and rendered by the management listing, so a saved
-/// override always round-trips through [`parse_stored_thinking_levels_override`]..
-///
-/// # Panics
-///
-/// Panics if serialization fails, which cannot occur: the value is an array
-/// of canonical level names, a shape serde_json always renders.
-pub(crate) fn render_thinking_levels(levels: &[IrReasoningEffort]) -> String {
-    #[expect(
-        clippy::expect_used,
-        reason = "serializing canonical level names into a JSON string array cannot fail"
-    )]
-    serde_json::to_string(levels).expect("canonical thinking levels serialize")
-}
-
-/// Parses a `thinking_levels_override` JSON array into canonical levels, rejecting malformed JSON,
-/// empty arrays, unknown names, and duplicates.
-fn parse_thinking_levels_override(json: &str) -> Result<Vec<IrReasoningEffort>, InvalidRequest> {
-    let values: Vec<String> = serde_json::from_str(json).map_err(InvalidRequest::from_json)?;
-
-    parse_thinking_levels(&values, "thinking_levels_override")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verifies that a corrupt stored override fails with the exact drift wording both surfaces
-    /// render verbatim (README §7.1), so the wire message is pinned at its single definition site.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the rendered drift message diverges from the contract.
-    #[test]
-    fn renders_the_stored_override_drift_wording() {
-        #[expect(
-            clippy::expect_used,
-            reason = "the corrupt override is constructed to fail"
-        )]
-        let message = parse_stored_thinking_levels_override(r#"["bogus"]"#)
-            .expect_err("a corrupt stored override must fail");
-
-        assert!(
-            message.starts_with("stored thinking_levels_override is invalid: "),
-            "unexpected drift message: {message}"
-        );
-    }
-
-    /// Verifies that the canonical render is the stored form: rendering levels and parsing them
-    /// back through the stored-override parser reproduces the input, so a saved override can never
-    /// fail its own revalidation.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the rendered form diverges from the stored contract.
-    #[test]
-    fn rendered_levels_round_trip_through_the_stored_parser() {
-        let levels = [IrReasoningEffort::Low, IrReasoningEffort::High];
-
-        let stored = render_thinking_levels(&levels);
-
-        assert_eq!(stored, r#"["low","high"]"#);
-        assert_eq!(
-            parse_stored_thinking_levels_override(&stored),
-            Ok(levels.to_vec())
-        );
     }
 }

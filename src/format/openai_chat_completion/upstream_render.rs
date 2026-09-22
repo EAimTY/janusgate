@@ -48,9 +48,10 @@ pub(crate) struct RequestBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat<'a>>,
 
-    /// Canonical reasoning level rendered as the OpenAI effort string.
+    /// Reasoning effort string rendered verbatim into the upstream's own parameter; omitted when
+    /// the client sent no effort (README §6.4).
     #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<&'static str>,
+    reasoning_effort: Option<&'a str>,
 }
 
 /// Streaming options: the gateway always asks for the trailing usage chunk.
@@ -404,6 +405,53 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
         top_p: ir.top_p,
         max_completion_tokens: ir.max_output_tokens,
         response_format,
-        reasoning_effort: ir.reasoning_effort.map(|effort| effort.to_openai()),
+        reasoning_effort: ir.reasoning_effort.as_deref(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_request_body;
+    use crate::ir::IrRequest;
+    use serde_json::Value;
+
+    /// Renders one upstream body for the given opaque effort string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered body fails to serialize.
+    fn render_body(reasoning_effort: Option<&str>) -> Value {
+        let ir = IrRequest {
+            model: "m".to_string(),
+            reasoning_effort: reasoning_effort.map(str::to_string),
+            ..IrRequest::default()
+        };
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered payload is under test; a failing render is the failure"
+        )]
+        serde_json::to_value(render_request_body(&ir, false)).expect("the body serializes")
+    }
+
+    /// Verifies the Chat Completions effort slot of the verbatim-passthrough contract (README
+    /// §6.4): any string — an unknown vocabulary value or the empty string — renders into
+    /// `reasoning_effort` exactly as sent, and an absent effort renders no field at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rendered slot diverges from the contract.
+    #[test]
+    fn renders_the_effort_string_verbatim_or_not_at_all() {
+        for effort in ["high", "xhigh", "ultra", ""] {
+            let body = render_body(Some(effort));
+
+            assert_eq!(
+                body.get("reasoning_effort").and_then(Value::as_str),
+                Some(effort)
+            );
+        }
+
+        assert!(render_body(None).get("reasoning_effort").is_none());
     }
 }

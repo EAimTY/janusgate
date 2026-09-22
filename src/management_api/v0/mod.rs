@@ -20,7 +20,7 @@ use self::error::Error;
 #[cfg(feature = "management-api-typescript-bindings")]
 use crate::management_api::route as route_helper;
 #[cfg(feature = "management-api-typescript-bindings")]
-use crate::management_api::route::{OrderedVocabulary, PayloadSource, RouteBinding};
+use crate::management_api::route::{PayloadSource, RouteBinding};
 use crate::{context::Context, management_api::Route as _, provider::Provider, security};
 use axum::{
     Router,
@@ -56,9 +56,9 @@ pub use self::{
     },
     error::{ErrorCode, ErrorResponse},
     models::{
-        CreateModel, CreateModelRequest, DiscoverModels, DiscoverModelsRequest,
-        DiscoverModelsResponse, ListModels, ListModelsRequest, ListModelsResponse, ModelEnvelope,
-        ModelResponse, UpdateModel, UpdateModelRequest,
+        CreateModel, CreateModelRequest, DeleteModel, DeleteModelRequest, DiscoverModels,
+        DiscoverModelsRequest, DiscoverModelsResponse, ListModels, ListModelsRequest,
+        ListModelsResponse, ModelEnvelope, ModelResponse, UpdateModel, UpdateModelRequest,
     },
     oauth_flow::{
         CompleteProviderOauth, CompleteProviderOauthRequest, ReauthorizeProvider,
@@ -71,10 +71,7 @@ pub use self::{
         UpdateProviderRequest,
     },
 };
-pub use crate::{
-    ir::IrReasoningEffort,
-    provider::{OAuthProviderType, ProviderType},
-};
+pub use crate::provider::{DiscoveryState, OAuthProviderType, ProviderType};
 
 /// URL prefix this version is mounted at, relative to the management API router. Its version
 /// segment also names this version's TypeScript bindings file.
@@ -92,13 +89,6 @@ pub(super) static ROUTES: [RouteBinding];
 #[cfg(feature = "management-api-typescript-bindings")]
 pub(super) static EXPORTED_TYPES: &[PayloadSource] =
     &[route_helper::payload_binding::<ErrorResponse>];
-
-/// The closed vocabularies this version's bindings publish whose variant order is itself a
-/// published fact: the canonical thinking levels (§6.4), ordered by increasing reasoning strength,
-/// render as an ordered const tuple with the level union derived from it.
-#[cfg(feature = "management-api-typescript-bindings")]
-pub(super) static ORDERED_VOCABULARIES: &[OrderedVocabulary] =
-    &[route_helper::ordered_vocabulary::<IrReasoningEffort>];
 
 /// Declares one version 0 route, registering it in `ROUTES`. The shared `route!` macro carries
 /// the declaration syntax and the contract a route must satisfy; this wrapper binds the version's
@@ -211,6 +201,10 @@ pub(super) fn router() -> Router<Context> {
         .route(
             UpdateModel::PATH,
             routing::on(method_filter(&UpdateModel::METHOD), models::update),
+        )
+        .route(
+            DeleteModel::PATH,
+            routing::on(method_filter(&DeleteModel::METHOD), models::delete),
         )
         .fallback(fallback)
         .method_not_allowed_fallback(method_not_allowed)

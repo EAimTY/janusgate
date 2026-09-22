@@ -211,6 +211,52 @@ struct StoredApiKeyCredentials<'a> {
     api_key: &'a str,
 }
 
+/// The discovery lifecycle state of a model row (README §3): which role produced the row and
+/// what the most recent successful discovery said about it.
+///
+/// The serde and TypeScript names are the management wire names, shared with
+/// `DiscoveryState::as_str` — the storage form and the wire form are one vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub enum DiscoveryState {
+    /// Listed by the most recent successful discovery of its provider.
+    #[serde(rename = "discovered")]
+    Discovered,
+
+    /// Was listed by an earlier discovery but missing from the most recent one: service is
+    /// suspended (the three-input effective status is false) until the upstream lists it again or
+    /// an administrator claims it through `models:create`.
+    #[serde(rename = "vanished")]
+    Vanished,
+
+    /// Created — or claimed out of a vanished row — through `models:create`; a discovery that
+    /// lists its identifier flips it to [`Discovered`](Self::Discovered), one that does not leaves
+    /// it alone: a manual row is never automatically marked `vanished`.
+    #[serde(rename = "manual")]
+    Manual,
+}
+
+impl DiscoveryState {
+    /// Parses the canonical discovery state name.
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "discovered" => Some(Self::Discovered),
+            "vanished" => Some(Self::Vanished),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+
+    /// Renders the canonical discovery state name.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovered => "discovered",
+            Self::Vanished => "vanished",
+            Self::Manual => "manual",
+        }
+    }
+}
+
 /// A stored credentials value: the string it carries, or any other JSON value, which carries no
 /// string. [`Credentials::parse`] rejects a field carrying a non-string value exactly like a field
 /// the payload omits, so both read as no string.
@@ -550,14 +596,15 @@ impl Provider {
 /// A stored model row.
 #[derive(Debug, Clone)]
 pub(crate) struct Model {
-    /// Owning provider row identifier.
-    pub(crate) provider_id: i64,
+    /// Row identifier: an `AUTOINCREMENT` number that is never recycled, so a deleted row's
+    /// identity can never be reattached to a later row (README §3).
+    pub(crate) id: i64,
 
     /// Exact upstream model identifier.
     pub(crate) upstream_id: String,
 
     /// Public routing ID, maintained at write time.
-    pub(crate) id: String,
+    pub(crate) public_id: String,
 
     /// Non-`None` explicitly sets the public routing ID directly, bypassing the provider's
     /// `model_prefix`.
@@ -566,8 +613,8 @@ pub(crate) struct Model {
     /// Whether the model is enabled to serve traffic under its provider.
     pub(crate) is_enabled: bool,
 
-    /// JSON array of canonical thinking levels, when filtering is configured.
-    pub(crate) thinking_levels_override: Option<String>,
+    /// Discovery lifecycle state of the row (README §3).
+    pub(crate) discovery_state: DiscoveryState,
 }
 
 /// A provider row joined with the model row a public ID resolved to.
@@ -597,13 +644,14 @@ impl Model {
         }
     }
 
-    /// The model's effective serving status: true if and only if both the owning provider and the
-    /// model itself are enabled (README §3).
-    ///
-    /// The provider's `enabled` flag serves as the master switch: disabling a provider turns off
-    /// all its models unconditionally.
+    /// The model's effective serving status — the one definition routing, the enabled-model
+    /// listing, and the management rendering all share (README §3): true if and only if the owning
+    /// provider is enabled, the model itself is enabled, and the row is not `vanished`. The
+    /// provider's `enabled` flag serves as the master switch, and a vanished row has its service
+    /// suspended regardless of its configured switch — without the switch ever being written
+    /// (discovery only writes `discovery_state`).
     pub(crate) fn is_effectively_enabled(&self, is_provider_enabled: bool) -> bool {
-        is_provider_enabled && self.is_enabled
+        is_provider_enabled && self.is_enabled && self.discovery_state != DiscoveryState::Vanished
     }
 }
 
@@ -672,6 +720,27 @@ mod tests {
 
             assert_eq!(rendered, format!("\"{}\"", oauth_type.as_str()));
         }
+
+        for state in [
+            DiscoveryState::Discovered,
+            DiscoveryState::Vanished,
+            DiscoveryState::Manual,
+        ] {
+            #[expect(clippy::expect_used, reason = "a unit enum always serializes")]
+            let rendered =
+                serde_json::to_string(&state).expect("a discovery state always serializes");
+
+            assert_eq!(rendered, format!("\"{}\"", state.as_str()));
+
+            #[expect(
+                clippy::expect_used,
+                reason = "the name was just rendered from the same variant"
+            )]
+            let parsed: DiscoveryState =
+                serde_json::from_str(&rendered).expect("a rendered name parses back");
+
+            assert_eq!(parsed, state);
+        }
     }
 
     /// Verifies that `Model::public_id` uses `model_prefix + upstream_id` when unoverridden, and
@@ -692,37 +761,32 @@ mod tests {
         assert_eq!(empty_prefix_id, "gemini-pro");
     }
 
-    /// Verifies that `Model::is_effectively_enabled` requires both the provider and the model to be
-    /// enabled.
+    /// Verifies that `Model::is_effectively_enabled` is the three-input definition — provider
+    /// enabled, model enabled, row not vanished — and that each failing input alone suspends
+    /// service.
     ///
     /// # Panics
     ///
     /// Panics if effective enabled assertions fail.
     #[test]
     fn resolves_effective_enabled_status() {
-        let model_enabled = Model {
-            provider_id: 1,
+        let model = |is_enabled, discovery_state| Model {
+            id: 1,
             upstream_id: "m1".to_string(),
-            id: "m1".to_string(),
+            public_id: "p/m1".to_string(),
             id_override: None,
-            is_enabled: true,
-            thinking_levels_override: None,
+            is_enabled,
+            discovery_state,
         };
 
-        assert!(model_enabled.is_effectively_enabled(true));
-        assert!(!model_enabled.is_effectively_enabled(false));
+        assert!(model(true, DiscoveryState::Discovered).is_effectively_enabled(true));
+        assert!(model(true, DiscoveryState::Manual).is_effectively_enabled(true));
 
-        let model_disabled = Model {
-            provider_id: 1,
-            upstream_id: "m2".to_string(),
-            id: "m2".to_string(),
-            id_override: None,
-            is_enabled: false,
-            thinking_levels_override: None,
-        };
-
-        assert!(!model_disabled.is_effectively_enabled(true));
-        assert!(!model_disabled.is_effectively_enabled(false));
+        // Each failing input alone suspends service.
+        assert!(!model(true, DiscoveryState::Discovered).is_effectively_enabled(false));
+        assert!(!model(false, DiscoveryState::Discovered).is_effectively_enabled(true));
+        assert!(!model(true, DiscoveryState::Vanished).is_effectively_enabled(true));
+        assert!(!model(true, DiscoveryState::Vanished).is_effectively_enabled(false));
     }
 
     /// Verifies that `OAuthProviderType` accurately maps to `ProviderType` without relying on an

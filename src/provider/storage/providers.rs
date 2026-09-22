@@ -203,7 +203,7 @@ pub(crate) async fn update_credentials(
 ///
 /// The write owns the provider row — the restated `name` included, so a different name renames the
 /// provider — an optional credentials replacement (which resets `expires_at` and clears any refresh
-/// lease), and — upholding the README §3 invariant — the public `id` of unoverridden model rows,
+/// lease), and — upholding the README §3 invariant — the `public_id` of unoverridden model rows,
 /// recomputed from the effective prefix through the shared composition rule [`Model::public_id`].
 /// Nothing is written when the new name is already taken by another provider, when any recomputed
 /// public ID would collide with an existing model row of another provider, or when two of the
@@ -295,13 +295,13 @@ pub(crate) async fn update_provider(
     }
 
     for (new_id, model) in &recomputed {
-        if new_id == &model.id {
+        if new_id == &model.public_id {
             continue;
         }
 
         transaction
             .execute(
-                "UPDATE models SET id = ?1 WHERE provider_id = ?2 AND upstream_id = ?3",
+                "UPDATE models SET public_id = ?1 WHERE provider_id = ?2 AND upstream_id = ?3",
                 params![new_id.as_str(), provider.id, model.upstream_id.as_str()],
             )
             .await?;

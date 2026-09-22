@@ -9,7 +9,7 @@
 //! `models:update`, and model discovery re-read the provider row inside their transactions through
 //! [`providers::find_provider_by_id_in_transaction`]..
 
-use super::{Credentials, Model, OAuthProviderType, Provider, ProviderType};
+use super::{Credentials, DiscoveryState, Model, OAuthProviderType, Provider, ProviderType};
 use crate::database::{Error as DatabaseError, Row, Transaction, Value, params::IntoValue};
 use std::collections::HashMap;
 use turso::Error as TursoError;
@@ -20,8 +20,8 @@ mod providers;
 
 pub(crate) use self::{
     models::{
-        ModelEntry, ModelOverrideUpdate, find_routing, insert_model_checked,
-        list_enabled_models_with_owner, list_model_entries, replace_discovered_models,
+        ModelCreate, ModelEntry, ModelUpdate, apply_discovered_models, delete_model_checked,
+        find_routing, insert_model_checked, list_enabled_models_with_owner, list_model_entries,
         update_model_overrides_checked,
     },
     oauth_states::{
@@ -39,20 +39,20 @@ pub(crate) use self::{
 const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, base_url, credentials, \
      expires_at, is_enabled";
 
-/// Column order of model selects.
-const MODEL_COLUMNS: &str = "provider_id, upstream_id, id, id_override, is_enabled, \
-     thinking_levels_override";
+/// Column order of model selects: the row identity first, then the upstream identifier, the
+/// routing columns, and the discovery state. The owning provider is never carried in the row
+/// itself — every read knows it through the query's filter or its join.
+const MODEL_COLUMNS: &str = "id, upstream_id, public_id, id_override, is_enabled, discovery_state";
 
 /// The combined column order of provider-model joins.
 const PROVIDER_MODEL_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.type, \
      p.base_url, p.credentials, p.expires_at, p.is_enabled, \
-     m.upstream_id, m.id, m.id_override, m.is_enabled, m.thinking_levels_override";
+     m.id, m.upstream_id, m.public_id, m.id_override, m.is_enabled, m.discovery_state";
 
 /// The combined column order of the model-entry join, consumed positionally by
 /// [`model_entry_from_row`]: the provider id, name, and enabled flag, then the model columns.
 const MODEL_ENTRY_COLUMNS: &str = "p.id, p.name, p.is_enabled, \
-     m.provider_id, m.upstream_id, m.id, m.id_override, m.is_enabled, \
-     m.thinking_levels_override";
+     m.id, m.upstream_id, m.public_id, m.id_override, m.is_enabled, m.discovery_state";
 
 /// Provider, model, and OAuth state persistence failures.
 ///
@@ -149,6 +149,12 @@ impl IntoValue for OAuthProviderType {
     }
 }
 
+impl IntoValue for DiscoveryState {
+    fn into_value(self) -> Result<Value, TursoError> {
+        Ok(Value::Text(self.as_str().to_string()))
+    }
+}
+
 /// The documented wire wording for a rejected provider name (README §7.1), owned once here so the
 /// checked rename and both management name-taken pre-checks render a taken name identically.
 pub(crate) fn provider_name_taken_message(name: &str) -> String {
@@ -160,6 +166,12 @@ pub(crate) fn provider_name_taken_message(name: &str) -> String {
 /// missing provider identically.
 pub(crate) fn provider_not_found_message(id: i64) -> String {
     format!("Provider {id} does not exist")
+}
+
+/// The wire wording for an unknown model row id (README §7 404 `not_found`), owned once here so the
+/// row-addressed writes that re-read the row render a missing model identically.
+pub(crate) fn model_not_found_message(id: i64) -> String {
+    format!("Model {id} does not exist")
 }
 
 /// Reads a provider type column, failing with an internal drift error on an unknown or non-text
@@ -186,6 +198,21 @@ fn oauth_provider_type_from_value(value: Value) -> Result<OAuthProviderType, Err
 
         _ => Err(Error::Drift {
             message: "OAuth state type column must be a text value".to_string(),
+        }),
+    }
+}
+
+/// Reads a discovery-state column, failing with an internal drift error on an unknown or non-text
+/// value: the column is written only through [`DiscoveryState::as_str`] and its schema `CHECK`
+/// pins the closed set, so anything else is storage drift.
+fn discovery_state_from_value(value: Value) -> Result<DiscoveryState, Error> {
+    match value {
+        Value::Text(text) => DiscoveryState::parse(&text).ok_or_else(|| Error::Drift {
+            message: format!("unknown discovery state `{text}`"),
+        }),
+
+        _ => Err(Error::Drift {
+            message: "discovery state column must be a text value".to_string(),
         }),
     }
 }
@@ -219,18 +246,18 @@ fn provider_from_row(row: &Row) -> Result<Provider, Error> {
 
 /// Parses a provider-model joined row in [`PROVIDER_MODEL_COLUMNS`] order.
 ///
-/// The join projects the provider columns first and the model columns second, without
-/// `models.provider_id`, which is taken from the provider row.
+/// The join projects the provider columns first and the model columns second; the model's
+/// `provider_id` is taken from the provider row.
 fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, Error> {
     let provider = provider_from_row(row)?;
 
     let model = Model {
-        provider_id: provider.id,
-        upstream_id: row.get(8)?,
-        id: row.get(9)?,
-        id_override: row.get(10)?,
-        is_enabled: row.get::<i64>(11)? != 0,
-        thinking_levels_override: row.get(12)?,
+        id: row.get(8)?,
+        upstream_id: row.get(9)?,
+        public_id: row.get(10)?,
+        id_override: row.get(11)?,
+        is_enabled: row.get::<i64>(12)? != 0,
+        discovery_state: discovery_state_from_value(row.get_value(13)?)?,
     };
 
     Ok(ProviderModelJoin { provider, model })
@@ -239,12 +266,12 @@ fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, Error> {
 /// Parses a model row starting at the given column offset.
 fn model_from_row_offset(row: &Row, offset: usize) -> Result<Model, Error> {
     Ok(Model {
-        provider_id: row.get(offset)?,
+        id: row.get(offset)?,
         upstream_id: row.get(offset + 1)?,
-        id: row.get(offset + 2)?,
+        public_id: row.get(offset + 2)?,
         id_override: row.get(offset + 3)?,
         is_enabled: row.get::<i64>(offset + 4)? != 0,
-        thinking_levels_override: row.get(offset + 5)?,
+        discovery_state: discovery_state_from_value(row.get_value(offset + 5)?)?,
     })
 }
 
@@ -289,8 +316,10 @@ fn ensure_ids_pairwise_distinct(
 }
 
 /// Rejects freshly composed public IDs that are already routed by another model row — of any
-/// provider, including another model of the same provider. An ID held by the very row being written
-/// is not a collision.
+/// provider, including another model of the same provider, and regardless of the holder's
+/// discovery state: a `vanished` or `manual` row and an `id_override` holder all keep their public
+/// ID reserved. An ID held by the very row being written is not a collision — the holder is
+/// identified by its natural key `(provider_id, upstream_id)`.
 ///
 /// `composed` carries `(public_id, upstream_id)` pairs of the provider identified by `provider_id`.
 /// Runs inside the caller's transaction, so the routed rows it observes cannot interleave with the
@@ -306,7 +335,7 @@ async fn ensure_ids_routable(
 ) -> Result<(), Error> {
     let routed_rows = transaction
         .query(
-            "SELECT m.id, m.provider_id, m.upstream_id, p.name \
+            "SELECT m.public_id, m.provider_id, m.upstream_id, p.name \
              FROM models m JOIN providers p ON p.id = m.provider_id",
             (),
         )
@@ -373,39 +402,24 @@ mod tests {
         (database, TempDbGuard(db_path))
     }
 
-    /// Verifies the full model ID lifecycle: prefix composition on discovery, direct replacement
-    /// when overridden, invariant preservation on provider prefix update, clearing overrides, and
-    /// routing conflict rejection.
+    /// Verifies the public-ID lifecycle end to end: discovery composes IDs from the provider's
+    /// prefix, `models:update` (addressed by row id) applies an override, routing follows the
+    /// composed ID, a `providers:update` prefix change recomputes every unoverridden ID while an
+    /// overridden one stays, clearing the override recomposes, a colliding override is rejected
+    /// without writing, and the two enabled switches — model and provider master switch — gate the
+    /// enabled-model listing and routing's effective status.
     ///
     /// # Panics
     ///
     /// Panics if database operations or assertions fail.
     #[tokio::test]
-    async fn test_model_id_override_and_prefix_behavior() -> Result<(), Box<dyn StdError>> {
+    async fn overrides_ids_and_recomputes_them_on_prefix_update() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
 
-        let credentials = Credentials::ApiKey("test-secret".to_string());
-
-        insert_provider(
-            &database,
-            &NewProvider {
-                name: "provider-1",
-                model_prefix: "p1/",
-                provider_type: ProviderType::OpenAiChatCompletion,
-                base_url: Some("http://localhost:8080"),
-                credentials: &credentials,
-                expires_at: None,
-                is_enabled: true,
-            },
-        )
-        .await?;
-
-        let providers = list_providers(&database).await?;
-        #[expect(clippy::indexing_slicing, reason = "one provider was inserted")]
-        let provider_id = providers[0].id;
-
-        // 1. Discover models: "gpt-4" and "claude"
-        let discovered = replace_discovered_models(
+        // 1. Discovery composes public IDs from the prefix; the response carries every fresh row,
+        //    ordered by public ID.
+        let discovered = apply_discovered_models(
             &database,
             provider_id,
             &["gpt-4".to_string(), "claude".to_string()],
@@ -414,53 +428,61 @@ mod tests {
 
         assert_eq!(discovered.len(), 2);
 
-        let entries = list_model_entries(&database, None).await?;
+        assert_eq!(
+            discovered
+                .first()
+                .map(|entry| entry.model.public_id.as_str()),
+            Some("p1/claude")
+        );
 
-        assert_eq!(entries.len(), 2);
-        #[expect(clippy::unwrap_used, reason = "gpt-4 is in discovered entries")]
-        let gpt4 = entries
-            .iter()
-            .find(|e| e.model.upstream_id == "gpt-4")
-            .unwrap();
-        assert_eq!(gpt4.model.id, "p1/gpt-4");
+        assert_eq!(
+            discovered
+                .get(1)
+                .map(|entry| entry.model.public_id.as_str()),
+            Some("p1/gpt-4")
+        );
+
+        let entries = list_model_entries(&database, None).await?;
+        let gpt4 = entry(&entries, "gpt-4");
+
+        assert_eq!(gpt4.model.public_id, "p1/gpt-4");
         assert_eq!(gpt4.model.id_override, None);
         assert!(gpt4.model.is_enabled);
+        assert_eq!(gpt4.model.discovery_state, DiscoveryState::Discovered);
         assert!(gpt4.model.is_effectively_enabled(gpt4.is_provider_enabled));
 
-        // 2. Set id_override on "gpt-4" to "top-gpt" (bypasses "p1/" prefix); the rewrite restates
-        //    the row's full override state
+        // 2. An override applied by row id replaces the composed ID; routing resolves it.
+        let gpt4_id = gpt4.model.id;
+
         let updated = update_model_overrides_checked(
             &database,
-            ModelOverrideUpdate {
-                provider_id,
-                upstream_id: "gpt-4",
+            ModelUpdate {
+                model_id: gpt4_id,
                 id_override: Some("top-gpt"),
                 is_enabled: true,
-                thinking_levels_override: None,
             },
         )
         .await?;
 
-        assert_eq!(updated.model.id, "top-gpt");
+        assert_eq!(updated.model.id, gpt4_id);
+        assert_eq!(updated.model.public_id, "top-gpt");
         assert_eq!(updated.model.id_override.as_deref(), Some("top-gpt"));
-        assert!(updated.model.is_enabled);
 
-        // Routing lookup resolves "top-gpt" to this model
-        let routing = find_routing(&database, "top-gpt").await?;
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the lookup follows it"
+        )]
+        let routing = find_routing(&database, "top-gpt")
+            .await?
+            .expect("the overridden ID routes");
 
-        assert!(routing.is_some());
-        #[expect(clippy::unwrap_used, reason = "routing row is present")]
-        let routing = routing.unwrap();
         assert_eq!(routing.model.upstream_id, "gpt-4");
         assert!(routing.is_effectively_enabled);
 
-        // Old prefixed ID "p1/gpt-4" no longer routes
-        let old_routing = find_routing(&database, "p1/gpt-4").await?;
+        // The old composed ID no longer routes.
+        assert!(find_routing(&database, "p1/gpt-4").await?.is_none());
 
-        assert!(old_routing.is_none());
-
-        // 3. Update provider's model_prefix to "new-p1/"; the rewrite restates the compatible
-        //    provider's full state
+        // 3. A prefix change recomputes unoverridden IDs; the overridden row keeps its override.
         update_provider(
             &database,
             provider_id,
@@ -474,80 +496,78 @@ mod tests {
         )
         .await?;
 
-        // Check: "gpt-4" retains "top-gpt", while "claude" is recomputed as "new-p1/claude"
-        let entries_after_prefix = list_model_entries(&database, None).await?;
-        #[expect(clippy::unwrap_used, reason = "gpt-4 is in entries")]
-        let gpt4_after = entries_after_prefix
-            .iter()
-            .find(|e| e.model.upstream_id == "gpt-4")
-            .unwrap();
-        assert_eq!(gpt4_after.model.id, "top-gpt");
-        #[expect(clippy::unwrap_used, reason = "claude is in entries")]
-        let claude_after = entries_after_prefix
-            .iter()
-            .find(|e| e.model.upstream_id == "claude")
-            .unwrap();
-        assert_eq!(claude_after.model.id, "new-p1/claude");
+        let entries = list_model_entries(&database, None).await?;
 
-        // 4. Clear id_override on "gpt-4": reverts to "new-p1/gpt-4"
+        assert_eq!(entry(&entries, "gpt-4").model.public_id, "top-gpt");
+        assert_eq!(entry(&entries, "claude").model.public_id, "new-p1/claude");
+
+        // 4. Clearing the override recomposes from the current prefix.
         let cleared = update_model_overrides_checked(
             &database,
-            ModelOverrideUpdate {
-                provider_id,
-                upstream_id: "gpt-4",
+            ModelUpdate {
+                model_id: gpt4_id,
                 id_override: None,
                 is_enabled: true,
-                thinking_levels_override: None,
             },
         )
         .await?;
 
-        assert_eq!(cleared.model.id, "new-p1/gpt-4");
+        assert_eq!(cleared.model.public_id, "new-p1/gpt-4");
         assert_eq!(cleared.model.id_override, None);
 
-        // 5. Collision check: try to set claude's id_override to "new-p1/gpt-4"
-        let collision_result = update_model_overrides_checked(
+        // 5. An ID already routed by another row collides and writes nothing.
+        let claude_id = entry(&entries, "claude").model.id;
+
+        let collision = update_model_overrides_checked(
             &database,
-            ModelOverrideUpdate {
-                provider_id,
-                upstream_id: "claude",
+            ModelUpdate {
+                model_id: claude_id,
                 id_override: Some("new-p1/gpt-4"),
                 is_enabled: true,
-                thinking_levels_override: None,
             },
         )
         .await;
-        assert!(collision_result.is_err());
 
-        // 6. Disable claude individually
-        let disabled_claude = update_model_overrides_checked(
+        assert!(matches!(collision, Err(Error::Conflict { .. })));
+
+        let entries = list_model_entries(&database, None).await?;
+
+        assert_eq!(entry(&entries, "claude").model.public_id, "new-p1/claude");
+
+        // 6. Disabling one model takes it out of the enabled listing and its effective status.
+        update_model_overrides_checked(
             &database,
-            ModelOverrideUpdate {
-                provider_id,
-                upstream_id: "claude",
+            ModelUpdate {
+                model_id: claude_id,
                 id_override: None,
                 is_enabled: false,
-                thinking_levels_override: None,
             },
         )
         .await?;
 
-        assert!(!disabled_claude.model.is_enabled);
+        let entries = list_model_entries(&database, None).await?;
+        let claude = entry(&entries, "claude");
+
+        assert!(!claude.model.is_enabled);
         assert!(
-            !disabled_claude
+            !claude
                 .model
-                .is_effectively_enabled(disabled_claude.is_provider_enabled)
+                .is_effectively_enabled(claude.is_provider_enabled)
         );
 
-        // Enabled models list includes gpt-4 but excludes claude
         let enabled_models = list_enabled_models_with_owner(&database).await?;
 
         assert_eq!(enabled_models.len(), 1);
-        #[expect(clippy::indexing_slicing, reason = "length 1 asserted above")]
-        let first_enabled = &enabled_models[0];
-        assert_eq!(first_enabled.0, "new-p1/gpt-4");
 
-        // 7. Master switch test: disable provider -> ALL models effectively disabled
+        assert_eq!(
+            enabled_models
+                .first()
+                .map(|(public_id, _)| public_id.as_str()),
+            Some("new-p1/gpt-4")
+        );
+
+        // 7. The provider is the master switch: disabling it disables every model effectively while
+        //    the enabled listing empties.
         update_provider(
             &database,
             provider_id,
@@ -561,177 +581,606 @@ mod tests {
         )
         .await?;
 
-        // Routing lookup for gpt-4 reports the effective status as disabled
-        let gpt4_routing = find_routing(&database, "new-p1/gpt-4").await?;
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the lookup follows it"
+        )]
+        let routing = find_routing(&database, "new-p1/gpt-4")
+            .await?
+            .expect("the row still resolves");
 
-        assert!(gpt4_routing.is_some());
-        #[expect(clippy::unwrap_used, reason = "routing is some")]
-        let gpt4_routing = gpt4_routing.unwrap();
-        assert!(!gpt4_routing.is_effectively_enabled);
-
-        // Enabled models list is now empty because provider is disabled
-        let enabled_models_after_provider_disable =
-            list_enabled_models_with_owner(&database).await?;
-        assert!(enabled_models_after_provider_disable.is_empty());
+        assert!(!routing.is_effectively_enabled);
+        assert!(list_enabled_models_with_owner(&database).await?.is_empty());
 
         Ok(())
     }
 
-    /// Verifies the manual model lifecycle: insertion composes the public ID from the provider's
-    /// current prefix, a repeated `upstream_id` and a routed public ID each conflict without
-    /// writing, and a later discovery carries the manual row's overrides over by `upstream_id`
-    /// — dropping the row only when the identifier no longer appears.
+    /// Verifies the manual-row creation rules: an absent identifier becomes a `manual` row with a
+    /// prefix-composed ID, a natural-key duplicate and a routed-ID collision each conflict without
+    /// writing, an unknown provider is not found — and discovery never touches an unlisted manual
+    /// row while listing it flips the row to `discovered` with its curation and identity intact.
     ///
     /// # Panics
     ///
     /// Panics if database operations or assertions fail.
     #[tokio::test]
-    async fn test_manual_model_insert_and_discovery_carry_over() -> Result<(), Box<dyn StdError>> {
+    async fn creates_manual_rows_discovery_never_prunes() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
 
-        let credentials = Credentials::ApiKey("test-secret".to_string());
-
-        insert_provider(
-            &database,
-            &NewProvider {
-                name: "provider-1",
-                model_prefix: "p1/",
-                provider_type: ProviderType::OpenAiChatCompletion,
-                base_url: Some("http://localhost:8080"),
-                credentials: &credentials,
-                expires_at: None,
-                is_enabled: true,
-            },
-        )
-        .await?;
-
-        let providers = list_providers(&database).await?;
-        #[expect(clippy::indexing_slicing, reason = "one provider was inserted")]
-        let provider_id = providers[0].id;
-
-        // 1. Insert a manual row: the public ID composes from the current prefix.
+        // 1. An absent identifier becomes a manual row with the requested state.
         let created = insert_model_checked(
             &database,
-            ModelOverrideUpdate {
+            ModelCreate {
                 provider_id,
                 upstream_id: "manual-1",
                 id_override: None,
                 is_enabled: false,
-                thinking_levels_override: Some(r#"["low"]"#),
             },
         )
         .await?;
 
-        assert_eq!(created.model.id, "p1/manual-1");
+        assert_eq!(created.model.public_id, "p1/manual-1");
+        assert_eq!(created.model.discovery_state, DiscoveryState::Manual);
         assert!(!created.model.is_enabled);
-        assert_eq!(
-            created.model.thinking_levels_override.as_deref(),
-            Some(r#"["low"]"#)
-        );
 
-        // 2. A repeated `upstream_id` on the same provider conflicts and writes nothing.
+        // 2. A natural-key duplicate conflicts and writes nothing.
         let duplicate = insert_model_checked(
             &database,
-            ModelOverrideUpdate {
+            ModelCreate {
                 provider_id,
                 upstream_id: "manual-1",
                 id_override: Some("other-id"),
                 is_enabled: true,
-                thinking_levels_override: None,
             },
         )
         .await;
+
         assert!(matches!(duplicate, Err(Error::Conflict { .. })));
 
-        // The failed insert left the stored row untouched.
-        let entries = list_model_entries(&database, Some(provider_id)).await?;
-        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            list_model_entries(&database, Some(provider_id))
+                .await?
+                .len(),
+            1
+        );
 
         // 3. A public ID already routed by another provider's row conflicts and writes nothing.
-        insert_provider(
+        let other_provider_id = insert_test_provider(&database, "provider-2", "p2/").await?;
+
+        let colliding = insert_model_checked(
             &database,
+            ModelCreate {
+                provider_id: other_provider_id,
+                upstream_id: "manual-1",
+                id_override: Some("p1/manual-1"),
+                is_enabled: true,
+            },
+        )
+        .await;
+
+        assert!(matches!(colliding, Err(Error::Conflict { .. })));
+        assert!(
+            list_model_entries(&database, Some(other_provider_id))
+                .await?
+                .is_empty()
+        );
+
+        // 4. An unknown provider yields not-found.
+        let missing = insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id: other_provider_id + 1000,
+                upstream_id: "ghost",
+                id_override: None,
+                is_enabled: true,
+            },
+        )
+        .await;
+
+        assert!(matches!(missing, Err(Error::NotFound { .. })));
+
+        // 5. A discovery not listing the manual identifier leaves the row alone — never pruned,
+        //    never marked — and the response carries every row of the provider.
+        let rows =
+            apply_discovered_models(&database, provider_id, &["fresh-1".to_string()]).await?;
+
+        assert_eq!(rows.len(), 2);
+
+        let entries = list_model_entries(&database, Some(provider_id)).await?;
+        let manual = entry(&entries, "manual-1");
+
+        assert_eq!(manual.model.discovery_state, DiscoveryState::Manual);
+        assert!(!manual.model.is_enabled);
+        assert_eq!(manual.model.public_id, "p1/manual-1");
+
+        let fresh = entry(&entries, "fresh-1");
+
+        assert_eq!(fresh.model.discovery_state, DiscoveryState::Discovered);
+        assert!(fresh.model.is_enabled);
+
+        // 6. A discovery listing the manual identifier flips it to `discovered`, keeping its row
+        //    identity and its curation.
+        let manual_id = manual.model.id;
+
+        apply_discovered_models(
+            &database,
+            provider_id,
+            &["fresh-1".to_string(), "manual-1".to_string()],
+        )
+        .await?;
+
+        let entries = list_model_entries(&database, Some(provider_id)).await?;
+        let manual = entry(&entries, "manual-1");
+
+        assert_eq!(manual.model.id, manual_id);
+        assert_eq!(manual.model.discovery_state, DiscoveryState::Discovered);
+        assert!(!manual.model.is_enabled);
+        assert_eq!(manual.model.public_id, "p1/manual-1");
+
+        Ok(())
+    }
+
+    /// Verifies the vanished semantics and the write-permission invariant: a discovery marks only
+    /// `discovered` rows `vanished`, a vanished row keeps routing resolution intact while its
+    /// three-input effective status turns false — excluding it from the enabled listing and the
+    /// outward `GET /models` source while the management listing still shows it — and a reappearing
+    /// row is restored by flipping only its state column, leaving curated columns and its identity
+    /// untouched.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn marks_vanished_rows_and_restores_them_by_state_flip_only()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
+
+        apply_discovered_models(
+            &database,
+            provider_id,
+            &["a".to_string(), "b".to_string(), "c".to_string()],
+        )
+        .await?;
+
+        let entries = list_model_entries(&database, None).await?;
+        let (a_id, b_id, c_id) = (
+            entry(&entries, "a").model.id,
+            entry(&entries, "b").model.id,
+            entry(&entries, "c").model.id,
+        );
+
+        // Curate: `a` gets an override, `b` is switched off, `c` stays at its defaults.
+        update_model_overrides_checked(
+            &database,
+            ModelUpdate {
+                model_id: a_id,
+                id_override: Some("custom-a"),
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        update_model_overrides_checked(
+            &database,
+            ModelUpdate {
+                model_id: b_id,
+                id_override: None,
+                is_enabled: false,
+            },
+        )
+        .await?;
+
+        // A discovery listing only `a` marks `b` and `c` vanished and answers with every row.
+        let rows = apply_discovered_models(&database, provider_id, &["a".to_string()]).await?;
+
+        assert_eq!(rows.len(), 3);
+
+        let entries = list_model_entries(&database, None).await?;
+        let a = entry(&entries, "a");
+        let b = entry(&entries, "b");
+        let c = entry(&entries, "c");
+
+        // The returning row keeps identity and every curated column.
+        assert_eq!(a.model.id, a_id);
+        assert_eq!(a.model.discovery_state, DiscoveryState::Discovered);
+        assert_eq!(a.model.public_id, "custom-a");
+        assert!(a.model.is_enabled);
+
+        // Vanish touches only the state column: `b` stays curated off, `c` stays on.
+        assert_eq!(b.model.discovery_state, DiscoveryState::Vanished);
+        assert!(!b.model.is_enabled);
+        assert_eq!(b.model.public_id, "p1/b");
+
+        assert_eq!(c.model.discovery_state, DiscoveryState::Vanished);
+        assert!(c.model.is_enabled);
+        assert_eq!(c.model.public_id, "p1/c");
+
+        // A vanished row with `is_enabled = 1` still resolves in routing — zero special-casing —
+        // but its three-input effective status is false, which is what turns into the outward 404.
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the lookup follows it"
+        )]
+        let routing = find_routing(&database, "p1/c")
+            .await?
+            .expect("a vanished row is still resolved by its public ID");
+
+        assert!(!routing.is_effectively_enabled);
+
+        // The enabled listing — the source of `GET /models` — excludes it; the management listing
+        // shows it with a false effective status.
+        let enabled_models = list_enabled_models_with_owner(&database).await?;
+
+        assert_eq!(enabled_models.len(), 1);
+
+        assert_eq!(
+            enabled_models
+                .first()
+                .map(|(public_id, _)| public_id.as_str()),
+            Some("custom-a")
+        );
+
+        let c = entry(&entries, "c");
+
+        assert!(c.model.is_enabled);
+        assert!(!c.model.is_effectively_enabled(c.is_provider_enabled));
+
+        // Reappearance flips only the state column back: identity and curation survive, the
+        // enabled switch is exactly what the administrator left behind.
+        apply_discovered_models(
+            &database,
+            provider_id,
+            &["a".to_string(), "b".to_string(), "c".to_string()],
+        )
+        .await?;
+
+        let entries = list_model_entries(&database, None).await?;
+        let a = entry(&entries, "a");
+        let b = entry(&entries, "b");
+        let c = entry(&entries, "c");
+
+        assert_eq!(a.model.id, a_id);
+        assert_eq!(a.model.public_id, "custom-a");
+        assert!(a.model.is_enabled);
+
+        assert_eq!(b.model.id, b_id);
+        assert_eq!(b.model.discovery_state, DiscoveryState::Discovered);
+        assert!(!b.model.is_enabled);
+
+        assert_eq!(c.model.id, c_id);
+        assert_eq!(c.model.discovery_state, DiscoveryState::Discovered);
+        assert!(c.model.is_enabled);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the lookup follows it"
+        )]
+        let routing = find_routing(&database, "p1/c")
+            .await?
+            .expect("the restored row routes");
+
+        assert!(routing.is_effectively_enabled);
+
+        let enabled_models = list_enabled_models_with_owner(&database).await?;
+
+        assert_eq!(enabled_models.len(), 2);
+
+        Ok(())
+    }
+
+    /// Verifies that a newly inserted discovered row's public ID collides against every row of the
+    /// table — a vanished holder and an `id_override` holder of other providers included — with the
+    /// whole refresh rejected as a conflict that writes nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn rejects_new_public_ids_held_by_any_row() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = create_test_database().await;
+
+        // Provider A discovers `gpt-4`, then drops it: the vanished row keeps `p1/gpt-4` reserved.
+        let provider_a = insert_test_provider(&database, "provider-a", "p1/").await?;
+
+        apply_discovered_models(&database, provider_a, &["gpt-4".to_string()]).await?;
+        apply_discovered_models(&database, provider_a, &["other".to_string()]).await?;
+
+        // Provider B shares the prefix and re-discovers the identifier: its brand-new row would
+        // take the vanished holder's ID, so the refresh is rejected and B stays empty.
+        let provider_b = insert_test_provider(&database, "provider-b", "p1/").await?;
+
+        let collision =
+            apply_discovered_models(&database, provider_b, &["gpt-4".to_string()]).await;
+
+        assert!(matches!(collision, Err(Error::Conflict { .. })));
+        assert!(
+            list_model_entries(&database, Some(provider_b))
+                .await?
+                .is_empty()
+        );
+
+        // An `id_override` holder reserves its ID the same way: a manual row of provider C holds
+        // `d/m`, so provider D's discovery composing `d/m` is rejected.
+        let provider_c = insert_test_provider(&database, "provider-c", "c/").await?;
+
+        insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id: provider_c,
+                upstream_id: "m",
+                id_override: Some("d/m"),
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        let provider_d = insert_test_provider(&database, "provider-d", "d/").await?;
+
+        let collision = apply_discovered_models(&database, provider_d, &["m".to_string()]).await;
+
+        assert!(matches!(collision, Err(Error::Conflict { .. })));
+        assert!(
+            list_model_entries(&database, Some(provider_d))
+                .await?
+                .is_empty()
+        );
+
+        Ok(())
+    }
+
+    /// Verifies the claim path of `models:create`: a vanished row is claimed into a `manual` row
+    /// keeping its row identity while the requested state — override, switch, recomposed public ID
+    /// — applies, the claim resumes service per the requested `is_enabled`, and a row the upstream
+    /// currently lists is never claimable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn claims_a_vanished_row_keeping_its_identity() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
+
+        apply_discovered_models(
+            &database,
+            provider_id,
+            &["gpt-4".to_string(), "keep".to_string()],
+        )
+        .await?;
+
+        let entries = list_model_entries(&database, None).await?;
+        let gpt4_id = entry(&entries, "gpt-4").model.id;
+
+        // The administrator disables the row before it vanishes; curation must survive the claim.
+        update_model_overrides_checked(
+            &database,
+            ModelUpdate {
+                model_id: gpt4_id,
+                id_override: None,
+                is_enabled: false,
+            },
+        )
+        .await?;
+
+        apply_discovered_models(&database, provider_id, &["keep".to_string()]).await?;
+
+        // The claim keeps the row id, applies the requested state, recomposes the public ID, and
+        // lands as `manual`.
+        let claimed = insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id,
+                upstream_id: "gpt-4",
+                id_override: Some("claimed-gpt"),
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        assert_eq!(claimed.model.id, gpt4_id);
+        assert_eq!(claimed.model.discovery_state, DiscoveryState::Manual);
+        assert_eq!(claimed.model.public_id, "claimed-gpt");
+        assert_eq!(claimed.model.id_override.as_deref(), Some("claimed-gpt"));
+        assert!(claimed.model.is_enabled);
+
+        // The claim is the manual recovery path: the row serves per its requested switch.
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the lookup follows it"
+        )]
+        let routing = find_routing(&database, "claimed-gpt")
+            .await?
+            .expect("the claimed row routes");
+
+        assert!(routing.is_effectively_enabled);
+        assert!(find_routing(&database, "p1/gpt-4").await?.is_none());
+
+        // A row the upstream currently lists is `discovered` and can never be claimed.
+        let conflict = insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id,
+                upstream_id: "keep",
+                id_override: None,
+                is_enabled: true,
+            },
+        )
+        .await;
+
+        assert!(matches!(conflict, Err(Error::Conflict { .. })));
+
+        Ok(())
+    }
+
+    /// Verifies the row-addressed update and delete rules: unknown row ids are not found, an
+    /// update writes only the override columns — never `discovery_state`, so a vanished row stays
+    /// unservable after an update — a recomposed-ID collision is rejected without writing, a
+    /// deleted row disappears, and a later discovery rebuilds a deleted `discovered` row under a
+    /// fresh, never-recycled identity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn updates_and_deletes_models_by_row_id() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
+
+        apply_discovered_models(&database, provider_id, &["a".to_string(), "b".to_string()])
+            .await?;
+
+        let entries = list_model_entries(&database, None).await?;
+        let a_id = entry(&entries, "a").model.id;
+        let b_id = entry(&entries, "b").model.id;
+
+        // Unknown row ids are not found, on both routes.
+        let missing_update = update_model_overrides_checked(
+            &database,
+            ModelUpdate {
+                model_id: a_id + b_id + 1000,
+                id_override: None,
+                is_enabled: true,
+            },
+        )
+        .await;
+
+        assert!(matches!(missing_update, Err(Error::NotFound { .. })));
+
+        let missing_delete = delete_model_checked(&database, a_id + b_id + 1000).await;
+
+        assert!(matches!(missing_delete, Err(Error::NotFound { .. })));
+
+        // Vanish `a`, then update it: the update writes the override columns but never
+        // `discovery_state`, so the row stays unservable.
+        apply_discovered_models(&database, provider_id, &["b".to_string()]).await?;
+
+        let updated = update_model_overrides_checked(
+            &database,
+            ModelUpdate {
+                model_id: a_id,
+                id_override: Some("va"),
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        assert_eq!(updated.model.discovery_state, DiscoveryState::Vanished);
+        assert_eq!(updated.model.public_id, "va");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the lookup follows it"
+        )]
+        let routing = find_routing(&database, "va")
+            .await?
+            .expect("the updated row still resolves");
+
+        assert!(!routing.is_effectively_enabled);
+
+        // A colliding recomposed ID is rejected and writes nothing.
+        let collision = update_model_overrides_checked(
+            &database,
+            ModelUpdate {
+                model_id: b_id,
+                id_override: Some("va"),
+                is_enabled: false,
+            },
+        )
+        .await;
+
+        assert!(matches!(collision, Err(Error::Conflict { .. })));
+
+        let entries = list_model_entries(&database, None).await?;
+        let b = entry(&entries, "b");
+
+        assert_eq!(b.model.public_id, "p1/b");
+        assert!(b.model.is_enabled);
+
+        // Deleting by row id removes the row; the same id is then unknown.
+        delete_model_checked(&database, a_id).await?;
+
+        let entries = list_model_entries(&database, None).await?;
+
+        assert_eq!(entries.len(), 1);
+
+        assert_eq!(
+            entries
+                .first()
+                .map(|entry| entry.model.upstream_id.as_str()),
+            Some("b")
+        );
+
+        let missing_delete = delete_model_checked(&database, a_id).await;
+
+        assert!(matches!(missing_delete, Err(Error::NotFound { .. })));
+
+        // A deleted discovered row is rebuilt by the next discovery as a new row: the identity is
+        // never recycled.
+        let rebuilt =
+            apply_discovered_models(&database, provider_id, &["a".to_string(), "b".to_string()])
+                .await?;
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just rebuilt by the refresh above"
+        )]
+        let fresh_a = rebuilt
+            .iter()
+            .find(|entry| entry.model.upstream_id == "a")
+            .expect("the rebuilt row is listed");
+
+        assert_ne!(fresh_a.model.id, a_id);
+
+        Ok(())
+    }
+
+    /// Inserts one enabled static-key test provider, returning its stored row.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the insert fails.
+    async fn insert_test_provider(
+        database: &Database,
+        name: &str,
+        model_prefix: &str,
+    ) -> Result<i64, Box<dyn StdError>> {
+        let provider = insert_provider(
+            database,
             &NewProvider {
-                name: "provider-2",
-                model_prefix: "p2/",
+                name,
+                model_prefix,
                 provider_type: ProviderType::OpenAiChatCompletion,
                 base_url: Some("http://localhost:8080"),
-                credentials: &credentials,
+                credentials: &Credentials::ApiKey("test-secret".to_string()),
                 expires_at: None,
                 is_enabled: true,
             },
         )
         .await?;
 
-        let providers = list_providers(&database).await?;
-        #[expect(clippy::unwrap_used, reason = "provider-2 was inserted")]
-        let other_provider_id = providers
+        Ok(provider.id)
+    }
+
+    /// Fetches one listing entry by its upstream identifier, expecting it to be present.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry is absent; every caller looks up a row the test just verified exists.
+    fn entry<'a>(entries: &'a [ModelEntry], upstream_id: &str) -> &'a ModelEntry {
+        entries
             .iter()
-            .find(|provider| provider.name == "provider-2")
-            .unwrap()
-            .id;
-
-        let colliding = insert_model_checked(
-            &database,
-            ModelOverrideUpdate {
-                provider_id: other_provider_id,
-                upstream_id: "manual-1",
-                id_override: Some("p1/manual-1"),
-                is_enabled: true,
-                thinking_levels_override: None,
-            },
-        )
-        .await;
-        assert!(matches!(colliding, Err(Error::Conflict { .. })));
-
-        let other_entries = list_model_entries(&database, Some(other_provider_id)).await?;
-        assert!(other_entries.is_empty());
-
-        // 4. An unknown provider yields not-found.
-        let missing = insert_model_checked(
-            &database,
-            ModelOverrideUpdate {
-                provider_id: other_provider_id + 1000,
-                upstream_id: "ghost",
-                id_override: None,
-                is_enabled: true,
-                thinking_levels_override: None,
-            },
-        )
-        .await;
-        assert!(matches!(missing, Err(Error::NotFound { .. })));
-
-        // 5. A later discovery carrying the manual identifier keeps its overrides; a fresh
-        //    identifier defaults to enabled with no overrides.
-        let rediscovered = replace_discovered_models(
-            &database,
-            provider_id,
-            &["manual-1".to_string(), "fresh-1".to_string()],
-        )
-        .await?;
-
-        assert_eq!(rediscovered.len(), 2);
-        #[expect(clippy::unwrap_used, reason = "manual-1 is re-discovered")]
-        let carried = rediscovered
-            .iter()
-            .find(|entry| entry.model.upstream_id == "manual-1")
-            .unwrap();
-        assert_eq!(carried.model.id, "p1/manual-1");
-        assert!(!carried.model.is_enabled);
-        assert_eq!(
-            carried.model.thinking_levels_override.as_deref(),
-            Some(r#"["low"]"#)
-        );
-
-        // 6. A discovery no longer listing the manual identifier drops the row.
-        let pruned =
-            replace_discovered_models(&database, provider_id, &["fresh-1".to_string()]).await?;
-
-        assert_eq!(pruned.len(), 1);
-        #[expect(clippy::indexing_slicing, reason = "length 1 asserted above")]
-        let survivor = &pruned[0];
-        assert_eq!(survivor.model.upstream_id, "fresh-1");
-
-        Ok(())
+            .find(|entry| entry.model.upstream_id == upstream_id)
+            .unwrap_or_else(|| {
+                #[expect(
+                    clippy::panic,
+                    reason = "every caller looks up a row the test just verified exists"
+                )]
+                {
+                    panic!("model row `{upstream_id}` must be listed")
+                }
+            })
     }
 
     /// Verifies the OAuth state lifecycle and typed database roundtrips for `OAuthProviderType` and

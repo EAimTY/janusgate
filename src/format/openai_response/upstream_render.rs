@@ -54,7 +54,7 @@ pub(crate) struct RequestBody<'a> {
 
     /// Reasoning configuration, omitted when the request has none.
     #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<Reasoning>,
+    reasoning: Option<Reasoning<'a>>,
 }
 
 /// One conversation item of the upstream request.
@@ -214,9 +214,9 @@ enum ResponseFormat<'a> {
 
 /// Reasoning configuration.
 #[derive(Debug, Serialize)]
-struct Reasoning {
-    /// Canonical reasoning level rendered as the OpenAI effort string.
-    effort: &'static str,
+struct Reasoning<'a> {
+    /// Reasoning effort string rendered verbatim from the IR, opaque to the gateway (README §6.4).
+    effort: &'a str,
 }
 
 /// Renders the Codex-flavored upstream request URL and payload: streaming is forced on (README §5.1
@@ -367,8 +367,60 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
         top_p: ir.top_p,
         max_output_tokens: ir.max_output_tokens,
         text,
-        reasoning: ir.reasoning_effort.map(|effort| Reasoning {
-            effort: effort.to_openai(),
-        }),
+        reasoning: ir
+            .reasoning_effort
+            .as_deref()
+            .map(|effort| Reasoning { effort }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_request;
+    use crate::ir::IrRequest;
+    use serde_json::Value;
+
+    /// Renders one upstream body for the given opaque effort string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered body fails to serialize.
+    fn render_body(reasoning_effort: Option<&str>) -> Value {
+        let ir = IrRequest {
+            model: "m".to_string(),
+            reasoning_effort: reasoning_effort.map(str::to_string),
+            ..IrRequest::default()
+        };
+
+        let (_, body) = render_request(&ir, "https://upstream.example", false);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered payload is under test; a failing render is the failure"
+        )]
+        serde_json::to_value(body).expect("the body serializes")
+    }
+
+    /// Verifies the Responses effort slot of the verbatim-passthrough contract (README §6.4): any
+    /// string — an unknown vocabulary value or the empty string — renders into `reasoning.effort`
+    /// exactly as sent, and an absent effort renders no reasoning object at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rendered slot diverges from the contract.
+    #[test]
+    fn renders_the_effort_string_verbatim_or_not_at_all() {
+        for effort in ["high", "xhigh", "ultra", ""] {
+            let body = render_body(Some(effort));
+
+            assert_eq!(
+                body.get("reasoning")
+                    .and_then(|reasoning| reasoning.get("effort"))
+                    .and_then(Value::as_str),
+                Some(effort)
+            );
+        }
+
+        assert!(render_body(None).get("reasoning").is_none());
     }
 }

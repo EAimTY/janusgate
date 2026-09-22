@@ -4,8 +4,8 @@
 use crate::{
     format::{self, ParsedRequest, StringOrArray},
     ir::{
-        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningEffort, IrRequest, IrResponseFormat,
-        IrRole, IrTool, IrToolChoice,
+        InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
+        IrToolChoice,
     },
 };
 use serde::{Deserialize, de::IgnoredAny};
@@ -49,7 +49,8 @@ struct RequestBody {
     #[serde(default)]
     response_format: Option<ResponseFormatIn>,
 
-    /// OpenAI reasoning effort.
+    /// Reasoning effort string, opaque to the gateway: the string type is the whole constraint,
+    /// and the value is carried verbatim into the upstream's own parameter (README §6.4).
     #[serde(default)]
     reasoning_effort: Option<String>,
 
@@ -507,16 +508,6 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
         }),
     };
 
-    let reasoning_effort = match &request.reasoning_effort {
-        None => None,
-        Some(effort) => Some(IrReasoningEffort::parse_openai(effort).ok_or_else(|| {
-            InvalidRequest::field(
-                "reasoning_effort",
-                format!("Unknown reasoning_effort `{effort}`"),
-            )
-        })?),
-    };
-
     Ok(ParsedRequest {
         ir: IrRequest {
             model: request.model,
@@ -532,7 +523,10 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             top_p: request.top_p,
             max_output_tokens: request.max_completion_tokens.or(request.max_tokens),
             response_format,
-            reasoning_effort,
+            // The effort carries through verbatim: the DTO's string type is the whole constraint,
+            // and any string — unknown vocabulary or empty — reaches the upstream render as sent
+            // (README §6.4).
+            reasoning_effort: request.reasoning_effort,
         },
         is_streaming: request.stream.unwrap_or(false),
         should_include_usage: request
@@ -862,37 +856,45 @@ mod tests {
         }
     }
 
-    /// The official `none` effort — the OpenAI vocabulary's explicit
-    /// no-reasoning value — parses to the canonical `off` level, the same
-    /// level `minimal` maps to, and the closed vocabulary still rejects
-    /// `xhigh`: the canonical set has no target for it that would not
-    /// silently downgrade an explicit client request (README §6.4).
+    /// The only constraint on `reasoning_effort` is its type: a non-string value is a 400
+    /// malformed request, while any string — an unknown vocabulary value such as `xhigh`, or the
+    /// empty string — parses and is carried into the IR verbatim (README §6.4); there is no value
+    /// list of any kind.
     ///
     /// # Panics
     ///
     /// Panics if the parsed request or rejection diverges from the contract.
     #[test]
-    fn reasoning_effort_none_parses_to_off_and_xhigh_is_rejected() {
-        #[expect(clippy::expect_used, reason = "`none` is constructed to parse")]
-        let none = parse(serde_json::json!({
-            "model": "m",
-            "messages": [{"role": "user", "content": "hi"}],
-            "reasoning_effort": "none",
-        }))
-        .expect("`reasoning_effort: \"none\"` must parse");
+    fn reasoning_effort_is_type_checked_only_and_carried_verbatim() {
+        for effort in ["none", "xhigh", "ultra", ""] {
+            #[expect(
+                clippy::expect_used,
+                reason = "an arbitrary string is constructed to parse"
+            )]
+            let parsed = parse(serde_json::json!({
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": effort,
+            }))
+            .expect("any effort string must parse");
 
-        assert_eq!(none.ir.reasoning_effort, Some(IrReasoningEffort::Off));
+            assert_eq!(parsed.ir.reasoning_effort.as_deref(), Some(effort));
+        }
 
-        #[expect(clippy::expect_used, reason = "`xhigh` is constructed to be rejected")]
+        #[expect(
+            clippy::expect_used,
+            reason = "the non-string value is constructed to be rejected"
+        )]
         let error = parse(serde_json::json!({
             "model": "m",
             "messages": [{"role": "user", "content": "hi"}],
-            "reasoning_effort": "xhigh",
+            "reasoning_effort": 5,
         }))
-        .expect_err("`reasoning_effort: \"xhigh\"` must be rejected");
+        .expect_err("a non-string effort must be rejected as malformed");
 
-        assert_eq!(error.param.as_deref(), Some("reasoning_effort"));
-
-        assert_eq!(error.to_string(), "Unknown reasoning_effort `xhigh`");
+        assert!(
+            error.to_string().contains("invalid type"),
+            "a non-string effort fails on its type alone: {error}"
+        );
     }
 }

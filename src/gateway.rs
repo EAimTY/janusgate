@@ -9,7 +9,7 @@ use super::{
         openai_response,
     },
     ids,
-    ir::{self, InvalidRequest, IrEvent, IrRequest},
+    ir::{InvalidRequest, IrEvent, IrRequest},
     provider::{
         Credentials, ModelRouting, Provider, ProviderType, endpoints, http_body, oauth,
         oauth::Error as OAuthError, storage, storage::Error as StorageError,
@@ -87,9 +87,13 @@ pub(crate) type IrEventStream = Pin<Box<dyn Stream<Item = Result<IrEvent, Error>
 
 /// Resolves a public routing ID (README §3) to its enabled routing row.
 ///
+/// Zero special-casing: a `vanished` row resolves like any other, and its false three-input
+/// effective status lands it in the same 404 `model_not_found` outcome as an unknown or disabled
+/// model — same error classification, same message (README §6.5).
+///
 /// # Errors
 ///
-/// Returns [`Error::ModelNotFound`] for unknown or disabled models.
+/// Returns [`Error::ModelNotFound`] for unknown, disabled, or vanished models.
 pub(crate) async fn resolve_routing(
     database: &Database,
     public_id: &str,
@@ -117,21 +121,9 @@ pub(crate) async fn execute(
     mut ir: IrRequest,
     is_client_streaming: bool,
 ) -> Result<IrEventStream, Error> {
-    // Creation validates `thinking_levels_override` at the management API, so a malformed stored
-    // value is drift inside the database — an invariant violation — and never a fault of the
-    // requesting client.
-    let thinking_levels = routing
-        .model
-        .thinking_levels_override
-        .as_deref()
-        .map(|json| {
-            ir::parse_stored_thinking_levels_override(json)
-                .map_err(|message| Error::Internal { message })
-        })
-        .transpose()?;
-
-    ir.reasoning_effort =
-        ir::apply_thinking_levels(ir.reasoning_effort, thinking_levels.as_deref());
+    // The client's reasoning effort string needs no interpretation here: it is opaque end to end
+    // (README §6.4) — no stored override is consulted, nothing is filtered or clamped — and the
+    // renderers write it verbatim into the upstream's own parameter.
     ir.model = routing.model.upstream_id.clone();
 
     // Names the upstream in every error-level record the pump tasks emit. Which single site logs
@@ -158,7 +150,7 @@ pub(crate) async fn execute(
 
     debug!(
         "dispatching public model `{}` via {upstream_label} ({}, streaming: {})",
-        routing.model.id,
+        routing.model.public_id,
         upstream_format.as_str(),
         is_client_streaming
     );

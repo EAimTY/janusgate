@@ -308,13 +308,6 @@ pub(super) enum Error {
     /// Upstream model discovery failed.
     #[error(transparent)]
     Discovery(#[from] DiscoveryError),
-
-    /// A stored thinking-levels override is corrupt — database drift (README §7.1).
-    #[error("{detail}")]
-    StoredOverrideDrift {
-        /// The shared stored-override parser's drift detail.
-        detail: String,
-    },
 }
 
 /// The flat management error body every failed management request renders (README §7). It is part
@@ -395,8 +388,6 @@ impl Error {
                 | StorageError::Drift { .. }
                 | StorageError::Database(_) => ErrorCode::Internal,
             },
-
-            Self::StoredOverrideDrift { .. } => ErrorCode::Internal,
         }
     }
 
@@ -451,8 +442,7 @@ impl From<Error> for ErrorResponse {
                 StorageError::Busy { .. } | StorageError::Drift { .. } | StorageError::Database(_),
             )
             | Error::OAuth(OAuthError::Internal { .. })
-            | Error::Discovery(DiscoveryError::Internal { .. })
-            | Error::StoredOverrideDrift { .. } => INTERNAL_MESSAGE.to_string(),
+            | Error::Discovery(DiscoveryError::Internal { .. }) => INTERNAL_MESSAGE.to_string(),
 
             _ => error.to_string(),
         };
@@ -749,12 +739,6 @@ mod tests {
             ),
             (Error::UpstreamReportedNoModels, ErrorCode::UpstreamError),
             (
-                Error::StoredOverrideDrift {
-                    detail: "stored thinking_levels_override is invalid".to_string(),
-                },
-                ErrorCode::Internal,
-            ),
-            (
                 Error::from(JsonRejection::MissingJsonContentType(
                     MissingJsonContentType::default(),
                 )),
@@ -811,12 +795,6 @@ mod tests {
                 true,
             ),
             (Error::UpstreamReportedNoModels, false),
-            (
-                Error::StoredOverrideDrift {
-                    detail: "corrupt".to_string(),
-                },
-                false,
-            ),
         ];
 
         for (error, is_client_fault) in cases {
@@ -895,16 +873,5 @@ mod tests {
 
         assert_eq!(body.errno, ErrorCode::Conflict);
         assert_eq!(body.message, CONSTRAINT_MESSAGE);
-
-        let drift = Error::StoredOverrideDrift {
-            detail: "stored thinking_levels_override is invalid: unknown level `bogus`".to_string(),
-        };
-
-        assert!(drift.to_string().contains("unknown level"));
-
-        let body = ErrorResponse::from(drift);
-
-        assert_eq!(body.errno, ErrorCode::Internal);
-        assert_eq!(body.message, INTERNAL_MESSAGE);
     }
 }

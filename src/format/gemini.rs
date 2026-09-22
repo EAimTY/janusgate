@@ -363,9 +363,9 @@ struct GenerationConfig<'a> {
     #[serde(rename = "responseSchema", skip_serializing_if = "Option::is_none")]
     response_schema: Option<&'a Value>,
 
-    /// Thinking configuration, omitted when the request named no level.
+    /// Thinking configuration, omitted when the client sent no effort string.
     #[serde(rename = "thinkingConfig", skip_serializing_if = "Option::is_none")]
-    thinking_config: Option<ThinkingConfig>,
+    thinking_config: Option<ThinkingConfig<'a>>,
 }
 
 impl GenerationConfig<'_> {
@@ -381,12 +381,15 @@ impl GenerationConfig<'_> {
     }
 }
 
-/// Thinking configuration.
+/// Thinking configuration: the client's effort string verbatim in the `thinkingLevel` slot.
+///
+/// The gateway never renders a token budget (`thinkingBudget`), so reasoning control reaches only
+/// Gemini 3 generation and later models; a budget is not this gateway's to invent (README §6.4).
 #[derive(Debug, Serialize)]
-struct ThinkingConfig {
-    /// Token budget rendered from the canonical thinking level (README §6.4).
-    #[serde(rename = "thinkingBudget")]
-    thinking_budget: u32,
+struct ThinkingConfig<'a> {
+    /// Client's reasoning effort string, opaque and verbatim (README §6.4).
+    #[serde(rename = "thinkingLevel")]
+    thinking_level: &'a str,
 }
 
 /// Renders the bare GenerateContentRequest carried in the envelope `request` field or sent directly
@@ -514,8 +517,8 @@ fn render_generate_content_request(
         max_output_tokens: ir.max_output_tokens,
         response_mime_type,
         response_schema,
-        thinking_config: ir.reasoning_effort.map(|effort| ThinkingConfig {
-            thinking_budget: effort.to_thinking_budget(),
+        thinking_config: ir.reasoning_effort.as_deref().map(|effort| ThinkingConfig {
+            thinking_level: effort,
         }),
     };
 
@@ -1028,6 +1031,62 @@ mod tests {
     )]
     fn request_json(request: &GenerateContentRequest<'_>) -> Value {
         serde_json::to_value(request).expect("the rendered request serializes")
+    }
+
+    fn thinking_level_of(rendered: &Value) -> Option<&str> {
+        rendered
+            .get("generationConfig")
+            .and_then(|config| config.get("thinkingConfig"))
+            .and_then(|thinking| thinking.get("thinkingLevel"))
+            .and_then(Value::as_str)
+    }
+
+    /// Verifies the Gemini thinking slot of the verbatim-passthrough contract (README §6.4): any
+    /// client string — an unknown vocabulary value or the empty string — renders into
+    /// `thinkingConfig.thinkingLevel` exactly as sent, an absent effort renders no thinking
+    /// configuration at all, and no rendered body ever carries a token budget.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rendered slot diverges from the contract.
+    #[test]
+    fn renders_thinking_level_verbatim_and_never_a_budget() {
+        for effort in ["high", "xhigh", "ultra", ""] {
+            let ir = IrRequest {
+                model: "m".to_string(),
+                reasoning_effort: Some(effort.to_string()),
+                ..IrRequest::default()
+            };
+
+            #[expect(clippy::expect_used, reason = "the render is under test")]
+            let request = render_generate_content_request(&ir)
+                .expect("a request carrying an effort string always renders");
+            let rendered = request_json(&request);
+
+            assert_eq!(thinking_level_of(&rendered), Some(effort));
+            assert!(
+                !rendered.to_string().contains("thinkingBudget"),
+                "a token budget must never render"
+            );
+        }
+
+        let ir = IrRequest {
+            model: "m".to_string(),
+            ..IrRequest::default()
+        };
+
+        #[expect(clippy::expect_used, reason = "the render is under test")]
+        let request = render_generate_content_request(&ir)
+            .expect("a request without an effort string always renders");
+        let rendered = request_json(&request);
+
+        assert!(
+            rendered
+                .get("generationConfig")
+                .is_none_or(|config| config.get("thinkingConfig").is_none()),
+            "an absent effort renders no thinking configuration"
+        );
+        assert!(!rendered.to_string().contains("thinkingBudget"));
     }
 
     /// A turn whose upstream reported `MALFORMED_FUNCTION_CALL` is a failed
