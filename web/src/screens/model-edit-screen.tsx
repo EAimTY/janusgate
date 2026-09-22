@@ -11,7 +11,7 @@ import { describeCallFailure } from "/src/screens/failure";
 import { Button, ButtonLink, Switch } from "/src/ui/controls";
 import { EmptyState, Notice, type NoticeTone, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { ModelAliasFields } from "/src/ui/model-form";
+import { ModelIdOverrideFields } from "/src/ui/model-form";
 
 type ScreenNotice = {
     readonly tone: NoticeTone;
@@ -76,7 +76,8 @@ export function ModelEditScreen(props: {
             return;
         }
 
-        setNotice(null);
+        // A successful read keeps the notice: a save reports through it just
+        // before this reload runs, and only a new failure replaces it.
         setProviders(providersOutcome.status === "ok" ? providersOutcome.result.providers : []);
         setModels(modelsOutcome.status === "ok" ? modelsOutcome.result.models : []);
         setHasRead(true);
@@ -113,6 +114,17 @@ export function ModelEditScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
+            <Show when={notice()}>
+                {(current) => (
+                    <Notice
+                        tone={current().tone}
+                        title={current().title}
+                        detail={current().detail}
+                        fix={current().fix}
+                    />
+                )}
+            </Show>
+
             <Show when={isReading() && !hasRead() && notice() === null}>
                 <PageHeader
                     title="Edit model"
@@ -161,17 +173,6 @@ export function ModelEditScreen(props: {
                             backLabel="Model"
                         />
 
-                        <Show when={notice()}>
-                            {(current) => (
-                                <Notice
-                                    tone={current().tone}
-                                    title={current().title}
-                                    detail={current().detail}
-                                    fix={current().fix}
-                                />
-                            )}
-                        </Show>
-
                         <ModelSettingsForm
                             api={props.api}
                             provider={both.provider}
@@ -205,7 +206,7 @@ function ModelSettingsForm(props: {
     // inside that write.
     const [current, setCurrent] = createSignal(props.initialModel);
     const [isEnabled, setIsEnabled] = createSignal(current().is_enabled);
-    const [hasAlias, setHasAlias] = createSignal(current().id_override !== null);
+    const [hasIdOverride, setHasIdOverride] = createSignal(current().id_override !== null);
     const [idOverride, setIdOverride] = createSignal(current().id_override ?? "");
     const [isSaving, setIsSaving] = createSignal(false);
 
@@ -218,7 +219,7 @@ function ModelSettingsForm(props: {
     };
 
     const normalizedOverride = (): string | null =>
-        !hasAlias() || idOverride().trim() === "" ? null : idOverride().trim();
+        !hasIdOverride() || idOverride().trim() === "" ? null : idOverride().trim();
 
     /** Inline composition error for the override, shown where it was typed. */
     const overrideError = (): string | null => {
@@ -235,7 +236,7 @@ function ModelSettingsForm(props: {
 
     const revert = (): void => {
         setIsEnabled(current().is_enabled);
-        setHasAlias(current().id_override !== null);
+        setHasIdOverride(current().id_override !== null);
         setIdOverride(current().id_override ?? "");
     };
 
@@ -272,7 +273,7 @@ function ModelSettingsForm(props: {
         // the form's new truth.
         setCurrent(saved);
         setIsEnabled(saved.is_enabled);
-        setHasAlias(saved.id_override !== null);
+        setHasIdOverride(saved.id_override !== null);
         setIdOverride(saved.id_override ?? "");
         props.onNotice({
             tone: "ok",
@@ -304,13 +305,13 @@ function ModelSettingsForm(props: {
                     onToggle={setIsEnabled}
                 />
 
-                <ModelAliasFields
-                    hasAlias={hasAlias()}
-                    onHasAliasToggle={setHasAlias}
-                    alias={idOverride()}
-                    onAliasInput={setIdOverride}
+                <ModelIdOverrideFields
+                    hasIdOverride={hasIdOverride()}
+                    onHasIdOverrideToggle={setHasIdOverride}
+                    idOverride={idOverride()}
+                    onIdOverrideInput={setIdOverride}
                     composedId={composedId()}
-                    aliasError={overrideError()}
+                    idOverrideError={overrideError()}
                     isDisabled={isSaving()}
                 />
 

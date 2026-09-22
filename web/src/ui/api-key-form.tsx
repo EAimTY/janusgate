@@ -66,11 +66,22 @@ export function CopyButton(props: {
     );
 }
 
+/**
+ * The inline error for a serving key's name, shown where it was typed. The
+ * gateway's only name rule is non-empty (gateway README §7) — every
+ * non-empty value is accepted verbatim, whitespace included, so nothing is
+ * trimmed here: rejecting more than the gateway would block a legal name.
+ */
+export function apiKeyNameError(name: string): string | null {
+    return name === "" ? "Name cannot be empty." : null;
+}
+
 /** The human label every serving key carries; names need not be unique. */
 export function ApiKeyNameField(props: {
     readonly name: string;
     readonly onNameInput: (value: string) => void;
     readonly isDisabled?: boolean;
+    readonly error?: string | null | undefined;
 }): JSX.Element {
     return (
         <TextField
@@ -79,6 +90,7 @@ export function ApiKeyNameField(props: {
             onInput={props.onNameInput}
             isDisabled={props.isDisabled ?? false}
             isData={false}
+            error={props.error}
             hint="Which client holds this key."
         />
     );

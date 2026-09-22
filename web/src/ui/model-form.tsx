@@ -7,13 +7,13 @@ import { Switch, TextField } from "/src/ui/controls";
  * a hand-set name while it is on. An empty value while on is the same as
  * off — the composed ID stands.
  */
-export function ModelAliasFields(props: {
-    readonly hasAlias: boolean;
-    readonly onHasAliasToggle: (hasAlias: boolean) => void;
-    readonly alias: string;
-    readonly onAliasInput: (value: string) => void;
+export function ModelIdOverrideFields(props: {
+    readonly hasIdOverride: boolean;
+    readonly onHasIdOverrideToggle: (hasIdOverride: boolean) => void;
+    readonly idOverride: string;
+    readonly onIdOverrideInput: (value: string) => void;
     readonly composedId: string;
-    readonly aliasError?: string | null | undefined;
+    readonly idOverrideError?: string | null | undefined;
     readonly isDisabled?: boolean;
 }): JSX.Element {
     const offHint = (): string =>
@@ -25,20 +25,20 @@ export function ModelAliasFields(props: {
         <div class="flex flex-col gap-4">
             <Switch
                 label="Override the public ID"
-                hint={props.hasAlias ? "On: clients call the override below." : offHint()}
-                isOn={props.hasAlias}
+                hint={props.hasIdOverride ? "On: clients call the override below." : offHint()}
+                isOn={props.hasIdOverride}
                 onText="On"
                 offText="Off"
                 isDisabled={props.isDisabled ?? false}
-                onToggle={props.onHasAliasToggle}
+                onToggle={props.onHasIdOverrideToggle}
             />
-            <Show when={props.hasAlias}>
+            <Show when={props.hasIdOverride}>
                 <TextField
                     label="Public ID override"
-                    value={props.alias}
-                    onInput={props.onAliasInput}
+                    value={props.idOverride}
+                    onInput={props.onIdOverrideInput}
                     isDisabled={props.isDisabled ?? false}
-                    error={props.aliasError}
+                    error={props.idOverrideError}
                     hint="Replaces the composed ID. Renaming breaks clients on the old ID."
                 />
             </Show>

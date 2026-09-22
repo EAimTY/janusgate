@@ -5,7 +5,7 @@ import { compositionMessage, isBearerSecret } from "/src/management-api/identifi
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
-import { ApiKeyNameField, ApiKeySecretField } from "/src/ui/api-key-form";
+import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { Button, Switch } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -17,6 +17,9 @@ import { Card, CardHeader, PageHeader } from "/src/ui/layout";
  */
 export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [name, setName] = createSignal("");
+    // The name's error is stated only once the operator has typed into the
+    // field — a pristine form is not an error, an emptied name is.
+    const [hasNameInput, setHasNameInput] = createSignal(false);
     const [secret, setSecret] = createSignal("");
     const [isEnabled, setIsEnabled] = createSignal(true);
     const [isCreating, setIsCreating] = createSignal(false);
@@ -26,14 +29,17 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
         readonly fix: string | null;
     } | null>(null);
 
+    /** Inline error for the name, shown where it was typed. */
+    const nameError = (): string | null => (hasNameInput() ? apiKeyNameError(name()) : null);
+
     /** Inline composition error for the secret, shown where it was typed. */
     const secretError = (): string | null =>
         secret() === "" || isBearerSecret(secret()) ? null : compositionMessage("Key");
 
-    const canCreate = (): boolean => isBearerSecret(secret()) && !isCreating();
+    const canCreate = (): boolean => name() !== "" && isBearerSecret(secret()) && !isCreating();
 
     const create = async (): Promise<void> => {
-        if (isCreating() || !isBearerSecret(secret())) {
+        if (isCreating() || name() === "" || !isBearerSecret(secret())) {
             return;
         }
 
@@ -113,8 +119,12 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                     />
                     <ApiKeyNameField
                         name={name()}
-                        onNameInput={setName}
+                        onNameInput={(value) => {
+                            setHasNameInput(true);
+                            setName(value);
+                        }}
                         isDisabled={isCreating()}
+                        error={nameError()}
                     />
                     <ApiKeySecretField
                         secret={secret()}

@@ -8,7 +8,7 @@ import { performManagementCall } from "/src/management-api/outcome";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
-import { ApiKeyNameField, ApiKeySecretField } from "/src/ui/api-key-form";
+import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { Button, ButtonLink, Switch } from "/src/ui/controls";
 import { EmptyState, Notice, type NoticeTone, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -63,7 +63,8 @@ export function ApiKeyEditScreen(props: {
             return;
         }
 
-        setNotice(null);
+        // A successful read keeps the notice: a save reports through it just
+        // before this reload runs, and only a new failure replaces it.
         setKeys(outcome.result.api_keys);
         setHasRead(true);
         reportRefresh();
@@ -94,6 +95,17 @@ export function ApiKeyEditScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
+            <Show when={notice()}>
+                {(current) => (
+                    <Notice
+                        tone={current().tone}
+                        title={current().title}
+                        detail={current().detail}
+                        fix={current().fix}
+                    />
+                )}
+            </Show>
+
             <Show when={isReading() && !hasRead() && notice() === null}>
                 <PageHeader
                     title="Edit API key"
@@ -133,17 +145,6 @@ export function ApiKeyEditScreen(props: {
                             backHref={hrefs.apiKeyDetail(row.id)}
                             backLabel="API key"
                         />
-
-                        <Show when={notice()}>
-                            {(current) => (
-                                <Notice
-                                    tone={current().tone}
-                                    title={current().title}
-                                    detail={current().detail}
-                                    fix={current().fix}
-                                />
-                            )}
-                        </Show>
 
                         <SettingsCard
                             api={props.api}
@@ -189,11 +190,16 @@ function SettingsCard(props: {
         name() !== props.apiKey.name ||
         secret() !== props.apiKey.key;
 
+    /** Inline error for the name, shown where it was typed. The stored name
+     * is non-empty by contract, so an empty value here is the operator's
+     * doing. */
+    const nameError = (): string | null => apiKeyNameError(name());
+
     /** Inline composition error for the secret, shown where it was typed. */
     const secretError = (): string | null =>
         secret() === "" || isBearerSecret(secret()) ? null : compositionMessage("Key");
 
-    const canSave = (): boolean => isDirty() && isBearerSecret(secret());
+    const canSave = (): boolean => isDirty() && nameError() === null && isBearerSecret(secret());
 
     const revert = (): void => {
         setIsEnabled(props.apiKey.is_enabled);
@@ -268,6 +274,7 @@ function SettingsCard(props: {
                     name={name()}
                     onNameInput={setName}
                     isDisabled={isSaving()}
+                    error={nameError()}
                 />
                 <ApiKeySecretField
                     secret={secret()}

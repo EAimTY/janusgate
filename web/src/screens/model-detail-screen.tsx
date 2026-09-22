@@ -11,6 +11,7 @@ import { EntityUsageCard } from "/src/screens/usage-stats";
 import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { modelDiscoveryBadge, modelServingBadge } from "/src/ui/models-table";
 
@@ -159,6 +160,46 @@ export function ModelDetailScreen(props: {
     );
 }
 
+/**
+ * The vanished row's recovery paths, each a real link: discovery runs on the
+ * owning provider's page, and claiming back is the Create model page opened
+ * with this model's provider fixed. The same warn notice `Notice` renders,
+ * with the two recovery actions linked where they are named.
+ */
+function VanishedModelNotice(props: { readonly providerId: number }): JSX.Element {
+    return (
+        <div
+            class="flex items-start gap-2.5 rounded-xl border border-warn/30 bg-warn-soft px-3.5 py-3 text-ink"
+            role="status"
+        >
+            <Glyph
+                name="alert"
+                class="mt-0.5 shrink-0"
+            />
+            <div class="min-w-0 flex-1">
+                <p class="text-[13.5px] font-medium">The upstream no longer reports this model.</p>
+                <p class="mt-1 break-words text-ink-dim">
+                    It serves nothing meanwhile.{" "}
+                    <AppLink
+                        href={hrefs.providerDetail(props.providerId)}
+                        class="font-medium text-accent hover:text-accent-strong"
+                    >
+                        Discover again
+                    </AppLink>
+                    {" when the upstream lists it, or "}
+                    <AppLink
+                        href={hrefs.modelNew(props.providerId)}
+                        class="font-medium text-accent hover:text-accent-strong"
+                    >
+                        claim it back from the Create model page
+                    </AppLink>
+                    {"."}
+                </p>
+            </div>
+        </div>
+    );
+}
+
 function ModelFacts(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse | null;
@@ -194,12 +235,7 @@ function ModelFacts(props: {
             </PageHeader>
 
             <Show when={props.model.discovery_state === "vanished"}>
-                <Notice
-                    tone="warn"
-                    title="The upstream no longer reports this model."
-                    detail="It serves nothing meanwhile. Discover again when the upstream lists it, or claim it back from the Create model page."
-                    fix={null}
-                />
+                <VanishedModelNotice providerId={props.model.provider_id} />
             </Show>
 
             <Card>

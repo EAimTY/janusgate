@@ -79,6 +79,17 @@ export function ApiKeyDetailScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
+            <Show when={failure()}>
+                {(current) => (
+                    <Notice
+                        tone="bad"
+                        title={current().title}
+                        detail={current().detail}
+                        fix={current().fix}
+                    />
+                )}
+            </Show>
+
             <Show when={isReading() && !hasRead() && failure() === null}>
                 <PageHeader
                     title="API key"
@@ -126,17 +137,6 @@ export function ApiKeyDetailScreen(props: {
                             />
                             <ButtonLink href={hrefs.apiKeyEdit(row.id)}>Edit API key</ButtonLink>
                         </PageHeader>
-
-                        <Show when={failure()}>
-                            {(current) => (
-                                <Notice
-                                    tone="bad"
-                                    title={current().title}
-                                    detail={current().detail}
-                                    fix={current().fix}
-                                />
-                            )}
-                        </Show>
 
                         <Card>
                             <CardHeader title="Secret" />

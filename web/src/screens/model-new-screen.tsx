@@ -11,7 +11,7 @@ import { describeCallFailure } from "/src/screens/failure";
 import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { ModelAliasFields } from "/src/ui/model-form";
+import { ModelIdOverrideFields } from "/src/ui/model-form";
 
 /**
  * One creation page for a manually added model. When opened from a
@@ -169,7 +169,7 @@ function ModelCreateForm(props: {
     const [providerId, setProviderId] = createSignal(initialSelection());
     const [upstreamId, setUpstreamId] = createSignal("");
     const [isEnabled, setIsEnabled] = createSignal(true);
-    const [hasAlias, setHasAlias] = createSignal(false);
+    const [hasIdOverride, setHasIdOverride] = createSignal(false);
     const [idOverride, setIdOverride] = createSignal("");
     const [isCreating, setIsCreating] = createSignal(false);
     const [failure, setFailure] = createSignal<{
@@ -185,7 +185,7 @@ function ModelCreateForm(props: {
     const trimmedUpstream = (): string => upstreamId().trim();
 
     const normalizedOverride = (): string | null =>
-        !hasAlias() || idOverride().trim() === "" ? null : idOverride().trim();
+        !hasIdOverride() || idOverride().trim() === "" ? null : idOverride().trim();
 
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
     const upstreamError = (): string | null =>
@@ -347,13 +347,13 @@ function ModelCreateForm(props: {
                         onToggle={setIsEnabled}
                     />
 
-                    <ModelAliasFields
-                        hasAlias={hasAlias()}
-                        onHasAliasToggle={setHasAlias}
-                        alias={idOverride()}
-                        onAliasInput={setIdOverride}
+                    <ModelIdOverrideFields
+                        hasIdOverride={hasIdOverride()}
+                        onHasIdOverrideToggle={setHasIdOverride}
+                        idOverride={idOverride()}
+                        onIdOverrideInput={setIdOverride}
                         composedId={composedId()}
-                        aliasError={overrideError()}
+                        idOverrideError={overrideError()}
                         isDisabled={isCreating()}
                     />
 
