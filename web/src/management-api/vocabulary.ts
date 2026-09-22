@@ -1,11 +1,13 @@
 import { ContractViolationError } from "/src/management-api/errors";
 
-import {
-    type OAuthProviderType,
-    type ProviderResponse,
-    type ProviderType,
-    THINKING_LEVEL_ORDER,
-    type ThinkingLevel,
+import type {
+    ApiLogEndpointType,
+    ApiLogOutcome,
+    DiscoveryState,
+    OAuthProviderType,
+    ProviderResponse,
+    ProviderType,
+    UsageGroupBy,
 } from "/src/management-api/generated/v0";
 
 export type VocabularyOption<TValue extends string> = {
@@ -85,27 +87,140 @@ export function isOAuthProviderRow(provider: ProviderResponse): provider is Extr
     return findOAuthProviderType(provider.type) !== null;
 }
 
-export function findThinkingLevel(value: unknown): ThinkingLevel | null {
-    const text = String(value);
+const DISCOVERY_STATE_LABELS: Record<DiscoveryState, string> = {
+    discovered: "Discovered",
+    vanished: "Vanished",
+    manual: "Manual",
+};
 
-    for (const level of THINKING_LEVEL_ORDER) {
-        if (level === text) {
-            return level;
-        }
-    }
+/**
+ * The discovery lifecycle states as options; the record type is exhaustive,
+ * so a state added to the generated union fails to compile until it is
+ * listed here.
+ */
+export const DISCOVERY_STATE_OPTIONS: ReadonlyArray<VocabularyOption<DiscoveryState>> =
+    Object.entries(DISCOVERY_STATE_LABELS).map(([value, label]) => ({
+        value: value as DiscoveryState,
+        label,
+    }));
 
-    return null;
+/** The label a model row's own `discovery_state` is presented under. */
+export function discoveryStateLabel(state: DiscoveryState): string {
+    return DISCOVERY_STATE_LABELS[state];
 }
 
-/** Narrows a wire value that must be one of the canonical thinking levels. */
-export function parseThinkingLevel(value: unknown, context: string): ThinkingLevel {
-    const level = findThinkingLevel(value);
+export function findDiscoveryState(value: unknown): DiscoveryState | null {
+    return findOption(DISCOVERY_STATE_OPTIONS, value);
+}
 
-    if (level === null) {
-        throw new ContractViolationError(
-            `${context} is not a canonical thinking level: ${String(value)}`,
-        );
+/** Narrows a wire value that must be one of the discovery lifecycle states. */
+export function parseDiscoveryState(value: unknown, context: string): DiscoveryState {
+    const state = findDiscoveryState(value);
+
+    if (state === null) {
+        throw new ContractViolationError(`${context} is not a discovery state: ${String(value)}`);
     }
 
-    return level;
+    return state;
+}
+
+const API_LOG_OUTCOME_LABELS: Record<ApiLogOutcome, string> = {
+    completed: "Completed",
+    client_aborted: "Client aborted",
+    upstream_error: "Upstream error",
+    internal: "Internal",
+};
+
+/** The recorded request outcomes as options; the record type is exhaustive. */
+export const API_LOG_OUTCOME_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogOutcome>> =
+    Object.entries(API_LOG_OUTCOME_LABELS).map(([value, label]) => ({
+        value: value as ApiLogOutcome,
+        label,
+    }));
+
+/** The label one accounting row's own `outcome` is presented under. */
+export function apiLogOutcomeLabel(outcome: ApiLogOutcome): string {
+    return API_LOG_OUTCOME_LABELS[outcome];
+}
+
+export function findApiLogOutcome(value: unknown): ApiLogOutcome | null {
+    return findOption(API_LOG_OUTCOME_OPTIONS, value);
+}
+
+/** Narrows a wire value that must be one of the recorded request outcomes. */
+export function parseApiLogOutcome(value: unknown, context: string): ApiLogOutcome {
+    const outcome = findApiLogOutcome(value);
+
+    if (outcome === null) {
+        throw new ContractViolationError(`${context} is not a request outcome: ${String(value)}`);
+    }
+
+    return outcome;
+}
+
+const API_LOG_ENDPOINT_LABELS: Record<ApiLogEndpointType, string> = {
+    openai_chat_completions: "Chat Completions",
+    openai_responses: "Responses",
+};
+
+/** The outward endpoints as options; the record type is exhaustive. */
+export const API_LOG_ENDPOINT_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogEndpointType>> =
+    Object.entries(API_LOG_ENDPOINT_LABELS).map(([value, label]) => ({
+        value: value as ApiLogEndpointType,
+        label,
+    }));
+
+/** The label one accounting row's own `endpoint_type` is presented under. */
+export function apiLogEndpointLabel(endpoint: ApiLogEndpointType): string {
+    return API_LOG_ENDPOINT_LABELS[endpoint];
+}
+
+export function findApiLogEndpointType(value: unknown): ApiLogEndpointType | null {
+    return findOption(API_LOG_ENDPOINT_OPTIONS, value);
+}
+
+/** Narrows a wire value that must be one of the outward endpoints. */
+export function parseApiLogEndpointType(value: unknown, context: string): ApiLogEndpointType {
+    const endpoint = findApiLogEndpointType(value);
+
+    if (endpoint === null) {
+        throw new ContractViolationError(`${context} is not an endpoint type: ${String(value)}`);
+    }
+
+    return endpoint;
+}
+
+const USAGE_GROUP_BY_LABELS: Record<UsageGroupBy, string> = {
+    day: "Day",
+    model: "Model",
+    provider: "Provider",
+    api_key: "API key",
+};
+
+/** The aggregation dimensions as options; the record type is exhaustive. */
+export const USAGE_GROUP_BY_OPTIONS: ReadonlyArray<VocabularyOption<UsageGroupBy>> = Object.entries(
+    USAGE_GROUP_BY_LABELS,
+).map(([value, label]) => ({
+    value: value as UsageGroupBy,
+    label,
+}));
+
+/** The label a `usage:query` bucketing dimension is presented under. */
+export function usageGroupByLabel(groupBy: UsageGroupBy): string {
+    return USAGE_GROUP_BY_LABELS[groupBy];
+}
+
+export function findUsageGroupBy(value: unknown): UsageGroupBy | null {
+    return findOption(USAGE_GROUP_BY_OPTIONS, value);
+}
+
+/** Narrows a wire value that must be one of the aggregation dimensions. */
+export function parseUsageGroupBy(value: unknown, context: string): UsageGroupBy {
+    const groupBy = findUsageGroupBy(value);
+
+    if (groupBy === null) {
+        throw new ContractViolationError(`${context} is not a usage grouping: ${String(value)}`);
+    }
+
+    return groupBy;
 }

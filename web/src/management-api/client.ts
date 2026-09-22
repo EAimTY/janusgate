@@ -14,6 +14,7 @@ import {
     type CreateModelRequest,
     type CreateProviderRequest,
     type DeleteApiKeyRequest,
+    type DeleteModelRequest,
     type DeleteProviderRequest,
     type DiscoverModelsRequest,
     type DiscoverModelsResponse,
@@ -23,9 +24,13 @@ import {
     type ListModelsResponse,
     type ListProvidersRequest,
     type ListProvidersResponse,
+    type ListUsageRequest,
+    type ListUsageResponse,
     type ModelEnvelope,
     type Path,
     type ProviderEnvelope,
+    type QueryUsageRequest,
+    type QueryUsageResponse,
     type ReauthorizeProviderRequest,
     type ReauthorizeProviderResponse,
     type StartProviderOauthRequest,
@@ -43,8 +48,10 @@ import {
     parseListApiKeysResponse,
     parseListModelsResponse,
     parseListProvidersResponse,
+    parseListUsageResponse,
     parseModelEnvelope,
     parseProviderEnvelope,
+    parseQueryUsageResponse,
     parseReauthorizeProviderResponse,
     parseStartProviderOauthResponse,
 } from "/src/management-api/validation";
@@ -97,6 +104,15 @@ import {
         request: CreateModelRequest,
         signal?: AbortSignal,
     ) => Promise<ModelEnvelope>;
+    readonly deleteModel: (request: DeleteModelRequest, signal?: AbortSignal) => Promise<void>;
+    readonly listUsage: (
+        request: ListUsageRequest,
+        signal?: AbortSignal,
+    ) => Promise<ListUsageResponse>;
+    readonly queryUsage: (
+        request: QueryUsageRequest,
+        signal?: AbortSignal,
+    ) => Promise<QueryUsageResponse>;
     readonly listApiKeys: (signal?: AbortSignal) => Promise<ListApiKeysResponse>;
     readonly createApiKey: (
         request: CreateApiKeyRequest,
@@ -282,6 +298,13 @@ export function createManagementApi(
             decodeResponse(await post("/models:update", request, signal), parseModelEnvelope),
         createModel: async (request, signal) =>
             decodeResponse(await post("/models:create", request, signal), parseModelEnvelope),
+        deleteModel: async (request, signal) => {
+            decodeResponse(await post("/models:delete", request, signal), parseEmptyResponse);
+        },
+        listUsage: async (request, signal) =>
+            decodeResponse(await post("/usage:list", request, signal), parseListUsageResponse),
+        queryUsage: async (request, signal) =>
+            decodeResponse(await post("/usage:query", request, signal), parseQueryUsageResponse),
         listApiKeys: async (signal) =>
             decodeResponse(
                 await post("/api-keys:list", emptyRequest, signal),

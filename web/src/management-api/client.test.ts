@@ -236,15 +236,27 @@ describe("createManagementApi", () => {
             if (call.url.endsWith("/models:create")) {
                 return jsonResponse(200, {
                     model: {
+                        id: 9,
                         provider_id: 4,
                         provider: "local",
                         upstream_id: "gpt-4o",
-                        id: "local/gpt-4o",
+                        public_id: "local/gpt-4o",
                         id_override: null,
                         is_enabled: true,
-                        is_effectively_enabled: true,
-                        thinking_levels_override: null,
+                        discovery_state: "discovered",
                     },
+                });
+            }
+
+            if (call.url.endsWith("/usage:list")) {
+                return jsonResponse(200, {
+                    api_logs: [],
+                });
+            }
+
+            if (call.url.endsWith("/usage:query")) {
+                return jsonResponse(200, {
+                    buckets: [],
                 });
             }
 
@@ -270,7 +282,9 @@ describe("createManagementApi", () => {
             upstream_id: "gpt-4o",
             id_override: null,
             is_enabled: true,
-            thinking_levels_override: null,
+        });
+        await api.deleteModel({
+            model_id: 9,
         });
         await api.createApiKey({
             name: "service-a",
@@ -286,13 +300,51 @@ describe("createManagementApi", () => {
         await api.deleteApiKey({
             api_key_id: 7,
         });
+        await api.listUsage({});
+        await api.queryUsage({
+            group_by: "day",
+        });
 
         expect(calls.map((call) => call.url)).toEqual([
             "http://127.0.0.1:47182/management-api/v0/api-keys:list",
             "http://127.0.0.1:47182/management-api/v0/models:create",
+            "http://127.0.0.1:47182/management-api/v0/models:delete",
             "http://127.0.0.1:47182/management-api/v0/api-keys:create",
             "http://127.0.0.1:47182/management-api/v0/api-keys:update",
             "http://127.0.0.1:47182/management-api/v0/api-keys:delete",
+            "http://127.0.0.1:47182/management-api/v0/usage:list",
+            "http://127.0.0.1:47182/management-api/v0/usage:query",
+        ]);
+
+        expect(calls.map((call) => JSON.parse(String(call.init.body)))).toEqual([
+            {},
+            {
+                provider_id: 4,
+                upstream_id: "gpt-4o",
+                id_override: null,
+                is_enabled: true,
+            },
+            {
+                model_id: 9,
+            },
+            {
+                name: "service-a",
+                key: "sk-live",
+                is_enabled: true,
+            },
+            {
+                api_key_id: 7,
+                name: "service-a",
+                key: "sk-live",
+                is_enabled: false,
+            },
+            {
+                api_key_id: 7,
+            },
+            {},
+            {
+                group_by: "day",
+            },
         ]);
     });
 

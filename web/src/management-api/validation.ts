@@ -3,6 +3,7 @@ import { ContractViolationError } from "/src/management-api/errors";
 import {
     type ApiKeyEnvelope,
     type ApiKeyResponse,
+    type ApiLogResponse,
     type DiscoverModelsResponse,
     type EmptyResponse,
     ErrorCode,
@@ -10,16 +11,23 @@ import {
     type ListApiKeysResponse,
     type ListModelsResponse,
     type ListProvidersResponse,
+    type ListUsageResponse,
     type ModelEnvelope,
     type ModelResponse,
     type ProviderEnvelope,
     type ProviderResponse,
+    type QueryUsageResponse,
     type ReauthorizeProviderResponse,
     type StartProviderOauthResponse,
-    type ThinkingLevel,
+    type UsageBucket,
+    type UsageBucketKey,
 } from "/src/management-api/generated/v0";
 
-import { parseThinkingLevel } from "/src/management-api/vocabulary";
+import {
+    parseApiLogEndpointType,
+    parseApiLogOutcome,
+    parseDiscoveryState,
+} from "/src/management-api/vocabulary";
 
 /**
  * Response validation (README §4.6): every management response enters the app
@@ -94,13 +102,16 @@ function expectNullableInteger(value: unknown, context: string): number | null {
     return value;
 }
 
-function expectThinkingLevelsOverride(value: unknown, context: string): ThinkingLevel[] | null {
-    if (value === null) {
-        return null;
+function expectBucketKey(value: unknown, context: string): UsageBucketKey {
+    if (typeof value === "string") {
+        return value;
     }
 
-    const entries = expectArray(value, context);
-    return entries.map((entry, index) => parseThinkingLevel(entry, `${context}[${index}]`));
+    if (typeof value === "number" && Number.isInteger(value)) {
+        return value;
+    }
+
+    throw new ContractViolationError(`${context} must be a string or an integer`);
 }
 
 /** One provider row; the union is discriminated by the restated `type`. */
@@ -180,27 +191,102 @@ export function parseProviderResponse(value: unknown, context: string): Provider
     }
 }
 
-/** One model row, including the two nullable mirror columns. */
+/**
+ * One model row: its never-recycled row identifier, its routing string, and
+ * its own inputs — the nullable mirror column, the serving switch, the
+ * discovery state. The effective verdict is never on the wire (rule 7).
+ */
 export function parseModelResponse(value: unknown, context: string): ModelResponse {
     const record = expectRecord(value, context);
 
     return {
+        id: expectInteger(Reflect.get(record, "id"), `${context}.id`),
         provider_id: expectInteger(Reflect.get(record, "provider_id"), `${context}.provider_id`),
         provider: expectString(Reflect.get(record, "provider"), `${context}.provider`),
         upstream_id: expectString(Reflect.get(record, "upstream_id"), `${context}.upstream_id`),
-        id: expectString(Reflect.get(record, "id"), `${context}.id`),
+        public_id: expectString(Reflect.get(record, "public_id"), `${context}.public_id`),
         id_override: expectNullableString(
             Reflect.get(record, "id_override"),
             `${context}.id_override`,
         ),
         is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
-        is_effectively_enabled: expectBoolean(
-            Reflect.get(record, "is_effectively_enabled"),
-            `${context}.is_effectively_enabled`,
+        discovery_state: parseDiscoveryState(
+            Reflect.get(record, "discovery_state"),
+            `${context}.discovery_state`,
         ),
-        thinking_levels_override: expectThinkingLevelsOverride(
-            Reflect.get(record, "thinking_levels_override"),
-            `${context}.thinking_levels_override`,
+    };
+}
+
+/**
+ * One accounting row, verbatim: the table's own fifteen columns, ids and
+ * numeric facts only — no name rides along (rule 7).
+ */
+export function parseApiLogResponse(value: unknown, context: string): ApiLogResponse {
+    const record = expectRecord(value, context);
+
+    return {
+        id: expectInteger(Reflect.get(record, "id"), `${context}.id`),
+        started_at: expectInteger(Reflect.get(record, "started_at"), `${context}.started_at`),
+        api_key_id: expectInteger(Reflect.get(record, "api_key_id"), `${context}.api_key_id`),
+        provider_id: expectInteger(Reflect.get(record, "provider_id"), `${context}.provider_id`),
+        model_id: expectInteger(Reflect.get(record, "model_id"), `${context}.model_id`),
+        endpoint_type: parseApiLogEndpointType(
+            Reflect.get(record, "endpoint_type"),
+            `${context}.endpoint_type`,
+        ),
+        is_stream: expectBoolean(Reflect.get(record, "is_stream"), `${context}.is_stream`),
+        http_status: expectNullableInteger(
+            Reflect.get(record, "http_status"),
+            `${context}.http_status`,
+        ),
+        outcome: parseApiLogOutcome(Reflect.get(record, "outcome"), `${context}.outcome`),
+        duration: expectInteger(Reflect.get(record, "duration"), `${context}.duration`),
+        input_tokens: expectNullableInteger(
+            Reflect.get(record, "input_tokens"),
+            `${context}.input_tokens`,
+        ),
+        output_tokens: expectNullableInteger(
+            Reflect.get(record, "output_tokens"),
+            `${context}.output_tokens`,
+        ),
+        cached_tokens: expectNullableInteger(
+            Reflect.get(record, "cached_tokens"),
+            `${context}.cached_tokens`,
+        ),
+        cache_write_tokens: expectNullableInteger(
+            Reflect.get(record, "cache_write_tokens"),
+            `${context}.cache_write_tokens`,
+        ),
+        reasoning_tokens: expectNullableInteger(
+            Reflect.get(record, "reasoning_tokens"),
+            `${context}.reasoning_tokens`,
+        ),
+    };
+}
+
+/** One aggregation bucket: the grouping key and the log's own numeric sums. */
+export function parseUsageBucket(value: unknown, context: string): UsageBucket {
+    const record = expectRecord(value, context);
+
+    return {
+        key: expectBucketKey(Reflect.get(record, "key"), `${context}.key`),
+        requests: expectInteger(Reflect.get(record, "requests"), `${context}.requests`),
+        input_tokens: expectInteger(Reflect.get(record, "input_tokens"), `${context}.input_tokens`),
+        output_tokens: expectInteger(
+            Reflect.get(record, "output_tokens"),
+            `${context}.output_tokens`,
+        ),
+        cached_tokens: expectInteger(
+            Reflect.get(record, "cached_tokens"),
+            `${context}.cached_tokens`,
+        ),
+        cache_write_tokens: expectInteger(
+            Reflect.get(record, "cache_write_tokens"),
+            `${context}.cache_write_tokens`,
+        ),
+        reasoning_tokens: expectInteger(
+            Reflect.get(record, "reasoning_tokens"),
+            `${context}.reasoning_tokens`,
         ),
     };
 }
@@ -244,6 +330,28 @@ export function parseModelEnvelope(value: unknown): ModelEnvelope {
 
     return {
         model: parseModelResponse(Reflect.get(record, "model"), "response.model"),
+    };
+}
+
+export function parseListUsageResponse(value: unknown): ListUsageResponse {
+    const record = expectRecord(value, "response");
+    const apiLogs = expectArray(Reflect.get(record, "api_logs"), "response.api_logs");
+
+    return {
+        api_logs: apiLogs.map((entry, index) =>
+            parseApiLogResponse(entry, `response.api_logs[${index}]`),
+        ),
+    };
+}
+
+export function parseQueryUsageResponse(value: unknown): QueryUsageResponse {
+    const record = expectRecord(value, "response");
+    const buckets = expectArray(Reflect.get(record, "buckets"), "response.buckets");
+
+    return {
+        buckets: buckets.map((entry, index) =>
+            parseUsageBucket(entry, `response.buckets[${index}]`),
+        ),
     };
 }
 

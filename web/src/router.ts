@@ -3,9 +3,10 @@ import { type Accessor, createSignal } from "solid-js";
 /**
  * The client-side routes. Each page does one job: the overview reads the
  * gateway's health, the providers pages administer providers, the models
- * pages administer models, and the api-keys pages administer serving keys.
- * The OAuth flows are steps inside the provider creation and reauthorization
- * forms, not destinations of their own.
+ * pages administer models, the api-keys pages administer serving keys, and
+ * the usage pages read request accounting. The OAuth flows are steps inside
+ * the provider creation and reauthorization forms, not destinations of their
+ * own.
  */
 export type AppRoute =
     | {
@@ -31,8 +32,7 @@ export type AppRoute =
       }
     | {
           readonly name: "modelDetail";
-          readonly providerId: number;
-          readonly upstreamId: string;
+          readonly modelId: number;
       }
     | {
           readonly name: "apiKeys";
@@ -43,6 +43,12 @@ export type AppRoute =
     | {
           readonly name: "apiKeyDetail";
           readonly apiKeyId: number;
+      }
+    | {
+          readonly name: "usage";
+      }
+    | {
+          readonly name: "usageQuery";
       }
     | {
           readonly name: "notFound";
@@ -63,11 +69,12 @@ export const hrefs = {
         providerFilter === null ? "/models" : `/models?provider=${providerFilter}`,
     modelNew: (providerFilter: number | null): string =>
         providerFilter === null ? "/models/new" : `/models/new?provider=${providerFilter}`,
-    modelDetail: (providerId: number, upstreamId: string): string =>
-        `/models/${providerId}/${encodeURIComponent(upstreamId)}`,
+    modelDetail: (modelId: number): string => `/models/${modelId}`,
     apiKeys: (): string => "/api-keys",
     apiKeyNew: (): string => "/api-keys/new",
     apiKeyDetail: (apiKeyId: number): string => `/api-keys/${apiKeyId}`,
+    usage: (): string => "/usage",
+    usageQuery: (): string => "/usage/query",
 } as const;
 
 /**
@@ -85,20 +92,6 @@ export function parseRowIdentifier(value: string | null): number | null {
 
 function readQueryParameter(search: string, name: string): string | null {
     return new URLSearchParams(search).get(name);
-}
-
-/** Reads an upstream ID out of the path's tail; anything blank is absent. */
-function parseUpstreamId(segments: ReadonlyArray<string>): string | null {
-    const joined = segments.join("/");
-
-    let decoded: string;
-    try {
-        decoded = decodeURIComponent(joined);
-    } catch {
-        return null;
-    }
-
-    return decoded === "" ? null : decoded;
 }
 
 export function matchAppRoute(pathname: string, search: string): AppRoute {
@@ -179,22 +172,30 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
               };
     }
 
-    const modelMatch = /^\/models\/([^/]+)\/(.+)$/.exec(normalizedPath);
+    if (normalizedPath === "/usage") {
+        return {
+            name: "usage",
+        };
+    }
+
+    if (normalizedPath === "/usage/query") {
+        return {
+            name: "usageQuery",
+        };
+    }
+
+    const modelMatch = /^\/models\/([^/]+)$/.exec(normalizedPath);
 
     if (modelMatch !== null) {
-        const providerId = parseRowIdentifier(modelMatch[1] ?? null);
-        const upstreamId = parseUpstreamId([
-            modelMatch[2] ?? "",
-        ]);
+        const modelId = parseRowIdentifier(modelMatch[1] ?? null);
 
-        return providerId === null || upstreamId === null
+        return modelId === null
             ? {
                   name: "notFound",
               }
             : {
                   name: "modelDetail",
-                  providerId,
-                  upstreamId,
+                  modelId,
               };
     }
 

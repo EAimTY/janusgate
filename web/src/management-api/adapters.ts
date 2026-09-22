@@ -1,13 +1,11 @@
-import {
-    type ApiKeyResponse,
-    type CreateModelRequest,
-    type ModelResponse,
-    type ProviderResponse,
-    THINKING_LEVEL_ORDER,
-    type ThinkingLevel,
-    type UpdateApiKeyRequest,
-    type UpdateModelRequest,
-    type UpdateProviderRequest,
+import type {
+    ApiKeyResponse,
+    CreateModelRequest,
+    ModelResponse,
+    ProviderResponse,
+    UpdateApiKeyRequest,
+    UpdateModelRequest,
+    UpdateProviderRequest,
 } from "/src/management-api/generated/v0";
 
 /**
@@ -103,34 +101,30 @@ export function toUpdateProviderRequest(
 }
 
 /**
- * Read-modify-write edits for `models:update` (README §4.5). The two nullable
- * mirror columns are stated explicitly — `null` is the no-override state — so
- * an edit that clears an override sends `null` rather than omitting the field.
+ * Read-modify-write edits for `models:update` (README §4.5): the row's two
+ * writable columns. The nullable mirror column is stated explicitly — `null`
+ * is the no-override state — so an edit that clears an override sends `null`
+ * rather than omitting the field. `discovery_state` is never an edit: this
+ * route cannot restore a vanished row.
  */
 export type ModelEdits = {
     readonly id_override?: string | null;
     readonly is_enabled?: boolean;
-    readonly thinking_levels_override?: ThinkingLevel[] | null;
 };
 
 /**
  * Builds one `models:update` request from a listed row and the changed
- * overrides. The row is addressed by its (`provider_id`, `upstream_id`) pair;
- * its derived public `id` is never part of a request.
+ * columns. The row is addressed by its never-recycled row identifier; its
+ * natural key and its derived public ID are never part of a request.
  */
 export function toUpdateModelRequest(
     model: ModelResponse,
     edits: ModelEdits = {},
 ): UpdateModelRequest {
     return {
-        provider_id: model.provider_id,
-        upstream_id: model.upstream_id,
+        model_id: model.id,
         id_override: edits.id_override === undefined ? model.id_override : edits.id_override,
         is_enabled: edits.is_enabled ?? model.is_enabled,
-        thinking_levels_override:
-            edits.thinking_levels_override === undefined
-                ? model.thinking_levels_override
-                : canonicalizeThinkingLevels(edits.thinking_levels_override),
     };
 }
 
@@ -163,19 +157,20 @@ export function toUpdateApiKeyRequest(
 }
 
 /**
- * Initial overrides for `models:create`: the same mirror columns `models:update` carries — `null`
- * is the no-override state — addressed by a fresh (`provider_id`, `upstream_id`) pair instead of an
- * existing row.
+ * Initial state for `models:create`: the two writable columns
+ * `models:update` carries — `null` is the no-override state — addressed by a
+ * fresh (`provider_id`, `upstream_id`) natural key instead of an existing
+ * row. The same shape also claims a vanished row as the manual recovery
+ * path.
  */
 export type NewModelOverrides = {
     readonly id_override?: string | null;
     readonly is_enabled?: boolean;
-    readonly thinking_levels_override?: ThinkingLevel[] | null;
 };
 
 /**
- * Builds one `models:create` request: the complete desired initial state of a manually added row.
- * The shape mirrors `models:update` field for field, so the two routes cannot drift apart.
+ * Builds one `models:create` request: the complete desired initial state of a
+ * manually added row.
  */
 export function toCreateModelRequest(
     providerId: number,
@@ -187,21 +182,5 @@ export function toCreateModelRequest(
         upstream_id: upstreamId,
         id_override: overrides.id_override ?? null,
         is_enabled: overrides.is_enabled ?? true,
-        thinking_levels_override: canonicalizeThinkingLevels(
-            overrides.thinking_levels_override ?? null,
-        ),
     };
-}
-
-/**
- * The canonical order travels with the contract (`THINKING_LEVEL_ORDER`), so a
- * request's override is expressed in that order regardless of the order the
- * editor collected it in.
- */
-function canonicalizeThinkingLevels(levels: ThinkingLevel[] | null): ThinkingLevel[] | null {
-    if (levels === null) {
-        return null;
-    }
-
-    return THINKING_LEVEL_ORDER.filter((level) => levels.includes(level));
 }

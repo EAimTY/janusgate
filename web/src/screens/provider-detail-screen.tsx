@@ -633,21 +633,17 @@ function ModelsCard(props: {
             return;
         }
 
-        const discovered = outcome.result.models;
+        const rows = outcome.result.models;
+        const vanished = rows.filter((row) => row.discovery_state === "vanished").length;
 
-        props.onNotice(
-            discovered.length === 0
-                ? {
-                      tone: "info",
-                      title: "Upstream reports no models.",
-                      detail: "Nothing changed — your curated list was kept.",
-                  }
-                : {
-                      tone: "ok",
-                      title: `${discovered.length} ${discovered.length === 1 ? "model" : "models"} synced from ${props.provider.name}.`,
-                      detail: "Overrides on models that returned were kept; models the provider no longer reports are gone.",
-                  },
-        );
+        props.onNotice({
+            tone: "ok",
+            title: `${rows.length} ${rows.length === 1 ? "model" : "models"} synced from ${props.provider.name}.`,
+            detail:
+                vanished === 0
+                    ? "Overrides on returning models were kept."
+                    : `Overrides were kept; ${vanished} ${vanished === 1 ? "model" : "models"} the upstream no longer reports ${vanished === 1 ? "is" : "are"} marked Vanished.`,
+        });
         props.onReload();
     };
 

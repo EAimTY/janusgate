@@ -18,8 +18,6 @@ export function formatClock(date: Date): string {
     });
 }
 
-import { THINKING_LEVEL_ORDER, type ThinkingLevel } from "/src/management-api/generated/v0";
-
 /**
  * How long a stored credential still holds, in the panel's words: a distance
  * in the largest units that say something, and whether it has already run out.
@@ -64,29 +62,54 @@ export function describeValidity(
 }
 
 /**
- * The allowed thinking levels of one model as one phrase: the canonical order
- * is the ladder, so a run of allowed levels reads as its span and anything
- * else is listed in that order.
+ * A token count as one phrase: unreported usage (`NULL` — the upstream sent
+ * no usage) reads as a dash, never as zero, so an absent breakdown cannot be
+ * mistaken for a measured one.
  */
-export function describeLevels(levels: ReadonlyArray<ThinkingLevel> | null): string {
-    if (levels === null) {
-        return "passes through";
+export function formatTokenCount(value: number | null): string {
+    return value === null ? "—" : value.toLocaleString();
+}
+
+/**
+ * A UTC-microsecond instant as a `datetime-local` value in this browser's
+ * zone, at the input's minute precision.
+ */
+export function formatMicrosForDateTimeInput(micros: number): string {
+    const date = new Date(micros / 1000);
+    const pad = (part: number): string => String(part).padStart(2, "0");
+
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * A `datetime-local` value as UTC microseconds. Blank or malformed input
+ * reads as `null` — no bound — so a half-typed filter never narrows the
+ * listing to nothing.
+ */
+export function parseDateTimeInputToMicros(value: string): number | null {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value.trim());
+
+    if (match === null) {
+        return null;
     }
 
-    const allowed = THINKING_LEVEL_ORDER.filter((level) => levels.includes(level));
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    const date = new Date(year, month - 1, day, hour, minute);
 
-    if (allowed.length === THINKING_LEVEL_ORDER.length) {
-        return "all four";
+    if (
+        Number.isNaN(date.getTime()) ||
+        date.getFullYear() !== year ||
+        date.getMonth() !== month - 1 ||
+        date.getDate() !== day ||
+        date.getHours() !== hour ||
+        date.getMinutes() !== minute
+    ) {
+        return null;
     }
 
-    if (allowed.length === 1) {
-        return `only ${allowed[0]}`;
-    }
-
-    const firstIndex = THINKING_LEVEL_ORDER.indexOf(allowed[0] as ThinkingLevel);
-    const isContiguous = allowed.every(
-        (level, offset) => THINKING_LEVEL_ORDER.indexOf(level) === firstIndex + offset,
-    );
-
-    return isContiguous ? `${allowed[0]}–${allowed[allowed.length - 1]}` : allowed.join(", ");
+    return date.getTime() * 1000;
 }

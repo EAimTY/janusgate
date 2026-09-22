@@ -9,8 +9,10 @@ import {
     parseListApiKeysResponse,
     parseListModelsResponse,
     parseListProvidersResponse,
+    parseListUsageResponse,
     parseModelEnvelope,
     parseProviderEnvelope,
+    parseQueryUsageResponse,
     parseReauthorizeProviderResponse,
     parseStartProviderOauthResponse,
 } from "./validation";
@@ -43,14 +45,42 @@ const antigravityProvider = {
 };
 
 const model = {
+    id: 9,
     provider_id: 1,
     provider: "local",
     upstream_id: "qwen3:32b",
-    id: "local/qwen3:32b",
+    public_id: "local/qwen3:32b",
     id_override: null,
     is_enabled: true,
-    is_effectively_enabled: true,
-    thinking_levels_override: null,
+    discovery_state: "discovered",
+};
+
+const apiLog = {
+    id: 42,
+    started_at: 1_780_000_000_000_000,
+    api_key_id: 7,
+    provider_id: 1,
+    model_id: 9,
+    endpoint_type: "openai_responses",
+    is_stream: false,
+    http_status: 200,
+    outcome: "completed",
+    duration: 812,
+    input_tokens: 120,
+    output_tokens: 340,
+    cached_tokens: null,
+    cache_write_tokens: null,
+    reasoning_tokens: 12,
+};
+
+const usageBucket = {
+    key: "2026-09-22",
+    requests: 3,
+    input_tokens: 360,
+    output_tokens: 1020,
+    cached_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 36,
 };
 
 describe("response validation", () => {
@@ -121,46 +151,59 @@ describe("response validation", () => {
         ).toThrow(/response\.providers must be an array/);
     });
 
-    it("keeps the two nullable mirror columns of a model", () => {
+    it("keeps the nullable mirror column of a model", () => {
         const overridden = {
             ...model,
             id_override: "custom-id",
-            thinking_levels_override: [
-                "low",
-                "high",
-            ],
-            is_effectively_enabled: false,
+            discovery_state: "manual",
+        };
+
+        const vanished = {
+            ...model,
+            id: 10,
+            is_enabled: true,
+            discovery_state: "vanished",
         };
 
         const response = parseListModelsResponse({
             models: [
                 model,
                 overridden,
+                vanished,
             ],
         });
 
         expect(response.models).toEqual([
             model,
             overridden,
+            vanished,
         ]);
     });
 
-    it("rejects a thinking level that is not canonical", () => {
+    it("rejects a discovery state outside the closed set", () => {
         expect(() =>
             parseListModelsResponse({
                 models: [
                     {
                         ...model,
-                        thinking_levels_override: [
-                            "medium",
-                            "extreme",
-                        ],
+                        discovery_state: "forgotten",
                     },
                 ],
             }),
-        ).toThrow(
-            /response\.models\[0\]\.thinking_levels_override\[1\] is not a canonical thinking level/,
-        );
+        ).toThrow(/response\.models\[0\]\.discovery_state is not a discovery state/);
+    });
+
+    it("rejects a model whose row identifier is not an integer", () => {
+        expect(() =>
+            parseListModelsResponse({
+                models: [
+                    {
+                        ...model,
+                        id: "local/qwen3:32b",
+                    },
+                ],
+            }),
+        ).toThrow(/response\.models\[0\]\.id must be an integer/);
     });
 
     it("rejects an omitted required-nullable field", () => {
@@ -223,6 +266,83 @@ describe("response validation", () => {
         ).toEqual({
             expires_at: 1_800_000_600,
         });
+    });
+
+    it("parses the usage listing and its aggregation", () => {
+        expect(
+            parseListUsageResponse({
+                api_logs: [
+                    apiLog,
+                ],
+            }),
+        ).toEqual({
+            api_logs: [
+                apiLog,
+            ],
+        });
+
+        // A row without usage and without a produced response keeps both as
+        // null; labels never ride along (rule 7).
+        const untouched = {
+            ...apiLog,
+            http_status: null,
+            outcome: "client_aborted",
+            input_tokens: null,
+            output_tokens: null,
+            reasoning_tokens: null,
+        };
+
+        expect(
+            parseListUsageResponse({
+                api_logs: [
+                    untouched,
+                ],
+            }).api_logs,
+        ).toEqual([
+            untouched,
+        ]);
+
+        expect(
+            parseQueryUsageResponse({
+                buckets: [
+                    usageBucket,
+                    {
+                        ...usageBucket,
+                        key: 9,
+                    },
+                ],
+            }),
+        ).toEqual({
+            buckets: [
+                usageBucket,
+                {
+                    ...usageBucket,
+                    key: 9,
+                },
+            ],
+        });
+
+        expect(() =>
+            parseListUsageResponse({
+                api_logs: [
+                    {
+                        ...apiLog,
+                        outcome: "succeeded",
+                    },
+                ],
+            }),
+        ).toThrow(/response\.api_logs\[0\]\.outcome is not a request outcome/);
+
+        expect(() =>
+            parseListUsageResponse({
+                api_logs: [
+                    {
+                        ...apiLog,
+                        endpoint_type: "openai_embeddings",
+                    },
+                ],
+            }),
+        ).toThrow(/response\.api_logs\[0\]\.endpoint_type is not an endpoint type/);
     });
 
     it("parses the api-keys listing and its envelope", () => {

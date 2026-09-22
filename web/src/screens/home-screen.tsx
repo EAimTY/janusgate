@@ -8,6 +8,7 @@ import type {
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
+import { isModelEffectivelyServing } from "/src/management-api/serving";
 import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
@@ -26,8 +27,8 @@ type HomeData = {
 /**
  * The overview: the gateway's health at a glance. Counts the operator can
  * trust, the providers that need a human, and the next step for a fresh
- * gateway. Request-level figures live nowhere here — the gateway keeps no
- * per-request data, so this page reports gateway state, not traffic.
+ * gateway. This page reports gateway state, not traffic — request-level
+ * figures live on the Usage pages.
  */
 export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [data, setData] = createSignal<HomeData>({
@@ -105,8 +106,21 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
         return () => controller?.abort();
     });
 
+    const providersById = createMemo(
+        () =>
+            new Map<number, ProviderResponse>(
+                data().providers.map((row) => [
+                    row.id,
+                    row,
+                ]),
+            ),
+    );
+
     const servingModels = createMemo(
-        () => data().models.filter((model) => model.is_effectively_enabled).length,
+        () =>
+            data().models.filter((model) =>
+                isModelEffectivelyServing(model, providersById().get(model.provider_id)),
+            ).length,
     );
 
     const enabledApiKeys = createMemo(() => data().apiKeys.filter((row) => row.is_enabled).length);
@@ -196,7 +210,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                             <Stat
                                 value={`${servingModels()} / ${data().models.length}`}
                                 label="Serving"
-                                hint="Provider and model both on"
+                                hint="Provider on, model on, reported"
                             />
                         </Card>
                         <Card>

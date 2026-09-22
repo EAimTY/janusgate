@@ -2,7 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
 import { toCreateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ProviderResponse, ThinkingLevel } from "/src/management-api/generated/v0";
+import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
@@ -10,15 +10,14 @@ import { describeCallFailure } from "/src/screens/failure";
 import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { ThinkingLevels } from "/src/ui/thinking-levels";
 
 /**
  * One creation page for a manually added model. The provider is picked once —
- * the row belongs to it — and the three overrides match the model page field
- * for field. Creating lands on the new model's page, like a provider creation
- * does. A manual row is indistinguishable from a discovered one afterwards: a
- * later sync keeps its overrides when the upstream ID reappears and drops the
- * row when it does not.
+ * the row belongs to it — and the two writable columns match the model page
+ * field for field. Creating lands on the new model's page, like a provider
+ * creation does. The same shape claims a vanished row back: naming a
+ * provider and upstream ID the gateway holds as vanished resumes service
+ * under the requested state instead of inserting a new row.
  */
 export function ModelNewScreen(props: {
     readonly api: ManagementApi;
@@ -78,7 +77,7 @@ export function ModelNewScreen(props: {
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="New model"
-                description="A model row sync would not produce. Pick its provider, name its upstream ID, set its overrides."
+                description="A model row sync would not produce — or a vanished one to claim back. Pick its provider, name its upstream ID, set its columns."
                 backHref={hrefs.models(props.providerFilter)}
                 backLabel="Models"
             />
@@ -150,7 +149,6 @@ function ModelCreateForm(props: {
     const [upstreamId, setUpstreamId] = createSignal("");
     const [idOverride, setIdOverride] = createSignal("");
     const [isEnabled, setIsEnabled] = createSignal(true);
-    const [levels, setLevels] = createSignal<ReadonlyArray<ThinkingLevel> | null>(null);
     const [isCreating, setIsCreating] = createSignal(false);
     const [failure, setFailure] = createSignal<{
         readonly title: string;
@@ -190,19 +188,11 @@ function ModelCreateForm(props: {
         setFailure(null);
         setIsCreating(true);
 
-        const selectedLevels = levels();
-
         const outcome = await performManagementCall(() =>
             props.api.createModel(
                 toCreateModelRequest(provider.id, trimmedUpstream(), {
                     id_override: normalizedOverride(),
                     is_enabled: isEnabled(),
-                    thinking_levels_override:
-                        selectedLevels === null
-                            ? null
-                            : [
-                                  ...selectedLevels,
-                              ],
                 }),
             ),
         );
@@ -224,9 +214,7 @@ function ModelCreateForm(props: {
             return;
         }
 
-        navigate(
-            hrefs.modelDetail(outcome.result.model.provider_id, outcome.result.model.upstream_id),
-        );
+        navigate(hrefs.modelDetail(outcome.result.model.id));
     };
 
     const submit = (event: SubmitEvent): void => {
@@ -260,8 +248,8 @@ function ModelCreateForm(props: {
 
             <Notice
                 tone="warn"
-                title="A manual row lives or dies by the next sync."
-                detail="Sync keeps its overrides when this upstream ID reappears, and drops the row when it does not. An upstream reporting no models keeps every curated row."
+                title="A manual row is never auto-removed — and it claims vanished rows."
+                detail="Sync flips a listed manual row to Discovered and leaves an unlisted one alone; it never deletes. Naming a vanished row's provider and upstream ID claims it back under the state set below. An upstream reporting no models changes nothing."
             />
 
             <Card>
@@ -291,8 +279,8 @@ function ModelCreateForm(props: {
 
             <Card>
                 <CardHeader
-                    title="Overrides"
-                    description="The three things a model page owns. Everything else about the model comes from upstream."
+                    title="Writable columns"
+                    description="The two things a model page owns. Everything else about the model comes from upstream."
                 />
                 <form
                     novalidate={true}
@@ -320,12 +308,6 @@ function ModelCreateForm(props: {
                         offText="Off"
                         isDisabled={isCreating()}
                         onToggle={setIsEnabled}
-                    />
-
-                    <ThinkingLevels
-                        allowedLevels={levels()}
-                        onChange={setLevels}
-                        isDisabled={isCreating()}
                     />
 
                     <div>

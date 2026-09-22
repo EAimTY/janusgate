@@ -103,35 +103,44 @@ describe("matchAppRoute", () => {
         });
     });
 
-    it("addresses one model by its provider and upstream identifiers", () => {
+    it("addresses one model by its row identifier", () => {
+        expect(match("/models/9")).toEqual({
+            name: "modelDetail",
+            modelId: 9,
+        });
+        expect(match("/models/9/")).toEqual({
+            name: "modelDetail",
+            modelId: 9,
+        });
+    });
+
+    it("reads a model address that is not a row identifier as not found", () => {
+        expect(match("/models/codex")).toEqual({
+            name: "notFound",
+        });
+        // The previous (provider, upstream) pair addresses no longer resolve.
         expect(match("/models/4/gpt-4o")).toEqual({
-            name: "modelDetail",
-            providerId: 4,
-            upstreamId: "gpt-4o",
+            name: "notFound",
         });
-    });
-
-    it("decodes an encoded upstream identifier", () => {
         expect(match("/models/4/gpt%204o%20mini")).toEqual({
-            name: "modelDetail",
-            providerId: 4,
-            upstreamId: "gpt 4o mini",
-        });
-        expect(match("/models/4/org%2Fmodel")).toEqual({
-            name: "modelDetail",
-            providerId: 4,
-            upstreamId: "org/model",
+            name: "notFound",
         });
     });
 
-    it("reads a model address without both identifiers as not found", () => {
-        expect(match("/models/4")).toEqual({
-            name: "notFound",
+    it("addresses the usage requests and their aggregation", () => {
+        expect(match("/usage")).toEqual({
+            name: "usage",
         });
-        expect(match("/models/codex/gpt-4o")).toEqual({
-            name: "notFound",
+        expect(match("/usage/")).toEqual({
+            name: "usage",
         });
-        expect(match("/models/4/%")).toEqual({
+        expect(match("/usage/query")).toEqual({
+            name: "usageQuery",
+        });
+        expect(match("/usage/query/")).toEqual({
+            name: "usageQuery",
+        });
+        expect(match("/usage/other")).toEqual({
             name: "notFound",
         });
     });
@@ -191,15 +200,15 @@ describe("matchAppRoute", () => {
             name: "apiKeyDetail",
             apiKeyId: 7,
         });
-        expect(match(hrefs.modelDetail(7, "gpt-4o"))).toEqual({
+        expect(match(hrefs.modelDetail(9))).toEqual({
             name: "modelDetail",
-            providerId: 7,
-            upstreamId: "gpt-4o",
+            modelId: 9,
         });
-        expect(match(hrefs.modelDetail(7, "org/model mini"))).toEqual({
-            name: "modelDetail",
-            providerId: 7,
-            upstreamId: "org/model mini",
+        expect(match(hrefs.usage())).toEqual({
+            name: "usage",
+        });
+        expect(match(hrefs.usageQuery())).toEqual({
+            name: "usageQuery",
         });
     });
 });

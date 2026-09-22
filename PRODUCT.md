@@ -26,7 +26,7 @@ Gateways that ship an admin UI ship it inside the server: the UI is bound to one
 
 Two mechanisms a neighboring product could not truthfully copy: the artifact is instance-agnostic by construction, and the frontend **compiles against TypeScript bindings generated from the gateway's own Rust sources**, so its wire contract cannot drift into a hand-maintained parallel.
 
-The gateway it fronts carries the same posture: strict model passthrough (no automatic mapping, aliasing, or fallback), upstream accounts — ChatGPT and Google OAuth subscriptions as well as static API keys — as first-class identities, and no request state retained.
+The gateway it fronts carries the same posture: strict model passthrough (no automatic mapping, aliasing, or fallback), upstream accounts — ChatGPT and Google OAuth subscriptions as well as static API keys — as first-class identities, and no request content retained (numeric request accounting aside).
 
 ## Operating Context
 
@@ -41,16 +41,19 @@ The gateway it fronts carries the same posture: strict model passthrough (no aut
 
 **Administered today**, entirely through `/management-api/v0/*` — every route `POST` with a JSON body, `Authorization: <token>` verbatim (no `Bearer` prefix):
 
-- **Providers** — list with serving state and OAuth expiry; create an `openai_compatible` account (name, model prefix, base URL, protocol, API key, enabled); rewrite any provider's complete readable state, with credentials write-only; delete (cascading to its models).
+- **Providers** — list with serving state and OAuth expiry; create a static-key account (`openai_response` / `openai_chat_completion` / `gemini_generate_content`; name, model prefix, base URL, API key, enabled); rewrite any provider's complete readable state, with credentials write-only; delete (cascading to its models).
 - **OAuth accounts** — start a flow for `openai_oauth` (ChatGPT account) or `antigravity_oauth` (Google account), then paste the returned code to create the provider with its credentials, or to reauthorize an existing one in place.
-- **Models** — list (optionally filtered to one provider); discover a provider's models from upstream (replacing that provider's rows, carrying overrides forward, and refusing to wipe curated rows when upstream reports nothing); edit per-model overrides: public ID override, serving switch, thinking levels.
-- **Derived facts the UI renders rather than recomputes blindly:** effective serving state (provider enabled and model enabled), the composed public model ID (`id_override ?? model_prefix + upstream_id`), and OAuth credential freshness.
-- **Vocabulary fixed by the domain:** provider, model prefix, upstream ID, public ID, discovery, protocol, thinking levels, reauthorization.
+- **Models** — list (optionally filtered to one provider); discover a provider's models from upstream as a mark-plus-upsert that writes only the row's `discovery_state` (`discovered` / `vanished` / `manual`) — never deleting a row, never rewriting curated columns, and refusing an empty upstream report; edit a row's two writable columns (public ID override, serving switch) addressed by its never-recycled row id; delete a row; create a row by its natural key `(provider_id, upstream_id)`, which also claims a vanished row as the manual recovery path.
+- **Serving-API keys** — list, issue (the plaintext secret is returned once, for the administrator to copy), rewrite a key's complete state (rename, rotate, serving switch), and revoke each key individually.
+- **Usage reads** — list recorded request-accounting rows newest first with cursor pagination, and aggregate them into buckets by day, model, provider, or API key over a time window with row-id filters; rows and buckets carry ids and numeric facts only — labels resolve through the entity lists.
+- **Derived facts the UI states under the gateway's documented definitions:** the three-input effective serving state (`provider enabled && model enabled && not vanished`), derived client-side from rows the app already fetches and never read off the wire; the composed public model ID (`id_override ?? model_prefix + upstream_id`), previewed locally and composed by the gateway at write time; and OAuth credential freshness.
+- **Vocabulary fixed by the domain:** provider, model prefix, upstream ID, public ID, discovery and its three states, serving key, request outcome, reauthorization. There is no level vocabulary: reasoning effort is an opaque client string the gateway passes through verbatim.
 
 **Planned, confirmed by the user, mechanism not yet decided:**
 
-- **Serving-API key issuance and revocation** — multiple API keys, each issued and revoked individually. Today `api.key` is a single static value in the gateway's configuration file.
-- **Observability**, covering both gateway-state and credential health (OAuth expiry and refresh state, upstream reachability, discovery results, model counts, serving state) and request-level insight (counts, latency, error rates, usage). Request-level insight now has a gateway-side source: request accounting retains one numeric row per dispatched request (README §3 *ApiLog*, governed by `api_logs.is_enabled`), while content — prompts, completions, headers, upstream error bodies — remains forbidden by the stateless-execution principle; no UI design for it is committed yet.
+- **Observability of gateway state and credential health** — OAuth expiry and refresh state, upstream reachability, discovery results, model counts, serving state. Request-level insight is no longer part of this pending work: it ships through the administered usage reads above, fed by request accounting that retains one numeric row per dispatched request (README §3 *ApiLog*, governed by `api_logs.is_enabled`), while content — prompts, completions, headers, upstream error bodies — remains forbidden by the stateless-execution principle.
+
+**Resolved (2026-09-22):** the first Usage surface is list plus aggregate query — request-detail pagination (`usage:list`, filters by model/provider/key plus time window) alongside bucketed aggregates (`usage:query` by day, model, provider, or API key), labels resolved through the entity lists. Model rows are addressed by their never-recycled row id; the previous `(provider_id, upstream_id)` deep links are not preserved. Discovery state (`discovered` / `vanished` / `manual`) plus the client-derived effective status is the status language; a vanished row states its recovery paths (upstream reappearance or a `models:create` claim).
 
 **Explicitly out of scope, confirmed:**
 
@@ -63,7 +66,7 @@ The gateway it fronts carries the same posture: strict model passthrough (no aut
 
 - **Zero third-party assets.** No CDN scripts, remote fonts, images, or analytics: the management token lives in this origin's `localStorage`, so any script running on the origin could read it. Everything the app uses is bundled or inlined.
 - **The contract is generated, never restated.** Application code compiles against the bindings; a response violating its expected shape is reported as an error, never partially rendered.
-- **Write semantics are the gateway's, verbatim:** full-state updates (omitting a required field is a rejection, not a keep), two-state fields (absent-keeps, never `null`), and secrets that are never read back.
+- **Write semantics are the gateway's, verbatim:** full-state updates (omitting a required field is a rejection, not a keep), two-state fields (absent-keeps, never `null`), and write-only secrets that are never read back (serving-key secrets are the readable exception, restated like any other field).
 
 ## Brand Commitments
 
@@ -83,7 +86,7 @@ The gateway it fronts carries the same posture: strict model passthrough (no aut
 
 1. **One token is the whole access model.** No accounts, roles, sessions, or permissions will be invented in the frontend. Anything requiring an identity concept belongs somewhere else.
 2. **The gateway owns product truth; the app owns its presentation.** Wire shapes come from generated bindings, derived state comes from the gateway, and the app never restates a contract it does not own — a violation surfaces as an error rather than being smoothed over.
-3. **Secrets flow in, never back out.** The management token, API keys, and OAuth codes are relayed and never displayed, stored, logged, or placed in a URL; credentials are write-only from the app's perspective.
+3. **Secrets flow in, never back out.** The management token, upstream provider API keys, and OAuth codes are relayed and never displayed, stored, logged, or placed in a URL; those credentials are write-only from the app's perspective. Serving-key secrets are the gateway's deliberate readable exception: returned so the administrator can copy them into serving clients, shown in full with a copy action, and never placed in a URL or persisted by the app.
 4. **Nothing about an instance is baked in.** The same artifact must administer any gateway, so no address, token, or instance-specific value may reach a build.
 5. **It must explain itself to a stranger.** The official deployment is the product's front door, so the gateway's vocabulary and state have to be legible in place, to an operator who has read nothing.
 

@@ -50,7 +50,7 @@ export function TextField(props: {
     readonly label: string;
     readonly value: string;
     readonly onInput: (value: string) => void;
-    readonly type?: "text" | "password" | "url";
+    readonly type?: "text" | "password" | "url" | "datetime-local";
     readonly placeholder?: string | undefined;
     readonly hint?: string | null | undefined;
     readonly error?: string | null | undefined;

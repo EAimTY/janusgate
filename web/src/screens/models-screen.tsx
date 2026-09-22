@@ -13,10 +13,10 @@ import { PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
 
 /**
- * Every synced model on one page, filterable by provider and searchable by
- * ID. Rows state the two facts a model has — serving and thinking levels —
- * and each row opens the model's own page, where those facts are edited.
- * Models are never created here: new rows arrive through a provider's sync.
+ * Every model on one page, filterable by provider and searchable by ID.
+ * Rows state the two facts a model has — serving and discovery state — and
+ * each row opens the model's own page, where the writable columns behind
+ * those facts are edited.
  */
 export function ModelsScreen(props: {
     readonly api: ManagementApi;
@@ -126,7 +126,7 @@ export function ModelsScreen(props: {
 
         return models().filter(
             (model) =>
-                model.id.toLowerCase().includes(needle) ||
+                model.public_id.toLowerCase().includes(needle) ||
                 model.upstream_id.toLowerCase().includes(needle),
         );
     });
@@ -135,7 +135,7 @@ export function ModelsScreen(props: {
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="Models"
-                description="Every synced model, everywhere. Open one to edit its overrides."
+                description="Every model, everywhere. Open one to edit its writable columns."
             >
                 <ButtonLink
                     href={hrefs.modelNew(props.providerFilter)}

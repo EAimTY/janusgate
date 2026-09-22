@@ -18,6 +18,8 @@ import { NotFoundScreen } from "/src/screens/not-found-screen";
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
 import { ProviderNewScreen } from "/src/screens/provider-new-screen";
 import { ProvidersScreen } from "/src/screens/providers-screen";
+import { UsageQueryScreen } from "/src/screens/usage-query-screen";
+import { UsageScreen } from "/src/screens/usage-screen";
 import { resolvedTheme, toggleTheme } from "/src/theme";
 import { AppLink } from "/src/ui/app-link";
 import { joinClass } from "/src/ui/attributes";
@@ -47,7 +49,7 @@ export function App(): JSX.Element {
     );
 }
 
-type NavKey = "overview" | "providers" | "models" | "keys";
+type NavKey = "overview" | "providers" | "models" | "keys" | "usage";
 
 const NAV_ITEMS: ReadonlyArray<{
     readonly key: NavKey;
@@ -79,6 +81,12 @@ const NAV_ITEMS: ReadonlyArray<{
         glyph: "key",
         href: hrefs.apiKeys(),
     },
+    {
+        key: "usage",
+        label: "Usage",
+        glyph: "activity",
+        href: hrefs.usage(),
+    },
 ];
 
 function navKeyOfRoute(name: string): NavKey | null {
@@ -96,6 +104,10 @@ function navKeyOfRoute(name: string): NavKey | null {
 
     if (name === "apiKeys" || name === "apiKeyNew" || name === "apiKeyDetail") {
         return "keys";
+    }
+
+    if (name === "usage" || name === "usageQuery") {
+        return "usage";
     }
 
     return null;
@@ -226,10 +238,15 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                             {(detail) => (
                                 <ModelDetailScreen
                                     api={api}
-                                    providerId={detail.providerId}
-                                    upstreamId={detail.upstreamId}
+                                    modelId={detail.modelId}
                                 />
                             )}
+                        </Match>
+                        <Match when={route().name === "usage"}>
+                            <UsageScreen api={api} />
+                        </Match>
+                        <Match when={route().name === "usageQuery"}>
+                            <UsageQueryScreen api={api} />
                         </Match>
                     </Switch>
                 </main>

@@ -1,13 +1,18 @@
 import type { JSX } from "@solidjs/web";
 import { For } from "solid-js";
-import { describeLevels } from "/src/format";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { isModelEffectivelyServing } from "/src/management-api/serving";
+import { discoveryStateLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { AppLink } from "/src/ui/app-link";
 import { Badge, type BadgeTone } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 
-/** How one model reads at a glance: serving, off, or held by its provider. */
+/**
+ * How one model reads at a glance: serving under the gateway's three-input
+ * definition, held by its provider, or off. The verdict is derived
+ * client-side from rows the app already fetches, never read off the wire.
+ */
 export function modelServingBadge(
     model: ModelResponse,
     provider: ProviderResponse | undefined,
@@ -15,14 +20,19 @@ export function modelServingBadge(
     readonly tone: BadgeTone;
     readonly label: string;
 } {
-    if (model.is_effectively_enabled) {
+    if (isModelEffectivelyServing(model, provider)) {
         return {
             tone: "ok",
             label: "Serving",
         };
     }
 
-    if (model.is_enabled && provider !== undefined && !provider.is_enabled) {
+    if (
+        model.is_enabled &&
+        model.discovery_state !== "vanished" &&
+        provider !== undefined &&
+        !provider.is_enabled
+    ) {
         return {
             tone: "warn",
             label: "Held by provider",
@@ -36,9 +46,39 @@ export function modelServingBadge(
 }
 
 /**
+ * Where one row stands in its discovery lifecycle: discovered from upstream,
+ * added by hand, or no longer reported. A vanished row keeps its curated
+ * columns and can be claimed back; it never serves meanwhile.
+ */
+export function modelDiscoveryBadge(model: ModelResponse): {
+    readonly tone: BadgeTone;
+    readonly label: string;
+} {
+    switch (model.discovery_state) {
+        case "discovered":
+            return {
+                tone: "muted",
+                label: discoveryStateLabel("discovered"),
+            };
+
+        case "manual":
+            return {
+                tone: "info",
+                label: discoveryStateLabel("manual"),
+            };
+
+        case "vanished":
+            return {
+                tone: "warn",
+                label: discoveryStateLabel("vanished"),
+            };
+    }
+}
+
+/**
  * One model's row: its public ID, where it comes from, and its two facts —
- * serving state and thinking levels. The row is one link to the model's own
- * page, where the overrides behind those facts are edited.
+ * serving state and discovery state. The row is one link to the model's own
+ * page, where the writable columns behind those facts are edited.
  */
 export function ModelRow(props: {
     readonly model: ModelResponse;
@@ -50,15 +90,20 @@ export function ModelRow(props: {
         readonly label: string;
     } => modelServingBadge(props.model, props.provider);
 
+    const discovery = (): {
+        readonly tone: BadgeTone;
+        readonly label: string;
+    } => modelDiscoveryBadge(props.model);
+
     return (
         <li>
             <AppLink
-                href={hrefs.modelDetail(props.model.provider_id, props.model.upstream_id)}
+                href={hrefs.modelDetail(props.model.id)}
                 class="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3 transition-colors duration-150 ease-out hover:border-ink-faint"
             >
                 <span class="min-w-0 flex-1 basis-56">
                     <span class="tnum block truncate text-[13.5px] font-medium">
-                        {props.model.id}
+                        {props.model.public_id}
                     </span>
                     <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
                         {props.showProvider === true && props.provider !== undefined
@@ -72,9 +117,10 @@ export function ModelRow(props: {
                         tone={serving().tone}
                         label={serving().label}
                     />
-                    <span class="hidden rounded-full bg-muted px-2.5 py-1 text-[12.5px] font-medium whitespace-nowrap text-ink-dim sm:inline">
-                        {describeLevels(props.model.thinking_levels_override)}
-                    </span>
+                    <Badge
+                        tone={discovery().tone}
+                        label={discovery().label}
+                    />
                 </span>
                 <Glyph
                     name="chev-right"

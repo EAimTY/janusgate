@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { describeLevels, describeValidity, formatClock } from "./format";
+import {
+    describeValidity,
+    formatClock,
+    formatMicrosForDateTimeInput,
+    formatTokenCount,
+    parseDateTimeInputToMicros,
+} from "./format";
 
 describe("describeValidity", () => {
     const now = 1_700_000_000;
@@ -38,53 +44,39 @@ describe("describeValidity", () => {
     });
 });
 
-describe("describeLevels", () => {
-    it("reads no override as passthrough", () => {
-        expect(describeLevels(null)).toBe("passes through");
+describe("formatTokenCount", () => {
+    it("reads unreported usage as a dash, never zero", () => {
+        expect(formatTokenCount(null)).toBe("—");
     });
 
-    it("reads the whole ladder as all four", () => {
-        expect(
-            describeLevels([
-                "off",
-                "low",
-                "medium",
-                "high",
-            ]),
-        ).toBe("all four");
+    it("reads a reported zero as zero", () => {
+        expect(formatTokenCount(0)).toBe("0");
     });
 
-    it("reads a single allowed level as only that level", () => {
-        expect(
-            describeLevels([
-                "medium",
-            ]),
-        ).toBe("only medium");
+    it("groups large counts", () => {
+        expect(formatTokenCount(1_234_567)).toBe("1,234,567");
+    });
+});
+
+describe("date-time input bounds", () => {
+    it("round-trips an instant through the input's minute precision", () => {
+        // 2026-09-22T10:30 local, seconds truncated by the input.
+        const micros = parseDateTimeInputToMicros("2026-09-22T10:30");
+
+        expect(micros).not.toBeNull();
+
+        const rendered = formatMicrosForDateTimeInput(micros ?? 0);
+        expect(rendered).toBe("2026-09-22T10:30");
     });
 
-    it("reads a contiguous run as its span", () => {
-        expect(
-            describeLevels([
-                "low",
-                "medium",
-                "high",
-            ]),
-        ).toBe("low–high");
-        expect(
-            describeLevels([
-                "low",
-                "medium",
-            ]),
-        ).toBe("low–medium");
+    it("reads blank as no bound", () => {
+        expect(parseDateTimeInputToMicros("")).toBeNull();
+        expect(parseDateTimeInputToMicros("   ")).toBeNull();
     });
 
-    it("lists a gapped set in canonical order, not input order", () => {
-        expect(
-            describeLevels([
-                "high",
-                "off",
-            ]),
-        ).toBe("off, high");
+    it("reads malformed input as no bound", () => {
+        expect(parseDateTimeInputToMicros("yesterday")).toBeNull();
+        expect(parseDateTimeInputToMicros("2026-13-40T25:70")).toBeNull();
     });
 });
 
