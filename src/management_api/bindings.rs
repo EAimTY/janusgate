@@ -3,14 +3,16 @@
 //! every payload type declaration ts-rs produces for the version's routes and extra exported types,
 //! then the route table composed from the version's registry — into one `<version>.ts` file
 //! directly in the output target, so a client imports a version from a single module and never
-//! chases per-type files.
+//! chases per-type files. One pass post-processes the declarations: structurally identical
+//! variants of an internally tagged enum emit as a single member discriminated by the union of
+//! their values, a type-level collapse that leaves every accepted JSON document unchanged.
 //!
 //! The generator is version-agnostic: the caller names the version prefix and hands over that
 //! version's route registry, so every version's bindings are produced by the same code while their
 //! contents stay entirely separate.
 
 use super::route::{ClosureType, PayloadBinding, PayloadSource, RouteBinding};
-use std::{any::TypeId, collections::HashMap, fs, path::Path};
+use std::{any::TypeId, collections::HashMap, fs, iter::Peekable, path::Path, str::CharIndices};
 use ts_rs::Config;
 
 /// One route as the generator sees it, after collection from the registry.
@@ -173,6 +175,210 @@ fn reject_duplicate_routes(routes: &[CollectedRoute]) {
     }
 }
 
+/// Collapses the structurally identical variants of one internally tagged enum
+/// in a rendered declaration. ts-rs renders a `#[serde(tag = "...")]` enum as one
+/// union member per variant, so variants carrying the same fields — the provider
+/// unions above all — repeat an identical field list once per discriminant
+/// value. Members whose text is identical apart from their string discriminant
+/// emit once, discriminated by the union of the values:
+///
+/// ```text
+/// { "type": "a", id: number } | { "type": "b", id: number }
+/// ```
+///
+/// renders as
+///
+/// ```text
+/// { "type": "a" | "b", id: number }
+/// ```
+///
+/// The two spellings accept exactly the same JSON documents, so the pass is
+/// type-level only: the wire contract is untouched, while a client branches on
+/// the shared field set instead of restating it per kind. Groups — and the
+/// discriminants inside one group — keep first-occurrence order, so the output
+/// stays deterministic. A declaration that is not wholly a tagged union of
+/// string discriminants — a bare literal union, a plain object, a single
+/// member, a differing tag key or field set, an escaped or non-string
+/// discriminant — passes through unchanged.
+fn collapse_identical_variants(rendered: &str) -> String {
+    const ANCHOR: &str = "export type ";
+
+    // Anchor on the last occurrence: docs precede their declaration and
+    // nothing follows the body's terminating `;`, so the last `export type `
+    // is always the real declaration's own anchor. A doc comment embedding an
+    // `export type`-shaped fragment — whose member text may match the real
+    // declaration — then stays verbatim in the prefix instead of anchoring the
+    // parse inside the comment, and any failed parse of the body still falls
+    // through to the unchanged input below.
+    let Some((prefix, after_anchor)) = rendered.rsplit_once(ANCHOR) else {
+        return rendered.to_owned();
+    };
+
+    let Some((ident, body)) = after_anchor.split_once(" = ") else {
+        return rendered.to_owned();
+    };
+
+    let Some(body) = body.strip_suffix(';') else {
+        return rendered.to_owned();
+    };
+
+    let members = split_top_level_union(body);
+
+    if members.len() < 2 {
+        return rendered.to_owned();
+    }
+
+    // Rests compare textually: ts-rs renders identical Rust fields to identical
+    // TypeScript text, so byte equality is exactly structural identity.
+    let mut groups: Vec<(&str, &str, Vec<&str>)> = Vec::new();
+
+    for member in &members {
+        let Some((tag, discriminant, rest)) = parse_tagged_member(member) else {
+            return rendered.to_owned();
+        };
+
+        match groups
+            .iter_mut()
+            .find(|(group_tag, group_rest, _)| *group_tag == tag && *group_rest == rest)
+        {
+            Some((_, _, discriminants)) => discriminants.push(discriminant),
+            None => groups.push((tag, rest, vec![discriminant])),
+        }
+    }
+
+    if groups.len() == members.len() {
+        return rendered.to_owned();
+    }
+
+    let mut collapsed = String::from(prefix);
+    collapsed.push_str(ANCHOR);
+    collapsed.push_str(ident);
+    collapsed.push_str(" = ");
+
+    for (group_index, (tag, rest, discriminants)) in groups.iter().enumerate() {
+        if group_index > 0 {
+            collapsed.push_str(" | ");
+        }
+
+        collapsed.push_str("{ \"");
+        collapsed.push_str(tag);
+        collapsed.push_str("\": ");
+
+        for (index, discriminant) in discriminants.iter().enumerate() {
+            if index > 0 {
+                collapsed.push_str(" | ");
+            }
+
+            collapsed.push('"');
+            collapsed.push_str(discriminant);
+            collapsed.push('"');
+        }
+
+        collapsed.push_str(", ");
+        collapsed.push_str(rest);
+        collapsed.push('}');
+    }
+
+    collapsed.push(';');
+
+    collapsed
+}
+
+/// Parses one rendered union member as an internally tagged object of the shape
+/// `{ "<tag>": "<discriminant>", <fields> }`, returning the tag key, the
+/// discriminant value, and the fields text. A member of any other shape — a
+/// bare literal, a plain object, an escaped quote inside either string — is no
+/// collapse candidate.
+fn parse_tagged_member(member: &str) -> Option<(&str, &str, &str)> {
+    let after_open = member.strip_prefix("{ \"")?;
+    let (tag, after_tag) = after_open.split_once('"')?;
+    let after_colon = after_tag.strip_prefix(": \"")?;
+    let (discriminant, after_discriminant) = after_colon.split_once('"')?;
+    let fields = after_discriminant.strip_prefix(", ")?.strip_suffix('}')?;
+
+    // An escaped quote would have ended the scanned string early, so a value
+    // carrying a backslash never names a real discriminant here.
+    if tag.contains('\\') || discriminant.contains('\\') {
+        return None;
+    }
+
+    Some((tag, discriminant, fields))
+}
+
+/// Splits one rendered union body into its top-level members, cutting on `|`
+/// only outside braces, parentheses, brackets, type arguments, and string
+/// literals, and skipping comments; every member is trimmed.
+fn split_top_level_union(body: &str) -> Vec<&str> {
+    let mut members = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut characters = body.char_indices().peekable();
+
+    while let Some((index, character)) = characters.next() {
+        match character {
+            '"' | '\'' | '`' => skip_string_literal(&mut characters, character),
+            '/' if characters.peek().is_some_and(|&(_, next)| next == '*') => {
+                skip_block_comment(&mut characters);
+            }
+            '/' if characters.peek().is_some_and(|&(_, next)| next == '/') => {
+                skip_line_comment(&mut characters);
+            }
+            '{' | '(' | '[' | '<' => depth += 1,
+            '}' | ')' | ']' | '>' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => {
+                let (head, _) = body.split_at(index);
+                let (_, member) = head.split_at(start);
+                members.push(member.trim());
+                start = index + '|'.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    let (_, tail) = body.split_at(start);
+    members.push(tail.trim());
+
+    members
+}
+
+/// Consumes characters through the closing quote of one string literal,
+/// honoring backslash escapes.
+fn skip_string_literal(characters: &mut Peekable<CharIndices<'_>>, quote: char) {
+    let mut is_escaped = false;
+
+    for (_, character) in characters.by_ref() {
+        if is_escaped {
+            is_escaped = false;
+        } else if character == '\\' {
+            is_escaped = true;
+        } else if character == quote {
+            return;
+        }
+    }
+}
+
+/// Consumes characters through the closing `*/` of one block comment.
+fn skip_block_comment(characters: &mut Peekable<CharIndices<'_>>) {
+    let mut was_asterisk = false;
+
+    for (_, character) in characters.by_ref() {
+        if was_asterisk && character == '/' {
+            return;
+        }
+
+        was_asterisk = character == '*';
+    }
+}
+
+/// Consumes characters through the end of one line comment.
+fn skip_line_comment(characters: &mut Peekable<CharIndices<'_>>) {
+    for (_, character) in characters.by_ref() {
+        if character == '\n' {
+            return;
+        }
+    }
+}
+
 /// Renders one version's whole bindings file: the generated-by header, the payload type
 /// declarations ordered by name, and the route table over them.
 fn render_version_file(
@@ -188,7 +394,11 @@ fn render_version_file(
 
     for closure_type in declarations {
         rendered.push('\n');
-        rendered.push_str(&(closure_type.declaration)(config));
+        // Identical variants of one tagged union collapse on the way out, so
+        // every declaration in the file carries each shared field list once.
+        rendered.push_str(&collapse_identical_variants(&(closure_type.declaration)(
+            config,
+        )));
         rendered.push('\n');
     }
 
@@ -435,6 +645,43 @@ mod tests {
         assert!(first.contains("export enum ErrorCode"));
         assert!(!first.contains("import "), "a single file needs no imports");
 
+        // Structurally identical variants of one tagged union collapse into a
+        // single member discriminated by the union of their kinds (README
+        // §7.3): each shared field list renders exactly once, never once per
+        // kind, while the accepted JSON documents are unchanged.
+        assert!(first.contains(
+            r#"export type ProviderResponse = { "type": "codex_oauth" | "antigravity_oauth","#,
+        ));
+        assert!(first.contains(
+            r#""type": "openai_response" | "openai_chat_completion" | "gemini_generate_content","#,
+        ));
+        assert!(first.contains(
+            "export type UpdateProviderRequest = { \"type\": \"openai_response\" | \
+             \"openai_chat_completion\" | \"gemini_generate_content\",",
+        ));
+        assert!(first.contains(r#""type": "codex_oauth" | "antigravity_oauth","#));
+
+        // The rule collapses only field-identical variants: the two OAuth
+        // update variants carry different credential types, so each stays a
+        // member of its own.
+        assert!(first.contains(
+            r#"credentials?: CodexOauthCredentials, } | { "type": "antigravity_oauth","#,
+        ));
+
+        // The static-key variants are field-identical in both provider unions,
+        // so no member restates their shared field list per kind.
+        for kind in [
+            "openai_response",
+            "openai_chat_completion",
+            "gemini_generate_content",
+        ] {
+            let restated_member = format!("{{ \"type\": \"{kind}\", ");
+            assert!(
+                !first.contains(&restated_member),
+                "the `{kind}` variant restates its field list per kind",
+            );
+        }
+
         let _ = fs::remove_dir_all(&target);
     }
 
@@ -487,6 +734,96 @@ mod tests {
     #[should_panic(expected = "has no TypeScript declaration")]
     fn rejects_undeclarable_payload_types() {
         let _ = route_contract::payload_binding::<()>(&Config::new());
+    }
+
+    /// Verifies the variant-collapse rule at its poles: members of one rendered
+    /// union that differ only in their string discriminant emit once with the
+    /// union of the discriminants — groups and discriminants in first-occurrence
+    /// order, docs inside the member preserved — while members with differing
+    /// fields stay separate, and anything the rule does not describe (a bare
+    /// literal union, a plain object, a single member, a differing tag or field
+    /// set, an escaped or non-string discriminant) passes through byte
+    /// unchanged. The collapse is type-level only: both spellings accept the
+    /// same JSON documents, so the wire contract is untouched.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a collapse or a pass-through diverges from the rule.
+    #[test]
+    fn collapses_identically_shaped_variants() {
+        assert_eq!(
+            super::collapse_identical_variants(concat!(
+                "export type T = { \"type\": \"a\", id: number, } | ",
+                "{ \"type\": \"b\", id: number, };",
+            )),
+            "export type T = { \"type\": \"a\" | \"b\", id: number, };",
+        );
+
+        // A member with its own fields stays a member of its own, after the
+        // collapsed group.
+        assert_eq!(
+            super::collapse_identical_variants(concat!(
+                "export type T = { \"type\": \"a\", id: number, } | ",
+                "{ \"type\": \"b\", id: number, } | ",
+                "{ \"type\": \"c\", label: string, };",
+            )),
+            concat!(
+                "export type T = { \"type\": \"a\" | \"b\", id: number, } | ",
+                "{ \"type\": \"c\", label: string, };",
+            ),
+        );
+
+        // Docs inside a member ride along, and the doc prefix ahead of the
+        // declaration is untouched.
+        assert_eq!(
+            super::collapse_identical_variants(concat!(
+                "/** A row. */\n",
+                "export type T = { \"type\": \"a\", \n/** Id. */\nid: number, } | ",
+                "{ \"type\": \"b\", \n/** Id. */\nid: number, };",
+            )),
+            concat!(
+                "/** A row. */\n",
+                "export type T = { \"type\": \"a\" | \"b\", \n/** Id. */\nid: number, };",
+            ),
+        );
+
+        // A `|` inside a member's nested type arguments never splits the union.
+        assert_eq!(
+            super::collapse_identical_variants(concat!(
+                "export type T = { \"type\": \"a\", rows: Array<Foo | Bar>, } | ",
+                "{ \"type\": \"b\", rows: Array<Foo | Bar>, };",
+            )),
+            "export type T = { \"type\": \"a\" | \"b\", rows: Array<Foo | Bar>, };",
+        );
+
+        // Anything the rule does not describe passes through byte unchanged.
+        for passthrough in [
+            "export type T = \"a\" | \"b\";",
+            "export type T = { id: number, };",
+            "export type T = { \"type\": \"a\", id: number, };",
+            "export type T = { \"type\": \"a\", id: number, } \
+             | { \"type\": \"b\", label: string, };",
+            "export type T = { \"type\": \"a\", id: number, } \
+             | { \"kind\": \"a\", id: number, };",
+            "export type T = { \"type\": \"a\\\"b\", id: number, } \
+             | { \"type\": \"c\", id: number, };",
+            "export type T = { \"type\": \"a\", id: number, } | { \"type\": 3, id: number, };",
+            "export enum T { A = 1 }",
+            // A doc comment embedding an `export type`-shaped union fragment
+            // never anchors the parse inside the comment: the pass anchors on
+            // the last anchor occurrence — the real declaration's own, since
+            // docs precede their declaration and nothing follows the
+            // terminating `;` — so the fragment stays verbatim in the prefix
+            // and this non-collapsible declaration passes through unchanged.
+            concat!(
+                "/** Like export type T = { \"type\": \"u\", id: number, } | ",
+                "{ \"type\": \"v\", id: number, } | { \"type\": \"w\", id: number, }; */\n",
+                "export type T = { \"type\": \"u\", id: number, } | ",
+                "{ \"type\": \"v\", label: string, };",
+            ),
+        ] {
+            assert_eq!(super::collapse_identical_variants(passthrough), passthrough);
+        }
     }
 
     /// Builds a minimal closure type for the checker tests; the declaration renderer is never

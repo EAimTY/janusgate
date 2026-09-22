@@ -26,7 +26,7 @@ const codexOauth: ProviderResponse = {
     name: "chatgpt",
     model_prefix: "gpt-",
     is_enabled: false,
-    expires_at: 1_800_000_000,
+    expires_at: 1_800_000_000_000_000,
 };
 
 const antigravityOauth: ProviderResponse = {

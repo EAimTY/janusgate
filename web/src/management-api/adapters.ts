@@ -26,63 +26,20 @@ export type ProviderEdits = {
 /**
  * Builds one `providers:update` request from a listed row and the fields the
  * administrator changed, restating the row's complete desired readable state
- * (README §4.5). OAuth credentials are never carried here: replacing them is
- * the `oauth:reauthorize` flow's job, and omitting the field keeps the stored
- * secret.
+ * (README §4.5). The three static-key kinds share one wire shape, so they
+ * share one branch; the two OAuth kinds carry different credential types on
+ * the wire, so each restates its own discriminant. OAuth credentials are never
+ * carried here: replacing them is the `oauth:reauthorize` flow's job, and
+ * omitting the field keeps the stored secret.
  */
 export function toUpdateProviderRequest(
     provider: ProviderResponse,
     edits: ProviderEdits = {},
 ): UpdateProviderRequest {
     switch (provider.type) {
-        case "openai_response":
-            return {
-                type: "openai_response",
-                provider_id: provider.id,
-                name: edits.name ?? provider.name,
-                model_prefix: edits.model_prefix ?? provider.model_prefix,
-                is_enabled: edits.is_enabled ?? provider.is_enabled,
-                base_url: edits.base_url ?? provider.base_url,
-                ...(edits.api_key === undefined
-                    ? {}
-                    : {
-                          api_key: edits.api_key,
-                      }),
-            };
-
-        case "openai_chat_completion":
-            return {
-                type: "openai_chat_completion",
-                provider_id: provider.id,
-                name: edits.name ?? provider.name,
-                model_prefix: edits.model_prefix ?? provider.model_prefix,
-                is_enabled: edits.is_enabled ?? provider.is_enabled,
-                base_url: edits.base_url ?? provider.base_url,
-                ...(edits.api_key === undefined
-                    ? {}
-                    : {
-                          api_key: edits.api_key,
-                      }),
-            };
-
-        case "gemini_generate_content":
-            return {
-                type: "gemini_generate_content",
-                provider_id: provider.id,
-                name: edits.name ?? provider.name,
-                model_prefix: edits.model_prefix ?? provider.model_prefix,
-                is_enabled: edits.is_enabled ?? provider.is_enabled,
-                base_url: edits.base_url ?? provider.base_url,
-                ...(edits.api_key === undefined
-                    ? {}
-                    : {
-                          api_key: edits.api_key,
-                      }),
-            };
-
         case "codex_oauth":
             return {
-                type: "codex_oauth",
+                type: provider.type,
                 provider_id: provider.id,
                 name: edits.name ?? provider.name,
                 model_prefix: edits.model_prefix ?? provider.model_prefix,
@@ -91,23 +48,41 @@ export function toUpdateProviderRequest(
 
         case "antigravity_oauth":
             return {
-                type: "antigravity_oauth",
+                type: provider.type,
                 provider_id: provider.id,
                 name: edits.name ?? provider.name,
                 model_prefix: edits.model_prefix ?? provider.model_prefix,
                 is_enabled: edits.is_enabled ?? provider.is_enabled,
             };
+
+        case "openai_response":
+        case "openai_chat_completion":
+        case "gemini_generate_content":
+            return {
+                type: provider.type,
+                provider_id: provider.id,
+                name: edits.name ?? provider.name,
+                model_prefix: edits.model_prefix ?? provider.model_prefix,
+                is_enabled: edits.is_enabled ?? provider.is_enabled,
+                base_url: edits.base_url ?? provider.base_url,
+                ...(edits.api_key === undefined
+                    ? {}
+                    : {
+                          api_key: edits.api_key,
+                      }),
+            };
     }
 }
 
 /**
- * Read-modify-write edits for `models:update` (README §4.5): the row's two
- * writable columns. The nullable mirror column is stated explicitly — `null`
- * is the no-override state — so an edit that clears an override sends `null`
- * rather than omitting the field. `discovery_state` is never an edit: this
- * route cannot restore a vanished row.
+ * Optional overrides of the model row's two writable columns (README §4.5).
+ * The nullable mirror column is stated explicitly — `null` is the no-override
+ * state — so an override that clears it sends `null` rather than omitting the
+ * field. `models:create` applies the overrides over the defaults,
+ * `models:update` over the listed row. `discovery_state` is never among them:
+ * neither route can restore a vanished row.
  */
-export type ModelEdits = {
+export type ModelOverrides = {
     readonly id_override?: string | null;
     readonly is_enabled?: boolean;
 };
@@ -119,7 +94,7 @@ export type ModelEdits = {
  */
 export function toUpdateModelRequest(
     model: ModelResponse,
-    edits: ModelEdits = {},
+    edits: ModelOverrides = {},
 ): UpdateModelRequest {
     return {
         model_id: model.id,
@@ -157,25 +132,13 @@ export function toUpdateApiKeyRequest(
 }
 
 /**
- * Initial state for `models:create`: the two writable columns
- * `models:update` carries — `null` is the no-override state — addressed by a
- * fresh (`provider_id`, `upstream_id`) natural key instead of an existing
- * row. The same shape also claims a vanished row as the manual recovery
- * path.
- */
-export type NewModelOverrides = {
-    readonly id_override?: string | null;
-    readonly is_enabled?: boolean;
-};
-
-/**
  * Builds one `models:create` request: the complete desired initial state of a
  * manually added row.
  */
 export function toCreateModelRequest(
     providerId: number,
     upstreamId: string,
-    overrides: NewModelOverrides = {},
+    overrides: ModelOverrides = {},
 ): CreateModelRequest {
     return {
         provider_id: providerId,

@@ -114,7 +114,12 @@ function expectBucketKey(value: unknown, context: string): UsageBucketKey {
     throw new ContractViolationError(`${context} must be a string or an integer`);
 }
 
-/** One provider row; the union is discriminated by the restated `type`. */
+/**
+ * One provider row; the union is discriminated by the restated `type`. The
+ * bindings collapse the field-identical kinds into one member per field set,
+ * and the parser branches the same way: the OAuth kinds all carry the nullable
+ * `expires_at`, the static-key kinds all carry the `base_url`.
+ */
 export function parseProviderResponse(value: unknown, context: string): ProviderResponse {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
@@ -128,67 +133,36 @@ export function parseProviderResponse(value: unknown, context: string): Provider
 
     const isEnabled = expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`);
 
-    // A closure: the static-key variants have no `expires_at`, so its absence is
-    // only an error where the union variant declares the field.
-    const readExpiresAt = () =>
-        expectNullableInteger(Reflect.get(record, "expires_at"), `${context}.expires_at`);
-
-    switch (type) {
-        case "openai_response":
-            return {
-                type: "openai_response",
-                id,
-                name,
-                model_prefix: modelPrefix,
-                is_enabled: isEnabled,
-                base_url: expectString(Reflect.get(record, "base_url"), `${context}.base_url`),
-            };
-
-        case "openai_chat_completion":
-            return {
-                type: "openai_chat_completion",
-                id,
-                name,
-                model_prefix: modelPrefix,
-                is_enabled: isEnabled,
-                base_url: expectString(Reflect.get(record, "base_url"), `${context}.base_url`),
-            };
-
-        case "gemini_generate_content":
-            return {
-                type: "gemini_generate_content",
-                id,
-                name,
-                model_prefix: modelPrefix,
-                is_enabled: isEnabled,
-                base_url: expectString(Reflect.get(record, "base_url"), `${context}.base_url`),
-            };
-
-        case "codex_oauth":
-            return {
-                type: "codex_oauth",
-                id,
-                name,
-                model_prefix: modelPrefix,
-                is_enabled: isEnabled,
-                expires_at: readExpiresAt(),
-            };
-
-        case "antigravity_oauth":
-            return {
-                type: "antigravity_oauth",
-                id,
-                name,
-                model_prefix: modelPrefix,
-                is_enabled: isEnabled,
-                expires_at: readExpiresAt(),
-            };
-
-        default:
-            throw new ContractViolationError(
-                `${context}.type is not a known provider type: ${type}`,
-            );
+    if (type === "codex_oauth" || type === "antigravity_oauth") {
+        return {
+            type,
+            id,
+            name,
+            model_prefix: modelPrefix,
+            is_enabled: isEnabled,
+            expires_at: expectNullableInteger(
+                Reflect.get(record, "expires_at"),
+                `${context}.expires_at`,
+            ),
+        };
     }
+
+    if (
+        type === "openai_response" ||
+        type === "openai_chat_completion" ||
+        type === "gemini_generate_content"
+    ) {
+        return {
+            type,
+            id,
+            name,
+            model_prefix: modelPrefix,
+            is_enabled: isEnabled,
+            base_url: expectString(Reflect.get(record, "base_url"), `${context}.base_url`),
+        };
+    }
+
+    throw new ContractViolationError(`${context}.type is not a known provider type: ${type}`);
 }
 
 /**
