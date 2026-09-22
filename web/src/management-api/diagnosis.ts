@@ -1,5 +1,6 @@
 import { isAbortFailure, ManagementApiError } from "/src/management-api/errors";
-import { ErrorCode } from "/src/management-api/generated/v0";
+import { ErrorCode, type ProviderType } from "/src/management-api/generated/v0";
+import { findOAuthProviderType } from "/src/management-api/vocabulary";
 
 /**
  * Whether the browser reached the instance's origin while the failed call was
@@ -37,6 +38,12 @@ export type ActionContext = {
     /** The origin this app is served from — the value a CORS allowlist needs. */
     readonly pageOrigin: string;
     readonly action?: ActionName | undefined;
+    /**
+     * The provider type the action addressed, where one is known: the
+     * recovery a discovery failure names depends on whether the provider
+     * logs in upstream (OAuth) or holds a static key.
+     */
+    readonly providerType?: ProviderType | undefined;
     readonly reachability?: Reachability;
 };
 
@@ -60,7 +67,7 @@ export type Diagnosis = {
         | "contract"
         | "gateway"
         | "unknown";
-    readonly headline: string;
+    readonly title: string;
     readonly detail: string;
     readonly fix: string | null;
 };
@@ -97,11 +104,25 @@ function conflictFix(action: ActionName | undefined): string {
     }
 }
 
-function upstreamFix(action: ActionName | undefined): string {
-    switch (action) {
-        case "discover-models":
-            return "Check the provider's state; a session that ran out needs reauthorizing.";
+function upstreamFix(context: ActionContext): string {
+    const { action, providerType } = context;
 
+    if (action === "discover-models") {
+        // The recovery a discovery refusal names depends on how the provider
+        // authenticates: an OAuth login is reconnected, a static key is
+        // corrected in place.
+        if (providerType !== undefined && findOAuthProviderType(providerType) !== null) {
+            return "The provider's authorization expired; reconnect it on the provider's edit page.";
+        }
+
+        if (providerType !== undefined) {
+            return "Check the provider's base URL and API key on its edit page.";
+        }
+
+        return "Check the provider's state and credentials.";
+    }
+
+    switch (action) {
         case "start-oauth":
         case "complete-oauth":
         case "reauthorize":
@@ -119,8 +140,8 @@ function networkDiagnosis(context: ActionContext): Diagnosis {
     if (!isCrossOrigin(baseUrl, pageOrigin)) {
         return {
             kind: "unreachable",
-            headline: `Nothing answered at ${baseUrl}.`,
-            detail: "Network request failed",
+            title: `Nothing answered at ${baseUrl}.`,
+            detail: "The browser could not complete the connection.",
             fix: "Check the address, that the gateway is running, and that its `listen` address is reachable from this browser.",
         };
     }
@@ -129,24 +150,24 @@ function networkDiagnosis(context: ActionContext): Diagnosis {
         case "reached":
             return {
                 kind: "blocked",
-                headline: `The gateway answered, but the browser blocked the response from ${baseUrl}.`,
-                detail: "Network request failed",
+                title: `The gateway answered, but the browser blocked the response from ${baseUrl}.`,
+                detail: "The browser withheld the response from this page.",
                 fix: `Add ${origin} to \`${CORS_SETTING}\` in that instance's configuration file and restart the gateway. Serving this app from the gateway's own origin avoids the allowlist entirely.`,
             };
 
         case "unreached":
             return {
                 kind: "unreachable",
-                headline: `Nothing answered at ${baseUrl}.`,
-                detail: "Network request failed",
+                title: `Nothing answered at ${baseUrl}.`,
+                detail: "The browser could not complete the connection.",
                 fix: "Check the address, that the gateway is running, and that it is reachable from this browser over this scheme.",
             };
 
         case "unknown":
             return {
                 kind: "no-answer",
-                headline: `No answer from ${baseUrl}.`,
-                detail: "Network request failed",
+                title: `No answer from ${baseUrl}.`,
+                detail: "The browser received no answer it could read.",
                 fix: `Either nothing is listening at that address, or the browser blocked the response before this page could read it — add ${origin} to \`${CORS_SETTING}\` and restart the gateway.`,
             };
     }
@@ -167,7 +188,7 @@ function fromGatewayError(error: ManagementApiError, context: ActionContext): Di
         case ErrorCode.Unauthorized:
             return {
                 kind: "unauthorized",
-                headline: "The gateway rejected that management token.",
+                title: "The gateway rejected that management token.",
                 detail: message,
                 fix: "The token must match `management_api.token` in that instance's configuration file; the gateway reads it live, so a changed token needs no restart.",
             };
@@ -175,7 +196,7 @@ function fromGatewayError(error: ManagementApiError, context: ActionContext): Di
         case ErrorCode.NotFound:
             return {
                 kind: "gone",
-                headline: "The gateway holds no such row.",
+                title: "The gateway holds no such row.",
                 detail: message,
                 fix: null,
             };
@@ -183,7 +204,7 @@ function fromGatewayError(error: ManagementApiError, context: ActionContext): Di
         case ErrorCode.Conflict:
             return {
                 kind: "conflict",
-                headline: "The gateway refused: an identifier is already taken.",
+                title: "The gateway refused: an identifier is already taken.",
                 detail: message,
                 fix: conflictFix(context.action),
             };
@@ -191,15 +212,15 @@ function fromGatewayError(error: ManagementApiError, context: ActionContext): Di
         case ErrorCode.UpstreamError:
             return {
                 kind: "upstream",
-                headline: "The upstream provider refused the call or was unreachable.",
+                title: "The upstream provider refused the call or was unreachable.",
                 detail: message,
-                fix: upstreamFix(context.action),
+                fix: upstreamFix(context),
             };
 
         case ErrorCode.Internal:
             return {
                 kind: "internal",
-                headline: "The gateway failed internally.",
+                title: "The gateway failed internally.",
                 detail: message,
                 fix: "The cause is in the gateway's stderr log; internal causes are never returned to this page.",
             };
@@ -207,7 +228,7 @@ function fromGatewayError(error: ManagementApiError, context: ActionContext): Di
         default:
             return {
                 kind: "rejected",
-                headline: "The gateway rejected the request.",
+                title: "The gateway rejected the request.",
                 detail: message,
                 fix: null,
             };
@@ -216,16 +237,18 @@ function fromGatewayError(error: ManagementApiError, context: ActionContext): Di
 
 /**
  * Explains a failed management call in the panel's own words, keeping the
- * gateway's message verbatim as the detail (README §4.3): the app never
- * replaces what the gateway said, it only says what the operator can do about
- * it — and only where it can be certain.
+ * gateway's message verbatim as the detail wherever the gateway rendered one
+ * (README §4.3): the app never replaces what the gateway said, it only says
+ * what the operator can do about it — and only where it can be certain. A
+ * call the browser refused never reached the gateway, so its diagnosis
+ * speaks for the browser instead.
  */
 export function diagnoseFailure(error: unknown, context: ActionContext): Diagnosis {
     if (error instanceof ManagementApiError) {
         if (error.category === "contract") {
             return {
                 kind: "contract",
-                headline: "The gateway answered with a shape this build does not know.",
+                title: "The gateway answered with a shape this build does not know.",
                 detail: error.message,
                 fix: "This build's generated bindings and the gateway's management API disagree; regenerate the bindings or rebuild this frontend from a matching revision.",
             };
@@ -236,17 +259,15 @@ export function diagnoseFailure(error: unknown, context: ActionContext): Diagnos
         }
 
         if (error.httpStatus === null) {
-            const network = networkDiagnosis(context);
-
-            return {
-                ...network,
-                detail: error.message,
-            };
+            // The browser refused the call before any answer existed, so
+            // there is no gateway message to keep: the network diagnosis's
+            // own human wording is the detail (README §6.4).
+            return networkDiagnosis(context);
         }
 
         return {
             kind: "gateway",
-            headline: `The gateway answered HTTP ${error.httpStatus} without a management error body.`,
+            title: `The gateway answered HTTP ${error.httpStatus} without a management error body.`,
             detail: error.message,
             fix: "Check the gateway's stderr log for the cause.",
         };
@@ -254,7 +275,7 @@ export function diagnoseFailure(error: unknown, context: ActionContext): Diagnos
 
     return {
         kind: "unknown",
-        headline: "The call failed.",
+        title: "The call failed.",
         detail: error instanceof Error ? error.message : String(error),
         fix: null,
     };

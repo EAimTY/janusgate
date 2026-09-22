@@ -1,12 +1,10 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { formatCreatedAt } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
-import { performManagementCall } from "/src/management-api/outcome";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import { createScreenRead, readAll } from "/src/screens/read";
 import { CopyButton } from "/src/ui/api-key-form";
 import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
@@ -22,54 +20,16 @@ import { PageHeader } from "/src/ui/layout";
  */
 export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [keys, setKeys] = createSignal<ReadonlyArray<ApiKeyResponse>>([]);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
     const [search, setSearch] = createSignal("");
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
 
-    let controller: AbortController | null = null;
-
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const outcome = await performManagementCall(() => props.api.listApiKeys(call.signal));
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        setIsReading(false);
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause);
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+    const read = createScreenRead({
+        load: async (signal) => {
+            const [keysResult] = await readAll(signal, {
+                run: (cycle) => props.api.listApiKeys(cycle),
             });
-            return;
-        }
 
-        setFailure(null);
-        setKeys(outcome.result.api_keys);
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+            setKeys(keysResult.api_keys);
+        },
     });
 
     const visibleKeys = createMemo(() => {
@@ -102,10 +62,10 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={failure()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}
@@ -113,7 +73,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && failure() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <div class="flex flex-col gap-2">
                     <For
                         each={[
@@ -127,7 +87,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                 </div>
             </Show>
 
-            <Show when={hasRead()}>
+            <Show when={read.hasRead()}>
                 <Show
                     when={keys().length > 0}
                     fallback={

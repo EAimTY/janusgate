@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, Show } from "solid-js";
 import { credentialExpiryLine, formatTimestamp, nowMicros } from "/src/format";
 import { toUpdateProviderRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
@@ -21,12 +21,17 @@ import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
 import { defaultModelPrefix, normalizeModelPrefix } from "/src/management-api/provider-defaults";
 import { findOAuthProviderType, isOAuthProviderRow } from "/src/management-api/vocabulary";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
+import {
+    createScreenRead,
+    type FailureCall,
+    isSameProviderRow,
+    readAll,
+    type ScreenNotice,
+} from "/src/screens/read";
 import { Button, ButtonLink, TextField } from "/src/ui/controls";
-import { EmptyState, Notice, type NoticeTone, Skeleton } from "/src/ui/feedback";
-import { Glyph } from "/src/ui/glyph";
+import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { AuthorizeStep } from "/src/ui/oauth-flow";
 import {
@@ -34,13 +39,6 @@ import {
     ProviderEnabledSwitch,
     ProviderIdentityFields,
 } from "/src/ui/provider-form";
-
-type ScreenNotice = {
-    readonly tone: NoticeTone;
-    readonly title: string;
-    readonly detail?: string | null | undefined;
-    readonly fix?: string | null | undefined;
-};
 
 /**
  * One provider's edit page: its settings, its credentials, and its deletion.
@@ -54,91 +52,64 @@ export function ProviderEditScreen(props: {
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
-    const [notice, setNotice] = createSignal<ScreenNotice | null>(null);
+    // Reported by the settings form: an open form with unsaved edits holds its
+    // row against refreshes, so an operator's input can never silently vanish.
+    const [isFormDirty, setIsFormDirty] = createSignal(false);
 
-    let controller: AbortController | null = null;
+    // The notice is also the save's reported outcome, so only a new failure
+    // replaces it — a successful read keeps it (README §6.3).
+    const read = createScreenRead({
+        reReadOn: () => props.providerId,
+        isNoticeKeptOnSuccess: true,
+        load: async (signal) => {
+            const [providersResult, modelsResult] = await readAll(
+                signal,
+                {
+                    run: (cycle) => props.api.listProviders(cycle),
+                },
+                {
+                    run: (cycle) =>
+                        props.api.listModels(
+                            {
+                                provider_id: props.providerId,
+                            },
+                            cycle,
+                        ),
+                },
+            );
 
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const [providersOutcome, modelsOutcome] = await Promise.all([
-            performManagementCall(() => props.api.listProviders(call.signal)),
-            performManagementCall(() =>
-                props.api.listModels(
-                    {
-                        provider_id: props.providerId,
-                    },
-                    call.signal,
-                ),
-            ),
-        ]);
-
-        if (providersOutcome.status === "aborted" || modelsOutcome.status === "aborted") {
-            return;
-        }
-
-        setIsReading(false);
-
-        const failed =
-            providersOutcome.status === "failed"
-                ? providersOutcome
-                : modelsOutcome.status === "failed"
-                  ? modelsOutcome
-                  : null;
-
-        if (failed !== null) {
-            const diagnosis = describeCallFailure(failed.cause);
-
-            setNotice({
-                tone: "bad",
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
-            });
-            return;
-        }
-
-        setProviders(providersOutcome.status === "ok" ? providersOutcome.result.providers : []);
-        setModels(modelsOutcome.status === "ok" ? modelsOutcome.result.models : []);
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        props.providerId;
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+            setProviders(providersResult.providers);
+            setModels(modelsResult.models);
+        },
     });
 
-    const provider = createMemo(
+    const latestProvider = createMemo(
         () => providers().find((candidate) => candidate.id === props.providerId) ?? null,
     );
 
-    const reportFailure = (
-        cause: unknown,
-        action: "update-provider" | "delete-provider" | "start-oauth" | "reauthorize",
-    ): void => {
-        const diagnosis = describeCallFailure(cause, action);
+    // A refresh answering the same row keeps the row's identity, so the open
+    // form is not remounted; a row that genuinely changed on the gateway is
+    // held back while the form holds unsaved edits, and the hold is stated.
+    const provider = createMemo((previous: ProviderResponse | null | undefined) => {
+        const fresh = latestProvider();
 
-        setNotice({
-            tone: "bad",
-            title: diagnosis.headline,
-            detail: diagnosis.detail,
-            fix: diagnosis.fix,
-        });
-    };
+        if (previous === null || previous === undefined || fresh === null) {
+            return fresh;
+        }
+
+        return isSameProviderRow(previous, fresh) || isFormDirty() ? previous : fresh;
+    });
+
+    const isRowHeld = createMemo(() => {
+        const current = provider();
+        const fresh = latestProvider();
+
+        return current !== null && fresh !== null && !isSameProviderRow(current, fresh);
+    });
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={notice()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
                         tone={current().tone}
@@ -149,7 +120,7 @@ export function ProviderEditScreen(props: {
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && notice() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <PageHeader
                     title="Edit provider"
                     backHref={hrefs.providerDetail(props.providerId)}
@@ -158,7 +129,7 @@ export function ProviderEditScreen(props: {
                 <Skeleton class="h-64 w-full rounded-2xl" />
             </Show>
 
-            <Show when={hasRead() && provider() === null}>
+            <Show when={read.hasRead() && provider() === null}>
                 <PageHeader
                     title="Edit provider"
                     backHref={hrefs.providers()}
@@ -189,12 +160,21 @@ export function ProviderEditScreen(props: {
                             backLabel="Provider"
                         />
 
+                        <Show when={isRowHeld()}>
+                            <Notice
+                                tone="warn"
+                                title="This provider changed on the gateway while you have unsaved edits."
+                                detail="Save writes your edits over the gateway's version; Revert picks the gateway's version up."
+                            />
+                        </Show>
+
                         <DetailsCard
                             api={props.api}
                             provider={row}
-                            onReload={() => void read()}
-                            onNotice={setNotice}
-                            onFailure={reportFailure}
+                            onReload={read.reload}
+                            onNotice={read.showNotice}
+                            onFailure={read.reportFailure}
+                            onDirtyChange={setIsFormDirty}
                         />
 
                         <Show
@@ -206,9 +186,9 @@ export function ProviderEditScreen(props: {
                                     api={props.api}
                                     provider={row}
                                     oauthType={oauthType}
-                                    onReload={() => void read()}
-                                    onNotice={setNotice}
-                                    onFailure={reportFailure}
+                                    onReload={read.reload}
+                                    onNotice={read.showNotice}
+                                    onFailure={read.reportFailure}
                                 />
                             )}
                         </Show>
@@ -217,7 +197,7 @@ export function ProviderEditScreen(props: {
                             api={props.api}
                             provider={row}
                             modelCount={models().length}
-                            onFailure={reportFailure}
+                            onFailure={read.reportFailure}
                         />
                     </>
                 )}
@@ -245,9 +225,15 @@ function DetailsCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
     readonly onReload: () => void;
-    readonly onNotice: (notice: ScreenNotice) => void;
-    readonly onFailure: (cause: unknown, action: "update-provider") => void;
+    readonly onNotice: (notice: ScreenNotice | null) => void;
+    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
+    readonly onDirtyChange: (isDirty: boolean) => void;
 }): JSX.Element {
+    // The settings as the gateway last returned them; a save re-baselines
+    // them onto the values it sent, because the write answers `{}` and the
+    // resulting row is otherwise known only to this form. The API key is
+    // never part of it: the secret is write-only.
+    const [baseline, setBaseline] = createSignal(props.provider);
     const [isEnabled, setIsEnabled] = createSignal(props.provider.is_enabled);
     const [name, setName] = createSignal(props.provider.name);
     // A stored prefix equal to the name with a slash is the default, so the
@@ -264,7 +250,7 @@ function DetailsCard(props: {
     const [apiKey, setApiKey] = createSignal("");
     const [isSaving, setIsSaving] = createSignal(false);
 
-    const isStatic = (): boolean => findOAuthProviderType(props.provider.type) === null;
+    const isStatic = (): boolean => findOAuthProviderType(baseline().type) === null;
 
     const effectivePrefix = createMemo(() =>
         isCustomPrefix() ? normalizeModelPrefix(customPrefix()) : defaultModelPrefix(name()),
@@ -292,11 +278,10 @@ function DetailsCard(props: {
 
     const isDirty = createMemo(
         () =>
-            isEnabled() !== props.provider.is_enabled ||
-            name() !== props.provider.name ||
-            effectivePrefix() !== props.provider.model_prefix ||
-            (isStatic() &&
-                (trimmedBaseUrl() !== staticBaseUrlOf(props.provider) || apiKey() !== "")),
+            isEnabled() !== baseline().is_enabled ||
+            name() !== baseline().name ||
+            effectivePrefix() !== baseline().model_prefix ||
+            (isStatic() && (trimmedBaseUrl() !== staticBaseUrlOf(baseline()) || apiKey() !== "")),
     );
 
     // A name is a human label, but the contract still requires it to hold
@@ -306,17 +291,25 @@ function DetailsCard(props: {
     const canSave = (): boolean =>
         isDirty() && isNamePresent() && prefixError() === null && isConnectionValid();
 
+    // The screen holds the form's row while this dirt stands (README §6.3).
+    createEffect(
+        () => isDirty(),
+        (isDirtyValue) => {
+            props.onDirtyChange(isDirtyValue);
+        },
+    );
+
     const revert = (): void => {
-        setIsEnabled(props.provider.is_enabled);
-        setName(props.provider.name);
-        setIsCustomPrefix(props.provider.model_prefix !== `${props.provider.name}/`);
+        setIsEnabled(baseline().is_enabled);
+        setName(baseline().name);
+        setIsCustomPrefix(baseline().model_prefix !== `${baseline().name}/`);
         setCustomPrefix(
-            props.provider.model_prefix !== `${props.provider.name}/`
-                ? props.provider.model_prefix
-                : "",
+            baseline().model_prefix !== `${baseline().name}/` ? baseline().model_prefix : "",
         );
-        setBaseUrl(staticBaseUrlOf(props.provider));
+        setBaseUrl(staticBaseUrlOf(baseline()));
         setApiKey("");
+        // Reverting resolves a held row onto the gateway's current version.
+        props.onReload();
     };
 
     const save = async (): Promise<void> => {
@@ -353,11 +346,31 @@ function DetailsCard(props: {
         }
 
         if (outcome.status === "failed") {
-            props.onFailure(outcome.cause, "update-provider");
+            props.onFailure(outcome.cause, {
+                action: "update-provider",
+            });
             return;
         }
 
-        const prefixChanged = effectivePrefix() !== props.provider.model_prefix;
+        const prefixChanged = effectivePrefix() !== baseline().model_prefix;
+        // The write's complete desired state: the update rewrote exactly
+        // these fields, so the row they describe is this form's new truth.
+        setBaseline(
+            isOAuthProviderRow(baseline())
+                ? {
+                      ...baseline(),
+                      name: name(),
+                      model_prefix: effectivePrefix(),
+                      is_enabled: isEnabled(),
+                  }
+                : {
+                      ...baseline(),
+                      name: name(),
+                      model_prefix: effectivePrefix(),
+                      is_enabled: isEnabled(),
+                      base_url: trimmedBaseUrl(),
+                  },
+        );
         setApiKey("");
         props.onNotice({
             tone: "ok",
@@ -392,6 +405,7 @@ function DetailsCard(props: {
                     name={name()}
                     namePlaceholder={props.provider.name}
                     onNameInput={setName}
+                    nameError={isNamePresent() ? null : "A provider needs a name."}
                     isCustomPrefix={isCustomPrefix()}
                     onCustomPrefixToggle={setIsCustomPrefix}
                     customPrefix={customPrefix()}
@@ -400,19 +414,6 @@ function DetailsCard(props: {
                     prefixError={prefixError()}
                     isDisabled={isSaving()}
                 />
-
-                <Show when={!isNamePresent()}>
-                    <p
-                        class="flex items-start gap-1.5 text-[13px] text-bad"
-                        role="alert"
-                    >
-                        <Glyph
-                            name="alert"
-                            class="mt-0.5 shrink-0"
-                        />
-                        A provider needs a name.
-                    </p>
-                </Show>
 
                 <Show when={isStatic()}>
                     <CompatibleConnectionFields
@@ -463,8 +464,8 @@ function CredentialsCard(props: {
     readonly provider: ProviderResponse;
     readonly oauthType: OAuthProviderType;
     readonly onReload: () => void;
-    readonly onNotice: (notice: ScreenNotice) => void;
-    readonly onFailure: (cause: unknown, action: "start-oauth" | "reauthorize") => void;
+    readonly onNotice: (notice: ScreenNotice | null) => void;
+    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
     const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
     const [code, setCode] = createSignal("");
@@ -499,7 +500,9 @@ function CredentialsCard(props: {
         }
 
         if (outcome.status === "failed") {
-            props.onFailure(outcome.cause, "start-oauth");
+            props.onFailure(outcome.cause, {
+                action: "start-oauth",
+            });
             return;
         }
 
@@ -541,7 +544,9 @@ function CredentialsCard(props: {
         }
 
         if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, "reauthorize");
+            const diagnosis = describeCallFailure(outcome.cause, {
+                action: "reauthorize",
+            });
 
             if (diagnosis.kind === "gone") {
                 // The state is consumed; the flow resets and the listing
@@ -551,7 +556,9 @@ function CredentialsCard(props: {
                 props.onReload();
             }
 
-            props.onFailure(outcome.cause, "reauthorize");
+            props.onFailure(outcome.cause, {
+                action: "reauthorize",
+            });
             return;
         }
 
@@ -639,7 +646,7 @@ function DangerCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
     readonly modelCount: number;
-    readonly onFailure: (cause: unknown, action: "delete-provider") => void;
+    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
     const [isArmed, setIsArmed] = createSignal(false);
     const [isDeleting, setIsDeleting] = createSignal(false);
@@ -664,7 +671,9 @@ function DangerCard(props: {
         }
 
         if (outcome.status === "failed") {
-            props.onFailure(outcome.cause, "delete-provider");
+            props.onFailure(outcome.cause, {
+                action: "delete-provider",
+            });
             setIsArmed(false);
             return;
         }

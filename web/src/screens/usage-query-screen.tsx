@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { formatTokenCount, parseDateTimeInputToMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
@@ -7,11 +7,10 @@ import type {
     UsageBucket,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
-import { performManagementCall } from "/src/management-api/outcome";
 import { USAGE_GROUP_BY_OPTIONS } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import { ReadCallFailure, readAll, readOne, type ScreenNotice } from "/src/screens/read";
 import {
     type UsageEntities,
     usageApiKeyLabel,
@@ -44,11 +43,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
     const [hasRead, setHasRead] = createSignal(false);
     const [isReading, setIsReading] = createSignal(true);
     const [isQuerying, setIsQuerying] = createSignal(false);
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
+    const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     let controller: AbortController | null = null;
 
@@ -86,29 +81,34 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         };
     };
 
-    const run = async (signal: AbortSignal): Promise<boolean> => {
-        const outcome = await performManagementCall(() =>
-            props.api.queryUsage(queryRequest(), signal),
-        );
-
-        if (outcome.status === "aborted") {
-            return false;
-        }
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, "query-usage");
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+    /**
+     * Runs the aggregation query, answering whether it produced buckets. This
+     * screen stays outside the shared read harness because the query is also
+     * a form submission: the submit and the screen read share one controller,
+     * so a submit stops an in-flight read rather than racing it.
+     */
+    const runQuery = async (signal: AbortSignal): Promise<boolean> => {
+        try {
+            const result = await readOne(signal, {
+                action: "query-usage",
+                run: (cycle) => props.api.queryUsage(queryRequest(), cycle),
             });
+
+            setFailure(null);
+            setBuckets(result.buckets);
+            return true;
+        } catch (error) {
+            if (error instanceof ReadCallFailure) {
+                setFailure(error.notice);
+                return false;
+            }
+
+            if (!signal.aborted) {
+                throw error;
+            }
+
             return false;
         }
-
-        setFailure(null);
-        setBuckets(outcome.result.buckets);
-        return true;
     };
 
     const read = async (): Promise<void> => {
@@ -118,53 +118,45 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         controller = call;
         setIsReading(true);
 
-        const [providersOutcome, modelsOutcome, apiKeysOutcome] = await Promise.all([
-            performManagementCall(() => props.api.listProviders(call.signal)),
-            performManagementCall(() => props.api.listModels({}, call.signal)),
-            performManagementCall(() => props.api.listApiKeys(call.signal)),
-        ]);
+        try {
+            const [providersResult, modelsResult, apiKeysResult] = await readAll(
+                call.signal,
+                {
+                    run: (cycle) => props.api.listProviders(cycle),
+                },
+                {
+                    run: (cycle) => props.api.listModels({}, cycle),
+                },
+                {
+                    run: (cycle) => props.api.listApiKeys(cycle),
+                },
+            );
 
-        if (
-            providersOutcome.status === "aborted" ||
-            modelsOutcome.status === "aborted" ||
-            apiKeysOutcome.status === "aborted"
-        ) {
-            return;
-        }
-
-        const failed =
-            providersOutcome.status === "failed"
-                ? providersOutcome
-                : modelsOutcome.status === "failed"
-                  ? modelsOutcome
-                  : apiKeysOutcome.status === "failed"
-                    ? apiKeysOutcome
-                    : null;
-
-        if (failed !== null) {
-            const diagnosis = describeCallFailure(failed.cause);
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+            setEntities({
+                providers: providersResult.providers,
+                models: modelsResult.models,
+                apiKeys: apiKeysResult.api_keys,
             });
-            setIsReading(false);
-            return;
+
+            if (await runQuery(call.signal)) {
+                setHasRead(true);
+                reportRefresh();
+            }
+        } catch (error) {
+            if (error instanceof ReadCallFailure) {
+                setFailure(error.notice);
+            } else if (!call.signal.aborted) {
+                throw error;
+            }
+        } finally {
+            // A superseded cycle's abort must not drop the loading state the
+            // cycle that superseded it raised (as the read harness does, its
+            // abort path installs nothing): only the cycle still holding the
+            // controller resets it.
+            if (!call.signal.aborted) {
+                setIsReading(false);
+            }
         }
-
-        setEntities({
-            providers: providersOutcome.status === "ok" ? providersOutcome.result.providers : [],
-            models: modelsOutcome.status === "ok" ? modelsOutcome.result.models : [],
-            apiKeys: apiKeysOutcome.status === "ok" ? apiKeysOutcome.result.api_keys : [],
-        });
-
-        if (await run(call.signal)) {
-            setHasRead(true);
-            reportRefresh();
-        }
-
-        setIsReading(false);
     };
 
     const submit = async (event: SubmitEvent): Promise<void> => {
@@ -180,7 +172,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         controller = call;
         setIsQuerying(true);
 
-        if (await run(call.signal)) {
+        if (await runQuery(call.signal)) {
             setHasRead(true);
             reportRefresh();
         }
@@ -188,12 +180,14 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         setIsQuerying(false);
     };
 
-    createTrackedEffect(() => {
-        refreshRequest();
-        void read();
+    createEffect(
+        () => refreshRequest(),
+        () => {
+            void read();
 
-        return () => controller?.abort();
-    });
+            return () => controller?.abort();
+        },
+    );
 
     const groupOptions = createMemo(() =>
         USAGE_GROUP_BY_OPTIONS.map((option) => ({
@@ -247,7 +241,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
             <Show when={failure()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}

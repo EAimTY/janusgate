@@ -1,13 +1,12 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { createSignal, For, onCleanup, Show } from "solid-js";
 import { formatCreatedAt, formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiLogOutcome, ApiLogResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import { createScreenRead, readAll, screenFailureNotice } from "/src/screens/read";
 import {
     type UsageEntities,
     usageApiKeyLabel,
@@ -34,64 +33,61 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
     });
     const [rows, setRows] = createSignal<ReadonlyArray<ApiLogResponse>>([]);
     const [hasMore, setHasMore] = createSignal(true);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
     const [isLoadingMore, setIsLoadingMore] = createSignal(false);
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
 
-    // The read that owns the stream and the loader that extends it. Each async
-    // continuation checks that its controller is still the current one and
-    // discards its result otherwise: a superseded call must write nothing.
-    let reader: AbortController | null = null;
+    // The loader that extends the stream, beside the harness's read cycle. Its
+    // async continuation checks that its controller is still the current one
+    // and discards its result otherwise: a superseded call writes nothing.
     let loader: AbortController | null = null;
 
-    const readEntities = async (signal: AbortSignal): Promise<boolean> => {
-        const [providersOutcome, modelsOutcome, apiKeysOutcome] = await Promise.all([
-            performManagementCall(() => props.api.listProviders(signal)),
-            performManagementCall(() => props.api.listModels({}, signal)),
-            performManagementCall(() => props.api.listApiKeys(signal)),
-        ]);
+    onCleanup(() => {
+        loader?.abort();
+    });
 
-        if (
-            providersOutcome.status === "aborted" ||
-            modelsOutcome.status === "aborted" ||
-            apiKeysOutcome.status === "aborted"
-        ) {
-            return false;
-        }
+    const read = createScreenRead({
+        load: async (signal) => {
+            // A page the refresh is about to replace must never land; the
+            // refresh owns the stream now.
+            loader?.abort();
+            loader = null;
+            setIsLoadingMore(false);
 
-        const failed =
-            providersOutcome.status === "failed"
-                ? providersOutcome
-                : modelsOutcome.status === "failed"
-                  ? modelsOutcome
-                  : apiKeysOutcome.status === "failed"
-                    ? apiKeysOutcome
-                    : null;
+            const [providersResult, modelsResult, apiKeysResult, pageResult] = await readAll(
+                signal,
+                {
+                    run: (cycle) => props.api.listProviders(cycle),
+                },
+                {
+                    run: (cycle) => props.api.listModels({}, cycle),
+                },
+                {
+                    run: (cycle) => props.api.listApiKeys(cycle),
+                },
+                {
+                    action: "list-usage",
+                    run: (cycle) =>
+                        props.api.listUsage(
+                            {
+                                limit: USAGE_PAGE_SIZE,
+                            },
+                            cycle,
+                        ),
+                },
+            );
 
-        if (failed !== null) {
-            const diagnosis = describeCallFailure(failed.cause);
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+            setEntities({
+                providers: providersResult.providers,
+                models: modelsResult.models,
+                apiKeys: apiKeysResult.api_keys,
             });
-            return false;
-        }
 
-        setEntities({
-            providers: providersOutcome.status === "ok" ? providersOutcome.result.providers : [],
-            models: modelsOutcome.status === "ok" ? modelsOutcome.result.models : [],
-            apiKeys: apiKeysOutcome.status === "ok" ? apiKeysOutcome.result.api_keys : [],
-        });
-        return true;
-    };
+            const continuation = nextUsagePage([], pageResult.api_logs);
+            setRows(continuation.rows);
+            setHasMore(continuation.hasMore);
+        },
+    });
 
+    /** Reads one `usage:list` page, stating a failure and answering nothing. */
     const readPage = async (
         signal: AbortSignal,
         beforeId: number | null,
@@ -115,65 +111,21 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
         }
 
         if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, "list-usage");
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
-            });
+            read.showNotice(
+                screenFailureNotice(outcome.cause, {
+                    action: "list-usage",
+                }),
+            );
             return null;
         }
 
         return outcome.result.api_logs;
     };
 
-    const read = async (): Promise<void> => {
-        reader?.abort();
-        loader?.abort();
-        loader = null;
-
-        const call = new AbortController();
-        reader = call;
-        setIsReading(true);
-        // The aborted loader will never land; the refresh owns the stream now.
-        setIsLoadingMore(false);
-
-        const entitiesRead = await readEntities(call.signal);
-
-        if (call !== reader) {
-            return;
-        }
-
-        if (!entitiesRead) {
-            setIsReading(false);
-            return;
-        }
-
-        const page = await readPage(call.signal, null);
-
-        if (call !== reader) {
-            return;
-        }
-
-        if (page === null) {
-            setIsReading(false);
-            return;
-        }
-
-        const continuation = nextUsagePage([], page);
-        setFailure(null);
-        setRows(continuation.rows);
-        setHasMore(continuation.hasMore);
-        setHasRead(true);
-        setIsReading(false);
-        reportRefresh();
-    };
-
     const loadMore = async (): Promise<void> => {
         // A refresh in flight is about to replace the stream wholesale;
         // extending it would resurrect rows the replacement invalidates.
-        if (isLoadingMore() || isReading()) {
+        if (isLoadingMore() || read.isReading()) {
             return;
         }
 
@@ -204,20 +156,10 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
         }
 
         const continuation = nextUsagePage(rows(), page);
-        setFailure(null);
+        read.showNotice(null);
         setRows(continuation.rows);
         setHasMore(continuation.hasMore);
     };
-
-    createTrackedEffect(() => {
-        refreshRequest();
-        void read();
-
-        return () => {
-            reader?.abort();
-            loader?.abort();
-        };
-    });
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -233,10 +175,10 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={failure()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}
@@ -244,7 +186,7 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && failure() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <div class="flex flex-col gap-2">
                     <For
                         each={[
@@ -258,7 +200,7 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
                 </div>
             </Show>
 
-            <Show when={hasRead()}>
+            <Show when={read.hasRead()}>
                 <Show
                     when={rows().length > 0}
                     fallback={

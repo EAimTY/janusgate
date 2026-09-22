@@ -80,7 +80,7 @@ describe("diagnoseFailure", () => {
         expect(diagnosis.fix).toContain("fresh one");
     });
 
-    it("points an upstream refusal at the provider's credentials when discovering models", () => {
+    it("keeps an upstream refusal during discovery agnostic when no provider type is known", () => {
         const diagnosis = diagnoseFailure(
             gatewayFailure(ErrorCode.UpstreamError, "upstream answered 502"),
             {
@@ -90,7 +90,39 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("upstream");
-        expect(diagnosis.fix).toContain("reauthorizing");
+        expect(diagnosis.fix).toContain("provider's state");
+    });
+
+    it("points an OAuth provider's discovery refusal at reconnecting its expired authorization", () => {
+        const diagnosis = diagnoseFailure(
+            gatewayFailure(ErrorCode.UpstreamError, "upstream answered 502"),
+            {
+                ...context,
+                action: "discover-models",
+                providerType: "codex_oauth",
+            },
+        );
+
+        expect(diagnosis.kind).toBe("upstream");
+        expect(diagnosis.fix).toContain("authorization expired");
+        expect(diagnosis.fix).toContain("reconnect");
+        expect(diagnosis.fix).not.toContain("API key");
+    });
+
+    it("points a static-key provider's discovery refusal at its connection fields", () => {
+        const diagnosis = diagnoseFailure(
+            gatewayFailure(ErrorCode.UpstreamError, "upstream answered 502"),
+            {
+                ...context,
+                action: "discover-models",
+                providerType: "gemini_generate_content",
+            },
+        );
+
+        expect(diagnosis.kind).toBe("upstream");
+        expect(diagnosis.fix).toContain("base URL");
+        expect(diagnosis.fix).toContain("API key");
+        expect(diagnosis.fix).not.toContain("reconnect");
     });
 
     it("keeps internal failures opaque and points at the gateway's log", () => {
@@ -110,7 +142,7 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("rejected");
-        expect(diagnosis.headline.length).toBeGreaterThan(0);
+        expect(diagnosis.title.length).toBeGreaterThan(0);
     });
 
     it("classifies a shape mismatch as a version disagreement", () => {
@@ -176,6 +208,40 @@ describe("diagnoseFailure", () => {
         expect(blocked.fix).toContain("management_api.cors.allowed_origin");
         expect(blocked.fix).toContain("https://admin.example.com");
         expect(unreached.fix).not.toContain("management_api.cors.allowed_origin");
+    });
+
+    it("renders the browser-refused network failures without the browser's jargon", () => {
+        for (const reachability of [
+            "reached",
+            "unreached",
+            "unknown",
+        ] as const) {
+            const diagnosis = diagnoseFailure(
+                new ManagementApiError("transport", "Network request failed: Failed to fetch", {
+                    cause: new TypeError("Failed to fetch"),
+                }),
+                {
+                    ...context,
+                    reachability,
+                },
+            );
+
+            expect(diagnosis.detail).not.toContain("Failed to fetch");
+            expect(diagnosis.detail.length).toBeGreaterThan(0);
+        }
+    });
+
+    it("renders a same-origin network failure without the browser's jargon", () => {
+        const diagnosis = diagnoseFailure(
+            new ManagementApiError("transport", "Network request failed: Failed to fetch"),
+            {
+                baseUrl: "https://gateway.example.com",
+                pageOrigin: "https://gateway.example.com",
+            },
+        );
+
+        expect(diagnosis.kind).toBe("unreachable");
+        expect(diagnosis.detail).not.toContain("Failed to fetch");
     });
 
     it("reports an unshaped HTTP failure with its status", () => {

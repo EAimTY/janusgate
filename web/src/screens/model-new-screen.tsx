@@ -1,13 +1,17 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 import { toCreateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { compositionMessage, isModelIdentifier } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import {
+    createScreenRead,
+    readAll,
+    type ScreenNotice,
+    screenFailureNotice,
+} from "/src/screens/read";
 import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -27,53 +31,15 @@ export function ModelNewScreen(props: {
     readonly providerFilter: number | null;
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
 
-    let controller: AbortController | null = null;
-
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const outcome = await performManagementCall(() => props.api.listProviders(call.signal));
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        setIsReading(false);
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause);
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+    const read = createScreenRead({
+        load: async (signal) => {
+            const [providersResult] = await readAll(signal, {
+                run: (cycle) => props.api.listProviders(cycle),
             });
-            return;
-        }
 
-        setFailure(null);
-        setProviders(outcome.result.providers);
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+            setProviders(providersResult.providers);
+        },
     });
 
     const fixedProvider = createMemo(() =>
@@ -97,10 +63,10 @@ export function ModelNewScreen(props: {
                 backLabel={backLabel()}
             />
 
-            <Show when={failure()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}
@@ -108,11 +74,11 @@ export function ModelNewScreen(props: {
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && failure() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <Skeleton class="h-64 w-full rounded-2xl" />
             </Show>
 
-            <Show when={hasRead()}>
+            <Show when={read.hasRead()}>
                 <Show
                     when={providers().length > 0}
                     fallback={
@@ -172,11 +138,7 @@ function ModelCreateForm(props: {
     const [hasIdOverride, setHasIdOverride] = createSignal(false);
     const [idOverride, setIdOverride] = createSignal("");
     const [isCreating, setIsCreating] = createSignal(false);
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
+    const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     const selectedProvider = createMemo(
         () => props.providers.find((row) => String(row.id) === providerId()) ?? null,
@@ -249,13 +211,11 @@ function ModelCreateForm(props: {
         }
 
         if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, "create-model");
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
-            });
+            setFailure(
+                screenFailureNotice(outcome.cause, {
+                    action: "create-model",
+                }),
+            );
             return;
         }
 
@@ -283,7 +243,7 @@ function ModelCreateForm(props: {
             <Show when={failure()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}

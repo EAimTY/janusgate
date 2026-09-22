@@ -1,17 +1,14 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { performManagementCall } from "/src/management-api/outcome";
 import { discoveryStateLabel } from "/src/management-api/vocabulary";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import { createScreenRead, readAll } from "/src/screens/read";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
-import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { modelDiscoveryBadge, modelServingBadge } from "/src/ui/models-table";
 
@@ -25,65 +22,23 @@ export function ModelDetailScreen(props: {
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
 
-    let controller: AbortController | null = null;
+    const read = createScreenRead({
+        reReadOn: () => props.modelId,
+        load: async (signal) => {
+            const [providersResult, modelsResult] = await readAll(
+                signal,
+                {
+                    run: (cycle) => props.api.listProviders(cycle),
+                },
+                {
+                    run: (cycle) => props.api.listModels({}, cycle),
+                },
+            );
 
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const [providersOutcome, modelsOutcome] = await Promise.all([
-            performManagementCall(() => props.api.listProviders(call.signal)),
-            performManagementCall(() => props.api.listModels({}, call.signal)),
-        ]);
-
-        if (providersOutcome.status === "aborted" || modelsOutcome.status === "aborted") {
-            return;
-        }
-
-        setIsReading(false);
-
-        const failed =
-            providersOutcome.status === "failed"
-                ? providersOutcome
-                : modelsOutcome.status === "failed"
-                  ? modelsOutcome
-                  : null;
-
-        if (failed !== null) {
-            const diagnosis = describeCallFailure(failed.cause);
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
-            });
-            return;
-        }
-
-        setFailure(null);
-        setProviders(providersOutcome.status === "ok" ? providersOutcome.result.providers : []);
-        setModels(modelsOutcome.status === "ok" ? modelsOutcome.result.models : []);
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        props.modelId;
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+            setProviders(providersResult.providers);
+            setModels(modelsResult.models);
+        },
     });
 
     const model = createMemo(() => models().find((row) => row.id === props.modelId) ?? null);
@@ -97,10 +52,10 @@ export function ModelDetailScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={failure()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}
@@ -108,7 +63,7 @@ export function ModelDetailScreen(props: {
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && failure() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <PageHeader
                     title="Model"
                     backHref={hrefs.models(null)}
@@ -117,7 +72,7 @@ export function ModelDetailScreen(props: {
                 <Skeleton class="h-64 w-full rounded-2xl" />
             </Show>
 
-            <Show when={hasRead() && model() === null}>
+            <Show when={read.hasRead() && model() === null}>
                 <PageHeader
                     title="Model"
                     backHref={hrefs.models(null)}
@@ -160,46 +115,6 @@ export function ModelDetailScreen(props: {
     );
 }
 
-/**
- * The vanished row's recovery paths, each a real link: discovery runs on the
- * owning provider's page, and claiming back is the Create model page opened
- * with this model's provider fixed. The same warn notice `Notice` renders,
- * with the two recovery actions linked where they are named.
- */
-function VanishedModelNotice(props: { readonly providerId: number }): JSX.Element {
-    return (
-        <div
-            class="flex items-start gap-2.5 rounded-xl border border-warn/30 bg-warn-soft px-3.5 py-3 text-ink"
-            role="status"
-        >
-            <Glyph
-                name="alert"
-                class="mt-0.5 shrink-0"
-            />
-            <div class="min-w-0 flex-1">
-                <p class="text-[13.5px] font-medium">The upstream no longer reports this model.</p>
-                <p class="mt-1 break-words text-ink-dim">
-                    It serves nothing meanwhile.{" "}
-                    <AppLink
-                        href={hrefs.providerDetail(props.providerId)}
-                        class="font-medium text-accent hover:text-accent-strong"
-                    >
-                        Discover again
-                    </AppLink>
-                    {" when the upstream lists it, or "}
-                    <AppLink
-                        href={hrefs.modelNew(props.providerId)}
-                        class="font-medium text-accent hover:text-accent-strong"
-                    >
-                        claim it back from the Create model page
-                    </AppLink>
-                    {"."}
-                </p>
-            </div>
-        </div>
-    );
-}
-
 function ModelFacts(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse | null;
@@ -235,7 +150,31 @@ function ModelFacts(props: {
             </PageHeader>
 
             <Show when={props.model.discovery_state === "vanished"}>
-                <VanishedModelNotice providerId={props.model.provider_id} />
+                {/* The same warn notice every screen states, with the two
+                recovery paths linked where they are named. */}
+                <Notice
+                    tone="warn"
+                    title="The upstream no longer reports this model."
+                    detail={
+                        <>
+                            It serves nothing meanwhile.{" "}
+                            <AppLink
+                                href={hrefs.providerDetail(props.model.provider_id)}
+                                class="font-medium text-accent hover:text-accent-strong"
+                            >
+                                Discover again
+                            </AppLink>
+                            {" when the upstream lists it, or "}
+                            <AppLink
+                                href={hrefs.modelNew(props.model.provider_id)}
+                                class="font-medium text-accent hover:text-accent-strong"
+                            >
+                                claim it back from the Create model page
+                            </AppLink>
+                            {"."}
+                        </>
+                    }
+                />
             </Show>
 
             <Card>

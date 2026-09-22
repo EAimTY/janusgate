@@ -105,6 +105,7 @@ export function ProviderIdentityFields(props: {
     readonly name: string;
     readonly namePlaceholder: string;
     readonly onNameInput: (value: string) => void;
+    readonly nameError?: string | null | undefined;
     readonly isCustomPrefix: boolean;
     readonly onCustomPrefixToggle: (isCustom: boolean) => void;
     readonly customPrefix: string;
@@ -122,6 +123,7 @@ export function ProviderIdentityFields(props: {
                 placeholder={props.namePlaceholder}
                 isDisabled={props.isDisabled ?? false}
                 isData={false}
+                error={props.nameError}
             />
             <Switch
                 label="Custom model prefix"

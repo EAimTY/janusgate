@@ -1,12 +1,10 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { performManagementCall } from "/src/management-api/outcome";
 import { providerTypeLabel } from "/src/management-api/vocabulary";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import { createScreenRead, readAll } from "/src/screens/read";
 import { ButtonLink } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
@@ -22,65 +20,23 @@ import { ProviderList } from "/src/ui/providers-table";
 export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
     const [search, setSearch] = createSignal("");
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
 
-    let controller: AbortController | null = null;
+    const read = createScreenRead({
+        load: async (signal) => {
+            const [providersResult, modelsResult] = await readAll(
+                signal,
+                {
+                    run: (cycle) => props.api.listProviders(cycle),
+                },
+                {
+                    run: (cycle) => props.api.listModels({}, cycle),
+                },
+            );
 
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const [providersOutcome, modelsOutcome] = await Promise.all([
-            performManagementCall(() => props.api.listProviders(call.signal)),
-            performManagementCall(() => props.api.listModels({}, call.signal)),
-        ]);
-
-        if (providersOutcome.status === "aborted" || modelsOutcome.status === "aborted") {
-            return;
-        }
-
-        setIsReading(false);
-
-        const failed =
-            providersOutcome.status === "failed"
-                ? providersOutcome
-                : modelsOutcome.status === "failed"
-                  ? modelsOutcome
-                  : null;
-
-        if (failed !== null) {
-            const diagnosis = describeCallFailure(failed.cause);
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
-            });
-            return;
-        }
-
-        setFailure(null);
-        setProviders(providersOutcome.status === "ok" ? providersOutcome.result.providers : []);
-        setModels(modelsOutcome.status === "ok" ? modelsOutcome.result.models : []);
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+            setProviders(providersResult.providers);
+            setModels(modelsResult.models);
+        },
     });
 
     const modelCounts = createMemo(() => {
@@ -122,10 +78,10 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={failure()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}
@@ -133,7 +89,7 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && failure() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <div class="flex flex-col gap-2">
                     <For
                         each={[
@@ -147,7 +103,7 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                 </div>
             </Show>
 
-            <Show when={hasRead()}>
+            <Show when={read.hasRead()}>
                 <Show
                     when={providers().length > 0}
                     fallback={

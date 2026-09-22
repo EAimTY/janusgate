@@ -1,12 +1,10 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 import { formatCreatedAt } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
-import { performManagementCall } from "/src/management-api/outcome";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import { createScreenRead, readAll } from "/src/screens/read";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
 import { ButtonLink } from "/src/ui/controls";
@@ -23,54 +21,16 @@ export function ApiKeyDetailScreen(props: {
     readonly apiKeyId: number;
 }): JSX.Element {
     const [keys, setKeys] = createSignal<ReadonlyArray<ApiKeyResponse>>([]);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
 
-    let controller: AbortController | null = null;
-
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const outcome = await performManagementCall(() => props.api.listApiKeys(call.signal));
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        setIsReading(false);
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause);
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+    const read = createScreenRead({
+        reReadOn: () => props.apiKeyId,
+        load: async (signal) => {
+            const [keysResult] = await readAll(signal, {
+                run: (cycle) => props.api.listApiKeys(cycle),
             });
-            return;
-        }
 
-        setFailure(null);
-        setKeys(outcome.result.api_keys);
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        props.apiKeyId;
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+            setKeys(keysResult.api_keys);
+        },
     });
 
     const apiKey = createMemo(
@@ -79,10 +39,10 @@ export function ApiKeyDetailScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={failure()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}
@@ -90,7 +50,7 @@ export function ApiKeyDetailScreen(props: {
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && failure() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <PageHeader
                     title="API key"
                     backHref={hrefs.apiKeys()}
@@ -99,7 +59,7 @@ export function ApiKeyDetailScreen(props: {
                 <Skeleton class="h-64 w-full rounded-2xl" />
             </Show>
 
-            <Show when={hasRead() && apiKey() === null}>
+            <Show when={read.hasRead() && apiKey() === null}>
                 <PageHeader
                     title="API key"
                     backHref={hrefs.apiKeys()}

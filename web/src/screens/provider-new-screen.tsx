@@ -133,7 +133,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
         setDiagnosis({
             kind: "rejected",
-            headline: "Paste the callback URL or the code.",
+            title: "Paste the callback URL or the code.",
             detail: "That paste holds neither a bare code nor a URL with a code in it.",
             fix: "Copy the whole address the login landed on, or just its code, and paste it here.",
         });
@@ -168,7 +168,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
 
         if (outcome.status === "failed") {
-            setDiagnosis(describeCallFailure(outcome.cause, "create-provider"));
+            setDiagnosis(
+                describeCallFailure(outcome.cause, {
+                    action: "create-provider",
+                }),
+            );
             return;
         }
 
@@ -196,7 +200,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
 
         if (outcome.status === "failed") {
-            setDiagnosis(describeCallFailure(outcome.cause, "start-oauth"));
+            setDiagnosis(
+                describeCallFailure(outcome.cause, {
+                    action: "start-oauth",
+                }),
+            );
             return;
         }
 
@@ -235,7 +243,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
 
         if (outcome.status === "failed") {
-            const failure = describeCallFailure(outcome.cause, "complete-oauth");
+            const failure = describeCallFailure(outcome.cause, {
+                action: "complete-oauth",
+            });
             setDiagnosis(failure);
 
             if (failure.kind === "gone") {
@@ -282,7 +292,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 {(failure) => (
                     <Notice
                         tone="bad"
-                        title={failure().headline}
+                        title={failure().title}
                         detail={failure().detail}
                         fix={failure().fix}
                     />

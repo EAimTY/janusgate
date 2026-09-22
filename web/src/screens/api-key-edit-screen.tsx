@@ -1,24 +1,22 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, Show } from "solid-js";
 import { toUpdateApiKeyRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { compositionMessage, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import {
+    createScreenRead,
+    type FailureCall,
+    isSameApiKeyRow,
+    readAll,
+    type ScreenNotice,
+} from "/src/screens/read";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { Button, ButtonLink, Switch } from "/src/ui/controls";
-import { EmptyState, Notice, type NoticeTone, Skeleton } from "/src/ui/feedback";
+import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-
-type ScreenNotice = {
-    readonly tone: NoticeTone;
-    readonly title: string;
-    readonly detail?: string | null | undefined;
-    readonly fix?: string | null | undefined;
-};
 
 /**
  * One serving key's edit page: its settings and its deletion. The form opens
@@ -30,72 +28,50 @@ export function ApiKeyEditScreen(props: {
     readonly apiKeyId: number;
 }): JSX.Element {
     const [keys, setKeys] = createSignal<ReadonlyArray<ApiKeyResponse>>([]);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
-    const [notice, setNotice] = createSignal<ScreenNotice | null>(null);
+    // Reported by the settings form: an open form with unsaved edits holds its
+    // row against refreshes, so an operator's input can never silently vanish.
+    const [isFormDirty, setIsFormDirty] = createSignal(false);
 
-    let controller: AbortController | null = null;
-
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const outcome = await performManagementCall(() => props.api.listApiKeys(call.signal));
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        setIsReading(false);
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause);
-
-            setNotice({
-                tone: "bad",
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+    // The notice is also the save's reported outcome, so only a new failure
+    // replaces it — a successful read keeps it (README §6.3).
+    const read = createScreenRead({
+        isNoticeKeptOnSuccess: true,
+        load: async (signal) => {
+            const [keysResult] = await readAll(signal, {
+                run: (cycle) => props.api.listApiKeys(cycle),
             });
-            return;
-        }
 
-        // A successful read keeps the notice: a save reports through it just
-        // before this reload runs, and only a new failure replaces it.
-        setKeys(outcome.result.api_keys);
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        props.apiKeyId;
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+            setKeys(keysResult.api_keys);
+        },
     });
 
-    const apiKey = createMemo(
+    const latestKey = createMemo(
         () => keys().find((candidate) => candidate.id === props.apiKeyId) ?? null,
     );
 
-    const reportFailure = (cause: unknown, action: "update-api-key" | "delete-api-key"): void => {
-        const diagnosis = describeCallFailure(cause, action);
+    // A refresh answering the same row keeps the row's identity, so the open
+    // form is not remounted; a row that genuinely changed on the gateway is
+    // held back while the form holds unsaved edits, and the hold is stated.
+    const apiKey = createMemo((previous: ApiKeyResponse | null | undefined) => {
+        const fresh = latestKey();
 
-        setNotice({
-            tone: "bad",
-            title: diagnosis.headline,
-            detail: diagnosis.detail,
-            fix: diagnosis.fix,
-        });
-    };
+        if (previous === null || previous === undefined || fresh === null) {
+            return fresh;
+        }
+
+        return isSameApiKeyRow(previous, fresh) || isFormDirty() ? previous : fresh;
+    });
+
+    const isRowHeld = createMemo(() => {
+        const current = apiKey();
+        const fresh = latestKey();
+
+        return current !== null && fresh !== null && !isSameApiKeyRow(current, fresh);
+    });
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={notice()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
                         tone={current().tone}
@@ -106,7 +82,7 @@ export function ApiKeyEditScreen(props: {
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && notice() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <PageHeader
                     title="Edit API key"
                     backHref={hrefs.apiKeyDetail(props.apiKeyId)}
@@ -115,7 +91,7 @@ export function ApiKeyEditScreen(props: {
                 <Skeleton class="h-64 w-full rounded-2xl" />
             </Show>
 
-            <Show when={hasRead() && apiKey() === null}>
+            <Show when={read.hasRead() && apiKey() === null}>
                 <PageHeader
                     title="Edit API key"
                     backHref={hrefs.apiKeys()}
@@ -146,13 +122,22 @@ export function ApiKeyEditScreen(props: {
                             backLabel="API key"
                         />
 
+                        <Show when={isRowHeld()}>
+                            <Notice
+                                tone="warn"
+                                title="This key changed on the gateway while you have unsaved edits."
+                                detail="Save writes your edits over the gateway's version; Revert picks the gateway's version up."
+                            />
+                        </Show>
+
                         <SettingsCard
                             api={props.api}
                             apiKey={row}
                             enabledCount={keys().filter((candidate) => candidate.is_enabled).length}
-                            onReload={() => void read()}
-                            onNotice={setNotice}
-                            onFailure={reportFailure}
+                            onReload={read.reload}
+                            onNotice={read.showNotice}
+                            onFailure={read.reportFailure}
+                            onDirtyChange={setIsFormDirty}
                         />
 
                         <DangerCard
@@ -162,7 +147,7 @@ export function ApiKeyEditScreen(props: {
                                 row.is_enabled &&
                                 keys().filter((candidate) => candidate.is_enabled).length <= 1
                             }
-                            onFailure={reportFailure}
+                            onFailure={read.reportFailure}
                         />
                     </>
                 )}
@@ -177,18 +162,31 @@ function SettingsCard(props: {
     readonly apiKey: ApiKeyResponse;
     readonly enabledCount: number;
     readonly onReload: () => void;
-    readonly onNotice: (notice: ScreenNotice) => void;
-    readonly onFailure: (cause: unknown, action: "update-api-key") => void;
+    readonly onNotice: (notice: ScreenNotice | null) => void;
+    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
+    readonly onDirtyChange: (isDirty: boolean) => void;
 }): JSX.Element {
+    // The settings as the gateway last returned them; a save re-baselines
+    // them onto the values it sent, because api-keys:update answers `{}` and
+    // the write's result is otherwise known only to this form.
+    const [baseline, setBaseline] = createSignal(props.apiKey);
     const [isEnabled, setIsEnabled] = createSignal(props.apiKey.is_enabled);
     const [name, setName] = createSignal(props.apiKey.name);
     const [secret, setSecret] = createSignal(props.apiKey.key);
     const [isSaving, setIsSaving] = createSignal(false);
 
     const isDirty = (): boolean =>
-        isEnabled() !== props.apiKey.is_enabled ||
-        name() !== props.apiKey.name ||
-        secret() !== props.apiKey.key;
+        isEnabled() !== baseline().is_enabled ||
+        name() !== baseline().name ||
+        secret() !== baseline().key;
+
+    // The screen holds the form's row while this dirt stands (README §6.3).
+    createEffect(
+        () => isDirty(),
+        (isDirtyValue) => {
+            props.onDirtyChange(isDirtyValue);
+        },
+    );
 
     /** Inline error for the name, shown where it was typed. The stored name
      * is non-empty by contract, so an empty value here is the operator's
@@ -202,9 +200,11 @@ function SettingsCard(props: {
     const canSave = (): boolean => isDirty() && nameError() === null && isBearerSecret(secret());
 
     const revert = (): void => {
-        setIsEnabled(props.apiKey.is_enabled);
-        setName(props.apiKey.name);
-        setSecret(props.apiKey.key);
+        setIsEnabled(baseline().is_enabled);
+        setName(baseline().name);
+        setSecret(baseline().key);
+        // Reverting resolves a held row onto the gateway's current version.
+        props.onReload();
     };
 
     const save = async (): Promise<void> => {
@@ -231,10 +231,20 @@ function SettingsCard(props: {
         }
 
         if (outcome.status === "failed") {
-            props.onFailure(outcome.cause, "update-api-key");
+            props.onFailure(outcome.cause, {
+                action: "update-api-key",
+            });
             return;
         }
 
+        // The write's complete desired state: the update rewrote exactly
+        // these fields, so the row they describe is this form's new truth.
+        setBaseline({
+            ...props.apiKey,
+            name: name(),
+            key: secret(),
+            is_enabled: isEnabled(),
+        });
         props.onNotice({
             tone: "ok",
             title: `${name()} saved.`,
@@ -317,7 +327,7 @@ function DangerCard(props: {
     readonly api: ManagementApi;
     readonly apiKey: ApiKeyResponse;
     readonly isLastEnabled: boolean;
-    readonly onFailure: (cause: unknown, action: "delete-api-key") => void;
+    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
     const [isArmed, setIsArmed] = createSignal(false);
     const [isDeleting, setIsDeleting] = createSignal(false);
@@ -342,7 +352,9 @@ function DangerCard(props: {
         }
 
         if (outcome.status === "failed") {
-            props.onFailure(outcome.cause, "delete-api-key");
+            props.onFailure(outcome.cause, {
+                action: "delete-api-key",
+            });
             setIsArmed(false);
             return;
         }

@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, createTrackedEffect, Show } from "solid-js";
+import { createEffect, createSignal, Show } from "solid-js";
 import { connectionService } from "/src/connection/app-service";
 import { normalizeBaseUrl } from "/src/connection/model";
 import { type Diagnosis, diagnoseFailure, probeReachability } from "/src/management-api/diagnosis";
@@ -25,50 +25,53 @@ export function ConnectionScreen(): JSX.Element {
     const state = connectionService.connectionState;
     const isVerifying = (): boolean => state().status === "verifying";
 
-    createTrackedEffect(() => {
-        const current = state();
-
-        if (current.status !== "unconnected" || current.failure === null) {
-            setDiagnosis(null);
-            return;
-        }
-
-        const failure = current.failure;
-        const attempted = failure.baseUrl ?? baseUrl();
-        const context = {
-            baseUrl: attempted,
-            pageOrigin: window.location.origin,
-            action: "connect" as const,
-        };
-        const initial = diagnoseFailure(failure.cause ?? failure.message, context);
-
-        setDiagnosis(initial);
-
-        if (initial.kind !== "no-answer") {
-            return;
-        }
-
-        // The probe separates "nothing is listening" from "the browser blocked
-        // the response"; it is only worth a request while the answer is open.
-        let isCurrent = true;
-
-        void probeReachability(attempted).then((reachability) => {
-            if (!isCurrent) {
+    createEffect(
+        () => {
+            const current = state();
+            return current.status === "unconnected" ? (current.failure ?? null) : null;
+        },
+        (failure) => {
+            if (failure === null) {
+                setDiagnosis(null);
                 return;
             }
 
-            setDiagnosis(
-                diagnoseFailure(failure.cause ?? failure.message, {
-                    ...context,
-                    reachability,
-                }),
-            );
-        });
+            const attempted = failure.baseUrl ?? baseUrl();
+            const context = {
+                baseUrl: attempted,
+                pageOrigin: window.location.origin,
+                action: "connect" as const,
+            };
+            const initial = diagnoseFailure(failure.cause ?? failure.message, context);
 
-        return () => {
-            isCurrent = false;
-        };
-    });
+            setDiagnosis(initial);
+
+            if (initial.kind !== "no-answer") {
+                return;
+            }
+
+            // The probe separates "nothing is listening" from "the browser blocked
+            // the response"; it is only worth a request while the answer is open.
+            let isCurrent = true;
+
+            void probeReachability(attempted).then((reachability) => {
+                if (!isCurrent) {
+                    return;
+                }
+
+                setDiagnosis(
+                    diagnoseFailure(failure.cause ?? failure.message, {
+                        ...context,
+                        reachability,
+                    }),
+                );
+            });
+
+            return () => {
+                isCurrent = false;
+            };
+        },
+    );
 
     const submit = (event: SubmitEvent): void => {
         event.preventDefault();
@@ -135,7 +138,7 @@ export function ConnectionScreen(): JSX.Element {
                         {(current) => (
                             <Notice
                                 tone="bad"
-                                title={current().headline}
+                                title={current().title}
                                 detail={current().detail}
                                 fix={current().fix}
                             />

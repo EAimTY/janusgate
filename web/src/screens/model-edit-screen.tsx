@@ -1,24 +1,22 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, Show } from "solid-js";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { compositionMessage, isModelIdentifier } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import {
+    createScreenRead,
+    type FailureCall,
+    isSameModelRow,
+    readAll,
+    type ScreenNotice,
+} from "/src/screens/read";
 import { Button, ButtonLink, Switch } from "/src/ui/controls";
-import { EmptyState, Notice, type NoticeTone, Skeleton } from "/src/ui/feedback";
+import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelIdOverrideFields } from "/src/ui/model-form";
-
-type ScreenNotice = {
-    readonly tone: NoticeTone;
-    readonly title: string;
-    readonly detail?: string | null | undefined;
-    readonly fix?: string | null | undefined;
-};
 
 /**
  * One model's edit page: its settings and its deletion. The form opens
@@ -33,66 +31,52 @@ export function ModelEditScreen(props: {
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
-    const [notice, setNotice] = createSignal<ScreenNotice | null>(null);
+    // Reported by the settings form: an open form with unsaved edits holds its
+    // row against refreshes, so an operator's input can never silently vanish.
+    const [isFormDirty, setIsFormDirty] = createSignal(false);
 
-    let controller: AbortController | null = null;
+    // The notice is also the save's reported outcome, so only a new failure
+    // replaces it — a successful read keeps it (README §6.3).
+    const read = createScreenRead({
+        reReadOn: () => props.modelId,
+        isNoticeKeptOnSuccess: true,
+        load: async (signal) => {
+            const [providersResult, modelsResult] = await readAll(
+                signal,
+                {
+                    run: (cycle) => props.api.listProviders(cycle),
+                },
+                {
+                    run: (cycle) => props.api.listModels({}, cycle),
+                },
+            );
 
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const [providersOutcome, modelsOutcome] = await Promise.all([
-            performManagementCall(() => props.api.listProviders(call.signal)),
-            performManagementCall(() => props.api.listModels({}, call.signal)),
-        ]);
-
-        if (providersOutcome.status === "aborted" || modelsOutcome.status === "aborted") {
-            return;
-        }
-
-        setIsReading(false);
-
-        const failed =
-            providersOutcome.status === "failed"
-                ? providersOutcome
-                : modelsOutcome.status === "failed"
-                  ? modelsOutcome
-                  : null;
-
-        if (failed !== null) {
-            const diagnosis = describeCallFailure(failed.cause);
-
-            setNotice({
-                tone: "bad",
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
-            });
-            return;
-        }
-
-        // A successful read keeps the notice: a save reports through it just
-        // before this reload runs, and only a new failure replaces it.
-        setProviders(providersOutcome.status === "ok" ? providersOutcome.result.providers : []);
-        setModels(modelsOutcome.status === "ok" ? modelsOutcome.result.models : []);
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        props.modelId;
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+            setProviders(providersResult.providers);
+            setModels(modelsResult.models);
+        },
     });
 
-    const model = createMemo(() => models().find((row) => row.id === props.modelId) ?? null);
+    const latestModel = createMemo(() => models().find((row) => row.id === props.modelId) ?? null);
+
+    // A refresh answering the same row keeps the row's identity, so the open
+    // form is not remounted; a row that genuinely changed on the gateway is
+    // held back while the form holds unsaved edits, and the hold is stated.
+    const model = createMemo((previous: ModelResponse | null | undefined) => {
+        const fresh = latestModel();
+
+        if (previous === null || previous === undefined || fresh === null) {
+            return fresh;
+        }
+
+        return isSameModelRow(previous, fresh) || isFormDirty() ? previous : fresh;
+    });
+
+    const isRowHeld = createMemo(() => {
+        const current = model();
+        const fresh = latestModel();
+
+        return current !== null && fresh !== null && !isSameModelRow(current, fresh);
+    });
 
     const provider = createMemo(() => {
         const current = model();
@@ -101,20 +85,9 @@ export function ModelEditScreen(props: {
             : (providers().find((row) => row.id === current.provider_id) ?? null);
     });
 
-    const reportFailure = (cause: unknown, action: "update-model" | "delete-model"): void => {
-        const diagnosis = describeCallFailure(cause, action);
-
-        setNotice({
-            tone: "bad",
-            title: diagnosis.headline,
-            detail: diagnosis.detail,
-            fix: diagnosis.fix,
-        });
-    };
-
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={notice()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
                         tone={current().tone}
@@ -125,7 +98,7 @@ export function ModelEditScreen(props: {
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && notice() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <PageHeader
                     title="Edit model"
                     backHref={hrefs.modelDetail(props.modelId)}
@@ -134,7 +107,7 @@ export function ModelEditScreen(props: {
                 <Skeleton class="h-64 w-full rounded-2xl" />
             </Show>
 
-            <Show when={hasRead() && model() === null}>
+            <Show when={read.hasRead() && model() === null}>
                 <PageHeader
                     title="Edit model"
                     backHref={hrefs.models(null)}
@@ -173,18 +146,27 @@ export function ModelEditScreen(props: {
                             backLabel="Model"
                         />
 
+                        <Show when={isRowHeld()}>
+                            <Notice
+                                tone="warn"
+                                title="This model changed on the gateway while you have unsaved edits."
+                                detail="Save writes your edits over the gateway's version; Revert picks the gateway's version up."
+                            />
+                        </Show>
+
                         <ModelSettingsForm
                             api={props.api}
                             provider={both.provider}
                             initialModel={both.model}
-                            onNotice={setNotice}
-                            onFailure={reportFailure}
-                            onReload={() => void read()}
+                            onNotice={read.showNotice}
+                            onFailure={read.reportFailure}
+                            onReload={read.reload}
+                            onDirtyChange={setIsFormDirty}
                         />
                         <DeleteCard
                             api={props.api}
                             model={both.model}
-                            onFailure={reportFailure}
+                            onFailure={read.reportFailure}
                         />
                     </>
                 )}
@@ -197,9 +179,10 @@ function ModelSettingsForm(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse | null;
     readonly initialModel: ModelResponse;
-    readonly onNotice: (notice: ScreenNotice) => void;
-    readonly onFailure: (cause: unknown, action: "update-model") => void;
+    readonly onNotice: (notice: ScreenNotice | null) => void;
+    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
     readonly onReload: () => void;
+    readonly onDirtyChange: (isDirty: boolean) => void;
 }): JSX.Element {
     // The settings as the gateway last returned them; a save re-baselines
     // them onto the write's answer, because the public ID is recomposed
@@ -232,12 +215,22 @@ function ModelSettingsForm(props: {
     const isDirty = (): boolean =>
         isEnabled() !== current().is_enabled || normalizedOverride() !== current().id_override;
 
+    // The screen holds the form's row while this dirt stands (README §6.3).
+    createEffect(
+        () => isDirty(),
+        (isDirtyValue) => {
+            props.onDirtyChange(isDirtyValue);
+        },
+    );
+
     const canSave = (): boolean => isDirty() && overrideError() === null;
 
     const revert = (): void => {
         setIsEnabled(current().is_enabled);
         setHasIdOverride(current().id_override !== null);
         setIdOverride(current().id_override ?? "");
+        // Reverting resolves a held row onto the gateway's current version.
+        props.onReload();
     };
 
     const save = async (): Promise<void> => {
@@ -263,7 +256,9 @@ function ModelSettingsForm(props: {
         }
 
         if (outcome.status === "failed") {
-            props.onFailure(outcome.cause, "update-model");
+            props.onFailure(outcome.cause, {
+                action: "update-model",
+            });
             return;
         }
 
@@ -348,7 +343,7 @@ function ModelSettingsForm(props: {
 function DeleteCard(props: {
     readonly api: ManagementApi;
     readonly model: ModelResponse;
-    readonly onFailure: (cause: unknown, action: "delete-model") => void;
+    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
     const [isArmed, setIsArmed] = createSignal(false);
     const [isDeleting, setIsDeleting] = createSignal(false);
@@ -373,7 +368,9 @@ function DeleteCard(props: {
         }
 
         if (outcome.status === "failed") {
-            props.onFailure(outcome.cause, "delete-model");
+            props.onFailure(outcome.cause, {
+                action: "delete-model",
+            });
             setIsArmed(false);
             return;
         }

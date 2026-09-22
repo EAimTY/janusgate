@@ -21,13 +21,14 @@ const NOTICE_GLYPH: Record<NoticeTone, GlyphName> = {
 
 /**
  * What the last action did, stated where the action was taken. The title is
- * the app's own statement, the detail is the gateway's message verbatim, and
- * the fix is named only where the app can be certain of one.
+ * the app's own statement, the detail is the gateway's message verbatim (or
+ * the notice's own prose, linked where a recovery path is a route), and the
+ * fix is named only where the app can be certain of one.
  */
 export function Notice(props: {
     readonly tone: NoticeTone;
     readonly title: string;
-    readonly detail?: string | null | undefined;
+    readonly detail?: string | JSX.Element | null | undefined;
     readonly fix?: string | null | undefined;
     readonly class?: string | undefined;
 }): JSX.Element {

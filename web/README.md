@@ -259,14 +259,14 @@ web/                                # the workspace root (this directory)
 │   ├── config.ts                    # Single home for non-secret tunables (e.g. storage keys)
 │   ├── tailwind.css                 # Tailwind v4 entry: the console's light/dark tokens and base styles
 │   ├── vite-env.d.ts                # Vite client types reference
-│   ├── connection/                  # The connection pair: model, storage, reducer, service
-│   ├── management-api/              # The wire contract and its use: client, validation, adapters, outcome, errors, diagnosis, generated bindings
-│   ├── ui/                          # The console's parts: controls, feedback, layout, glyphs, tables, shared form pieces
+│   ├── connection/                  # The connection pair: app-service, model, service, state
+│   ├── management-api/              # The wire contract and its use: client, validation, adapters, outcome, errors, diagnosis, identifiers, oauth-code, provider-defaults, serving, vocabulary, generated bindings
+│   ├── ui/                          # The console's parts: app-link, attributes, controls, feedback, layout, glyphs, tables, shared form pieces
 │   └── screens/                     # One module per route, plus the screens' shared fragments
 ```
 
 
-Test modules (`*.test.ts`) live next to the modules they cover and are not listed above. Inside `src/screens/`, four shared fragments serve every route's module: `failure.ts` (the failure presentation §6.4 renders), `usage-labels.ts` (usage labels resolved through the entity lists), `usage-stats.tsx` (the detail pages' usage card), and `usage-pagination.ts` (the usage stream's cursor and continuation).
+Test modules (`*.test.ts`) live next to the modules they cover and are not listed above. Inside `src/screens/`, five shared fragments serve every route's module: `read.ts` (the screen read harness §6.3), `failure.ts` (the failure presentation §6.4 renders), `usage-labels.ts` (usage labels resolved through the entity lists), `usage-stats.tsx` (the detail pages' usage card), and `usage-pagination.ts` (the usage stream's cursor and continuation).
 
 ### 7.1 Generated bindings
 

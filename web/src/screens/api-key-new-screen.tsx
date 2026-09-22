@@ -4,7 +4,7 @@ import type { ManagementApi } from "/src/management-api/client";
 import { compositionMessage, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import { type ScreenNotice, screenFailureNotice } from "/src/screens/read";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { Button, Switch } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
@@ -23,11 +23,7 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
     const [secret, setSecret] = createSignal("");
     const [isEnabled, setIsEnabled] = createSignal(true);
     const [isCreating, setIsCreating] = createSignal(false);
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
+    const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     /** Inline error for the name, shown where it was typed. */
     const nameError = (): string | null => (hasNameInput() ? apiKeyNameError(name()) : null);
@@ -61,13 +57,11 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
         }
 
         if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, "create-api-key");
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
-            });
+            setFailure(
+                screenFailureNotice(outcome.cause, {
+                    action: "create-api-key",
+                }),
+            );
             return;
         }
 

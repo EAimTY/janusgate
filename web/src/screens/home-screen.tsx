@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { credentialExpiryLine, isCredentialExpired, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
@@ -7,12 +7,10 @@ import type {
     ModelResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
-import { performManagementCall } from "/src/management-api/outcome";
 import { isModelEffectivelyServing } from "/src/management-api/serving";
 import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import { createScreenRead, readAll } from "/src/screens/read";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
@@ -36,74 +34,28 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
         models: [],
         apiKeys: [],
     });
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
 
-    let controller: AbortController | null = null;
+    const read = createScreenRead({
+        load: async (signal) => {
+            const [providersResult, modelsResult, apiKeysResult] = await readAll(
+                signal,
+                {
+                    run: (cycle) => props.api.listProviders(cycle),
+                },
+                {
+                    run: (cycle) => props.api.listModels({}, cycle),
+                },
+                {
+                    run: (cycle) => props.api.listApiKeys(cycle),
+                },
+            );
 
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const [providersOutcome, modelsOutcome, apiKeysOutcome] = await Promise.all([
-            performManagementCall(() => props.api.listProviders(call.signal)),
-            performManagementCall(() => props.api.listModels({}, call.signal)),
-            performManagementCall(() => props.api.listApiKeys(call.signal)),
-        ]);
-
-        if (
-            providersOutcome.status === "aborted" ||
-            modelsOutcome.status === "aborted" ||
-            apiKeysOutcome.status === "aborted"
-        ) {
-            return;
-        }
-
-        setIsReading(false);
-
-        const failed =
-            providersOutcome.status === "failed"
-                ? providersOutcome
-                : modelsOutcome.status === "failed"
-                  ? modelsOutcome
-                  : apiKeysOutcome.status === "failed"
-                    ? apiKeysOutcome
-                    : null;
-
-        if (failed !== null) {
-            const diagnosis = describeCallFailure(failed.cause);
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+            setData({
+                providers: providersResult.providers,
+                models: modelsResult.models,
+                apiKeys: apiKeysResult.api_keys,
             });
-            return;
-        }
-
-        setFailure(null);
-        setData({
-            providers: providersOutcome.status === "ok" ? providersOutcome.result.providers : [],
-            models: modelsOutcome.status === "ok" ? modelsOutcome.result.models : [],
-            apiKeys: apiKeysOutcome.status === "ok" ? apiKeysOutcome.result.api_keys : [],
-        });
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+        },
     });
 
     const providersById = createMemo(
@@ -164,10 +116,10 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={failure()}>
+            <Show when={read.notice()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}
@@ -175,7 +127,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                 )}
             </Show>
 
-            <Show when={isReading() && !hasRead() && failure() === null}>
+            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                 <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                     <For
                         each={[
@@ -196,7 +148,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                 </div>
             </Show>
 
-            <Show when={hasRead()}>
+            <Show when={read.hasRead()}>
                 <Show
                     when={data().providers.length > 0}
                     fallback={<GettingStarted />}

@@ -1,12 +1,10 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { UsageBucket } from "/src/management-api/generated/v0";
-import { performManagementCall } from "/src/management-api/outcome";
-import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
+import { createScreenRead, readOne } from "/src/screens/read";
 import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
@@ -35,62 +33,24 @@ export function EntityUsageCard(props: {
     readonly subjectKind: string;
 }): JSX.Element {
     const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
-    const [hasRead, setHasRead] = createSignal(false);
-    const [isReading, setIsReading] = createSignal(true);
-    const [failure, setFailure] = createSignal<{
-        readonly title: string;
-        readonly detail: string;
-        readonly fix: string | null;
-    } | null>(null);
 
-    let controller: AbortController | null = null;
-
-    const read = async (): Promise<void> => {
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsReading(true);
-
-        const outcome = await performManagementCall(() =>
-            props.api.queryUsage(
-                {
-                    group_by: "day",
-                    ...props.filter,
-                },
-                call.signal,
-            ),
-        );
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        setIsReading(false);
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, "query-usage");
-
-            setFailure({
-                title: diagnosis.headline,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+    const read = createScreenRead({
+        reReadOn: () => props.filter,
+        load: async (signal) => {
+            const result = await readOne(signal, {
+                action: "query-usage",
+                run: (cycle) =>
+                    props.api.queryUsage(
+                        {
+                            group_by: "day",
+                            ...props.filter,
+                        },
+                        cycle,
+                    ),
             });
-            return;
-        }
 
-        setFailure(null);
-        setBuckets(outcome.result.buckets);
-        setHasRead(true);
-        reportRefresh();
-    };
-
-    createTrackedEffect(() => {
-        props.filter;
-        refreshRequest();
-        void read();
-
-        return () => controller?.abort();
+            setBuckets(result.buckets);
+        },
     });
 
     const newestFirst = createMemo(() =>
@@ -127,10 +87,10 @@ export function EntityUsageCard(props: {
             </CardHeader>
 
             <div class="mt-4">
-                <Show when={failure()}>
+                <Show when={read.notice()}>
                     {(current) => (
                         <Notice
-                            tone="bad"
+                            tone={current().tone}
                             title={current().title}
                             detail={current().detail}
                             fix={current().fix}
@@ -138,7 +98,7 @@ export function EntityUsageCard(props: {
                     )}
                 </Show>
 
-                <Show when={isReading() && !hasRead() && failure() === null}>
+                <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
                     <div class="grid gap-3 sm:grid-cols-3">
                         <Skeleton class="h-16 w-full" />
                         <Skeleton class="h-16 w-full" />
@@ -146,7 +106,7 @@ export function EntityUsageCard(props: {
                     </div>
                 </Show>
 
-                <Show when={hasRead() && failure() === null}>
+                <Show when={read.hasRead() && read.notice() === null}>
                     <Show
                         when={buckets().length > 0}
                         fallback={
