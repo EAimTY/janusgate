@@ -34,7 +34,7 @@ describe("matchAppRoute", () => {
         });
     });
 
-    it("addresses one provider by its identifier", () => {
+    it("addresses one provider by its identifier, and its edit page", () => {
         expect(match("/providers/12")).toEqual({
             name: "providerDetail",
             providerId: 12,
@@ -43,10 +43,21 @@ describe("matchAppRoute", () => {
             name: "providerDetail",
             providerId: 12,
         });
+        expect(match("/providers/12/edit")).toEqual({
+            name: "providerEdit",
+            providerId: 12,
+        });
+        expect(match("/providers/12/edit/")).toEqual({
+            name: "providerEdit",
+            providerId: 12,
+        });
     });
 
     it("reads a provider segment that is not a row identifier as not found", () => {
         expect(match("/providers/codex")).toEqual({
+            name: "notFound",
+        });
+        expect(match("/providers/codex/edit")).toEqual({
             name: "notFound",
         });
         expect(match("/providers/12/extra")).toEqual({
@@ -87,7 +98,7 @@ describe("matchAppRoute", () => {
         });
     });
 
-    it("addresses the api-keys list, creation, and detail", () => {
+    it("addresses the api-keys list, creation, detail, and edit", () => {
         expect(match("/api-keys")).toEqual({
             name: "apiKeys",
         });
@@ -98,18 +109,33 @@ describe("matchAppRoute", () => {
             name: "apiKeyDetail",
             apiKeyId: 7,
         });
+        expect(match("/api-keys/7/edit")).toEqual({
+            name: "apiKeyEdit",
+            apiKeyId: 7,
+        });
         expect(match("/api-keys/codex")).toEqual({
+            name: "notFound",
+        });
+        expect(match("/api-keys/codex/edit")).toEqual({
             name: "notFound",
         });
     });
 
-    it("addresses one model by its row identifier", () => {
+    it("addresses one model by its row identifier, and its edit page", () => {
         expect(match("/models/9")).toEqual({
             name: "modelDetail",
             modelId: 9,
         });
         expect(match("/models/9/")).toEqual({
             name: "modelDetail",
+            modelId: 9,
+        });
+        expect(match("/models/9/edit")).toEqual({
+            name: "modelEdit",
+            modelId: 9,
+        });
+        expect(match("/models/9/edit/")).toEqual({
+            name: "modelEdit",
             modelId: 9,
         });
     });
@@ -174,6 +200,10 @@ describe("matchAppRoute", () => {
             name: "providerDetail",
             providerId: 7,
         });
+        expect(match(hrefs.providerEdit(7))).toEqual({
+            name: "providerEdit",
+            providerId: 7,
+        });
         expect(match(hrefs.models(null))).toEqual({
             name: "models",
             providerFilter: null,
@@ -200,8 +230,16 @@ describe("matchAppRoute", () => {
             name: "apiKeyDetail",
             apiKeyId: 7,
         });
+        expect(match(hrefs.apiKeyEdit(7))).toEqual({
+            name: "apiKeyEdit",
+            apiKeyId: 7,
+        });
         expect(match(hrefs.modelDetail(9))).toEqual({
             name: "modelDetail",
+            modelId: 9,
+        });
+        expect(match(hrefs.modelEdit(9))).toEqual({
+            name: "modelEdit",
             modelId: 9,
         });
         expect(match(hrefs.usage())).toEqual({

@@ -1,12 +1,19 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, Match, Show, Switch } from "solid-js";
+import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { Diagnosis } from "/src/management-api/diagnosis";
 import type {
     OAuthProviderType,
     StartProviderOauthResponse,
 } from "/src/management-api/generated/v0";
+import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
+import {
+    defaultModelPrefix,
+    defaultProviderBaseName,
+    normalizeModelPrefix,
+    suggestProviderName,
+} from "/src/management-api/provider-defaults";
 import { findOAuthProviderType } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
@@ -19,29 +26,67 @@ import {
     ProviderIdentityFields,
     type ProviderKind,
     ProviderKindPicker,
-    ProviderServingSwitch,
 } from "/src/ui/provider-form";
 
 /**
  * One creation page for every provider kind. The three static-key wire
  * formats and the two OAuth logins are the same creation — the kind picker
  * only swaps the credential path that follows the shared identity fields.
+ * Every provider starts enabled; switching one off lives on its edit page.
  * A static-key kind is created under its own `type`; OAuth completions mint
  * the provider and land on its page, like a key creation does.
  */
 export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [kind, setKind] = createSignal<ProviderKind>("openai_response");
-    const [name, setName] = createSignal("");
-    const [modelPrefix, setModelPrefix] = createSignal("");
-    const [isEnabled, setIsEnabled] = createSignal(true);
+    const [name, setName] = createSignal(defaultProviderBaseName("openai_response"));
+    const [isNameTouched, setIsNameTouched] = createSignal(false);
+    const [takenNames, setTakenNames] = createSignal<ReadonlySet<string>>(new Set());
+    const [isCustomPrefix, setIsCustomPrefix] = createSignal(false);
+    const [customPrefix, setCustomPrefix] = createSignal("");
     const [baseUrl, setBaseUrl] = createSignal("");
     const [apiKey, setApiKey] = createSignal("");
+
+    // The taken names arrive after the first read; until then the base name
+    // stands in, and a hand-typed name is never overwritten.
+    void performManagementCall(() => props.api.listProviders()).then((outcome) => {
+        if (outcome.status !== "ok") {
+            return;
+        }
+
+        const taken = new Set(outcome.result.providers.map((row) => row.name));
+        setTakenNames(taken);
+
+        if (!isNameTouched()) {
+            setName(suggestProviderName(kind(), taken));
+        }
+    });
+
+    const suggestion = createMemo(() => suggestProviderName(kind(), takenNames()));
+
+    /** The name the request carries: what was typed, or the suggestion when untouched. */
+    const resolvedName = createMemo(() => (name().trim() === "" ? suggestion() : name().trim()));
+
+    /** The prefix the request carries: the default, or the hand-set value. */
+    const resolvedPrefix = createMemo(() =>
+        isCustomPrefix()
+            ? normalizeModelPrefix(customPrefix())
+            : defaultModelPrefix(resolvedName()),
+    );
 
     const pickKind = (next: ProviderKind): void => {
         setKind(next);
         setDiagnosis(null);
         setFlow(null);
         setCode("");
+
+        if (!isNameTouched()) {
+            setName(suggestProviderName(next, takenNames()));
+        }
+    };
+
+    const inputName = (value: string): void => {
+        setIsNameTouched(true);
+        setName(value);
     };
 
     const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
@@ -53,8 +98,25 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     const isBusy = (): boolean => isCreating() || isStarting() || isCompleting();
 
-    /** Creates a static-key provider. The gateway refuses nothing itself: a
-     * taken name or an unparsable value comes back as its own message. */
+    /** Reads the pasted callback: a full URL reduces to its code, a bare code passes through. */
+    const readPastedCode = (): string | null => {
+        const pasted = extractAuthorizationCode(code());
+
+        if (pasted !== null) {
+            return pasted;
+        }
+
+        setDiagnosis({
+            kind: "rejected",
+            headline: "Paste the callback URL or the code.",
+            detail: "That paste holds neither a bare code nor a URL with a code in it.",
+            fix: "Copy the whole address the login landed on, or just its code, and paste it here.",
+        });
+
+        return null;
+    };
+
+    /** Creates a static-key provider. A taken name comes back as its own message. */
     const create = async (): Promise<void> => {
         if (isBusy()) {
             return;
@@ -65,9 +127,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
         const outcome = await performManagementCall(() =>
             props.api.createProvider({
-                name: name(),
-                model_prefix: modelPrefix(),
-                is_enabled: isEnabled(),
+                name: resolvedName(),
+                model_prefix: resolvedPrefix(),
+                is_enabled: true,
                 base_url: baseUrl(),
                 type: kind(),
                 api_key: apiKey(),
@@ -123,15 +185,21 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             return;
         }
 
+        const pasted = readPastedCode();
+
+        if (pasted === null) {
+            return;
+        }
+
         setDiagnosis(null);
         setIsCompleting(true);
 
         const outcome = await performManagementCall(() =>
             props.api.completeProviderOauth({
                 state: startedFlow.state,
-                code: code().trim(),
-                name: name(),
-                model_prefix: modelPrefix(),
+                code: pasted,
+                name: resolvedName(),
+                model_prefix: resolvedPrefix(),
             }),
         );
 
@@ -179,8 +247,8 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="New provider"
-                description="One upstream provider. Pick the kind — the credential path follows."
+                title="Create provider"
+                description="One upstream account. Pick the kind — the credential path follows."
                 backHref={hrefs.providers()}
                 backLabel="Providers"
             />
@@ -208,21 +276,17 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             </Card>
 
             <Card>
-                <CardHeader
-                    title="Identity"
-                    description="The name clients see, and the prefix every public model ID starts with."
-                />
+                <CardHeader title="Identity" />
                 <div class="mt-4 flex max-w-2xl flex-col gap-4">
                     <ProviderIdentityFields
                         name={name()}
-                        modelPrefix={modelPrefix()}
-                        onNameInput={setName}
-                        onModelPrefixInput={setModelPrefix}
-                        isDisabled={isBusy()}
-                    />
-                    <ProviderServingSwitch
-                        isEnabled={isEnabled()}
-                        onToggle={setIsEnabled}
+                        namePlaceholder={suggestion()}
+                        onNameInput={inputName}
+                        isCustomPrefix={isCustomPrefix()}
+                        onCustomPrefixToggle={setIsCustomPrefix}
+                        customPrefix={customPrefix()}
+                        onCustomPrefixInput={setCustomPrefix}
+                        defaultPrefix={defaultModelPrefix(resolvedName())}
                         isDisabled={isBusy()}
                     />
                 </div>
@@ -234,7 +298,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         <Card>
                             <CardHeader
                                 title="Connect the account"
-                                description="The gateway runs the authorization itself and mints the credentials. This app only relays the returned code and never stores it."
+                                description="Approve access, then paste back what the login landed on. This app never stores it."
                             />
                             <Show
                                 when={flow()}
@@ -262,12 +326,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                             onStartOver={startOver}
                                         >
                                             <TextField
-                                                label="Authorization code"
+                                                label="Callback URL or authorization code"
                                                 value={code()}
                                                 onInput={setCode}
-                                                placeholder="Paste the code from the callback URL"
+                                                placeholder="Paste the whole callback URL"
                                                 isDisabled={isCompleting()}
-                                                hint="Single-use, like the state it completes, and never stored."
                                             />
                                             <div>
                                                 <Button
@@ -291,7 +354,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     <Card>
                         <CardHeader
                             title="Connection"
-                            description="Where the gateway sends this provider's traffic, and the key it authenticates with. The key is write-only — the gateway never returns it."
+                            description="The key is write-only — the gateway never returns it."
                         />
                         <form
                             novalidate={true}

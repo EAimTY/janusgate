@@ -62,17 +62,17 @@ describe("usage labels", () => {
         });
     });
 
-    it("reads a deleted row by its number, never by a guessed name", () => {
+    it("names a deleted row by its kind, never by a guessed name or number", () => {
         expect(usageModelLabel(entities, 11)).toEqual({
-            text: "#11",
+            text: "Deleted model",
             isListed: false,
         });
         expect(usageProviderLabel(entities, 3)).toEqual({
-            text: "#3",
+            text: "Deleted provider",
             isListed: false,
         });
         expect(usageApiKeyLabel(entities, 8)).toEqual({
-            text: "#8",
+            text: "Deleted key",
             isListed: false,
         });
     });

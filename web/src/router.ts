@@ -4,9 +4,10 @@ import { type Accessor, createSignal } from "solid-js";
  * The client-side routes. Each page does one job: the overview reads the
  * gateway's health, the providers pages administer providers, the models
  * pages administer models, the api-keys pages administer serving keys, and
- * the usage pages read request accounting. The OAuth flows are steps inside
- * the provider creation and reauthorization forms, not destinations of their
- * own.
+ * the usage pages read request accounting. Detail pages read one thing and
+ * link to their edit page; edit pages own every change. The OAuth flows are
+ * steps inside the provider creation and reauthorization forms, not
+ * destinations of their own.
  */
 export type AppRoute =
     | {
@@ -23,6 +24,10 @@ export type AppRoute =
           readonly providerId: number;
       }
     | {
+          readonly name: "providerEdit";
+          readonly providerId: number;
+      }
+    | {
           readonly name: "models";
           readonly providerFilter: number | null;
       }
@@ -35,6 +40,10 @@ export type AppRoute =
           readonly modelId: number;
       }
     | {
+          readonly name: "modelEdit";
+          readonly modelId: number;
+      }
+    | {
           readonly name: "apiKeys";
       }
     | {
@@ -42,6 +51,10 @@ export type AppRoute =
       }
     | {
           readonly name: "apiKeyDetail";
+          readonly apiKeyId: number;
+      }
+    | {
+          readonly name: "apiKeyEdit";
           readonly apiKeyId: number;
       }
     | {
@@ -65,14 +78,17 @@ export const hrefs = {
     providers: (): string => "/providers",
     providerNew: (): string => "/providers/new",
     providerDetail: (providerId: number): string => `/providers/${providerId}`,
+    providerEdit: (providerId: number): string => `/providers/${providerId}/edit`,
     models: (providerFilter: number | null): string =>
         providerFilter === null ? "/models" : `/models?provider=${providerFilter}`,
     modelNew: (providerFilter: number | null): string =>
         providerFilter === null ? "/models/new" : `/models/new?provider=${providerFilter}`,
     modelDetail: (modelId: number): string => `/models/${modelId}`,
+    modelEdit: (modelId: number): string => `/models/${modelId}/edit`,
     apiKeys: (): string => "/api-keys",
     apiKeyNew: (): string => "/api-keys/new",
     apiKeyDetail: (apiKeyId: number): string => `/api-keys/${apiKeyId}`,
+    apiKeyEdit: (apiKeyId: number): string => `/api-keys/${apiKeyId}/edit`,
     usage: (): string => "/usage",
     usageQuery: (): string => "/usage/query",
 } as const;
@@ -116,6 +132,21 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
         };
     }
 
+    const providerEditMatch = /^\/providers\/([^/]+)\/edit$/.exec(normalizedPath);
+
+    if (providerEditMatch !== null) {
+        const providerId = parseRowIdentifier(providerEditMatch[1] ?? null);
+
+        return providerId === null
+            ? {
+                  name: "notFound",
+              }
+            : {
+                  name: "providerEdit",
+                  providerId,
+              };
+    }
+
     const providerMatch = /^\/providers\/([^/]+)$/.exec(normalizedPath);
 
     if (providerMatch !== null) {
@@ -157,6 +188,21 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
         };
     }
 
+    const apiKeyEditMatch = /^\/api-keys\/([^/]+)\/edit$/.exec(normalizedPath);
+
+    if (apiKeyEditMatch !== null) {
+        const apiKeyId = parseRowIdentifier(apiKeyEditMatch[1] ?? null);
+
+        return apiKeyId === null
+            ? {
+                  name: "notFound",
+              }
+            : {
+                  name: "apiKeyEdit",
+                  apiKeyId,
+              };
+    }
+
     const apiKeyMatch = /^\/api-keys\/([^/]+)$/.exec(normalizedPath);
 
     if (apiKeyMatch !== null) {
@@ -182,6 +228,21 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
         return {
             name: "usageQuery",
         };
+    }
+
+    const modelEditMatch = /^\/models\/([^/]+)\/edit$/.exec(normalizedPath);
+
+    if (modelEditMatch !== null) {
+        const modelId = parseRowIdentifier(modelEditMatch[1] ?? null);
+
+        return modelId === null
+            ? {
+                  name: "notFound",
+              }
+            : {
+                  name: "modelEdit",
+                  modelId,
+              };
     }
 
     const modelMatch = /^\/models\/([^/]+)$/.exec(normalizedPath);

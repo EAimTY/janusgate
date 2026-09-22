@@ -47,8 +47,9 @@ export function modelServingBadge(
 
 /**
  * Where one row stands in its discovery lifecycle: discovered from upstream,
- * added by hand, or no longer reported. A vanished row keeps its curated
- * columns and can be claimed back; it never serves meanwhile.
+ * added by hand, or no longer listed. A row the upstream no longer reports
+ * keeps its curated settings and can be claimed back; it never serves
+ * meanwhile.
  */
 export function modelDiscoveryBadge(model: ModelResponse): {
     readonly tone: BadgeTone;
@@ -78,7 +79,7 @@ export function modelDiscoveryBadge(model: ModelResponse): {
 /**
  * One model's row: its public ID, where it comes from, and its two facts —
  * serving state and discovery state. The row is one link to the model's own
- * page, where the writable columns behind those facts are edited.
+ * page, where the settings behind those facts are changed.
  */
 export function ModelRow(props: {
     readonly model: ModelResponse;
@@ -109,7 +110,7 @@ export function ModelRow(props: {
                         {props.showProvider === true && props.provider !== undefined
                             ? `${props.provider.name} · ${props.model.upstream_id}`
                             : props.model.upstream_id}
-                        {props.model.id_override !== null ? " · ID override" : ""}
+                        {props.model.id_override !== null ? " · Custom ID" : ""}
                     </span>
                 </span>
                 <span class="flex items-center gap-2">

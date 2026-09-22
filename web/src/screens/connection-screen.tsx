@@ -106,10 +106,8 @@ export function ConnectionScreen(): JSX.Element {
                         Connect to your gateway
                     </h1>
                     <p class="mt-2 text-ink-dim">
-                        JanusGate is a headless gateway: an OpenAI-compatible API in front, several
-                        upstream accounts behind it — a Codex OAuth or Antigravity OAuth login, or a
-                        key on any OpenAI-compatible API. This app administers those accounts, their
-                        models, and their credentials. The gateway itself serves no interface.
+                        This app administers a JanusGate gateway: its upstream accounts, their
+                        models, and their credentials.
                     </p>
                 </div>
 
@@ -118,15 +116,13 @@ export function ConnectionScreen(): JSX.Element {
                         A running JanusGate instance, reachable from this browser.
                     </RequirementStep>
                     <RequirementStep index={2}>
-                        Its management token: the value of{" "}
-                        <span class="tnum">management_api.token</span> in that instance's
-                        configuration file.
+                        Its management token: <span class="tnum">management_api.token</span> in that
+                        instance's configuration file.
                     </RequirementStep>
                     <RequirementStep index={3}>
-                        This page's origin <span class="tnum">{window.location.origin}</span> listed
-                        in that instance's{" "}
-                        <span class="tnum">management_api.cors.allowed_origin</span> — or the
-                        gateway served from this same origin.
+                        <span class="tnum">{window.location.origin}</span> in that instance's{" "}
+                        <span class="tnum">management_api.cors.allowed_origin</span> — unless this
+                        app is served from the gateway itself.
                     </RequirementStep>
                 </ol>
 
@@ -155,7 +151,7 @@ export function ConnectionScreen(): JSX.Element {
                         autocomplete="url"
                         isDisabled={isVerifying()}
                         error={baseUrlError()}
-                        hint="The origin only — scheme, host and port. The management path is fixed by the contract."
+                        hint="Scheme, host and port only."
                     />
 
                     <TextField
@@ -169,6 +165,16 @@ export function ConnectionScreen(): JSX.Element {
                         hint="Sent only to that instance, and kept only in this browser."
                     />
 
+                    <label class="flex w-fit cursor-pointer items-center gap-2 text-[13.5px] text-ink-dim">
+                        <input
+                            type="checkbox"
+                            class="size-4 accent-(--color-accent)"
+                            checked={isTokenVisible()}
+                            onChange={(event) => setIsTokenVisible(event.currentTarget.checked)}
+                        />
+                        Show the token while typing
+                    </label>
+
                     <div class="flex flex-wrap items-center gap-4">
                         <Button
                             type="submit"
@@ -177,25 +183,8 @@ export function ConnectionScreen(): JSX.Element {
                         >
                             {isVerifying() ? "Probing the gateway…" : "Connect"}
                         </Button>
-
-                        <label class="flex cursor-pointer items-center gap-2 text-[13.5px] text-ink-dim">
-                            <input
-                                type="checkbox"
-                                class="size-4 accent-(--color-accent)"
-                                checked={isTokenVisible()}
-                                onChange={(event) => setIsTokenVisible(event.currentTarget.checked)}
-                            />
-                            Show the token while typing
-                        </label>
                     </div>
                 </form>
-
-                <p class="border-t border-rule pt-4 text-[13px] text-ink-faint">
-                    The probe call is the connection test: only a management call that answers
-                    proves the pair, and only then is it stored. A rejected token, a blocked origin,
-                    and an address nothing answers are three different failures, and this page says
-                    which one you have.
-                </p>
             </div>
         </div>
     );

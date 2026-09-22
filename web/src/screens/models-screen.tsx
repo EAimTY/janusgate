@@ -15,8 +15,8 @@ import { ModelList } from "/src/ui/models-table";
 /**
  * Every model on one page, filterable by provider and searchable by ID.
  * Rows state the two facts a model has — serving and discovery state — and
- * each row opens the model's own page, where the writable columns behind
- * those facts are edited.
+ * each row opens the model's detail page, behind which its edit page owns
+ * every change.
  */
 export function ModelsScreen(props: {
     readonly api: ManagementApi;
@@ -135,14 +135,14 @@ export function ModelsScreen(props: {
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="Models"
-                description="Every model, everywhere. Open one to edit its writable columns."
+                description="Every model, everywhere. Open one for its details, settings, and usage."
             >
                 <ButtonLink
                     href={hrefs.modelNew(props.providerFilter)}
                     tone="primary"
                     glyph="plus"
                 >
-                    New model
+                    Create model
                 </ButtonLink>
             </PageHeader>
 
@@ -178,14 +178,14 @@ export function ModelsScreen(props: {
                         <EmptyState
                             glyph="stack"
                             title="No models yet"
-                            description="Models usually arrive when a provider syncs with its upstream. Add a provider first, then sync — or add one by hand when sync would not produce it."
+                            description="Add a provider first, then sync its models — or add one by hand."
                         >
                             <ButtonLink
                                 href={hrefs.modelNew(props.providerFilter)}
                                 tone="primary"
                                 glyph="plus"
                             >
-                                New model
+                                Create model
                             </ButtonLink>
                         </EmptyState>
                     }

@@ -318,8 +318,8 @@ function usageOutcomeBadge(outcome: ApiLogOutcome): {
 
 /**
  * One recorded request: when it started, how it ended, what it was, and
- * its numbers. Labels resolve through the current entity lists; a number
- * with no listing is the row's bare id.
+ * its numbers. Labels resolve through the current entity lists; an id with
+ * no listing reads as its deleted kind.
  */
 function UsageRow(props: {
     readonly row: ApiLogResponse;

@@ -17,7 +17,8 @@ import { PageHeader } from "/src/ui/layout";
 /**
  * Every serving key on one page. Rows carry identity, the full secret with a
  * copy action, serving state, and creation time — each row opens the key's
- * own page, where those facts are edited. Nothing is edited here.
+ * detail page, behind which its edit page owns every change. Nothing is
+ * edited here.
  */
 export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [keys, setKeys] = createSignal<ReadonlyArray<ApiKeyResponse>>([]);
@@ -90,14 +91,14 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="API keys"
-                description="Serving keys. Clients send one as Authorization: Bearer <key>; open one to rename, rotate, or revoke it."
+                description="Serving keys. Clients send one as Authorization: Bearer <key>; open one for its secret and usage."
             >
                 <ButtonLink
                     href={hrefs.apiKeyNew()}
                     tone="primary"
                     glyph="plus"
                 >
-                    New key
+                    Create API key
                 </ButtonLink>
             </PageHeader>
 
@@ -133,14 +134,14 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                         <EmptyState
                             glyph="key"
                             title="No API keys yet"
-                            description="Serving clients authenticate with these keys, and a fresh gateway serves nothing until the first one exists. Issue one, copy the secret into client configuration, and serving starts."
+                            description="A fresh gateway serves nothing until the first key exists."
                         >
                             <ButtonLink
                                 href={hrefs.apiKeyNew()}
                                 tone="primary"
                                 glyph="plus"
                             >
-                                New key
+                                Create API key
                             </ButtonLink>
                         </EmptyState>
                     }
@@ -198,7 +199,7 @@ function ApiKeyRow(props: { readonly apiKey: ApiKeyResponse }): JSX.Element {
                         {props.apiKey.name}
                     </span>
                     <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
-                        {`#${props.apiKey.id} · created ${formatCreatedAt(props.apiKey.created_at)}`}
+                        {`Created ${formatCreatedAt(props.apiKey.created_at)}`}
                     </span>
                     <span class="tnum mt-1 block truncate text-[12.5px] text-ink-dim">
                         {props.apiKey.key}

@@ -12,7 +12,7 @@ export type UsageEntities = {
 };
 
 export type UsageLabel = {
-    /** The current name, or the bare `#<id>` when the row is gone. */
+    /** The current name, or what kind of row is gone when it is no longer listed. */
     readonly text: string;
     /** False when the id is no longer listed — the row was deleted after the request was recorded. */
     readonly isListed: boolean;
@@ -24,12 +24,13 @@ function resolveLabel(
         readonly name: string;
     }>,
     id: number,
+    missingText: string,
 ): UsageLabel {
     const row = names.find((candidate) => candidate.id === id);
 
     return row === undefined
         ? {
-              text: `#${id}`,
+              text: missingText,
               isListed: false,
           }
         : {
@@ -38,7 +39,7 @@ function resolveLabel(
           };
 }
 
-/** A request's model as its current public ID, or its bare number. */
+/** A request's model as its current public ID, or as a deleted model. */
 export function usageModelLabel(entities: UsageEntities, modelId: number): UsageLabel {
     return resolveLabel(
         entities.models.map((row) => ({
@@ -46,15 +47,16 @@ export function usageModelLabel(entities: UsageEntities, modelId: number): Usage
             name: row.public_id,
         })),
         modelId,
+        "Deleted model",
     );
 }
 
-/** A request's provider as its current name, or its bare number. */
+/** A request's provider as its current name, or as a deleted provider. */
 export function usageProviderLabel(entities: UsageEntities, providerId: number): UsageLabel {
-    return resolveLabel(entities.providers, providerId);
+    return resolveLabel(entities.providers, providerId, "Deleted provider");
 }
 
-/** A request's API key as its current name, or its bare number. */
+/** A request's API key as its current name, or as a deleted key. */
 export function usageApiKeyLabel(entities: UsageEntities, apiKeyId: number): UsageLabel {
-    return resolveLabel(entities.apiKeys, apiKeyId);
+    return resolveLabel(entities.apiKeys, apiKeyId, "Deleted key");
 }

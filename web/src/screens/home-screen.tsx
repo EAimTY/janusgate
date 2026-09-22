@@ -150,7 +150,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                     tone="primary"
                     glyph="plus"
                 >
-                    New provider
+                    Create provider
                 </ButtonLink>
             </PageHeader>
 
@@ -203,7 +203,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                             <Stat
                                 value={String(data().models.length)}
                                 label="Models"
-                                hint="Synced or added by hand"
+                                hint="Discovered or added by hand"
                             />
                         </Card>
                         <Card>
@@ -260,7 +260,9 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                                                 }
                                             </span>
                                         </p>
-                                        <ButtonLink href={hrefs.apiKeyNew()}>New key</ButtonLink>
+                                        <ButtonLink href={hrefs.apiKeyNew()}>
+                                            Create API key
+                                        </ButtonLink>
                                     </li>
                                 </Show>
                                 <For each={attentionProviders()}>
@@ -280,7 +282,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                                                 </span>
                                             </p>
                                             <ButtonLink href={hrefs.providerDetail(provider.id)}>
-                                                Open and sync
+                                                Open and discover
                                             </ButtonLink>
                                         </li>
                                     )}
@@ -353,7 +355,7 @@ function GettingStarted(): JSX.Element {
         <EmptyState
             glyph="plug"
             title="No providers yet"
-            description="A provider is one upstream account — a Codex OAuth or Antigravity OAuth login, or a key on any OpenAI-compatible API. Its models arrive when you sync, and each becomes a public model ID your clients can call."
+            description="A provider is one upstream account. Its models arrive when you discover them."
         >
             <ButtonLink
                 href={hrefs.providerNew()}
@@ -374,11 +376,11 @@ function GettingStarted(): JSX.Element {
                 />
                 <GettingStartedStep
                     index={3}
-                    title="Sync its models from upstream"
+                    title="Discover its models from upstream"
                 />
                 <GettingStartedStep
                     index={4}
-                    title="Turn on serving"
+                    title="Enable the provider"
                 />
                 <GettingStartedStep
                     index={5}

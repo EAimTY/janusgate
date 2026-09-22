@@ -1,0 +1,238 @@
+import type { JSX } from "@solidjs/web";
+import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { formatTokenCount } from "/src/format";
+import type { ManagementApi } from "/src/management-api/client";
+import type { UsageBucket } from "/src/management-api/generated/v0";
+import { performManagementCall } from "/src/management-api/outcome";
+import { refreshRequest, reportRefresh } from "/src/refresh-state";
+import { hrefs } from "/src/router";
+import { describeCallFailure } from "/src/screens/failure";
+import { ButtonLink } from "/src/ui/controls";
+import { Notice, Skeleton, Stat } from "/src/ui/feedback";
+import { Card, CardHeader } from "/src/ui/layout";
+
+/** Which recorded rows the stats count: exactly one subject's. */
+export type UsageSubjectFilter =
+    | {
+          readonly provider_id: number;
+      }
+    | {
+          readonly model_id: number;
+      }
+    | {
+          readonly api_key_id: number;
+      };
+
+/**
+ * One subject's request accounting as aggregates: totals plus one row per
+ * day, newest first. The gateway counts rows and sums tokens; names never
+ * ride along, so this card shows numbers only. A failed read states its
+ * diagnosis in place, like every other card that reads.
+ */
+export function EntityUsageCard(props: {
+    readonly api: ManagementApi;
+    readonly filter: UsageSubjectFilter;
+    readonly subjectKind: string;
+}): JSX.Element {
+    const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
+    const [hasRead, setHasRead] = createSignal(false);
+    const [isReading, setIsReading] = createSignal(true);
+    const [failure, setFailure] = createSignal<{
+        readonly title: string;
+        readonly detail: string;
+        readonly fix: string | null;
+    } | null>(null);
+
+    let controller: AbortController | null = null;
+
+    const read = async (): Promise<void> => {
+        controller?.abort();
+
+        const call = new AbortController();
+        controller = call;
+        setIsReading(true);
+
+        const outcome = await performManagementCall(() =>
+            props.api.queryUsage(
+                {
+                    group_by: "day",
+                    ...props.filter,
+                },
+                call.signal,
+            ),
+        );
+
+        if (outcome.status === "aborted") {
+            return;
+        }
+
+        setIsReading(false);
+
+        if (outcome.status === "failed") {
+            const diagnosis = describeCallFailure(outcome.cause, "query-usage");
+
+            setFailure({
+                title: diagnosis.headline,
+                detail: diagnosis.detail,
+                fix: diagnosis.fix,
+            });
+            return;
+        }
+
+        setFailure(null);
+        setBuckets(outcome.result.buckets);
+        setHasRead(true);
+        reportRefresh();
+    };
+
+    createTrackedEffect(() => {
+        props.filter;
+        refreshRequest();
+        void read();
+
+        return () => controller?.abort();
+    });
+
+    const newestFirst = createMemo(() =>
+        [
+            ...buckets(),
+        ].reverse(),
+    );
+
+    const totals = createMemo(() => {
+        let requests = 0;
+        let input = 0;
+        let output = 0;
+
+        for (const bucket of buckets()) {
+            requests += bucket.requests;
+            input += bucket.input_tokens;
+            output += bucket.output_tokens;
+        }
+
+        return {
+            requests,
+            input,
+            output,
+        };
+    });
+
+    return (
+        <Card>
+            <CardHeader
+                title="Usage"
+                description="Requests and tokens per day — numbers only, never content."
+            >
+                <ButtonLink href={hrefs.usageQuery()}>Open aggregates</ButtonLink>
+            </CardHeader>
+
+            <div class="mt-4">
+                <Show when={failure()}>
+                    {(current) => (
+                        <Notice
+                            tone="bad"
+                            title={current().title}
+                            detail={current().detail}
+                            fix={current().fix}
+                        />
+                    )}
+                </Show>
+
+                <Show when={isReading() && !hasRead() && failure() === null}>
+                    <div class="grid gap-3 sm:grid-cols-3">
+                        <Skeleton class="h-16 w-full" />
+                        <Skeleton class="h-16 w-full" />
+                        <Skeleton class="h-16 w-full" />
+                    </div>
+                </Show>
+
+                <Show when={hasRead() && failure() === null}>
+                    <Show
+                        when={buckets().length > 0}
+                        fallback={
+                            <Notice
+                                tone="info"
+                                title={`No requests recorded for this ${props.subjectKind} yet.`}
+                                detail="One row appears per dispatched serving request — the moment the gateway sends upstream."
+                            />
+                        }
+                    >
+                        <div class="grid gap-3 sm:grid-cols-3">
+                            <Stat
+                                value={formatTokenCount(totals().requests)}
+                                label="Requests"
+                                hint="Dispatched, all days"
+                            />
+                            <Stat
+                                value={formatTokenCount(totals().input)}
+                                label="Input tokens"
+                                hint="Summed, usage reported"
+                            />
+                            <Stat
+                                value={formatTokenCount(totals().output)}
+                                label="Output tokens"
+                                hint="Summed, usage reported"
+                            />
+                        </div>
+
+                        <div class="mt-4 overflow-x-auto">
+                            <table class="tnum w-full min-w-[480px] text-left text-[13px]">
+                                <thead>
+                                    <tr class="text-ink-dim">
+                                        <th
+                                            scope="col"
+                                            class="px-3 py-2 text-[12.5px] font-medium"
+                                        >
+                                            Day
+                                        </th>
+                                        <th
+                                            scope="col"
+                                            class="px-3 py-2 text-right text-[12.5px] font-medium"
+                                        >
+                                            Requests
+                                        </th>
+                                        <th
+                                            scope="col"
+                                            class="px-3 py-2 text-right text-[12.5px] font-medium"
+                                        >
+                                            Input
+                                        </th>
+                                        <th
+                                            scope="col"
+                                            class="px-3 py-2 text-right text-[12.5px] font-medium"
+                                        >
+                                            Output
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <For each={newestFirst()}>
+                                        {(bucket) => (
+                                            <tr class="border-t border-rule">
+                                                <th
+                                                    scope="row"
+                                                    class="px-3 py-2 font-medium"
+                                                >
+                                                    {String(bucket.key)}
+                                                </th>
+                                                <td class="px-3 py-2 text-right">
+                                                    {formatTokenCount(bucket.requests)}
+                                                </td>
+                                                <td class="px-3 py-2 text-right">
+                                                    {formatTokenCount(bucket.input_tokens)}
+                                                </td>
+                                                <td class="px-3 py-2 text-right">
+                                                    {formatTokenCount(bucket.output_tokens)}
+                                                </td>
+                                            </tr>
+                                        )}
+                                    </For>
+                                </tbody>
+                            </table>
+                        </div>
+                    </Show>
+                </Show>
+            </div>
+        </Card>
+    );
+}

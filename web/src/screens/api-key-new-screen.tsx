@@ -10,9 +10,9 @@ import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 
 /**
- * One creation page for a serving key: a human label, the secret (typed or
- * generated), and the serving switch. Creating lands on the new key's page,
- * like a provider creation does.
+ * One creation page for a serving key: whether it works from the start, a
+ * human label, and the secret (typed or generated). Creating lands on the
+ * new key's page, like a provider creation does.
  */
 export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [name, setName] = createSignal("");
@@ -69,8 +69,8 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="New API key"
-                description="One secret your serving clients share. Copy it into client configuration after creating."
+                title="Create API key"
+                description="One secret your serving clients share."
                 backHref={hrefs.apiKeys()}
                 backLabel="API keys"
             />
@@ -89,13 +89,21 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
             <Card>
                 <CardHeader
                     title="Key"
-                    description="The label is yours; the secret must be non-empty and held by no other key."
+                    description="The secret must be non-empty and held by no other key."
                 />
                 <form
                     novalidate={true}
                     class="mt-4 flex max-w-2xl flex-col gap-4"
                     onSubmit={submit}
                 >
+                    <Switch
+                        label="Enabled"
+                        isOn={isEnabled()}
+                        onText="On"
+                        offText="Off"
+                        isDisabled={isCreating()}
+                        onToggle={setIsEnabled}
+                    />
                     <ApiKeyNameField
                         name={name()}
                         onNameInput={setName}
@@ -106,22 +114,13 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                         onSecretInput={setSecret}
                         isDisabled={isCreating()}
                     />
-                    <Switch
-                        label="Enabled"
-                        hint="A disabled key is stored but authorizes nothing until it is turned on."
-                        isOn={isEnabled()}
-                        onText="On"
-                        offText="Off"
-                        isDisabled={isCreating()}
-                        onToggle={setIsEnabled}
-                    />
                     <div>
                         <Button
                             type="submit"
                             tone="primary"
                             isBusy={isCreating()}
                         >
-                            {isCreating() ? "Creating…" : "Create key"}
+                            {isCreating() ? "Creating…" : "Create API key"}
                         </Button>
                     </div>
                 </form>

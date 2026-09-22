@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, createTrackedEffect, For, Show } from "solid-js";
+import { createMemo, createSignal, createTrackedEffect, Show } from "solid-js";
 import { toCreateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
@@ -10,14 +10,16 @@ import { describeCallFailure } from "/src/screens/failure";
 import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { ModelAliasFields } from "/src/ui/model-form";
 
 /**
- * One creation page for a manually added model. The provider is picked once —
- * the row belongs to it — and the two writable columns match the model page
- * field for field. Creating lands on the new model's page, like a provider
- * creation does. The same shape claims a vanished row back: naming a
- * provider and upstream ID the gateway holds as vanished resumes service
- * under the requested state instead of inserting a new row.
+ * One creation page for a manually added model. When opened from a
+ * provider's page the provider is fixed — there is nothing to pick — and
+ * otherwise it is picked once, because the model belongs to it. The
+ * settings match the edit page field for field. Creating lands on the new
+ * model's page, like a provider creation does. The same shape claims back a
+ * model the upstream no longer reports: naming its provider and upstream ID
+ * resumes service under the requested state instead of inserting a new row.
  */
 export function ModelNewScreen(props: {
     readonly api: ManagementApi;
@@ -73,13 +75,25 @@ export function ModelNewScreen(props: {
         return () => controller?.abort();
     });
 
+    const fixedProvider = createMemo(() =>
+        props.providerFilter === null
+            ? null
+            : (providers().find((row) => row.id === props.providerFilter) ?? null),
+    );
+
+    const backHref = (): string =>
+        fixedProvider() === null
+            ? hrefs.models(props.providerFilter)
+            : hrefs.providerDetail(fixedProvider()?.id ?? 0);
+    const backLabel = (): string => (fixedProvider() === null ? "Models" : "Provider");
+
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
-                title="New model"
-                description="A model row sync would not produce — or a vanished one to claim back. Pick its provider, name its upstream ID, set its columns."
-                backHref={hrefs.models(props.providerFilter)}
-                backLabel="Models"
+                title="Create model"
+                description="Something discovery would not produce — or a model the upstream no longer reports, to claim back."
+                backHref={backHref()}
+                backLabel={backLabel()}
             />
 
             <Show when={failure()}>
@@ -104,14 +118,14 @@ export function ModelNewScreen(props: {
                         <EmptyState
                             glyph="stack"
                             title="No providers yet"
-                            description="A model belongs to a provider, and there is none to hold it. Add a provider first — its sync may already produce this model."
+                            description="A model belongs to a provider, and there is none to hold it. Add a provider first — discovery may already produce this model."
                         >
                             <ButtonLink
                                 href={hrefs.providerNew()}
                                 tone="primary"
                                 glyph="plus"
                             >
-                                New provider
+                                Create provider
                             </ButtonLink>
                         </EmptyState>
                     }
@@ -120,6 +134,7 @@ export function ModelNewScreen(props: {
                         api={props.api}
                         providers={providers()}
                         initialProviderId={props.providerFilter}
+                        fixedProvider={fixedProvider()}
                     />
                 </Show>
             </Show>
@@ -131,8 +146,13 @@ function ModelCreateForm(props: {
     readonly api: ManagementApi;
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly initialProviderId: number | null;
+    readonly fixedProvider: ProviderResponse | null;
 }): JSX.Element {
     const initialSelection = (): string => {
+        if (props.fixedProvider !== null) {
+            return String(props.fixedProvider.id);
+        }
+
         if (
             props.initialProviderId !== null &&
             props.providers.some((row) => row.id === props.initialProviderId)
@@ -147,8 +167,9 @@ function ModelCreateForm(props: {
 
     const [providerId, setProviderId] = createSignal(initialSelection());
     const [upstreamId, setUpstreamId] = createSignal("");
-    const [idOverride, setIdOverride] = createSignal("");
     const [isEnabled, setIsEnabled] = createSignal(true);
+    const [hasAlias, setHasAlias] = createSignal(false);
+    const [idOverride, setIdOverride] = createSignal("");
     const [isCreating, setIsCreating] = createSignal(false);
     const [failure, setFailure] = createSignal<{
         readonly title: string;
@@ -163,7 +184,7 @@ function ModelCreateForm(props: {
     const trimmedUpstream = (): string => upstreamId().trim();
 
     const normalizedOverride = (): string | null =>
-        idOverride().trim() === "" ? null : idOverride().trim();
+        !hasAlias() || idOverride().trim() === "" ? null : idOverride().trim();
 
     const composedId = (): string => {
         const provider = selectedProvider();
@@ -229,7 +250,7 @@ function ModelCreateForm(props: {
         },
         ...props.providers.map((row) => ({
             value: String(row.id),
-            label: `${row.name} (#${row.id})`,
+            label: row.name,
         })),
     ]);
 
@@ -248,66 +269,66 @@ function ModelCreateForm(props: {
 
             <Notice
                 tone="warn"
-                title="A manual row is never auto-removed — and it claims vanished rows."
-                detail="Sync flips a listed manual row to Discovered and leaves an unlisted one alone; it never deletes. Naming a vanished row's provider and upstream ID claims it back under the state set below. An upstream reporting no models changes nothing."
+                title="A model added by hand is never removed automatically — and it claims back what discovery lost."
+                detail="Naming a provider and upstream ID the upstream no longer reports claims that model back under the settings below."
             />
 
             <Card>
-                <CardHeader
-                    title="Identity"
-                    description="Which provider holds the row, and the exact upstream identifier it serves."
-                />
+                <CardHeader title="Identity" />
                 <div class="mt-4 flex max-w-2xl flex-col gap-4">
-                    <SelectField
-                        label="Provider"
-                        value={providerId()}
-                        options={providerOptions()}
-                        onChange={setProviderId}
-                        isDisabled={isCreating()}
-                        hint="The row's owner. A changed prefix later recomposes every unoverridden public ID on it."
-                    />
+                    <Show
+                        when={props.fixedProvider}
+                        fallback={
+                            <SelectField
+                                label="Provider"
+                                value={providerId()}
+                                options={providerOptions()}
+                                onChange={setProviderId}
+                                isDisabled={isCreating()}
+                            />
+                        }
+                    >
+                        {(fixed) => (
+                            <div>
+                                <p class="block text-[13px] font-medium text-ink">Provider</p>
+                                <p class="tnum mt-1.5">{fixed().name}</p>
+                            </div>
+                        )}
+                    </Show>
                     <TextField
                         label="Upstream ID"
                         value={upstreamId()}
                         onInput={setUpstreamId}
                         placeholder="gpt-4o"
                         isDisabled={isCreating()}
-                        hint="The exact identifier sent upstream. Verbatim, like a discovered row — no mapping, no alias."
+                        hint="Sent upstream verbatim."
                     />
                 </div>
             </Card>
 
             <Card>
-                <CardHeader
-                    title="Writable columns"
-                    description="The two things a model page owns. Everything else about the model comes from upstream."
-                />
+                <CardHeader title="Model settings" />
                 <form
                     novalidate={true}
                     class="mt-4 flex max-w-2xl flex-col gap-5"
                     onSubmit={submit}
                 >
-                    <TextField
-                        label="Public ID override"
-                        value={idOverride()}
-                        onInput={setIdOverride}
-                        placeholder="No override"
-                        isDisabled={isCreating()}
-                        hint={
-                            trimmedUpstream() === ""
-                                ? "Clients call the composed ID once the upstream ID is named."
-                                : `Clients will call it ${composedId()}. Renaming breaks clients on the old ID — there are no aliases.`
-                        }
-                    />
-
                     <Switch
-                        label="Serving"
-                        hint="A model serves only while both its own switch and its provider's are on."
+                        label="Enabled"
                         isOn={isEnabled()}
                         onText="On"
                         offText="Off"
                         isDisabled={isCreating()}
                         onToggle={setIsEnabled}
+                    />
+
+                    <ModelAliasFields
+                        hasAlias={hasAlias()}
+                        onHasAliasToggle={setHasAlias}
+                        alias={idOverride()}
+                        onAliasInput={setIdOverride}
+                        composedId={composedId()}
+                        isDisabled={isCreating()}
                     />
 
                     <div>
@@ -322,20 +343,6 @@ function ModelCreateForm(props: {
                     </div>
                 </form>
             </Card>
-
-            <Show when={props.providers.length > 1}>
-                <p class="text-[12.5px] text-ink-faint">
-                    <For each={props.providers}>
-                        {(row, index) => (
-                            <>
-                                {index() > 0 ? " · " : ""}
-                                {row.name}
-                            </>
-                        )}
-                    </For>
-                    {` — ${props.providers.length} providers hold rows.`}
-                </p>
-            </Show>
         </>
     );
 }

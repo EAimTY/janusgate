@@ -1,7 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
 import { Button, TextField } from "/src/ui/controls";
-import { Glyph } from "/src/ui/glyph";
 
 /**
  * Mints one serving-key secret locally: 32 random bytes, base64url without
@@ -80,7 +79,7 @@ export function ApiKeyNameField(props: {
             onInput={props.onNameInput}
             isDisabled={props.isDisabled ?? false}
             isData={false}
-            hint="Which client holds this key. Names need not be unique; a conflict is reported against the secret, never the name."
+            hint="Which client holds this key."
         />
     );
 }
@@ -105,10 +104,7 @@ export function ApiKeySecretField(props: {
                 onInput={props.onSecretInput}
                 isDisabled={props.isDisabled ?? false}
                 placeholder="sk-… or Generate one"
-                hint={
-                    props.hint ??
-                    "Sent as Authorization: Bearer <key> by serving clients. Shown in full so it can be copied into client configuration."
-                }
+                hint={props.hint ?? "Sent as Authorization: Bearer <key> by serving clients."}
             />
             <div class="mt-2 flex flex-wrap gap-2">
                 <Button
@@ -135,19 +131,5 @@ export function ApiKeySecretValue(props: { readonly secret: string }): JSX.Eleme
             </p>
             <CopyButton value={props.secret} />
         </div>
-    );
-}
-
-/** The serving switch, shared wording wherever a key is edited. */
-export function ApiKeyServingHint(): JSX.Element {
-    return (
-        <p class="flex items-start gap-1.5 text-[13px] text-ink-faint">
-            <Glyph
-                name="info"
-                class="mt-0.5 shrink-0"
-            />
-            Disabling stops this key on the next request. With no enabled key left, the gateway
-            serves nothing.
-        </p>
     );
 }

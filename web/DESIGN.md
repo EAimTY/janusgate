@@ -78,8 +78,9 @@ The interface is a quiet console for a working operator, not an instrument
 to admire. Each page does exactly one thing — the overview reads the
 gateway's health, the provider pages administer providers, the model pages
 administer models — and rows never unfold into editors: a row is one link to
-the page where that thing is edited. The operator always knows where they
-are, what this page owns, and where the one action they came for lives.
+that thing's detail page, behind which its edit page owns every change. The
+operator always knows where they are, what this page owns, and where the one
+action they came for lives.
 
 The world is built from restraint, not decoration. One neutral family
 tinted faintly green, one teal accent for actions and current selection, and
@@ -101,13 +102,14 @@ kept nowhere and referenced by nothing.
 
 - Light by default, dark on demand: the OS decides unless the operator
   overrode it; the override persists beside the connection, not in a build.
-- One page, one job; rows link to editors, editors live on their own pages.
+- One page, one job; rows link to detail pages, edit pages own every change.
 - Flat surfaces, 1px borders, 16px cards, pill badges, no shadows.
 - Single sans family, fixed sizes; mono tabular figures for data.
 - Motion is CSS only and means state: switch flips, notices land, screens
   settle once. Everything parks under `prefers-reduced-motion`.
 - Plain English copy. Domain words are provider, model, public ID, upstream
-  ID, prefix, serving, sync, reconnect — nothing else needs a glossary.
+  ID, prefix, enabled, serving, discover, reconnect — nothing else needs a
+  glossary.
 
 ## Colors
 
@@ -184,16 +186,17 @@ about the data stays in the sans.
 ## Components
 
 - **Buttons** come in four tones — primary, secondary, danger, ghost —
-  one shape, one rhythm. Labels name the action ("Sync models", "Save
-  changes", "Delete for good"); busy states name the wait ("Syncing…").
+  one shape, one rhythm. Labels name the action ("Discover models", "Save
+  changes", "Delete for good"); busy states name the wait ("Discovering…").
 - **Fields** are labelled above, hinted below, errored below in bad with
   an alert mark. Inputs sit on the canvas ground with a strong-rule edge;
   focus turns the edge accent.
 - **Switches** are pills with knobs, `role="switch"`, with an On/Off word
-  beside them. A switch flips a serving state; it never submits a form.
-- **Cards** hold one subject: details, credentials, models, danger. A card
-  has a title, an optional one-line description, and the actions that
-  belong to it — nothing else.
+  beside them. A switch flips an enabled state — always labelled `Enabled`
+  with no caption, always first in its settings — it never submits a form.
+- **Cards** hold one subject: details, settings, credentials, models, usage,
+  danger. A card has a title, an optional one-line description, and the
+  actions that belong to it — nothing else.
 - **Skeletons** hold the layout while a screen's first read is in flight.
   A failed first read replaces the skeleton with the failure, never stacks
   under it.
@@ -216,9 +219,9 @@ conveys state — a flip, a landing, a settling — and nothing else.
 
 Controls name their action; errors name the problem and the recovery; the
 gateway's message is always kept verbatim as the detail. The fixed
-vocabulary: provider, model, public ID, upstream ID, prefix, serving,
-sync, reconnect, override, thinking levels. Setup copy assumes a stranger
-who read only the READMEs; in-app copy assumes an operator mid-task.
+vocabulary: provider, model, public ID, upstream ID, prefix, enabled,
+serving, discover, reconnect, override, thinking levels. Setup copy assumes a
+stranger who read only the READMEs; in-app copy assumes an operator mid-task.
 
 ## What this world refuses
 

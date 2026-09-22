@@ -89,7 +89,10 @@ export function isOAuthProviderRow(provider: ProviderResponse): provider is Extr
 
 const DISCOVERY_STATE_LABELS: Record<DiscoveryState, string> = {
     discovered: "Discovered",
-    vanished: "Vanished",
+    // The wire value `vanished` never reaches the operator verbatim: the
+    // label states what it means for them — the upstream no longer lists
+    // this model, while everything curated here is kept.
+    vanished: "No longer reported",
     manual: "Manual",
 };
 

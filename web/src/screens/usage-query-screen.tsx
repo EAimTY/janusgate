@@ -209,7 +209,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         },
         ...entities().providers.map((row) => ({
             value: String(row.id),
-            label: `${row.name} (#${row.id})`,
+            label: row.name,
         })),
     ]);
 
@@ -220,7 +220,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         },
         ...entities().models.map((row) => ({
             value: String(row.id),
-            label: `${row.public_id} (#${row.id})`,
+            label: row.public_id,
         })),
     ]);
 
@@ -231,7 +231,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         },
         ...entities().apiKeys.map((row) => ({
             value: String(row.id),
-            label: `${row.name} (#${row.id})`,
+            label: row.name,
         })),
     ]);
 

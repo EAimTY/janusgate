@@ -49,7 +49,8 @@ export function credentialBadge(provider: ProviderResponse): {
 /**
  * The provider list: one row per upstream account. Rows carry identity,
  * type, model count, and the two states — nothing else, and no model's
- * details. Everything about one provider lives on its own page.
+ * details. Each row opens the provider's detail page; the edit page behind
+ * it owns every change.
  */
 export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
@@ -143,14 +144,14 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="Providers"
-                description="Upstream accounts. Open one to edit it, sync its models, or fix its credentials."
+                description="Upstream accounts. Open one for its models and usage — editing lives one step further in."
             >
                 <ButtonLink
                     href={hrefs.providerNew()}
                     tone="primary"
                     glyph="plus"
                 >
-                    New provider
+                    Create provider
                 </ButtonLink>
             </PageHeader>
 
@@ -186,14 +187,14 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                         <EmptyState
                             glyph="plug"
                             title="No providers yet"
-                            description="A provider is one upstream account — a Codex OAuth or Antigravity OAuth login, or a key on any OpenAI-compatible API."
+                            description="A provider is one upstream account."
                         >
                             <ButtonLink
                                 href={hrefs.providerNew()}
                                 tone="primary"
                                 glyph="plus"
                             >
-                                New provider
+                                Create provider
                             </ButtonLink>
                         </EmptyState>
                     }
@@ -263,13 +264,13 @@ function ProviderRow(props: {
                         {props.provider.name}
                     </span>
                     <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
-                        {`#${props.provider.id} · ${providerTypeLabel(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
+                        {`${providerTypeLabel(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
                     </span>
                 </span>
                 <span class="flex items-center gap-2">
                     <Badge
                         tone={props.provider.is_enabled ? "ok" : "muted"}
-                        label={props.provider.is_enabled ? "Serving" : "Off"}
+                        label={props.provider.is_enabled ? "Enabled" : "Disabled"}
                     />
                     <Badge
                         tone={credential().tone}

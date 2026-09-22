@@ -86,9 +86,7 @@ export function AuthorizeStep(props: {
             </dl>
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
-                The state is single-use, so a failed exchange needs a fresh flow. Authorization
-                codes are single-use too and expire quickly: paste the code and finish promptly
-                after approving access.
+                Both are single-use and expire quickly — finish promptly after approving access.
             </p>
 
             <div class="h-px w-full bg-rule" />

@@ -7,15 +7,18 @@ import { createManagementApi } from "/src/management-api/client";
 import { refreshStamp, requestRefresh } from "/src/refresh-state";
 import { currentLocation, hrefs, matchAppRoute, navigate } from "/src/router";
 import { ApiKeyDetailScreen } from "/src/screens/api-key-detail-screen";
+import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
 import { ApiKeyNewScreen } from "/src/screens/api-key-new-screen";
 import { ApiKeysScreen } from "/src/screens/api-keys-screen";
 import { ConnectionScreen } from "/src/screens/connection-screen";
 import { HomeScreen } from "/src/screens/home-screen";
 import { ModelDetailScreen } from "/src/screens/model-detail-screen";
+import { ModelEditScreen } from "/src/screens/model-edit-screen";
 import { ModelNewScreen } from "/src/screens/model-new-screen";
 import { ModelsScreen } from "/src/screens/models-screen";
 import { NotFoundScreen } from "/src/screens/not-found-screen";
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
+import { ProviderEditScreen } from "/src/screens/provider-edit-screen";
 import { ProviderNewScreen } from "/src/screens/provider-new-screen";
 import { ProvidersScreen } from "/src/screens/providers-screen";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
@@ -94,15 +97,30 @@ function navKeyOfRoute(name: string): NavKey | null {
         return "overview";
     }
 
-    if (name === "providers" || name === "providerNew" || name === "providerDetail") {
+    if (
+        name === "providers" ||
+        name === "providerNew" ||
+        name === "providerDetail" ||
+        name === "providerEdit"
+    ) {
         return "providers";
     }
 
-    if (name === "models" || name === "modelNew" || name === "modelDetail") {
+    if (
+        name === "models" ||
+        name === "modelNew" ||
+        name === "modelDetail" ||
+        name === "modelEdit"
+    ) {
         return "models";
     }
 
-    if (name === "apiKeys" || name === "apiKeyNew" || name === "apiKeyDetail") {
+    if (
+        name === "apiKeys" ||
+        name === "apiKeyNew" ||
+        name === "apiKeyDetail" ||
+        name === "apiKeyEdit"
+    ) {
         return "keys";
     }
 
@@ -133,6 +151,11 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
         return current.name === "providerDetail" ? current : null;
     });
 
+    const providerEditRoute = createMemo(() => {
+        const current = route();
+        return current.name === "providerEdit" ? current : null;
+    });
+
     const modelsRoute = createMemo(() => {
         const current = route();
         return current.name === "models" ? current : null;
@@ -148,9 +171,19 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
         return current.name === "apiKeyDetail" ? current : null;
     });
 
+    const apiKeyEditRoute = createMemo(() => {
+        const current = route();
+        return current.name === "apiKeyEdit" ? current : null;
+    });
+
     const modelDetailRoute = createMemo(() => {
         const current = route();
         return current.name === "modelDetail" ? current : null;
+    });
+
+    const modelEditRoute = createMemo(() => {
+        const current = route();
+        return current.name === "modelEdit" ? current : null;
     });
 
     return (
@@ -189,6 +222,17 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                                 <ProviderDetailScreen
                                     api={api}
                                     providerId={detail.providerId}
+                                />
+                            )}
+                        </Match>
+                        <Match
+                            when={providerEditRoute()}
+                            keyed
+                        >
+                            {(edit) => (
+                                <ProviderEditScreen
+                                    api={api}
+                                    providerId={edit.providerId}
                                 />
                             )}
                         </Match>
@@ -232,6 +276,17 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                             )}
                         </Match>
                         <Match
+                            when={apiKeyEditRoute()}
+                            keyed
+                        >
+                            {(edit) => (
+                                <ApiKeyEditScreen
+                                    api={api}
+                                    apiKeyId={edit.apiKeyId}
+                                />
+                            )}
+                        </Match>
+                        <Match
                             when={modelDetailRoute()}
                             keyed
                         >
@@ -239,6 +294,17 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                                 <ModelDetailScreen
                                     api={api}
                                     modelId={detail.modelId}
+                                />
+                            )}
+                        </Match>
+                        <Match
+                            when={modelEditRoute()}
+                            keyed
+                        >
+                            {(edit) => (
+                                <ModelEditScreen
+                                    api={api}
+                                    modelId={edit.modelId}
                                 />
                             )}
                         </Match>
