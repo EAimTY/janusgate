@@ -28,24 +28,13 @@ const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
     antigravity_oauth: "Antigravity OAuth",
 };
 
-/**
- * The same vocabulary as options. The record type makes the key set exactly the
- * union, so the enumerated keys are members of it by construction.
- */
-export const PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<ProviderType>> = Object.entries(
-    PROVIDER_TYPE_LABELS,
-).map(([value, label]) => ({
-    value: value as ProviderType,
-    label,
-}));
-
 const OAUTH_PROVIDER_TYPE_LABELS: Record<OAuthProviderType, string> = {
     codex_oauth: "Codex OAuth",
     antigravity_oauth: "Antigravity OAuth",
 };
 
 /** The OAuth provider kinds as options; the record type is exhaustive as above. */
-export const OAUTH_PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<OAuthProviderType>> =
+const OAUTH_PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<OAuthProviderType>> =
     Object.entries(OAUTH_PROVIDER_TYPE_LABELS).map(([value, label]) => ({
         value: value as OAuthProviderType,
         label,
@@ -101,18 +90,19 @@ const DISCOVERY_STATE_LABELS: Record<DiscoveryState, string> = {
  * so a state added to the generated union fails to compile until it is
  * listed here.
  */
-export const DISCOVERY_STATE_OPTIONS: ReadonlyArray<VocabularyOption<DiscoveryState>> =
-    Object.entries(DISCOVERY_STATE_LABELS).map(([value, label]) => ({
-        value: value as DiscoveryState,
-        label,
-    }));
+const DISCOVERY_STATE_OPTIONS: ReadonlyArray<VocabularyOption<DiscoveryState>> = Object.entries(
+    DISCOVERY_STATE_LABELS,
+).map(([value, label]) => ({
+    value: value as DiscoveryState,
+    label,
+}));
 
 /** The label a model row's own `discovery_state` is presented under. */
 export function discoveryStateLabel(state: DiscoveryState): string {
     return DISCOVERY_STATE_LABELS[state];
 }
 
-export function findDiscoveryState(value: unknown): DiscoveryState | null {
+function findDiscoveryState(value: unknown): DiscoveryState | null {
     return findOption(DISCOVERY_STATE_OPTIONS, value);
 }
 
@@ -135,18 +125,19 @@ const API_LOG_OUTCOME_LABELS: Record<ApiLogOutcome, string> = {
 };
 
 /** The recorded request outcomes as options; the record type is exhaustive. */
-export const API_LOG_OUTCOME_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogOutcome>> =
-    Object.entries(API_LOG_OUTCOME_LABELS).map(([value, label]) => ({
-        value: value as ApiLogOutcome,
-        label,
-    }));
+const API_LOG_OUTCOME_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogOutcome>> = Object.entries(
+    API_LOG_OUTCOME_LABELS,
+).map(([value, label]) => ({
+    value: value as ApiLogOutcome,
+    label,
+}));
 
 /** The label one accounting row's own `outcome` is presented under. */
 export function apiLogOutcomeLabel(outcome: ApiLogOutcome): string {
     return API_LOG_OUTCOME_LABELS[outcome];
 }
 
-export function findApiLogOutcome(value: unknown): ApiLogOutcome | null {
+function findApiLogOutcome(value: unknown): ApiLogOutcome | null {
     return findOption(API_LOG_OUTCOME_OPTIONS, value);
 }
 
@@ -167,7 +158,7 @@ const API_LOG_ENDPOINT_LABELS: Record<ApiLogEndpointType, string> = {
 };
 
 /** The outward endpoints as options; the record type is exhaustive. */
-export const API_LOG_ENDPOINT_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogEndpointType>> =
+const API_LOG_ENDPOINT_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogEndpointType>> =
     Object.entries(API_LOG_ENDPOINT_LABELS).map(([value, label]) => ({
         value: value as ApiLogEndpointType,
         label,
@@ -178,7 +169,7 @@ export function apiLogEndpointLabel(endpoint: ApiLogEndpointType): string {
     return API_LOG_ENDPOINT_LABELS[endpoint];
 }
 
-export function findApiLogEndpointType(value: unknown): ApiLogEndpointType | null {
+function findApiLogEndpointType(value: unknown): ApiLogEndpointType | null {
     return findOption(API_LOG_ENDPOINT_OPTIONS, value);
 }
 
@@ -213,7 +204,7 @@ export function usageGroupByLabel(groupBy: UsageGroupBy): string {
     return USAGE_GROUP_BY_LABELS[groupBy];
 }
 
-export function findUsageGroupBy(value: unknown): UsageGroupBy | null {
+function findUsageGroupBy(value: unknown): UsageGroupBy | null {
     return findOption(USAGE_GROUP_BY_OPTIONS, value);
 }
 

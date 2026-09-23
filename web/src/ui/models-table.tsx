@@ -9,9 +9,12 @@ import { Badge, type BadgeTone } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 
 /**
- * How one model reads at a glance: serving under the gateway's three-input
- * definition, held by its provider, or off. The verdict is derived
- * client-side from rows the app already fetches, never read off the wire.
+ * How one model reads at a glance, under the gateway's three-input effective
+ * serving definition derived client-side from rows the app already fetches
+ * and never read off the wire: `Serving`, or the one cause that keeps it from
+ * serving — the model's own switch (`Off`), the upstream no longer reporting
+ * the row (`Suspended`), the provider's switch (`Held by provider`), or a
+ * provider row absent from the fetched rows (`Unknown`).
  */
 export function modelServingBadge(
     model: ModelResponse,
@@ -27,21 +30,34 @@ export function modelServingBadge(
         };
     }
 
-    if (
-        model.is_enabled &&
-        model.discovery_state !== "vanished" &&
-        provider !== undefined &&
-        !provider.is_enabled
-    ) {
+    if (!model.is_enabled) {
+        return {
+            tone: "muted",
+            label: "Off",
+        };
+    }
+
+    if (model.discovery_state === "vanished") {
+        return {
+            tone: "warn",
+            label: "Suspended",
+        };
+    }
+
+    if (provider !== undefined && !provider.is_enabled) {
         return {
             tone: "warn",
             label: "Held by provider",
         };
     }
 
+    // No switch is off and the row is listed, yet the provider row the
+    // conjunction needs is missing from the fetched rows — reachable only
+    // while a concurrent provider deletion races the listing read; the next
+    // read settles the verdict.
     return {
         tone: "muted",
-        label: "Off",
+        label: "Unknown",
     };
 }
 
@@ -81,7 +97,7 @@ export function modelDiscoveryBadge(model: ModelResponse): {
  * serving state and discovery state. The row is one link to the model's own
  * page, where the settings behind those facts are changed.
  */
-export function ModelRow(props: {
+function ModelRow(props: {
     readonly model: ModelResponse;
     readonly provider: ProviderResponse | undefined;
     readonly showProvider?: boolean | undefined;

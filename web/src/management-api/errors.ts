@@ -1,4 +1,4 @@
-import { ErrorCode } from "/src/management-api/generated/v0";
+import type { ErrorCode } from "/src/management-api/generated/v0";
 
 /**
  * How a management call failed:
@@ -49,11 +49,6 @@ export class ContractViolationError extends Error {
         super(message);
         this.name = "ContractViolationError";
     }
-}
-
-/** A 401 carrying the version's `unauthorized` errno proves the token dead. */
-export function isUnauthorizedFailure(value: unknown): boolean {
-    return value instanceof ManagementApiError && value.errno === ErrorCode.Unauthorized;
 }
 
 /** Aborts are control flow, never a failure to render. */

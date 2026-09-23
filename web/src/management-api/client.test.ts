@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Connection } from "/src/connection/model";
 import { createManagementApi } from "./client";
-import { isUnauthorizedFailure, ManagementApiError } from "./errors";
+import { ManagementApiError } from "./errors";
 import { ErrorCode } from "./generated/v0";
 
 /**
@@ -130,10 +130,9 @@ describe("createManagementApi", () => {
         expect(apiError.errno).toBe(ErrorCode.Conflict);
         expect(apiError.httpStatus).toBe(409);
         expect(apiError.message).toBe("provider name taken");
-        expect(isUnauthorizedFailure(error)).toBe(false);
     });
 
-    it("recognizes the unauthorized errno", async () => {
+    it("reports an unauthorized failure to the connection service", async () => {
         stubFetch(() =>
             jsonResponse(401, {
                 errno: ErrorCode.Unauthorized,
@@ -151,7 +150,6 @@ describe("createManagementApi", () => {
             .listProviders()
             .catch((failure: unknown) => failure);
 
-        expect(isUnauthorizedFailure(error)).toBe(true);
         expect((error as ManagementApiError).message).toBe("invalid token");
 
         expect(notices).toEqual([

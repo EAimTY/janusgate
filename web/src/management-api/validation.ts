@@ -195,7 +195,7 @@ export function parseModelResponse(value: unknown, context: string): ModelRespon
  * One accounting row, verbatim: the table's own fifteen columns, ids and
  * numeric facts only — no name rides along (rule 7).
  */
-export function parseApiLogResponse(value: unknown, context: string): ApiLogResponse {
+function parseApiLogResponse(value: unknown, context: string): ApiLogResponse {
     const record = expectRecord(value, context);
 
     return {
@@ -239,7 +239,7 @@ export function parseApiLogResponse(value: unknown, context: string): ApiLogResp
 }
 
 /** One aggregation bucket: the grouping key and the log's own numeric sums. */
-export function parseUsageBucket(value: unknown, context: string): UsageBucket {
+function parseUsageBucket(value: unknown, context: string): UsageBucket {
     const record = expectRecord(value, context);
 
     return {

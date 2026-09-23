@@ -8,7 +8,7 @@ import { copyText } from "./clipboard";
  * padding. The gateway accepts any non-empty, unique value, so generation is
  * a typing convenience — pasting a self-made secret works the same.
  */
-export function generateApiKey(): string {
+function generateApiKey(): string {
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
 
