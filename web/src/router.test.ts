@@ -87,14 +87,43 @@ describe("matchAppRoute", () => {
         expect(match("/models/new")).toEqual({
             name: "modelNew",
             providerFilter: null,
+            upstreamId: null,
         });
         expect(match("/models/new?provider=4")).toEqual({
             name: "modelNew",
             providerFilter: 4,
+            upstreamId: null,
         });
         expect(match("/models/new?provider=codex")).toEqual({
             name: "modelNew",
             providerFilter: null,
+            upstreamId: null,
+        });
+    });
+
+    it("carries a claim-back upstream ID into model creation, and no other value", () => {
+        expect(match("/models/new?provider=4&upstream=gpt-x")).toEqual({
+            name: "modelNew",
+            providerFilter: 4,
+            upstreamId: "gpt-x",
+        });
+        expect(match("/models/new?upstream=gpt-x")).toEqual({
+            name: "modelNew",
+            providerFilter: null,
+            upstreamId: "gpt-x",
+        });
+        // Only a routing-safe upstream ID addresses the prefill; anything
+        // else reads as absent, like a provider filter that is not a row
+        // identifier.
+        expect(match("/models/new?provider=4&upstream=gpt%20x")).toEqual({
+            name: "modelNew",
+            providerFilter: 4,
+            upstreamId: null,
+        });
+        expect(match("/models/new?provider=4&upstream=")).toEqual({
+            name: "modelNew",
+            providerFilter: 4,
+            upstreamId: null,
         });
     });
 
@@ -215,10 +244,17 @@ describe("matchAppRoute", () => {
         expect(match(hrefs.modelNew(null))).toEqual({
             name: "modelNew",
             providerFilter: null,
+            upstreamId: null,
         });
         expect(match(hrefs.modelNew(7))).toEqual({
             name: "modelNew",
             providerFilter: 7,
+            upstreamId: null,
+        });
+        expect(match(hrefs.modelNew(7, "gpt-x"))).toEqual({
+            name: "modelNew",
+            providerFilter: 7,
+            upstreamId: "gpt-x",
         });
         expect(match(hrefs.apiKeys())).toEqual({
             name: "apiKeys",

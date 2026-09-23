@@ -4,7 +4,7 @@ import type { ApiLogResponse } from "/src/management-api/generated/v0";
 export const USAGE_PAGE_SIZE = 100;
 
 /** The stream state one fetched page produces: the rows to hold and whether the stream continues past them. */
-export type UsageContinuation = {
+type UsageContinuation = {
     readonly rows: ReadonlyArray<ApiLogResponse>;
     /** True only when the fetched page filled its full size — a shorter page proves nothing older is recorded. */
     readonly hasMore: boolean;

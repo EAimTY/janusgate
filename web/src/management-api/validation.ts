@@ -124,7 +124,7 @@ function expectBucketKey(value: unknown, context: string): UsageBucketKey {
  * read their membership from the closed vocabularies, so a kind added to the
  * contract cannot compile past a vocabulary and then fail here at runtime.
  */
-export function parseProviderResponse(value: unknown, context: string): ProviderResponse {
+function parseProviderResponse(value: unknown, context: string): ProviderResponse {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
     const id = expectInteger(Reflect.get(record, "id"), `${context}.id`);
@@ -174,7 +174,7 @@ export function parseProviderResponse(value: unknown, context: string): Provider
  * its own inputs — the nullable mirror column, the serving switch, the
  * discovery state. The effective verdict is never on the wire (rule 7).
  */
-export function parseModelResponse(value: unknown, context: string): ModelResponse {
+function parseModelResponse(value: unknown, context: string): ModelResponse {
     const record = expectRecord(value, context);
 
     return {
@@ -334,7 +334,7 @@ export function parseQueryUsageResponse(value: unknown): QueryUsageResponse {
 }
 
 /** One gateway API key row: the complete readable state, plaintext secret included. */
-export function parseApiKeyResponse(value: unknown, context: string): ApiKeyResponse {
+function parseApiKeyResponse(value: unknown, context: string): ApiKeyResponse {
     const record = expectRecord(value, context);
 
     return {

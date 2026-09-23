@@ -253,6 +253,7 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                                 <ModelNewScreen
                                     api={api}
                                     providerFilter={created.providerFilter}
+                                    upstreamId={created.upstreamId}
                                 />
                             )}
                         </Match>

@@ -15,11 +15,12 @@ import {
     readAll,
     type ScreenNotice,
 } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { ButtonLink, Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { EmptyState, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 
 /**
@@ -74,18 +75,9 @@ export function ApiKeyEditScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <PageHeader
                     title="Edit API key"
                     backHref={hrefs.apiKeyDetail(props.apiKeyId)}

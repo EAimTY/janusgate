@@ -14,10 +14,11 @@ export type UsageEntities = {
 };
 
 /**
- * The three entity listings a usage screen reads alongside its usage rows,
- * as one read call: the listings run in parallel under the cycle's signal
- * and answer as the whole `UsageEntities` triple, so every cycle that ends
- * successfully leaves the labels' resolution lists loaded.
+ * The three entity listings a screen reads to name entities — the usage
+ * screens alongside their rows, the overview for its health counts — as one
+ * read call: the listings run in parallel under the cycle's signal and answer
+ * as the whole `UsageEntities` triple, so every cycle that ends successfully
+ * leaves the labels' resolution lists loaded.
  */
 export function readUsageEntities(api: ManagementApi): ReadCall<UsageEntities> {
     return {
@@ -44,7 +45,7 @@ export function readUsageEntities(api: ManagementApi): ReadCall<UsageEntities> {
     };
 }
 
-export type UsageLabel = {
+type UsageLabel = {
     /** The current name, or what kind of row is gone when it is no longer listed. */
     readonly text: string;
     /** False when the id is no longer listed — the row was deleted after the request was recorded. */

@@ -10,7 +10,7 @@ import type {
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
 
-export type VocabularyOption<TValue extends string> = {
+type VocabularyOption<TValue extends string> = {
     readonly value: TValue;
     readonly label: string;
 };
@@ -19,7 +19,7 @@ export type VocabularyOption<TValue extends string> = {
  * The static-key provider kinds — the ones `providers:create` mints outright,
  * as opposed to the OAuth logins `oauth:complete` mints.
  */
-export type StaticProviderType = Exclude<ProviderType, OAuthProviderType>;
+type StaticProviderType = Exclude<ProviderType, OAuthProviderType>;
 
 /**
  * The static-key provider kinds with the label each is presented under. The
