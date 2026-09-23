@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EMPTY_USAGE_FILTER_DRAFT } from "/src/usage-filter";
 import { hrefs, matchAppRoute, parseRowIdentifier } from "./router";
 
 function match(target: string) {
@@ -185,9 +186,11 @@ describe("matchAppRoute", () => {
     it("addresses the usage requests and their aggregation", () => {
         expect(match("/usage")).toEqual({
             name: "usage",
+            filter: EMPTY_USAGE_FILTER_DRAFT,
         });
         expect(match("/usage/")).toEqual({
             name: "usage",
+            filter: EMPTY_USAGE_FILTER_DRAFT,
         });
         expect(match("/usage/query")).toEqual({
             name: "usageQuery",
@@ -197,6 +200,24 @@ describe("matchAppRoute", () => {
         });
         expect(match("/usage/other")).toEqual({
             name: "notFound",
+        });
+    });
+
+    it("carries the listing's filter through its route", () => {
+        const filter = {
+            window: "24h",
+            providerId: "3",
+            modelId: "",
+            apiKeyId: "",
+            endpointType: "",
+            outcome: "failures",
+            streamChoice: "",
+            statusInput: "",
+        } as const;
+
+        expect(match(hrefs.usage(filter))).toEqual({
+            name: "usage",
+            filter,
         });
     });
 
@@ -280,6 +301,16 @@ describe("matchAppRoute", () => {
         });
         expect(match(hrefs.usage())).toEqual({
             name: "usage",
+            filter: {
+                window: "all",
+                providerId: "",
+                modelId: "",
+                apiKeyId: "",
+                endpointType: "",
+                outcome: "",
+                streamChoice: "",
+                statusInput: "",
+            },
         });
         expect(match(hrefs.usageQuery())).toEqual({
             name: "usageQuery",

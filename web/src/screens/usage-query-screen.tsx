@@ -1,19 +1,13 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
+import { createEffect, createSignal, For, Show } from "solid-js";
 import { formatTokenCount, parseDateTimeInputToMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
-    ApiLogEndpointType,
-    ApiLogOutcome,
     QueryUsageRequest,
     UsageBucket,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
-import {
-    API_LOG_ENDPOINT_OPTIONS,
-    API_LOG_OUTCOME_OPTIONS,
-    USAGE_GROUP_BY_OPTIONS,
-} from "/src/management-api/vocabulary";
+import { USAGE_GROUP_BY_OPTIONS } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { ReadCallFailure, readOne, type ScreenNotice } from "/src/screens/read";
@@ -22,12 +16,15 @@ import {
     type UsageEntities,
     usageDimensionLabel,
 } from "/src/screens/usage-labels";
-import { Button, SelectField, Switch, TextField } from "/src/ui/controls";
+import { Button, Switch, TextField } from "/src/ui/controls";
 import { Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-
-/** Whether the client streamed, as the stream filter's select spells it. */
-type StreamChoice = "" | "streamed" | "non-streamed";
+import { UsageFilterControls } from "/src/ui/usage-filter-controls";
+import {
+    buildUsageFilter,
+    EMPTY_USAGE_FILTER_FIELDS,
+    type UsageFilterFields,
+} from "/src/usage-filter";
 
 /**
  * Request accounting as aggregates: one bucket per distinct combination of
@@ -47,13 +44,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
     ]);
     const [fromInput, setFromInput] = createSignal("");
     const [toInput, setToInput] = createSignal("");
-    const [providerId, setProviderId] = createSignal("");
-    const [modelId, setModelId] = createSignal("");
-    const [apiKeyId, setApiKeyId] = createSignal("");
-    const [endpointType, setEndpointType] = createSignal<"" | ApiLogEndpointType>("");
-    const [outcome, setOutcome] = createSignal<"" | ApiLogOutcome>("");
-    const [streamChoice, setStreamChoice] = createSignal<StreamChoice>("");
-    const [statusInput, setStatusInput] = createSignal("");
+    const [fields, setFields] = createSignal<UsageFilterFields>(EMPTY_USAGE_FILTER_FIELDS);
     const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
     // The dimensions the displayed buckets were grouped by — the request's own
     // set, not the live switches: a key carries exactly its request's
@@ -83,77 +74,15 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         );
     };
 
-    const queryRequest = (): QueryUsageRequest => {
-        const from = parseDateTimeInputToMicros(fromInput());
-        const to = parseDateTimeInputToMicros(toInput());
-        const statuses = parseStatusList(statusInput());
-        const endpoint = endpointType();
-        const chosenOutcome = outcome();
-        const streamMode = streamChoice();
-
-        return {
-            group_by: [
-                ...groupBy(),
-            ],
-            filter: {
-                ...(from === null
-                    ? {}
-                    : {
-                          from,
-                      }),
-                ...(to === null
-                    ? {}
-                    : {
-                          to,
-                      }),
-                ...(providerId() === ""
-                    ? {}
-                    : {
-                          provider_id: [
-                              Number(providerId()),
-                          ],
-                      }),
-                ...(modelId() === ""
-                    ? {}
-                    : {
-                          model_id: [
-                              Number(modelId()),
-                          ],
-                      }),
-                ...(apiKeyId() === ""
-                    ? {}
-                    : {
-                          api_key_id: [
-                              Number(apiKeyId()),
-                          ],
-                      }),
-                ...(endpoint === ""
-                    ? {}
-                    : {
-                          endpoint_type: [
-                              endpoint,
-                          ],
-                      }),
-                ...(chosenOutcome === ""
-                    ? {}
-                    : {
-                          outcome: [
-                              chosenOutcome,
-                          ],
-                      }),
-                ...(streamMode === ""
-                    ? {}
-                    : {
-                          is_stream: streamMode === "streamed",
-                      }),
-                ...(statuses.length === 0
-                    ? {}
-                    : {
-                          http_status: statuses,
-                      }),
-            },
-        };
-    };
+    const queryRequest = (): QueryUsageRequest => ({
+        group_by: [
+            ...groupBy(),
+        ],
+        filter: buildUsageFilter(fields(), {
+            from: parseDateTimeInputToMicros(fromInput()),
+            to: parseDateTimeInputToMicros(toInput()),
+        }),
+    });
 
     /** Runs the aggregation query, answering whether it produced buckets. */
     const runQuery = async (signal: AbortSignal): Promise<boolean> => {
@@ -244,39 +173,6 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         },
     );
 
-    const providerOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All providers",
-        },
-        ...entities().providers.map((row) => ({
-            value: String(row.id),
-            label: row.name,
-        })),
-    ]);
-
-    const modelOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All models",
-        },
-        ...entities().models.map((row) => ({
-            value: String(row.id),
-            label: row.public_id,
-        })),
-    ]);
-
-    const apiKeyOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All API keys",
-        },
-        ...entities().apiKeys.map((row) => ({
-            value: String(row.id),
-            label: row.name,
-        })),
-    ]);
-
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
@@ -339,79 +235,18 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                             isDisabled={isQuerying()}
                             hint="Exclusive, in this browser's zone. Blank sets no bound."
                         />
-                        <TextField
-                            label="HTTP statuses"
-                            value={statusInput()}
-                            onInput={setStatusInput}
+                        <UsageFilterControls
+                            fields={fields()}
+                            providers={entities().providers}
+                            models={entities().models}
+                            apiKeys={entities().apiKeys}
                             isDisabled={isQuerying()}
-                            hint="Comma-separated, e.g. 200, 429. Never-answered requests match no status."
-                        />
-                        <SelectField
-                            label="Provider"
-                            value={providerId()}
-                            options={providerOptions()}
-                            onChange={setProviderId}
-                            isDisabled={isQuerying()}
-                        />
-                        <SelectField
-                            label="Model"
-                            value={modelId()}
-                            options={modelOptions()}
-                            onChange={setModelId}
-                            isDisabled={isQuerying()}
-                        />
-                        <SelectField
-                            label="API key"
-                            value={apiKeyId()}
-                            options={apiKeyOptions()}
-                            onChange={setApiKeyId}
-                            isDisabled={isQuerying()}
-                        />
-                        <SelectField
-                            label="Endpoint"
-                            value={endpointType()}
-                            options={[
-                                {
-                                    value: "",
-                                    label: "All endpoints",
-                                },
-                                ...API_LOG_ENDPOINT_OPTIONS,
-                            ]}
-                            onChange={setEndpointType}
-                            isDisabled={isQuerying()}
-                        />
-                        <SelectField
-                            label="Outcome"
-                            value={outcome()}
-                            options={[
-                                {
-                                    value: "",
-                                    label: "All outcomes",
-                                },
-                                ...API_LOG_OUTCOME_OPTIONS,
-                            ]}
-                            onChange={setOutcome}
-                            isDisabled={isQuerying()}
-                        />
-                        <SelectField
-                            label="Stream mode"
-                            value={streamChoice()}
-                            options={[
-                                {
-                                    value: "",
-                                    label: "Any",
-                                },
-                                {
-                                    value: "streamed",
-                                    label: "Streamed",
-                                },
-                                {
-                                    value: "non-streamed",
-                                    label: "Non-streamed",
-                                },
-                            ]}
-                            onChange={setStreamChoice}
-                            isDisabled={isQuerying()}
+                            onEdit={(edits) =>
+                                setFields((current) => ({
+                                    ...current,
+                                    ...edits,
+                                }))
+                            }
                         />
                     </div>
                     <div>
@@ -519,19 +354,6 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
             </Show>
         </div>
     );
-}
-
-/**
- * Parses the operator's comma-separated status list: blank entries drop out,
- * and entries that are not integers never form a filter value.
- */
-function parseStatusList(input: string): number[] {
-    return input
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter((entry) => entry !== "")
-        .map((entry) => Number(entry))
-        .filter((entry) => Number.isInteger(entry));
 }
 
 function BucketHeader(props: {

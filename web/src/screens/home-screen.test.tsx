@@ -1,0 +1,262 @@
+import { render } from "@solidjs/web";
+import { afterEach, describe, expect, it } from "vitest";
+import type { ManagementApi } from "/src/management-api/client";
+import type {
+    ApiKeyResponse,
+    ModelResponse,
+    ProviderResponse,
+    QueryUsageRequest,
+    QueryUsageResponse,
+    UsageBucket,
+} from "/src/management-api/generated/v0";
+import { HomeScreen } from "/src/screens/home-screen";
+
+const BASE_URL = "https://gateway.example.com";
+
+const providerRow: ProviderResponse = {
+    type: "openai_chat_completion",
+    id: 1,
+    name: "local",
+    model_prefix: "local-",
+    is_enabled: true,
+    base_url: "https://upstream.example.com/v1",
+};
+
+/** One model of the enabled provider: effectively routing, by the gateway's three inputs. */
+const modelRow: ModelResponse = {
+    id: 9,
+    provider_id: 1,
+    provider: "local",
+    upstream_id: "qwen3:32b",
+    public_id: "local-qwen3-32b",
+    id_override: null,
+    is_enabled: true,
+    discovery_state: "discovered",
+};
+
+/** One vanished model: its row exists, but the gateway does not route it. */
+const vanishedModelRow: ModelResponse = {
+    ...modelRow,
+    id: 10,
+    upstream_id: "qwen3:14b",
+    public_id: "local-qwen3-14b",
+    discovery_state: "vanished",
+};
+
+const apiKeyRow: ApiKeyResponse = {
+    id: 7,
+    name: "service-a",
+    key: "sk-live",
+    is_enabled: true,
+    created_at: 1_700_000_000_000_000,
+};
+
+function bucket(key: UsageBucket["key"], requests: number): UsageBucket {
+    return {
+        key,
+        requests,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+    };
+}
+
+/** The UTC day one instant falls in, spelled the way the gateway spells it. */
+function utcDay(offsetDays: number): string {
+    return new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * A gateway with one provider, one routing model, one vanished model, and one
+ * API key, whose accounting answers 45 requests in the rolling window — five
+ * of them failures — and two days of daily buckets. Every other route rejects,
+ * so an unexpected call fails the test loudly instead of hanging it.
+ */
+function overviewApi(requests: Array<QueryUsageRequest>): ManagementApi {
+    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
+
+    return {
+        listProviders: () =>
+            Promise.resolve({
+                providers: [
+                    providerRow,
+                ],
+            }),
+        listModels: () =>
+            Promise.resolve({
+                models: [
+                    modelRow,
+                    vanishedModelRow,
+                ],
+            }),
+        listApiKeys: () =>
+            Promise.resolve({
+                api_keys: [
+                    apiKeyRow,
+                ],
+            }),
+        queryUsage: (request): Promise<QueryUsageResponse> => {
+            requests.push(request);
+
+            return Promise.resolve({
+                buckets: request.group_by.includes("outcome")
+                    ? [
+                          bucket(
+                              {
+                                  outcome: "completed",
+                              },
+                              40,
+                          ),
+                          bucket(
+                              {
+                                  outcome: "upstream_error",
+                              },
+                              5,
+                          ),
+                      ]
+                    : [
+                          bucket(
+                              {
+                                  day: utcDay(0),
+                              },
+                              40,
+                          ),
+                          bucket(
+                              {
+                                  day: utcDay(-3),
+                              },
+                              5,
+                          ),
+                      ],
+            });
+        },
+        createProvider: refused,
+        updateProvider: refused,
+        deleteProvider: refused,
+        startProviderOauth: refused,
+        completeProviderOauth: refused,
+        reauthorizeProvider: refused,
+        discoverModels: refused,
+        updateModel: refused,
+        createModel: refused,
+        deleteModel: refused,
+        createApiKey: refused,
+        updateApiKey: refused,
+        deleteApiKey: refused,
+        listUsage: refused,
+    };
+}
+
+async function settle(): Promise<void> {
+    for (let round = 0; round < 10; round += 1) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+}
+
+function linkTo(href: string): HTMLAnchorElement {
+    for (const candidate of document.querySelectorAll("a")) {
+        if (candidate.getAttribute("href") === href) {
+            return candidate;
+        }
+    }
+
+    throw new Error(`No link to ${href}`);
+}
+
+function bodyText(): string {
+    return document.body.textContent ?? "";
+}
+
+/** The chart's bars, by their accessible names. */
+function barLabels(): ReadonlyArray<string> {
+    return Array.from(document.querySelectorAll("span[role='img']")).map(
+        (node) => node.getAttribute("aria-label") ?? "",
+    );
+}
+
+describe("HomeScreen", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+
+        disposes.length = 0;
+    });
+
+    function mount(api: ManagementApi): void {
+        disposes.push(
+            render(
+                () => (
+                    <HomeScreen
+                        api={api}
+                        baseUrl={BASE_URL}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("states every figure as a door to the page that explains it", async () => {
+        mount(overviewApi([]));
+        await settle();
+
+        expect(linkTo("/providers").textContent).toContain("Providers");
+        expect(linkTo("/providers").textContent).toContain("1");
+
+        // One routing model, one vanished row: the figure is the gateway's
+        // three-input status, derived from the rows, never the row count.
+        expect(linkTo("/models").textContent).toContain("Models routing");
+        expect(linkTo("/models").textContent).toContain("1");
+
+        expect(linkTo("/api-keys").textContent).toContain("API keys");
+        expect(linkTo("/api-keys").textContent).toContain("1");
+
+        // The rolling window is a route, so the figure opens the listing it
+        // counted — and the error figure opens the failures among them.
+        expect(linkTo("/usage?window=24h").textContent).toContain("45");
+        expect(linkTo("/usage?window=24h&outcome=upstream_error,internal").textContent).toContain(
+            "5",
+        );
+    });
+
+    it("reads the rolling window and the daily axis from the gateway's own buckets", async () => {
+        const requests: Array<QueryUsageRequest> = [];
+
+        mount(overviewApi(requests));
+        await settle();
+
+        expect(requests).toHaveLength(2);
+        expect(requests[0]?.group_by).toEqual([
+            "outcome",
+        ]);
+        expect(requests[0]?.filter?.from).toBeTypeOf("number");
+        expect(requests[1]?.group_by).toEqual([
+            "day",
+        ]);
+        expect(requests[1]?.filter?.from).toBeTypeOf("number");
+        expect(requests[1]?.filter?.to).toBeTypeOf("number");
+
+        const bars = barLabels();
+
+        expect(bars).toHaveLength(14);
+        expect(bars.at(-1)).toBe(`${utcDay(0)}: 40 requests`);
+        expect(bars.at(-4)).toBe(`${utcDay(-3)}: 5 requests`);
+        // A quiet day is a zero bar, not a missing one.
+        expect(bars.at(-2)).toBe(`${utcDay(-1)}: 0 requests`);
+        expect(bodyText()).toContain(`45 requests · peak 40 on ${utcDay(0)}`);
+    });
+
+    it("points clients at every outward surface the gateway serves", async () => {
+        mount(overviewApi([]));
+        await settle();
+
+        expect(bodyText()).toContain(`${BASE_URL}/api/openai-v1`);
+        expect(bodyText()).toContain(`${BASE_URL}/api/gemini-v1beta`);
+        expect(bodyText()).toContain(`${BASE_URL}/api/anthropic-v1`);
+    });
+});

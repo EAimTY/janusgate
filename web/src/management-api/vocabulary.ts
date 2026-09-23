@@ -165,7 +165,8 @@ export function apiLogOutcomeLabel(outcome: ApiLogOutcome): string {
     return API_LOG_OUTCOME_LABELS[outcome];
 }
 
-function findApiLogOutcome(value: unknown): ApiLogOutcome | null {
+/** Looks a wire value up as a recorded outcome, answering `null` when it is not one. */
+export function findApiLogOutcome(value: unknown): ApiLogOutcome | null {
     return findOption(API_LOG_OUTCOME_OPTIONS, value);
 }
 
@@ -200,7 +201,8 @@ export function apiLogEndpointLabel(endpoint: ApiLogEndpointType): string {
     return API_LOG_ENDPOINT_LABELS[endpoint];
 }
 
-function findApiLogEndpointType(value: unknown): ApiLogEndpointType | null {
+/** Looks a wire value up as an outward endpoint, answering `null` when it is not one. */
+export function findApiLogEndpointType(value: unknown): ApiLogEndpointType | null {
     return findOption(API_LOG_ENDPOINT_OPTIONS, value);
 }
 

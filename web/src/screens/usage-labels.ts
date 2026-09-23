@@ -104,7 +104,7 @@ export function usageApiKeyLabel(entities: UsageEntities, apiKeyId: number): Usa
  * a key carries exactly the requested dimensions, so an absent field is a
  * contract violation, not a blank to render past.
  */
-function keyField<TValue>(value: TValue | undefined, field: string): TValue {
+export function bucketKeyField<TValue>(value: TValue | undefined, field: string): TValue {
     if (value === undefined) {
         throw new ContractViolationError(`the bucket key carries no ${field}`);
     }
@@ -125,28 +125,29 @@ export function usageDimensionLabel(
 ): string {
     switch (dimension) {
         case "day":
-            return keyField(key.day, "day");
+            return bucketKeyField(key.day, "day");
 
         case "model":
-            return usageModelLabel(entities, keyField(key.model_id, "model_id")).text;
+            return usageModelLabel(entities, bucketKeyField(key.model_id, "model_id")).text;
 
         case "provider":
-            return usageProviderLabel(entities, keyField(key.provider_id, "provider_id")).text;
+            return usageProviderLabel(entities, bucketKeyField(key.provider_id, "provider_id"))
+                .text;
 
         case "api_key":
-            return usageApiKeyLabel(entities, keyField(key.api_key_id, "api_key_id")).text;
+            return usageApiKeyLabel(entities, bucketKeyField(key.api_key_id, "api_key_id")).text;
 
         case "endpoint_type":
-            return apiLogEndpointLabel(keyField(key.endpoint_type, "endpoint_type"));
+            return apiLogEndpointLabel(bucketKeyField(key.endpoint_type, "endpoint_type"));
 
         case "outcome":
-            return apiLogOutcomeLabel(keyField(key.outcome, "outcome"));
+            return apiLogOutcomeLabel(bucketKeyField(key.outcome, "outcome"));
 
         case "is_stream":
-            return keyField(key.is_stream, "is_stream") ? "Streamed" : "Non-streamed";
+            return bucketKeyField(key.is_stream, "is_stream") ? "Streamed" : "Non-streamed";
 
         case "http_status": {
-            const status = keyField(key.http_status, "http_status");
+            const status = bucketKeyField(key.http_status, "http_status");
 
             return status === null ? "—" : String(status);
         }

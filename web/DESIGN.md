@@ -72,6 +72,8 @@ components:
   card: "surface, 1px rule border, 16px radius, no shadow"
   field: "canvas ground, strong-rule border, accent focus, 8px radius"
   switch: "pill track with sliding knob, role=switch, on/off text beside it"
+  stat-link: "a figure card whose whole surface is an anchor, chevron at its right edge"
+  bar-chart: "accent bars on the card ground, one 1px rule as the axis, no gridlines, no legend, a text name per bar"
 ---
 
 # Design System: JanusGate Console
@@ -82,11 +84,12 @@ components:
 
 The interface is a quiet console for a working operator, not an instrument
 to admire. Each page does exactly one thing — the overview reads the
-gateway's health, the provider pages administer providers, the model pages
-administer models — and rows never unfold into editors: a row is one link to
-that thing's detail page, behind which its edit page owns every change. The
-operator always knows where they are, what this page owns, and where the one
-action they came for lives.
+gateway's health and its recent traffic, the provider pages administer
+providers, the model pages administer models, the key pages hand out the
+serving secret, the usage pages read the accounting — and rows never unfold
+into editors: a row is one link to that thing's detail page, behind which its
+edit page owns every change. The operator always knows where they are, what
+this page owns, and where the one action they came for lives.
 
 The world is built from restraint, not decoration. One neutral family
 tinted faintly green, one teal accent for actions and current selection, and
@@ -144,8 +147,10 @@ are the authored SVG geometry.
   usage stream's client-aborted outcomes, unsaved-changes stamps. Always
   with an alert mark or plain words.
 - **Bad** (light `#c92a1e` on `#fdecea`, dark `#f26d5f` on `#431b16`):
-  failures, destructive actions. Always with an alert mark. Danger buttons
-  set their label in **bad ink** (light `#ffffff`, dark `#1a0b09`).
+  failures, destructive actions. Always with a mark — the alert triangle on
+  a notice, the cross on a status badge, so a failed request reads apart
+  from the alert-marked credential warning. Danger buttons set their label
+  in **bad ink** (light `#ffffff`, dark `#1a0b09`).
 
 ### Neutral
 
@@ -209,6 +214,18 @@ about the data stays in the sans.
 - **Cards** hold one subject: details, settings, credentials, models, usage,
   danger. A card has a title, an optional one-line description, and the
   actions that belong to it — nothing else.
+- **Stat links** are the overview's figures: a card whose whole surface is an
+  anchor, the figure in tabular figures at 26px, its name under it, and the
+  chevron a row carries at its right edge. Hover strengthens the border, lifts
+  the ground, and turns the chevron accent — a figure that goes somewhere
+  never looks like a figure that does not.
+- **Charts** are drawn from the console's own materials: one series, accent
+  bars on the card's ground, a single 1px rule as the axis, and no gridlines,
+  no legend, no second hue. A quiet day is a 2px tick at the axis, never a
+  gap. Every bar is a focusable point whose accessible name is its day and
+  figure; the axis prints the window's two ends, and a readout line states
+  the window's total and peak until a bar is read, then that day and its
+  figure — no figure is readable only by hovering.
 - **Skeletons** hold the layout while a screen's first read is in flight.
   A failed first read replaces the skeleton with the failure, never stacks
   under it.
@@ -241,7 +258,7 @@ stranger who read only the READMEs; in-app copy assumes an operator mid-task.
   confirmations.
 - State carried by color alone; colored edge strips; gradient text; glass.
 - Kickers and eyebrows above headings; section numbers; hero-metric
-  stat blocks (figures here are labelled stats, not decoration).
+  stat blocks (figures here are labelled stats and doors, not decoration).
 - Display faces, webfonts, image assets, icon fonts, emoji-as-icons.
 - Anything that moves beyond the motion grammar, and any motion that
   needs JavaScript to run.

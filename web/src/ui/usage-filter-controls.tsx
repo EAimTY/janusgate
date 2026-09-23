@@ -1,0 +1,197 @@
+import type { JSX } from "@solidjs/web";
+import { createMemo } from "solid-js";
+import type {
+    ApiKeyResponse,
+    ModelResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
+import { API_LOG_ENDPOINT_OPTIONS, API_LOG_OUTCOME_OPTIONS } from "/src/management-api/vocabulary";
+import { SelectField, TextField } from "/src/ui/controls";
+import type { UsageFilterFields, UsageOutcomeChoice, UsageStreamChoice } from "/src/usage-filter";
+
+/**
+ * The outcome control's choices: everything, the two failure outcomes under
+ * the one name the app calls them by, then each outcome on its own. The
+ * grouped choice exists so a figure stated as "errors" can be opened as a
+ * filter without the control having to show a list it cannot present.
+ */
+const OUTCOME_CHOICE_OPTIONS: ReadonlyArray<{
+    readonly value: UsageOutcomeChoice;
+    readonly label: string;
+}> = [
+    {
+        value: "",
+        label: "All outcomes",
+    },
+    {
+        value: "failures",
+        label: "Failures (upstream or internal)",
+    },
+    ...API_LOG_OUTCOME_OPTIONS,
+];
+
+const STREAM_CHOICE_OPTIONS: ReadonlyArray<{
+    readonly value: UsageStreamChoice;
+    readonly label: string;
+}> = [
+    {
+        value: "",
+        label: "Any",
+    },
+    {
+        value: "streamed",
+        label: "Streamed",
+    },
+    {
+        value: "non-streamed",
+        label: "Non-streamed",
+    },
+];
+
+/**
+ * The shared usage filter's controls, as a fragment the caller lays out in its
+ * own grid: both usage screens narrow the same filter type, so both present
+ * these fields — the same labels, the same options, the same vocabulary —
+ * while each screen owns the bounds it resolves (a rolling window on the
+ * listing, explicit instants on the aggregates page). Every option list is
+ * built from the entity listings the screen read, so a filter can only name a
+ * row the app can also label.
+ *
+ * The control reports the one field the operator changed and the screen merges
+ * it into the filter it holds, so two edits delivered in one task — a change
+ * event following an input event — never overwrite each other with a field set
+ * read before the first landed.
+ */
+export function UsageFilterControls(props: {
+    readonly fields: UsageFilterFields;
+    readonly providers: ReadonlyArray<ProviderResponse>;
+    readonly models: ReadonlyArray<ModelResponse>;
+    readonly apiKeys: ReadonlyArray<ApiKeyResponse>;
+    readonly isDisabled: boolean;
+    readonly onEdit: (edits: Partial<UsageFilterFields>) => void;
+}): JSX.Element {
+    const providerOptions = createMemo(() => [
+        {
+            value: "",
+            label: "All providers",
+        },
+        ...props.providers.map((row) => ({
+            value: String(row.id),
+            label: row.name,
+        })),
+    ]);
+
+    const modelOptions = createMemo(() => [
+        {
+            value: "",
+            label: "All models",
+        },
+        ...props.models.map((row) => ({
+            value: String(row.id),
+            label: row.public_id,
+        })),
+    ]);
+
+    const apiKeyOptions = createMemo(() => [
+        {
+            value: "",
+            label: "All API keys",
+        },
+        ...props.apiKeys.map((row) => ({
+            value: String(row.id),
+            label: row.name,
+        })),
+    ]);
+
+    const update = (edits: Partial<UsageFilterFields>): void => {
+        props.onEdit(edits);
+    };
+
+    return (
+        <>
+            <SelectField
+                label="Provider"
+                value={props.fields.providerId}
+                options={providerOptions()}
+                onChange={(providerId) =>
+                    update({
+                        providerId,
+                    })
+                }
+                isDisabled={props.isDisabled}
+            />
+            <SelectField
+                label="Model"
+                value={props.fields.modelId}
+                options={modelOptions()}
+                onChange={(modelId) =>
+                    update({
+                        modelId,
+                    })
+                }
+                isDisabled={props.isDisabled}
+            />
+            <SelectField
+                label="API key"
+                value={props.fields.apiKeyId}
+                options={apiKeyOptions()}
+                onChange={(apiKeyId) =>
+                    update({
+                        apiKeyId,
+                    })
+                }
+                isDisabled={props.isDisabled}
+            />
+            <SelectField
+                label="Endpoint"
+                value={props.fields.endpointType}
+                options={[
+                    {
+                        value: "",
+                        label: "All endpoints",
+                    },
+                    ...API_LOG_ENDPOINT_OPTIONS,
+                ]}
+                onChange={(endpointType) =>
+                    update({
+                        endpointType,
+                    })
+                }
+                isDisabled={props.isDisabled}
+            />
+            <SelectField
+                label="Outcome"
+                value={props.fields.outcome}
+                options={OUTCOME_CHOICE_OPTIONS}
+                onChange={(outcome) =>
+                    update({
+                        outcome,
+                    })
+                }
+                isDisabled={props.isDisabled}
+            />
+            <SelectField
+                label="Stream mode"
+                value={props.fields.streamChoice}
+                options={STREAM_CHOICE_OPTIONS}
+                onChange={(streamChoice) =>
+                    update({
+                        streamChoice,
+                    })
+                }
+                isDisabled={props.isDisabled}
+            />
+            <TextField
+                label="HTTP statuses"
+                value={props.fields.statusInput}
+                onInput={(statusInput) =>
+                    update({
+                        statusInput,
+                    })
+                }
+                isDisabled={props.isDisabled}
+                hint="Comma-separated, e.g. 200, 429. Never-answered requests match no status."
+            />
+        </>
+    );
+}

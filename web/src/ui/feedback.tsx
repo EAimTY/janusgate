@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { Show } from "solid-js";
+import { AppLink } from "/src/ui/app-link";
 import { joinClass } from "/src/ui/attributes";
 import { Glyph, type GlyphName } from "/src/ui/glyph";
 
@@ -116,8 +117,36 @@ export function Stat(props: {
     );
 }
 
-/** A page with nothing to show yet: what this is, and the one way forward. */
-export function EmptyState(props: {
+/**
+ * One headline figure that is also a door: the whole card is the link, so the
+ * figure and the page that explains it are one target. The chevron marks the
+ * card as navigation — the same affordance a table row carries.
+ */
+export function StatLink(props: {
+    readonly href: string;
+    readonly value: string;
+    readonly label: string;
+}): JSX.Element {
+    return (
+        <AppLink
+            href={props.href}
+            class="group flex items-start justify-between gap-3 rounded-2xl border border-rule bg-surface px-4 py-4 transition-colors duration-150 ease-out hover:border-ink-faint hover:bg-hover"
+        >
+            <span class="min-w-0">
+                <span class="tnum block truncate text-[26px] leading-none font-semibold tracking-tight">
+                    {props.value}
+                </span>
+                <span class="mt-2 block text-[13px] font-medium text-ink-dim">{props.label}</span>
+            </span>
+            <Glyph
+                name="chev-right"
+                class="mt-1 shrink-0 text-ink-faint transition-colors duration-150 ease-out group-hover:text-accent"
+            />
+        </AppLink>
+    );
+}
+
+/** A page with nothing to show yet: what this is, and the one way forward. */ export function EmptyState(props: {
     readonly glyph?: GlyphName | undefined;
     readonly title: string;
     readonly description: string;

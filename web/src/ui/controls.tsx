@@ -211,6 +211,8 @@ export function Button(props: {
     readonly isDisabled?: boolean;
     readonly isBusy?: boolean;
     readonly title?: string | undefined;
+    /** The button's accessible name, where its visible label is shared by several buttons. */
+    readonly ariaLabel?: string | undefined;
     readonly class?: string | undefined;
     readonly onClick?: () => void;
 }): JSX.Element {
@@ -220,6 +222,7 @@ export function Button(props: {
             class={buttonClass(props.tone ?? "secondary", props.class)}
             disabled={(props.isDisabled ?? false) || (props.isBusy ?? false)}
             title={props.title}
+            aria-label={props.ariaLabel}
             onClick={() => props.onClick?.()}
         >
             <Show when={props.glyph}>{(name) => <Glyph name={name()} />}</Show>

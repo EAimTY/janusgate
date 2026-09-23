@@ -1,5 +1,11 @@
 import { type Accessor, createSignal } from "solid-js";
 import { isRoutingToken } from "/src/management-api/identifiers";
+import {
+    EMPTY_USAGE_FILTER_DRAFT,
+    parseUsageFilterDraft,
+    serializeUsageFilterDraft,
+    type UsageFilterDraft,
+} from "/src/usage-filter";
 
 /**
  * The client-side routes. Each page does one job: the overview reads the
@@ -62,6 +68,8 @@ export type AppRoute =
       }
     | {
           readonly name: "usage";
+          /** The filter the route carries; the default draft is the unfiltered stream. */
+          readonly filter: UsageFilterDraft;
       }
     | {
           readonly name: "usageQuery";
@@ -108,7 +116,12 @@ export const hrefs = {
     apiKeyNew: (): string => "/api-keys/new",
     apiKeyDetail: (apiKeyId: number): string => `/api-keys/${apiKeyId}`,
     apiKeyEdit: (apiKeyId: number): string => `/api-keys/${apiKeyId}/edit`,
-    usage: (): string => "/usage",
+    /** The listing's filter as its route carries it: absent means unfiltered. */
+    usage: (filter: UsageFilterDraft = EMPTY_USAGE_FILTER_DRAFT): string => {
+        const query = serializeUsageFilterDraft(filter);
+
+        return query === "" ? "/usage" : `/usage?${query}`;
+    },
     usageQuery: (): string => "/usage/query",
 } as const;
 
@@ -247,6 +260,7 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
     if (normalizedPath === "/usage") {
         return {
             name: "usage",
+            filter: parseUsageFilterDraft(search),
         };
     }
 

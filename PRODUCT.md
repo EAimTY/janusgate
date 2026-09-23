@@ -8,17 +8,17 @@ web
 
 ## Users
 
-- **Operators of self-hosted JanusGate instances.** The product's users are people who run their own gateway: the project's author and other self-hosters who installed JanusGate from the repository. Their job is to turn a fresh headless gateway into a working OpenAI-compatible endpoint — creating upstream accounts, discovering and curating routes, and recovering credentials that expire. Each has the instance's single management token and administers alone; there is no second seat.
+- **Operators of self-hosted JanusGate instances.** The product's users are people who run their own gateway: the project's author and other self-hosters who installed JanusGate from the repository. Their job is to turn a fresh headless gateway into a working endpoint for the client they already use — creating upstream accounts, discovering and curating routes, and recovering credentials that expire. Each has the instance's single management token and administers alone; there is no second seat.
 - **Strangers arriving at the official deployment.** The project ships an officially deployed instance of the frontend that anyone may use, and many operators will meet JanusGate there having read only the READMEs. The app is the first — often only — part of the product they see, and it must be usable without knowledge of the management API's shape.
 - Both groups are the same audience in different moods: the same operator who reads the repository is the one who later opens the UI to fix an expired account. Device and session shape were not constrained.
 
 ## Product Purpose
 
-JanusGate is a self-hosted, lightweight AI gateway written in Rust. It exposes an OpenAI-compatible serving API (`/api/openai-v1`) backed by heterogeneous upstream accounts, and a versioned management JSON API (`/management-api/v0/*`). The gateway is deliberately headless: no frontend, no static assets, no accounts, no sessions.
+JanusGate is a self-hosted, lightweight AI gateway written in Rust. It exposes three outward serving API families — OpenAI-compatible (`/api/openai-v1`), Gemini (`/api/gemini-v1beta`), and Anthropic (`/api/anthropic-v1`) — backed by heterogeneous upstream accounts, and a versioned management JSON API (`/management-api/v0/*`). The gateway is deliberately headless: no frontend, no static assets, no accounts, no sessions.
 
 janusgate-web is the missing control plane — the official, statically hosted single-page application through which one operator administers a JanusGate instance entirely over the network. It is the sanctioned UI for the management API, lives in this repository as the `web/` workspace, and is deployed separately from the gateway it administers.
 
-Success for the web UI: an operator can connect to a running gateway and reach a correctly routed, working OpenAI-compatible endpoint — accounts created, models discovered, serving state curated, expired credentials replaced — without hand-editing the configuration file, reading gateway logs, or calling the API themselves.
+Success for the web UI: an operator can connect to a running gateway and reach a correctly routed, working endpoint — accounts created, models discovered, serving state curated, expired credentials replaced, and the endpoint path plus the issued serving key in hand — without hand-editing the configuration file, reading gateway logs, or calling the API themselves.
 
 ## Positioning
 
@@ -26,7 +26,7 @@ Gateways that ship an admin UI ship it inside the server: the UI is bound to one
 
 Two mechanisms a neighboring product could not truthfully copy: the artifact is instance-agnostic by construction, and the frontend **compiles against TypeScript bindings generated from the gateway's own Rust sources**, so its wire contract cannot drift into a hand-maintained parallel.
 
-The gateway it fronts carries the same posture: strict model passthrough (no automatic mapping, aliasing, or fallback), upstream accounts — ChatGPT and Google OAuth subscriptions as well as static API keys — as first-class identities, and no request content retained (numeric request accounting aside).
+The gateway it fronts carries the same posture: strict model passthrough (no automatic mapping, aliasing, or fallback), upstream accounts — ChatGPT and Google OAuth subscriptions as well as static API keys — as first-class identities, and no request content retained (numeric request accounting aside). Its three outward families are independent of those accounts: **every surface serves every upstream format**, so one public model ID is the single routing key no matter which client dialect asks for it — and the console never presents a provider kind as bound to an endpoint.
 
 ## Operating Context
 
@@ -41,19 +41,26 @@ The gateway it fronts carries the same posture: strict model passthrough (no aut
 
 **Administered today**, entirely through `/management-api/v0/*` — every route `POST` with a JSON body, `Authorization: <token>` verbatim (no `Bearer` prefix):
 
-- **Providers** — list with enabled state and OAuth expiry; create a static-key account (`openai_response` / `openai_chat_completion` / `gemini_generate_content`; name, model prefix, base URL, API key, enabled); rewrite any provider's complete readable state, with credentials write-only; delete (cascading to its models).
+- **Outward surfaces** — three client dialects over one effective-model set: OpenAI-compatible (`/api/openai-v1`: chat completions, responses), Gemini (`/api/gemini-v1beta`: generateContent, interactions), and Anthropic (`/api/anthropic-v1`: messages), each with its own auth and its own native model listing. Nothing in the management API names a surface: a request routes by public model ID alone, and a public ID containing `/` or `:` is unreachable through the URL-pathed Gemini generateContent route (the gateway rejects both characters in newly written routing tokens).
+- **Providers** — list with enabled state and OAuth expiry; create a static-key account (`openai_response` / `openai_chat_completion` / `gemini_generate_content` / `gemini_interaction` / `anthropic_messages`; name, model prefix, base URL, API key, enabled); rewrite any provider's complete readable state, with credentials write-only; delete (cascading to its models).
 - **OAuth accounts** — start a flow for `codex_oauth` (ChatGPT account) or `antigravity_oauth` (Google account), then paste the returned code to create the provider with its credentials, or to reauthorize an existing one in place.
 - **Models** — list (optionally filtered to one provider); discover a provider's models from upstream as a mark-plus-upsert that writes only the row's `discovery_state` (`discovered` / `vanished` / `manual`) — never deleting a row, never rewriting curated columns, and refusing an empty upstream report; edit a row's two writable columns (public ID override, serving switch) addressed by its never-recycled row id; delete a row; create a row by its natural key `(provider_id, upstream_id)`, which also claims a vanished row as the manual recovery path.
 - **Serving-API keys** — list, issue, rewrite a key's complete state (rename, rotate, serving switch), and revoke each key individually; the plaintext secret is a stored field the gateway answers with in the clear on both the listing and the creation, and the console surfaces it in full with a copy action for the administrator's serving-client configuration.
-- **Usage reads** — list recorded request-accounting rows newest first with cursor pagination, and aggregate them into buckets by day, model, provider, or API key over a time window with row-id filters; rows and buckets carry ids and numeric facts only — labels resolve through the entity lists.
+- **Usage reads** — list recorded request-accounting rows newest first with cursor pagination, and aggregate them into buckets over any set of eight dimensions (day, model, provider, API key, endpoint, outcome, stream mode, HTTP status) — one composite bucket key per requested dimension, in request order, with an empty set totalling the whole selection. Both reads share one filter type: a time window plus multi-value filters over the same dimensions, up to 100 values each, an empty list rejected. Rows and buckets carry ids and numeric facts only — labels resolve through the entity lists.
 - **Derived facts the UI states under the gateway's documented definitions:** the three-input effective serving state (`provider enabled && model enabled && not vanished`), derived client-side from rows the app already fetches and never read off the wire; the composed public model ID (`id_override ?? model_prefix + upstream_id`), previewed locally and composed by the gateway at write time; and OAuth credential freshness.
-- **Vocabulary fixed by the domain:** provider, model prefix, upstream ID, public ID, discovery and its three states, serving key, request outcome, reauthorization. There is no level vocabulary: reasoning effort is an opaque client string the gateway passes through verbatim.
+- **Vocabulary fixed by the domain:** provider, model prefix, upstream ID, public ID, discovery and its three states, serving key, request outcome, endpoint, reauthorization. Reasoning effort is a **closed vocabulary** — `none | minimal | low | medium | high | xhigh | max` — parsed by the gateway, written verbatim into the target upstream's own parameter, never mapped across vocabularies, and never stored on a model row or an accounting row.
 
 **Planned, confirmed by the user, mechanism not yet decided:**
 
 - **Observability of gateway state and credential health** — OAuth expiry and refresh state, upstream reachability, discovery results, model counts, serving state. Request-level insight is no longer part of this pending work: it ships through the administered usage reads above, fed by request accounting that retains one numeric row per dispatched request (README §3 *ApiLog*, governed by `api_logs.is_enabled`), while content — prompts, completions, headers, upstream error bodies — remains forbidden by the stateless-execution principle.
 
-**Resolved (2026-09-22):** the first Usage surface is list plus aggregate query — request-detail pagination (`usage:list`, filters by model/provider/key plus time window) alongside bucketed aggregates (`usage:query` by day, model, provider, or API key), labels resolved through the entity lists. Model rows are addressed by their never-recycled row id; the previous `(provider_id, upstream_id)` deep links are not preserved. Discovery state (`discovered` / `vanished` / `manual`) plus the client-derived effective status is the status language; a vanished row states its recovery paths (upstream reappearance or a `models:create` claim).
+**Resolved (2026-09-22):** model rows are addressed by their never-recycled row id; the previous `(provider_id, upstream_id)` deep links are not preserved. Discovery state (`discovered` / `vanished` / `manual`) plus the client-derived effective status is the status language; a vanished row states its recovery paths (upstream reappearance or a `models:create` claim).
+
+**Resolved (2026-09-24, after the multi-surface refactor):**
+
+- **The console carries the endpoint reference.** The instance's base URL plus `/api/openai-v1`, `/api/gemini-v1beta`, and `/api/anthropic-v1`, each copyable, on the overview — where an operator meets the gateway's shape before a key exists. The READMEs stay normative; the console stops being silent about where a client points.
+- **The Usage listing gains the shared filter.** The raw unfiltered stream is no longer the design: both usage reads expose the same filter set.
+- **The overview reports recent traffic beside gateway state.** Its figures are provider, routable-model, API-key, recent-request (24 h), and recent-error (24 h) counts — each figure a link to the page that owns it — over a bar chart of requests per day for the last 14 UTC days.
 
 **Explicitly out of scope, confirmed:**
 

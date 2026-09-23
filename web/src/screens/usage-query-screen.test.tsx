@@ -311,7 +311,9 @@ describe("UsageQueryScreen request assembly", () => {
                                 requests.push(request);
 
                                 return Promise.resolve({
-                                    buckets: [bucketFor(request.group_by)],
+                                    buckets: [
+                                        bucketFor(request.group_by),
+                                    ],
                                 });
                             },
                         }}

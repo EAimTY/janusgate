@@ -9,6 +9,7 @@ import type {
 import { requestRefresh } from "/src/refresh-state";
 import { USAGE_PAGE_SIZE } from "/src/screens/usage-pagination";
 import { UsageScreen } from "/src/screens/usage-screen";
+import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filter";
 
 /**
  * One accounting row whose only distinguishing rendering is `<duration> ms`:
@@ -170,8 +171,18 @@ describe("UsageScreen stream continuation", () => {
         disposes.length = 0;
     });
 
-    function mount(api: ManagementApi): void {
-        disposes.push(render(() => <UsageScreen api={api} />, document.body));
+    function mount(api: ManagementApi, filter: UsageFilterDraft = EMPTY_USAGE_FILTER_DRAFT): void {
+        disposes.push(
+            render(
+                () => (
+                    <UsageScreen
+                        api={api}
+                        filter={filter}
+                    />
+                ),
+                document.body,
+            ),
+        );
     }
 
     it("discards a load-more page the refresh superseded", async () => {
@@ -293,5 +304,119 @@ describe("UsageScreen stream continuation", () => {
         expect(bodyText()).toContain("948 ms");
         expect(bodyText()).toContain("That is every recorded row.");
         expect(bodyText()).not.toContain("page load refused");
+    });
+});
+
+describe("UsageScreen filtering", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+
+        disposes.length = 0;
+    });
+
+    function mount(api: ManagementApi, filter: UsageFilterDraft = EMPTY_USAGE_FILTER_DRAFT): void {
+        disposes.push(
+            render(
+                () => (
+                    <UsageScreen
+                        api={api}
+                        filter={filter}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    const filtered: UsageFilterDraft = {
+        ...EMPTY_USAGE_FILTER_DRAFT,
+        window: "24h",
+        outcome: "failures",
+        statusInput: "500",
+    };
+
+    it("carries the route's filter, resolved once, into every page of the stream", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder), filtered);
+        await settle();
+
+        const first = holder.pages.at(-1)?.request;
+
+        expect(first?.filter?.outcome).toEqual([
+            "upstream_error",
+            "internal",
+        ]);
+        expect(first?.filter?.http_status).toEqual([
+            500,
+        ]);
+        expect(first?.filter?.from).toBeTypeOf("number");
+
+        answerLastPage(holder, page(1050, USAGE_PAGE_SIZE));
+        await settle();
+
+        buttonWithText("Load more").click();
+        await settle();
+
+        const next = holder.pages.at(-1)?.request;
+
+        expect(next?.before_id).toBe(951);
+        // The rolling window is resolved once per cycle: pages carrying
+        // different bounds could skip or repeat rows at the seam.
+        expect(next?.filter).toEqual(first?.filter);
+    });
+
+    it("sends no filter at all for the unfiltered stream", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder));
+        await settle();
+
+        expect(holder.pages.at(-1)?.request).toEqual({
+            limit: USAGE_PAGE_SIZE,
+        });
+    });
+
+    it("states a filtered empty answer as a filter that matched nothing", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder), filtered);
+        await settle();
+
+        answerLastPage(holder, []);
+        await settle();
+
+        expect(bodyText()).toContain("No recorded requests match this filter.");
+        expect(bodyText()).not.toContain("No requests recorded yet");
+    });
+
+    it("clears the filter back to the unfiltered address", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder), filtered);
+        await settle();
+        answerLastPage(holder, []);
+        await settle();
+
+        buttonWithText("Clear filters").click();
+        await settle();
+
+        expect(`${window.location.pathname}${window.location.search}`).toBe("/usage");
     });
 });

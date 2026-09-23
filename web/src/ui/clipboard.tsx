@@ -60,6 +60,8 @@ export function CopyButton(props: {
     readonly subject?: string | undefined;
     readonly isDisabled?: boolean;
     readonly label?: string | undefined;
+    /** The button's accessible name, where several copies share one visible label. */
+    readonly ariaLabel?: string | undefined;
 }): JSX.Element {
     const [copyState, setCopyState] = createSignal<CopyState>("idle");
     let timer: number | undefined;
@@ -84,6 +86,7 @@ export function CopyButton(props: {
             <Button
                 glyph="copy"
                 title={props.label ?? "Copy to clipboard"}
+                ariaLabel={props.ariaLabel}
                 isDisabled={(props.isDisabled ?? false) || props.value === ""}
                 onClick={() => void copy()}
             >

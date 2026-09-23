@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { type Accessor, createMemo, createSignal, Match, Show, Switch } from "solid-js";
+import { type Accessor, createMemo, createSignal, Match, onSettled, Show, Switch } from "solid-js";
 import { connectionService } from "/src/connection/app-service";
 import type { Connection } from "/src/connection/model";
 import { formatClock } from "/src/format";
@@ -161,6 +161,13 @@ function routeNamed<TName extends AppRoute["name"]>(
 }
 
 function AdminShell(props: { readonly connection: Connection }): JSX.Element {
+    // The shell is created per connection, and it always starts at the top:
+    // the setup screen can leave the document scrolled when its form was the
+    // last thing on a short viewport.
+    onSettled(() => {
+        window.scrollTo(0, 0);
+    });
+
     const api = createManagementApi(props.connection, {
         onUnauthorized: (notice) => {
             // A late 401 answering the previous connection must not clear the
@@ -183,6 +190,7 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
     const apiKeyEditRoute = routeNamed(route, "apiKeyEdit");
     const modelDetailRoute = routeNamed(route, "modelDetail");
     const modelEditRoute = routeNamed(route, "modelEdit");
+    const usageRoute = routeNamed(route, "usage");
 
     return (
         <div class="flex min-h-screen flex-col">
@@ -204,7 +212,10 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                 <main id="main">
                     <Switch fallback={<NotFoundScreen />}>
                         <Match when={route().name === "home"}>
-                            <HomeScreen api={api} />
+                            <HomeScreen
+                                api={api}
+                                baseUrl={props.connection.baseUrl}
+                            />
                         </Match>
                         <Match when={route().name === "providers"}>
                             <ProvidersScreen api={api} />
@@ -307,8 +318,16 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                                 />
                             )}
                         </Match>
-                        <Match when={route().name === "usage"}>
-                            <UsageScreen api={api} />
+                        <Match
+                            when={usageRoute()}
+                            keyed
+                        >
+                            {(usage) => (
+                                <UsageScreen
+                                    api={api}
+                                    filter={usage.filter}
+                                />
+                            )}
                         </Match>
                         <Match when={route().name === "usageQuery"}>
                             <UsageQueryScreen api={api} />
@@ -373,14 +392,14 @@ function ContextBar(props: {
         <div class="flex flex-wrap items-center gap-x-4 gap-y-3">
             <nav
                 aria-label="Primary"
-                class="flex items-center gap-1 rounded-xl border border-rule bg-surface p-1"
+                class="flex flex-wrap items-center gap-1 rounded-xl border border-rule bg-surface p-1"
             >
                 {NAV_ITEMS.map((item) => (
                     <AppLink
                         href={item.href}
                         isCurrent={props.activeNav === item.key}
                         class={joinClass(
-                            "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13.5px] font-medium transition-colors duration-150 ease-out",
+                            "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13.5px] font-medium whitespace-nowrap transition-colors duration-150 ease-out",
                             props.activeNav === item.key
                                 ? "bg-accent-soft text-accent dark:text-accent-strong"
                                 : "text-ink-dim hover:bg-hover hover:text-ink",
