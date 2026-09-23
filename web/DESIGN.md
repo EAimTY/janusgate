@@ -23,6 +23,8 @@ colors:
   bad: "#c92a1e"
   bad-soft: "#fdecea"
   bad-ink: "#ffffff"
+  scroll-thumb: "#c2cdc7"
+  scroll-thumb-hover: "#a9b6b0"
   # Dark: the same roles, re-inked
   dark-canvas: "#0d1412"
   dark-surface: "#151e1b"
@@ -44,6 +46,8 @@ colors:
   dark-bad: "#f26d5f"
   dark-bad-soft: "#431b16"
   dark-bad-ink: "#1a0b09"
+  dark-scroll-thumb: "#33443c"
+  dark-scroll-thumb-hover: "#43564d"
 typography:
   family: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif'
   data: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace with tabular-nums'
@@ -136,8 +140,9 @@ are the authored SVG geometry.
 - **Ok** (light `#147339` on `#e2f4e7`, dark `#4cc38a` on `#123825`):
   serving, valid credentials, success notices. Always with a check mark.
 - **Warn** (light `#9f4c08` on `#faeedb`, dark `#e8a04c` on `#3d2c12`):
-  expired or stale credentials, held-by-provider models, unsaved-changes
-  stamps. Always with an alert mark or plain words.
+  expired or stale credentials, suspended and held-by-provider models, the
+  usage stream's client-aborted outcomes, unsaved-changes stamps. Always
+  with an alert mark or plain words.
 - **Bad** (light `#c92a1e` on `#fdecea`, dark `#f26d5f` on `#431b16`):
   failures, destructive actions. Always with an alert mark. Danger buttons
   set their label in **bad ink** (light `#ffffff`, dark `#1a0b09`).
@@ -177,9 +182,12 @@ only where the app can be certain of one. Failures are `role="alert"`.
 
 **One family for everything.** The platform sans carries titles, labels,
 buttons, and body; there is no display face and no pairing to maintain.
-Sizes are fixed, not fluid: 20px page titles, 15px card titles, 14px body,
-13px supporting copy, 12.5px captions. Titles track tight; nothing is ever
-set in all-caps as a voice.
+Sizes are fixed, not fluid, each painted where it belongs: 26px stat
+figures, 22px the connection screen's title, 20px page titles, 16px
+empty-state titles, 15px card titles, 14.5px table row names, 13.5px
+controls, 13px supporting copy, 12.5px captions, 12px step numerals — the
+14px body base is set once by the stylesheet, and no utility re-states it.
+Titles track tight; nothing is ever set in all-caps as a voice.
 
 **Data is mono with tabular figures.** Anything that identifies a row —
 public and upstream IDs, prefixes, provider addresses, states, expiries,
