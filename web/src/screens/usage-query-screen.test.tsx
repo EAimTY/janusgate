@@ -2,16 +2,58 @@ import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
+    ApiKeyResponse,
     ListApiKeysResponse,
     ListModelsResponse,
     ListProvidersResponse,
+    ModelResponse,
+    ProviderResponse,
     UsageBucket,
 } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
 
+const providerRow: ProviderResponse = {
+    type: "openai_chat_completion",
+    id: 1,
+    name: "local",
+    model_prefix: "local/",
+    is_enabled: true,
+    base_url: "https://upstream.example.com/v1",
+};
+
+const modelRow: ModelResponse = {
+    id: 9,
+    provider_id: 1,
+    provider: "local",
+    upstream_id: "qwen3:32b",
+    public_id: "local/qwen3:32b",
+    id_override: null,
+    is_enabled: true,
+    discovery_state: "discovered",
+};
+
+const apiKeyRow: ApiKeyResponse = {
+    id: 7,
+    name: "service-a",
+    key: "sk-live",
+    is_enabled: true,
+    created_at: 1_700_000_000_000_000,
+};
+
 const dayBucket: UsageBucket = {
     key: "2026-09-01",
+    requests: 3,
+    input_tokens: 120,
+    output_tokens: 45,
+    cached_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+};
+
+/** One bucket grouped by provider 1 — its label resolves through the entity lists. */
+const providerBucket: UsageBucket = {
+    key: 1,
     requests: 3,
     input_tokens: 120,
     output_tokens: 45,
@@ -56,6 +98,9 @@ function screenApi(
         readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
     },
     onQueryUsage: () => void,
+    buckets: ReadonlyArray<UsageBucket> = [
+        dayBucket,
+    ],
 ): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
@@ -68,9 +113,7 @@ function screenApi(
 
             return Promise.resolve({
                 buckets: [
-                    {
-                        ...dayBucket,
-                    },
+                    ...buckets,
                 ],
             });
         },
@@ -112,6 +155,39 @@ function answerLast<TValue>(pending: Array<(answer: TValue) => void>, value: TVa
 /** The first-read placeholder: present exactly while the screen owes its first answers. */
 function skeleton(): Element | null {
     return document.querySelector(".wash");
+}
+
+function buttonWithText(text: string): HTMLButtonElement {
+    for (const candidate of document.querySelectorAll("button")) {
+        if (candidate.textContent?.includes(text) === true) {
+            return candidate as HTMLButtonElement;
+        }
+    }
+
+    throw new Error(`No button reading ${text}`);
+}
+
+/** Picks one select the way a browser delivers a choice. */
+function labeledSelect(label: string, value: string): void {
+    for (const candidate of document.querySelectorAll("label")) {
+        const id = candidate.getAttribute("for");
+
+        if (candidate.textContent === label && id !== null) {
+            const select = document.getElementById(id);
+
+            if (select instanceof HTMLSelectElement) {
+                select.value = value;
+                select.dispatchEvent(
+                    new Event("change", {
+                        bubbles: true,
+                    }),
+                );
+                return;
+            }
+        }
+    }
+
+    throw new Error(`No select labeled ${label}`);
 }
 
 describe("UsageQueryScreen refresh racing the initial read", () => {
@@ -170,5 +246,77 @@ describe("UsageQueryScreen refresh racing the initial read", () => {
         expect(queryCount).toBe(1);
         expect(skeleton()).toBeNull();
         expect(document.body.textContent).toContain("2026-09-01");
+    });
+});
+
+describe("UsageQueryScreen submit during the initial read", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("reads the entity lists the labels resolve through before the query lands", async () => {
+        let queryCount = 0;
+        const holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        } = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {
+            queryCount += 1;
+        }, [
+            providerBucket,
+        ]);
+
+        disposes.push(render(() => <UsageQueryScreen api={api} />, document.body));
+        await settle();
+
+        // The initial read is in flight under the skeleton.
+        expect(skeleton()).not.toBeNull();
+        expect(holder.providers).toHaveLength(1);
+
+        // The operator picks the provider grouping and submits while that
+        // first read is still in flight.
+        labeledSelect("Group by", "provider");
+        buttonWithText("Run query").click();
+        await settle();
+
+        // The submit superseded the read and reads the entity lists itself:
+        // a second held round of listings, and the query waits behind them.
+        expect(holder.providers).toHaveLength(2);
+        expect(queryCount).toBe(0);
+        expect(buttonWithText("Querying…").disabled).toBe(true);
+
+        answerLast(holder.providers, {
+            providers: [
+                providerRow,
+            ],
+        });
+        answerLast(holder.models, {
+            models: [
+                modelRow,
+            ],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [
+                apiKeyRow,
+            ],
+        });
+        await settle();
+
+        // The bucket's label resolves through the freshly read lists — an
+        // existing provider never reads as a deleted row.
+        expect(queryCount).toBe(1);
+        expect(skeleton()).toBeNull();
+        expect(document.body.textContent).toContain("local");
+        expect(document.body.textContent).not.toContain("Deleted provider");
     });
 });

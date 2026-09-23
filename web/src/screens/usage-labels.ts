@@ -1,8 +1,10 @@
+import type { ManagementApi } from "/src/management-api/client";
 import type {
     ApiKeyResponse,
     ModelResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
+import { type ReadCall, readAll } from "./read";
 
 /** The entity lists a usage screen reads alongside the accounting rows. */
 export type UsageEntities = {
@@ -10,6 +12,37 @@ export type UsageEntities = {
     readonly models: ReadonlyArray<ModelResponse>;
     readonly apiKeys: ReadonlyArray<ApiKeyResponse>;
 };
+
+/**
+ * The three entity listings a usage screen reads alongside its usage rows,
+ * as one read call: the listings run in parallel under the cycle's signal
+ * and answer as the whole `UsageEntities` triple, so every cycle that ends
+ * successfully leaves the labels' resolution lists loaded.
+ */
+export function readUsageEntities(api: ManagementApi): ReadCall<UsageEntities> {
+    return {
+        run: async (signal) => {
+            const [providersResult, modelsResult, apiKeysResult] = await readAll(
+                signal,
+                {
+                    run: (cycle) => api.listProviders(cycle),
+                },
+                {
+                    run: (cycle) => api.listModels({}, cycle),
+                },
+                {
+                    run: (cycle) => api.listApiKeys(cycle),
+                },
+            );
+
+            return {
+                providers: providersResult.providers,
+                models: modelsResult.models,
+                apiKeys: apiKeysResult.api_keys,
+            };
+        },
+    };
+}
 
 export type UsageLabel = {
     /** The current name, or what kind of row is gone when it is no longer listed. */

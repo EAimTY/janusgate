@@ -8,6 +8,7 @@ import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/voc
 import { hrefs } from "/src/router";
 import { createScreenRead, readAll, screenFailureNotice } from "/src/screens/read";
 import {
+    readUsageEntities,
     type UsageEntities,
     usageApiKeyLabel,
     usageModelLabel,
@@ -52,17 +53,9 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
             loader = null;
             setIsLoadingMore(false);
 
-            const [providersResult, modelsResult, apiKeysResult, pageResult] = await readAll(
+            const [entitiesResult, pageResult] = await readAll(
                 signal,
-                {
-                    run: (cycle) => props.api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) => props.api.listModels({}, cycle),
-                },
-                {
-                    run: (cycle) => props.api.listApiKeys(cycle),
-                },
+                readUsageEntities(props.api),
                 {
                     action: "list-usage",
                     run: (cycle) =>
@@ -75,11 +68,7 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
                 },
             );
 
-            setEntities({
-                providers: providersResult.providers,
-                models: modelsResult.models,
-                apiKeys: apiKeysResult.api_keys,
-            });
+            setEntities(entitiesResult);
 
             const continuation = nextUsagePage([], pageResult.api_logs);
             setRows(continuation.rows);

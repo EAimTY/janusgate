@@ -10,8 +10,9 @@ import type {
 import { USAGE_GROUP_BY_OPTIONS } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { ReadCallFailure, readAll, readOne, type ScreenNotice } from "/src/screens/read";
+import { ReadCallFailure, readOne, type ScreenNotice } from "/src/screens/read";
 import {
+    readUsageEntities,
     type UsageEntities,
     usageApiKeyLabel,
     usageModelLabel,
@@ -81,12 +82,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         };
     };
 
-    /**
-     * Runs the aggregation query, answering whether it produced buckets. This
-     * screen stays outside the shared read harness because the query is also
-     * a form submission: the submit and the screen read share one controller,
-     * so a submit stops an in-flight read rather than racing it.
-     */
+    /** Runs the aggregation query, answering whether it produced buckets. */
     const runQuery = async (signal: AbortSignal): Promise<boolean> => {
         try {
             const result = await readOne(signal, {
@@ -111,32 +107,25 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         }
     };
 
-    const read = async (): Promise<void> => {
+    /**
+     * Runs one full cycle: the entity listings and the aggregation query, in
+     * that order, under one controller. This screen stays outside the shared
+     * read harness because the query is also a form submission: the submit
+     * and the screen read run this same cycle and share one controller, so a
+     * submit stops an in-flight read rather than racing it — and reads the
+     * entity lists itself, so superseding a read never leaves the labels
+     * resolving against lists the screen never loaded.
+     */
+    const runCycle = async (isSubmit: boolean): Promise<void> => {
         controller?.abort();
 
         const call = new AbortController();
         controller = call;
         setIsReading(true);
+        setIsQuerying(isSubmit);
 
         try {
-            const [providersResult, modelsResult, apiKeysResult] = await readAll(
-                call.signal,
-                {
-                    run: (cycle) => props.api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) => props.api.listModels({}, cycle),
-                },
-                {
-                    run: (cycle) => props.api.listApiKeys(cycle),
-                },
-            );
-
-            setEntities({
-                providers: providersResult.providers,
-                models: modelsResult.models,
-                apiKeys: apiKeysResult.api_keys,
-            });
+            setEntities(await readOne(call.signal, readUsageEntities(props.api)));
 
             if (await runQuery(call.signal)) {
                 setHasRead(true);
@@ -149,12 +138,13 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                 throw error;
             }
         } finally {
-            // A superseded cycle's abort must not drop the loading state the
+            // A superseded cycle's abort must not drop the loading states the
             // cycle that superseded it raised (as the read harness does, its
             // abort path installs nothing): only the cycle still holding the
-            // controller resets it.
+            // controller resets them.
             if (!call.signal.aborted) {
                 setIsReading(false);
+                setIsQuerying(false);
             }
         }
     };
@@ -166,24 +156,13 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
             return;
         }
 
-        controller?.abort();
-
-        const call = new AbortController();
-        controller = call;
-        setIsQuerying(true);
-
-        if (await runQuery(call.signal)) {
-            setHasRead(true);
-            reportRefresh();
-        }
-
-        setIsQuerying(false);
+        await runCycle(true);
     };
 
     createEffect(
         () => refreshRequest(),
         () => {
-            void read();
+            void runCycle(false);
 
             return () => controller?.abort();
         },
