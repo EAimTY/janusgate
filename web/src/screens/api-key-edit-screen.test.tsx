@@ -1,7 +1,9 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ApiKeyResponse } from "/src/management-api/generated/v0";
+import { ManagementApiError } from "/src/management-api/errors";
+import type { ApiKeyResponse, UpdateApiKeyRequest } from "/src/management-api/generated/v0";
+import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
 
@@ -14,11 +16,18 @@ const key: ApiKeyResponse = {
 };
 
 /**
- * A management API whose key listing answers from a mutable holder (so a test
- * can change what the gateway answers between refreshes) and whose write
- * surface records nothing — this screen is only ever read here.
+ * A management API standing in for the gateway itself: its key listing
+ * answers from a mutable holder (so a test can change what the gateway
+ * answers between refreshes), and `api-keys:update` applies the request's
+ * complete desired state back into the holder and records it, so a reload
+ * after a save answers the saved row the way the real gateway would.
  */
-function screenApi(holder: { readonly keys: ReadonlyArray<ApiKeyResponse> }): ManagementApi {
+function screenApi(
+    holder: {
+        keys: ReadonlyArray<ApiKeyResponse>;
+    },
+    sent: UpdateApiKeyRequest[] = [],
+): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
     return {
@@ -29,6 +38,22 @@ function screenApi(holder: { readonly keys: ReadonlyArray<ApiKeyResponse> }): Ma
                     ...holder.keys,
                 ],
             });
+        },
+        updateApiKey: (request) => {
+            sent.push(request);
+
+            holder.keys = holder.keys.map((row) =>
+                row.id === request.api_key_id
+                    ? {
+                          ...row,
+                          name: request.name,
+                          key: request.key,
+                          is_enabled: request.is_enabled,
+                      }
+                    : row,
+            );
+
+            return Promise.resolve();
         },
         listProviders: refused,
         listModels: refused,
@@ -45,7 +70,6 @@ function screenApi(holder: { readonly keys: ReadonlyArray<ApiKeyResponse> }): Ma
         listUsage: refused,
         queryUsage: refused,
         createApiKey: refused,
-        updateApiKey: refused,
         deleteApiKey: refused,
     };
 }
@@ -91,6 +115,16 @@ function typeInto(input: HTMLInputElement, value: string): void {
             bubbles: true,
         }),
     );
+}
+
+function switchWithLabel(label: string): HTMLButtonElement {
+    for (const candidate of document.querySelectorAll("button[role='switch']")) {
+        if (candidate.closest("div")?.textContent?.includes(label) === true) {
+            return candidate as HTMLButtonElement;
+        }
+    }
+
+    throw new Error(`No switch labeled ${label}`);
 }
 
 describe("ApiKeyEditScreen refresh against an open form", () => {
@@ -208,5 +242,184 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
 
         expect(labeledInput("Name").value).toBe("renamed-elsewhere");
         expect(document.body.textContent).not.toContain("changed on the gateway");
+    });
+
+    it("lands a save over a held row on the sent values, carrying the rotated secret", async () => {
+        const holder = {
+            keys: [
+                key,
+            ],
+        };
+        const sent: UpdateApiKeyRequest[] = [];
+        disposes.push(
+            render(
+                () => (
+                    <ApiKeyEditScreen
+                        api={screenApi(holder, sent)}
+                        apiKeyId={7}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        typeInto(labeledInput("Name"), "saved-here");
+        typeInto(labeledInput("Key"), "sk-rotated");
+        holder.keys = [
+            {
+                ...key,
+                name: "renamed-elsewhere",
+            },
+        ];
+        requestRefresh();
+        await settle();
+        expect(document.body.textContent).toContain("changed on the gateway");
+
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(sent).toEqual([
+            {
+                api_key_id: 7,
+                name: "saved-here",
+                key: "sk-rotated",
+                is_enabled: true,
+            },
+        ]);
+        expect(holder.keys).toEqual([
+            {
+                ...key,
+                name: "saved-here",
+                key: "sk-rotated",
+            },
+        ]);
+        expect(labeledInput("Name").value).toBe("saved-here");
+        expect(labeledInput("Key").value).toBe("sk-rotated");
+        expect(document.body.textContent).not.toContain("changed on the gateway");
+        expect(document.body.textContent).not.toContain("Unsaved changes");
+        expect(document.body.textContent).toContain("saved-here saved.");
+    });
+
+    it("states the last-enabled-key consequence when a save turns the only enabled key off", async () => {
+        const holder = {
+            keys: [
+                key,
+            ],
+        };
+        const sent: UpdateApiKeyRequest[] = [];
+        disposes.push(
+            render(
+                () => (
+                    <ApiKeyEditScreen
+                        api={screenApi(holder, sent)}
+                        apiKeyId={7}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        switchWithLabel("Enabled").click();
+        await settle();
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(sent[0]?.is_enabled).toBe(false);
+        expect(holder.keys).toEqual([
+            {
+                ...key,
+                is_enabled: false,
+            },
+        ]);
+        expect(document.body.textContent).toContain(
+            "This was the last enabled key: the gateway now serves nothing until a key is turned on.",
+        );
+    });
+
+    it("reloads the listing when a save answers gone, handing over to the not-found state", async () => {
+        const holder = {
+            keys: [
+                key,
+            ],
+        };
+        const api: ManagementApi = {
+            ...screenApi(holder),
+            updateApiKey: () =>
+                Promise.reject(
+                    new ManagementApiError("gateway", "no key 7", {
+                        errno: ErrorCode.NotFound,
+                        httpStatus: 404,
+                    }),
+                ),
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ApiKeyEditScreen
+                        api={api}
+                        apiKeyId={7}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        typeInto(labeledInput("Name"), "renamed");
+        await settle();
+        holder.keys = [];
+        buttonWithText("Save changes").click();
+        await settle();
+
+        // The message is rendered and the listing that showed the row is
+        // reloaded (web README §6.4), so the not-found state takes over
+        // instead of a ghost form.
+        expect(document.body.textContent).toContain("The gateway holds no such row.");
+        expect(document.body.textContent).toContain("API key not found");
+    });
+
+    it("reloads the listing when a delete answers gone", async () => {
+        const holder = {
+            keys: [
+                key,
+            ],
+        };
+        const api: ManagementApi = {
+            ...screenApi(holder),
+            deleteApiKey: () =>
+                Promise.reject(
+                    new ManagementApiError("gateway", "no key 7", {
+                        errno: ErrorCode.NotFound,
+                        httpStatus: 404,
+                    }),
+                ),
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ApiKeyEditScreen
+                        api={api}
+                        apiKeyId={7}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        holder.keys = [];
+        for (const candidate of document.querySelectorAll("button")) {
+            if (candidate.textContent?.includes("Delete…") === true) {
+                candidate.click();
+            }
+        }
+        await settle();
+        buttonWithText("Delete for good").click();
+        await settle();
+
+        expect(document.body.textContent).toContain("The gateway holds no such row.");
+        expect(document.body.textContent).toContain("API key not found");
     });
 });

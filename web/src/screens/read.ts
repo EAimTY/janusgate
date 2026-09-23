@@ -176,6 +176,13 @@ export function createScreenRead(options: {
             throw error;
         }
 
+        if (call.signal.aborted) {
+            // Superseded after the reads resolved but before this
+            // continuation ran: the cycle is dead either way, and the newer
+            // cycle owns the screen — nothing installs, not even `hasRead`.
+            return;
+        }
+
         setIsReading(false);
 
         if (options.isNoticeKeptOnSuccess !== true) {
@@ -231,7 +238,10 @@ export function createScreenRead(options: {
  * gateway while the form is dirty is held back, and `isRowHeld` states it —
  * the Save-or-Revert notice's trigger. Once the form is clean, a read's row
  * is adopted; a read answering the same content keeps the row's identity, so
- * a refresh that changed nothing never remounts the form.
+ * a refresh that changed nothing never remounts the form. The one exception
+ * is a read answering null — the row was deleted on the gateway: the row
+ * becomes null and nothing is held, dirt included, because deletion ends the
+ * form (the screen's not-found state takes over).
  */
 export function createHeldRow<TRow>(
     latest: Accessor<TRow | null>,
@@ -262,6 +272,30 @@ export function createHeldRow<TRow>(
         row,
         isRowHeld,
     };
+}
+
+/**
+ * The identity-pinning memo beside `createHeldRow`, without the hold
+ * condition (README §6.3): a read answering the same row content keeps the
+ * previous object's identity, so a refresh that changed nothing never
+ * remounts what is mounted on the row; a changed answer adopts the fresh
+ * object; a gone answer passes null through. It is for lookups whose subject
+ * is not the form's own row and so cannot hold edits — such as the model
+ * edit's owning provider, re-parsed on every read like every listing.
+ */
+export function createPinnedRow<TRow>(
+    latest: Accessor<TRow | null>,
+    isSameRow: (previous: TRow, fresh: TRow) => boolean,
+): Accessor<TRow | null> {
+    return createMemo((previous: TRow | null | undefined) => {
+        const fresh = latest();
+
+        if (previous === null || previous === undefined || fresh === null) {
+            return fresh;
+        }
+
+        return isSameRow(previous, fresh) ? previous : fresh;
+    });
 }
 
 /**

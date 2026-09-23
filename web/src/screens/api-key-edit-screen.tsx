@@ -6,6 +6,7 @@ import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { compositionMessage, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
+import { describeCallFailure } from "/src/screens/failure";
 import {
     createHeldRow,
     createScreenRead,
@@ -16,7 +17,8 @@ import {
 } from "/src/screens/read";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { Button, ButtonLink, Switch } from "/src/ui/controls";
+import { ButtonLink, Switch } from "/src/ui/controls";
+import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 
@@ -33,6 +35,14 @@ export function ApiKeyEditScreen(props: {
     // Reported by the settings form: an open form with unsaved edits holds its
     // row against refreshes, so an operator's input can never silently vanish.
     const [isFormDirty, setIsFormDirty] = createSignal(false);
+    // Set when a save succeeds: the standing listing is then stale by
+    // construction — the save overwrote exactly what the listing still
+    // shows — so the held row must not adopt it before the save's own reload
+    // lands (README §6.3: a save re-baselines the form onto the values it
+    // sent). The latch clears on the first read cycle that starts after the
+    // save, so a failed reload leaves the hold standing instead of resting
+    // the screen on the pre-save rows.
+    const [isSaveSettling, setIsSaveSettling] = createSignal(false);
 
     // The notice is also the save's reported outcome, so only a new failure
     // replaces it — a successful read keeps it (README §6.3).
@@ -44,6 +54,7 @@ export function ApiKeyEditScreen(props: {
             });
 
             setKeys(keysResult.api_keys);
+            setIsSaveSettling(false);
         },
     });
 
@@ -53,8 +64,13 @@ export function ApiKeyEditScreen(props: {
 
     // A refresh answering the same row keeps the row's identity, so the open
     // form is not remounted; a row that genuinely changed on the gateway is
-    // held back while the form holds unsaved edits, and the hold is stated.
-    const { row: apiKey, isRowHeld } = createHeldRow(latestKey, isFormDirty, isSameApiKeyRow);
+    // held back while the form holds unsaved edits — or while a save is
+    // still settling — and the hold is stated.
+    const { row: apiKey, isRowHeld } = createHeldRow(
+        latestKey,
+        () => isFormDirty() || isSaveSettling(),
+        isSameApiKeyRow,
+    );
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -109,13 +125,10 @@ export function ApiKeyEditScreen(props: {
                             backLabel="API key"
                         />
 
-                        <Show when={isRowHeld()}>
-                            <Notice
-                                tone="warn"
-                                title="This key changed on the gateway while you have unsaved edits."
-                                detail="Save writes your edits over the gateway's version; Revert picks the gateway's version up."
-                            />
-                        </Show>
+                        <HoldNotice
+                            isHeld={isRowHeld()}
+                            subject="key"
+                        />
 
                         <SettingsCard
                             api={props.api}
@@ -125,6 +138,7 @@ export function ApiKeyEditScreen(props: {
                             onNotice={read.showNotice}
                             onFailure={read.reportFailure}
                             onDirtyChange={setIsFormDirty}
+                            onSaved={() => setIsSaveSettling(true)}
                         />
 
                         <DangerCard
@@ -134,6 +148,7 @@ export function ApiKeyEditScreen(props: {
                                 row.is_enabled &&
                                 keys().filter((candidate) => candidate.is_enabled).length <= 1
                             }
+                            onReload={read.reload}
                             onFailure={read.reportFailure}
                         />
                     </>
@@ -152,6 +167,7 @@ function SettingsCard(props: {
     readonly onNotice: (notice: ScreenNotice | null) => void;
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
     readonly onDirtyChange: (isDirty: boolean) => void;
+    readonly onSaved: () => void;
 }): JSX.Element {
     // The settings as the gateway last returned them; a save re-baselines
     // them onto the values it sent, because api-keys:update answers `{}` and
@@ -218,6 +234,17 @@ function SettingsCard(props: {
         }
 
         if (outcome.status === "failed") {
+            const diagnosis = describeCallFailure(outcome.cause, {
+                action: "update-api-key",
+            });
+
+            if (diagnosis.kind === "gone") {
+                // The row is gone behind the screen: the listing re-reads so
+                // the not-found state takes over instead of a ghost form
+                // accepting re-saves forever (README §6.4).
+                props.onReload();
+            }
+
             props.onFailure(outcome.cause, {
                 action: "update-api-key",
             });
@@ -232,6 +259,9 @@ function SettingsCard(props: {
             key: secret(),
             is_enabled: isEnabled(),
         });
+        // The hold stands until this save's reload lands: the listing still
+        // answers what the save overwrote.
+        props.onSaved();
         props.onNotice({
             tone: "ok",
             title: `${name()} saved.`,
@@ -280,30 +310,12 @@ function SettingsCard(props: {
                     hint="Replacing the secret revokes the old value on save."
                     error={secretError()}
                 />
-                <div class="flex flex-wrap items-center gap-2">
-                    <Button
-                        type="submit"
-                        tone="primary"
-                        isDisabled={!canSave()}
-                        isBusy={isSaving()}
-                    >
-                        {isSaving() ? "Saving…" : "Save changes"}
-                    </Button>
-                    <Button
-                        isDisabled={!isDirty() || isSaving()}
-                        onClick={revert}
-                    >
-                        Revert
-                    </Button>
-                    <Show when={isDirty() && !isSaving()}>
-                        <span
-                            class="text-[13px] font-medium text-warn"
-                            role="status"
-                        >
-                            Unsaved changes
-                        </span>
-                    </Show>
-                </div>
+                <DirtyFormFooter
+                    canSave={canSave()}
+                    isSaving={isSaving()}
+                    isDirty={isDirty()}
+                    onRevert={revert}
+                />
             </form>
         </Card>
     );
@@ -314,6 +326,7 @@ function DangerCard(props: {
     readonly api: ManagementApi;
     readonly apiKey: ApiKeyResponse;
     readonly isLastEnabled: boolean;
+    readonly onReload: () => void;
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
     const confirmDelete = async (): Promise<boolean> => {
@@ -328,6 +341,16 @@ function DangerCard(props: {
         }
 
         if (outcome.status === "failed") {
+            const diagnosis = describeCallFailure(outcome.cause, {
+                action: "delete-api-key",
+            });
+
+            if (diagnosis.kind === "gone") {
+                // The row is already gone: the listing re-reads so the
+                // not-found state takes over (README §6.4).
+                props.onReload();
+            }
+
             props.onFailure(outcome.cause, {
                 action: "delete-api-key",
             });

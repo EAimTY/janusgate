@@ -1,7 +1,9 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
+import { ManagementApiError } from "/src/management-api/errors";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ModelEditScreen } from "/src/screens/model-edit-screen";
 
@@ -347,5 +349,95 @@ describe("ModelEditScreen refresh against an open form", () => {
         expect(document.body.textContent).not.toContain("changed on the gateway");
         expect(document.body.textContent).not.toContain("Unsaved changes");
         expect(document.body.textContent).toContain("Clients now call it custom/gpt-x.");
+    });
+
+    it("reloads the listing when a save answers gone, handing over to the not-found state", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [
+                model,
+            ],
+        };
+        const api: ManagementApi = {
+            ...screenApi(holder),
+            updateModel: () =>
+                Promise.reject(
+                    new ManagementApiError("gateway", "no model 11", {
+                        errno: ErrorCode.NotFound,
+                        httpStatus: 404,
+                    }),
+                ),
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ModelEditScreen
+                        api={api}
+                        modelId={11}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        await overridePublicId("custom/gpt-x");
+        holder.models = [];
+        buttonWithText("Save changes").click();
+        await settle();
+
+        // The message is rendered and the listing that showed the row is
+        // reloaded (web README §6.4), so the not-found state takes over
+        // instead of a ghost form.
+        expect(document.body.textContent).toContain("The gateway holds no such row.");
+        expect(document.body.textContent).toContain("Model not found");
+    });
+
+    it("reloads the listing when a delete answers gone", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [
+                model,
+            ],
+        };
+        const api: ManagementApi = {
+            ...screenApi(holder),
+            deleteModel: () =>
+                Promise.reject(
+                    new ManagementApiError("gateway", "no model 11", {
+                        errno: ErrorCode.NotFound,
+                        httpStatus: 404,
+                    }),
+                ),
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ModelEditScreen
+                        api={api}
+                        modelId={11}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        holder.models = [];
+        for (const candidate of document.querySelectorAll("button")) {
+            if (candidate.textContent?.includes("Delete…") === true) {
+                candidate.click();
+            }
+        }
+        await settle();
+        buttonWithText("Delete for good").click();
+        await settle();
+
+        expect(document.body.textContent).toContain("The gateway holds no such row.");
+        expect(document.body.textContent).toContain("Model not found");
     });
 });

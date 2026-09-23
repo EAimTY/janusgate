@@ -6,8 +6,10 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { compositionMessage, isModelIdentifier } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
+import { describeCallFailure } from "/src/screens/failure";
 import {
     createHeldRow,
+    createPinnedRow,
     createScreenRead,
     type FailureCall,
     isSameModelRow,
@@ -16,7 +18,8 @@ import {
     type ScreenNotice,
 } from "/src/screens/read";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { Button, ButtonLink, Switch } from "/src/ui/controls";
+import { ButtonLink, Switch } from "/src/ui/controls";
+import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelIdOverrideFields } from "/src/ui/model-form";
@@ -37,6 +40,14 @@ export function ModelEditScreen(props: {
     // Reported by the settings form: an open form with unsaved edits holds its
     // row against refreshes, so an operator's input can never silently vanish.
     const [isFormDirty, setIsFormDirty] = createSignal(false);
+    // Set when a save succeeds: the standing listing is then stale by
+    // construction — the save overwrote exactly what the listing still
+    // shows — so the held row must not adopt it before the save's own reload
+    // lands (README §6.3: a save re-baselines the form onto the values it
+    // sent). The latch clears on the first read cycle that starts after the
+    // save, so a failed reload leaves the hold standing instead of resting
+    // the screen on the pre-save rows.
+    const [isSaveSettling, setIsSaveSettling] = createSignal(false);
 
     // The notice is also the save's reported outcome, so only a new failure
     // replaces it — a successful read keeps it (README §6.3).
@@ -56,6 +67,7 @@ export function ModelEditScreen(props: {
 
             setProviders(providersResult.providers);
             setModels(modelsResult.models);
+            setIsSaveSettling(false);
         },
     });
 
@@ -63,26 +75,26 @@ export function ModelEditScreen(props: {
 
     // A refresh answering the same row keeps the row's identity, so the open
     // form is not remounted; a row that genuinely changed on the gateway is
-    // held back while the form holds unsaved edits, and the hold is stated.
-    const { row: model, isRowHeld } = createHeldRow(latestModel, isFormDirty, isSameModelRow);
+    // held back while the form holds unsaved edits — or while a save is
+    // still settling — and the hold is stated.
+    const { row: model, isRowHeld } = createHeldRow(
+        latestModel,
+        () => isFormDirty() || isSaveSettling(),
+        isSameModelRow,
+    );
 
     // The owning provider, kept identity-stable for the same reason: the
     // listing re-parses on every read, so an unpinned lookup would hand the
     // form a fresh object each refresh and remount it over the operator's
     // input even when nothing changed.
-    const provider = createMemo((previous: ProviderResponse | null | undefined) => {
+    const latestOwningProvider = createMemo(() => {
         const current = model();
-        const fresh =
-            current === null
-                ? null
-                : (providers().find((row) => row.id === current.provider_id) ?? null);
 
-        if (previous === null || previous === undefined || fresh === null) {
-            return fresh;
-        }
-
-        return isSameProviderRow(previous, fresh) ? previous : fresh;
+        return current === null
+            ? null
+            : (providers().find((row) => row.id === current.provider_id) ?? null);
     });
+    const provider = createPinnedRow(latestOwningProvider, isSameProviderRow);
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -137,13 +149,10 @@ export function ModelEditScreen(props: {
                             backLabel="Model"
                         />
 
-                        <Show when={isRowHeld()}>
-                            <Notice
-                                tone="warn"
-                                title="This model changed on the gateway while you have unsaved edits."
-                                detail="Save writes your edits over the gateway's version; Revert picks the gateway's version up."
-                            />
-                        </Show>
+                        <HoldNotice
+                            isHeld={isRowHeld()}
+                            subject="model"
+                        />
 
                         <ModelSettingsForm
                             api={props.api}
@@ -153,10 +162,12 @@ export function ModelEditScreen(props: {
                             onFailure={read.reportFailure}
                             onReload={read.reload}
                             onDirtyChange={setIsFormDirty}
+                            onSaved={() => setIsSaveSettling(true)}
                         />
                         <DeleteCard
                             api={props.api}
                             model={row}
+                            onReload={read.reload}
                             onFailure={read.reportFailure}
                         />
                     </>
@@ -174,6 +185,7 @@ function ModelSettingsForm(props: {
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
     readonly onReload: () => void;
     readonly onDirtyChange: (isDirty: boolean) => void;
+    readonly onSaved: () => void;
 }): JSX.Element {
     // The settings as the gateway last returned them; a save re-baselines
     // them onto the write's answer, because the public ID is recomposed
@@ -247,6 +259,17 @@ function ModelSettingsForm(props: {
         }
 
         if (outcome.status === "failed") {
+            const diagnosis = describeCallFailure(outcome.cause, {
+                action: "update-model",
+            });
+
+            if (diagnosis.kind === "gone") {
+                // The row is gone behind the screen: the listing re-reads so
+                // the not-found state takes over instead of a ghost form
+                // accepting re-saves forever (README §6.4).
+                props.onReload();
+            }
+
             props.onFailure(outcome.cause, {
                 action: "update-model",
             });
@@ -261,6 +284,9 @@ function ModelSettingsForm(props: {
         setIsEnabled(saved.is_enabled);
         setHasIdOverride(saved.id_override !== null);
         setIdOverride(saved.id_override ?? "");
+        // The hold stands until this save's reload lands: the listing still
+        // answers what the save overwrote.
+        props.onSaved();
         props.onNotice({
             tone: "ok",
             title: "Model saved.",
@@ -301,30 +327,12 @@ function ModelSettingsForm(props: {
                     isDisabled={isSaving()}
                 />
 
-                <div class="flex flex-wrap items-center gap-2">
-                    <Button
-                        type="submit"
-                        tone="primary"
-                        isDisabled={!canSave()}
-                        isBusy={isSaving()}
-                    >
-                        {isSaving() ? "Saving…" : "Save changes"}
-                    </Button>
-                    <Button
-                        isDisabled={!isDirty() || isSaving()}
-                        onClick={revert}
-                    >
-                        Revert
-                    </Button>
-                    <Show when={isDirty() && !isSaving()}>
-                        <span
-                            class="text-[13px] font-medium text-warn"
-                            role="status"
-                        >
-                            Unsaved changes
-                        </span>
-                    </Show>
-                </div>
+                <DirtyFormFooter
+                    canSave={canSave()}
+                    isSaving={isSaving()}
+                    isDirty={isDirty()}
+                    onRevert={revert}
+                />
             </form>
         </Card>
     );
@@ -334,6 +342,7 @@ function ModelSettingsForm(props: {
 function DeleteCard(props: {
     readonly api: ManagementApi;
     readonly model: ModelResponse;
+    readonly onReload: () => void;
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
     const confirmDelete = async (): Promise<boolean> => {
@@ -348,6 +357,16 @@ function DeleteCard(props: {
         }
 
         if (outcome.status === "failed") {
+            const diagnosis = describeCallFailure(outcome.cause, {
+                action: "delete-model",
+            });
+
+            if (diagnosis.kind === "gone") {
+                // The row is already gone: the listing re-reads so the
+                // not-found state takes over (README §6.4).
+                props.onReload();
+            }
+
             props.onFailure(outcome.cause, {
                 action: "delete-model",
             });

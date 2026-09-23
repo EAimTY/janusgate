@@ -11,6 +11,7 @@ import { isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { requestRefresh } from "/src/refresh-state";
 import {
     createHeldRow,
+    createPinnedRow,
     createScreenRead,
     isSameApiKeyRow,
     isSameModelRow,
@@ -239,6 +240,32 @@ describe("createScreenRead", () => {
         await settle();
         expect(read.notice()).toBeNull();
         expect(read.isReading()).toBe(false);
+    });
+
+    it("installs nothing from a superseded cycle's late success", async () => {
+        const state = manualLoad();
+        const { read } = mountedRead({
+            load: state.load,
+        });
+        await waitForCycles(state, 1);
+
+        requestRefresh();
+        await waitForCycles(state, 2);
+        expect(state.cycles[0]?.signal.aborted).toBe(true);
+
+        // Cycle 1's load resolves only after its supersession: the dead
+        // cycle must not drop `isReading` under the live one or install
+        // anything it read.
+        state.cycles[0]?.succeed();
+        await settle();
+        expect(read.hasRead()).toBe(false);
+        expect(read.isReading()).toBe(true);
+
+        state.cycles[1]?.succeed();
+        await settle();
+        expect(read.hasRead()).toBe(true);
+        expect(read.isReading()).toBe(false);
+        expect(read.notice()).toBeNull();
     });
 
     it("keeps an action notice across a successful read when the policy says so", async () => {
@@ -621,6 +648,94 @@ describe("createHeldRow", () => {
         await settle();
         expect(held.row()).toBe(heldRow);
         expect(held.isRowHeld()).toBe(false);
+
+        dispose();
+    });
+
+    it("answers null while the form is dirty when the read says the row is gone", async () => {
+        const { held, setLatest, setIsFormDirty, dispose } = mountedKey();
+
+        setLatest(key);
+        await settle();
+        setIsFormDirty(true);
+        await settle();
+
+        // Deletion ends the form whatever the dirt: a gone read passes null
+        // through, and nothing is held against it.
+        setLatest(null);
+        await settle();
+
+        expect(held.row()).toBeNull();
+        expect(held.isRowHeld()).toBe(false);
+
+        dispose();
+    });
+});
+
+describe("createPinnedRow", () => {
+    function mountedProvider() {
+        const [latest, setLatest] = createSignal<ProviderResponse | null>(null);
+        const box: {
+            pinned?: ReturnType<typeof createPinnedRow<ProviderResponse>>;
+        } = {};
+        const dispose = createRoot((teardown) => {
+            box.pinned = createPinnedRow(latest, isSameProviderRow);
+            return teardown;
+        });
+
+        if (box.pinned === undefined) {
+            throw new Error("The pinned row did not mount");
+        }
+
+        return {
+            pinned: box.pinned,
+            setLatest,
+            dispose,
+        };
+    }
+
+    const provider: ProviderResponse = {
+        type: "openai_response",
+        id: 3,
+        name: "alpha",
+        model_prefix: "alpha/",
+        is_enabled: true,
+        base_url: "https://alpha.example",
+    };
+
+    afterEach(() => {
+        for (const dispose of mountedDisposes.reverse()) {
+            dispose();
+        }
+        mountedDisposes.length = 0;
+    });
+
+    it("keeps a re-answered row's identity, adopts a changed one, and passes null through", async () => {
+        const { pinned, setLatest, dispose } = mountedProvider();
+
+        setLatest(provider);
+        await settle();
+        const pinnedRow = pinned();
+        expect(pinnedRow).toBe(provider);
+
+        // A re-parsed answer with the same content keeps the object.
+        setLatest({
+            ...provider,
+        });
+        await settle();
+        expect(pinned()).toBe(pinnedRow);
+
+        const renamed: ProviderResponse = {
+            ...provider,
+            name: "beta",
+        };
+        setLatest(renamed);
+        await settle();
+        expect(pinned()).toBe(renamed);
+
+        setLatest(null);
+        await settle();
+        expect(pinned()).toBeNull();
 
         dispose();
     });

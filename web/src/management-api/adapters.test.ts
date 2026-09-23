@@ -84,6 +84,18 @@ describe("toUpdateProviderRequest", () => {
         });
     });
 
+    it("restates a typed prefix byte-for-byte, trailing slash included", () => {
+        // The gateway stores `model_prefix` verbatim and recomposes every
+        // unoverridden public ID from exactly what the request states
+        // (gateway README §7) — a prefix trimmed here would rewrite every
+        // client's routing, so no edit value may ever be normalized.
+        const request = toUpdateProviderRequest(compatible, {
+            model_prefix: "q/",
+        });
+
+        expect(request.model_prefix).toBe("q/");
+    });
+
     it("omits the write-only api_key when the secret is kept", () => {
         const request = toUpdateProviderRequest(compatible, {
             name: "renamed",

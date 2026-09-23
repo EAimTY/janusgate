@@ -1,7 +1,13 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { ManagementApiError } from "/src/management-api/errors";
+import type {
+    ModelResponse,
+    ProviderResponse,
+    UpdateProviderRequest,
+} from "/src/management-api/generated/v0";
+import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ProviderEditScreen } from "/src/screens/provider-edit-screen";
 
@@ -29,12 +35,16 @@ const model: ModelResponse = {
  * A management API standing in for the gateway itself: its listings answer
  * from mutable holders, and `providers:update` applies the request's complete
  * desired state back into the holder, so a reload after a save answers the
- * saved row the way the real gateway would.
+ * saved row the way the real gateway would. Requests are recorded into the
+ * optional wire the test passes, for assertions on what the form sent.
  */
-function screenApi(holder: {
-    providers: ReadonlyArray<ProviderResponse>;
-    models: ReadonlyArray<ModelResponse>;
-}): ManagementApi {
+function screenApi(
+    holder: {
+        providers: ReadonlyArray<ProviderResponse>;
+        models: ReadonlyArray<ModelResponse>;
+    },
+    sent: UpdateProviderRequest[] = [],
+): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
     return {
@@ -53,6 +63,8 @@ function screenApi(holder: {
                 ],
             }),
         updateProvider: (request) => {
+            sent.push(request);
+
             holder.providers = holder.providers.map((row) => {
                 if (row.id !== request.provider_id) {
                     return row;
@@ -136,6 +148,74 @@ function typeInto(input: HTMLInputElement, value: string): void {
     );
 }
 
+function switchWithLabel(label: string): HTMLButtonElement {
+    for (const candidate of document.querySelectorAll("button[role='switch']")) {
+        if (candidate.closest("div")?.textContent?.includes(label) === true) {
+            return candidate as HTMLButtonElement;
+        }
+    }
+
+    throw new Error(`No switch labeled ${label}`);
+}
+
+function goneFailure(message: string): ManagementApiError {
+    return new ManagementApiError("gateway", message, {
+        errno: ErrorCode.NotFound,
+        httpStatus: 404,
+    });
+}
+
+/**
+ * A management API whose third provider listing is held until the test
+ * releases it, exposing the window between a save and its reload landing.
+ */
+function gatedScreenApi(holder: {
+    providers: ReadonlyArray<ProviderResponse>;
+    models: ReadonlyArray<ModelResponse>;
+}): {
+    api: ManagementApi;
+    isReloadInFlight: () => boolean;
+    releaseReload: (rows: ReadonlyArray<ProviderResponse>) => void;
+    failReload: (error: unknown) => void;
+} {
+    let readCount = 0;
+    let release: ((rows: ReadonlyArray<ProviderResponse>) => void) | null = null;
+    let fail: ((error: unknown) => void) | null = null;
+
+    const api: ManagementApi = {
+        ...screenApi(holder),
+        listProviders: (signal) => {
+            signal?.throwIfAborted();
+            readCount += 1;
+
+            if (readCount !== 3) {
+                return Promise.resolve({
+                    providers: [
+                        ...holder.providers,
+                    ],
+                });
+            }
+
+            return new Promise((resolve, reject) => {
+                release = (rows) =>
+                    resolve({
+                        providers: [
+                            ...rows,
+                        ],
+                    });
+                fail = reject;
+            });
+        },
+    };
+
+    return {
+        api,
+        isReloadInFlight: () => release !== null,
+        releaseReload: (rows) => release?.(rows),
+        failReload: (error) => fail?.(error),
+    };
+}
+
 describe("ProviderEditScreen refresh against an open form", () => {
     const disposes: Array<() => void> = [];
 
@@ -146,15 +226,18 @@ describe("ProviderEditScreen refresh against an open form", () => {
         disposes.length = 0;
     });
 
-    function mount(holder: {
-        providers: ReadonlyArray<ProviderResponse>;
-        models: ReadonlyArray<ModelResponse>;
-    }): void {
+    function mount(
+        holder: {
+            providers: ReadonlyArray<ProviderResponse>;
+            models: ReadonlyArray<ModelResponse>;
+        },
+        sent: UpdateProviderRequest[] = [],
+    ): void {
         disposes.push(
             render(
                 () => (
                     <ProviderEditScreen
-                        api={screenApi(holder)}
+                        api={screenApi(holder, sent)}
                         providerId={3}
                     />
                 ),
@@ -181,6 +264,324 @@ describe("ProviderEditScreen refresh against an open form", () => {
         await settle();
 
         expect(labeledInput("Name").value).toBe("renamed");
+    });
+
+    it("restates a typed custom prefix byte-for-byte in the update request", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [],
+        };
+        const sent: UpdateProviderRequest[] = [];
+        mount(holder, sent);
+        await settle();
+
+        // The typed prefix carries its own trailing slash, and the field
+        // promises it is used exactly as typed (gateway README §7 stores the
+        // prefix verbatim and recomposes every unoverridden public ID from
+        // exactly what the write states).
+        switchWithLabel("Custom model prefix").click();
+        await settle();
+        typeInto(labeledInput("Model prefix"), "q/");
+        await settle();
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(sent).toHaveLength(1);
+        expect(sent[0]?.model_prefix).toBe("q/");
+        expect(holder.providers).toEqual([
+            {
+                ...provider,
+                model_prefix: "q/",
+            },
+        ]);
+        expect(labeledInput("Model prefix").value).toBe("q/");
+        expect(document.body.textContent).not.toContain("Unsaved changes");
+    });
+
+    it("restates a typed custom prefix byte-for-byte on an OAuth provider", async () => {
+        const codex: ProviderResponse = {
+            type: "codex_oauth",
+            id: 3,
+            name: "chatgpt",
+            model_prefix: "gpt-",
+            is_enabled: true,
+            expires_at: null,
+        };
+        const holder = {
+            providers: [
+                codex,
+            ],
+            models: [],
+        };
+        const sent: UpdateProviderRequest[] = [];
+        mount(holder, sent);
+        await settle();
+
+        // The OAuth row already carries a hand-set prefix, so its field is
+        // open at mount; the save must restate the typed value byte-for-byte
+        // exactly as the static-key path must.
+        typeInto(labeledInput("Model prefix"), "gpt/");
+        await settle();
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(sent).toHaveLength(1);
+        expect(sent[0]?.model_prefix).toBe("gpt/");
+        expect(sent[0] && "base_url" in sent[0]).toBe(false);
+        expect(holder.providers).toEqual([
+            {
+                ...codex,
+                model_prefix: "gpt/",
+            },
+        ]);
+    });
+
+    it("opens clean when the stored prefix is a custom value ending in a slash", async () => {
+        const holder = {
+            providers: [
+                {
+                    ...provider,
+                    model_prefix: "q/",
+                },
+            ],
+            models: [],
+        };
+        mount(holder);
+        await settle();
+
+        // The stored prefix is verbatim gateway state, so the form must
+        // restate it byte-for-byte: a derived or normalized value would
+        // present an untouched form as dirty at mount.
+        expect(labeledInput("Model prefix").value).toBe("q/");
+        expect(document.body.textContent).not.toContain("Unsaved changes");
+        expect(buttonWithText("Save changes").disabled).toBe(true);
+    });
+
+    it("accepts a name the gateway would store verbatim, whitespace included", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [],
+        };
+        const sent: UpdateProviderRequest[] = [];
+        mount(holder, sent);
+        await settle();
+
+        // The gateway's only name rule is non-empty, stored verbatim: a
+        // whitespace-only name is legal once the prefix is hand-set, and
+        // nothing here is trimmed — rejecting more than the gateway would
+        // block a legal name.
+        switchWithLabel("Custom model prefix").click();
+        await settle();
+        typeInto(labeledInput("Model prefix"), "q/");
+        typeInto(labeledInput("Name"), " ");
+        await settle();
+
+        expect(document.body.textContent).not.toContain("A provider needs a name.");
+        expect(buttonWithText("Save changes").disabled).toBe(false);
+
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(sent[0]?.name).toBe(" ");
+        expect(holder.providers).toEqual([
+            {
+                ...provider,
+                name: " ",
+                model_prefix: "q/",
+            },
+        ]);
+    });
+
+    it("keeps the held row from adopting the pre-save listing before the save's reload lands", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [],
+        };
+        const gate = gatedScreenApi(holder);
+        disposes.push(
+            render(
+                () => (
+                    <ProviderEditScreen
+                        api={gate.api}
+                        providerId={3}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        typeInto(labeledInput("Name"), "saved-here");
+        holder.providers = [
+            {
+                ...provider,
+                name: "renamed-elsewhere",
+                model_prefix: "renamed-elsewhere/",
+            },
+        ];
+        requestRefresh();
+        await settle();
+        expect(document.body.textContent).toContain("changed on the gateway");
+
+        buttonWithText("Save changes").click();
+        await settle();
+        expect(gate.isReloadInFlight()).toBe(true);
+
+        // The window between the dirt clearing and the save's reload
+        // landing: the listing still answers the pre-save rows, and the
+        // held row must not adopt them — the sent values persist.
+        expect(labeledInput("Name").value).toBe("saved-here");
+        expect(document.body.textContent).not.toContain("renamed-elsewhere");
+
+        gate.releaseReload(holder.providers);
+        await settle();
+
+        expect(labeledInput("Name").value).toBe("saved-here");
+        expect(document.body.textContent).not.toContain("renamed-elsewhere");
+        expect(document.body.textContent).toContain("saved-here saved.");
+        expect(document.body.textContent).not.toContain("Unsaved changes");
+        expect(document.body.textContent).not.toContain("changed on the gateway");
+    });
+
+    it("keeps the sent values when the save-triggered reload fails, until a later read resolves", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [],
+        };
+        const gate = gatedScreenApi(holder);
+        disposes.push(
+            render(
+                () => (
+                    <ProviderEditScreen
+                        api={gate.api}
+                        providerId={3}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        typeInto(labeledInput("Name"), "saved-here");
+        holder.providers = [
+            {
+                ...provider,
+                name: "renamed-elsewhere",
+                model_prefix: "renamed-elsewhere/",
+            },
+        ];
+        requestRefresh();
+        await settle();
+
+        buttonWithText("Save changes").click();
+        await settle();
+        expect(gate.isReloadInFlight()).toBe(true);
+
+        gate.failReload(
+            new ManagementApiError("gateway", "reload dropped", {
+                errno: ErrorCode.UpstreamError,
+                httpStatus: 502,
+            }),
+        );
+        await settle();
+
+        // A failed reload must not hand the form the stale pre-save rows
+        // either: the save succeeded, so the listing is stale by
+        // construction and the sent values stand.
+        expect(labeledInput("Name").value).toBe("saved-here");
+        expect(document.body.textContent).not.toContain("renamed-elsewhere");
+        expect(document.body.textContent).toContain("reload dropped");
+
+        // The first read that starts after the save resolves the hand-off.
+        requestRefresh();
+        await settle();
+
+        expect(labeledInput("Name").value).toBe("saved-here");
+        expect(document.body.textContent).toContain("Edit saved-here");
+        expect(document.body.textContent).not.toContain("renamed-elsewhere");
+    });
+
+    it("reloads the listing when a save answers gone, handing over to the not-found state", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [],
+        };
+        const api: ManagementApi = {
+            ...screenApi(holder),
+            updateProvider: () => Promise.reject(goneFailure("no provider 3")),
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ProviderEditScreen
+                        api={api}
+                        providerId={3}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        typeInto(labeledInput("Name"), "renamed");
+        await settle();
+        holder.providers = [];
+        buttonWithText("Save changes").click();
+        await settle();
+
+        // The message is rendered and the listing that showed the row is
+        // reloaded (web README §6.4), so the screen stops showing state the
+        // gateway no longer holds instead of inviting a ghost re-save.
+        expect(document.body.textContent).toContain("The gateway holds no such row.");
+        expect(document.body.textContent).toContain("Provider not found");
+    });
+
+    it("reloads the listing when a delete answers gone", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [],
+        };
+        const api: ManagementApi = {
+            ...screenApi(holder),
+            deleteProvider: () => Promise.reject(goneFailure("no provider 3")),
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ProviderEditScreen
+                        api={api}
+                        providerId={3}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        holder.providers = [];
+        for (const candidate of document.querySelectorAll("button")) {
+            if (candidate.textContent?.includes("Delete…") === true) {
+                candidate.click();
+            }
+        }
+        await settle();
+        buttonWithText("Delete for good").click();
+        await settle();
+
+        expect(document.body.textContent).toContain("The gateway holds no such row.");
+        expect(document.body.textContent).toContain("Provider not found");
     });
 
     it("keeps a dirty form across a refresh that answers a changed row, and says so", async () => {

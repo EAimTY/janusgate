@@ -19,7 +19,7 @@ import {
 } from "/src/management-api/identifiers";
 import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
-import { defaultModelPrefix, normalizeModelPrefix } from "/src/management-api/provider-defaults";
+import { defaultModelPrefix } from "/src/management-api/provider-defaults";
 import { findOAuthProviderType, isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
@@ -33,6 +33,7 @@ import {
 } from "/src/screens/read";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Button, ButtonLink, TextField } from "/src/ui/controls";
+import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { AuthorizeStep } from "/src/ui/oauth-flow";
@@ -57,6 +58,14 @@ export function ProviderEditScreen(props: {
     // Reported by the settings form: an open form with unsaved edits holds its
     // row against refreshes, so an operator's input can never silently vanish.
     const [isFormDirty, setIsFormDirty] = createSignal(false);
+    // Set when a save succeeds: the standing listing is then stale by
+    // construction — the save overwrote exactly what the listing still
+    // shows — so the held row must not adopt it before the save's own reload
+    // lands (README §6.3: a save re-baselines the form onto the values it
+    // sent). The latch clears on the first read cycle that starts after the
+    // save, so a failed reload leaves the hold standing instead of resting
+    // the screen on the pre-save rows.
+    const [isSaveSettling, setIsSaveSettling] = createSignal(false);
 
     // The notice is also the save's reported outcome, so only a new failure
     // replaces it — a successful read keeps it (README §6.3).
@@ -82,6 +91,7 @@ export function ProviderEditScreen(props: {
 
             setProviders(providersResult.providers);
             setModels(modelsResult.models);
+            setIsSaveSettling(false);
         },
     });
 
@@ -91,10 +101,11 @@ export function ProviderEditScreen(props: {
 
     // A refresh answering the same row keeps the row's identity, so the open
     // form is not remounted; a row that genuinely changed on the gateway is
-    // held back while the form holds unsaved edits, and the hold is stated.
+    // held back while the form holds unsaved edits — or while a save is
+    // still settling — and the hold is stated.
     const { row: provider, isRowHeld } = createHeldRow(
         latestProvider,
-        isFormDirty,
+        () => isFormDirty() || isSaveSettling(),
         isSameProviderRow,
     );
 
@@ -151,13 +162,10 @@ export function ProviderEditScreen(props: {
                             backLabel="Provider"
                         />
 
-                        <Show when={isRowHeld()}>
-                            <Notice
-                                tone="warn"
-                                title="This provider changed on the gateway while you have unsaved edits."
-                                detail="Save writes your edits over the gateway's version; Revert picks the gateway's version up."
-                            />
-                        </Show>
+                        <HoldNotice
+                            isHeld={isRowHeld()}
+                            subject="provider"
+                        />
 
                         <DetailsCard
                             api={props.api}
@@ -167,6 +175,7 @@ export function ProviderEditScreen(props: {
                             onNotice={read.showNotice}
                             onFailure={read.reportFailure}
                             onDirtyChange={setIsFormDirty}
+                            onSaved={() => setIsSaveSettling(true)}
                         />
 
                         <Show
@@ -189,6 +198,7 @@ export function ProviderEditScreen(props: {
                             api={props.api}
                             provider={row}
                             modelCount={models().length}
+                            onReload={read.reload}
                             onFailure={read.reportFailure}
                         />
                     </>
@@ -207,6 +217,7 @@ function DetailsCard(props: {
     readonly onNotice: (notice: ScreenNotice | null) => void;
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
     readonly onDirtyChange: (isDirty: boolean) => void;
+    readonly onSaved: () => void;
 }): JSX.Element {
     // The settings as the gateway last returned them; a save re-baselines
     // them onto the values it sent, because the write answers `{}` and the
@@ -234,8 +245,15 @@ function DetailsCard(props: {
 
     const isStatic = (): boolean => findOAuthProviderType(baseline().type) === null;
 
+    // The typed prefix is the value on the wire, byte-for-byte: the gateway
+    // stores `model_prefix` verbatim and recomposes every unoverridden
+    // public ID from exactly what the write states (gateway README §7), and
+    // the field promises it is used exactly as typed — normalizing here
+    // would silently rewrite the clients' routing and mark the form dirty
+    // against its own baseline. Composition is guarded below, where it is
+    // typed.
     const effectivePrefix = createMemo(() =>
-        isCustomPrefix() ? normalizeModelPrefix(customPrefix()) : defaultModelPrefix(name()),
+        isCustomPrefix() ? customPrefix() : defaultModelPrefix(name()),
     );
 
     const trimmedBaseUrl = (): string => baseUrl().trim();
@@ -272,9 +290,11 @@ function DetailsCard(props: {
         );
     });
 
-    // A name is a human label, but the contract still requires it to hold
-    // something: an emptied field must not reach the gateway as a 400.
-    const isNamePresent = (): boolean => name().trim() !== "";
+    // A name is the administrator's choice, stored verbatim (gateway README
+    // §7): the only rule is non-empty — an emptied field must not reach the
+    // gateway as a 400 — and nothing is trimmed, because rejecting more than
+    // the gateway would block a legal name.
+    const isNamePresent = (): boolean => name() !== "";
 
     const canSave = (): boolean =>
         isDirty() && isNamePresent() && prefixError() === null && isConnectionValid();
@@ -336,6 +356,17 @@ function DetailsCard(props: {
         }
 
         if (outcome.status === "failed") {
+            const diagnosis = describeCallFailure(outcome.cause, {
+                action: "update-provider",
+            });
+
+            if (diagnosis.kind === "gone") {
+                // The row is gone behind the screen: the listing re-reads so
+                // the not-found state takes over instead of a ghost form
+                // accepting re-saves forever (README §6.4).
+                props.onReload();
+            }
+
             props.onFailure(outcome.cause, {
                 action: "update-provider",
             });
@@ -373,6 +404,9 @@ function DetailsCard(props: {
                   },
         );
         setApiKey("");
+        // The hold stands until this save's reload lands: the listing still
+        // answers what the save overwrote.
+        props.onSaved();
         props.onNotice({
             tone: "ok",
             title: `${name()} saved.`,
@@ -430,30 +464,12 @@ function DetailsCard(props: {
                     />
                 </Show>
 
-                <div class="flex flex-wrap items-center gap-2">
-                    <Button
-                        type="submit"
-                        tone="primary"
-                        isDisabled={!canSave()}
-                        isBusy={isSaving()}
-                    >
-                        {isSaving() ? "Saving…" : "Save changes"}
-                    </Button>
-                    <Button
-                        isDisabled={!isDirty() || isSaving()}
-                        onClick={revert}
-                    >
-                        Revert
-                    </Button>
-                    <Show when={isDirty() && !isSaving()}>
-                        <span
-                            class="text-[13px] font-medium text-warn"
-                            role="status"
-                        >
-                            Unsaved changes
-                        </span>
-                    </Show>
-                </div>
+                <DirtyFormFooter
+                    canSave={canSave()}
+                    isSaving={isSaving()}
+                    isDirty={isDirty()}
+                    onRevert={revert}
+                />
             </form>
         </Card>
     );
@@ -647,6 +663,7 @@ function DangerCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
     readonly modelCount: number;
+    readonly onReload: () => void;
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
     const confirmDelete = async (): Promise<boolean> => {
@@ -661,6 +678,16 @@ function DangerCard(props: {
         }
 
         if (outcome.status === "failed") {
+            const diagnosis = describeCallFailure(outcome.cause, {
+                action: "delete-provider",
+            });
+
+            if (diagnosis.kind === "gone") {
+                // The row is already gone: the listing re-reads so the
+                // not-found state takes over (README §6.4).
+                props.onReload();
+            }
+
             props.onFailure(outcome.cause, {
                 action: "delete-provider",
             });
