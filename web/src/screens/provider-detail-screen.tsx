@@ -6,7 +6,13 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { performManagementCall } from "/src/management-api/outcome";
 import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
-import { createScreenRead, isSameProviderRow, readAll } from "/src/screens/read";
+import {
+    createScreenRead,
+    isSameProviderRow,
+    readAll,
+    type ScreenNotice,
+    screenFailureNotice,
+} from "/src/screens/read";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
@@ -27,6 +33,10 @@ export function ProviderDetailScreen(props: {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
     const [isDiscovering, setIsDiscovering] = createSignal(false);
+    // The discovery's progress and outcome are stated where the action was
+    // taken — on the Models card — never in the read-level notice above the
+    // page (README §6.4). The read scope stays the read's alone.
+    const [discoveryNotice, setDiscoveryNotice] = createSignal<ScreenNotice | null>(null);
 
     // The provider whose empty list already triggered its one automatic
     // discovery. A plain variable, not a signal: it guards an action, and it
@@ -41,11 +51,10 @@ export function ProviderDetailScreen(props: {
         discoveryController?.abort();
     });
 
-    // The notice is also the discovery's reported outcome, so only a new
-    // failure replaces it — a successful read keeps it (README §6.3).
+    // A successful read clears the read-level notice; the discovery's own
+    // outcome lives on the Models card and survives reads untouched.
     const read = createScreenRead({
         reReadOn: () => props.providerId,
-        isNoticeKeptOnSuccess: true,
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
@@ -65,6 +74,13 @@ export function ProviderDetailScreen(props: {
 
             setProviders(providersResult.providers);
             setModels(modelsResult.models);
+
+            if (!providersResult.providers.some((candidate) => candidate.id === props.providerId)) {
+                // The subject row is gone: the not-found state takes over,
+                // and the discovery outcome stated on its Models card goes
+                // with it instead of surviving as a stale banner.
+                setDiscoveryNotice(null);
+            }
 
             if (modelsResult.models.length === 0 && autoDiscoveredFor !== props.providerId) {
                 // The decision reads the fetched arrays, not the signals: a
@@ -91,7 +107,7 @@ export function ProviderDetailScreen(props: {
         const call = new AbortController();
         discoveryController = call;
         setIsDiscovering(true);
-        read.showNotice({
+        setDiscoveryNotice({
             tone: "info",
             title: `Discovering models from ${current.name}…`,
             detail: "Asking the upstream what it reports right now.",
@@ -113,10 +129,12 @@ export function ProviderDetailScreen(props: {
         }
 
         if (outcome.status === "failed") {
-            read.reportFailure(outcome.cause, {
-                action: "discover-models",
-                providerType: current.type,
-            });
+            setDiscoveryNotice(
+                screenFailureNotice(outcome.cause, {
+                    action: "discover-models",
+                    providerType: current.type,
+                }),
+            );
             return;
         }
 
@@ -125,9 +143,16 @@ export function ProviderDetailScreen(props: {
         const vanished = rows.filter((row) => row.discovery_state === "vanished").length;
         const manual = rows.length - discovered - vanished;
 
-        const facts = [
-            "Custom names were kept.",
-        ];
+        // Discovery never writes `id_override`, so every override in the
+        // answer is a pre-existing custom name the refresh kept — a first
+        // discovery that inserts only fresh rows keeps none.
+        const keptNames = rows.filter((row) => row.id_override !== null).length;
+
+        const facts: string[] = [];
+
+        if (keptNames > 0) {
+            facts.push(`${keptNames} custom ${keptNames === 1 ? "name was" : "names were"} kept.`);
+        }
 
         if (manual > 0) {
             facts.push(`${manual} added by hand ${manual === 1 ? "was" : "were"} left untouched.`);
@@ -139,13 +164,13 @@ export function ProviderDetailScreen(props: {
             );
         }
 
-        read.showNotice({
+        setDiscoveryNotice({
             tone: "ok",
             title:
                 discovered > 0
                     ? `${discovered} ${discovered === 1 ? "model" : "models"} discovered from ${current.name}.`
                     : `Nothing new discovered from ${current.name}.`,
-            detail: facts.join(" "),
+            detail: facts.length > 0 ? facts.join(" ") : null,
         });
 
         // A discovery answering after the visitor left must not read again.
@@ -248,6 +273,7 @@ export function ProviderDetailScreen(props: {
                             models={models()}
                             providersById={providersById()}
                             isDiscovering={isDiscovering()}
+                            notice={discoveryNotice()}
                             onDiscover={() => void discover(row)}
                         />
 
@@ -267,18 +293,9 @@ export function ProviderDetailScreen(props: {
 
 /** What this provider is, read-only: every change lives on the edit page. */
 function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element {
-    const baseUrl = (): string | null => {
-        switch (props.provider.type) {
-            case "openai_response":
-            case "openai_chat_completion":
-            case "gemini_generate_content":
-                return props.provider.base_url;
-
-            case "codex_oauth":
-            case "antigravity_oauth":
-                return null;
-        }
-    };
+    // A static key's row carries the base URL; an OAuth login's row has none.
+    const baseUrl = (): string | null =>
+        isOAuthProviderRow(props.provider) ? null : props.provider.base_url;
 
     const credentialLine = (): string | null => {
         if (!isOAuthProviderRow(props.provider) || props.provider.expires_at === null) {
@@ -331,12 +348,17 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
     );
 }
 
-/** The provider's models and the discovery that refreshes them from upstream. */
+/**
+ * The provider's models and the discovery that refreshes them from upstream.
+ * The discovery's progress and outcome are stated here, where the action was
+ * taken — never at the top of the page, which states read failures only.
+ */
 function ModelsCard(props: {
     readonly provider: ProviderResponse;
     readonly models: ReadonlyArray<ModelResponse>;
     readonly providersById: ReadonlyMap<number, ProviderResponse>;
     readonly isDiscovering: boolean;
+    readonly notice: ScreenNotice | null;
     readonly onDiscover: () => void;
 }): JSX.Element {
     return (
@@ -359,6 +381,18 @@ function ModelsCard(props: {
                     {props.isDiscovering ? "Discovering…" : "Discover models"}
                 </Button>
             </CardHeader>
+            <Show when={props.notice}>
+                {(current) => (
+                    <div class="mt-4">
+                        <Notice
+                            tone={current().tone}
+                            title={current().title}
+                            detail={current().detail}
+                            fix={current().fix}
+                        />
+                    </div>
+                )}
+            </Show>
             <div class="mt-4">
                 <Show
                     when={props.models.length > 0}

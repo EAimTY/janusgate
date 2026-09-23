@@ -24,6 +24,8 @@ import {
 } from "/src/management-api/generated/v0";
 
 import {
+    findOAuthProviderType,
+    findStaticProviderType,
     parseApiLogEndpointType,
     parseApiLogOutcome,
     parseDiscoveryState,
@@ -118,7 +120,9 @@ function expectBucketKey(value: unknown, context: string): UsageBucketKey {
  * One provider row; the union is discriminated by the restated `type`. The
  * bindings collapse the field-identical kinds into one member per field set,
  * and the parser branches the same way: the OAuth kinds all carry the nullable
- * `expires_at`, the static-key kinds all carry the `base_url`.
+ * `expires_at`, the static-key kinds all carry the `base_url`. Both branches
+ * read their membership from the closed vocabularies, so a kind added to the
+ * contract cannot compile past a vocabulary and then fail here at runtime.
  */
 export function parseProviderResponse(value: unknown, context: string): ProviderResponse {
     const record = expectRecord(value, context);
@@ -133,9 +137,11 @@ export function parseProviderResponse(value: unknown, context: string): Provider
 
     const isEnabled = expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`);
 
-    if (type === "codex_oauth" || type === "antigravity_oauth") {
+    const oauthType = findOAuthProviderType(type);
+
+    if (oauthType !== null) {
         return {
-            type,
+            type: oauthType,
             id,
             name,
             model_prefix: modelPrefix,
@@ -147,13 +153,11 @@ export function parseProviderResponse(value: unknown, context: string): Provider
         };
     }
 
-    if (
-        type === "openai_response" ||
-        type === "openai_chat_completion" ||
-        type === "gemini_generate_content"
-    ) {
+    const staticType = findStaticProviderType(type);
+
+    if (staticType !== null) {
         return {
-            type,
+            type: staticType,
             id,
             name,
             model_prefix: modelPrefix,

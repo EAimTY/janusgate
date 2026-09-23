@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
+import { createMemo, createSignal, Match, onCleanup, Show, Switch } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { Diagnosis } from "/src/management-api/diagnosis";
 import type {
@@ -54,19 +54,26 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const [apiKey, setApiKey] = createSignal("");
 
     // The taken names arrive after the first read; until then the base name
-    // stands in, and a hand-typed name is never overwritten.
-    void performManagementCall(() => props.api.listProviders()).then((outcome) => {
-        if (outcome.status !== "ok") {
-            return;
-        }
+    // stands in, and a hand-typed name is never overwritten. The read is
+    // aborted when the screen goes away, so a late answer does no work; a
+    // failed suggestion source degrades silently, never as a screen failure.
+    const suggestionController = new AbortController();
+    onCleanup(() => suggestionController.abort());
 
-        const taken = new Set(outcome.result.providers.map((row) => row.name));
-        setTakenNames(taken);
+    void performManagementCall(() => props.api.listProviders(suggestionController.signal)).then(
+        (outcome) => {
+            if (outcome.status !== "ok") {
+                return;
+            }
 
-        if (!isNameTouched()) {
-            setName(suggestProviderName(kind(), taken));
-        }
-    });
+            const taken = new Set(outcome.result.providers.map((row) => row.name));
+            setTakenNames(taken);
+
+            if (!isNameTouched()) {
+                setName(suggestProviderName(kind(), taken));
+            }
+        },
+    );
 
     const suggestion = createMemo(() => suggestProviderName(kind(), takenNames()));
 

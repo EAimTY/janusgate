@@ -16,22 +16,44 @@ export type VocabularyOption<TValue extends string> = {
 };
 
 /**
- * Every provider kind with the label each is presented under. The record type
- * is exhaustive, so a kind added to the generated union fails to compile
- * until it is listed here.
+ * The static-key provider kinds — the ones `providers:create` mints outright,
+ * as opposed to the OAuth logins `oauth:complete` mints.
  */
-const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
+export type StaticProviderType = Exclude<ProviderType, OAuthProviderType>;
+
+/**
+ * The static-key provider kinds with the label each is presented under. The
+ * record type is exhaustive, so a kind added to the generated union fails to
+ * compile until it is listed here.
+ */
+const STATIC_PROVIDER_TYPE_LABELS: Record<StaticProviderType, string> = {
     openai_response: "OpenAI Responses API",
     openai_chat_completion: "OpenAI Chat Completions API",
     gemini_generate_content: "Gemini generateContent API",
-    codex_oauth: "Codex OAuth",
-    antigravity_oauth: "Antigravity OAuth",
 };
 
 const OAUTH_PROVIDER_TYPE_LABELS: Record<OAuthProviderType, string> = {
     codex_oauth: "Codex OAuth",
     antigravity_oauth: "Antigravity OAuth",
 };
+
+/**
+ * Every provider kind with the label each is presented under — the two
+ * sub-vocabularies above, composed. The record type is exhaustive, so a kind
+ * added to the generated union fails to compile until its sub-vocabulary
+ * lists it.
+ */
+const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
+    ...STATIC_PROVIDER_TYPE_LABELS,
+    ...OAUTH_PROVIDER_TYPE_LABELS,
+};
+
+/** The static-key provider kinds as options; the record type is exhaustive as above. */
+const STATIC_PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<StaticProviderType>> =
+    Object.entries(STATIC_PROVIDER_TYPE_LABELS).map(([value, label]) => ({
+        value: value as StaticProviderType,
+        label,
+    }));
 
 /** The OAuth provider kinds as options; the record type is exhaustive as above. */
 const OAUTH_PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<OAuthProviderType>> =
@@ -61,6 +83,11 @@ function findOption<TValue extends string>(
 
 export function findOAuthProviderType(value: unknown): OAuthProviderType | null {
     return findOption(OAUTH_PROVIDER_TYPE_OPTIONS, value);
+}
+
+/** Looks a static-key kind up, returning `null` when the value is not one. */
+export function findStaticProviderType(value: unknown): StaticProviderType | null {
+    return findOption(STATIC_PROVIDER_TYPE_OPTIONS, value);
 }
 
 /**
@@ -198,11 +225,6 @@ export const USAGE_GROUP_BY_OPTIONS: ReadonlyArray<VocabularyOption<UsageGroupBy
     value: value as UsageGroupBy,
     label,
 }));
-
-/** The label a `usage:query` bucketing dimension is presented under. */
-export function usageGroupByLabel(groupBy: UsageGroupBy): string {
-    return USAGE_GROUP_BY_LABELS[groupBy];
-}
 
 function findUsageGroupBy(value: unknown): UsageGroupBy | null {
     return findOption(USAGE_GROUP_BY_OPTIONS, value);

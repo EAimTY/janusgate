@@ -44,6 +44,24 @@ const antigravityProvider = {
     expires_at: null,
 };
 
+const responsesProvider = {
+    type: "openai_response",
+    id: 4,
+    name: "responses",
+    model_prefix: "",
+    is_enabled: true,
+    base_url: "https://api.openai.com/v1",
+};
+
+const geminiProvider = {
+    type: "gemini_generate_content",
+    id: 5,
+    name: "gemini",
+    model_prefix: "gemini/",
+    is_enabled: false,
+    base_url: "https://generativelanguage.googleapis.com",
+};
+
 const model = {
     id: 9,
     provider_id: 1,
@@ -87,17 +105,45 @@ describe("response validation", () => {
     it("parses every provider variant", () => {
         const response = parseListProvidersResponse({
             providers: [
+                responsesProvider,
                 compatibleProvider,
+                geminiProvider,
                 oauthProvider,
                 antigravityProvider,
             ],
         });
 
         expect(response.providers).toEqual([
+            responsesProvider,
             compatibleProvider,
+            geminiProvider,
             oauthProvider,
             antigravityProvider,
         ]);
+    });
+
+    it("validates each variant's own field on the branch its type selects", () => {
+        expect(() =>
+            parseListProvidersResponse({
+                providers: [
+                    {
+                        ...oauthProvider,
+                        expires_at: "soon",
+                    },
+                ],
+            }),
+        ).toThrow(/response\.providers\[0\]\.expires_at must be an integer or null/);
+
+        expect(() =>
+            parseListProvidersResponse({
+                providers: [
+                    {
+                        ...compatibleProvider,
+                        base_url: 7,
+                    },
+                ],
+            }),
+        ).toThrow(/response\.providers\[0\]\.base_url must be a string/);
     });
 
     it("tolerates unknown extra keys but reads every required one", () => {

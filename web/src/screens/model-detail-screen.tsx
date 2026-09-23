@@ -4,11 +4,11 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { discoveryStateLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
-import { createScreenRead, readAll } from "/src/screens/read";
+import { createScreenRead, isSameModelRow, isSameProviderRow, readAll } from "/src/screens/read";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
-import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { modelDiscoveryBadge, modelServingBadge } from "/src/ui/models-table";
 
@@ -41,13 +41,31 @@ export function ModelDetailScreen(props: {
         },
     });
 
-    const model = createMemo(() => models().find((row) => row.id === props.modelId) ?? null);
+    // Each row memo keeps its previous answer when a re-read returns the same
+    // content, so a refresh never flips object identity and never remounts
+    // the cards (or restarts the usage read) over unchanged data.
+    const model = createMemo((previous: ModelResponse | null | undefined) => {
+        const fresh = models().find((row) => row.id === props.modelId) ?? null;
 
-    const provider = createMemo(() => {
+        if (previous === null || previous === undefined || fresh === null) {
+            return fresh;
+        }
+
+        return isSameModelRow(previous, fresh) ? previous : fresh;
+    });
+
+    const provider = createMemo((previous: ProviderResponse | null | undefined) => {
         const current = model();
-        return current === null
-            ? null
-            : (providers().find((row) => row.id === current.provider_id) ?? null);
+        const fresh =
+            current === null
+                ? null
+                : (providers().find((row) => row.id === current.provider_id) ?? null);
+
+        if (previous === null || previous === undefined || fresh === null) {
+            return fresh;
+        }
+
+        return isSameProviderRow(previous, fresh) ? previous : fresh;
     });
 
     return (
@@ -121,12 +139,12 @@ function ModelFacts(props: {
     readonly model: ModelResponse;
 }): JSX.Element {
     const serving = (): {
-        readonly tone: "ok" | "warn" | "bad" | "muted" | "info";
+        readonly tone: BadgeTone;
         readonly label: string;
     } => modelServingBadge(props.model, props.provider ?? undefined);
 
     const discovery = (): {
-        readonly tone: "ok" | "warn" | "bad" | "muted" | "info";
+        readonly tone: BadgeTone;
         readonly label: string;
     } => modelDiscoveryBadge(props.model);
 
@@ -162,7 +180,7 @@ function ModelFacts(props: {
                                 href={hrefs.providerDetail(props.model.provider_id)}
                                 class="font-medium text-accent hover:text-accent-strong"
                             >
-                                Discover again
+                                Discover again on the provider's page
                             </AppLink>
                             {" when the upstream lists it, or "}
                             <AppLink

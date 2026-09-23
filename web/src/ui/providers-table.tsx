@@ -47,7 +47,7 @@ export function credentialBadge(provider: ProviderResponse): {
  * states. The row is one link to the provider's own page, where its models
  * and usage live and the edit page behind it owns every change.
  */
-export function ProviderRow(props: {
+function ProviderRow(props: {
     readonly provider: ProviderResponse;
     readonly modelCount: number;
 }): JSX.Element {

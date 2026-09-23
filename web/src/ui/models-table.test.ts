@@ -1,0 +1,160 @@
+import { describe, expect, it } from "vitest";
+import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import type { BadgeTone } from "/src/ui/feedback";
+import { modelServingBadge } from "/src/ui/models-table";
+
+const enabledProvider: ProviderResponse = {
+    type: "openai_chat_completion",
+    id: 4,
+    name: "local",
+    model_prefix: "local/",
+    is_enabled: true,
+    base_url: "https://upstream.example.com/v1",
+};
+
+const disabledProvider: ProviderResponse = {
+    ...enabledProvider,
+    is_enabled: false,
+};
+
+function model(overrides: Partial<ModelResponse> = {}): ModelResponse {
+    return {
+        id: 9,
+        provider_id: 4,
+        provider: "local",
+        upstream_id: "qwen3:32b",
+        public_id: "local/qwen3:32b",
+        id_override: null,
+        is_enabled: true,
+        discovery_state: "discovered",
+        ...overrides,
+    };
+}
+
+/**
+ * Every rung of the badge's precedence ladder: the serving verdict first,
+ * then the one cause that keeps the row from serving — the row's own switch
+ * outranks the suspension, and the suspension outranks the provider's hold.
+ */
+const LADDER: ReadonlyArray<{
+    readonly name: string;
+    readonly model: ModelResponse;
+    readonly provider: ProviderResponse | undefined;
+    readonly tone: BadgeTone;
+    readonly label: string;
+}> = [
+    {
+        name: "a listed row with both switches on serves",
+        model: model(),
+        provider: enabledProvider,
+        tone: "ok",
+        label: "Serving",
+    },
+    {
+        name: "a manual row with both switches on serves",
+        model: model({
+            discovery_state: "manual",
+        }),
+        provider: enabledProvider,
+        tone: "ok",
+        label: "Serving",
+    },
+    {
+        name: "the row's own switch reads Off over an enabled provider",
+        model: model({
+            is_enabled: false,
+        }),
+        provider: enabledProvider,
+        tone: "muted",
+        label: "Off",
+    },
+    {
+        name: "the row's own switch reads Off even when the row is vanished",
+        model: model({
+            is_enabled: false,
+            discovery_state: "vanished",
+        }),
+        provider: enabledProvider,
+        tone: "muted",
+        label: "Off",
+    },
+    {
+        name: "the row's own switch reads Off even when the provider is off",
+        model: model({
+            is_enabled: false,
+        }),
+        provider: disabledProvider,
+        tone: "muted",
+        label: "Off",
+    },
+    {
+        name: "a vanished row with both switches on reads Suspended",
+        model: model({
+            discovery_state: "vanished",
+        }),
+        provider: enabledProvider,
+        tone: "warn",
+        label: "Suspended",
+    },
+    {
+        name: "a vanished row reads Suspended even when the provider is off",
+        model: model({
+            discovery_state: "vanished",
+        }),
+        provider: disabledProvider,
+        tone: "warn",
+        label: "Suspended",
+    },
+    {
+        name: "a vanished row reads Suspended when its provider row is absent",
+        model: model({
+            discovery_state: "vanished",
+        }),
+        provider: undefined,
+        tone: "warn",
+        label: "Suspended",
+    },
+    {
+        name: "a listed row behind an off provider is Held by provider",
+        model: model(),
+        provider: disabledProvider,
+        tone: "warn",
+        label: "Held by provider",
+    },
+    {
+        name: "a manual row behind an off provider is Held by provider",
+        model: model({
+            discovery_state: "manual",
+        }),
+        provider: disabledProvider,
+        tone: "warn",
+        label: "Held by provider",
+    },
+    {
+        name: "a listed row whose provider row is absent reads Unknown",
+        model: model(),
+        provider: undefined,
+        tone: "muted",
+        label: "Unknown",
+    },
+    {
+        name: "a manual row whose provider row is absent reads Unknown",
+        model: model({
+            discovery_state: "manual",
+        }),
+        provider: undefined,
+        tone: "muted",
+        label: "Unknown",
+    },
+];
+
+describe("modelServingBadge", () => {
+    it("walks the precedence ladder one rung per cause", () => {
+        for (const rung of LADDER) {
+            expect(modelServingBadge(rung.model, rung.provider), rung.name).toEqual({
+                tone: rung.tone,
+                label: rung.label,
+            });
+        }
+    });
+});

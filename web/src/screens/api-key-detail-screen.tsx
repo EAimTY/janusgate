@@ -4,7 +4,7 @@ import { formatCreatedAt } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
-import { createScreenRead, readAll } from "/src/screens/read";
+import { createScreenRead, isSameApiKeyRow, readAll } from "/src/screens/read";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
 import { ButtonLink } from "/src/ui/controls";
@@ -33,9 +33,18 @@ export function ApiKeyDetailScreen(props: {
         },
     });
 
-    const apiKey = createMemo(
-        () => keys().find((candidate) => candidate.id === props.apiKeyId) ?? null,
-    );
+    // The row memo keeps its previous answer when a re-read returns the same
+    // content, so a refresh never flips object identity and never remounts
+    // the cards (or restarts the usage read) over unchanged data.
+    const apiKey = createMemo((previous: ApiKeyResponse | null | undefined) => {
+        const fresh = keys().find((candidate) => candidate.id === props.apiKeyId) ?? null;
+
+        if (previous === null || previous === undefined || fresh === null) {
+            return fresh;
+        }
+
+        return isSameApiKeyRow(previous, fresh) ? previous : fresh;
+    });
 
     return (
         <div class="rise-in flex flex-col gap-5">

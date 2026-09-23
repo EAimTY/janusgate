@@ -257,78 +257,82 @@ function ModelCreateForm(props: {
                 detail="Naming a provider and upstream ID the upstream no longer reports claims that model back under the settings below."
             />
 
-            <Card>
-                <CardHeader title="Identity" />
-                <div class="mt-4 flex max-w-2xl flex-col gap-4">
-                    <Show
-                        when={props.fixedProvider}
-                        fallback={
-                            <SelectField
-                                label="Provider"
-                                value={providerId()}
-                                options={providerOptions()}
-                                onChange={setProviderId}
-                                isDisabled={isCreating()}
-                            />
-                        }
-                    >
-                        {(fixed) => (
-                            <div>
-                                <p class="block text-[13px] font-medium text-ink">Provider</p>
-                                <p class="tnum mt-1.5">{fixed().name}</p>
-                            </div>
-                        )}
-                    </Show>
-                    <TextField
-                        label="Upstream ID"
-                        value={upstreamId()}
-                        onInput={setUpstreamId}
-                        placeholder="gpt-4o"
-                        isDisabled={isCreating()}
-                        error={upstreamError()}
-                        hint="Sent upstream verbatim — letters, numbers, and symbols only."
-                    />
-                </div>
-            </Card>
-
-            <Card>
-                <CardHeader title="Model settings" />
-                <form
-                    novalidate={true}
-                    class="mt-4 flex max-w-2xl flex-col gap-5"
-                    onSubmit={submit}
-                >
-                    <Switch
-                        label="Enabled"
-                        isOn={isEnabled()}
-                        onText="On"
-                        offText="Off"
-                        isDisabled={isCreating()}
-                        onToggle={setIsEnabled}
-                    />
-
-                    <ModelIdOverrideFields
-                        hasIdOverride={hasIdOverride()}
-                        onHasIdOverrideToggle={setHasIdOverride}
-                        idOverride={idOverride()}
-                        onIdOverrideInput={setIdOverride}
-                        composedId={composedId()}
-                        idOverrideError={overrideError()}
-                        isDisabled={isCreating()}
-                    />
-
-                    <div>
-                        <Button
-                            type="submit"
-                            tone="primary"
-                            isDisabled={!canCreate()}
-                            isBusy={isCreating()}
+            {/* One form spans both cards, so pressing Enter in the identity
+            fields submits the creation like in any text field of a form. */}
+            <form
+                novalidate={true}
+                class="flex flex-col gap-5"
+                onSubmit={submit}
+            >
+                <Card>
+                    <CardHeader title="Identity" />
+                    <div class="mt-4 flex max-w-2xl flex-col gap-4">
+                        <Show
+                            when={props.fixedProvider}
+                            fallback={
+                                <SelectField
+                                    label="Provider"
+                                    value={providerId()}
+                                    options={providerOptions()}
+                                    onChange={setProviderId}
+                                    isDisabled={isCreating()}
+                                />
+                            }
                         >
-                            {isCreating() ? "Creating…" : "Create model"}
-                        </Button>
+                            {(fixed) => (
+                                <div>
+                                    <p class="block text-[13px] font-medium text-ink">Provider</p>
+                                    <p class="tnum mt-1.5">{fixed().name}</p>
+                                </div>
+                            )}
+                        </Show>
+                        <TextField
+                            label="Upstream ID"
+                            value={upstreamId()}
+                            onInput={setUpstreamId}
+                            placeholder="gpt-4o"
+                            isDisabled={isCreating()}
+                            error={upstreamError()}
+                            hint="Sent upstream verbatim — letters, numbers, and symbols only."
+                        />
                     </div>
-                </form>
-            </Card>
+                </Card>
+
+                <Card>
+                    <CardHeader title="Model settings" />
+                    <div class="mt-4 flex max-w-2xl flex-col gap-5">
+                        <Switch
+                            label="Enabled"
+                            isOn={isEnabled()}
+                            onText="On"
+                            offText="Off"
+                            isDisabled={isCreating()}
+                            onToggle={setIsEnabled}
+                        />
+
+                        <ModelIdOverrideFields
+                            hasIdOverride={hasIdOverride()}
+                            onHasIdOverrideToggle={setHasIdOverride}
+                            idOverride={idOverride()}
+                            onIdOverrideInput={setIdOverride}
+                            composedId={composedId()}
+                            idOverrideError={overrideError()}
+                            isDisabled={isCreating()}
+                        />
+
+                        <div>
+                            <Button
+                                type="submit"
+                                tone="primary"
+                                isDisabled={!canCreate()}
+                                isBusy={isCreating()}
+                            >
+                                {isCreating() ? "Creating…" : "Create model"}
+                            </Button>
+                        </div>
+                    </div>
+                </Card>
+            </form>
         </>
     );
 }
