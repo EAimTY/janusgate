@@ -351,6 +351,8 @@ All scripts below run from `web/`. The repository root is an npm workspace wrapp
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Vitest run (domain-logic suites, §11) |
 
+Arguments after `--` pass through to the underlying tool: `npm run dev -- --host` from `web/`, or `npm run dev:web -- --host` from the repository root (the root `dev:web`, `build:web`, and `test:web` delegates forward arguments the same way).
+
 ### First run and workflow
 
 ```bash

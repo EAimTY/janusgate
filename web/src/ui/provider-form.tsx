@@ -129,12 +129,10 @@ export function ProviderIdentityFields(props: {
                 label="Custom model prefix"
                 hint={
                     props.isCustomPrefix
-                        ? "On: the prefix below is used exactly as typed."
-                        : `Off: models are served as ${props.defaultPrefix === "" ? "upstream-id" : `${props.defaultPrefix}upstream-id`}.`
+                        ? "Models are served under the custom prefix below."
+                        : `Models are served as ${props.defaultPrefix === "" ? "upstream-id" : `${props.defaultPrefix}upstream-id`}.`
                 }
                 isOn={props.isCustomPrefix}
-                onText="On"
-                offText="Off"
                 isDisabled={props.isDisabled ?? false}
                 onToggle={props.onCustomPrefixToggle}
             />
@@ -209,8 +207,6 @@ export function ProviderEnabledSwitch(props: {
         <Switch
             label="Enabled"
             isOn={props.isEnabled}
-            onText="On"
-            offText="Off"
             isDisabled={props.isDisabled ?? false}
             onToggle={props.onToggle}
         />

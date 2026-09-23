@@ -6,9 +6,9 @@
         "web"
     ],
     "scripts": {
-        "dev:web": "npm run dev -w web",
-        "build:web": "npm run build -w web",
-        "test:web": "npm test -w web",
+        "dev:web": "npm run dev -w web --",
+        "build:web": "npm run build -w web --",
+        "test:web": "npm test -w web --",
         "check": "biome check && npm run typecheck -w web",
         "fix": "biome check --write --unsafe && npm run typecheck -w web"
     },

@@ -143,13 +143,13 @@ function buttonWithText(text: string): HTMLButtonElement {
 }
 
 function switchWithLabel(label: string): HTMLButtonElement {
-    for (const candidate of document.querySelectorAll("button[role='switch']")) {
-        if (candidate.closest("div")?.textContent?.includes(label) === true) {
-            return candidate as HTMLButtonElement;
-        }
+    const candidate = document.querySelector(`button[role='switch'][aria-label='${label}']`);
+
+    if (candidate === null) {
+        throw new Error(`No switch labeled ${label}`);
     }
 
-    throw new Error(`No switch labeled ${label}`);
+    return candidate as HTMLButtonElement;
 }
 
 /** Types into an input the way a browser delivers an edit. */

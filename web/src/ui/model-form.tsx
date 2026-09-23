@@ -18,17 +18,15 @@ export function ModelIdOverrideFields(props: {
 }): JSX.Element {
     const offHint = (): string =>
         props.composedId === ""
-            ? "Off: clients call the composed ID once the upstream ID is named."
-            : `Off: clients call ${props.composedId}.`;
+            ? "Clients call the composed ID once the upstream ID is named."
+            : `Clients call ${props.composedId}.`;
 
     return (
         <div class="flex flex-col gap-4">
             <Switch
                 label="Override the public ID"
-                hint={props.hasIdOverride ? "On: clients call the override below." : offHint()}
+                hint={props.hasIdOverride ? "Clients call the override below." : offHint()}
                 isOn={props.hasIdOverride}
-                onText="On"
-                offText="Off"
                 isDisabled={props.isDisabled ?? false}
                 onToggle={props.onHasIdOverrideToggle}
             />

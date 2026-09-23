@@ -305,8 +305,6 @@ function ModelCreateForm(props: {
                         <Switch
                             label="Enabled"
                             isOn={isEnabled()}
-                            onText="On"
-                            offText="Off"
                             isDisabled={isCreating()}
                             onToggle={setIsEnabled}
                         />

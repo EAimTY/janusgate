@@ -251,52 +251,46 @@ export function ButtonLink(props: {
 }
 
 /**
- * A labeled on/off switch. The label names the thing being switched and the
- * knob's position is mirrored by `aria-checked`, so the state is never
- * color alone.
+ * A labeled on/off switch. The switch sits next to its label on the left
+ * and the knob's position is mirrored by `aria-checked`, so the state is
+ * never color alone. The hint, when present, states the current
+ * consequence of the switch's position.
  */
 export function Switch(props: {
     readonly label: string;
     readonly hint?: string | null | undefined;
     readonly isOn: boolean;
-    readonly onText?: string | undefined;
-    readonly offText?: string | undefined;
     readonly isDisabled?: boolean;
     readonly onToggle: (isOn: boolean) => void;
     readonly class?: string | undefined;
 }): JSX.Element {
     return (
-        <div class={joinClass("flex items-start justify-between gap-4", props.class ?? "")}>
-            <div class="min-w-0">
+        <div class={props.class}>
+            <div class="flex items-center gap-2.5">
                 <p class="text-[13px] font-medium text-ink">{props.label}</p>
-                <Show when={props.hint}>
-                    {(hint) => <p class="mt-1 max-w-[70ch] text-[13px] text-ink-faint">{hint()}</p>}
-                </Show>
-            </div>
-            <button
-                type="button"
-                role="switch"
-                aria-checked={ariaBoolean(props.isOn)}
-                aria-label={props.label}
-                disabled={props.isDisabled ?? false}
-                class={joinClass(
-                    "relative mt-0.5 h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-50",
-                    props.isOn ? "bg-accent" : "bg-rule-strong dark:bg-muted",
-                )}
-                onClick={() => props.onToggle(!props.isOn)}
-            >
-                <span
-                    aria-hidden="true"
+                <button
+                    type="button"
+                    role="switch"
+                    aria-checked={ariaBoolean(props.isOn)}
+                    aria-label={props.label}
+                    disabled={props.isDisabled ?? false}
                     class={joinClass(
-                        "absolute top-0.5 left-0.5 block size-5 rounded-full bg-surface transition-transform duration-150 ease-out dark:bg-ink",
-                        props.isOn ? "translate-x-5" : "translate-x-0",
+                        "relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-50",
+                        props.isOn ? "bg-accent" : "bg-rule-strong dark:bg-muted",
                     )}
-                />
-            </button>
-            <Show when={props.onText !== undefined || props.offText !== undefined}>
-                <span class="mt-1 w-12 shrink-0 text-right text-[13px] font-medium text-ink-dim">
-                    {props.isOn ? (props.onText ?? "On") : (props.offText ?? "Off")}
-                </span>
+                    onClick={() => props.onToggle(!props.isOn)}
+                >
+                    <span
+                        aria-hidden="true"
+                        class={joinClass(
+                            "absolute top-0.5 left-0.5 block size-5 rounded-full bg-surface transition-transform duration-150 ease-out dark:bg-ink",
+                            props.isOn ? "translate-x-5" : "translate-x-0",
+                        )}
+                    />
+                </button>
+            </div>
+            <Show when={props.hint}>
+                {(hint) => <p class="mt-1.5 max-w-[70ch] text-[13px] text-ink-faint">{hint()}</p>}
             </Show>
         </div>
     );

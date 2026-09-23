@@ -284,8 +284,6 @@ function SettingsCard(props: {
                 <Switch
                     label="Enabled"
                     isOn={isEnabled()}
-                    onText="On"
-                    offText="Off"
                     isDisabled={isSaving()}
                     onToggle={setIsEnabled}
                 />
