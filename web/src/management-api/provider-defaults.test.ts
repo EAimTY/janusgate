@@ -40,7 +40,7 @@ describe("suggestProviderName", () => {
         ).toBe("codex-2");
     });
 
-    it("skips over gaps instead of reusing a freed suffix", () => {
+    it("reuses the lowest freed suffix", () => {
         expect(
             suggestProviderName(
                 "codex_oauth",
