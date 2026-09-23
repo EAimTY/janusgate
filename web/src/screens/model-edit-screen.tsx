@@ -7,12 +7,15 @@ import { compositionMessage, isModelIdentifier } from "/src/management-api/ident
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import {
+    createHeldRow,
     createScreenRead,
     type FailureCall,
     isSameModelRow,
+    isSameProviderRow,
     readAll,
     type ScreenNotice,
 } from "/src/screens/read";
+import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Button, ButtonLink, Switch } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -61,28 +64,24 @@ export function ModelEditScreen(props: {
     // A refresh answering the same row keeps the row's identity, so the open
     // form is not remounted; a row that genuinely changed on the gateway is
     // held back while the form holds unsaved edits, and the hold is stated.
-    const model = createMemo((previous: ModelResponse | null | undefined) => {
-        const fresh = latestModel();
+    const { row: model, isRowHeld } = createHeldRow(latestModel, isFormDirty, isSameModelRow);
+
+    // The owning provider, kept identity-stable for the same reason: the
+    // listing re-parses on every read, so an unpinned lookup would hand the
+    // form a fresh object each refresh and remount it over the operator's
+    // input even when nothing changed.
+    const provider = createMemo((previous: ProviderResponse | null | undefined) => {
+        const current = model();
+        const fresh =
+            current === null
+                ? null
+                : (providers().find((row) => row.id === current.provider_id) ?? null);
 
         if (previous === null || previous === undefined || fresh === null) {
             return fresh;
         }
 
-        return isSameModelRow(previous, fresh) || isFormDirty() ? previous : fresh;
-    });
-
-    const isRowHeld = createMemo(() => {
-        const current = model();
-        const fresh = latestModel();
-
-        return current !== null && fresh !== null && !isSameModelRow(current, fresh);
-    });
-
-    const provider = createMemo(() => {
-        const current = model();
-        return current === null
-            ? null
-            : (providers().find((row) => row.id === current.provider_id) ?? null);
+        return isSameProviderRow(previous, fresh) ? previous : fresh;
     });
 
     return (
@@ -127,22 +126,14 @@ export function ModelEditScreen(props: {
             </Show>
 
             <Show
-                when={(() => {
-                    const current = model();
-                    return current === null
-                        ? null
-                        : {
-                              model: current,
-                              provider: provider(),
-                          };
-                })()}
+                when={model()}
                 keyed
             >
-                {(both) => (
+                {(row) => (
                     <>
                         <PageHeader
-                            title={`Edit ${both.model.public_id}`}
-                            backHref={hrefs.modelDetail(both.model.id)}
+                            title={`Edit ${row.public_id}`}
+                            backHref={hrefs.modelDetail(row.id)}
                             backLabel="Model"
                         />
 
@@ -156,8 +147,8 @@ export function ModelEditScreen(props: {
 
                         <ModelSettingsForm
                             api={props.api}
-                            provider={both.provider}
-                            initialModel={both.model}
+                            provider={provider()}
+                            initialModel={row}
                             onNotice={read.showNotice}
                             onFailure={read.reportFailure}
                             onReload={read.reload}
@@ -165,7 +156,7 @@ export function ModelEditScreen(props: {
                         />
                         <DeleteCard
                             api={props.api}
-                            model={both.model}
+                            model={row}
                             onFailure={read.reportFailure}
                         />
                     </>
@@ -345,78 +336,34 @@ function DeleteCard(props: {
     readonly model: ModelResponse;
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
-    const [isArmed, setIsArmed] = createSignal(false);
-    const [isDeleting, setIsDeleting] = createSignal(false);
-
-    const remove = async (): Promise<void> => {
-        if (isDeleting()) {
-            return;
-        }
-
-        setIsDeleting(true);
-
+    const confirmDelete = async (): Promise<boolean> => {
         const outcome = await performManagementCall(() =>
             props.api.deleteModel({
                 model_id: props.model.id,
             }),
         );
 
-        setIsDeleting(false);
-
         if (outcome.status === "aborted") {
-            return;
+            return false;
         }
 
         if (outcome.status === "failed") {
             props.onFailure(outcome.cause, {
                 action: "delete-model",
             });
-            setIsArmed(false);
-            return;
+            return false;
         }
 
         navigate(hrefs.models(props.model.provider_id));
+        return true;
     };
 
     return (
-        <Card class="border-bad/30">
-            <CardHeader
-                title="Delete this model"
-                description="Deleting removes the model at once. Clients calling its public ID start getting 404s."
-            />
-            <Show
-                when={isArmed()}
-                fallback={
-                    <div class="mt-4">
-                        <Button
-                            tone="danger"
-                            glyph="trash"
-                            onClick={() => setIsArmed(true)}
-                        >
-                            Delete…
-                        </Button>
-                    </div>
-                }
-            >
-                <div class="mt-4 flex flex-wrap items-center gap-2">
-                    <p class="w-full text-[13.5px] text-ink-dim">
-                        {`Delete ${props.model.public_id}? A deleted discovered model returns as new on the next discovery — claiming it back from the Create model page keeps it serving under the same ID.`}
-                    </p>
-                    <Button
-                        tone="danger"
-                        isBusy={isDeleting()}
-                        onClick={() => void remove()}
-                    >
-                        {isDeleting() ? "Deleting…" : "Delete for good"}
-                    </Button>
-                    <Button
-                        isDisabled={isDeleting()}
-                        onClick={() => setIsArmed(false)}
-                    >
-                        Keep it
-                    </Button>
-                </div>
-            </Show>
-        </Card>
+        <ConfirmDeleteCard
+            title="Delete this model"
+            description="Deleting removes the model at once. Clients calling its public ID start getting 404s."
+            question={`Delete ${props.model.public_id}? A deleted discovered model returns as new on the next discovery — claiming it back from the Create model page keeps it serving under the same ID.`}
+            onConfirm={confirmDelete}
+        />
     );
 }

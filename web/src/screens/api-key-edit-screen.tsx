@@ -7,6 +7,7 @@ import { compositionMessage, isBearerSecret } from "/src/management-api/identifi
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import {
+    createHeldRow,
     createScreenRead,
     type FailureCall,
     isSameApiKeyRow,
@@ -14,6 +15,7 @@ import {
     type ScreenNotice,
 } from "/src/screens/read";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
+import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Button, ButtonLink, Switch } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -52,22 +54,7 @@ export function ApiKeyEditScreen(props: {
     // A refresh answering the same row keeps the row's identity, so the open
     // form is not remounted; a row that genuinely changed on the gateway is
     // held back while the form holds unsaved edits, and the hold is stated.
-    const apiKey = createMemo((previous: ApiKeyResponse | null | undefined) => {
-        const fresh = latestKey();
-
-        if (previous === null || previous === undefined || fresh === null) {
-            return fresh;
-        }
-
-        return isSameApiKeyRow(previous, fresh) || isFormDirty() ? previous : fresh;
-    });
-
-    const isRowHeld = createMemo(() => {
-        const current = apiKey();
-        const fresh = latestKey();
-
-        return current !== null && fresh !== null && !isSameApiKeyRow(current, fresh);
-    });
+    const { row: apiKey, isRowHeld } = createHeldRow(latestKey, isFormDirty, isSameApiKeyRow);
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -329,80 +316,38 @@ function DangerCard(props: {
     readonly isLastEnabled: boolean;
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
-    const [isArmed, setIsArmed] = createSignal(false);
-    const [isDeleting, setIsDeleting] = createSignal(false);
-
-    const remove = async (): Promise<void> => {
-        if (isDeleting()) {
-            return;
-        }
-
-        setIsDeleting(true);
-
+    const confirmDelete = async (): Promise<boolean> => {
         const outcome = await performManagementCall(() =>
             props.api.deleteApiKey({
                 api_key_id: props.apiKey.id,
             }),
         );
 
-        setIsDeleting(false);
-
         if (outcome.status === "aborted") {
-            return;
+            return false;
         }
 
         if (outcome.status === "failed") {
             props.onFailure(outcome.cause, {
                 action: "delete-api-key",
             });
-            setIsArmed(false);
-            return;
+            return false;
         }
 
         navigate(hrefs.apiKeys());
+        return true;
     };
 
     return (
-        <Card class="border-bad/30">
-            <CardHeader
-                title="Delete this key"
-                description="Deleting revokes the key at once. Clients holding it start getting 401s. Nothing else is removed."
-            />
-            <Show
-                when={isArmed()}
-                fallback={
-                    <div class="mt-4">
-                        <Button
-                            tone="danger"
-                            glyph="trash"
-                            onClick={() => setIsArmed(true)}
-                        >
-                            Delete…
-                        </Button>
-                    </div>
-                }
-            >
-                <div class="mt-4 flex flex-wrap items-center gap-2">
-                    <p class="w-full text-[13.5px] text-ink-dim">
-                        {props.isLastEnabled
-                            ? `Delete ${props.apiKey.name}? It is the last enabled key — the gateway will serve nothing until another key is turned on.`
-                            : `Delete ${props.apiKey.name}? Clients holding this secret lose access.`}
-                    </p>
-                    <Button
-                        tone="danger"
-                        isBusy={isDeleting()}
-                        onClick={() => void remove()}
-                    >
-                        {isDeleting() ? "Deleting…" : "Delete for good"}
-                    </Button>
-                    <Button
-                        isDisabled={isDeleting()}
-                        onClick={() => setIsArmed(false)}
-                    >
-                        Keep it
-                    </Button>
-                </div>
-            </Show>
-        </Card>
+        <ConfirmDeleteCard
+            title="Delete this key"
+            description="Deleting revokes the key at once. Clients holding it start getting 401s. Nothing else is removed."
+            question={
+                props.isLastEnabled
+                    ? `Delete ${props.apiKey.name}? It is the last enabled key — the gateway will serve nothing until another key is turned on.`
+                    : `Delete ${props.apiKey.name}? Clients holding this secret lose access.`
+            }
+            onConfirm={confirmDelete}
+        />
     );
 }

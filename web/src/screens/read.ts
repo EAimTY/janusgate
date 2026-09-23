@@ -1,4 +1,4 @@
-import { type Accessor, createEffect, createSignal, onCleanup } from "solid-js";
+import { type Accessor, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { ActionName } from "/src/management-api/diagnosis";
 import { isAbortFailure } from "/src/management-api/errors";
 import type {
@@ -160,14 +160,16 @@ export function createScreenRead(options: {
         try {
             await options.load(call.signal);
         } catch (error) {
-            if (error instanceof ReadCallFailure) {
-                setIsReading(false);
-                setNotice(error.notice);
+            if (isAbortFailure(error) || call.signal.aborted) {
+                // Superseded or disposed: an aborted read installs nothing —
+                // not even its diagnosis, which belongs to a cycle the screen
+                // has already replaced.
                 return;
             }
 
-            if (isAbortFailure(error) || call.signal.aborted) {
-                // Superseded or disposed: an aborted read installs nothing.
+            if (error instanceof ReadCallFailure) {
+                setIsReading(false);
+                setNotice(error.notice);
                 return;
             }
 
@@ -219,6 +221,46 @@ export function createScreenRead(options: {
                 void run();
             }
         },
+    };
+}
+
+/**
+ * The edit screens' held row (README §6.3): while the settings form holds
+ * unsaved edits, the row keeps its identity whatever a read answers, so an
+ * open dirty form is never reset; a row that genuinely changed on the
+ * gateway while the form is dirty is held back, and `isRowHeld` states it —
+ * the Save-or-Revert notice's trigger. Once the form is clean, a read's row
+ * is adopted; a read answering the same content keeps the row's identity, so
+ * a refresh that changed nothing never remounts the form.
+ */
+export function createHeldRow<TRow>(
+    latest: Accessor<TRow | null>,
+    isFormDirty: Accessor<boolean>,
+    isSameRow: (previous: TRow, fresh: TRow) => boolean,
+): {
+    readonly row: Accessor<TRow | null>;
+    readonly isRowHeld: Accessor<boolean>;
+} {
+    const row = createMemo((previous: TRow | null | undefined) => {
+        const fresh = latest();
+
+        if (previous === null || previous === undefined || fresh === null) {
+            return fresh;
+        }
+
+        return isSameRow(previous, fresh) || isFormDirty() ? previous : fresh;
+    });
+
+    const isRowHeld = createMemo(() => {
+        const current = row();
+        const fresh = latest();
+
+        return current !== null && fresh !== null && !isSameRow(current, fresh);
+    });
+
+    return {
+        row,
+        isRowHeld,
     };
 }
 

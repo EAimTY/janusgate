@@ -24,12 +24,14 @@ import { findOAuthProviderType, isOAuthProviderRow } from "/src/management-api/v
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
 import {
+    createHeldRow,
     createScreenRead,
     type FailureCall,
     isSameProviderRow,
     readAll,
     type ScreenNotice,
 } from "/src/screens/read";
+import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Button, ButtonLink, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -90,22 +92,11 @@ export function ProviderEditScreen(props: {
     // A refresh answering the same row keeps the row's identity, so the open
     // form is not remounted; a row that genuinely changed on the gateway is
     // held back while the form holds unsaved edits, and the hold is stated.
-    const provider = createMemo((previous: ProviderResponse | null | undefined) => {
-        const fresh = latestProvider();
-
-        if (previous === null || previous === undefined || fresh === null) {
-            return fresh;
-        }
-
-        return isSameProviderRow(previous, fresh) || isFormDirty() ? previous : fresh;
-    });
-
-    const isRowHeld = createMemo(() => {
-        const current = provider();
-        const fresh = latestProvider();
-
-        return current !== null && fresh !== null && !isSameProviderRow(current, fresh);
-    });
+    const { row: provider, isRowHeld } = createHeldRow(
+        latestProvider,
+        isFormDirty,
+        isSameProviderRow,
+    );
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -171,6 +162,7 @@ export function ProviderEditScreen(props: {
                         <DetailsCard
                             api={props.api}
                             provider={row}
+                            models={models()}
                             onReload={read.reload}
                             onNotice={read.showNotice}
                             onFailure={read.reportFailure}
@@ -206,24 +198,11 @@ export function ProviderEditScreen(props: {
     );
 }
 
-/** The stored base URL of a static-key provider row, or empty for OAuth logins. */
-function staticBaseUrlOf(provider: ProviderResponse): string {
-    switch (provider.type) {
-        case "openai_response":
-        case "openai_chat_completion":
-        case "gemini_generate_content":
-            return provider.base_url;
-
-        case "codex_oauth":
-        case "antigravity_oauth":
-            return "";
-    }
-}
-
 /** The provider's editable settings. Saving writes the complete readable state. */
 function DetailsCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
+    readonly models: ReadonlyArray<ModelResponse>;
     readonly onReload: () => void;
     readonly onNotice: (notice: ScreenNotice | null) => void;
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
@@ -246,7 +225,10 @@ function DetailsCard(props: {
             ? props.provider.model_prefix
             : "",
     );
-    const [baseUrl, setBaseUrl] = createSignal(staticBaseUrlOf(props.provider));
+    // A static key's row carries the stored base URL; an OAuth login's has none.
+    const [baseUrl, setBaseUrl] = createSignal(
+        isOAuthProviderRow(props.provider) ? "" : props.provider.base_url,
+    );
     const [apiKey, setApiKey] = createSignal("");
     const [isSaving, setIsSaving] = createSignal(false);
 
@@ -276,13 +258,19 @@ function DetailsCard(props: {
         !isStatic() ||
         (isBaseUrl(trimmedBaseUrl()) && (apiKey() === "" || isBearerSecret(apiKey())));
 
-    const isDirty = createMemo(
-        () =>
-            isEnabled() !== baseline().is_enabled ||
-            name() !== baseline().name ||
-            effectivePrefix() !== baseline().model_prefix ||
-            (isStatic() && (trimmedBaseUrl() !== staticBaseUrlOf(baseline()) || apiKey() !== "")),
-    );
+    const isDirty = createMemo(() => {
+        const baselineRow = baseline();
+
+        return (
+            isEnabled() !== baselineRow.is_enabled ||
+            name() !== baselineRow.name ||
+            effectivePrefix() !== baselineRow.model_prefix ||
+            (isStatic() &&
+                (trimmedBaseUrl() !==
+                    (isOAuthProviderRow(baselineRow) ? "" : baselineRow.base_url) ||
+                    apiKey() !== ""))
+        );
+    });
 
     // A name is a human label, but the contract still requires it to hold
     // something: an emptied field must not reach the gateway as a 400.
@@ -300,13 +288,15 @@ function DetailsCard(props: {
     );
 
     const revert = (): void => {
-        setIsEnabled(baseline().is_enabled);
-        setName(baseline().name);
-        setIsCustomPrefix(baseline().model_prefix !== `${baseline().name}/`);
+        const baselineRow = baseline();
+
+        setIsEnabled(baselineRow.is_enabled);
+        setName(baselineRow.name);
+        setIsCustomPrefix(baselineRow.model_prefix !== `${baselineRow.name}/`);
         setCustomPrefix(
-            baseline().model_prefix !== `${baseline().name}/` ? baseline().model_prefix : "",
+            baselineRow.model_prefix !== `${baselineRow.name}/` ? baselineRow.model_prefix : "",
         );
-        setBaseUrl(staticBaseUrlOf(baseline()));
+        setBaseUrl(isOAuthProviderRow(baselineRow) ? "" : baselineRow.base_url);
         setApiKey("");
         // Reverting resolves a held row onto the gateway's current version.
         props.onReload();
@@ -352,7 +342,18 @@ function DetailsCard(props: {
             return;
         }
 
-        const prefixChanged = effectivePrefix() !== baseline().model_prefix;
+        // The warning states a recomposition only when the save actually
+        // recomposes one: the gateway rewrites exactly the unoverridden
+        // models whose composed ID differs from the public ID it already
+        // holds, so the submitted prefix is measured against those rows —
+        // never against this form's first-read baseline, which a held row
+        // can leave behind what the gateway holds now.
+        const prefix = effectivePrefix();
+        const recomposesPublicIds = props.models.some(
+            (model) =>
+                model.id_override === null && model.public_id !== `${prefix}${model.upstream_id}`,
+        );
+
         // The write's complete desired state: the update rewrote exactly
         // these fields, so the row they describe is this form's new truth.
         setBaseline(
@@ -375,7 +376,7 @@ function DetailsCard(props: {
         props.onNotice({
             tone: "ok",
             title: `${name()} saved.`,
-            detail: prefixChanged
+            detail: recomposesPublicIds
                 ? "The new prefix recomposes the public ID of every model without an override."
                 : null,
         });
@@ -648,78 +649,45 @@ function DangerCard(props: {
     readonly modelCount: number;
     readonly onFailure: (cause: unknown, call?: FailureCall) => void;
 }): JSX.Element {
-    const [isArmed, setIsArmed] = createSignal(false);
-    const [isDeleting, setIsDeleting] = createSignal(false);
-
-    const remove = async (): Promise<void> => {
-        if (isDeleting()) {
-            return;
-        }
-
-        setIsDeleting(true);
-
+    const confirmDelete = async (): Promise<boolean> => {
         const outcome = await performManagementCall(() =>
             props.api.deleteProvider({
                 provider_id: props.provider.id,
             }),
         );
 
-        setIsDeleting(false);
-
         if (outcome.status === "aborted") {
-            return;
+            return false;
         }
 
         if (outcome.status === "failed") {
             props.onFailure(outcome.cause, {
                 action: "delete-provider",
             });
-            setIsArmed(false);
-            return;
+            return false;
         }
 
         navigate(hrefs.providers());
+        return true;
     };
 
+    // A provider with no models cascades nothing: the count phrase and the
+    // clients' 404s name consequences that do not exist and must not fire.
+    const description =
+        props.modelCount === 0
+            ? "Deleting removes the provider. It has no models, so nothing else is removed."
+            : `Deleting removes the provider and, by cascade, its ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}.`;
+    const question =
+        props.modelCount === 0
+            ? `Delete ${props.provider.name}?`
+            : `Delete ${props.provider.name}? Clients calling those public IDs will start getting 404s.`;
+
     return (
-        <Card class="border-bad/30">
-            <CardHeader
-                title="Delete this provider"
-                description={`Deleting removes the provider and, by cascade, its ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}.`}
-            />
-            <Show
-                when={isArmed()}
-                fallback={
-                    <div class="mt-4">
-                        <Button
-                            tone="danger"
-                            glyph="trash"
-                            onClick={() => setIsArmed(true)}
-                        >
-                            Delete…
-                        </Button>
-                    </div>
-                }
-            >
-                <div class="mt-4 flex flex-wrap items-center gap-2">
-                    <p class="w-full text-[13.5px] text-ink-dim">
-                        {`Delete ${props.provider.name}? Clients calling those public IDs will start getting 404s.`}
-                    </p>
-                    <Button
-                        tone="danger"
-                        isBusy={isDeleting()}
-                        onClick={() => void remove()}
-                    >
-                        {isDeleting() ? "Deleting…" : "Delete for good"}
-                    </Button>
-                    <Button
-                        isDisabled={isDeleting()}
-                        onClick={() => setIsArmed(false)}
-                    >
-                        Keep it
-                    </Button>
-                </div>
-            </Show>
-        </Card>
+        <ConfirmDeleteCard
+            title="Delete this provider"
+            description={description}
+            question={question}
+            onConfirm={confirmDelete}
+        />
     );
 }
