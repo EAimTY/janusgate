@@ -92,7 +92,9 @@ const apiLog = {
 };
 
 const usageBucket = {
-    key: "2026-09-22",
+    key: {
+        day: "2026-09-22",
+    },
     requests: 3,
     input_tokens: 360,
     output_tokens: 1020,
@@ -348,25 +350,57 @@ describe("response validation", () => {
             untouched,
         ]);
 
+        // The composite key types every present dimension and passes absence
+        // through; a `NULL` status bucket reads as null.
+        const modelBucket = {
+            ...usageBucket,
+            key: {
+                day: "2026-09-22",
+                model_id: 9,
+                http_status: null,
+            },
+        };
+
         expect(
             parseQueryUsageResponse({
                 buckets: [
                     usageBucket,
-                    {
-                        ...usageBucket,
-                        key: 9,
-                    },
+                    modelBucket,
                 ],
             }),
         ).toEqual({
             buckets: [
                 usageBucket,
-                {
-                    ...usageBucket,
-                    key: 9,
-                },
+                modelBucket,
             ],
         });
+
+        // A present key field must still type-check and stay in vocabulary.
+        expect(() =>
+            parseQueryUsageResponse({
+                buckets: [
+                    {
+                        ...usageBucket,
+                        key: {
+                            day: 5,
+                        },
+                    },
+                ],
+            }),
+        ).toThrow(/response\.buckets\[0\]\.key\.day must be a string/);
+
+        expect(() =>
+            parseQueryUsageResponse({
+                buckets: [
+                    {
+                        ...usageBucket,
+                        key: {
+                            outcome: "succeeded",
+                        },
+                    },
+                ],
+            }),
+        ).toThrow(/response\.buckets\[0\]\.key\.outcome is not a request outcome/);
 
         expect(() =>
             parseListUsageResponse({

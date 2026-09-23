@@ -1,8 +1,10 @@
 //! Schema version 1: the initial database layout.
 //!
-//! Version 1 creates every current object — the `providers`, `models`, `oauth_states`, `api_keys`,
-//! and `api_logs` tables and the `idx_oauth_states_expires_at` and `idx_api_logs_started_at`
-//! indexes — so its [`Schema::migration`]
+//! Version 1 creates every current object — the `providers`, `models`, `oauth_states`,
+//! `api_keys`, and `api_logs` tables and the `idx_oauth_states_expires_at`,
+//! `idx_api_logs_started_at`, `idx_api_logs_api_key_started_at`,
+//! `idx_api_logs_provider_started_at`, and `idx_api_logs_model_started_at` indexes — so its
+//! [`Schema::migration`]
 //! is empty: there is no previous version to migrate from. A fresh database receives this
 //! version's DDL directly, and every later version's migration transforms it.
 //!
@@ -34,9 +36,13 @@
 //!   per-outcome decision rules live in the recording code (README §3 *ApiLog*).
 //! - The five token columns are `NULL` when the upstream reported no usage; `output_tokens`
 //!   includes `reasoning_tokens`.
-//! - `started_at` (dispatch-start instant, microseconds) is the table's only secondary index:
-//!   pagination reads order by `id` (rowid order comes for free) and aggregate reads bound their
-//!   time window on this index.
+//! - `started_at` (dispatch-start instant, microseconds) is indexed alone
+//!   (`idx_api_logs_started_at`) and in one composite index per attribution id
+//!   (`idx_api_logs_api_key_started_at`, `idx_api_logs_provider_started_at`,
+//!   `idx_api_logs_model_started_at`): the management filters (README §7.1) pair a high-selectivity
+//!   id with a time window, while the low-cardinality columns — `outcome`, `endpoint_type`,
+//!   `is_stream`, `http_status` — are deliberately not indexed. Pagination reads order by `id`
+//!   (rowid order comes for free).
 //! - The requested reasoning effort and any content — prompt, completion, headers, upstream error
 //!   bodies — are never recorded.
 //!
@@ -168,6 +174,12 @@ CREATE TABLE api_logs (
 ) STRICT;
 
 CREATE INDEX idx_api_logs_started_at ON api_logs (started_at);
+
+CREATE INDEX idx_api_logs_api_key_started_at ON api_logs (api_key_id, started_at);
+
+CREATE INDEX idx_api_logs_provider_started_at ON api_logs (provider_id, started_at);
+
+CREATE INDEX idx_api_logs_model_started_at ON api_logs (model_id, started_at);
 "###;
 
 /// Migration upgrading the previous version into version 1: empty, as version 1 has no
@@ -373,6 +385,113 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// Verifies the `api_logs` index set on a fresh database (README §3 *ApiLog*): exactly the
+    /// four declared indexes exist, each carrying its documented columns in order — the time
+    /// index alone, and one composite per attribution id pairing the id with the dispatch time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a statement or query fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an index is missing, unexpected, or carries different columns than declared.
+    #[tokio::test]
+    async fn api_logs_carry_the_documented_indexes() -> Result<(), Box<dyn StdError>> {
+        let connection = open_fresh().await?;
+
+        let mut rows = connection
+            .query(
+                "SELECT name, sql FROM sqlite_schema WHERE type = 'index' \
+                 AND tbl_name = 'api_logs' ORDER BY name",
+                (),
+            )
+            .await?;
+
+        let mut indexes = Vec::new();
+
+        while let Some(row) = rows.next().await? {
+            let name: String = row.get(0)?;
+            let sql: String = row.get(1)?;
+
+            indexes.push((name, sql));
+        }
+
+        assert_eq!(
+            indexes
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "idx_api_logs_api_key_started_at",
+                "idx_api_logs_model_started_at",
+                "idx_api_logs_provider_started_at",
+                "idx_api_logs_started_at",
+            ],
+            "the api_logs index set is exactly the four documented indexes"
+        );
+
+        // The index columns and their order read back from the stored DDL, parsed like the
+        // canonical schema comparison parses it.
+        for (name, sql) in &indexes {
+            let indexed_columns = indexed_columns(sql)?;
+
+            #[expect(
+                clippy::panic,
+                reason = "an unexpected stored index fails the test loudly"
+            )]
+            let expected: &[&str] = match name.as_str() {
+                "idx_api_logs_started_at" => &["started_at"],
+                "idx_api_logs_api_key_started_at" => &["api_key_id", "started_at"],
+                "idx_api_logs_provider_started_at" => &["provider_id", "started_at"],
+                "idx_api_logs_model_started_at" => &["model_id", "started_at"],
+                other => panic!("unexpected api_logs index {other}"),
+            };
+
+            assert_eq!(&indexed_columns, expected, "columns of {name}");
+        }
+
+        Ok(())
+    }
+
+    /// Parses one `CREATE INDEX` statement and renders its indexed columns in declared order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the statement fails to parse or is not a `CREATE INDEX`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an indexed column is an expression rather than a plain column reference, which
+    /// the schema never declares.
+    fn indexed_columns(sql: &str) -> Result<Vec<String>, Box<dyn StdError>> {
+        use turso_parser::{
+            ast::{Cmd, Expr, Stmt},
+            parser::Parser,
+        };
+
+        let mut parser = Parser::new(sql.as_bytes());
+
+        let statement = match parser.next() {
+            Some(Ok(Cmd::Stmt(Stmt::CreateIndex { columns, .. }))) => columns,
+            _ => return Err("expected one CREATE INDEX statement".into()),
+        };
+
+        #[expect(
+            clippy::panic,
+            reason = "the schema declares plain column indexes only"
+        )]
+        let names = statement
+            .iter()
+            .map(|column| match &*column.expr {
+                Expr::Id(name) => name.to_string(),
+                other => panic!("index declares an expression column: {other:?}"),
+            })
+            .collect::<Vec<String>>();
+
+        Ok(names)
     }
 
     /// Verifies the `api_logs.outcome` closed domain: an outcome outside the four recorded

@@ -8,7 +8,9 @@ import type {
     ListProvidersResponse,
     ModelResponse,
     ProviderResponse,
+    QueryUsageRequest,
     UsageBucket,
+    UsageGroupBy,
 } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
@@ -48,7 +50,9 @@ const apiKeyRow: ApiKeyResponse = {
 };
 
 const dayBucket: UsageBucket = {
-    key: "2026-09-01",
+    key: {
+        day: "2026-09-01",
+    },
     requests: 3,
     input_tokens: 120,
     output_tokens: 45,
@@ -57,9 +61,12 @@ const dayBucket: UsageBucket = {
     reasoning_tokens: 0,
 };
 
-/** One bucket grouped by provider 1 — its label resolves through the entity lists. */
+/** One bucket grouped by provider 1 on the 1st — its label resolves through the entity lists. */
 const providerBucket: UsageBucket = {
-    key: 1,
+    key: {
+        day: "2026-09-01",
+        provider_id: 1,
+    },
     requests: 3,
     input_tokens: 120,
     output_tokens: 45,
@@ -188,6 +195,18 @@ function buttonWithText(text: string): HTMLButtonElement {
     throw new Error(`No button reading ${text}`);
 }
 
+/** Toggles one group-by switch the way a browser delivers a click. */
+function labeledSwitch(label: string): void {
+    const control = document.querySelector(`button[role="switch"][aria-label="${label}"]`);
+
+    if (control instanceof HTMLButtonElement) {
+        control.click();
+        return;
+    }
+
+    throw new Error(`No switch labeled ${label}`);
+}
+
 /** Picks one select the way a browser delivers a choice. */
 function labeledSelect(label: string, value: string): void {
     for (const candidate of document.querySelectorAll("label")) {
@@ -210,6 +229,153 @@ function labeledSelect(label: string, value: string): void {
 
     throw new Error(`No select labeled ${label}`);
 }
+
+/** Types into one labeled text field the way a browser delivers keystrokes. */
+function labeledInput(label: string, value: string): void {
+    for (const candidate of document.querySelectorAll("label")) {
+        const id = candidate.getAttribute("for");
+
+        if (candidate.textContent === label && id !== null) {
+            const input = document.getElementById(id);
+
+            if (input instanceof HTMLInputElement) {
+                input.value = value;
+                input.dispatchEvent(
+                    new Event("input", {
+                        bubbles: true,
+                    }),
+                );
+                return;
+            }
+        }
+    }
+
+    throw new Error(`No input labeled ${label}`);
+}
+
+/** One bucket whose key carries exactly the requested dimensions. */
+function bucketFor(dimensions: ReadonlyArray<UsageGroupBy>): UsageBucket {
+    const key: UsageBucket["key"] = {};
+
+    for (const dimension of dimensions) {
+        if (dimension === "day") {
+            key.day = "2026-09-01";
+        }
+
+        if (dimension === "outcome") {
+            key.outcome = "completed";
+        }
+    }
+
+    return {
+        key,
+        requests: 1,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+    };
+}
+
+describe("UsageQueryScreen request assembly", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("sends the dimension set and the assembled filter to the query route", async () => {
+        const requests: QueryUsageRequest[] = [];
+        const holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        } = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {});
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={{
+                            ...api,
+                            queryUsage: (request) => {
+                                requests.push(request);
+
+                                return Promise.resolve({
+                                    buckets: [bucketFor(request.group_by)],
+                                });
+                            },
+                        }}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The untouched form asks for the day dimension and filters nothing.
+        expect(requests).toEqual([
+            {
+                group_by: [
+                    "day",
+                ],
+                filter: {},
+            },
+        ]);
+
+        // Toggling a dimension and filling two filters composes both.
+        labeledSwitch("Outcome");
+        labeledInput("HTTP statuses", "200, 429");
+        labeledSelect("Stream mode", "streamed");
+        buttonWithText("Run query").click();
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        expect(requests[1]).toEqual({
+            group_by: [
+                "day",
+                "outcome",
+            ],
+            filter: {
+                http_status: [
+                    200,
+                    429,
+                ],
+                is_stream: true,
+            },
+        });
+    });
+});
 
 describe("UsageQueryScreen refresh racing the initial read", () => {
     const disposes: Array<() => void> = [];
@@ -306,7 +472,7 @@ describe("UsageQueryScreen submit during the initial read", () => {
 
         // The operator picks the provider grouping and submits while that
         // first read is still in flight.
-        labeledSelect("Group by", "provider");
+        labeledSwitch("Provider");
         buttonWithText("Run query").click();
         await settle();
 
@@ -378,7 +544,7 @@ describe("UsageQueryScreen refresh racing an in-flight submit", () => {
         // The operator picks the provider grouping and submits while that
         // first read is still in flight; the submit's own entity listings
         // are held.
-        labeledSelect("Group by", "provider");
+        labeledSwitch("Provider");
         buttonWithText("Run query").click();
         await settle();
 

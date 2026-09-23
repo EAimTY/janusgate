@@ -153,13 +153,12 @@ const API_LOG_OUTCOME_LABELS: Record<ApiLogOutcome, string> = {
     internal: "Internal",
 };
 
-/** The recorded request outcomes as options; the record type is exhaustive. */
-const API_LOG_OUTCOME_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogOutcome>> = Object.entries(
-    API_LOG_OUTCOME_LABELS,
-).map(([value, label]) => ({
-    value: value as ApiLogOutcome,
-    label,
-}));
+/** The recorded request outcomes as filter options; the record type is exhaustive. */
+export const API_LOG_OUTCOME_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogOutcome>> =
+    Object.entries(API_LOG_OUTCOME_LABELS).map(([value, label]) => ({
+        value: value as ApiLogOutcome,
+        label,
+    }));
 
 /** The label one accounting row's own `outcome` is presented under. */
 export function apiLogOutcomeLabel(outcome: ApiLogOutcome): string {
@@ -189,8 +188,8 @@ const API_LOG_ENDPOINT_LABELS: Record<ApiLogEndpointType, string> = {
     anthropic_messages: "Anthropic Messages",
 };
 
-/** The outward endpoints as options; the record type is exhaustive. */
-const API_LOG_ENDPOINT_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogEndpointType>> =
+/** The outward endpoints as filter options; the record type is exhaustive. */
+export const API_LOG_ENDPOINT_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogEndpointType>> =
     Object.entries(API_LOG_ENDPOINT_LABELS).map(([value, label]) => ({
         value: value as ApiLogEndpointType,
         label,
@@ -221,6 +220,10 @@ const USAGE_GROUP_BY_LABELS: Record<UsageGroupBy, string> = {
     model: "Model",
     provider: "Provider",
     api_key: "API key",
+    endpoint_type: "Endpoint",
+    outcome: "Outcome",
+    is_stream: "Stream mode",
+    http_status: "HTTP status",
 };
 
 /** The aggregation dimensions as options; the record type is exhaustive. */

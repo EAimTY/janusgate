@@ -73,11 +73,11 @@ pub use self::{
     },
     usage::{
         ApiLogResponse, ListUsage, ListUsageRequest, ListUsageResponse, QueryUsage,
-        QueryUsageRequest, QueryUsageResponse, UsageBucket,
+        QueryUsageRequest, QueryUsageResponse, UsageBucket, UsageBucketKey, UsageFilter,
     },
 };
 pub use crate::{
-    api_logs::{ApiLogEndpointType, ApiLogOutcome, UsageBucketKey, UsageGroupBy},
+    api_logs::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
     provider::{DiscoveryState, OAuthProviderType, ProviderType},
 };
 

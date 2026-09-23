@@ -3,30 +3,38 @@ import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { formatTokenCount, parseDateTimeInputToMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
+    ApiLogEndpointType,
+    ApiLogOutcome,
     QueryUsageRequest,
     UsageBucket,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
-import { USAGE_GROUP_BY_OPTIONS } from "/src/management-api/vocabulary";
+import {
+    API_LOG_ENDPOINT_OPTIONS,
+    API_LOG_OUTCOME_OPTIONS,
+    USAGE_GROUP_BY_OPTIONS,
+} from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { ReadCallFailure, readOne, type ScreenNotice } from "/src/screens/read";
 import {
     readUsageEntities,
     type UsageEntities,
-    usageApiKeyLabel,
-    usageModelLabel,
-    usageProviderLabel,
+    usageDimensionLabel,
 } from "/src/screens/usage-labels";
-import { Button, SelectField, TextField } from "/src/ui/controls";
+import { Button, SelectField, Switch, TextField } from "/src/ui/controls";
 import { Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 
+/** Whether the client streamed, as the stream filter's select spells it. */
+type StreamChoice = "" | "streamed" | "non-streamed";
+
 /**
- * Request accounting as aggregates: one bucket per day, model, provider, or
- * API key inside the window and filters. The bucketing dimension is the
- * request's typed enum; every other field narrows what the gateway counts,
- * and labels resolve through the entity lists the screen already holds.
+ * Request accounting as aggregates: one bucket per distinct combination of
+ * the requested dimensions inside the filter. The dimensions are a set of
+ * switches — none selected totals every row — and the filter narrows what the
+ * gateway counts. Bucket keys are composite: one part per requested dimension,
+ * resolved through the entity lists and the vocabularies the screen holds.
  */
 export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [entities, setEntities] = createSignal<UsageEntities>({
@@ -34,13 +42,26 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         models: [],
         apiKeys: [],
     });
-    const [groupBy, setGroupBy] = createSignal<UsageGroupBy>("day");
+    const [groupBy, setGroupBy] = createSignal<ReadonlyArray<UsageGroupBy>>([
+        "day",
+    ]);
     const [fromInput, setFromInput] = createSignal("");
     const [toInput, setToInput] = createSignal("");
     const [providerId, setProviderId] = createSignal("");
     const [modelId, setModelId] = createSignal("");
     const [apiKeyId, setApiKeyId] = createSignal("");
+    const [endpointType, setEndpointType] = createSignal<"" | ApiLogEndpointType>("");
+    const [outcome, setOutcome] = createSignal<"" | ApiLogOutcome>("");
+    const [streamChoice, setStreamChoice] = createSignal<StreamChoice>("");
+    const [statusInput, setStatusInput] = createSignal("");
     const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
+    // The dimensions the displayed buckets were grouped by — the request's own
+    // set, not the live switches: a key carries exactly its request's
+    // dimensions, so toggling a switch must not re-render the previous
+    // answer's keys against a question it never answered.
+    const [responseDimensions, setResponseDimensions] = createSignal<ReadonlyArray<UsageGroupBy>>(
+        [],
+    );
     const [hasRead, setHasRead] = createSignal(false);
     const [isReading, setIsReading] = createSignal(true);
     const [isQuerying, setIsQuerying] = createSignal(false);
@@ -48,50 +69,105 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
 
     let controller: AbortController | null = null;
 
+    /** Adds the dimension to the requested set, or removes it from it. */
+    const toggleDimension = (dimension: UsageGroupBy, isOn: boolean): void => {
+        setGroupBy((current) =>
+            isOn
+                ? current.includes(dimension)
+                    ? current
+                    : [
+                          ...current,
+                          dimension,
+                      ]
+                : current.filter((candidate) => candidate !== dimension),
+        );
+    };
+
     const queryRequest = (): QueryUsageRequest => {
         const from = parseDateTimeInputToMicros(fromInput());
         const to = parseDateTimeInputToMicros(toInput());
+        const statuses = parseStatusList(statusInput());
+        const endpoint = endpointType();
+        const chosenOutcome = outcome();
+        const streamMode = streamChoice();
 
         return {
-            group_by: groupBy(),
-            ...(from === null
-                ? {}
-                : {
-                      from,
-                  }),
-            ...(to === null
-                ? {}
-                : {
-                      to,
-                  }),
-            ...(providerId() === ""
-                ? {}
-                : {
-                      provider_id: Number(providerId()),
-                  }),
-            ...(modelId() === ""
-                ? {}
-                : {
-                      model_id: Number(modelId()),
-                  }),
-            ...(apiKeyId() === ""
-                ? {}
-                : {
-                      api_key_id: Number(apiKeyId()),
-                  }),
+            group_by: [
+                ...groupBy(),
+            ],
+            filter: {
+                ...(from === null
+                    ? {}
+                    : {
+                          from,
+                      }),
+                ...(to === null
+                    ? {}
+                    : {
+                          to,
+                      }),
+                ...(providerId() === ""
+                    ? {}
+                    : {
+                          provider_id: [
+                              Number(providerId()),
+                          ],
+                      }),
+                ...(modelId() === ""
+                    ? {}
+                    : {
+                          model_id: [
+                              Number(modelId()),
+                          ],
+                      }),
+                ...(apiKeyId() === ""
+                    ? {}
+                    : {
+                          api_key_id: [
+                              Number(apiKeyId()),
+                          ],
+                      }),
+                ...(endpoint === ""
+                    ? {}
+                    : {
+                          endpoint_type: [
+                              endpoint,
+                          ],
+                      }),
+                ...(chosenOutcome === ""
+                    ? {}
+                    : {
+                          outcome: [
+                              chosenOutcome,
+                          ],
+                      }),
+                ...(streamMode === ""
+                    ? {}
+                    : {
+                          is_stream: streamMode === "streamed",
+                      }),
+                ...(statuses.length === 0
+                    ? {}
+                    : {
+                          http_status: statuses,
+                      }),
+            },
         };
     };
 
     /** Runs the aggregation query, answering whether it produced buckets. */
     const runQuery = async (signal: AbortSignal): Promise<boolean> => {
         try {
+            const request = queryRequest();
+
             const result = await readOne(signal, {
                 action: "query-usage",
-                run: (cycle) => props.api.queryUsage(queryRequest(), cycle),
+                run: (cycle) => props.api.queryUsage(request, cycle),
             });
 
             setFailure(null);
             setBuckets(result.buckets);
+            setResponseDimensions(request.group_by);
             return true;
         } catch (error) {
             if (error instanceof ReadCallFailure) {
@@ -168,13 +244,6 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         },
     );
 
-    const groupOptions = createMemo(() =>
-        USAGE_GROUP_BY_OPTIONS.map((option) => ({
-            value: option.value,
-            label: option.label,
-        })),
-    );
-
     const providerOptions = createMemo(() => [
         {
             value: "",
@@ -212,7 +281,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="Usage aggregates"
-                description="One bucket per grouping inside the window and filters — counts and token sums, never content."
+                description="One bucket per dimension combination inside the filter — counts and token sums, never content."
                 backHref={hrefs.usage()}
                 backLabel="Usage"
             />
@@ -235,14 +304,25 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                     class="mt-4 flex flex-col gap-4"
                     onSubmit={(event) => void submit(event)}
                 >
+                    <div>
+                        <p class="text-[13px] font-medium text-ink">Group by</p>
+                        <div class="mt-2 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
+                            <For each={USAGE_GROUP_BY_OPTIONS}>
+                                {(option) => (
+                                    <Switch
+                                        label={option.label}
+                                        isOn={groupBy().includes(option.value)}
+                                        isDisabled={isQuerying()}
+                                        onToggle={(isOn) => toggleDimension(option.value, isOn)}
+                                    />
+                                )}
+                            </For>
+                        </div>
+                        <p class="mt-2 max-w-[70ch] text-[13px] text-ink-faint">
+                            Any dimension set works — none selected totals every matching row.
+                        </p>
+                    </div>
                     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        <SelectField
-                            label="Group by"
-                            value={groupBy()}
-                            options={groupOptions()}
-                            onChange={setGroupBy}
-                            isDisabled={isQuerying()}
-                        />
                         <TextField
                             label="From"
                             type="datetime-local"
@@ -258,6 +338,13 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                             onInput={setToInput}
                             isDisabled={isQuerying()}
                             hint="Exclusive, in this browser's zone. Blank sets no bound."
+                        />
+                        <TextField
+                            label="HTTP statuses"
+                            value={statusInput()}
+                            onInput={setStatusInput}
+                            isDisabled={isQuerying()}
+                            hint="Comma-separated, e.g. 200, 429. Never-answered requests match no status."
                         />
                         <SelectField
                             label="Provider"
@@ -278,6 +365,52 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                             value={apiKeyId()}
                             options={apiKeyOptions()}
                             onChange={setApiKeyId}
+                            isDisabled={isQuerying()}
+                        />
+                        <SelectField
+                            label="Endpoint"
+                            value={endpointType()}
+                            options={[
+                                {
+                                    value: "",
+                                    label: "All endpoints",
+                                },
+                                ...API_LOG_ENDPOINT_OPTIONS,
+                            ]}
+                            onChange={setEndpointType}
+                            isDisabled={isQuerying()}
+                        />
+                        <SelectField
+                            label="Outcome"
+                            value={outcome()}
+                            options={[
+                                {
+                                    value: "",
+                                    label: "All outcomes",
+                                },
+                                ...API_LOG_OUTCOME_OPTIONS,
+                            ]}
+                            onChange={setOutcome}
+                            isDisabled={isQuerying()}
+                        />
+                        <SelectField
+                            label="Stream mode"
+                            value={streamChoice()}
+                            options={[
+                                {
+                                    value: "",
+                                    label: "Any",
+                                },
+                                {
+                                    value: "streamed",
+                                    label: "Streamed",
+                                },
+                                {
+                                    value: "non-streamed",
+                                    label: "Non-streamed",
+                                },
+                            ]}
+                            onChange={setStreamChoice}
                             isDisabled={isQuerying()}
                         />
                     </div>
@@ -346,7 +479,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                                             <tr class="border-t border-rule">
                                                 <BucketKeyCell
                                                     bucket={bucket}
-                                                    groupBy={groupBy()}
+                                                    dimensions={responseDimensions()}
                                                     entities={entities()}
                                                 />
                                                 <BucketCell
@@ -388,6 +521,19 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
     );
 }
 
+/**
+ * Parses the operator's comma-separated status list: blank entries drop out,
+ * and entries that are not integers never form a filter value.
+ */
+function parseStatusList(input: string): number[] {
+    return input
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry !== "")
+        .map((entry) => Number(entry))
+        .filter((entry) => Number.isInteger(entry));
+}
+
 function BucketHeader(props: {
     readonly label: string;
     readonly isNumeric?: boolean;
@@ -406,28 +552,25 @@ function BucketCell(props: { readonly value: string }): JSX.Element {
     return <td class="px-3 py-2 text-right">{props.value}</td>;
 }
 
-/** A bucket's key in the words the operator knows: the day, or the resolved row. */
+/**
+ * A bucket's composite key in the words the operator knows: one part per
+ * requested dimension, in request order — ids resolved through the entity
+ * lists, the enums through their vocabularies. The total bucket's empty key
+ * reads as "Total".
+ */
 function BucketKeyCell(props: {
     readonly bucket: UsageBucket;
-    readonly groupBy: UsageGroupBy;
+    readonly dimensions: ReadonlyArray<UsageGroupBy>;
     readonly entities: UsageEntities;
 }): JSX.Element {
-    const label = (): string => {
-        if (props.groupBy === "day" || typeof props.bucket.key === "string") {
-            return String(props.bucket.key);
-        }
-
-        switch (props.groupBy) {
-            case "model":
-                return usageModelLabel(props.entities, props.bucket.key).text;
-
-            case "provider":
-                return usageProviderLabel(props.entities, props.bucket.key).text;
-
-            case "api_key":
-                return usageApiKeyLabel(props.entities, props.bucket.key).text;
-        }
-    };
+    const label = (): string =>
+        props.dimensions.length === 0
+            ? "Total"
+            : props.dimensions
+                  .map((dimension) =>
+                      usageDimensionLabel(dimension, props.bucket.key, props.entities),
+                  )
+                  .join(" · ");
 
     return (
         <th

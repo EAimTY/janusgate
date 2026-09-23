@@ -25,6 +25,7 @@ use crate::{
 };
 use log::error;
 use serde::{Deserialize, Serialize};
+use vec1::Vec1;
 
 /// Column order of api log selects, consumed positionally by [`api_log_from_row`].
 const API_LOG_COLUMNS: &str = "id, started_at, api_key_id, provider_id, model_id, \
@@ -140,8 +141,8 @@ impl ApiLogOutcome {
 }
 
 /// The bucketing dimension of the usage aggregation (README §7.1 `usage:query`): a closed,
-/// unordered set — the type is the validation, so any other value is rejected while the request
-/// payload parses. The serde and TypeScript names are the wire names.
+/// unordered set — the element type is the validation, so any other value is rejected while the
+/// request payload parses. The serde and TypeScript names are the wire names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub enum UsageGroupBy {
@@ -160,20 +161,88 @@ pub enum UsageGroupBy {
     /// Authenticating API key row id.
     #[serde(rename = "api_key")]
     ApiKey,
+
+    /// Outward completion endpoint the request arrived on.
+    #[serde(rename = "endpoint_type")]
+    EndpointType,
+
+    /// Recorded outcome of the request.
+    #[serde(rename = "outcome")]
+    Outcome,
+
+    /// Whether the client requested a streamed response.
+    #[serde(rename = "is_stream")]
+    IsStream,
+
+    /// HTTP status delivered to the client; the `NULL` rows form their own bucket.
+    #[serde(rename = "http_status")]
+    HttpStatus,
 }
 
-/// The bucket key of one aggregation row (README §7.1): the UTC day string when grouping by day,
-/// or the grouped row id — model, provider, or API key — otherwise. The two JSON shapes are
-/// distinct, so the closed sum parses back without a tag.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum UsageBucketKey {
-    /// A UTC day in `YYYY-MM-DD`.
-    Day(String),
+impl UsageGroupBy {
+    /// Renders the wire spelling of the dimension — the exact string the request vocabulary
+    /// carries.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Model => "model",
+            Self::Provider => "provider",
+            Self::ApiKey => "api_key",
+            Self::EndpointType => "endpoint_type",
+            Self::Outcome => "outcome",
+            Self::IsStream => "is_stream",
+            Self::HttpStatus => "http_status",
+        }
+    }
 
-    /// A grouped row id.
-    Id(i64),
+    /// The SQL key expression the dimension groups, selects, and orders by (README §7.1): the
+    /// stored column itself, except the day dimension, whose expression derives the UTC day of
+    /// the dispatch stamp.
+    pub(crate) const fn expression(self) -> &'static str {
+        match self {
+            Self::Day => "date(started_at / 1000000, 'unixepoch')",
+            Self::Model => "model_id",
+            Self::Provider => "provider_id",
+            Self::ApiKey => "api_key_id",
+            Self::EndpointType => "endpoint_type",
+            Self::Outcome => "outcome",
+            Self::IsStream => "is_stream",
+            Self::HttpStatus => "http_status",
+        }
+    }
+}
+
+/// The bucket key of one aggregation row (README §7.1): one value per requested dimension —
+/// in request order on the wire — and `None` for every dimension the aggregation did not
+/// request. `http_status` is `None` both for an unrequested dimension and for the bucket the
+/// `NULL` rows form; the wire layer decides the field's presence from the requested
+/// dimensions and renders that bucket as `null`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct UsageBucketKey {
+    /// The UTC day of `started_at`, `YYYY-MM-DD`.
+    pub(crate) day: Option<String>,
+
+    /// Grouped model row id.
+    pub(crate) model_id: Option<i64>,
+
+    /// Grouped provider row id.
+    pub(crate) provider_id: Option<i64>,
+
+    /// Grouped API key row id.
+    pub(crate) api_key_id: Option<i64>,
+
+    /// Grouped outward completion endpoint.
+    pub(crate) endpoint_type: Option<ApiLogEndpointType>,
+
+    /// Grouped recorded outcome.
+    pub(crate) outcome: Option<ApiLogOutcome>,
+
+    /// Grouped stream flag.
+    pub(crate) is_stream: Option<bool>,
+
+    /// Grouped HTTP status; `None` for the `NULL` rows' bucket.
+    pub(crate) http_status: Option<i64>,
 }
 
 /// One accounting row about to be inserted: every column but the server-assigned `id`.
@@ -321,10 +390,48 @@ pub(crate) async fn finalize_api_log(
     }
 }
 
-/// Lists accounting rows newest first: at most `limit` rows whose id is strictly below
-/// `before_id` — the cursor a client derives from the previous page's last row — ordered by `id`
-/// descending, so the rowid order doubles as the pagination order over the insertion history.
-/// An absent `before_id` starts at the newest row.
+/// The shared filter of both management reads (README §7.1): every present field narrows the
+/// rows both `usage:list` and `usage:query` consider. Values are never validated against stored
+/// rows — an unknown id or a never-recorded status matches an empty set, because a filter
+/// locates rather than addresses. Within one multi-value field the values OR (SQL `IN`);
+/// fields compose with AND. `from` is an inclusive lower bound of `started_at` and `to` an
+/// exclusive upper bound, in UTC microseconds. The multi-value fields are non-empty by
+/// construction: the wire parser rejects an empty array before the filter exists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct UsageFilter {
+    /// Inclusive lower bound of `started_at`, in UTC microseconds.
+    pub(crate) from: Option<i64>,
+
+    /// Exclusive upper bound of `started_at`, in UTC microseconds.
+    pub(crate) to: Option<i64>,
+
+    /// API key row ids a row may carry.
+    pub(crate) api_key_id: Option<Vec1<i64>>,
+
+    /// Provider row ids a row may carry.
+    pub(crate) provider_id: Option<Vec1<i64>>,
+
+    /// Model row ids a row may carry.
+    pub(crate) model_id: Option<Vec1<i64>>,
+
+    /// Outward completion endpoints a row may carry.
+    pub(crate) endpoint_type: Option<Vec1<ApiLogEndpointType>>,
+
+    /// Recorded outcomes a row may carry.
+    pub(crate) outcome: Option<Vec1<ApiLogOutcome>>,
+
+    /// Stream flag a row must carry.
+    pub(crate) is_stream: Option<bool>,
+
+    /// HTTP statuses a row may carry; a `NULL` status matches nothing, since SQL `NULL` never
+    /// satisfies an `IN` list.
+    pub(crate) http_status: Option<Vec1<i64>>,
+}
+
+/// Lists accounting rows newest first: at most `limit` rows inside `filter` whose id is
+/// strictly below `before_id` — the cursor a client derives from the previous page's last row
+/// — ordered by `id` descending, so the rowid order doubles as the pagination order over the
+/// insertion history. An absent `before_id` starts at the newest row.
 ///
 /// # Errors
 ///
@@ -333,34 +440,36 @@ pub(crate) async fn list_api_logs(
     database: &Database,
     limit: i64,
     before_id: Option<i64>,
+    filter: &UsageFilter,
 ) -> Result<Vec<ApiLog>, Error> {
-    let (sql, values) = match before_id {
-        Some(before_id) => (
-            format!(
-                "SELECT {API_LOG_COLUMNS} FROM api_logs WHERE id < ?1 ORDER BY id DESC LIMIT ?2"
-            ),
-            vec![before_id, limit],
-        ),
+    let (mut conditions, mut values) = filter_conditions(filter);
 
-        None => (
-            format!("SELECT {API_LOG_COLUMNS} FROM api_logs ORDER BY id DESC LIMIT ?1"),
-            vec![limit],
-        ),
-    };
+    // The cursor rides behind the filter fields: both compose with AND.
+    if let Some(before_id) = before_id {
+        push_bound(&mut conditions, &mut values, "id <", before_id);
+    }
+
+    values.push(Value::Integer(limit));
+
+    let sql = format!(
+        "SELECT {API_LOG_COLUMNS} FROM api_logs{} ORDER BY id DESC LIMIT ?{}",
+        where_clause(&conditions),
+        values.len(),
+    );
 
     let rows = database.query(sql, values).await?;
 
     rows.iter().map(api_log_from_row).collect()
 }
 
-/// Aggregates accounting rows into `selection`'s buckets: one bucket per distinct value of the
-/// grouping dimension inside the time window and filters, ordered by that key ascending — an ISO
-/// day string orders chronologically, a row id numerically. `requests` counts rows; each token
-/// column sums with `NULL` excluded from the sum and an all-`NULL` bucket rendering `0`, so
-/// unreported usage never inflates or deflates a total.
-///
-/// The window binds `started_at` directly, so an aggregation with any bound reads through
-/// `idx_api_logs_started_at`; an empty selection aggregates the whole table.
+/// Aggregates accounting rows into `selection`'s buckets: one bucket per distinct combination
+/// of the requested dimensions inside the filter, ordered by the key expressions in request
+/// order under SQLite's ordering — `NULL` first, days chronological, ids numeric. An empty
+/// grouping aggregates everything into one total bucket: an aggregate query without `GROUP
+/// BY` answers with exactly one row, so a selection matching no rows is one zeroed bucket,
+/// never an empty list. `requests` counts rows; each token column sums with `NULL` excluded
+/// from the sum and an all-`NULL` bucket rendering `0`, so unreported usage never inflates or
+/// deflates a total.
 ///
 /// # Errors
 ///
@@ -369,63 +478,171 @@ pub(crate) async fn query_usage(
     database: &Database,
     selection: &UsageSelection,
 ) -> Result<Vec<UsageAggregate>, Error> {
-    let key_expression = match selection.group_by {
-        UsageGroupBy::Day => "date(started_at / 1000000, 'unixepoch')",
-        UsageGroupBy::Model => "model_id",
-        UsageGroupBy::Provider => "provider_id",
-        UsageGroupBy::ApiKey => "api_key_id",
-    };
+    let key_expressions: Vec<&str> = selection
+        .group_by
+        .iter()
+        .map(|dimension| dimension.expression())
+        .collect();
+    let key_list = key_expressions.join(", ");
 
-    // Conditions and values build together, so every `?N` placeholder binds the value its clause
-    // pushed: window bounds first (they ride the index), then the locating filters.
-    let mut conditions: Vec<String> = Vec::new();
-    let mut values: Vec<i64> = Vec::new();
+    // Conditions and values build together, so every `?N` placeholder binds the value its
+    // clause pushed: window bounds first (they ride the indexes), then the locating filters.
+    let (conditions, values) = filter_conditions(&selection.filter);
 
-    let mut push = |condition: &str, value: i64| {
-        values.push(value);
-        conditions.push(format!("{condition} ?{}", values.len()));
-    };
+    let aggregates = "COUNT(*), \
+         COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), \
+         COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), \
+         COALESCE(SUM(reasoning_tokens), 0)";
 
-    if let Some(from) = selection.from {
-        push("started_at >=", from);
-    }
-
-    if let Some(to) = selection.to {
-        push("started_at <", to);
-    }
-
-    if let Some(model_id) = selection.model_id {
-        push("model_id =", model_id);
-    }
-
-    if let Some(provider_id) = selection.provider_id {
-        push("provider_id =", provider_id);
-    }
-
-    if let Some(api_key_id) = selection.api_key_id {
-        push("api_key_id =", api_key_id);
-    }
-
-    let where_clause = if conditions.is_empty() {
-        String::new()
+    // No dimensions, no key columns, no grouping, no ordering: the single total bucket.
+    let (select_keys, grouping, ordering) = if key_expressions.is_empty() {
+        (String::new(), String::new(), String::new())
     } else {
-        format!(" WHERE {}", conditions.join(" AND "))
+        (
+            format!("{key_list}, "),
+            format!(" GROUP BY {key_list}"),
+            format!(" ORDER BY {key_list}"),
+        )
     };
 
     let sql = format!(
-        "SELECT {key_expression}, COUNT(*), \
-         COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), \
-         COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), \
-         COALESCE(SUM(reasoning_tokens), 0) \
-         FROM api_logs{where_clause} \
-         GROUP BY {key_expression} ORDER BY {key_expression}"
+        "SELECT {select_keys}{aggregates} FROM api_logs{}{grouping}{ordering}",
+        where_clause(&conditions),
     );
 
     let rows = database.query(sql, values).await?;
 
     rows.iter()
-        .map(|row| usage_aggregate_from_row(row, selection.group_by))
+        .map(|row| usage_aggregate_from_row(row, &selection.group_by))
         .collect()
+}
+
+/// Builds the WHERE clause both management reads share (README §7.1): conditions and values
+/// grow together, so every `?N` placeholder binds the value its clause pushed — the window
+/// bounds first, then each present filter field.
+fn filter_conditions(filter: &UsageFilter) -> (Vec<String>, Vec<Value>) {
+    let mut conditions: Vec<String> = Vec::new();
+    let mut values: Vec<Value> = Vec::new();
+
+    if let Some(from) = filter.from {
+        push_bound(&mut conditions, &mut values, "started_at >=", from);
+    }
+
+    if let Some(to) = filter.to {
+        push_bound(&mut conditions, &mut values, "started_at <", to);
+    }
+
+    if let Some(ids) = &filter.api_key_id {
+        push_in_condition(
+            &mut conditions,
+            &mut values,
+            "api_key_id",
+            &ids.iter().map(|id| Value::Integer(*id)).collect::<Vec<_>>(),
+        );
+    }
+
+    if let Some(ids) = &filter.provider_id {
+        push_in_condition(
+            &mut conditions,
+            &mut values,
+            "provider_id",
+            &ids.iter().map(|id| Value::Integer(*id)).collect::<Vec<_>>(),
+        );
+    }
+
+    if let Some(ids) = &filter.model_id {
+        push_in_condition(
+            &mut conditions,
+            &mut values,
+            "model_id",
+            &ids.iter().map(|id| Value::Integer(*id)).collect::<Vec<_>>(),
+        );
+    }
+
+    if let Some(types) = &filter.endpoint_type {
+        push_in_condition(
+            &mut conditions,
+            &mut values,
+            "endpoint_type",
+            &types
+                .iter()
+                .map(|kind| Value::Text(kind.as_str().to_string()))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    if let Some(outcomes) = &filter.outcome {
+        push_in_condition(
+            &mut conditions,
+            &mut values,
+            "outcome",
+            &outcomes
+                .iter()
+                .map(|outcome| Value::Text(outcome.as_str().to_string()))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    if let Some(is_stream) = filter.is_stream {
+        push_bound(
+            &mut conditions,
+            &mut values,
+            "is_stream =",
+            i64::from(is_stream),
+        );
+    }
+
+    if let Some(statuses) = &filter.http_status {
+        // SQL `NULL` never satisfies an `IN` list, so the never-answered rows match nothing
+        // here by the engine's own semantics (README §7.1).
+        push_in_condition(
+            &mut conditions,
+            &mut values,
+            "http_status",
+            &statuses
+                .iter()
+                .map(|status| Value::Integer(*status))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    (conditions, values)
+}
+
+/// Appends one scalar condition binding one value: the placeholder is numbered by the value's
+/// position, so it binds exactly what this clause pushed.
+fn push_bound(conditions: &mut Vec<String>, values: &mut Vec<Value>, condition: &str, value: i64) {
+    values.push(Value::Integer(value));
+    conditions.push(format!("{condition} ?{}", values.len()));
+}
+
+/// Appends one `column IN (…)` condition: a placeholder per value, numbered in order, so the
+/// clause binds exactly the values it pushed. The list is non-empty by construction — the
+/// wire parser rejects an empty array — so the `IN` never degenerates.
+fn push_in_condition(
+    conditions: &mut Vec<String>,
+    values: &mut Vec<Value>,
+    column: &str,
+    list: &[Value],
+) {
+    let placeholders = list
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("?{}", values.len() + index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    values.extend_from_slice(list);
+    conditions.push(format!("{column} IN ({placeholders})"));
+}
+
+/// Joins the built conditions into the WHERE clause text; empty when no condition applies.
+fn where_clause(conditions: &[String]) -> String {
+    if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conditions.join(" AND "))
+    }
 }
 
 /// Parses an accounting row in [`API_LOG_COLUMNS`] order.
@@ -449,24 +666,38 @@ fn api_log_from_row(row: &Row) -> Result<ApiLog, Error> {
     })
 }
 
-/// Parses one aggregation row: the key in the grouping's own shape, then the count and the five
-/// coalesced sums.
-fn usage_aggregate_from_row(row: &Row, group_by: UsageGroupBy) -> Result<UsageAggregate, Error> {
-    let key = match group_by {
-        UsageGroupBy::Day => UsageBucketKey::Day(row.get(0)?),
-        UsageGroupBy::Model | UsageGroupBy::Provider | UsageGroupBy::ApiKey => {
-            UsageBucketKey::Id(row.get(0)?)
+/// Parses one aggregation row: one key column per requested dimension, in request order, then
+/// the count and the five coalesced sums.
+fn usage_aggregate_from_row(row: &Row, group_by: &[UsageGroupBy]) -> Result<UsageAggregate, Error> {
+    let mut key = UsageBucketKey::default();
+
+    for (index, dimension) in group_by.iter().enumerate() {
+        match dimension {
+            UsageGroupBy::Day => key.day = Some(row.get(index)?),
+            UsageGroupBy::Model => key.model_id = Some(row.get(index)?),
+            UsageGroupBy::Provider => key.provider_id = Some(row.get(index)?),
+            UsageGroupBy::ApiKey => key.api_key_id = Some(row.get(index)?),
+            UsageGroupBy::EndpointType => {
+                key.endpoint_type = Some(endpoint_type_from_value(row.get_value(index)?)?);
+            }
+            UsageGroupBy::Outcome => {
+                key.outcome = Some(outcome_from_value(row.get_value(index)?)?);
+            }
+            UsageGroupBy::IsStream => key.is_stream = Some(row.get::<i64>(index)? != 0),
+            // The status column is the one nullable key column: its `NULL` bucket reads as
+            // `None` and renders `null` on the wire.
+            UsageGroupBy::HttpStatus => key.http_status = row.get(index)?,
         }
-    };
+    }
 
     Ok(UsageAggregate {
         key,
-        requests: row.get(1)?,
-        input_tokens: row.get(2)?,
-        output_tokens: row.get(3)?,
-        cached_tokens: row.get(4)?,
-        cache_write_tokens: row.get(5)?,
-        reasoning_tokens: row.get(6)?,
+        requests: row.get(group_by.len())?,
+        input_tokens: row.get(group_by.len() + 1)?,
+        output_tokens: row.get(group_by.len() + 2)?,
+        cached_tokens: row.get(group_by.len() + 3)?,
+        cache_write_tokens: row.get(group_by.len() + 4)?,
+        reasoning_tokens: row.get(group_by.len() + 5)?,
     })
 }
 
@@ -582,7 +813,7 @@ pub(crate) struct ApiLog {
 /// reported no usage sums to `0`, and every sum renders as a plain number.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UsageAggregate {
-    /// Bucket key: the UTC day, or the grouped row id.
+    /// Bucket key: one value per requested dimension.
     pub(crate) key: UsageBucketKey,
 
     /// Number of accounting rows in the bucket.
@@ -604,28 +835,15 @@ pub(crate) struct UsageAggregate {
     pub(crate) reasoning_tokens: i64,
 }
 
-/// The `usage:query` selection: one bucketing plus the absent-keeps filters, each `None` when the
-/// field was absent. A filter locates rather than addresses: an unknown id naturally yields an
-/// empty result, and `from` is inclusive while `to` is exclusive over `started_at`.
-#[derive(Debug, Clone, Copy)]
+/// The `usage:query` selection: the requested bucketing dimensions in request order — empty
+/// aggregates one total bucket — plus the shared filter (README §7.1).
+#[derive(Debug, Clone)]
 pub(crate) struct UsageSelection {
-    /// Bucketing dimension.
-    pub(crate) group_by: UsageGroupBy,
+    /// Bucketing dimensions, deduplicated and closed-vocabulary by the request validation.
+    pub(crate) group_by: Vec<UsageGroupBy>,
 
-    /// Inclusive lower bound of `started_at`, in UTC microseconds.
-    pub(crate) from: Option<i64>,
-
-    /// Exclusive upper bound of `started_at`, in UTC microseconds.
-    pub(crate) to: Option<i64>,
-
-    /// Model row id filter.
-    pub(crate) model_id: Option<i64>,
-
-    /// Provider row id filter.
-    pub(crate) provider_id: Option<i64>,
-
-    /// API key row id filter.
-    pub(crate) api_key_id: Option<i64>,
+    /// The filter both management reads share.
+    pub(crate) filter: UsageFilter,
 }
 
 /// Inserts one accounting row — a single synchronous statement on a pooled connection, the same
@@ -1136,9 +1354,20 @@ mod tests {
         }
     }
 
+    /// Builds one non-empty filter list from a fixture slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics on an empty slice, which no test fixture constructs.
+    fn list1<T: Clone>(values: &[T]) -> Vec1<T> {
+        #[expect(clippy::unwrap_used, reason = "test fixtures are non-empty")]
+        Vec1::try_from_vec(values.to_vec()).unwrap()
+    }
+
     /// Verifies `usage:list` pagination (README §7.1): rows order by `id` descending, the limit
     /// bounds each page, `before_id` is strictly older — the cursor row itself never reappears —
-    /// and a cursor at or below the oldest row yields the empty final page.
+    /// a cursor at or below the oldest row yields the empty final page, and the filter composes
+    /// with the cursor: only rows inside the filter continue a filtered page.
     ///
     /// # Errors
     ///
@@ -1155,36 +1384,66 @@ mod tests {
             record_api_log(&database, write(stamp * 1_000, 1, 1, 1, [None; 5])).await?;
         }
 
+        // Two rows of a second model, so the model filter has pages of its own.
+        record_api_log(&database, write(6_000, 1, 1, 2, [None; 5])).await?;
+        record_api_log(&database, write(7_000, 1, 1, 2, [None; 5])).await?;
+
         let ids = |logs: &[ApiLog]| logs.iter().map(|log| log.id).collect::<Vec<i64>>();
+        let no_filter = UsageFilter::default();
+        let model_two = UsageFilter {
+            model_id: Some(list1(&[2])),
+            ..UsageFilter::default()
+        };
 
         // The default page lists every row, newest first.
-        let page = list_api_logs(&database, 100, None).await?;
-        assert_eq!(ids(&page), [5, 4, 3, 2, 1]);
+        let page = list_api_logs(&database, 100, None, &no_filter).await?;
+        assert_eq!(ids(&page), [7, 6, 5, 4, 3, 2, 1]);
 
         // The limit bounds the page, order unchanged.
-        let page = list_api_logs(&database, 2, None).await?;
-        assert_eq!(ids(&page), [5, 4]);
+        let page = list_api_logs(&database, 2, None, &no_filter).await?;
+        assert_eq!(ids(&page), [7, 6]);
 
         // before_id is strict: the cursor row is excluded, only older rows follow.
-        let page = list_api_logs(&database, 100, Some(4)).await?;
-        assert_eq!(ids(&page), [3, 2, 1]);
+        let page = list_api_logs(&database, 100, Some(6), &no_filter).await?;
+        assert_eq!(ids(&page), [5, 4, 3, 2, 1]);
 
         // A limit smaller than the remainder keeps walking strictly older.
-        let page = list_api_logs(&database, 1, Some(3)).await?;
-        assert_eq!(ids(&page), [2]);
+        let page = list_api_logs(&database, 1, Some(5), &no_filter).await?;
+        assert_eq!(ids(&page), [4]);
 
         // A cursor at the oldest row is the empty final page.
-        let page = list_api_logs(&database, 100, Some(1)).await?;
+        let page = list_api_logs(&database, 100, Some(1), &no_filter).await?;
         assert!(page.is_empty());
+
+        // The filter narrows the stream to its own rows, newest first.
+        let page = list_api_logs(&database, 100, None, &model_two).await?;
+        assert_eq!(ids(&page), [7, 6]);
+
+        // A filtered page continues through the filter: cursor and filter compose.
+        let page = list_api_logs(&database, 100, Some(7), &model_two).await?;
+        assert_eq!(ids(&page), [6]);
+
+        let page = list_api_logs(&database, 100, Some(6), &model_two).await?;
+        assert!(page.is_empty());
+
+        // A filter the fixture satisfies only below the cursor composes the same way.
+        let model_one = UsageFilter {
+            model_id: Some(list1(&[1])),
+            ..UsageFilter::default()
+        };
+        let page = list_api_logs(&database, 100, Some(6), &model_one).await?;
+        assert_eq!(ids(&page), [5, 4, 3, 2, 1]);
 
         Ok(())
     }
 
-    /// Verifies `usage:query` end to end over a hand-checked fixture (README §7.1): all four
-    /// groupings bucket and order by their own key, sums exclude `NULL` tokens while still
-    /// counting their row — an all-`NULL` bucket sums to `0` — the window is inclusive from and
-    /// exclusive to, and the locating filters narrow naturally, an unknown id yielding the empty
-    /// set instead of an error.
+    /// Verifies `usage:query` end to end over a hand-checked fixture (README §7.1): every
+    /// dimension buckets and orders by its own key, dimension sets compose the key and the
+    /// ordering in request order, the empty set aggregates one total bucket — zero rows
+    /// included — `NULL` statuses form their own bucket, sums exclude `NULL` tokens while still
+    /// counting their row, the window is inclusive from and exclusive to, and the filter
+    /// locates: within a field values OR, across fields they AND, and an unknown id yields the
+    /// empty set instead of an error.
     ///
     /// # Errors
     ///
@@ -1194,70 +1453,125 @@ mod tests {
     ///
     /// Panics if any bucket, sum, window edge, or filter diverges from the documented semantics.
     #[tokio::test]
-    async fn aggregates_four_groupings_over_filters_and_windows() -> Result<(), Box<dyn StdError>> {
+    async fn aggregates_by_dimension_sets_over_the_shared_filter() -> Result<(), Box<dyn StdError>>
+    {
         let (database, _guard) = create_test_database().await;
 
         const DAY_MICROS: i64 = 86_400_000_000;
         let first_day = 1_700_000_000_000_000; // 2023-11-14 UTC
         let second_day = first_day + DAY_MICROS; // 2023-11-15 UTC
 
-        record_api_log(
-            &database,
-            write(
+        // Four rows spanning both days, two models, two providers, two keys, two endpoints,
+        // both stream flags, three outcomes, and one `NULL` status (recorded no usage at all).
+        let fixture = [
+            (
                 first_day + 1,
                 1,
                 1,
                 1,
+                ApiLogEndpointType::OpenaiChatCompletions,
+                false,
+                Some(200),
+                ApiLogOutcome::Completed,
                 [Some(10), Some(20), Some(1), Some(2), Some(3)],
             ),
-        )
-        .await?;
-
-        // Reported no usage at all: counted everywhere, summing to zero.
-        record_api_log(&database, write(first_day + 2, 2, 1, 2, [None; 5])).await?;
-
-        // Totals without a breakdown: the breakdown columns stay out of the sums.
-        record_api_log(
-            &database,
-            write(
+            (
+                first_day + 2,
+                2,
+                1,
+                2,
+                ApiLogEndpointType::OpenaiChatCompletions,
+                false,
+                None,
+                ApiLogOutcome::ClientAborted,
+                [None; 5],
+            ),
+            (
                 second_day + 1,
                 1,
                 2,
                 1,
+                ApiLogEndpointType::OpenaiResponses,
+                true,
+                Some(200),
+                ApiLogOutcome::Completed,
                 [Some(5), Some(6), None, None, None],
             ),
-        )
-        .await?;
-
-        record_api_log(
-            &database,
-            write(
+            (
                 second_day + 2,
                 1,
                 1,
                 1,
+                ApiLogEndpointType::OpenaiChatCompletions,
+                true,
+                Some(500),
+                ApiLogOutcome::UpstreamError,
                 [Some(1), Some(2), Some(3), Some(4), Some(5)],
             ),
+        ];
+
+        for (
+            started_at,
+            api_key_id,
+            provider_id,
+            model_id,
+            endpoint_type,
+            is_stream,
+            http_status,
+            outcome,
+            tokens,
+        ) in fixture
+        {
+            let [
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
+            ] = tokens;
+
+            record_api_log(
+                &database,
+                ApiLogWrite {
+                    started_at,
+                    api_key_id,
+                    provider_id,
+                    model_id,
+                    endpoint_type,
+                    is_stream,
+                    http_status,
+                    outcome,
+                    duration: 5,
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens,
+                    cache_write_tokens,
+                    reasoning_tokens,
+                },
+            )
+            .await?;
+        }
+
+        let selection =
+            |group_by: Vec<UsageGroupBy>, filter: UsageFilter| UsageSelection { group_by, filter };
+
+        let no_filter = UsageFilter::default();
+
+        // Grouping by UTC day: ISO keys ascending, NULL-excluding sums, the usage-less row
+        // still counted.
+        let buckets = query_usage(
+            &database,
+            &selection(vec![UsageGroupBy::Day], no_filter.clone()),
         )
         .await?;
-
-        let base = UsageSelection {
-            group_by: UsageGroupBy::Day,
-            from: None,
-            to: None,
-            model_id: None,
-            provider_id: None,
-            api_key_id: None,
-        };
-
-        // Grouping by UTC day: ISO keys ascending, NULL-excluding sums, the usage-less row still
-        // counted.
-        let buckets = query_usage(&database, &UsageSelection { ..base }).await?;
         assert_eq!(
             buckets,
             vec![
                 UsageAggregate {
-                    key: UsageBucketKey::Day("2023-11-14".to_string()),
+                    key: UsageBucketKey {
+                        day: Some("2023-11-14".to_string()),
+                        ..UsageBucketKey::default()
+                    },
                     requests: 2,
                     input_tokens: 10,
                     output_tokens: 20,
@@ -1266,7 +1580,10 @@ mod tests {
                     reasoning_tokens: 3,
                 },
                 UsageAggregate {
-                    key: UsageBucketKey::Day("2023-11-15".to_string()),
+                    key: UsageBucketKey {
+                        day: Some("2023-11-15".to_string()),
+                        ..UsageBucketKey::default()
+                    },
                     requests: 2,
                     input_tokens: 6,
                     output_tokens: 8,
@@ -1277,243 +1594,376 @@ mod tests {
             ]
         );
 
-        // Grouping by model: numeric keys ascending; model 2's single usage-less row sums to 0.
+        // The empty dimension set aggregates one total bucket whose key is empty.
+        let buckets = query_usage(&database, &selection(vec![], no_filter.clone())).await?;
+        assert_eq!(
+            buckets,
+            vec![UsageAggregate {
+                key: UsageBucketKey::default(),
+                requests: 4,
+                input_tokens: 16,
+                output_tokens: 28,
+                cached_tokens: 4,
+                cache_write_tokens: 6,
+                reasoning_tokens: 8,
+            }]
+        );
+
+        // A total bucket over an empty selection is one zeroed bucket, never an empty list.
+        let unknown = UsageFilter {
+            model_id: Some(list1(&[999])),
+            ..UsageFilter::default()
+        };
+        let buckets = query_usage(&database, &selection(vec![], unknown.clone())).await?;
+        assert_eq!(
+            buckets,
+            vec![UsageAggregate {
+                key: UsageBucketKey::default(),
+                requests: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cached_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            }]
+        );
+
+        // The same filter over a real grouping yields no bucket at all: a filter locates,
+        // never 404s (README §7.0).
         let buckets = query_usage(
             &database,
-            &UsageSelection {
-                group_by: UsageGroupBy::Model,
-                ..base
-            },
+            &selection(vec![UsageGroupBy::Model], unknown.clone()),
+        )
+        .await?;
+        assert!(buckets.is_empty());
+
+        // A composite key carries exactly the requested dimensions, and the requested order
+        // drives the ordering: model-major here.
+        let buckets = query_usage(
+            &database,
+            &selection(
+                vec![UsageGroupBy::Model, UsageGroupBy::Day],
+                no_filter.clone(),
+            ),
         )
         .await?;
 
+        let keys = buckets
+            .iter()
+            .map(|bucket| bucket.key.clone())
+            .collect::<Vec<_>>();
+
         assert_eq!(
-            buckets,
+            keys,
             vec![
-                UsageAggregate {
-                    key: UsageBucketKey::Id(1),
-                    requests: 3,
-                    input_tokens: 16,
-                    output_tokens: 28,
-                    cached_tokens: 4,
-                    cache_write_tokens: 6,
-                    reasoning_tokens: 8,
+                UsageBucketKey {
+                    model_id: Some(1),
+                    day: Some("2023-11-14".to_string()),
+                    ..UsageBucketKey::default()
                 },
-                UsageAggregate {
-                    key: UsageBucketKey::Id(2),
-                    requests: 1,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cached_tokens: 0,
-                    cache_write_tokens: 0,
-                    reasoning_tokens: 0,
+                UsageBucketKey {
+                    model_id: Some(1),
+                    day: Some("2023-11-15".to_string()),
+                    ..UsageBucketKey::default()
+                },
+                UsageBucketKey {
+                    model_id: Some(2),
+                    day: Some("2023-11-14".to_string()),
+                    ..UsageBucketKey::default()
                 },
             ]
         );
 
-        // Grouping by provider: the partial-breakdown row contributes only its totals.
+        // The reversed request orders day-major instead: the request order is the ordering.
         let buckets = query_usage(
             &database,
-            &UsageSelection {
-                group_by: UsageGroupBy::Provider,
-                ..base
-            },
+            &selection(
+                vec![UsageGroupBy::Day, UsageGroupBy::Model],
+                no_filter.clone(),
+            ),
         )
         .await?;
 
+        let keys = buckets
+            .iter()
+            .map(|bucket| bucket.key.clone())
+            .collect::<Vec<_>>();
+
         assert_eq!(
-            buckets,
+            keys,
             vec![
-                UsageAggregate {
-                    key: UsageBucketKey::Id(1),
-                    requests: 3,
-                    input_tokens: 11,
-                    output_tokens: 22,
-                    cached_tokens: 4,
-                    cache_write_tokens: 6,
-                    reasoning_tokens: 8,
+                UsageBucketKey {
+                    day: Some("2023-11-14".to_string()),
+                    model_id: Some(1),
+                    ..UsageBucketKey::default()
                 },
-                UsageAggregate {
-                    key: UsageBucketKey::Id(2),
-                    requests: 1,
-                    input_tokens: 5,
-                    output_tokens: 6,
-                    cached_tokens: 0,
-                    cache_write_tokens: 0,
-                    reasoning_tokens: 0,
+                UsageBucketKey {
+                    day: Some("2023-11-14".to_string()),
+                    model_id: Some(2),
+                    ..UsageBucketKey::default()
+                },
+                UsageBucketKey {
+                    day: Some("2023-11-15".to_string()),
+                    model_id: Some(1),
+                    ..UsageBucketKey::default()
                 },
             ]
         );
 
-        // Grouping by API key.
+        // The `NULL` status rows form their own bucket, and the enum dimension orders by its
+        // stored spelling; SQLite orders `NULL` first.
         let buckets = query_usage(
             &database,
-            &UsageSelection {
-                group_by: UsageGroupBy::ApiKey,
-                ..base
-            },
+            &selection(
+                vec![UsageGroupBy::Outcome, UsageGroupBy::HttpStatus],
+                no_filter.clone(),
+            ),
         )
         .await?;
 
         assert_eq!(
-            buckets,
+            buckets
+                .iter()
+                .map(|bucket| (bucket.key.outcome, bucket.key.http_status, bucket.requests))
+                .collect::<Vec<_>>(),
             vec![
-                UsageAggregate {
-                    key: UsageBucketKey::Id(1),
-                    requests: 3,
-                    input_tokens: 16,
-                    output_tokens: 28,
-                    cached_tokens: 4,
-                    cache_write_tokens: 6,
-                    reasoning_tokens: 8,
-                },
-                UsageAggregate {
-                    key: UsageBucketKey::Id(2),
-                    requests: 1,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cached_tokens: 0,
-                    cache_write_tokens: 0,
-                    reasoning_tokens: 0,
-                },
+                (Some(ApiLogOutcome::ClientAborted), None, 1),
+                (Some(ApiLogOutcome::Completed), Some(200), 2),
+                (Some(ApiLogOutcome::UpstreamError), Some(500), 1),
             ]
+        );
+
+        // Every remaining dimension buckets by its own column.
+        let buckets = query_usage(
+            &database,
+            &selection(vec![UsageGroupBy::EndpointType], no_filter.clone()),
+        )
+        .await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| (bucket.key.endpoint_type, bucket.requests))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(ApiLogEndpointType::OpenaiChatCompletions), 3),
+                (Some(ApiLogEndpointType::OpenaiResponses), 1),
+            ]
+        );
+
+        let buckets = query_usage(
+            &database,
+            &selection(vec![UsageGroupBy::IsStream], no_filter.clone()),
+        )
+        .await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| (bucket.key.is_stream, bucket.requests))
+                .collect::<Vec<_>>(),
+            vec![(Some(false), 2), (Some(true), 2)]
+        );
+
+        let buckets = query_usage(
+            &database,
+            &selection(vec![UsageGroupBy::Provider], no_filter.clone()),
+        )
+        .await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| (bucket.key.provider_id, bucket.requests))
+                .collect::<Vec<_>>(),
+            vec![(Some(1), 3), (Some(2), 1)]
+        );
+
+        let buckets = query_usage(
+            &database,
+            &selection(vec![UsageGroupBy::ApiKey], no_filter.clone()),
+        )
+        .await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| (bucket.key.api_key_id, bucket.requests))
+                .collect::<Vec<_>>(),
+            vec![(Some(1), 3), (Some(2), 1)]
+        );
+
+        // Within one field the values OR — model 2 here, the unknown id contributing nothing.
+        let either = UsageFilter {
+            model_id: Some(list1(&[2, 999])),
+            ..UsageFilter::default()
+        };
+        let buckets = query_usage(
+            &database,
+            &selection(vec![UsageGroupBy::Model], either.clone()),
+        )
+        .await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| (bucket.key.model_id, bucket.requests))
+                .collect::<Vec<_>>(),
+            vec![(Some(2), 1)]
+        );
+
+        // Across fields the filters AND: models 1 or 2 together with the completed outcome.
+        let filtered = UsageFilter {
+            model_id: Some(list1(&[1, 2])),
+            outcome: Some(list1(&[ApiLogOutcome::Completed])),
+            ..UsageFilter::default()
+        };
+        let buckets = query_usage(
+            &database,
+            &selection(vec![UsageGroupBy::Model], filtered.clone()),
+        )
+        .await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| (bucket.key.model_id, bucket.requests))
+                .collect::<Vec<_>>(),
+            vec![(Some(1), 2)]
+        );
+
+        // The enum, stream, status, key, and provider filters each narrow on their own column.
+        let filtered = UsageFilter {
+            endpoint_type: Some(list1(&[ApiLogEndpointType::OpenaiResponses])),
+            ..UsageFilter::default()
+        };
+        let buckets = query_usage(&database, &selection(vec![], filtered)).await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| bucket.requests)
+                .collect::<Vec<_>>(),
+            [1]
+        );
+
+        let filtered = UsageFilter {
+            is_stream: Some(true),
+            ..UsageFilter::default()
+        };
+        let buckets = query_usage(&database, &selection(vec![], filtered)).await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| bucket.requests)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+
+        // `NULL` statuses match no `IN` list: only the two answered 200s count.
+        let filtered = UsageFilter {
+            http_status: Some(list1(&[200])),
+            ..UsageFilter::default()
+        };
+        let buckets = query_usage(&database, &selection(vec![], filtered)).await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| bucket.requests)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+
+        // Filters compose to an empty set — no provider-1 responses exist — and the empty
+        // selection's total bucket counts zero, never an error nor an empty list.
+        let filtered = UsageFilter {
+            provider_id: Some(list1(&[1])),
+            endpoint_type: Some(list1(&[ApiLogEndpointType::OpenaiResponses])),
+            ..UsageFilter::default()
+        };
+        let buckets = query_usage(&database, &selection(vec![], filtered)).await?;
+
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| bucket.requests)
+                .collect::<Vec<_>>(),
+            [0]
         );
 
         // The window is inclusive at `from` — the row stamped exactly at the bound is in — and
         // exclusive at `to`.
+        let windowed = UsageFilter {
+            from: Some(second_day),
+            ..UsageFilter::default()
+        };
         let buckets = query_usage(
             &database,
-            &UsageSelection {
-                from: Some(second_day),
-                ..base
-            },
+            &selection(vec![UsageGroupBy::Day], windowed.clone()),
         )
         .await?;
 
         assert_eq!(
             buckets
                 .iter()
-                .map(|bucket| (bucket.key.clone(), bucket.requests))
+                .map(|bucket| (bucket.key.day.clone(), bucket.requests))
                 .collect::<Vec<_>>(),
-            vec![(UsageBucketKey::Day("2023-11-15".to_string()), 2)]
+            vec![(Some("2023-11-15".to_string()), 2)]
         );
 
+        let windowed = UsageFilter {
+            from: Some(first_day + 2),
+            to: Some(second_day),
+            ..UsageFilter::default()
+        };
         let buckets = query_usage(
             &database,
-            &UsageSelection {
-                from: Some(first_day + 2),
-                to: Some(second_day),
-                ..base
-            },
+            &selection(vec![UsageGroupBy::Day], windowed.clone()),
         )
         .await?;
 
         assert_eq!(
             buckets
                 .iter()
-                .map(|bucket| (bucket.key.clone(), bucket.requests))
+                .map(|bucket| (bucket.key.day.clone(), bucket.requests))
                 .collect::<Vec<_>>(),
-            vec![(UsageBucketKey::Day("2023-11-14".to_string()), 1)]
+            vec![(Some("2023-11-14".to_string()), 1)]
         );
 
-        // An empty window is an empty aggregation, not an error.
+        // An empty window is an empty aggregation with a real grouping, not an error.
+        let windowed = UsageFilter {
+            from: Some(second_day),
+            to: Some(second_day),
+            ..UsageFilter::default()
+        };
         let buckets = query_usage(
             &database,
-            &UsageSelection {
-                from: Some(second_day),
-                to: Some(second_day),
-                ..base
-            },
+            &selection(vec![UsageGroupBy::Day], windowed.clone()),
         )
         .await?;
 
         assert!(buckets.is_empty());
 
-        // An unknown id is an empty set: filters locate, they never 404 (README §7.0).
+        // Filters compose with the window and the grouping: the second day's completed rows.
+        let composed = UsageFilter {
+            from: Some(second_day),
+            outcome: Some(list1(&[ApiLogOutcome::Completed])),
+            ..UsageFilter::default()
+        };
         let buckets = query_usage(
             &database,
-            &UsageSelection {
-                model_id: Some(999),
-                ..base
-            },
-        )
-        .await?;
-
-        assert!(buckets.is_empty());
-
-        // A filter narrows the grouping: model 1 only, still bucketed by day.
-        let buckets = query_usage(
-            &database,
-            &UsageSelection {
-                model_id: Some(1),
-                ..base
-            },
+            &selection(vec![UsageGroupBy::Provider], composed.clone()),
         )
         .await?;
 
         assert_eq!(
             buckets
                 .iter()
-                .map(|bucket| (bucket.key.clone(), bucket.requests))
+                .map(|bucket| (bucket.key.provider_id, bucket.requests))
                 .collect::<Vec<_>>(),
-            vec![
-                (UsageBucketKey::Day("2023-11-14".to_string()), 1),
-                (UsageBucketKey::Day("2023-11-15".to_string()), 2),
-            ]
-        );
-
-        // Filters compose with each other, the window, and the grouping.
-        let buckets = query_usage(
-            &database,
-            &UsageSelection {
-                group_by: UsageGroupBy::Provider,
-                from: Some(second_day),
-                model_id: Some(1),
-                ..base
-            },
-        )
-        .await?;
-
-        assert_eq!(
-            buckets,
-            vec![
-                UsageAggregate {
-                    key: UsageBucketKey::Id(1),
-                    requests: 1,
-                    input_tokens: 1,
-                    output_tokens: 2,
-                    cached_tokens: 3,
-                    cache_write_tokens: 4,
-                    reasoning_tokens: 5,
-                },
-                UsageAggregate {
-                    key: UsageBucketKey::Id(2),
-                    requests: 1,
-                    input_tokens: 5,
-                    output_tokens: 6,
-                    cached_tokens: 0,
-                    cache_write_tokens: 0,
-                    reasoning_tokens: 0,
-                },
-            ]
-        );
-
-        let buckets = query_usage(
-            &database,
-            &UsageSelection {
-                group_by: UsageGroupBy::Model,
-                api_key_id: Some(2),
-                ..base
-            },
-        )
-        .await?;
-
-        assert_eq!(
-            buckets
-                .iter()
-                .map(|bucket| (bucket.key.clone(), bucket.requests))
-                .collect::<Vec<_>>(),
-            vec![(UsageBucketKey::Id(2), 1)]
+            vec![(Some(2), 1)]
         );
 
         Ok(())
@@ -1584,7 +2034,8 @@ mod tests {
         database.execute(fixture, ()).await?;
 
         // Both read paths agree with the generating formula.
-        let first_page = list_api_logs(&database, 100, None).await?;
+        let no_filter = UsageFilter::default();
+        let first_page = list_api_logs(&database, 100, None, &no_filter).await?;
         let page_ids = first_page.iter().map(|log| log.id).collect::<Vec<i64>>();
 
         #[expect(clippy::unwrap_used, reason = "the fixture wrote ten thousand rows")]
@@ -1603,7 +2054,7 @@ mod tests {
         #[expect(clippy::unwrap_used, reason = "the page holds one hundred rows")]
         let cursor = *page_ids.last().unwrap();
 
-        let second_page = list_api_logs(&database, 100, Some(cursor)).await?;
+        let second_page = list_api_logs(&database, 100, Some(cursor), &no_filter).await?;
         let second_ids = second_page.iter().map(|log| log.id).collect::<Vec<i64>>();
 
         assert_eq!(
@@ -1612,29 +2063,25 @@ mod tests {
             "the next page continues where the cursor left off"
         );
 
-        let tail = list_api_logs(&database, 100, Some(3)).await?;
+        let tail = list_api_logs(&database, 100, Some(3), &no_filter).await?;
         assert_eq!(tail.iter().map(|log| log.id).collect::<Vec<i64>>(), [2, 1]);
 
-        let base = UsageSelection {
-            group_by: UsageGroupBy::Day,
-            from: None,
-            to: None,
-            model_id: None,
-            provider_id: None,
-            api_key_id: None,
+        let day_selection = UsageSelection {
+            group_by: vec![UsageGroupBy::Day],
+            filter: UsageFilter::default(),
         };
 
-        let day_buckets = query_usage(&database, &base).await?;
+        let day_buckets = query_usage(&database, &day_selection).await?;
         let day_requests = day_buckets
             .iter()
-            .map(|bucket| (bucket.key.clone(), bucket.requests))
+            .map(|bucket| (bucket.key.day.clone(), bucket.requests))
             .collect::<Vec<_>>();
 
         assert_eq!(
             day_requests,
             vec![
-                (UsageBucketKey::Day("2023-11-14".to_string()), ROWS / 2),
-                (UsageBucketKey::Day("2023-11-15".to_string()), ROWS / 2),
+                (Some("2023-11-14".to_string()), ROWS / 2),
+                (Some("2023-11-15".to_string()), ROWS / 2),
             ]
         );
 
@@ -1652,24 +2099,17 @@ mod tests {
         let model_buckets = query_usage(
             &database,
             &UsageSelection {
-                group_by: UsageGroupBy::Model,
-                ..base
+                group_by: vec![UsageGroupBy::Model],
+                filter: UsageFilter::default(),
             },
         )
         .await?;
         let model_keys = model_buckets
             .iter()
-            .map(|bucket| bucket.key.clone())
+            .map(|bucket| bucket.key.model_id)
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            model_keys,
-            [
-                UsageBucketKey::Id(1),
-                UsageBucketKey::Id(2),
-                UsageBucketKey::Id(3)
-            ]
-        );
+        assert_eq!(model_keys, [Some(1), Some(2), Some(3)]);
 
         for (bucket, model_id) in model_buckets.iter().zip(1..=3) {
             assert_eq!(bucket.requests, expected_requests(model_id));
@@ -1681,8 +2121,11 @@ mod tests {
         let window_buckets = query_usage(
             &database,
             &UsageSelection {
-                from: Some(second_day),
-                ..base
+                group_by: vec![UsageGroupBy::Day],
+                filter: UsageFilter {
+                    from: Some(second_day),
+                    ..UsageFilter::default()
+                },
             },
         )
         .await?;
@@ -1690,9 +2133,9 @@ mod tests {
         assert_eq!(
             window_buckets
                 .iter()
-                .map(|bucket| (bucket.key.clone(), bucket.requests))
+                .map(|bucket| (bucket.key.day.clone(), bucket.requests))
                 .collect::<Vec<_>>(),
-            vec![(UsageBucketKey::Day("2023-11-15".to_string()), ROWS / 2)]
+            vec![(Some("2023-11-15".to_string()), ROWS / 2)]
         );
 
         // The window predicate reads through the started_at index.
@@ -1714,6 +2157,29 @@ mod tests {
                 .iter()
                 .any(|detail| detail.contains("idx_api_logs_started_at")),
             "the usage window must read through idx_api_logs_started_at; plan: {details:?}"
+        );
+
+        // An id filter paired with the time window reads through the matching composite index
+        // (README §3 *ApiLog*): the filter shape the management surface issues most.
+        let filtered_plan = database
+            .query(
+                "EXPLAIN QUERY PLAN SELECT id FROM api_logs \
+                 WHERE model_id IN (?1, ?2) AND started_at >= ?3 AND started_at < ?4",
+                params![1, 2, second_day, second_day + 1],
+            )
+            .await?;
+
+        let filtered_details = filtered_plan
+            .iter()
+            .map(|row| row.get::<String>(3))
+            .collect::<Result<Vec<String>, _>>()?;
+
+        assert!(
+            filtered_details
+                .iter()
+                .any(|detail| detail.contains("idx_api_logs_model_started_at")),
+            "the filtered usage window must read through idx_api_logs_model_started_at; \
+             plan: {filtered_details:?}"
         );
 
         Ok(())

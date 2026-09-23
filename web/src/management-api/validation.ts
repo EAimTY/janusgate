@@ -105,15 +105,50 @@ function expectNullableInteger(value: unknown, context: string): number | null {
 }
 
 function expectBucketKey(value: unknown, context: string): UsageBucketKey {
-    if (typeof value === "string") {
-        return value;
+    const record = expectRecord(value, context);
+    const key: UsageBucketKey = {};
+
+    const day = Reflect.get(record, "day");
+    if (day !== undefined) {
+        key.day = expectString(day, `${context}.day`);
     }
 
-    if (typeof value === "number" && Number.isInteger(value)) {
-        return value;
+    const modelId = Reflect.get(record, "model_id");
+    if (modelId !== undefined) {
+        key.model_id = expectInteger(modelId, `${context}.model_id`);
     }
 
-    throw new ContractViolationError(`${context} must be a string or an integer`);
+    const providerId = Reflect.get(record, "provider_id");
+    if (providerId !== undefined) {
+        key.provider_id = expectInteger(providerId, `${context}.provider_id`);
+    }
+
+    const apiKeyId = Reflect.get(record, "api_key_id");
+    if (apiKeyId !== undefined) {
+        key.api_key_id = expectInteger(apiKeyId, `${context}.api_key_id`);
+    }
+
+    const endpointType = Reflect.get(record, "endpoint_type");
+    if (endpointType !== undefined) {
+        key.endpoint_type = parseApiLogEndpointType(endpointType, `${context}.endpoint_type`);
+    }
+
+    const outcome = Reflect.get(record, "outcome");
+    if (outcome !== undefined) {
+        key.outcome = parseApiLogOutcome(outcome, `${context}.outcome`);
+    }
+
+    const isStream = Reflect.get(record, "is_stream");
+    if (isStream !== undefined) {
+        key.is_stream = expectBoolean(isStream, `${context}.is_stream`);
+    }
+
+    const httpStatus = Reflect.get(record, "http_status");
+    if (httpStatus !== undefined) {
+        key.http_status = expectNullableInteger(httpStatus, `${context}.http_status`);
+    }
+
+    return key;
 }
 
 /**

@@ -300,7 +300,9 @@ describe("createManagementApi", () => {
         });
         await api.listUsage({});
         await api.queryUsage({
-            group_by: "day",
+            group_by: [
+                "day",
+            ],
         });
 
         expect(calls.map((call) => call.url)).toEqual([
@@ -341,7 +343,9 @@ describe("createManagementApi", () => {
             },
             {},
             {
-                group_by: "day",
+                group_by: [
+                    "day",
+                ],
             },
         ]);
     });

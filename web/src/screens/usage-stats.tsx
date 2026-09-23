@@ -2,7 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import type { UsageBucket } from "/src/management-api/generated/v0";
+import type { UsageBucket, UsageFilter } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
 import { createScreenRead, readOne } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
@@ -21,6 +21,31 @@ type UsageSubjectFilter =
     | {
           readonly api_key_id: number;
       };
+
+/** The subject as the shared `usage` filter the query route carries: the one id, listed. */
+function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
+    if ("provider_id" in filter) {
+        return {
+            provider_id: [
+                filter.provider_id,
+            ],
+        };
+    }
+
+    if ("model_id" in filter) {
+        return {
+            model_id: [
+                filter.model_id,
+            ],
+        };
+    }
+
+    return {
+        api_key_id: [
+            filter.api_key_id,
+        ],
+    };
+}
 
 /**
  * One subject's request accounting as aggregates: totals plus one row per
@@ -43,8 +68,10 @@ export function EntityUsageCard(props: {
                 run: (cycle) =>
                     props.api.queryUsage(
                         {
-                            group_by: "day",
-                            ...props.filter,
+                            group_by: [
+                                "day",
+                            ],
+                            filter: subjectFilter(props.filter),
                         },
                         cycle,
                     ),
@@ -165,7 +192,7 @@ export function EntityUsageCard(props: {
                                                     scope="row"
                                                     class="px-3 py-2 font-medium"
                                                 >
-                                                    {String(bucket.key)}
+                                                    {bucket.key.day ?? ""}
                                                 </th>
                                                 <td class="px-3 py-2 text-right">
                                                     {formatTokenCount(bucket.requests)}

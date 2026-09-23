@@ -1136,7 +1136,7 @@ mod tests {
             .post(format!("{base}/management-api/v0/usage:query"))
             .header("Authorization", "e2e-token")
             .header("Content-Type", "application/json")
-            .body(r#"{"group_by":"provider"}"#)
+            .body(r#"{"group_by":["provider"]}"#)
             .send()
             .await?;
 

@@ -22,10 +22,9 @@ import { PageHeader } from "/src/ui/layout";
 import { nextUsagePage, USAGE_PAGE_SIZE, usageCursor } from "./usage-pagination";
 
 /**
- * Every dispatched request, newest first. The listing carries no filters —
- * the route's only cursor is the row id — so this page is the raw stream
- * with its labels resolved through the entity lists, and the aggregation
- * page carries the filtered questions.
+ * Every dispatched request, newest first. This page streams the raw listing
+ * unfiltered — the route's filter stays the aggregates page's instrument —
+ * and resolves its labels through the entity lists.
  */
 export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [entities, setEntities] = createSignal<UsageEntities>({

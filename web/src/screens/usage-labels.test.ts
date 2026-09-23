@@ -3,8 +3,14 @@ import type {
     ApiKeyResponse,
     ModelResponse,
     ProviderResponse,
+    UsageBucketKey,
 } from "/src/management-api/generated/v0";
-import { usageApiKeyLabel, usageModelLabel, usageProviderLabel } from "./usage-labels";
+import {
+    usageApiKeyLabel,
+    usageDimensionLabel,
+    usageModelLabel,
+    usageProviderLabel,
+} from "./usage-labels";
 
 const providers: ReadonlyArray<ProviderResponse> = [
     {
@@ -75,5 +81,63 @@ describe("usage labels", () => {
             text: "Deleted key",
             isListed: false,
         });
+    });
+
+    it("renders each requested bucket-key dimension in the operator's words", () => {
+        const key: UsageBucketKey = {
+            day: "2026-09-01",
+            model_id: 9,
+            provider_id: 1,
+            api_key_id: 7,
+            endpoint_type: "openai_responses",
+            outcome: "client_aborted",
+            is_stream: true,
+            http_status: null,
+        };
+
+        expect(usageDimensionLabel("day", key, entities)).toBe("2026-09-01");
+        expect(usageDimensionLabel("model", key, entities)).toBe("local-qwen3-32b");
+        expect(usageDimensionLabel("provider", key, entities)).toBe("local");
+        expect(usageDimensionLabel("api_key", key, entities)).toBe("service-a");
+        expect(usageDimensionLabel("endpoint_type", key, entities)).toBe("Responses");
+        expect(usageDimensionLabel("outcome", key, entities)).toBe("Client aborted");
+        expect(usageDimensionLabel("is_stream", key, entities)).toBe("Streamed");
+        // The `NULL` status bucket is a real bucket: an em dash, never a crash.
+        expect(usageDimensionLabel("http_status", key, entities)).toBe("—");
+        expect(
+            usageDimensionLabel(
+                "http_status",
+                {
+                    ...key,
+                    http_status: 429,
+                },
+                entities,
+            ),
+        ).toBe("429");
+        expect(
+            usageDimensionLabel(
+                "is_stream",
+                {
+                    ...key,
+                    is_stream: false,
+                },
+                entities,
+            ),
+        ).toBe("Non-streamed");
+    });
+
+    it("treats a key field missing for a requested dimension as a contract violation", () => {
+        expect(() => usageDimensionLabel("day", {}, entities)).toThrow(
+            /the bucket key carries no day/,
+        );
+        expect(() =>
+            usageDimensionLabel(
+                "model",
+                {
+                    day: "2026-09-01",
+                },
+                entities,
+            ),
+        ).toThrow(/the bucket key carries no model_id/);
     });
 });
