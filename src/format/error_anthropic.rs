@@ -1,5 +1,5 @@
 //! Anthropic error render: the wire payload types and the closed `render(&Error)` match for
-//! the Anthropic wire format (REFACTOR §3).
+//! the Anthropic wire format (README §6.7).
 //!
 //! Anthropic renders `{"type": "error", "error": {type, message}}` with the `type` vocabulary
 //! (`authentication_error`, `not_found_error`, `invalid_request_error`, `api_error`).

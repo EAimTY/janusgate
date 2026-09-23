@@ -5,6 +5,8 @@ import {
     describeManagementFailure,
     isAbortFailure,
     ManagementApiError,
+    type ManagementApiErrorDetails,
+    type ManagementFailureCategory,
 } from "/src/management-api/errors";
 
 import {
@@ -178,6 +180,23 @@ export function createManagementApi(
     connection: Connection,
     options: ManagementApiOptions = {},
 ): ManagementApi {
+    /**
+     * Raises a failure the way every `post` failure is raised: retaining the
+     * address the call went to, so the diagnosis of a failure whose
+     * connection is already cleared — a 401's siblings still in flight, a
+     * disconnect mid-read — still names a real origin (README §6.4).
+     */
+    function failure(
+        category: ManagementFailureCategory,
+        message: string,
+        details: Omit<ManagementApiErrorDetails, "baseUrl"> = {},
+    ): ManagementApiError {
+        return new ManagementApiError(category, message, {
+            baseUrl: connection.baseUrl,
+            ...details,
+        });
+    }
+
     async function post(path: Path, request: unknown, signal?: AbortSignal): Promise<unknown> {
         const url = `${connection.baseUrl}${MANAGEMENT_API_PATH}${path}`;
 
@@ -201,7 +220,7 @@ export function createManagementApi(
                 throw error;
             }
 
-            throw new ManagementApiError(
+            throw failure(
                 "transport",
                 `Network request failed: ${describeManagementFailure(error)}`,
                 {
@@ -219,7 +238,7 @@ export function createManagementApi(
                 throw error;
             }
 
-            throw new ManagementApiError(
+            throw failure(
                 "transport",
                 `Network request failed: ${describeManagementFailure(error)}`,
                 {
@@ -237,7 +256,7 @@ export function createManagementApi(
             if (errorResponse === null) {
                 // Not the management API's error domain: only the status is
                 // reportable (README §4.2).
-                throw new ManagementApiError("transport", `HTTP ${response.status}`, {
+                throw failure("transport", `HTTP ${response.status}`, {
                     httpStatus: response.status,
                 });
             }
@@ -246,14 +265,14 @@ export function createManagementApi(
                 options.onUnauthorized?.(errorResponse.message);
             }
 
-            throw new ManagementApiError("gateway", errorResponse.message, {
+            throw failure("gateway", errorResponse.message, {
                 httpStatus: response.status,
                 errno: errorResponse.errno,
             });
         }
 
         if (!body.isJson) {
-            throw new ManagementApiError("transport", `HTTP ${response.status}`, {
+            throw failure("transport", `HTTP ${response.status}`, {
                 httpStatus: response.status,
             });
         }

@@ -1,5 +1,5 @@
 //! Outward client API error domain: the one format-neutral taxonomy every `/api` surface shares
-//! (REFACTOR §3).
+//! (README §6.7).
 //!
 //! [`Error`] is the client API's own domain — the `crate::api` module's own error type under the
 //! repo's module-local `Error` convention, path-qualified against [`gateway::Error`] and the
@@ -18,17 +18,17 @@
 //! [`gateway::Error`]: crate::gateway::Error
 
 use crate::{
-    api_logs::ApiLogOutcome,
     gateway::Error as GatewayError,
     ir::InvalidRequest,
-    provider::{oauth::Error as OAuthError, storage::Error as StorageError},
+    provider::oauth::Error as OAuthError,
+    storage::{Error as StorageError, api_logs::ApiLogOutcome},
 };
 use axum::http::StatusCode;
 use log::{debug, error};
 
 /// Fixed message every internal failure renders: the internal cause reaches the log record only —
 /// the previous behavior of passing internal messages through to the client is deliberately
-/// dropped (REFACTOR §3).
+/// dropped (README §6.7).
 const INTERNAL_MESSAGE: &str = "Internal server error.";
 
 /// Fixed client message for authentication failures.
@@ -41,7 +41,7 @@ const METHOD_NOT_ALLOWED_MESSAGE: &str = "Method not allowed.";
 const PAYLOAD_TOO_LARGE_MESSAGE: &str = "Request body too large.";
 
 /// An error surfaced to an outward API client: one variant per contract row, each pinning exactly
-/// one HTTP status (REFACTOR §3).
+/// one HTTP status (README §6.7).
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     /// The request carried a missing or invalid API key.
@@ -289,7 +289,7 @@ mod tests {
     use super::*;
     use crate::format::PayloadError;
 
-    /// Verifies every variant pins its contract status (REFACTOR §3): 401 for the key, 404 for the
+    /// Verifies every variant pins its contract status (README §6.7): 401 for the key, 404 for the
     /// URL and the model, 405 for the method, 413 for the body, 400 for the malformed request, the
     /// mirrored status for the upstream, 502 for the unavailable upstream, and 500 with the fixed
     /// message for the internal failure.

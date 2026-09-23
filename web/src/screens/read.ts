@@ -6,7 +6,7 @@ import type {
     ModelResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
-import { performManagementCall } from "/src/management-api/outcome";
+import { type ManagementCallOutcome, performManagementCall } from "/src/management-api/outcome";
 import { isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { describeCallFailure, type FailureCall } from "/src/screens/failure";
@@ -54,6 +54,16 @@ export type ReadCall<TResult> = {
     /** The action the call attempts, which several failure diagnoses specialize on. */
     readonly action?: ActionName | undefined;
     readonly run: (signal: AbortSignal) => Promise<TResult>;
+};
+
+/** What an action's failure reporting accepts beside its diagnosis. */
+export type ReportActionOptions = {
+    /**
+     * Runs when the diagnosis says the row the call addressed is gone — the
+     * screen's reload, usually, so the not-found state takes over instead of
+     * a ghost form accepting re-saves forever (README §6.4).
+     */
+    readonly onGone?: (() => void) | undefined;
 };
 
 /**
@@ -135,6 +145,23 @@ export type ScreenRead = {
     readonly showNotice: (notice: ScreenNotice | null) => void;
     /** Diagnoses a failed action call into the standing notice. */
     readonly reportFailure: (cause: unknown, call?: FailureCall) => void;
+    /**
+     * States a finished action call's outcome where the read failures are
+     * stated, and answers whether the call succeeded, so the caller keeps
+     * only its success half. An aborted call states nothing; a failed one is
+     * diagnosed into the standing notice — a `gone` diagnosis first runs
+     * `onGone`.
+     */
+    readonly reportAction: <TResult>(
+        outcome: ManagementCallOutcome<TResult>,
+        call: FailureCall,
+        options?: ReportActionOptions,
+    ) => outcome is Extract<
+        ManagementCallOutcome<TResult>,
+        {
+            readonly status: "ok";
+        }
+    >;
     /** Runs one read cycle now — a successful action's explicit reload. */
     readonly reload: () => void;
 };
@@ -246,6 +273,39 @@ export function createScreenRead(options: {
         reportFailure: (cause, call) => {
             setNotice(screenFailureNotice(cause, call));
         },
+        reportAction: <TResult>(
+            outcome: ManagementCallOutcome<TResult>,
+            call: FailureCall,
+            options?: ReportActionOptions,
+        ): outcome is Extract<
+            ManagementCallOutcome<TResult>,
+            {
+                readonly status: "ok";
+            }
+        > => {
+            if (outcome.status === "aborted") {
+                return false;
+            }
+
+            if (outcome.status === "failed") {
+                const diagnosis = describeCallFailure(outcome.cause, call);
+
+                if (diagnosis.kind === "gone") {
+                    options?.onGone?.();
+                }
+
+                setNotice({
+                    tone: "bad",
+                    title: diagnosis.title,
+                    detail: diagnosis.detail,
+                    fix: diagnosis.fix,
+                });
+
+                return false;
+            }
+
+            return true;
+        },
         reload: () => {
             if (!isDisposed()) {
                 void run();
@@ -294,6 +354,63 @@ export function createHeldRow<TRow>(
     return {
         row,
         isRowHeld,
+    };
+}
+
+/**
+ * The edit screens' row (README §6.3): the held row of `createHeldRow` plus
+ * the save-settling latch. While the settings form holds unsaved edits — or
+ * a save is still settling — the row keeps its identity whatever a read
+ * answers, so an open dirty form is never reset; a row that genuinely
+ * changed on the gateway while the hold stands is held back, and `isRowHeld`
+ * states it — the Save-or-Revert notice's trigger. Once the form is clean
+ * and no save is settling, a read's row is adopted; a read answering the
+ * same content keeps the row's identity, so a refresh that changed nothing
+ * never remounts the form. The one exception is a read answering null — the
+ * row was deleted on the gateway: the row becomes null and nothing is held,
+ * dirt included, because deletion ends the form (the screen's not-found
+ * state takes over).
+ *
+ * The latch covers the window between a save and its own reload: the save
+ * overwrote exactly what the standing listing still shows, so the listing is
+ * stale by construction and the held row must not adopt it (a save
+ * re-baselines the form onto the values it sent). `reportSaved` sets the
+ * latch when a save succeeds; the save's own reload clears it once its reads
+ * land, so a failed reload leaves the hold standing instead of resting the
+ * screen on the pre-save rows.
+ */
+export function createEditRow<TRow>(
+    latest: Accessor<TRow | null>,
+    isSameRow: (previous: TRow, fresh: TRow) => boolean,
+): {
+    readonly row: Accessor<TRow | null>;
+    readonly isRowHeld: Accessor<boolean>;
+    /** Reports the settings form's dirt — the hold's first clause. */
+    readonly reportFormDirty: (isDirty: boolean) => void;
+    /** Reports a save that succeeded: the hold stands until its reload lands. */
+    readonly reportSaved: () => void;
+    /** Reports a read cycle whose reads landed, resolving the save's hold. */
+    readonly reportReloaded: () => void;
+} {
+    const [isFormDirty, setIsFormDirty] = createSignal(false);
+    const [isSaveSettling, setIsSaveSettling] = createSignal(false);
+
+    const { row, isRowHeld } = createHeldRow(
+        latest,
+        () => isFormDirty() || isSaveSettling(),
+        isSameRow,
+    );
+
+    return {
+        row,
+        isRowHeld,
+        reportFormDirty: setIsFormDirty,
+        reportSaved: () => {
+            setIsSaveSettling(true);
+        },
+        reportReloaded: () => {
+            setIsSaveSettling(false);
+        },
     };
 }
 

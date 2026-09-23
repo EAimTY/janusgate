@@ -8,7 +8,7 @@ import {
     parseUsageFilterDraft,
     serializeUsageFilterDraft,
     windowBoundMicros,
-} from "/src/usage-filter";
+} from "./usage-filter";
 
 /** An arbitrary instant; every window bound below is stated relative to it. */
 const NOW = Date.UTC(2026, 8, 24, 10, 30, 0) * 1000;

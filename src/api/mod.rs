@@ -1,5 +1,6 @@
-//! Outward client API routing: the `/api` parent router and the shared error domain every
-//! format surface renders through its own wire shape (REFACTOR §3).
+//! Outward client API routing: the `/api` parent router, the shared error domain every
+//! format surface renders through its own wire shape (README §6.7), and the shared outward
+//! serving pipeline every format surface runs through ([`serving`]).
 
 use super::{context::Context, database::Database, server};
 use axum::Router;
@@ -8,6 +9,7 @@ mod anthropic_v1;
 pub(crate) mod error;
 mod gemini_v1beta;
 mod openai_v1;
+mod serving;
 
 pub(crate) use self::error::{Error, log_error};
 

@@ -6,16 +6,14 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { isRoutingToken, routingTokenMessage } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
 import {
-    createHeldRow,
+    createEditRow,
     createPinnedRow,
     createScreenRead,
-    type FailureCall,
     isSameModelRow,
     isSameProviderRow,
     readAll,
-    type ScreenNotice,
+    type ScreenRead,
 } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
@@ -38,17 +36,14 @@ export function ModelEditScreen(props: {
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
-    // Reported by the settings form: an open form with unsaved edits holds its
-    // row against refreshes, so an operator's input can never silently vanish.
-    const [isFormDirty, setIsFormDirty] = createSignal(false);
-    // Set when a save succeeds: the standing listing is then stale by
-    // construction — the save overwrote exactly what the listing still
-    // shows — so the held row must not adopt it before the save's own reload
-    // lands (README §6.3: a save re-baselines the form onto the values it
-    // sent). The latch clears on the first read cycle that starts after the
-    // save, so a failed reload leaves the hold standing instead of resting
-    // the screen on the pre-save rows.
-    const [isSaveSettling, setIsSaveSettling] = createSignal(false);
+
+    const latestModel = createMemo(() => models().find((row) => row.id === props.modelId) ?? null);
+
+    // The held row with its save-settling latch: an open form with unsaved
+    // edits holds its row against refreshes, so an operator's input can never
+    // silently vanish, and a succeeded save holds it until its own reload
+    // lands (README §6.3).
+    const edit = createEditRow(latestModel, isSameModelRow);
 
     // The notice is also the save's reported outcome, so only a new failure
     // replaces it — a successful read keeps it (README §6.3).
@@ -68,21 +63,14 @@ export function ModelEditScreen(props: {
 
             setProviders(providersResult.providers);
             setModels(modelsResult.models);
-            setIsSaveSettling(false);
+            edit.reportReloaded();
         },
     });
 
-    const latestModel = createMemo(() => models().find((row) => row.id === props.modelId) ?? null);
-
     // A refresh answering the same row keeps the row's identity, so the open
     // form is not remounted; a row that genuinely changed on the gateway is
-    // held back while the form holds unsaved edits — or while a save is
-    // still settling — and the hold is stated.
-    const { row: model, isRowHeld } = createHeldRow(
-        latestModel,
-        () => isFormDirty() || isSaveSettling(),
-        isSameModelRow,
-    );
+    // held back while the hold stands — and the hold is stated.
+    const { row: model, isRowHeld } = edit;
 
     // The owning provider, kept identity-stable for the same reason: the
     // listing re-parses on every read, so an unpinned lookup would hand the
@@ -150,17 +138,14 @@ export function ModelEditScreen(props: {
                             api={props.api}
                             provider={provider()}
                             initialModel={row}
-                            onNotice={read.showNotice}
-                            onFailure={read.reportFailure}
-                            onReload={read.reload}
-                            onDirtyChange={setIsFormDirty}
-                            onSaved={() => setIsSaveSettling(true)}
+                            read={read}
+                            onDirtyChange={edit.reportFormDirty}
+                            onSaved={edit.reportSaved}
                         />
                         <DeleteCard
                             api={props.api}
                             model={row}
-                            onReload={read.reload}
-                            onFailure={read.reportFailure}
+                            read={read}
                         />
                     </>
                 )}
@@ -173,9 +158,7 @@ function ModelSettingsForm(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse | null;
     readonly initialModel: ModelResponse;
-    readonly onNotice: (notice: ScreenNotice | null) => void;
-    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
-    readonly onReload: () => void;
+    readonly read: ScreenRead;
     readonly onDirtyChange: (isDirty: boolean) => void;
     readonly onSaved: () => void;
 }): JSX.Element {
@@ -226,7 +209,7 @@ function ModelSettingsForm(props: {
         setHasIdOverride(current().id_override !== null);
         setIdOverride(current().id_override ?? "");
         // Reverting resolves a held row onto the gateway's current version.
-        props.onReload();
+        props.read.reload();
     };
 
     const save = async (): Promise<void> => {
@@ -247,25 +230,17 @@ function ModelSettingsForm(props: {
 
         setIsSaving(false);
 
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, {
-                action: "update-model",
-            });
-
-            if (diagnosis.kind === "gone") {
-                // The row is gone behind the screen: the listing re-reads so
-                // the not-found state takes over instead of a ghost form
-                // accepting re-saves forever (README §6.4).
-                props.onReload();
-            }
-
-            props.onFailure(outcome.cause, {
-                action: "update-model",
-            });
+        if (
+            !props.read.reportAction(
+                outcome,
+                {
+                    action: "update-model",
+                },
+                {
+                    onGone: props.read.reload,
+                },
+            )
+        ) {
             return;
         }
 
@@ -280,12 +255,12 @@ function ModelSettingsForm(props: {
         // The hold stands until this save's reload lands: the listing still
         // answers what the save overwrote.
         props.onSaved();
-        props.onNotice({
+        props.read.showNotice({
             tone: "ok",
             title: "Model saved.",
             detail: `Clients now call it ${saved.public_id}.`,
         });
-        props.onReload();
+        props.read.reload();
     };
 
     const submit = (event: SubmitEvent): void => {
@@ -333,8 +308,7 @@ function ModelSettingsForm(props: {
 function DeleteCard(props: {
     readonly api: ManagementApi;
     readonly model: ModelResponse;
-    readonly onReload: () => void;
-    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
+    readonly read: ScreenRead;
 }): JSX.Element {
     const confirmDelete = async (): Promise<boolean> => {
         const outcome = await performManagementCall(() =>
@@ -343,24 +317,17 @@ function DeleteCard(props: {
             }),
         );
 
-        if (outcome.status === "aborted") {
-            return false;
-        }
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, {
-                action: "delete-model",
-            });
-
-            if (diagnosis.kind === "gone") {
-                // The row is already gone: the listing re-reads so the
-                // not-found state takes over (README §6.4).
-                props.onReload();
-            }
-
-            props.onFailure(outcome.cause, {
-                action: "delete-model",
-            });
+        if (
+            !props.read.reportAction(
+                outcome,
+                {
+                    action: "delete-model",
+                },
+                {
+                    onGone: props.read.reload,
+                },
+            )
+        ) {
             return false;
         }
 

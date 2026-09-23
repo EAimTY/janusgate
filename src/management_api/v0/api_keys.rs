@@ -2,8 +2,8 @@
 
 use super::{EmptyResponse, Error, route};
 use crate::{
-    api_keys::{self, ApiKey, NewApiKey},
     context::Context,
+    storage::api_keys::{self, ApiKey, NewApiKey},
 };
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;

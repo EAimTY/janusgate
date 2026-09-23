@@ -3,20 +3,23 @@
 
 use super::{
     api::Error as ApiError,
-    api_logs::{ApiLogDraft, finalize_api_log},
     context::Context,
     database::Database,
     format::{
-        PayloadError, UpstreamEventParser, UpstreamFormat, anthropic_messages, gemini,
-        gemini_interaction, openai_chat_completion, openai_response,
+        PayloadError, UpstreamEventParser, UpstreamFormat, anthropic_messages,
+        gemini_generate_content, gemini_interaction, openai_chat_completion, openai_response,
     },
     ids,
     ir::{InvalidRequest, IrEvent, IrRequest},
     provider::{
-        Credentials, ModelRouting, Provider, ProviderType, endpoints, http_body, oauth,
-        oauth::Error as OAuthError, storage, storage::Error as StorageError,
+        Credentials, MissingBaseUrl, ModelRouting, Provider, ProviderType, endpoints, http_body,
+        oauth, oauth::Error as OAuthError,
     },
     sse::{SseFrame, SseParser},
+    storage::{
+        self, Error as StorageError,
+        api_logs::{ApiLogDraft, finalize_api_log},
+    },
 };
 use log::{debug, error};
 use reqwest::{Client, StatusCode};
@@ -306,7 +309,7 @@ fn build_upstream_request(
         ProviderType::OpenAiResponse => {
             let (url, body) = openai_response::render_request(
                 ir,
-                compatible_base_url(provider)?,
+                provider.upstream_base_url()?,
                 is_client_streaming,
             );
 
@@ -319,7 +322,7 @@ fn build_upstream_request(
         ProviderType::OpenAiChatCompletion => {
             let (url, body) = openai_chat_completion::render_request(
                 ir,
-                compatible_base_url(provider)?,
+                provider.upstream_base_url()?,
                 is_client_streaming,
             );
 
@@ -341,7 +344,7 @@ fn build_upstream_request(
                 });
             };
 
-            let (url, envelope) = gemini::render_antigravity_request(
+            let (url, envelope) = gemini_generate_content::render_antigravity_request(
                 ir,
                 endpoints::ANTIGRAVITY_BASE_URL,
                 endpoints::ANTIGRAVITY_USER_AGENT,
@@ -358,9 +361,9 @@ fn build_upstream_request(
         }
 
         ProviderType::GeminiGenerateContent => {
-            let (url, body) = gemini::render_compatible_request(
+            let (url, body) = gemini_generate_content::render_compatible_request(
                 ir,
-                compatible_base_url(provider)?,
+                provider.upstream_base_url()?,
                 &routing.model.upstream_id,
                 is_client_streaming,
             )?;
@@ -374,13 +377,12 @@ fn build_upstream_request(
                 .json(&body))
         }
 
-        // Owned by the Interactions subagent: `POST {base}/v1beta/interactions` with the
-        // `x-goog-api-key` and pinned `Api-Revision` headers (REFACTOR §6). The scaffold
-        // renderer reports unimplemented until the subagent lands the real wire shape.
+        // The Interactions upstream wire shape: `POST {base}/v1beta/interactions` with the
+        // `x-goog-api-key` and pinned `Api-Revision` headers (README §5.4).
         ProviderType::GeminiInteraction => {
             let (url, body) = gemini_interaction::render_request(
                 ir,
-                compatible_base_url(provider)?,
+                provider.upstream_base_url()?,
                 &routing.model.upstream_id,
                 is_client_streaming,
             )?;
@@ -398,13 +400,12 @@ fn build_upstream_request(
                 .json(&body))
         }
 
-        // Owned by the Anthropic subagent: `POST {base}/v1/messages` with the `x-api-key` and
-        // pinned `anthropic-version` headers (REFACTOR §6). The scaffold renderer reports
-        // unimplemented until the subagent lands the real wire shape.
+        // The Anthropic Messages upstream wire shape: `POST {base}/v1/messages` with the
+        // `x-api-key` and pinned `anthropic-version` headers (README §5.5).
         ProviderType::AnthropicMessages => {
             let (url, body) = anthropic_messages::render_request(
                 ir,
-                compatible_base_url(provider)?,
+                provider.upstream_base_url()?,
                 is_client_streaming,
             )?;
 
@@ -423,17 +424,6 @@ fn build_upstream_request(
     }
 }
 
-/// Resolves the stored base URL of a static-key provider.
-///
-/// OAuth providers carry fixed endpoints and never consult this. Creation validates `base_url` at
-/// the management API, so a missing value is stored drift — an invariant violation — and never a
-/// fault of the requesting client.
-fn compatible_base_url(provider: &Provider) -> Result<&str, Error> {
-    provider.base_url.as_deref().ok_or_else(|| Error::Internal {
-        message: "compatible provider lacks a stored base_url".to_string(),
-    })
-}
-
 /// Boxes the upstream event parser for the given wire format.
 fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventParser + Send> {
     match upstream_format {
@@ -441,7 +431,9 @@ fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventPars
         UpstreamFormat::OpenAiChatCompletion => {
             Box::new(openai_chat_completion::UpstreamParser::new())
         }
-        UpstreamFormat::GeminiGenerateContent => Box::new(gemini::UpstreamParser::new()),
+        UpstreamFormat::GeminiGenerateContent => {
+            Box::new(gemini_generate_content::UpstreamParser::new())
+        }
         UpstreamFormat::GeminiInteraction => Box::new(gemini_interaction::UpstreamParser::new()),
         UpstreamFormat::AnthropicMessages => Box::new(anthropic_messages::UpstreamParser::new()),
     }
@@ -709,10 +701,18 @@ impl From<PayloadError> for Error {
     }
 }
 
+impl From<MissingBaseUrl> for Error {
+    fn from(error: MissingBaseUrl) -> Self {
+        Self::Internal {
+            message: error.to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{api::Error as ApiError, api_logs::ApiLogOutcome};
+    use crate::{api::Error as ApiError, storage::api_logs::ApiLogOutcome};
     use reqwest::StatusCode;
 
     /// Verifies the dispatch accounting derives from the shared API classification: a mirrored

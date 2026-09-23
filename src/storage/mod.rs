@@ -1,19 +1,30 @@
-//! Provider, model, and OAuth state persistence, split by entity: [`providers`], [`models`], and
-//! [`oauth_states`] own their tables' statements, while this module owns the shared error domain,
-//! the Turso value conversions of the provider domain types, the row codecs, and the public model
-//! ID collision checks.
+//! The storage tier: the single home of every Turso statement and of the shared storage error
+//! domain.
+//!
+//! Every database statement outside the frozen schema lives here, one module per table:
+//! [`providers`], [`models`], [`oauth_states`], [`api_keys`], and [`api_logs`]. This module owns
+//! the shared error domain ([`Error`]) every surface maps onto its own taxonomy, the Turso value
+//! conversions of the provider domain types, the provider and model row codecs, and the public
+//! model ID collision checks. Both the provider domain (OAuth refresh, model discovery) and the
+//! api-side code (outward authentication, the gateway pipeline, the management surfaces) depend
+//! on this tier — the error taxonomy in particular is provider-agnostic, so it lives here rather
+//! than under `provider`.
 //!
 //! The entity split interlocks deliberately, mirroring the README §7.1 transaction contracts:
 //! `providers:update` recomputes its models' public IDs from the fresh prefix, so [`providers`]
 //! reads model rows through [`models::find_models_in_transaction`], while `models:create`,
 //! `models:update`, and model discovery re-read the provider row inside their transactions through
-//! [`providers::find_provider_by_id_in_transaction`]..
+//! [`providers::find_provider_by_id_in_transaction`].
 
-use super::{Credentials, DiscoveryState, Model, OAuthProviderType, Provider, ProviderType};
-use crate::database::{Error as DatabaseError, Row, Transaction, Value, params::IntoValue};
+use crate::{
+    database::{Error as DatabaseError, Row, Transaction, Value, params::IntoValue},
+    provider::{Credentials, DiscoveryState, Model, OAuthProviderType, Provider, ProviderType},
+};
 use std::collections::HashMap;
 use turso::Error as TursoError;
 
+pub(crate) mod api_keys;
+pub(crate) mod api_logs;
 mod models;
 mod oauth_states;
 mod providers;

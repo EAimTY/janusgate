@@ -16,7 +16,7 @@ pub(crate) struct SseFrame {
 
     /// Parsed `event:` name of the frame, when the upstream sent one. Anthropic and Interactions
     /// upstream parsers discriminate on this name; the JSON payloads' own `type`/`event_type`
-    /// members are not relied on for discrimination (REFACTOR §3).
+    /// members are not relied on for discrimination (README §5.4, §5.5).
     pub(crate) event: Option<String>,
 }
 
@@ -25,9 +25,9 @@ pub(crate) struct SseFrame {
 /// Implements the field subset of the SSE specification used by all upstream protocols: `data:`
 /// and `event:` fields, `:` comment lines, optional field value prefixes, and line terminators of
 /// `\n`, `\r\n`, or `\r`. The other fields the specification defines (`id`, `retry`) are
-/// tolerated and ignored. A frame is dispatched on an empty line only when at least one `data:`
-/// line was seen, so heartbeat comments and eventless keep-alive frames never surface. One leading
-/// UTF-8 BOM is stripped as the specification's decoding step requires.
+/// tolerated and ignored. A frame is dispatched on an empty line only when its joined `data:`
+/// payload is non-empty, so heartbeat comments and `data:`-only keep-alive frames never surface.
+/// One leading UTF-8 BOM is stripped as the specification's decoding step requires.
 #[derive(Debug, Default)]
 pub(crate) struct SseParser {
     /// Bytes received but not yet consumed as complete lines.
@@ -142,18 +142,20 @@ impl SseParser {
                     offset += consumed;
 
                     if line.is_empty() {
-                        if !self.pending_data_lines.is_empty() {
-                            frames.push(SseFrame {
-                                data: self.pending_data_lines.join("\n"),
-                                event: self.pending_event.take(),
-                            });
+                        // Per the specification's "dispatch the event" steps, an empty data
+                        // buffer dispatches nothing and both assembly buffers are cleared. The
+                        // joined payload is empty exactly when every accepted `data:` line's
+                        // value was empty after the single-space strip — the shape of
+                        // `data:`-only keep-alive frames — while a second empty line joins to a
+                        // lone newline and still dispatches.
+                        let data = self.pending_data_lines.join("\n");
+                        let event = self.pending_event.take();
 
-                            self.pending_data_lines = Vec::new();
-                            self.pending_frame_bytes = 0;
-                        } else {
-                            // An event line without data never dispatches; drop its name so it
-                            // cannot leak into the next frame's assembly.
-                            self.pending_event = None;
+                        self.pending_data_lines = Vec::new();
+                        self.pending_frame_bytes = 0;
+
+                        if !data.is_empty() {
+                            frames.push(SseFrame { data, event });
                         }
 
                         continue;
@@ -304,4 +306,152 @@ fn next_line(buffer: &[u8]) -> Result<Option<(String, usize)>, SseParseError> {
     let line = String::from_utf8_lossy(&buffer[..end]).into_owned();
 
     Ok(Some((line, end + terminator_length)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ingests every chunk into a fresh parser and returns all frames, including any trailing
+    /// frame [`SseParser::finish`] dispatches. Test streams are static, complete, and
+    /// well-formed, so a parse error is always a parser regression.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a static stream unexpectedly fails to parse.
+    fn frames_from(chunks: &[&[u8]]) -> Vec<SseFrame> {
+        let mut parser = SseParser::new();
+        let mut frames = Vec::new();
+
+        for chunk in chunks {
+            #[expect(
+                clippy::unwrap_used,
+                reason = "static well-formed test streams never fail to parse"
+            )]
+            frames.extend(parser.ingest(chunk).unwrap());
+        }
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "static well-formed test streams never fail to parse"
+        )]
+        frames.extend(parser.finish().unwrap());
+
+        frames
+    }
+
+    /// A `data:`-only keep-alive frame carries an empty joined payload and must not dispatch,
+    /// while the following real frame still dispatches whole.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed frames differ from the documented dispatch behavior.
+    #[test]
+    fn keep_alive_data_frame_is_not_dispatched() {
+        let frames = frames_from(&[b"data:\n\n", b"data: {\"ok\":true}\n\n"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                data: "{\"ok\":true}".to_string(),
+                event: None
+            }]
+        );
+    }
+
+    /// The empty-payload skip holds when the keep-alive frame is split across chunk boundaries,
+    /// and `finish` must surface nothing for it either.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any frame is dispatched.
+    #[test]
+    fn keep_alive_frame_split_across_chunks_is_not_dispatched() {
+        let frames = frames_from(&[b"data:\n", b"\n"]);
+
+        assert!(frames.is_empty());
+    }
+
+    /// The specification strips exactly one optional space from a field value, so `data: `
+    /// carries an empty value and dispatches nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any frame is dispatched.
+    #[test]
+    fn stripped_space_only_data_frame_is_not_dispatched() {
+        let frames = frames_from(&[b"data: \n\n"]);
+
+        assert!(frames.is_empty());
+    }
+
+    /// Only one space is stripped, so a second space leaves a whitespace payload that dispatches
+    /// verbatim instead of being skipped as empty.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed frames differ from the documented dispatch behavior.
+    #[test]
+    fn second_space_data_frame_dispatches_its_payload() {
+        let frames = frames_from(&[b"data:  \n\n"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                data: " ".to_string(),
+                event: None
+            }]
+        );
+    }
+
+    /// A skipped empty-payload frame also drops its pending `event:` name, so the name cannot
+    /// leak into the next frame's assembly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed frames differ from the documented dispatch behavior.
+    #[test]
+    fn skipped_empty_data_frame_drops_the_pending_event_name() {
+        let frames = frames_from(&[b"event: ping\ndata:\n\n", b"data: real\n\n"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                data: "real".to_string(),
+                event: None
+            }]
+        );
+    }
+
+    /// Two empty `data:` lines join to a lone newline, a non-empty payload that still dispatches,
+    /// pinning the boundary of the empty-payload skip.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed frames differ from the documented dispatch behavior.
+    #[test]
+    fn two_empty_data_lines_dispatch_a_newline_payload() {
+        let frames = frames_from(&[b"data:\ndata:\n\n"]);
+
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                data: "\n".to_string(),
+                event: None
+            }]
+        );
+    }
+
+    /// Comment-only frames flow through the same empty-payload skip on their dispatching blank
+    /// line and must keep surfacing nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any frame is dispatched.
+    #[test]
+    fn comment_only_frame_still_never_dispatches() {
+        let frames = frames_from(&[b": ping\n\n"]);
+
+        assert!(frames.is_empty());
+    }
 }

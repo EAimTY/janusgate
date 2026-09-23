@@ -1,6 +1,6 @@
 /**
  * Composition rules for machine-consumed management fields (gateway README
- * §7, REFACTOR §7): routing identifiers, model prefixes, bearer secrets, and base URLs.
+ * §7): routing identifiers, model prefixes, bearer secrets, and base URLs.
  * Every predicate mirrors the gateway's own validation and its schema
  * `CHECK` constraints, so the app rejects exactly what the gateway would
  * reject — before the round trip, with the field named.

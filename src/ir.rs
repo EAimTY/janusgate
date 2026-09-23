@@ -44,7 +44,7 @@ impl InvalidRequest {
     }
 }
 
-/// Closed reasoning vocabulary shared by every format (REFACTOR §1): one enum, forever.
+/// Closed reasoning vocabulary shared by every format (README §6.4): one enum, forever.
 ///
 /// Inbound surfaces parse their own parameter into this enum; unknown strings are a 400 at the
 /// gateway. Upstream renderers write the enum verbatim into the target's own level parameter.
@@ -52,7 +52,7 @@ impl InvalidRequest {
 /// support is rejected by the upstream and mirrored to the client per the existing error policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IrReasoningLevel {
-    /// No reasoning; renders as the native off spelling per format (REFACTOR §1).
+    /// No reasoning; renders as the native off spelling per format (README §6.4).
     None,
 
     /// Minimal reasoning effort.
@@ -114,7 +114,7 @@ impl IrReasoningLevel {
 
 /// One assistant reasoning block: its text (when the family exposes text) plus the opaque replay
 /// payload — enough to represent both an Anthropic-style `thinking` block and a
-/// `redacted_thinking` block, and an Interactions `thought` step, verbatim (REFACTOR §2).
+/// `redacted_thinking` block, and an Interactions `thought` step, verbatim (README §6.1).
 ///
 /// Same-family round-trip is mandatory: Anthropic inbound thinking/redacted blocks and
 /// Interactions inbound thought steps replay byte-exact to their own upstreams. OpenAI surfaces
@@ -276,11 +276,11 @@ pub(crate) enum IrPart {
         content: String,
 
         /// Whether the tool reported an error; read and rendered by the Anthropic surface pair
-        /// only, dropped by every other surface (REFACTOR §2).
+        /// only, dropped by every other surface (README §6.1).
         is_error: bool,
     },
 
-    /// An assistant reasoning block (REFACTOR §2): its text plus the opaque family-bound replay
+    /// An assistant reasoning block (README §6.1): its text plus the opaque family-bound replay
     /// payload. Same-family round-trip replays the opaque payload verbatim; OpenAI surfaces
     /// render the text through the existing reasoning channels and drop the payload.
     Reasoning {
@@ -386,7 +386,7 @@ pub(crate) struct IrRequest {
     /// Response format restriction.
     pub(crate) response_format: Option<IrResponseFormat>,
 
-    /// Reasoning effort level in the closed shared vocabulary (REFACTOR §1): parsed from the
+    /// Reasoning effort level in the closed shared vocabulary (README §6.4): parsed from the
     /// client's own parameter into [`IrReasoningLevel`], written verbatim into the upstream's own
     /// parameter. `None` means the client omitted the field, and then no upstream parameter is
     /// rendered.
@@ -412,7 +412,7 @@ pub(crate) enum IrEvent {
     ReasoningDelta(String),
 
     /// A complete reasoning block, terminating the reasoning text streamed so far with its
-    /// signature so streaming and aggregated renderings agree (REFACTOR §2). Upstream parsers
+    /// signature so streaming and aggregated renderings agree (README §6.2). Upstream parsers
     /// emit either deltas plus an empty-text done, or a done carrying the full text with no
     /// prior deltas — never both with overlapping text — so renderers can render both safely:
     /// a non-empty `text` renders when no deltas preceded it, an empty `text` closes the block
@@ -474,11 +474,12 @@ pub(crate) enum IrEvent {
 
 /// Token accounting of a completion.
 ///
-/// The breakdown values mirror the official Responses usage detail objects: `cached_tokens` and
+/// The breakdown values mirror the official usage detail objects: `cached_tokens` and
 /// `cache_write_tokens` detail the input, and `reasoning_tokens` details the output. They are
-/// [`None`] when the upstream reports no breakdown — every Chat Completions upstream, and any
-/// Responses upstream that reports totals only — so the outward Responses rendering can zero-fill
-/// the SDK-required detail fields.
+/// [`None`] when the upstream reports no breakdown — an upstream that reports totals only, such
+/// as a Responses upstream without detail objects or a Chat Completions upstream that omits its
+/// `prompt_tokens_details`/`completion_tokens_details` objects — so the outward Responses
+/// rendering can zero-fill the SDK-required detail fields.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct IrUsage {
     /// Tokens consumed by the input.
@@ -523,7 +524,7 @@ pub(crate) struct IrAggregation {
     pub(crate) reasoning: String,
 
     /// Completed reasoning blocks in emission order, carrying their signatures and opaque replay
-    /// payloads so streaming and aggregated renderings agree (REFACTOR §2).
+    /// payloads so streaming and aggregated renderings agree (README §6.2).
     pub(crate) reasoning_blocks: Vec<IrReasoningBlock>,
 
     /// Completed tool calls in emission order.

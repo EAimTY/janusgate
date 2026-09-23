@@ -739,7 +739,7 @@ impl ClientSseRenderer for SseRenderer {
 
             // A done carrying text opens its block when no deltas preceded it; an empty-text done
             // only marks the block the deltas already delivered. The opaque payload is dropped on
-            // OpenAI surfaces (REFACTOR §2); block closure happens on Finish via
+            // OpenAI surfaces (README §6.2); block closure happens on Finish via
             // `close_open_items`.
             IrEvent::ReasoningDone { text, .. } => {
                 if text.is_empty() {
@@ -1038,7 +1038,7 @@ impl ClientSseRenderer for SseRenderer {
     }
 
     /// Renders a mid-stream error as a terminal `response.failed` event, classified once through
-    /// the shared API error (REFACTOR §3).
+    /// the shared API error (README §6.7).
     ///
     /// Strict clients validate the embedded response object like any other, so it carries the full
     /// required shell rather than a bare id/status/error subset.

@@ -6,8 +6,12 @@ import type {
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { API_LOG_ENDPOINT_OPTIONS, API_LOG_OUTCOME_OPTIONS } from "/src/management-api/vocabulary";
+import type {
+    UsageFilterFields,
+    UsageOutcomeChoice,
+    UsageStreamChoice,
+} from "/src/screens/usage-filter";
 import { SelectField, TextField } from "/src/ui/controls";
-import type { UsageFilterFields, UsageOutcomeChoice, UsageStreamChoice } from "/src/usage-filter";
 
 /**
  * The outcome control's choices: everything, the two failure outcomes under

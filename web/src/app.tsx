@@ -4,7 +4,7 @@ import { connectionService } from "/src/connection/app-service";
 import type { Connection } from "/src/connection/model";
 import { formatClock } from "/src/format";
 import { createManagementApi } from "/src/management-api/client";
-import { refreshStamp, requestRefresh } from "/src/refresh-state";
+import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
 import { type AppRoute, currentLocation, hrefs, matchAppRoute, navigate } from "/src/router";
 import { ApiKeyDetailScreen } from "/src/screens/api-key-detail-screen";
 import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
@@ -161,9 +161,14 @@ function routeNamed<TName extends AppRoute["name"]>(
 }
 
 function AdminShell(props: { readonly connection: Connection }): JSX.Element {
-    // The shell is created per connection, and it always starts at the top:
-    // the setup screen can leave the document scrolled when its form was the
-    // last thing on a short viewport.
+    // The shell is created per connection: the freshness stamp belongs to the
+    // instance the reads answer, so a different connection starts unrefreshed
+    // instead of showing the previous instance's stamp until its first read
+    // completes. The shell also always starts at the top — the setup screen
+    // can leave the document scrolled when its form was the last thing on a
+    // short viewport.
+    resetRefreshStamp();
+
     onSettled(() => {
         window.scrollTo(0, 0);
     });

@@ -403,7 +403,7 @@ mod tests {
         serde_json::to_value(body).expect("the body serializes")
     }
 
-    /// Verifies the Responses effort slot of the closed-vocabulary contract (REFACTOR §1): every
+    /// Verifies the Responses effort slot of the closed-vocabulary contract (README §6.4): every
     /// vocabulary value renders verbatim, and an absent effort renders no reasoning object at all.
     ///
     /// # Panics

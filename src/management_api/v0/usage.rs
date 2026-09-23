@@ -7,9 +7,9 @@
 
 use super::{Error, Nullable, route};
 use crate::{
-    api_logs::{self, ApiLog, UsageAggregate, UsageGroupBy, list_api_logs, query_usage},
     context::Context,
     ir::InvalidRequest,
+    storage::api_logs::{self, ApiLog, UsageAggregate, UsageGroupBy, list_api_logs, query_usage},
 };
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
@@ -577,8 +577,8 @@ mod tests {
         UsageFilter, resolve_filter, resolve_group_by, resolve_limit,
     };
     use crate::{
-        api_logs::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
         management_api::v0::Error,
+        storage::api_logs::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
     };
     use vec1::Vec1;
 
@@ -800,7 +800,7 @@ mod tests {
         // An absent filter resolves to the empty filter, filtering nothing.
         assert!(
             resolve_filter(None)
-                .is_ok_and(|filter| filter == crate::api_logs::UsageFilter::default()),
+                .is_ok_and(|filter| filter == crate::storage::api_logs::UsageFilter::default()),
             "an absent filter resolves to the empty filter"
         );
     }
@@ -815,7 +815,7 @@ mod tests {
     /// Panics if a rendered body diverges from the documented shape.
     #[test]
     fn renders_the_documented_wire_shapes() {
-        let log = crate::api_logs::ApiLog {
+        let log = crate::storage::api_logs::ApiLog {
             id: 9,
             started_at: 1_700_000_000_000_000,
             api_key_id: 3,
@@ -868,11 +868,11 @@ mod tests {
         assert!(!rendered.contains_key("reasoning_effort"));
 
         // A composite key renders exactly the requested dimensions, in request order.
-        let aggregate = crate::api_logs::UsageAggregate {
-            key: crate::api_logs::UsageBucketKey {
+        let aggregate = crate::storage::api_logs::UsageAggregate {
+            key: crate::storage::api_logs::UsageBucketKey {
                 day: Some("2026-01-02".to_string()),
                 model_id: Some(42),
-                ..crate::api_logs::UsageBucketKey::default()
+                ..crate::storage::api_logs::UsageBucketKey::default()
             },
             requests: 4,
             input_tokens: 10,
@@ -903,11 +903,11 @@ mod tests {
         );
 
         // The `NULL` status bucket renders `null`, and the total bucket's key is empty.
-        let aggregate = crate::api_logs::UsageAggregate {
-            key: crate::api_logs::UsageBucketKey {
+        let aggregate = crate::storage::api_logs::UsageAggregate {
+            key: crate::storage::api_logs::UsageBucketKey {
                 outcome: Some(ApiLogOutcome::ClientAborted),
                 http_status: None,
-                ..crate::api_logs::UsageBucketKey::default()
+                ..crate::storage::api_logs::UsageBucketKey::default()
             },
             requests: 1,
             input_tokens: 0,
@@ -929,8 +929,8 @@ mod tests {
             Some(&serde_json::json!({"outcome": "client_aborted", "http_status": null}))
         );
 
-        let aggregate = crate::api_logs::UsageAggregate {
-            key: crate::api_logs::UsageBucketKey::default(),
+        let aggregate = crate::storage::api_logs::UsageAggregate {
+            key: crate::storage::api_logs::UsageBucketKey::default(),
             requests: 7,
             input_tokens: 0,
             output_tokens: 0,

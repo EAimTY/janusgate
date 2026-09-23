@@ -6,14 +6,12 @@ import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { compositionMessage, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
 import {
-    createHeldRow,
+    createEditRow,
     createScreenRead,
-    type FailureCall,
     isSameApiKeyRow,
     readAll,
-    type ScreenNotice,
+    type ScreenRead,
 } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
@@ -33,17 +31,16 @@ export function ApiKeyEditScreen(props: {
     readonly apiKeyId: number;
 }): JSX.Element {
     const [keys, setKeys] = createSignal<ReadonlyArray<ApiKeyResponse>>([]);
-    // Reported by the settings form: an open form with unsaved edits holds its
-    // row against refreshes, so an operator's input can never silently vanish.
-    const [isFormDirty, setIsFormDirty] = createSignal(false);
-    // Set when a save succeeds: the standing listing is then stale by
-    // construction — the save overwrote exactly what the listing still
-    // shows — so the held row must not adopt it before the save's own reload
-    // lands (README §6.3: a save re-baselines the form onto the values it
-    // sent). The latch clears on the first read cycle that starts after the
-    // save, so a failed reload leaves the hold standing instead of resting
-    // the screen on the pre-save rows.
-    const [isSaveSettling, setIsSaveSettling] = createSignal(false);
+
+    const latestKey = createMemo(
+        () => keys().find((candidate) => candidate.id === props.apiKeyId) ?? null,
+    );
+
+    // The held row with its save-settling latch: an open form with unsaved
+    // edits holds its row against refreshes, so an operator's input can never
+    // silently vanish, and a succeeded save holds it until its own reload
+    // lands (README §6.3).
+    const edit = createEditRow(latestKey, isSameApiKeyRow);
 
     // The notice is also the save's reported outcome, so only a new failure
     // replaces it — a successful read keeps it (README §6.3).
@@ -55,23 +52,14 @@ export function ApiKeyEditScreen(props: {
             });
 
             setKeys(keysResult.api_keys);
-            setIsSaveSettling(false);
+            edit.reportReloaded();
         },
     });
 
-    const latestKey = createMemo(
-        () => keys().find((candidate) => candidate.id === props.apiKeyId) ?? null,
-    );
-
     // A refresh answering the same row keeps the row's identity, so the open
     // form is not remounted; a row that genuinely changed on the gateway is
-    // held back while the form holds unsaved edits — or while a save is
-    // still settling — and the hold is stated.
-    const { row: apiKey, isRowHeld } = createHeldRow(
-        latestKey,
-        () => isFormDirty() || isSaveSettling(),
-        isSameApiKeyRow,
-    );
+    // held back while the hold stands — and the hold is stated.
+    const { row: apiKey, isRowHeld } = edit;
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -126,11 +114,9 @@ export function ApiKeyEditScreen(props: {
                             api={props.api}
                             apiKey={row}
                             enabledCount={keys().filter((candidate) => candidate.is_enabled).length}
-                            onReload={read.reload}
-                            onNotice={read.showNotice}
-                            onFailure={read.reportFailure}
-                            onDirtyChange={setIsFormDirty}
-                            onSaved={() => setIsSaveSettling(true)}
+                            read={read}
+                            onDirtyChange={edit.reportFormDirty}
+                            onSaved={edit.reportSaved}
                         />
 
                         <DangerCard
@@ -140,8 +126,7 @@ export function ApiKeyEditScreen(props: {
                                 row.is_enabled &&
                                 keys().filter((candidate) => candidate.is_enabled).length <= 1
                             }
-                            onReload={read.reload}
-                            onFailure={read.reportFailure}
+                            read={read}
                         />
                     </>
                 )}
@@ -155,9 +140,7 @@ function SettingsCard(props: {
     readonly api: ManagementApi;
     readonly apiKey: ApiKeyResponse;
     readonly enabledCount: number;
-    readonly onReload: () => void;
-    readonly onNotice: (notice: ScreenNotice | null) => void;
-    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
+    readonly read: ScreenRead;
     readonly onDirtyChange: (isDirty: boolean) => void;
     readonly onSaved: () => void;
 }): JSX.Element {
@@ -199,7 +182,7 @@ function SettingsCard(props: {
         setName(baseline().name);
         setSecret(baseline().key);
         // Reverting resolves a held row onto the gateway's current version.
-        props.onReload();
+        props.read.reload();
     };
 
     const save = async (): Promise<void> => {
@@ -221,25 +204,17 @@ function SettingsCard(props: {
 
         setIsSaving(false);
 
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, {
-                action: "update-api-key",
-            });
-
-            if (diagnosis.kind === "gone") {
-                // The row is gone behind the screen: the listing re-reads so
-                // the not-found state takes over instead of a ghost form
-                // accepting re-saves forever (README §6.4).
-                props.onReload();
-            }
-
-            props.onFailure(outcome.cause, {
-                action: "update-api-key",
-            });
+        if (
+            !props.read.reportAction(
+                outcome,
+                {
+                    action: "update-api-key",
+                },
+                {
+                    onGone: props.read.reload,
+                },
+            )
+        ) {
             return;
         }
 
@@ -254,7 +229,7 @@ function SettingsCard(props: {
         // The hold stands until this save's reload lands: the listing still
         // answers what the save overwrote.
         props.onSaved();
-        props.onNotice({
+        props.read.showNotice({
             tone: "ok",
             title: `${name()} saved.`,
             detail:
@@ -262,7 +237,7 @@ function SettingsCard(props: {
                     ? "This was the last enabled key: the gateway now serves nothing until a key is turned on."
                     : null,
         });
-        props.onReload();
+        props.read.reload();
     };
 
     const submit = (event: SubmitEvent): void => {
@@ -316,8 +291,7 @@ function DangerCard(props: {
     readonly api: ManagementApi;
     readonly apiKey: ApiKeyResponse;
     readonly isLastEnabled: boolean;
-    readonly onReload: () => void;
-    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
+    readonly read: ScreenRead;
 }): JSX.Element {
     const confirmDelete = async (): Promise<boolean> => {
         const outcome = await performManagementCall(() =>
@@ -326,24 +300,17 @@ function DangerCard(props: {
             }),
         );
 
-        if (outcome.status === "aborted") {
-            return false;
-        }
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, {
-                action: "delete-api-key",
-            });
-
-            if (diagnosis.kind === "gone") {
-                // The row is already gone: the listing re-reads so the
-                // not-found state takes over (README §6.4).
-                props.onReload();
-            }
-
-            props.onFailure(outcome.cause, {
-                action: "delete-api-key",
-            });
+        if (
+            !props.read.reportAction(
+                outcome,
+                {
+                    action: "delete-api-key",
+                },
+                {
+                    onGone: props.read.reload,
+                },
+            )
+        ) {
             return false;
         }
 

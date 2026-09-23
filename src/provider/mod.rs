@@ -1,4 +1,7 @@
-//! Provider entities, credentials, upstream storage, OAuth flows, and model discovery.
+//! Provider entities, credentials, OAuth flows, upstream endpoints, and model discovery.
+//!
+//! The storage tier holding every database statement — including the providers' own rows — lives
+//! beside this module in [`crate::storage`].
 
 use crate::format::UpstreamFormat;
 use serde::{
@@ -12,7 +15,6 @@ pub(crate) mod discovery;
 pub(crate) mod endpoints;
 pub(crate) mod http_body;
 pub(crate) mod oauth;
-pub(crate) mod storage;
 
 /// Kinds of upstream providers: one per upstream product — a static-key wire
 /// format or an OAuth login — so the type pins the wire format outright and no
@@ -604,10 +606,36 @@ pub(crate) struct Provider {
     pub(crate) is_enabled: bool,
 }
 
+/// A static-key provider whose stored row lacks the base URL its upstream requests need
+/// (README §3): creation validates `base_url` at the management API, so a missing value is stored
+/// drift — an invariant violation — and never a fault of the requesting client.
+#[derive(Debug, thiserror::Error)]
+#[error("static-key provider `{name}` lacks a stored base URL")]
+pub(crate) struct MissingBaseUrl {
+    /// The provider whose stored row lacks the base URL.
+    name: String,
+}
+
 impl Provider {
     /// The upstream wire format the provider speaks, pinned by its type.
     pub(crate) fn upstream_format(&self) -> UpstreamFormat {
         self.provider_type.upstream_format()
+    }
+
+    /// The base URL the provider's upstream requests target: the stored value with any trailing
+    /// slashes removed, so the per-endpoint path compositions never double the separator. OAuth
+    /// providers carry fixed endpoints and never consult this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MissingBaseUrl`] when the static-key row carries no stored base URL.
+    pub(crate) fn upstream_base_url(&self) -> Result<&str, MissingBaseUrl> {
+        self.base_url
+            .as_deref()
+            .map(|url| url.trim_end_matches('/'))
+            .ok_or_else(|| MissingBaseUrl {
+                name: self.name.clone(),
+            })
     }
 }
 

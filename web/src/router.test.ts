@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_USAGE_FILTER_DRAFT } from "/src/usage-filter";
+import { EMPTY_USAGE_FILTER_DRAFT } from "/src/screens/usage-filter";
 import { hrefs, matchAppRoute, parseRowIdentifier } from "./router";
 
 function match(target: string) {

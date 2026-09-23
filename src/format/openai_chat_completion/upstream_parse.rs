@@ -153,9 +153,12 @@ struct FunctionFields {
     arguments: Option<String>,
 }
 
-/// Upstream token accounting. Only the totals ride the IR: the outward Chat Completions surface
-/// renders nothing else, and the Responses surface zero-fills an absent breakdown.
-#[derive(Debug, Deserialize)]
+/// Upstream token accounting: the totals always, beside the official detail objects when the
+/// upstream reports them — `prompt_tokens_details.cached_tokens`,
+/// `prompt_tokens_details.cache_write_tokens`, and
+/// `completion_tokens_details.reasoning_tokens` ride into the IR breakdowns (README §6.2),
+/// while the members the gateway does not read are ignored.
+#[derive(Debug, Default, Deserialize)]
 struct UpstreamUsage {
     /// Tokens consumed by the input.
     #[serde(default)]
@@ -164,6 +167,34 @@ struct UpstreamUsage {
     /// Tokens produced by the output.
     #[serde(default)]
     completion_tokens: u64,
+
+    /// Input breakdown: the cache-read and cache-write columns.
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+
+    /// Output breakdown: the reasoning column.
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+/// The official `prompt_tokens_details` object; every member is optional.
+#[derive(Debug, Default, Deserialize)]
+struct PromptTokensDetails {
+    /// Input tokens served from the upstream prompt cache.
+    #[serde(default)]
+    cached_tokens: Option<u64>,
+
+    /// Input tokens written to the upstream prompt cache.
+    #[serde(default)]
+    cache_write_tokens: Option<u64>,
+}
+
+/// The official `completion_tokens_details` object; every member is optional.
+#[derive(Debug, Default, Deserialize)]
+struct CompletionTokensDetails {
+    /// Output tokens spent on model reasoning.
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
 }
 
 impl UpstreamParser {
@@ -410,7 +441,18 @@ fn usage_event(usage: &UpstreamUsage) -> IrEvent {
     IrEvent::Usage(IrUsage {
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
-        ..IrUsage::default()
+        cached_tokens: usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens),
+        cache_write_tokens: usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cache_write_tokens),
+        reasoning_tokens: usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|details| details.reasoning_tokens),
     })
 }
 
@@ -483,4 +525,87 @@ fn message_events_from_full(message: &MessageFields) -> Vec<IrEvent> {
     }
 
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sse::SseFrame;
+
+    /// Builds one upstream frame carrying `data`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the payload is not valid JSON, which cannot occur for the fixtures.
+    fn frame(data: &str) -> SseFrame {
+        #[expect(
+            clippy::expect_used,
+            reason = "fixture payloads are constructed to be valid JSON"
+        )]
+        let parsed: Value = serde_json::from_str(data).expect("fixture payloads are valid JSON");
+
+        SseFrame {
+            data: parsed.to_string(),
+            event: None,
+        }
+    }
+
+    /// Parses the official terminal usage chunk (README §6.2): the three documented breakdown
+    /// members ride through to the IR usage, beside the totals the gateway already carried.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed events diverge from the upstream report.
+    #[test]
+    fn parses_usage_breakdowns_from_the_terminal_chunk() {
+        let mut parser = UpstreamParser::new();
+
+        let start = parser.ingest_frame(&frame(
+            r#"{"id":"c1","model":"m","choices":[{"index":0,"delta":{},
+               "finish_reason":"stop"}]}"#,
+        ));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the finish chunk is constructed to parse"
+        )]
+        let start = start.expect("the finish chunk parses");
+
+        assert_eq!(
+            start,
+            vec![
+                IrEvent::MessageStart {
+                    id: "c1".to_string(),
+                    model: "m".to_string(),
+                },
+                IrEvent::Finish(IrFinishReason::Stop),
+            ],
+        );
+
+        let usage = parser.ingest_frame(&frame(
+            r#"{"id":"c1","model":"m","choices":[],"usage":{
+               "prompt_tokens": 100,
+               "completion_tokens": 50,
+               "total_tokens": 150,
+               "prompt_tokens_details": {"cached_tokens": 80, "cache_write_tokens": 7},
+               "completion_tokens_details": {"reasoning_tokens": 20}}}"#,
+        ));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the usage chunk is constructed to parse"
+        )]
+        let usage = usage.expect("the usage chunk parses");
+
+        assert_eq!(
+            usage,
+            vec![IrEvent::Usage(IrUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cached_tokens: Some(80),
+                cache_write_tokens: Some(7),
+                reasoning_tokens: Some(20),
+            })],
+        );
+    }
 }

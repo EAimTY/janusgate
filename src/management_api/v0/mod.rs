@@ -77,8 +77,8 @@ pub use self::{
     },
 };
 pub use crate::{
-    api_logs::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
     provider::{DiscoveryState, OAuthProviderType, ProviderType},
+    storage::api_logs::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
 };
 
 /// URL prefix this version is mounted at, relative to the management API router. Its version
@@ -306,7 +306,7 @@ fn validate_composition(param: &'static str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validates a model prefix (README §7, REFACTOR §7): empty means no prefix, otherwise the
+/// Validates a model prefix (README §7): empty means no prefix, otherwise the
 /// routing-token composition — printable ASCII without whitespace and without `/` or `:` (the
 /// Gemini URL path cannot address them).
 ///
@@ -321,7 +321,7 @@ fn validate_model_prefix(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validates a routing token (REFACTOR §7): `upstream_id` or a present `id_override`. The value
+/// Validates a routing token (README §7): `upstream_id` or a present `id_override`. The value
 /// must be non-empty printable ASCII without whitespace and without `/` or `:` — the Gemini URL
 /// path (`/models/{model}:generateContent`) cannot address them. An empty value is
 /// [`Error::EmptyIdentifier`], any other composition failure [`Error::InvalidIdentifier`].
@@ -973,7 +973,7 @@ mod tests {
         }
     }
 
-    /// Verifies the model prefix composition (README §7, REFACTOR §7): empty means no prefix,
+    /// Verifies the model prefix composition (README §7): empty means no prefix,
     /// otherwise the routing-token composition — printable ASCII without whitespace and without
     /// `/` or `:` (the Gemini URL path cannot address them).
     ///
@@ -1001,7 +1001,7 @@ mod tests {
         }
     }
 
-    /// Verifies the routing-token composition (REFACTOR §7): `upstream_id` and a present
+    /// Verifies the routing-token composition (README §7): `upstream_id` and a present
     /// `id_override` reject `/` and `:` beside the generic composition, because the Gemini URL
     /// path cannot address them.
     ///

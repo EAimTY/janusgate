@@ -2,6 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { modelCountsByProvider } from "/src/management-api/serving";
 import { providerTypeLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { createScreenRead, readAll } from "/src/screens/read";
@@ -39,15 +40,7 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
         },
     });
 
-    const modelCounts = createMemo(() => {
-        const counts = new Map<number, number>();
-
-        for (const model of models()) {
-            counts.set(model.provider_id, (counts.get(model.provider_id) ?? 0) + 1);
-        }
-
-        return counts;
-    });
+    const modelCounts = createMemo(() => modelCountsByProvider(models()));
 
     const visibleProviders = createMemo(() => {
         const needle = search().trim().toLowerCase();

@@ -12,7 +12,7 @@ import type { ErrorCode } from "/src/management-api/generated/v0";
  * the cause whole, because the panel's diagnosis reads the failure rather than
  * its prose — or nothing to do because the visitor navigated away mid-flight.
  */
-type ManagementCallOutcome<TResult> =
+export type ManagementCallOutcome<TResult> =
     | {
           readonly status: "ok";
           readonly result: TResult;

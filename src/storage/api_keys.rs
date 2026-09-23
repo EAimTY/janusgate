@@ -7,14 +7,13 @@
 //!
 //! The outward authentication middleware reads only enabled secrets through
 //! [`list_enabled_api_key_secrets`]; the management surface owns the full CRUD below. Storage
-//! failures reuse the provider storage error domain ([`Error`]), so the management taxonomy
-//! classifies them with no new mapping: a missing row is a 404, a taken key a 409, and a
-//! constraint backstop the generic collision message. Messages never carry the secret itself —
-//! only the row id — so a conflict body stays safe to render and log.
+//! failures classify through the shared storage error domain ([`Error`]): a missing row is a 404,
+//! a taken key a 409, and a constraint backstop the generic collision message. Messages never
+//! carry the secret itself — only the row id — so a conflict body stays safe to render and log.
 
+use super::Error;
 use crate::{
     database::{Database, params},
-    provider::storage::Error,
     unix_time,
 };
 

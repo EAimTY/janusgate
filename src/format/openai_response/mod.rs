@@ -5,9 +5,9 @@
 
 use self::client_render::{ResponseObject, SseRenderer};
 use crate::{
-    api_logs::ApiLogEndpointType,
     format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
     ir::{InvalidRequest, IrAggregation},
+    storage::api_logs::ApiLogEndpointType,
 };
 
 mod client_render;

@@ -3,10 +3,8 @@
 use super::{EmptyResponse, Error, Nullable, route};
 use crate::{
     context::Context,
-    provider::{
-        DiscoveryState, discovery, oauth,
-        storage::{self, ModelCreate, ModelEntry, ModelUpdate},
-    },
+    provider::{DiscoveryState, discovery, oauth},
+    storage::{self, ModelCreate, ModelEntry, ModelUpdate},
 };
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
@@ -452,7 +450,8 @@ mod tests {
     use super::{CreateModelRequest, DeleteModelRequest, ModelResponse, UpdateModelRequest};
     use crate::{
         management_api::v0::Nullable,
-        provider::{DiscoveryState, Model, storage::ModelEntry},
+        provider::{DiscoveryState, Model},
+        storage::ModelEntry,
     };
 
     /// Pins the `models` wire row at the JSON level: the row identifier under `id`, the routing

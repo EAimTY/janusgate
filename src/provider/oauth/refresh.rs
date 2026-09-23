@@ -6,7 +6,9 @@ use super::{Error, flow, token};
 use crate::{
     database::{Database, Error as DatabaseError, Transaction},
     http_client,
-    provider::{Credentials, OAuthProviderType, Provider, storage, storage::Error as StorageError},
+    provider::{Credentials, OAuthProviderType, Provider},
+    storage,
+    storage::Error as StorageError,
     unix_time,
 };
 use log::{debug, info, warn};
@@ -278,73 +280,129 @@ async fn refresh_and_store(
     outcome
 }
 
+/// The merge context a refresh grant's response folds back into: the OAuth credentials variant
+/// being renewed and the stored fields the renewed credentials inherit when the grant leaves them
+/// unchanged.
+enum RefreshTarget {
+    /// ChatGPT OAuth credentials, inheriting the account ID unless the grant's `id_token` carries
+    /// a fresher claim.
+    CodexOauth {
+        /// Stored ChatGPT account ID, the fallback when the `id_token` claim is absent.
+        account_id: String,
+
+        /// Stored refresh token, the fallback when the grant does not rotate it.
+        stored_refresh_token: String,
+    },
+
+    /// Google OAuth credentials, inheriting the Antigravity project ID unchanged.
+    AntigravityOauth {
+        /// Stored Antigravity project ID, carried over unchanged.
+        project_id: String,
+
+        /// Stored refresh token, the fallback when the grant does not rotate it.
+        stored_refresh_token: String,
+    },
+}
+
+impl RefreshTarget {
+    /// The stored refresh token the refresh grant presents.
+    fn refresh_token(&self) -> &str {
+        match self {
+            RefreshTarget::CodexOauth {
+                stored_refresh_token,
+                ..
+            }
+            | RefreshTarget::AntigravityOauth {
+                stored_refresh_token,
+                ..
+            } => stored_refresh_token,
+        }
+    }
+
+    /// Merges the refresh grant's response into renewed credentials.
+    fn merge(self, refreshed: flow::RefreshedTokens, access_token: String) -> Credentials {
+        match self {
+            RefreshTarget::CodexOauth {
+                account_id,
+                stored_refresh_token,
+            } => Credentials::CodexOauth {
+                account_id: refreshed
+                    .id_token
+                    .as_deref()
+                    .and_then(token::openai_account_claim)
+                    .unwrap_or(account_id),
+                access_token,
+                refresh_token: refreshed.refresh_token.unwrap_or(stored_refresh_token),
+            },
+
+            RefreshTarget::AntigravityOauth {
+                project_id,
+                stored_refresh_token,
+            } => Credentials::AntigravityOauth {
+                project_id,
+                access_token,
+                refresh_token: refreshed.refresh_token.unwrap_or(stored_refresh_token),
+            },
+        }
+    }
+}
+
 /// Calls the provider's refresh grant and merges the result into new credentials.
+///
+/// The single dispatch on the provider's credentials selects the grant's provider type together
+/// with the [`RefreshTarget`] the response merges into, and its `ApiKey` arm is the one place the
+/// "API key credentials never refresh" invariant lives — [`ensure_fresh_token`] already refuses
+/// API key providers before entering its loop.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the refresh grant fails.
+/// Returns [`Error`] when the credentials are API keys or the refresh grant fails.
 async fn refresh_and_build_credentials(
     http: &Client,
     provider: &Provider,
 ) -> Result<(Credentials, i64), Error> {
-    let refreshed = match &provider.credentials {
-        Credentials::CodexOauth { refresh_token, .. } => {
-            flow::refresh_tokens(http, OAuthProviderType::CodexOauth, refresh_token).await?
-        }
+    let (oauth_type, target) = match &provider.credentials {
+        Credentials::CodexOauth {
+            account_id,
+            refresh_token,
+            ..
+        } => (
+            OAuthProviderType::CodexOauth,
+            RefreshTarget::CodexOauth {
+                account_id: account_id.clone(),
+                stored_refresh_token: refresh_token.clone(),
+            },
+        ),
 
-        Credentials::AntigravityOauth { refresh_token, .. } => {
-            flow::refresh_tokens(http, OAuthProviderType::AntigravityOauth, refresh_token).await?
-        }
+        Credentials::AntigravityOauth {
+            project_id,
+            refresh_token,
+            ..
+        } => (
+            OAuthProviderType::AntigravityOauth,
+            RefreshTarget::AntigravityOauth {
+                project_id: project_id.clone(),
+                stored_refresh_token: refresh_token.clone(),
+            },
+        ),
 
+        // API key credentials carry no refresh token, so there is no grant to call; this arm is
+        // the invariant's single home.
         Credentials::ApiKey(_) => {
             return Err(Error::Internal {
                 message: "API key credentials never refresh".to_string(),
             });
         }
     };
+
+    let refreshed = flow::refresh_tokens(http, oauth_type, target.refresh_token()).await?;
 
     let access_token = refreshed.access_token.clone();
 
     // Computed before `access_token` is moved into the credentials.
     let expires_at = token::token_expiry_from(refreshed.expires_in, Some(&access_token))?;
 
-    let credentials = match &provider.credentials {
-        Credentials::CodexOauth {
-            account_id,
-            refresh_token: stored_refresh_token,
-            ..
-        } => Credentials::CodexOauth {
-            account_id: refreshed
-                .id_token
-                .as_deref()
-                .and_then(token::openai_account_claim)
-                .unwrap_or_else(|| account_id.clone()),
-            access_token,
-            refresh_token: refreshed
-                .refresh_token
-                .unwrap_or_else(|| stored_refresh_token.clone()),
-        },
-
-        Credentials::AntigravityOauth {
-            project_id,
-            refresh_token: stored_refresh_token,
-            ..
-        } => Credentials::AntigravityOauth {
-            project_id: project_id.clone(),
-            access_token,
-            refresh_token: refreshed
-                .refresh_token
-                .unwrap_or_else(|| stored_refresh_token.clone()),
-        },
-
-        Credentials::ApiKey(_) => {
-            return Err(Error::Internal {
-                message: "API key credentials never refresh".to_string(),
-            });
-        }
-    };
-
-    Ok((credentials, expires_at))
+    Ok((target.merge(refreshed, access_token), expires_at))
 }
 
 /// Whether the provider's OAuth token is still valid long enough to use.

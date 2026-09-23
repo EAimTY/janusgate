@@ -526,7 +526,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             response_format,
             // The closed vocabulary is enforced here: an unknown string is a 400 naming the
             // field, and the parsed enum renders verbatim into the upstream's own parameter
-            // (REFACTOR §1).
+            // (README §6.4).
             reasoning_effort: request
                 .reasoning_effort
                 .as_deref()
@@ -863,7 +863,7 @@ mod tests {
         }
     }
 
-    /// `reasoning_effort` parses into the closed seven-value vocabulary (REFACTOR §1): known
+    /// `reasoning_effort` parses into the closed seven-value vocabulary (README §6.4): known
     /// values parse, unknown strings are a 400 naming the field, and a non-string value is a 400
     /// malformed request.
     ///

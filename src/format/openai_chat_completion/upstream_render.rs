@@ -437,8 +437,7 @@ mod tests {
         serde_json::to_value(render_request_body(&ir, false)).expect("the body serializes")
     }
 
-    /// Verifies the Chat Completions effort slot of the verbatim-passthrough contract (README
-    /// Verifies the Chat Completions effort slot of the closed-vocabulary contract (REFACTOR §1):
+    /// Verifies the Chat Completions effort slot of the closed-vocabulary contract (README §6.4):
     /// every vocabulary value renders verbatim, and an absent effort renders no field at all.
     ///
     /// # Panics

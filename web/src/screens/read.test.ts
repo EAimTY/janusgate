@@ -7,9 +7,11 @@ import type {
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { ErrorCode } from "/src/management-api/generated/v0";
+import { performManagementCall } from "/src/management-api/outcome";
 import { isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { requestRefresh } from "/src/refresh-state";
 import {
+    createEditRow,
     createHeldRow,
     createPinnedRow,
     createScreenRead,
@@ -797,6 +799,168 @@ describe("createHeldRow", () => {
 
         expect(held.row()).toBeNull();
         expect(held.isRowHeld()).toBe(false);
+
+        dispose();
+    });
+});
+
+describe("reportAction", () => {
+    afterEach(() => {
+        for (const dispose of mountedDisposes.reverse()) {
+            dispose();
+        }
+        mountedDisposes.length = 0;
+    });
+
+    it("diagnoses a failed action into the notice and runs onGone only when the row is gone", async () => {
+        const { read } = mountedRead({
+            load: async () => {},
+        });
+        await settle();
+
+        let goneReloads = 0;
+        const goneOutcome = await performManagementCall(() =>
+            Promise.reject(gatewayFailure(ErrorCode.NotFound, "the row is gone")),
+        );
+        const reported = read.reportAction(
+            goneOutcome,
+            {
+                action: "update-provider",
+            },
+            {
+                onGone: () => {
+                    goneReloads += 1;
+                },
+            },
+        );
+        await settle();
+
+        expect(reported).toBe(false);
+        expect(goneReloads).toBe(1);
+        expect(read.notice()).toEqual({
+            tone: "bad",
+            title: "The gateway holds no such row.",
+            detail: "the row is gone",
+            fix: null,
+        });
+
+        // A failure that is not a gone row states its diagnosis but reloads
+        // nothing: the screen's own state stands.
+        const conflictOutcome = await performManagementCall(() =>
+            Promise.reject(gatewayFailure(ErrorCode.Conflict, "name taken")),
+        );
+        read.reportAction(
+            conflictOutcome,
+            {
+                action: "update-provider",
+            },
+            {
+                onGone: () => {
+                    goneReloads += 1;
+                },
+            },
+        );
+        await settle();
+
+        expect(goneReloads).toBe(1);
+        expect(read.notice()?.title).toContain("an identifier is already taken");
+    });
+
+    it("answers true for a succeeded call and states nothing for an aborted one", async () => {
+        const { read } = mountedRead({
+            load: async () => {},
+        });
+        await settle();
+
+        const succeeded = read.reportAction(
+            await performManagementCall(() =>
+                Promise.resolve({
+                    model: undefined,
+                }),
+            ),
+            {
+                action: "update-model",
+            },
+        );
+        await settle();
+
+        expect(succeeded).toBe(true);
+        expect(read.notice()).toBeNull();
+
+        const reported = read.reportAction(await performManagementCall(() => abortFailure()), {
+            action: "update-model",
+        });
+        await settle();
+
+        expect(reported).toBe(false);
+        expect(read.notice()).toBeNull();
+    });
+});
+
+describe("createEditRow", () => {
+    function mountedEditRow() {
+        const [latest, setLatest] = createSignal<ApiKeyResponse | null>(null);
+        const box: {
+            edit?: ReturnType<typeof createEditRow<ApiKeyResponse>>;
+        } = {};
+        const dispose = createRoot((teardown) => {
+            box.edit = createEditRow(latest, isSameApiKeyRow);
+            return teardown;
+        });
+
+        if (box.edit === undefined) {
+            throw new Error("The edit row did not mount");
+        }
+
+        return {
+            edit: box.edit,
+            setLatest,
+            dispose,
+        };
+    }
+
+    const key: ApiKeyResponse = {
+        id: 7,
+        name: "service-a",
+        key: "sk-live",
+        is_enabled: true,
+        created_at: 1,
+    };
+
+    afterEach(() => {
+        for (const dispose of mountedDisposes.reverse()) {
+            dispose();
+        }
+        mountedDisposes.length = 0;
+    });
+
+    it("holds the row from a succeeded save until its reload lands, whatever the listing answers", async () => {
+        const { edit, setLatest, dispose } = mountedEditRow();
+
+        setLatest(key);
+        await settle();
+        expect(edit.row()).toBe(key);
+
+        // The save succeeded; the listing still answers the pre-save rows,
+        // and the held row must not adopt them even though the form is clean.
+        edit.reportSaved();
+        const savedRow: ApiKeyResponse = {
+            ...key,
+            name: "renamed-elsewhere",
+        };
+        setLatest(savedRow);
+        await settle();
+
+        expect(edit.row()).toBe(key);
+        expect(edit.isRowHeld()).toBe(true);
+
+        // The save's reload lands: its reads clear the latch and the fresh
+        // listing is adopted.
+        edit.reportReloaded();
+        await settle();
+
+        expect(edit.row()).toBe(savedRow);
+        expect(edit.isRowHeld()).toBe(false);
 
         dispose();
     });

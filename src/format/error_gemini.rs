@@ -1,9 +1,13 @@
 //! Gemini error render: the wire payload types and the closed `render(&Error)` match for the
-//! Gemini wire format (REFACTOR §3).
+//! Gemini wire format (README §6.7).
 //!
-//! Gemini renders `{"error": {code, message, status}}` with the canonical code vocabulary
-//! (`UNAUTHENTICATED`/`NOT_FOUND`/`INVALID_ARGUMENT`/`INTERNAL`, mirrored numeric code with
-//! `UNKNOWN` for upstream mirrors).
+//! Gemini renders the official Status shape (google.aip.dev/193): `{"error": {code, message,
+//! status}}` whose `code` is the numeric HTTP status and whose `status` is the canonical
+//! google.rpc.Code-style name — `UNAUTHENTICATED`/`NOT_FOUND`/`INVALID_ARGUMENT`/`INTERNAL`/
+//! `UNAVAILABLE` for the gateway's own failures, the canonical HTTP-to-code name where
+//! google.rpc/code.proto defines one and otherwise the closest semantic member as an explicit
+//! gateway extension (408 `DEADLINE_EXCEEDED`, 416 `OUT_OF_RANGE`, 502 `UNAVAILABLE`) for
+//! mirrored upstream statuses, and `UNKNOWN` where the vocabulary has no member.
 
 use crate::api::Error;
 use axum::http::StatusCode;
@@ -19,14 +23,15 @@ pub(crate) struct GeminiErrorEnvelope {
 /// The Gemini error object.
 #[derive(Debug, Serialize)]
 pub(crate) struct GeminiErrorBody {
-    /// Canonical Gemini error code.
-    pub(crate) code: &'static str,
+    /// HTTP status of the failure; the official Status schema types the JSON `code` as an
+    /// int32 HTTP status code, not a code-name string.
+    pub(crate) code: u16,
 
     /// Human-readable error message.
     pub(crate) message: String,
 
-    /// HTTP status text.
-    pub(crate) status: String,
+    /// Canonical google.rpc.Code-style status name (`NOT_FOUND`, `UNAUTHENTICATED`, ...).
+    pub(crate) status: &'static str,
 }
 
 /// Renders the Gemini error body for one API failure. Compiler exhaustiveness over [`Error`] is
@@ -34,42 +39,71 @@ pub(crate) struct GeminiErrorBody {
 pub(crate) fn render_body(error: &Error) -> GeminiErrorBody {
     match error {
         Error::InvalidApiKey => GeminiErrorBody {
-            code: "UNAUTHENTICATED",
+            code: StatusCode::UNAUTHORIZED.as_u16(),
             message: error.to_string(),
-            status: status_text(StatusCode::UNAUTHORIZED),
+            status: "UNAUTHENTICATED",
         },
 
         Error::InvalidUrl { .. } | Error::ModelNotFound { .. } => GeminiErrorBody {
-            code: "NOT_FOUND",
+            code: StatusCode::NOT_FOUND.as_u16(),
             message: error.to_string(),
-            status: status_text(StatusCode::NOT_FOUND),
+            status: "NOT_FOUND",
         },
 
+        // The vocabulary has no member closer to a wrong method, an oversized body, or a
+        // malformed request: the request itself is at fault, so INVALID_ARGUMENT carries all
+        // three while the numeric `code` distinguishes their HTTP statuses.
         Error::MethodNotAllowed | Error::PayloadTooLarge | Error::MalformedRequest { .. } => {
             GeminiErrorBody {
-                code: "INVALID_ARGUMENT",
+                code: error.http_status().as_u16(),
                 message: error.to_string(),
-                status: status_text(error.http_status()),
+                status: "INVALID_ARGUMENT",
             }
         }
 
         Error::Upstream { status, .. } => GeminiErrorBody {
-            code: "UNKNOWN",
+            code: status.as_u16(),
             message: error.to_string(),
-            status: status_text(*status),
+            status: canonical_status_name(*status),
         },
 
         Error::UpstreamUnavailable { .. } => GeminiErrorBody {
-            code: "UNKNOWN",
+            code: StatusCode::BAD_GATEWAY.as_u16(),
             message: error.to_string(),
-            status: status_text(StatusCode::BAD_GATEWAY),
+            status: "UNAVAILABLE",
         },
 
         Error::Internal => GeminiErrorBody {
-            code: "INTERNAL",
+            code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             message: error.to_string(),
-            status: status_text(StatusCode::INTERNAL_SERVER_ERROR),
+            status: "INTERNAL",
         },
+    }
+}
+
+/// Maps a mirrored upstream HTTP status to its canonical google.rpc.Code-style name: the
+/// canonical HTTP-to-code name (google.aip.dev/193, google.rpc/code.proto) where that mapping
+/// defines a row — 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 404
+/// `NOT_FOUND`, 409 `ABORTED`, 429 `RESOURCE_EXHAUSTED`, 499 `CANCELLED`, 500 `INTERNAL`, 501
+/// `UNIMPLEMENTED`, 503 `UNAVAILABLE`, 504 `DEADLINE_EXCEEDED` — and otherwise the closest
+/// semantic member as an explicit gateway extension for the statuses the canonical mapping has
+/// no row for: 408 `DEADLINE_EXCEEDED`, 416 `OUT_OF_RANGE`, 502 `UNAVAILABLE`. A status outside
+/// both degrades to `UNKNOWN`.
+fn canonical_status_name(status: StatusCode) -> &'static str {
+    match status.as_u16() {
+        400 => "INVALID_ARGUMENT",
+        401 => "UNAUTHENTICATED",
+        403 => "PERMISSION_DENIED",
+        404 => "NOT_FOUND",
+        408 | 504 => "DEADLINE_EXCEEDED",
+        409 => "ABORTED",
+        416 => "OUT_OF_RANGE",
+        429 => "RESOURCE_EXHAUSTED",
+        499 => "CANCELLED",
+        500 => "INTERNAL",
+        501 => "UNIMPLEMENTED",
+        502 | 503 => "UNAVAILABLE",
+        _ => "UNKNOWN",
     }
 }
 
@@ -85,7 +119,104 @@ pub(crate) fn render(error: &Error) -> (StatusCode, GeminiErrorEnvelope) {
     )
 }
 
-/// Renders the HTTP status text for the Gemini `status` field.
-fn status_text(status: StatusCode) -> String {
-    status.canonical_reason().unwrap_or("Unknown").to_string()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    /// Reads the JSON value at a pointer path of a rendered body.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the path is absent: a missing path is the failure under test.
+    fn at<'a>(value: &'a Value, pointer: &str) -> &'a Value {
+        #[expect(
+            clippy::expect_used,
+            reason = "rendered bodies are under test; a missing path is the failure"
+        )]
+        value
+            .pointer(pointer)
+            .expect("the rendered body carries the expected path")
+    }
+
+    /// Serializes one rendered error body for inspection.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered body fails to serialize.
+    fn body_json(error: &Error) -> Value {
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered body is under test; a failing render is the failure"
+        )]
+        serde_json::to_value(render_body(error)).expect("the error body serializes")
+    }
+
+    /// Verifies the official Status shape (google.aip.dev/193): `code` carries the numeric HTTP
+    /// status and `status` carries the canonical google.rpc.Code-style name — Gemini-dialect
+    /// SDKs type `error.code` as a number and branch on `error.status` strings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rendered field carries the wrong kind of value.
+    #[test]
+    fn renders_numeric_code_and_canonical_status_name() {
+        let key = body_json(&Error::InvalidApiKey);
+
+        assert_eq!(at(&key, "/code"), &json!(401));
+        assert_eq!(at(&key, "/status"), &json!("UNAUTHENTICATED"));
+
+        let body = body_json(&Error::ModelNotFound {
+            model: "m".to_string(),
+        });
+
+        assert_eq!(at(&body, "/code"), &json!(404));
+        assert_eq!(at(&body, "/status"), &json!("NOT_FOUND"));
+
+        let body = body_json(&Error::MalformedRequest {
+            param: Some("model".to_string()),
+            message: "bad model".to_string(),
+        });
+
+        assert_eq!(at(&body, "/code"), &json!(400));
+        assert_eq!(at(&body, "/status"), &json!("INVALID_ARGUMENT"));
+
+        let body = body_json(&Error::Internal);
+
+        assert_eq!(at(&body, "/code"), &json!(500));
+        assert_eq!(at(&body, "/status"), &json!("INTERNAL"));
+    }
+
+    /// Maps a mirrored upstream status to the most accurate canonical name per the canonical
+    /// HTTP-to-code mapping, degrading to `UNKNOWN` where the vocabulary has no member.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a mirrored status renders outside its canonical name.
+    #[test]
+    fn maps_mirrored_upstream_statuses_to_canonical_names() {
+        let body = body_json(&Error::Upstream {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "rate limited".to_string(),
+        });
+
+        assert_eq!(at(&body, "/code"), &json!(429));
+        assert_eq!(at(&body, "/status"), &json!("RESOURCE_EXHAUSTED"));
+
+        let body = body_json(&Error::Upstream {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "overloaded".to_string(),
+        });
+
+        assert_eq!(at(&body, "/code"), &json!(503));
+        assert_eq!(at(&body, "/status"), &json!("UNAVAILABLE"));
+
+        let body = body_json(&Error::Upstream {
+            status: StatusCode::SEE_OTHER,
+            message: "odd upstream".to_string(),
+        });
+
+        assert_eq!(at(&body, "/code"), &json!(303));
+        assert_eq!(at(&body, "/status"), &json!("UNKNOWN"));
+    }
 }

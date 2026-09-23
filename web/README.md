@@ -256,18 +256,17 @@ web/                                # the workspace root (this directory)
 │   ├── refresh-state.ts             # The refresh stamp and the refresh request every screen shares
 │   ├── theme.ts                     # Light/dark/system preference, resolution, persistence
 │   ├── format.ts                    # Timestamps, credential validity, token counts, date-time bounds
-│   ├── usage-filter.ts              # The shared accounting filter: its form vocabulary, its route encoding, and the wire filter it builds
 │   ├── config.ts                    # Single home for non-secret tunables (e.g. storage keys)
 │   ├── tailwind.css                 # Tailwind v4 entry: the console's light/dark tokens and base styles
 │   ├── vite-env.d.ts                # Vite client types reference
 │   ├── connection/                  # The connection pair: app-service, model, service, state
 │   ├── management-api/              # The wire contract and its use: client, validation, adapters, outcome, errors, diagnosis, identifiers, oauth-code, outward-surfaces, provider-defaults, serving, vocabulary, generated bindings
 │   ├── ui/                          # The console's parts: app-link, attributes, bar-chart, clipboard, controls, feedback, layout, glyphs, tables, shared form pieces
-│   └── screens/                     # One module per route, plus the screens' shared fragments
+│   └── screens/                     # One module per route, plus the screens' shared fragments and the shared usage filter
 ```
 
 
-Test modules (`*.test.ts(x)`) live next to the modules they cover and are not listed above. Inside `src/screens/`, seven shared fragments serve every route's module: `read.ts` (the screen read harness §6.3), `read-notice.tsx` (the standing read notice every screen states, §6.3), `failure.ts` (the failure presentation §6.4 renders), `usage-labels.ts` (usage labels resolved through the entity lists, plus the shared read call that loads those lists at the head of both usage screens' cycles), `usage-stats.tsx` (the detail pages' usage card), `usage-pagination.ts` (the usage stream's cursor and continuation), and `overview-stats.ts` (the overview's daily window, its zero-filled series, and its rolling figures).
+Test modules (`*.test.ts(x)`) live next to the modules they cover and are not listed above. Inside `src/screens/`, seven shared fragments serve every route's module: `read.ts` (the screen read harness §6.3), `read-notice.tsx` (the standing read notice every screen states, §6.3), `failure.ts` (the failure presentation §6.4 renders), `usage-labels.ts` (usage labels resolved through the entity lists, plus the shared read call that loads those lists at the head of both usage screens' cycles), `usage-stats.tsx` (the detail pages' usage card), `usage-pagination.ts` (the usage stream's cursor and continuation), and `overview-stats.ts` (the overview's daily window, its zero-filled series, and its rolling figures). Beside the seven fragments, `usage-filter.ts` — the shared accounting filter (its form vocabulary, its route encoding, and the wire filter it builds) — serves the usage screens from the same directory.
 
 ### 7.1 Generated bindings
 

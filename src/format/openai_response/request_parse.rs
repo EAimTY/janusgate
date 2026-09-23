@@ -562,7 +562,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
     };
 
     // The closed vocabulary is enforced here: an unknown effort string is a 400 naming the field,
-    // and the parsed enum renders verbatim into the upstream's own parameter (REFACTOR §1).
+    // and the parsed enum renders verbatim into the upstream's own parameter (README §6.4).
     // `summary` keeps its own validation above.
     let reasoning_effort = request
         .reasoning
@@ -1113,7 +1113,7 @@ mod tests {
         assert_eq!(parsed.ir.messages.len(), 1);
     }
 
-    /// `reasoning.effort` parses into the closed seven-value vocabulary (REFACTOR §1): known
+    /// `reasoning.effort` parses into the closed seven-value vocabulary (README §6.4): known
     /// values parse, unknown strings are a 400 naming the field, and a non-string value is a 400
     /// malformed request. `summary` keeps its own validation.
     ///

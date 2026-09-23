@@ -4,7 +4,7 @@ import { credentialExpiryLine, isCredentialExpired, nowMicros } from "/src/forma
 import type { ManagementApi } from "/src/management-api/client";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { OUTWARD_SURFACES } from "/src/management-api/outward-surfaces";
-import { isModelEffectivelyServing } from "/src/management-api/serving";
+import { isModelEffectivelyServing, modelCountsByProvider } from "/src/management-api/serving";
 import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
@@ -17,7 +17,7 @@ import {
 } from "/src/screens/overview-stats";
 import { createScreenRead, readAll } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
-import { readUsageEntities, type UsageEntities } from "/src/screens/usage-labels";
+import { readUsageBuckets, readUsageEntities, type UsageEntities } from "/src/screens/usage-labels";
 import { AppLink } from "/src/ui/app-link";
 import { BarChart } from "/src/ui/bar-chart";
 import { CopyButton } from "/src/ui/clipboard";
@@ -25,7 +25,7 @@ import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton, StatLink } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { EMPTY_USAGE_FILTER_DRAFT } from "/src/usage-filter";
+import { EMPTY_USAGE_FILTER_DRAFT } from "./usage-filter";
 
 /** What the overview's reads answered: the rolling figures plus the daily series. */
 type OverviewTraffic = OverviewRecentTotals & {
@@ -64,37 +64,23 @@ export function HomeScreen(props: {
             const [entitiesResult, recentResult, dailyResult] = await readAll(
                 signal,
                 readUsageEntities(props.api),
-                {
-                    action: "query-usage",
-                    run: (cycle) =>
-                        props.api.queryUsage(
-                            {
-                                group_by: [
-                                    "outcome",
-                                ],
-                                filter: {
-                                    from: overviewRecentFrom(readAt),
-                                },
-                            },
-                            cycle,
-                        ),
-                },
-                {
-                    action: "query-usage",
-                    run: (cycle) =>
-                        props.api.queryUsage(
-                            {
-                                group_by: [
-                                    "day",
-                                ],
-                                filter: {
-                                    from: dailyWindow.from,
-                                    to: dailyWindow.to,
-                                },
-                            },
-                            cycle,
-                        ),
-                },
+                readUsageBuckets(props.api, {
+                    group_by: [
+                        "outcome",
+                    ],
+                    filter: {
+                        from: overviewRecentFrom(readAt),
+                    },
+                }),
+                readUsageBuckets(props.api, {
+                    group_by: [
+                        "day",
+                    ],
+                    filter: {
+                        from: dailyWindow.from,
+                        to: dailyWindow.to,
+                    },
+                }),
             );
 
             setEntities(entitiesResult);
@@ -127,11 +113,7 @@ export function HomeScreen(props: {
     );
 
     const emptyProviders = createMemo(() => {
-        const modelCounts = new Map<number, number>();
-
-        for (const model of entities().models) {
-            modelCounts.set(model.provider_id, (modelCounts.get(model.provider_id) ?? 0) + 1);
-        }
+        const modelCounts = modelCountsByProvider(entities().models);
 
         return entities().providers.filter((provider) => (modelCounts.get(provider.id) ?? 0) === 0);
     });

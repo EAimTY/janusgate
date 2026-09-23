@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createSignal, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { formatTokenCount, parseDateTimeInputToMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
@@ -10,21 +10,24 @@ import type {
 import { USAGE_GROUP_BY_OPTIONS } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs } from "/src/router";
-import { ReadCallFailure, readOne, type ScreenNotice } from "/src/screens/read";
-import {
-    readUsageEntities,
-    type UsageEntities,
-    usageDimensionLabel,
-} from "/src/screens/usage-labels";
 import { Button, Switch, TextField } from "/src/ui/controls";
 import { Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { UsageFilterControls } from "/src/ui/usage-filter-controls";
+import { ReadCallFailure, readOne, type ScreenNotice } from "./read";
 import {
     buildUsageFilter,
     EMPTY_USAGE_FILTER_FIELDS,
     type UsageFilterFields,
-} from "/src/usage-filter";
+} from "./usage-filter";
+import {
+    indexUsageEntities,
+    readUsageBuckets,
+    readUsageEntities,
+    type UsageEntities,
+    type UsageEntityIndex,
+    usageDimensionLabel,
+} from "./usage-labels";
 
 /**
  * Request accounting as aggregates: one bucket per distinct combination of
@@ -60,6 +63,9 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
 
     let controller: AbortController | null = null;
 
+    // Indexed once per entities change, so every bucket key's id lookups are O(1).
+    const index = createMemo(() => indexUsageEntities(entities()));
+
     /** Adds the dimension to the requested set, or removes it from it. */
     const toggleDimension = (dimension: UsageGroupBy, isOn: boolean): void => {
         setGroupBy((current) =>
@@ -89,10 +95,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         try {
             const request = queryRequest();
 
-            const result = await readOne(signal, {
-                action: "query-usage",
-                run: (cycle) => props.api.queryUsage(request, cycle),
-            });
+            const result = await readOne(signal, readUsageBuckets(props.api, request));
 
             setFailure(null);
             setBuckets(result.buckets);
@@ -315,7 +318,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                                                 <BucketKeyCell
                                                     bucket={bucket}
                                                     dimensions={responseDimensions()}
-                                                    entities={entities()}
+                                                    index={index()}
                                                 />
                                                 <BucketCell
                                                     value={formatTokenCount(bucket.requests)}
@@ -376,22 +379,20 @@ function BucketCell(props: { readonly value: string }): JSX.Element {
 
 /**
  * A bucket's composite key in the words the operator knows: one part per
- * requested dimension, in request order — ids resolved through the entity
- * lists, the enums through their vocabularies. The total bucket's empty key
- * reads as "Total".
+ * requested dimension, in request order — ids resolved through the indexed
+ * entity lists, the enums through their vocabularies. The total bucket's
+ * empty key reads as "Total".
  */
 function BucketKeyCell(props: {
     readonly bucket: UsageBucket;
     readonly dimensions: ReadonlyArray<UsageGroupBy>;
-    readonly entities: UsageEntities;
+    readonly index: UsageEntityIndex;
 }): JSX.Element {
     const label = (): string =>
         props.dimensions.length === 0
             ? "Total"
             : props.dimensions
-                  .map((dimension) =>
-                      usageDimensionLabel(dimension, props.bucket.key, props.entities),
-                  )
+                  .map((dimension) => usageDimensionLabel(dimension, props.bucket.key, props.index))
                   .join(" · ");
 
     return (

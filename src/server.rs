@@ -334,12 +334,12 @@ fn bind_tcp_listener() -> (TcpListener, SocketAddr) {
 mod tests {
     use super::*;
     use crate::{
-        api_keys::{self, NewApiKey},
         config::ConfigLoader,
         database::Database,
-        provider::{
-            Credentials, NewProvider, ProviderType,
-            storage::{self, ModelCreate},
+        provider::{Credentials, NewProvider, ProviderType},
+        storage::{
+            self, ModelCreate,
+            api_keys::{self, NewApiKey},
         },
     };
     use std::{

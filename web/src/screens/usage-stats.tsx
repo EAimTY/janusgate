@@ -4,11 +4,12 @@ import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { UsageBucket, UsageFilter } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
-import { createScreenRead, readOne } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
+import { createScreenRead, readOne } from "./read";
+import { readUsageBuckets } from "./usage-labels";
 
 /** Which recorded rows the stats count: exactly one subject's. */
 type UsageSubjectFilter =
@@ -63,19 +64,15 @@ export function EntityUsageCard(props: {
     const read = createScreenRead({
         reReadOn: () => props.filter,
         load: async (signal) => {
-            const result = await readOne(signal, {
-                action: "query-usage",
-                run: (cycle) =>
-                    props.api.queryUsage(
-                        {
-                            group_by: [
-                                "day",
-                            ],
-                            filter: subjectFilter(props.filter),
-                        },
-                        cycle,
-                    ),
-            });
+            const result = await readOne(
+                signal,
+                readUsageBuckets(props.api, {
+                    group_by: [
+                        "day",
+                    ],
+                    filter: subjectFilter(props.filter),
+                }),
+            );
 
             setBuckets(result.buckets);
         },

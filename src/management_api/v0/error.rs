@@ -19,8 +19,9 @@ use crate::{
     ir::InvalidRequest,
     provider::{
         OAuthProviderType, ProviderType, discovery::Error as DiscoveryError,
-        oauth::Error as OAuthError, storage::Error as StorageError,
+        oauth::Error as OAuthError,
     },
+    storage::Error as StorageError,
 };
 use as_http_status_code::{AsStatusCode, StatusCode};
 use axum::{
@@ -495,8 +496,9 @@ mod tests {
         ir::InvalidRequest,
         provider::{
             OAuthProviderType, ProviderType, discovery::Error as DiscoveryError,
-            oauth::Error as OAuthError, storage::Error as StorageError,
+            oauth::Error as OAuthError,
         },
+        storage::Error as StorageError,
     };
     use as_http_status_code::{AsStatusCode as _, StatusCode};
     use axum::{

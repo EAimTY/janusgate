@@ -10,11 +10,18 @@ import type { ErrorCode } from "/src/management-api/generated/v0";
  *   is reportable.
  * - `contract` — a 2xx body that does not match the expected shape.
  */
-type ManagementFailureCategory = "gateway" | "transport" | "contract";
+export type ManagementFailureCategory = "gateway" | "transport" | "contract";
 
-type ManagementApiErrorDetails = {
+export type ManagementApiErrorDetails = {
     readonly httpStatus?: number | null;
     readonly errno?: ErrorCode | null;
+    /**
+     * The base URL the failed call was addressed to, retained by the client
+     * that raised it. The diagnosis of a failure whose connection is already
+     * cleared — a 401's siblings still in flight, a disconnect mid-read —
+     * falls back to it, so the message keeps naming a real address.
+     */
+    readonly baseUrl?: string | null;
     readonly cause?: unknown;
 };
 
@@ -23,6 +30,7 @@ export class ManagementApiError extends Error {
     readonly category: ManagementFailureCategory;
     readonly httpStatus: number | null;
     readonly errno: ErrorCode | null;
+    readonly baseUrl: string | null;
 
     constructor(
         category: ManagementFailureCategory,
@@ -37,7 +45,17 @@ export class ManagementApiError extends Error {
         this.category = category;
         this.httpStatus = details.httpStatus ?? null;
         this.errno = details.errno ?? null;
+        this.baseUrl = details.baseUrl ?? null;
     }
+}
+
+/**
+ * The address a failed management call went to, when the client retained it
+ * on the failure: the fallback a diagnosis names once the connection that
+ * made the call is no longer live.
+ */
+export function managementFailureBaseUrl(value: unknown): string | null {
+    return value instanceof ManagementApiError ? value.baseUrl : null;
 }
 
 /**

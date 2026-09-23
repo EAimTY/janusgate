@@ -1,10 +1,11 @@
 //! Upstream model discovery per provider type.
 
 use super::{
-    Credentials, Provider, ProviderType, endpoints, http_body, http_body::ExchangeFailure, oauth,
+    Credentials, MissingBaseUrl, Provider, ProviderType, endpoints, http_body,
+    http_body::ExchangeFailure, oauth,
 };
 use crate::format::UpstreamFormat;
-use reqwest::Client;
+use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use std::collections::BTreeMap;
 
@@ -70,17 +71,18 @@ struct AvailableModelsResponse {
     models: Option<BTreeMap<String, IgnoredAny>>,
 }
 
-/// An OpenAI-compatible model list (README §5.3): the OpenAI protocols serve the model entries
-/// under `data`. The payload is upstream-owned, so unknown fields are ignored.
+/// A model list serving its entries under `data` (README §5.3): the OpenAI protocols' `/models`
+/// and Anthropic Messages' `/v1/models` answer this one shape. The payload is upstream-owned, so
+/// unknown fields are ignored.
 #[derive(Debug, Deserialize)]
-struct CompatibleModelsResponse {
+struct DataModelsResponse {
     /// Model entries the payload carries.
-    data: Option<Vec<CompatibleModelEntry>>,
+    data: Option<Vec<DataModelEntry>>,
 }
 
-/// One model entry of an OpenAI-compatible model list.
+/// One model entry of a model list served under `data`.
 #[derive(Debug, Deserialize)]
-struct CompatibleModelEntry {
+struct DataModelEntry {
     /// Upstream model identifier the entry names.
     id: Option<String>,
 }
@@ -141,6 +143,16 @@ impl From<ExchangeFailure> for Error {
             },
 
             ExchangeFailure::Unavailable { detail } => Self::Unavailable { detail },
+        }
+    }
+}
+
+/// Converts the shared missing-base-url fault into the discovery error domain: a static-key row
+/// without its stored base URL is internal drift, never the requesting client's fault.
+impl From<MissingBaseUrl> for Error {
+    fn from(error: MissingBaseUrl) -> Self {
+        Self::Internal {
+            message: error.to_string(),
         }
     }
 }
@@ -206,107 +218,37 @@ async fn discover_antigravity(http: &Client, secret: &str) -> Result<Vec<String>
     Ok(models.into_keys().collect())
 }
 
-/// Discovers models from a static-key upstream, shaped by the wire format its type pins.
-async fn discover_compatible(
-    http: &Client,
-    provider: &Provider,
-    secret: &str,
-) -> Result<Vec<String>, Error> {
-    let base_url = provider
-        .base_url
-        .as_deref()
-        .ok_or_else(|| Error::Internal {
-            message: format!(
-                "static-key provider `{}` lacks a stored base URL",
-                provider.name
-            ),
-        })?;
+/// Fetches a model list served under `data` (README §5.3) — the OpenAI protocols' `/models` and
+/// Anthropic Messages' `/v1/models` — and yields the entries' identifiers.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the request fails or the payload does not carry the list.
+async fn fetch_data_model_list(request: RequestBuilder) -> Result<Vec<String>, Error> {
+    let response: DataModelsResponse = http_body::send_and_parse_json(request, "upstream").await?;
 
-    let base_url = base_url.trim_end_matches('/');
+    let entries = response.data.ok_or_else(|| Error::Unavailable {
+        detail: "model discovery payload lacks a `data` array".to_string(),
+    })?;
 
-    match provider.upstream_format() {
-        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
-            let request = http.get(format!("{base_url}/models")).bearer_auth(secret);
-
-            let response: CompatibleModelsResponse =
-                http_body::send_and_parse_json(request, "upstream").await?;
-
-            let entries = response.data.ok_or_else(|| Error::Unavailable {
-                detail: "model discovery payload lacks a `data` array".to_string(),
-            })?;
-
-            entries
-                .into_iter()
-                .map(|entry| {
-                    entry.id.ok_or_else(|| Error::Unavailable {
-                        detail: "model discovery entry lacks an `id` string".to_string(),
-                    })
-                })
-                .collect()
-        }
-
-        UpstreamFormat::GeminiGenerateContent => {
-            let request = http
-                .get(format!("{base_url}/models"))
-                .header(endpoints::GEMINI_API_KEY_HEADER, secret);
-
-            let response: GeminiModelsResponse =
-                http_body::send_and_parse_json(request, "upstream").await?;
-
-            let entries = response.models.ok_or_else(|| Error::Unavailable {
-                detail: "model discovery payload lacks a `models` array".to_string(),
-            })?;
-
-            entries
-                .into_iter()
-                .map(|entry| {
-                    let name = entry.name.ok_or_else(|| Error::Unavailable {
-                        detail: "model discovery entry lacks a `name` string".to_string(),
-                    })?;
-
-                    Ok(name.strip_prefix("models/").unwrap_or(&name).to_string())
-                })
-                .collect()
-        }
-
-        UpstreamFormat::GeminiInteraction | UpstreamFormat::AnthropicMessages => {
-            Err(Error::Internal {
-                message: "discovery for the new upstream format is handled by its own discover \
-                     function, not the compatible path"
-                    .to_string(),
+    entries
+        .into_iter()
+        .map(|entry| {
+            entry.id.ok_or_else(|| Error::Unavailable {
+                detail: "model discovery entry lacks an `id` string".to_string(),
             })
-        }
-    }
+        })
+        .collect()
 }
 
-/// Discovers models from a Gemini Interactions upstream: `GET {base}/v1beta/models` with the
-/// `x-goog-api-key` header and the pinned `Api-Revision` (REFACTOR §6), in the existing
-/// `GET {base}/v1beta/models` shape (`models[].name`, `"models/<id>"` or bare `<id>`).
-async fn discover_gemini_interaction(
-    http: &Client,
-    provider: &Provider,
-    secret: &str,
-) -> Result<Vec<String>, Error> {
-    let base_url = provider
-        .base_url
-        .as_deref()
-        .ok_or_else(|| Error::Internal {
-            message: format!(
-                "static-key provider `{}` lacks a stored base URL",
-                provider.name
-            ),
-        })?;
-
-    let base_url = base_url.trim_end_matches('/');
-
-    let request = http
-        .get(format!("{base_url}/v1beta/models"))
-        .header(endpoints::GEMINI_API_KEY_HEADER, secret)
-        .header(
-            endpoints::GEMINI_API_REVISION_HEADER,
-            endpoints::GEMINI_API_REVISION,
-        );
-
+/// Fetches a Gemini model list (README §5.3) and yields the entries' identifiers: each entry's
+/// resource name with the `models/` prefix stripped, so a bare `<id>` and a `models/<id>` name
+/// yield the same identifier.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the request fails or the payload does not carry the list.
+async fn fetch_gemini_model_list(request: RequestBuilder) -> Result<Vec<String>, Error> {
     let response: GeminiModelsResponse =
         http_body::send_and_parse_json(request, "upstream").await?;
 
@@ -326,63 +268,76 @@ async fn discover_gemini_interaction(
         .collect()
 }
 
-/// An Anthropic model list: `GET {base}/v1/models` serving entries under `data` (REFACTOR §6).
-/// The payload is upstream-owned, so unknown fields are ignored.
-#[derive(Debug, Deserialize)]
-struct AnthropicModelsResponse {
-    /// Model entries the payload carries.
-    data: Option<Vec<AnthropicModelEntry>>,
+/// Discovers models from a static-key upstream, shaped by the wire format its type pins.
+async fn discover_compatible(
+    http: &Client,
+    provider: &Provider,
+    secret: &str,
+) -> Result<Vec<String>, Error> {
+    let base_url = provider.upstream_base_url()?;
+
+    match provider.upstream_format() {
+        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
+            fetch_data_model_list(http.get(format!("{base_url}/models")).bearer_auth(secret)).await
+        }
+
+        UpstreamFormat::GeminiGenerateContent => {
+            fetch_gemini_model_list(
+                http.get(format!("{base_url}/models"))
+                    .header(endpoints::GEMINI_API_KEY_HEADER, secret),
+            )
+            .await
+        }
+
+        UpstreamFormat::GeminiInteraction | UpstreamFormat::AnthropicMessages => {
+            Err(Error::Internal {
+                message: "discovery for the new upstream format is handled by its own discover \
+                     function, not the compatible path"
+                    .to_string(),
+            })
+        }
+    }
 }
 
-/// One model entry of an Anthropic model list.
-#[derive(Debug, Deserialize)]
-struct AnthropicModelEntry {
-    /// Upstream model identifier the entry names.
-    id: Option<String>,
+/// Discovers models from a Gemini Interactions upstream: `GET {base}/v1beta/models` with the
+/// `x-goog-api-key` header and the pinned `Api-Revision` (README §5.3), in the existing
+/// `GET {base}/v1beta/models` shape (`models[].name`, `"models/<id>"` or bare `<id>`).
+async fn discover_gemini_interaction(
+    http: &Client,
+    provider: &Provider,
+    secret: &str,
+) -> Result<Vec<String>, Error> {
+    let base_url = provider.upstream_base_url()?;
+
+    fetch_gemini_model_list(
+        http.get(format!("{base_url}/v1beta/models"))
+            .header(endpoints::GEMINI_API_KEY_HEADER, secret)
+            .header(
+                endpoints::GEMINI_API_REVISION_HEADER,
+                endpoints::GEMINI_API_REVISION,
+            ),
+    )
+    .await
 }
 
 /// Discovers models from an Anthropic Messages upstream: `GET {base}/v1/models` with the
-/// `x-api-key` header and the pinned `anthropic-version` (REFACTOR §6).
+/// `x-api-key` header and the pinned `anthropic-version` (README §5.3).
 async fn discover_anthropic(
     http: &Client,
     provider: &Provider,
     secret: &str,
 ) -> Result<Vec<String>, Error> {
-    let base_url = provider
-        .base_url
-        .as_deref()
-        .ok_or_else(|| Error::Internal {
-            message: format!(
-                "static-key provider `{}` lacks a stored base URL",
-                provider.name
+    let base_url = provider.upstream_base_url()?;
+
+    fetch_data_model_list(
+        http.get(format!("{base_url}/v1/models"))
+            .header(endpoints::ANTHROPIC_API_KEY_HEADER, secret)
+            .header(
+                endpoints::ANTHROPIC_VERSION_HEADER,
+                endpoints::ANTHROPIC_VERSION,
             ),
-        })?;
-
-    let base_url = base_url.trim_end_matches('/');
-
-    let request = http
-        .get(format!("{base_url}/v1/models"))
-        .header(endpoints::ANTHROPIC_API_KEY_HEADER, secret)
-        .header(
-            endpoints::ANTHROPIC_VERSION_HEADER,
-            endpoints::ANTHROPIC_VERSION,
-        );
-
-    let response: AnthropicModelsResponse =
-        http_body::send_and_parse_json(request, "upstream").await?;
-
-    let entries = response.data.ok_or_else(|| Error::Unavailable {
-        detail: "model discovery payload lacks a `data` array".to_string(),
-    })?;
-
-    entries
-        .into_iter()
-        .map(|entry| {
-            entry.id.ok_or_else(|| Error::Unavailable {
-                detail: "model discovery entry lacks an `id` string".to_string(),
-            })
-        })
-        .collect()
+    )
+    .await
 }
 
 #[cfg(test)]

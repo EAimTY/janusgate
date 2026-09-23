@@ -9,7 +9,7 @@ import type {
 import { requestRefresh } from "/src/refresh-state";
 import { USAGE_PAGE_SIZE } from "/src/screens/usage-pagination";
 import { UsageScreen } from "/src/screens/usage-screen";
-import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filter";
+import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "./usage-filter";
 
 /**
  * One accounting row whose only distinguishing rendering is `<duration> ms`:

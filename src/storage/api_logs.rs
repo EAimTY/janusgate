@@ -13,14 +13,14 @@
 //! all. Those two classes of missed recording are the documented edge of the accounting
 //! semantics (README §3 *ApiLog*).
 //!
-//! Storage failures reuse the provider storage error domain ([`Error`]), so a constraint
+//! Storage failures classify through the shared storage error domain ([`Error`]): a constraint
 //! backstop classifies as a conflict on the management taxonomy with no new mapping, and a
 //! recorded row's closed-vocabulary columns parse back as drift rather than as a client fault.
 
+use super::Error;
 use crate::{
     database::{Database, Row, Value, params},
     ir::IrUsage,
-    provider::storage::Error,
     unix_time,
 };
 use log::error;
@@ -887,11 +887,11 @@ pub(crate) async fn record_api_log(database: &Database, write: ApiLogWrite) -> R
 mod tests {
     use super::*;
     use crate::{
-        api_keys::{self, NewApiKey},
         database::{Database, Value},
-        provider::{
-            Credentials, NewProvider, ProviderType,
-            storage::{self, ModelCreate},
+        provider::{Credentials, NewProvider, ProviderType},
+        storage::{
+            self, ModelCreate,
+            api_keys::{self, NewApiKey},
         },
     };
     use std::{error::Error as StdError, num::NonZero, path::PathBuf, time::Duration};

@@ -1,6 +1,6 @@
 import type { UsageBucket } from "/src/management-api/generated/v0";
 import { bucketKeyField } from "/src/screens/usage-labels";
-import { USAGE_OUTCOME_FAILURES } from "/src/usage-filter";
+import { USAGE_OUTCOME_FAILURES } from "./usage-filter";
 
 const DAY_MICROS = 86_400_000_000;
 
@@ -56,6 +56,11 @@ export function overviewRecentFrom(nowMicros: number): number {
  * The 14-day series a `usage:query` by day answers: the gateway lists only the
  * days that recorded rows, so every day of the window is placed on the axis and
  * the missing ones read as zero — a gap is a quiet day, not a missing bar.
+ *
+ * The buckets arrive through `readUsageBuckets`, which proved inside the read
+ * cycle that every key carries the `day` its request asked for; the
+ * `bucketKeyField` read below is the fatal assert on that proven invariant,
+ * never the guard that would discover a gateway/bindings skew.
  */
 export function buildOverviewDailySeries(
     buckets: ReadonlyArray<UsageBucket>,
@@ -104,7 +109,9 @@ export function buildOverviewDailySeries(
 /**
  * The overview's two rolling figures out of one `usage:query` by outcome: every
  * request recorded in the window, and the failures among them under the shared
- * definition the listing's "Failures" filter names.
+ * definition the listing's "Failures" filter names. As in
+ * `buildOverviewDailySeries`, the keys' `outcome` parts were proven present by
+ * `readUsageBuckets`; the `bucketKeyField` read asserts that invariant.
  */
 export function overviewRecentTotals(buckets: ReadonlyArray<UsageBucket>): OverviewRecentTotals {
     let requests = 0;

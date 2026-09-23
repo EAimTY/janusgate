@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { formatTimestamp, formatTokenCount, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
@@ -11,27 +11,29 @@ import type {
 import { performManagementCall } from "/src/management-api/outcome";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
-import { createScreenRead, readAll, screenFailureNotice } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
-import {
-    readUsageEntities,
-    type UsageEntities,
-    usageApiKeyLabel,
-    usageModelLabel,
-    usageProviderLabel,
-} from "/src/screens/usage-labels";
 import { Button, ButtonLink, SelectField } from "/src/ui/controls";
 import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { UsageFilterControls } from "/src/ui/usage-filter-controls";
+import { createScreenRead, readAll, screenFailureNotice } from "./read";
 import {
     draftUsageFilter,
     EMPTY_USAGE_FILTER_DRAFT,
     hasUsageFilter,
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
-} from "/src/usage-filter";
+} from "./usage-filter";
+import {
+    indexUsageEntities,
+    readUsageEntities,
+    type UsageEntities,
+    type UsageEntityIndex,
+    usageApiKeyLabel,
+    usageModelLabel,
+    usageProviderLabel,
+} from "./usage-labels";
 import { nextUsagePage, USAGE_PAGE_SIZE, usageCursor } from "./usage-pagination";
 
 /**
@@ -106,6 +108,9 @@ export function UsageScreen(props: {
             setHasMore(continuation.hasMore);
         },
     });
+
+    // Indexed once per entities change, so every row's label lookups are O(1).
+    const index = createMemo(() => indexUsageEntities(entities()));
 
     /** Reads one `usage:list` page, stating a failure and answering nothing. */
     const readPage = async (
@@ -319,7 +324,7 @@ export function UsageScreen(props: {
                             {(row) => (
                                 <UsageRow
                                     row={row}
-                                    entities={entities()}
+                                    index={index()}
                                 />
                             )}
                         </For>
@@ -402,21 +407,21 @@ function usageOutcomeBadge(outcome: ApiLogOutcome): {
 
 /**
  * One recorded request: when it started, how it ended, what it was, and
- * its numbers. Labels resolve through the current entity lists; an id with
+ * its numbers. Labels resolve through the indexed entity lists; an id with
  * no listing reads as its deleted kind.
  */
 function UsageRow(props: {
     readonly row: ApiLogResponse;
-    readonly entities: UsageEntities;
+    readonly index: UsageEntityIndex;
 }): JSX.Element {
     const outcome = (): {
         readonly tone: BadgeTone;
         readonly label: string;
     } => usageOutcomeBadge(props.row.outcome);
 
-    const model = () => usageModelLabel(props.entities, props.row.model_id);
-    const provider = () => usageProviderLabel(props.entities, props.row.provider_id);
-    const apiKey = () => usageApiKeyLabel(props.entities, props.row.api_key_id);
+    const model = () => usageModelLabel(props.index.modelsById, props.row.model_id);
+    const provider = () => usageProviderLabel(props.index.providersById, props.row.provider_id);
+    const apiKey = () => usageApiKeyLabel(props.index.apiKeysById, props.row.api_key_id);
 
     const missingTitle = "This row is no longer listed.";
 

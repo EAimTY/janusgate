@@ -43,7 +43,8 @@
 //! then serve inference and [`refresh::ensure_fresh_token`] renews them under the database
 //! lease.
 
-use super::{http_body, http_body::ExchangeFailure, storage::Error as StorageError};
+use super::{http_body, http_body::ExchangeFailure};
+use crate::storage::Error as StorageError;
 
 mod antigravity;
 mod flow;

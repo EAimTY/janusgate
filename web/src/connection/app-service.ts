@@ -28,6 +28,9 @@ function browserStorage(): Storage | null {
     }
 }
 
+/** How long the connection probe may run before it counts as failed. */
+const PROBE_TIMEOUT_MS = 15_000;
+
 /**
  * The application's single connection service, wired to the browser's storage
  * and to the connection probe — `providers:list`, the first call of README
@@ -36,6 +39,10 @@ function browserStorage(): Storage | null {
 export const connectionService = createConnectionService({
     storage: browserStorage(),
     probe: async (connection: Connection) => {
-        await createManagementApi(connection).listProviders();
+        // The probe is the setup button's busy state: without a deadline a
+        // dead address would hold it for the browser's full default fetch
+        // timeout. The deadline surfaces as the usual transport failure,
+        // which the setup panel diagnoses like any other refusal.
+        await createManagementApi(connection).listProviders(AbortSignal.timeout(PROBE_TIMEOUT_MS));
     },
 });

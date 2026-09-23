@@ -6,14 +6,22 @@
 //! [`UpstreamEventParser`]. Upstream payload rendering has no shared contract — the payloads are
 //! provider-coupled — so each codec exposes free `render_request` functions that the gateway
 //! invokes directly; each returns the upstream URL beside the payload, so every protocol's path
-//! shape lives in the codec that owns it while the provider layer threads the endpoint base in. The
-//! Gemini codec is upstream-only (README §6.3): it implements [`UpstreamEventParser`] plus its
-//! request renderers, but no outward client format.
+//! shape lives in the codec that owns it while the provider layer threads the endpoint base in.
+//!
+//! All five families are bidirectional (README §6.3): each implements [`UpstreamEventParser`] for
+//! its same-named upstream protocol plus the free request renderers beside it, and each implements
+//! [`ClientFormat`] as the outward client surface served under that protocol's name —
+//! `openai_response`, `openai_chat_completion`, `gemini_generate_content`, `gemini_interaction`,
+//! and `anthropic_messages`. No family is upstream-parse-only; every family both speaks its
+//! upstream protocol and serves its outward surface.
 
 use crate::{
-    api_logs::ApiLogEndpointType,
-    ir::{InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrRequest, IrToolChoice},
+    ir::{
+        InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrMessage, IrPart, IrRequest,
+        IrRole, IrToolChoice,
+    },
     sse::SseFrame,
+    storage::api_logs::ApiLogEndpointType,
 };
 use serde::{
     Deserialize, Deserializer, Serialize,
@@ -30,8 +38,7 @@ pub(crate) mod anthropic_messages;
 pub(crate) mod error_anthropic;
 pub(crate) mod error_gemini;
 pub(crate) mod error_openai;
-pub(crate) mod gemini;
-pub(crate) mod gemini_inbound;
+pub(crate) mod gemini_generate_content;
 pub(crate) mod gemini_interaction;
 pub(crate) mod openai_chat_completion;
 pub(crate) mod openai_response;
@@ -104,7 +111,7 @@ pub(crate) struct ParsedRequest {
     pub(crate) should_include_usage: bool,
 }
 
-/// Route context the router threads into request parsing (REFACTOR §4): the facts the URL path
+/// Route context the router threads into request parsing (README §6.5): the facts the URL path
 /// carries that the body does not.
 ///
 /// OpenAI-family surfaces carry the model in the body, so they parse with an empty context.
@@ -134,6 +141,53 @@ impl RouteContext {
         Self {
             public_id: Some(public_id),
             is_streaming,
+        }
+    }
+}
+
+/// Accumulates consecutive same-role parts into single IR messages: parts of one role extend the
+/// open run, and a part of another role flushes it as one [`IrMessage`] before opening the next
+/// run. A contribution carrying no parts is transparent — it neither extends nor splits a run.
+///
+/// The role-merging request parsers share this accumulator: the Anthropic Messages parser chunks
+/// a user turn's mixed content into user and tool messages (README §5.5), and the Interactions
+/// parser coalesces consecutive same-role steps into one message per run.
+#[derive(Default)]
+pub(in crate::format) struct RoleRun {
+    /// Messages flushed so far, in order.
+    messages: Vec<IrMessage>,
+
+    /// The open run: its role and the parts accumulated since it opened.
+    open: Option<(IrRole, Vec<IrPart>)>,
+}
+
+impl RoleRun {
+    /// Extends the open run when it carries `role`, else flushes it and opens a new one.
+    pub(in crate::format) fn push(&mut self, role: IrRole, parts: Vec<IrPart>) {
+        if parts.is_empty() {
+            return;
+        }
+
+        match &mut self.open {
+            Some((open_role, open_parts)) if *open_role == role => open_parts.extend(parts),
+
+            _ => {
+                self.flush_open();
+                self.open = Some((role, parts));
+            }
+        }
+    }
+
+    /// Closes the accumulator, flushing the open run and returning every message in order.
+    pub(in crate::format) fn finish(mut self) -> Vec<IrMessage> {
+        self.flush_open();
+        self.messages
+    }
+
+    /// Moves the open run, when one exists, into the finished messages.
+    fn flush_open(&mut self) {
+        if let Some((role, parts)) = self.open.take() {
+            self.messages.push(IrMessage { role, parts });
         }
     }
 }
@@ -173,7 +227,7 @@ pub(crate) trait ClientSseRenderer {
 
     /// Renders a mid-stream error as a terminal frame from the shared [`crate::api::Error`]
     /// classification: the HTTP error path and the stream-frame path share one classification
-    /// (REFACTOR §3); each codec places it in its own terminal frame — the Chat Completions
+    /// (README §6.7); each codec places it in its own terminal frame — the Chat Completions
     /// error envelope or the failed Responses response object — through its format's render
     /// module.
     fn error_frame(&mut self, error: &crate::api::Error) -> String;
@@ -190,7 +244,7 @@ pub(crate) trait ClientFormat {
     const ENDPOINT_TYPE: ApiLogEndpointType;
 
     /// Parses one client request body with the router's route context: the URL-path facts the
-    /// body does not carry (REFACTOR §4). Surfaces routing the model from the body ignore the
+    /// body does not carry (README §6.5). Surfaces routing the model from the body ignore the
     /// context; Gemini surfaces take the public model id (and streaming mode, when the URL
     /// action decides it) from it.
     ///
@@ -408,6 +462,9 @@ where
 /// Parses tool function arguments into a JSON object, treating an empty argument string as an empty
 /// object.
 ///
+/// This is the reject policy: tool-call arguments are validated at parse and upstream-render
+/// time, where a non-object is a contract violation that fails the request.
+///
 /// # Errors
 ///
 /// Returns an error when the arguments are not a JSON object.
@@ -432,6 +489,52 @@ pub(in crate::format) fn arguments_as_object(
             "Tool call arguments must encode a JSON object",
         )),
     }
+}
+
+/// Renders tool arguments into the object the wire carries: the parsed object when the arguments
+/// encode one, the empty object otherwise — the degraded remainder carries no inventable shape.
+///
+/// This is the degrade policy, the render-time counterpart of [`arguments_as_object`]: client
+/// renderers never fail a healthy stream over malformed arguments text, so every non-object
+/// falls back to the empty object instead of erroring.
+pub(in crate::format) fn arguments_to_object_or_empty(arguments: &str) -> Map<String, Value> {
+    arguments_as_object(arguments).unwrap_or_default()
+}
+
+/// Serializes an arguments object into the JSON-encoded text form the IR carries. Serialization
+/// of a parsed JSON object is total, so no failure path exists.
+pub(in crate::format) fn arguments_object_to_text(object: Map<String, Value>) -> String {
+    Value::Object(object).to_string()
+}
+
+/// Resolves the function name a tool output answers, scanning the conversation for the matching
+/// invocation.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] when no matching tool call exists in the conversation.
+pub(in crate::format) fn resolve_tool_output_name(
+    call_id: &str,
+    ir: &IrRequest,
+) -> Result<String, InvalidRequest> {
+    for message in &ir.messages {
+        for part in &message.parts {
+            if let IrPart::ToolCall {
+                call_id: candidate,
+                name,
+                ..
+            } = part
+                && candidate == call_id
+            {
+                return Ok(name.clone());
+            }
+        }
+    }
+
+    Err(InvalidRequest::field(
+        "messages",
+        format!("Tool output references unknown call_id `{call_id}`"),
+    ))
 }
 
 /// Parses the JSON payload of an upstream SSE frame into a codec's typed upstream shape; the single

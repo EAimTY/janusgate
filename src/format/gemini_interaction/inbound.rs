@@ -38,14 +38,14 @@ use super::{
     RenderStep, ResponseFormatShape, STATUS_COMPLETED, STATUS_INCOMPLETE, STATUS_REQUIRES_ACTION,
 };
 use crate::{
-    api_logs::ApiLogEndpointType,
     format::{self, ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
     ids,
     ir::{
-        InvalidRequest, IrAggregation, IrFinishReason, IrImage, IrMessage, IrPart,
-        IrReasoningLevel, IrRequest, IrResponseFormat, IrRole, IrTool, IrToolChoice, IrUsage,
+        InvalidRequest, IrAggregation, IrFinishReason, IrImage, IrPart, IrReasoningLevel,
+        IrRequest, IrResponseFormat, IrRole, IrTool, IrToolChoice, IrUsage,
     },
     sse,
+    storage::api_logs::ApiLogEndpointType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -291,8 +291,7 @@ impl CallArgumentsIn {
                 Ok(text)
             }
 
-            // Rendering a JSON object map cannot fail: the value holds finite numbers only.
-            Self::Object(map) => Ok(Value::Object(map).to_string()),
+            Self::Object(map) => Ok(format::arguments_object_to_text(map)),
         }
     }
 }
@@ -408,37 +407,9 @@ fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, Inv
     reject_present_fields(&request)?;
     format::validate_sampling_ranges(request.temperature, request.top_p)?;
 
-    let mut messages: Vec<IrMessage> = Vec::new();
-    let mut open_run: Option<(IrRole, Vec<IrPart>)> = None;
-
-    // Pushes the open run as one message; consecutive same-role steps coalesce, so a text turn
-    // followed by its thought step and tool calls stays one assistant message.
-    let flush_run = |messages: &mut Vec<IrMessage>, run: &mut Option<(IrRole, Vec<IrPart>)>| {
-        if let Some((role, parts)) = run.take() {
-            messages.push(IrMessage { role, parts });
-        }
-    };
-
-    // Extends the open run when it carries the role, else flushes it and opens a new one. A step
-    // that converts to no parts is transparent: it neither extends nor splits a run.
-    let push_parts = |messages: &mut Vec<IrMessage>,
-                      open_run: &mut Option<(IrRole, Vec<IrPart>)>,
-                      role: IrRole,
-                      parts: Vec<IrPart>| {
-        if parts.is_empty() {
-            return;
-        }
-
-        match open_run {
-            Some(open) if open.0 == role => open.1.extend(parts),
-
-            _ => {
-                flush_run(messages, open_run);
-
-                *open_run = Some((role, parts));
-            }
-        }
-    };
+    // Consecutive same-role steps coalesce into one message per run, so a text turn followed by
+    // its thought step and tool calls stays one assistant message.
+    let mut run = format::RoleRun::default();
 
     for step in request.input {
         match step {
@@ -466,16 +437,11 @@ fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, Inv
                     }
                 }
 
-                push_parts(&mut messages, &mut open_run, IrRole::User, parts);
+                run.push(IrRole::User, parts);
             }
 
             StepIn::OutputText { text } => {
-                push_parts(
-                    &mut messages,
-                    &mut open_run,
-                    IrRole::Assistant,
-                    vec![IrPart::Text { text }],
-                );
+                run.push(IrRole::Assistant, vec![IrPart::Text { text }]);
             }
 
             StepIn::Thought {
@@ -493,9 +459,7 @@ fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, Inv
                 })
                 .unwrap_or(Value::Null);
 
-                push_parts(
-                    &mut messages,
-                    &mut open_run,
+                run.push(
                     IrRole::Assistant,
                     vec![IrPart::Reasoning {
                         text: summary.unwrap_or_default(),
@@ -511,9 +475,7 @@ fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, Inv
                 arguments,
                 signature,
             } => {
-                push_parts(
-                    &mut messages,
-                    &mut open_run,
+                run.push(
                     IrRole::Assistant,
                     vec![IrPart::ToolCall {
                         call_id: id,
@@ -532,9 +494,7 @@ fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, Inv
                 call_id,
                 result,
             } => {
-                push_parts(
-                    &mut messages,
-                    &mut open_run,
+                run.push(
                     IrRole::Tool,
                     vec![IrPart::ToolOutput {
                         call_id,
@@ -546,7 +506,7 @@ fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, Inv
         }
     }
 
-    flush_run(&mut messages, &mut open_run);
+    let messages = run.finish();
 
     let mut tools: Vec<IrTool> = Vec::new();
 
@@ -2312,8 +2272,14 @@ mod tests {
         )
         .expect("the error frame carries JSON");
 
+        // The official Status shape (google.aip.dev/193): a numeric HTTP `code` beside the
+        // canonical google.rpc.Code-style `status` name.
         assert_eq!(
             payload.pointer("/error/code"),
+            Some(&serde_json::json!(401))
+        );
+        assert_eq!(
+            payload.pointer("/error/status"),
             Some(&serde_json::json!("UNAUTHENTICATED"))
         );
     }

@@ -7,8 +7,6 @@ use lexopt::{Arg as Argument, Parser as ArgumentsParser};
 use std::{ffi::OsString, path::PathBuf};
 
 mod api;
-mod api_keys;
-mod api_logs;
 mod config;
 mod context;
 mod database;
@@ -23,6 +21,7 @@ mod provider;
 mod security;
 mod server;
 mod sse;
+mod storage;
 mod unix_time;
 
 /// Global application configuration loader, installed once during process startup, hot-reloaded by

@@ -23,14 +23,12 @@ import { performManagementCall } from "/src/management-api/outcome";
 import { defaultModelPrefix } from "/src/management-api/provider-defaults";
 import { findOAuthProviderType, isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
 import {
-    createHeldRow,
+    createEditRow,
     createScreenRead,
-    type FailureCall,
     isSameProviderRow,
     readAll,
-    type ScreenNotice,
+    type ScreenRead,
 } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
@@ -57,17 +55,16 @@ export function ProviderEditScreen(props: {
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
-    // Reported by the settings form: an open form with unsaved edits holds its
-    // row against refreshes, so an operator's input can never silently vanish.
-    const [isFormDirty, setIsFormDirty] = createSignal(false);
-    // Set when a save succeeds: the standing listing is then stale by
-    // construction — the save overwrote exactly what the listing still
-    // shows — so the held row must not adopt it before the save's own reload
-    // lands (README §6.3: a save re-baselines the form onto the values it
-    // sent). The latch clears on the first read cycle that starts after the
-    // save, so a failed reload leaves the hold standing instead of resting
-    // the screen on the pre-save rows.
-    const [isSaveSettling, setIsSaveSettling] = createSignal(false);
+
+    const latestProvider = createMemo(
+        () => providers().find((candidate) => candidate.id === props.providerId) ?? null,
+    );
+
+    // The held row with its save-settling latch: an open form with unsaved
+    // edits holds its row against refreshes, so an operator's input can never
+    // silently vanish, and a succeeded save holds it until its own reload
+    // lands (README §6.3).
+    const edit = createEditRow(latestProvider, isSameProviderRow);
 
     // The notice is also the save's reported outcome, so only a new failure
     // replaces it — a successful read keeps it (README §6.3).
@@ -93,23 +90,14 @@ export function ProviderEditScreen(props: {
 
             setProviders(providersResult.providers);
             setModels(modelsResult.models);
-            setIsSaveSettling(false);
+            edit.reportReloaded();
         },
     });
 
-    const latestProvider = createMemo(
-        () => providers().find((candidate) => candidate.id === props.providerId) ?? null,
-    );
-
     // A refresh answering the same row keeps the row's identity, so the open
     // form is not remounted; a row that genuinely changed on the gateway is
-    // held back while the form holds unsaved edits — or while a save is
-    // still settling — and the hold is stated.
-    const { row: provider, isRowHeld } = createHeldRow(
-        latestProvider,
-        () => isFormDirty() || isSaveSettling(),
-        isSameProviderRow,
-    );
+    // held back while the hold stands — and the hold is stated.
+    const { row: provider, isRowHeld } = edit;
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -164,11 +152,9 @@ export function ProviderEditScreen(props: {
                             api={props.api}
                             provider={row}
                             models={models()}
-                            onReload={read.reload}
-                            onNotice={read.showNotice}
-                            onFailure={read.reportFailure}
-                            onDirtyChange={setIsFormDirty}
-                            onSaved={() => setIsSaveSettling(true)}
+                            read={read}
+                            onDirtyChange={edit.reportFormDirty}
+                            onSaved={edit.reportSaved}
                         />
 
                         <Show
@@ -180,9 +166,7 @@ export function ProviderEditScreen(props: {
                                     api={props.api}
                                     provider={row}
                                     oauthType={oauthType}
-                                    onReload={read.reload}
-                                    onNotice={read.showNotice}
-                                    onFailure={read.reportFailure}
+                                    read={read}
                                 />
                             )}
                         </Show>
@@ -191,8 +175,7 @@ export function ProviderEditScreen(props: {
                             api={props.api}
                             provider={row}
                             modelCount={models().length}
-                            onReload={read.reload}
-                            onFailure={read.reportFailure}
+                            read={read}
                         />
                     </>
                 )}
@@ -206,9 +189,7 @@ function DetailsCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
     readonly models: ReadonlyArray<ModelResponse>;
-    readonly onReload: () => void;
-    readonly onNotice: (notice: ScreenNotice | null) => void;
-    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
+    readonly read: ScreenRead;
     readonly onDirtyChange: (isDirty: boolean) => void;
     readonly onSaved: () => void;
 }): JSX.Element {
@@ -314,7 +295,7 @@ function DetailsCard(props: {
         setBaseUrl(isOAuthProviderRow(baselineRow) ? "" : baselineRow.base_url);
         setApiKey("");
         // Reverting resolves a held row onto the gateway's current version.
-        props.onReload();
+        props.read.reload();
     };
 
     const save = async (): Promise<void> => {
@@ -346,25 +327,17 @@ function DetailsCard(props: {
 
         setIsSaving(false);
 
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, {
-                action: "update-provider",
-            });
-
-            if (diagnosis.kind === "gone") {
-                // The row is gone behind the screen: the listing re-reads so
-                // the not-found state takes over instead of a ghost form
-                // accepting re-saves forever (README §6.4).
-                props.onReload();
-            }
-
-            props.onFailure(outcome.cause, {
-                action: "update-provider",
-            });
+        if (
+            !props.read.reportAction(
+                outcome,
+                {
+                    action: "update-provider",
+                },
+                {
+                    onGone: props.read.reload,
+                },
+            )
+        ) {
             return;
         }
 
@@ -402,14 +375,14 @@ function DetailsCard(props: {
         // The hold stands until this save's reload lands: the listing still
         // answers what the save overwrote.
         props.onSaved();
-        props.onNotice({
+        props.read.showNotice({
             tone: "ok",
             title: `${name()} saved.`,
             detail: recomposesPublicIds
                 ? "The new prefix recomposes the public ID of every model without an override."
                 : null,
         });
-        props.onReload();
+        props.read.reload();
     };
 
     const submit = (event: SubmitEvent): void => {
@@ -475,9 +448,7 @@ function CredentialsCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
     readonly oauthType: OAuthProviderType;
-    readonly onReload: () => void;
-    readonly onNotice: (notice: ScreenNotice | null) => void;
-    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
+    readonly read: ScreenRead;
 }): JSX.Element {
     const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
     const [code, setCode] = createSignal("");
@@ -507,14 +478,11 @@ function CredentialsCard(props: {
 
         setIsStarting(false);
 
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            props.onFailure(outcome.cause, {
+        if (
+            !props.read.reportAction(outcome, {
                 action: "start-oauth",
-            });
+            })
+        ) {
             return;
         }
 
@@ -531,7 +499,7 @@ function CredentialsCard(props: {
         const pasted = extractAuthorizationCode(code());
 
         if (pasted === null) {
-            props.onNotice({
+            props.read.showNotice({
                 tone: "bad",
                 title: "Paste the callback URL or the code.",
                 detail: "That paste holds neither a bare code nor a URL with a code in it.",
@@ -551,38 +519,35 @@ function CredentialsCard(props: {
 
         setIsCompleting(false);
 
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, {
-                action: "reauthorize",
-            });
-
-            if (diagnosis.kind === "gone") {
-                // The state is consumed; the flow resets and the listing
-                // re-reads instead of either being retried.
-                setFlow(null);
-                setCode("");
-                props.onReload();
-            }
-
-            props.onFailure(outcome.cause, {
-                action: "reauthorize",
-            });
+        if (
+            !props.read.reportAction(
+                outcome,
+                {
+                    action: "reauthorize",
+                },
+                {
+                    onGone: () => {
+                        // The state is consumed; the flow resets and the listing
+                        // re-reads instead of either being retried.
+                        setFlow(null);
+                        setCode("");
+                        props.read.reload();
+                    },
+                },
+            )
+        ) {
             return;
         }
 
         const replacement: ReauthorizeProviderResponse = outcome.result;
         setFlow(null);
         setCode("");
-        props.onNotice({
+        props.read.showNotice({
             tone: "ok",
             title: "Credentials replaced.",
             detail: `The new credentials expire ${formatTimestamp(replacement.expires_at)}.`,
         });
-        props.onReload();
+        props.read.reload();
     };
 
     const submit = (event: SubmitEvent): void => {
@@ -658,8 +623,7 @@ function DangerCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
     readonly modelCount: number;
-    readonly onReload: () => void;
-    readonly onFailure: (cause: unknown, call?: FailureCall) => void;
+    readonly read: ScreenRead;
 }): JSX.Element {
     const confirmDelete = async (): Promise<boolean> => {
         const outcome = await performManagementCall(() =>
@@ -668,24 +632,17 @@ function DangerCard(props: {
             }),
         );
 
-        if (outcome.status === "aborted") {
-            return false;
-        }
-
-        if (outcome.status === "failed") {
-            const diagnosis = describeCallFailure(outcome.cause, {
-                action: "delete-provider",
-            });
-
-            if (diagnosis.kind === "gone") {
-                // The row is already gone: the listing re-reads so the
-                // not-found state takes over (README §6.4).
-                props.onReload();
-            }
-
-            props.onFailure(outcome.cause, {
-                action: "delete-provider",
-            });
+        if (
+            !props.read.reportAction(
+                outcome,
+                {
+                    action: "delete-provider",
+                },
+                {
+                    onGone: props.read.reload,
+                },
+            )
+        ) {
             return false;
         }
 

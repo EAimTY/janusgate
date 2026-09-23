@@ -334,7 +334,7 @@ impl ClientSseRenderer for SseRenderer {
             // A done carrying text renders it only when no deltas preceded it: upstream parsers
             // emit either deltas plus an empty-text done, or a done with the full text and no
             // deltas, never both with overlapping text — so rendering a non-empty done is the
-            // done-only path, and the opaque payload is dropped on OpenAI surfaces (REFACTOR §2).
+            // done-only path, and the opaque payload is dropped on OpenAI surfaces (README §6.2).
             IrEvent::ReasoningDone { text, .. } => {
                 if text.is_empty() {
                     Vec::new()
@@ -513,7 +513,7 @@ impl ClientSseRenderer for SseRenderer {
     }
 
     /// Renders a mid-stream error as a terminal SSE frame carrying the OpenAI error envelope,
-    /// classified once through the shared API error (REFACTOR §3).
+    /// classified once through the shared API error (README §6.7).
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
         let envelope = OpenAiErrorEnvelope {
             error: crate::format::error_openai::render_body(error),
