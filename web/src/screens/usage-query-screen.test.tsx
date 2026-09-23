@@ -22,6 +22,12 @@ const providerRow: ProviderResponse = {
     base_url: "https://upstream.example.com/v1",
 };
 
+/** The superseded submit's own answer: the same row under its pre-refresh name. */
+const staleProviderRow: ProviderResponse = {
+    ...providerRow,
+    name: "stale-submit",
+};
+
 const modelRow: ModelResponse = {
     id: 9,
     provider_id: 1,
@@ -147,6 +153,21 @@ function answerLast<TValue>(pending: Array<(answer: TValue) => void>, value: TVa
 
     if (answer === undefined) {
         throw new Error("No held call to answer");
+    }
+
+    answer(value);
+}
+
+/** Answers one held call by position — a superseded cycle's own, late answer. */
+function answerAt<TValue>(
+    pending: Array<(answer: TValue) => void>,
+    position: number,
+    value: TValue,
+): void {
+    const answer = pending.at(position);
+
+    if (answer === undefined) {
+        throw new Error(`No held call at position ${position}`);
     }
 
     answer(value);
@@ -318,5 +339,107 @@ describe("UsageQueryScreen submit during the initial read", () => {
         expect(skeleton()).toBeNull();
         expect(document.body.textContent).toContain("local");
         expect(document.body.textContent).not.toContain("Deleted provider");
+    });
+});
+
+describe("UsageQueryScreen refresh racing an in-flight submit", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("renders the refresh over the submit and lets the submit's late answer write nothing", async () => {
+        let queryCount = 0;
+        const holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        } = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {
+            queryCount += 1;
+        }, [
+            providerBucket,
+        ]);
+
+        disposes.push(render(() => <UsageQueryScreen api={api} />, document.body));
+        await settle();
+
+        // The initial read is in flight under the skeleton.
+        expect(skeleton()).not.toBeNull();
+
+        // The operator picks the provider grouping and submits while that
+        // first read is still in flight; the submit's own entity listings
+        // are held.
+        labeledSelect("Group by", "provider");
+        buttonWithText("Run query").click();
+        await settle();
+
+        expect(holder.providers).toHaveLength(2);
+        expect(buttonWithText("Querying…").disabled).toBe(true);
+
+        // The shell Refresh is pressed while that submit is in flight — the
+        // one supersede that starts while the busy state is the submit's.
+        requestRefresh();
+        await settle();
+
+        // The refresh raises its own cycle and reads the entity lists
+        // itself: a third held round, with both cycles' queries still
+        // waiting behind their listings.
+        expect(holder.providers).toHaveLength(3);
+        expect(queryCount).toBe(0);
+
+        // The superseded submit's cleanup settles into its own guard only —
+        // it must not drop the loading state the refresh's cycle raised.
+        expect(skeleton()).not.toBeNull();
+
+        // The refresh's cycle answers and its query runs to completion.
+        answerLast(holder.providers, {
+            providers: [
+                providerRow,
+            ],
+        });
+        answerLast(holder.models, {
+            models: [
+                modelRow,
+            ],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [
+                apiKeyRow,
+            ],
+        });
+        await settle();
+
+        // The busy state is neither stuck nor handed back by the superseded
+        // cycle: the submit button reads its idle label, enabled.
+        expect(queryCount).toBe(1);
+        expect(skeleton()).toBeNull();
+        expect(buttonWithText("Run query").disabled).toBe(false);
+
+        // The rendered bucket resolves through the refresh's entity lists.
+        expect(document.body.textContent).toContain("local");
+        expect(document.body.textContent).not.toContain("Deleted provider");
+
+        // The submit's own listing answers, arriving after everything has
+        // settled, write nothing: the screen stays exactly as the refresh's
+        // cycle left it.
+        answerAt(holder.providers, 1, {
+            providers: [
+                staleProviderRow,
+            ],
+        });
+        await settle();
+
+        expect(queryCount).toBe(1);
+        expect(document.body.textContent).toContain("local");
+        expect(document.body.textContent).not.toContain("stale-submit");
     });
 });

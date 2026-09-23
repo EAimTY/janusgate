@@ -225,18 +225,3 @@ export const USAGE_GROUP_BY_OPTIONS: ReadonlyArray<VocabularyOption<UsageGroupBy
     value: value as UsageGroupBy,
     label,
 }));
-
-function findUsageGroupBy(value: unknown): UsageGroupBy | null {
-    return findOption(USAGE_GROUP_BY_OPTIONS, value);
-}
-
-/** Narrows a wire value that must be one of the aggregation dimensions. */
-export function parseUsageGroupBy(value: unknown, context: string): UsageGroupBy {
-    const groupBy = findUsageGroupBy(value);
-
-    if (groupBy === null) {
-        throw new ContractViolationError(`${context} is not a usage grouping: ${String(value)}`);
-    }
-
-    return groupBy;
-}
