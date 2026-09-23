@@ -2,7 +2,7 @@
 //! SSE frames or an aggregated non-streaming body.
 
 use crate::{
-    format::{self, ClientSseRenderer, OpenAiErrorBody, OpenAiErrorEnvelope},
+    format::{self, ClientSseRenderer, error_openai::OpenAiErrorEnvelope},
     ids,
     ir::{IrAggregation, IrEvent, IrUsage},
     sse, unix_time,
@@ -331,6 +331,24 @@ impl ClientSseRenderer for SseRenderer {
                 None,
             )],
 
+            // A done carrying text renders it only when no deltas preceded it: upstream parsers
+            // emit either deltas plus an empty-text done, or a done with the full text and no
+            // deltas, never both with overlapping text — so rendering a non-empty done is the
+            // done-only path, and the opaque payload is dropped on OpenAI surfaces (REFACTOR §2).
+            IrEvent::ReasoningDone { text, .. } => {
+                if text.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.chunk_frame(
+                        Delta {
+                            reasoning_content: Some(text.clone()),
+                            ..Delta::default()
+                        },
+                        None,
+                    )]
+                }
+            }
+
             IrEvent::ToolCallDelta {
                 index,
                 call_id,
@@ -494,15 +512,11 @@ impl ClientSseRenderer for SseRenderer {
         }
     }
 
-    /// Renders a mid-stream error as a terminal SSE frame carrying the OpenAI error envelope.
-    fn error_frame(&mut self, error: &OpenAiErrorBody) -> String {
+    /// Renders a mid-stream error as a terminal SSE frame carrying the OpenAI error envelope,
+    /// classified once through the shared API error (REFACTOR §3).
+    fn error_frame(&mut self, error: &crate::api::Error) -> String {
         let envelope = OpenAiErrorEnvelope {
-            error: OpenAiErrorBody {
-                message: error.message.clone(),
-                r#type: error.r#type,
-                param: error.param.clone(),
-                code: error.code.clone(),
-            },
+            error: crate::format::error_openai::render_body(error),
         };
 
         sse::format_data_frame(&format::render_json(&envelope))

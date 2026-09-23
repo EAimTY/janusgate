@@ -1,5 +1,5 @@
 import { type Accessor, createSignal } from "solid-js";
-import { isModelIdentifier } from "/src/management-api/identifiers";
+import { isRoutingToken } from "/src/management-api/identifiers";
 
 /**
  * The client-side routes. Each page does one job: the overview reads the
@@ -198,7 +198,7 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
         return {
             name: "modelNew",
             providerFilter: parseRowIdentifier(readQueryParameter(search, "provider")),
-            upstreamId: upstream !== null && isModelIdentifier(upstream) ? upstream : null,
+            upstreamId: upstream !== null && isRoutingToken(upstream) ? upstream : null,
         };
     }
 

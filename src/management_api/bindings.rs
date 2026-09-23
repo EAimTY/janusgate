@@ -631,7 +631,8 @@ mod tests {
         // The two accounting vocabularies publish as plain unions carrying exactly their closed
         // member sets — no ordering or enumeration artifact (README §7.3).
         assert!(first.contains(
-            "export type ApiLogEndpointType = \"openai_chat_completions\" | \"openai_responses\";"
+            "export type ApiLogEndpointType = \"openai_chat_completions\" | \"openai_responses\" | \
+             \"gemini_generate_content\" | \"gemini_interactions\" | \"anthropic_messages\";"
         ));
         assert!(first.contains(
             "export type ApiLogOutcome = \"completed\" | \"client_aborted\" | \
@@ -653,11 +654,17 @@ mod tests {
             r#"export type ProviderResponse = { "type": "codex_oauth" | "antigravity_oauth","#,
         ));
         assert!(first.contains(
-            r#""type": "openai_response" | "openai_chat_completion" | "gemini_generate_content","#,
+            r#""type": "openai_response" | "openai_chat_completion" | "gemini_generate_content""#,
         ));
         assert!(first.contains(
-            "export type UpdateProviderRequest = { \"type\": \"openai_response\" | \
-             \"openai_chat_completion\" | \"gemini_generate_content\",",
+            r#""gemini_generate_content" | "gemini_interaction" | "anthropic_messages""#,
+        ));
+        assert!(
+            first
+                .contains("export type UpdateProviderRequest = { \"type\": \"openai_response\" |",)
+        );
+        assert!(first.contains(
+            r#""gemini_generate_content" | "gemini_interaction" | "anthropic_messages", "#,
         ));
         assert!(first.contains(r#""type": "codex_oauth" | "antigravity_oauth","#));
 
@@ -674,6 +681,8 @@ mod tests {
             "openai_response",
             "openai_chat_completion",
             "gemini_generate_content",
+            "gemini_interaction",
+            "anthropic_messages",
         ] {
             let restated_member = format!("{{ \"type\": \"{kind}\", ");
             assert!(

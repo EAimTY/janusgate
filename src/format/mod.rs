@@ -26,7 +26,13 @@ use std::{
 };
 use thiserror::Error;
 
+pub(crate) mod anthropic_messages;
+pub(crate) mod error_anthropic;
+pub(crate) mod error_gemini;
+pub(crate) mod error_openai;
 pub(crate) mod gemini;
+pub(crate) mod gemini_inbound;
+pub(crate) mod gemini_interaction;
 pub(crate) mod openai_chat_completion;
 pub(crate) mod openai_response;
 
@@ -50,6 +56,14 @@ pub enum UpstreamFormat {
     /// Gemini GenerateContent protocol.
     #[serde(rename = "gemini_generate_content")]
     GeminiGenerateContent,
+
+    /// Gemini Interactions protocol.
+    #[serde(rename = "gemini_interaction")]
+    GeminiInteraction,
+
+    /// Anthropic Messages protocol.
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages,
 }
 
 impl UpstreamFormat {
@@ -60,6 +74,8 @@ impl UpstreamFormat {
             Self::OpenAiResponse => "openai_response",
             Self::OpenAiChatCompletion => "openai_chat_completion",
             Self::GeminiGenerateContent => "gemini_generate_content",
+            Self::GeminiInteraction => "gemini_interaction",
+            Self::AnthropicMessages => "anthropic_messages",
         }
     }
 }
@@ -86,6 +102,40 @@ pub(crate) struct ParsedRequest {
     /// Whether the client asked for a trailing usage-only chunk; only the Chat Completions format
     /// exposes the option, every other format includes usage unconditionally.
     pub(crate) should_include_usage: bool,
+}
+
+/// Route context the router threads into request parsing (REFACTOR §4): the facts the URL path
+/// carries that the body does not.
+///
+/// OpenAI-family surfaces carry the model in the body, so they parse with an empty context.
+/// Gemini surfaces route the model from the URL path — the body carries no model — so they parse
+/// with the public model id (and, for GenerateContent, the streaming mode from the URL action,
+/// not the body). The pipeline's "model from parsed body" assumption is replaced accordingly:
+/// every parser sets `ir.model` from the body or, when the route provides it, from the context.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RouteContext {
+    /// Public model id from the URL path, when the surface routes it there.
+    pub(crate) public_id: Option<String>,
+
+    /// Streaming mode from the URL action, when the surface routes it there (`Some`) rather than
+    /// the body (`None`).
+    pub(crate) is_streaming: Option<bool>,
+}
+
+impl RouteContext {
+    /// Empty context: the model and streaming mode both come from the body.
+    pub(crate) fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Context carrying the URL-routed public model id and, when the URL action decides it, the
+    /// streaming mode.
+    pub(crate) fn with_model(public_id: String, is_streaming: Option<bool>) -> Self {
+        Self {
+            public_id: Some(public_id),
+            is_streaming,
+        }
+    }
 }
 
 /// Format-independent upstream parsing contract implemented by every codec's upstream parser.
@@ -121,36 +171,12 @@ pub(crate) trait ClientSseRenderer {
     /// Renders one IR event into zero or more SSE frames.
     fn render(&mut self, event: &IrEvent) -> Vec<String>;
 
-    /// Renders a mid-stream error as a terminal frame. `error` is the surface's classified failure
-    /// in the OpenAI error shape; each codec places it in its own terminal frame — the Chat
-    /// Completions error envelope or the failed Responses response object.
-    fn error_frame(&mut self, error: &OpenAiErrorBody) -> String;
-}
-
-/// The OpenAI error object (README §6.7): the shape every outward failure renders as, whether in a
-/// JSON error envelope, inside a streamed Chat Completions error frame, or as the `error` of a
-/// failed Responses response object.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct OpenAiErrorBody {
-    /// Human-readable error message.
-    pub(crate) message: String,
-
-    /// OpenAI `type` field.
-    pub(crate) r#type: &'static str,
-
-    /// OpenAI `param` field, when the failure names a request parameter.
-    pub(crate) param: Option<String>,
-
-    /// OpenAI `code` field, when the failure has a stable code.
-    pub(crate) code: Option<String>,
-}
-
-/// The JSON error envelope `{"error": {...}}` shared by the JSON error response and the streamed
-/// Chat Completions error frame, so both render the same envelope from the same type.
-#[derive(Debug, Serialize)]
-pub(crate) struct OpenAiErrorEnvelope {
-    /// The rendered error object.
-    pub(crate) error: OpenAiErrorBody,
+    /// Renders a mid-stream error as a terminal frame from the shared [`crate::api::Error`]
+    /// classification: the HTTP error path and the stream-frame path share one classification
+    /// (REFACTOR §3); each codec places it in its own terminal frame — the Chat Completions
+    /// error envelope or the failed Responses response object — through its format's render
+    /// module.
+    fn error_frame(&mut self, error: &crate::api::Error) -> String;
 }
 
 /// An outward client format: parses client requests into IR and renders IR events back in the
@@ -163,12 +189,15 @@ pub(crate) trait ClientFormat {
     /// accounting row (README §3 *ApiLog*); each endpoint names itself.
     const ENDPOINT_TYPE: ApiLogEndpointType;
 
-    /// Parses one client request body.
+    /// Parses one client request body with the router's route context: the URL-path facts the
+    /// body does not carry (REFACTOR §4). Surfaces routing the model from the body ignore the
+    /// context; Gemini surfaces take the public model id (and streaming mode, when the URL
+    /// action decides it) from it.
     ///
     /// # Errors
     ///
     /// Returns [`InvalidRequest`] for malformed or unsupported requests.
-    fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest>
+    fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, InvalidRequest>
     where
         Self: Sized;
 

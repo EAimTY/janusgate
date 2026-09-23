@@ -5,18 +5,20 @@ import { providerTypeLabel } from "/src/management-api/vocabulary";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Switch, TextField } from "/src/ui/controls";
 
-/** The five creatable provider kinds, exactly the wire contract's five provider types. */
+/** The seven provider kinds, exactly the wire contract's provider types. */
 export type ProviderKind = ProviderType;
 
 const PROVIDER_KIND_DESCRIPTIONS: Record<ProviderKind, string> = {
     openai_response: "Any Responses API with a static key.",
     openai_chat_completion: "Any Chat Completions API with a static key.",
     gemini_generate_content: "Any generateContent API with a static key.",
+    gemini_interaction: "Any Interactions API with a static key.",
+    anthropic_messages: "Any Messages API with a static key.",
     codex_oauth: "A ChatGPT account via its login page.",
     antigravity_oauth: "A Google account via its login page.",
 };
 
-/** The kind picker groups wire formats by family: OAuth logins, OpenAI-compatible keys, Gemini. */
+/** The kind picker groups wire formats by family: OAuth logins, OpenAI-compatible keys, Gemini, Anthropic. */
 const PROVIDER_KIND_GROUPS: ReadonlyArray<{
     readonly title: string;
     readonly kinds: ReadonlyArray<ProviderKind>;
@@ -39,12 +41,19 @@ const PROVIDER_KIND_GROUPS: ReadonlyArray<{
         title: "Gemini",
         kinds: [
             "gemini_generate_content",
+            "gemini_interaction",
+        ],
+    },
+    {
+        title: "Anthropic",
+        kinds: [
+            "anthropic_messages",
         ],
     },
 ];
 
 /**
- * The provider kind as grouped options. The three static-key wire formats
+ * The provider kind as grouped options. The five static-key wire formats
  * and the two OAuth logins are one choice here — not different creations —
  * because they are all providers whose credential paths merely differ.
  */
@@ -144,7 +153,7 @@ export function ProviderIdentityFields(props: {
                     placeholder="Empty for none"
                     isDisabled={props.isDisabled ?? false}
                     error={props.prefixError}
-                    hint='Used exactly as typed — no "/" is added.'
+                    hint="Used exactly as typed — no separator is added."
                 />
             </Show>
         </div>

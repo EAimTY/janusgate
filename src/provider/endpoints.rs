@@ -49,6 +49,21 @@ pub(crate) const ANTIGRAVITY_USER_AGENT: &str = "antigravity";
 /// OpenAI-family compatible upstreams authenticate through `Authorization: Bearer` instead.
 pub(crate) const GEMINI_API_KEY_HEADER: &str = "x-goog-api-key";
 
+/// Header name pinning the Gemini API revision on Gemini upstream calls (REFACTOR §6).
+pub(crate) const GEMINI_API_REVISION_HEADER: &str = "Api-Revision";
+
+/// Pinned Gemini API revision sent on Gemini upstream calls.
+pub(crate) const GEMINI_API_REVISION: &str = "2026-09-01";
+
+/// Header name carrying the API key of an Anthropic upstream (REFACTOR §6).
+pub(crate) const ANTHROPIC_API_KEY_HEADER: &str = "x-api-key";
+
+/// Header name pinning the Anthropic API version on Anthropic upstream calls (REFACTOR §6).
+pub(crate) const ANTHROPIC_VERSION_HEADER: &str = "anthropic-version";
+
+/// Pinned Anthropic API version sent on Anthropic upstream calls.
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
+
 /// `User-Agent` header value required by the Codex endpoint, derived from [`CODEX_CLIENT_VERSION`].
 pub(crate) fn codex_user_agent() -> String {
     format!("codex_cli_rs/{CODEX_CLIENT_VERSION}")

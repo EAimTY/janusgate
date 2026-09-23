@@ -44,6 +44,106 @@ impl InvalidRequest {
     }
 }
 
+/// Closed reasoning vocabulary shared by every format (REFACTOR §1): one enum, forever.
+///
+/// Inbound surfaces parse their own parameter into this enum; unknown strings are a 400 at the
+/// gateway. Upstream renderers write the enum verbatim into the target's own level parameter.
+/// There is no cross-vocabulary mapping, and there never will be — a value the target does not
+/// support is rejected by the upstream and mirrored to the client per the existing error policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IrReasoningLevel {
+    /// No reasoning; renders as the native off spelling per format (REFACTOR §1).
+    None,
+
+    /// Minimal reasoning effort.
+    Minimal,
+
+    /// Low reasoning effort.
+    Low,
+
+    /// Medium reasoning effort.
+    Medium,
+
+    /// High reasoning effort.
+    High,
+
+    /// Extra-high reasoning effort.
+    XHigh,
+
+    /// Maximum reasoning effort.
+    Max,
+}
+
+impl IrReasoningLevel {
+    /// Parses the closed vocabulary string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidRequest`] naming `param` for unknown strings.
+    pub(crate) fn parse(value: &str, param: &str) -> Result<Self, InvalidRequest> {
+        match value {
+            "none" => Ok(Self::None),
+            "minimal" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::XHigh),
+            "max" => Ok(Self::Max),
+            other => Err(InvalidRequest::field(
+                param,
+                format!("Unknown reasoning effort `{other}`"),
+            )),
+        }
+    }
+
+    /// Renders the canonical vocabulary string, written verbatim into the target's own level
+    /// parameter.
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// One assistant reasoning block: its text (when the family exposes text) plus the opaque replay
+/// payload — enough to represent both an Anthropic-style `thinking` block and a
+/// `redacted_thinking` block, and an Interactions `thought` step, verbatim (REFACTOR §2).
+///
+/// Same-family round-trip is mandatory: Anthropic inbound thinking/redacted blocks and
+/// Interactions inbound thought steps replay byte-exact to their own upstreams. OpenAI surfaces
+/// render the block's text through the existing reasoning channels and drop the opaque payload.
+/// Cross-family, the opaque payload is dropped (signatures are family-bound).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IrReasoningBlock {
+    /// Reasoning text, when the family exposes text.
+    pub(crate) text: String,
+
+    /// Upstream signature terminating the block, when the family exposes one.
+    pub(crate) signature: Option<String>,
+
+    /// Opaque family-bound replay payload, stored verbatim from the inbound block JSON.
+    /// [`Value::Null`] when the block carries no replay payload.
+    pub(crate) opaque: Value,
+}
+
+impl IrReasoningBlock {
+    /// Builds a text-only block with no replay payload.
+    pub(crate) fn text_only(text: String) -> Self {
+        Self {
+            text,
+            signature: None,
+            opaque: Value::Null,
+        }
+    }
+}
+
 /// Reason a completion finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IrFinishReason {
@@ -174,6 +274,24 @@ pub(crate) enum IrPart {
 
         /// JSON or plain-text result content.
         content: String,
+
+        /// Whether the tool reported an error; read and rendered by the Anthropic surface pair
+        /// only, dropped by every other surface (REFACTOR §2).
+        is_error: bool,
+    },
+
+    /// An assistant reasoning block (REFACTOR §2): its text plus the opaque family-bound replay
+    /// payload. Same-family round-trip replays the opaque payload verbatim; OpenAI surfaces
+    /// render the text through the existing reasoning channels and drop the payload.
+    Reasoning {
+        /// Reasoning text, when the family exposes text.
+        text: String,
+
+        /// Upstream signature terminating the block, when the family exposes one.
+        signature: Option<String>,
+
+        /// Opaque family-bound replay payload, stored verbatim from the inbound block JSON.
+        opaque: Value,
     },
 }
 
@@ -268,13 +386,11 @@ pub(crate) struct IrRequest {
     /// Response format restriction.
     pub(crate) response_format: Option<IrResponseFormat>,
 
-    /// Reasoning effort string the client sent, opaque to the gateway: carried verbatim from the
-    /// client's own parameter into the upstream's own parameter (README §6.4). The gateway
-    /// constrains only the type — a non-string value is a 400 malformed request, enforced by the
-    /// inbound parsers' string-typed fields — and never validates, maps, enumerates, clamps, or
-    /// defaults the value itself. `None` means the client omitted the field, and then no upstream
-    /// parameter is rendered.
-    pub(crate) reasoning_effort: Option<String>,
+    /// Reasoning effort level in the closed shared vocabulary (REFACTOR §1): parsed from the
+    /// client's own parameter into [`IrReasoningLevel`], written verbatim into the upstream's own
+    /// parameter. `None` means the client omitted the field, and then no upstream parameter is
+    /// rendered.
+    pub(crate) reasoning_effort: Option<IrReasoningLevel>,
 }
 
 /// One event of a completion, in upstream-agnostic form.
@@ -294,6 +410,23 @@ pub(crate) enum IrEvent {
 
     /// Incremental reasoning or summary text.
     ReasoningDelta(String),
+
+    /// A complete reasoning block, terminating the reasoning text streamed so far with its
+    /// signature so streaming and aggregated renderings agree (REFACTOR §2). Upstream parsers
+    /// emit either deltas plus an empty-text done, or a done carrying the full text with no
+    /// prior deltas — never both with overlapping text — so renderers can render both safely:
+    /// a non-empty `text` renders when no deltas preceded it, an empty `text` closes the block
+    /// the deltas already delivered.
+    ReasoningDone {
+        /// Complete reasoning text of the block; empty when streamed deltas delivered it.
+        text: String,
+
+        /// Upstream signature terminating the block.
+        signature: Option<String>,
+
+        /// Opaque family-bound replay payload.
+        opaque: Value,
+    },
 
     /// Incremental tool call assembly; `index` is stable per call.
     ToolCallDelta {
@@ -389,6 +522,10 @@ pub(crate) struct IrAggregation {
     /// All accumulated reasoning text.
     pub(crate) reasoning: String,
 
+    /// Completed reasoning blocks in emission order, carrying their signatures and opaque replay
+    /// payloads so streaming and aggregated renderings agree (REFACTOR §2).
+    pub(crate) reasoning_blocks: Vec<IrReasoningBlock>,
+
     /// Completed tool calls in emission order.
     pub(crate) tool_calls: Vec<IrAggregatedToolCall>,
 
@@ -412,6 +549,10 @@ pub(crate) struct Aggregator {
     /// Tool call indexes already completed in this aggregation; a repeated done for one of them is
     /// ignored.
     completed_call_indexes: Vec<usize>,
+
+    /// Reasoning text streamed since the last [`IrEvent::ReasoningDone`]; consulted when a done
+    /// arrives without its own complete `text`.
+    pending_reasoning: String,
 }
 
 impl Aggregator {
@@ -425,7 +566,48 @@ impl Aggregator {
 
             IrEvent::TextDelta(delta) => self.aggregation.text.push_str(delta),
 
-            IrEvent::ReasoningDelta(delta) => self.aggregation.reasoning.push_str(delta),
+            IrEvent::ReasoningDelta(delta) => {
+                self.aggregation.reasoning.push_str(delta);
+                self.pending_reasoning.push_str(delta);
+            }
+
+            IrEvent::ReasoningDone {
+                text,
+                signature,
+                opaque,
+            } => {
+                // The done carries the block's complete text; when it arrives empty, the streamed
+                // deltas since the previous done are the authoritative text — mirroring the
+                // ToolCallDone fallback — so a delta-only upstream and a done-only upstream fold
+                // to the same block. When it carries text, that text is authoritative: the pending
+                // deltas' bytes already sit at the tail of `reasoning`, so they are truncated off
+                // before the authoritative text is pushed.
+                if text.is_empty() {
+                    let block_text = std::mem::take(&mut self.pending_reasoning);
+
+                    self.aggregation.reasoning_blocks.push(IrReasoningBlock {
+                        text: block_text,
+                        signature: signature.clone(),
+                        opaque: opaque.clone(),
+                    });
+                } else {
+                    let pending = std::mem::take(&mut self.pending_reasoning);
+
+                    self.aggregation.reasoning.truncate(
+                        self.aggregation
+                            .reasoning
+                            .len()
+                            .saturating_sub(pending.len()),
+                    );
+                    self.aggregation.reasoning.push_str(text);
+
+                    self.aggregation.reasoning_blocks.push(IrReasoningBlock {
+                        text: text.clone(),
+                        signature: signature.clone(),
+                        opaque: opaque.clone(),
+                    });
+                }
+            }
 
             IrEvent::ToolCallDelta {
                 index,
@@ -484,8 +666,18 @@ impl Aggregator {
         }
     }
 
-    /// Consumes the accumulator, dropping any unfinished in-flight tool call state.
-    pub(crate) fn finish(self) -> IrAggregation {
+    /// Consumes the accumulator, flushing an unterminated reasoning span as a text-only block so
+    /// a delta-only stream without a closing done still yields its block for aggregated
+    /// renderings; unfinished in-flight tool call state is dropped.
+    pub(crate) fn finish(mut self) -> IrAggregation {
+        if !self.pending_reasoning.is_empty() {
+            let text = std::mem::take(&mut self.pending_reasoning);
+
+            self.aggregation
+                .reasoning_blocks
+                .push(IrReasoningBlock::text_only(text));
+        }
+
         self.aggregation
     }
 

@@ -21,7 +21,7 @@ const compatibleProvider = {
     type: "openai_chat_completion",
     id: 1,
     name: "local",
-    model_prefix: "local/",
+    model_prefix: "local-",
     is_enabled: true,
     base_url: "https://upstream.example.com",
 };
@@ -39,7 +39,7 @@ const antigravityProvider = {
     type: "antigravity_oauth",
     id: 3,
     name: "antigravity",
-    model_prefix: "ag/",
+    model_prefix: "ag-",
     is_enabled: true,
     expires_at: null,
 };
@@ -57,7 +57,7 @@ const geminiProvider = {
     type: "gemini_generate_content",
     id: 5,
     name: "gemini",
-    model_prefix: "gemini/",
+    model_prefix: "gemini-",
     is_enabled: false,
     base_url: "https://generativelanguage.googleapis.com",
 };
@@ -67,7 +67,7 @@ const model = {
     provider_id: 1,
     provider: "local",
     upstream_id: "qwen3:32b",
-    public_id: "local/qwen3:32b",
+    public_id: "local-qwen3-32b",
     id_override: null,
     is_enabled: true,
     discovery_state: "discovered",
@@ -245,7 +245,7 @@ describe("response validation", () => {
                 models: [
                     {
                         ...model,
-                        id: "local/qwen3:32b",
+                        id: "local-qwen3-32b",
                     },
                 ],
             }),

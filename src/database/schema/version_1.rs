@@ -6,6 +6,11 @@
 //! is empty: there is no previous version to migrate from. A fresh database receives this
 //! version's DDL directly, and every later version's migration transforms it.
 //!
+//! REFACTOR §7 exception, this once: the project is pre-launch, so this version is edited in
+//! place — no new `version_x` module, no migration text, `SCHEMAS` stays at one version — gaining
+//! the two new static-key provider types, the three new request-accounting endpoint values, and
+//! the `/`-and-`:` exclusion on routing tokens (the Gemini URL path cannot address them).
+//!
 //! `api_logs` is request accounting: one row per dispatched inference request (README §3
 //! *ApiLog*):
 //!
@@ -47,10 +52,12 @@
 //! `providers.model_prefix` (empty means no prefix), `models.upstream_id`, `models.public_id`, a
 //! present `models.id_override` — every bearer secret (`api_keys.key`), and every static-key
 //! `providers.base_url` holds only printable ASCII without whitespace (`U+0021–U+007E`), matched
-//! as `NOT GLOB '*[^!-~]*'`, with non-emptiness pinned wherever empty is not a state. Human labels
-//! (`providers.name`, `api_keys.name`) stay free-form behind their non-empty `CHECK`s, and opaque
-//! upstream credential JSON is validated at the management layer instead — its shape is not a
-//! column invariant.
+//! as `NOT GLOB '*[^!-~]*'`, with non-emptiness pinned wherever empty is not a state. The routing
+//! tokens `providers.model_prefix`, `models.upstream_id`, and a present `models.id_override`
+//! additionally reject `/` and `:` (`NOT GLOB '*[/:]*'`): the Gemini URL path cannot address them
+//! (REFACTOR §7). Human labels (`providers.name`, `api_keys.name`) stay free-form behind their
+//! non-empty `CHECK`s, and opaque upstream credential JSON is validated at the management layer
+//! instead — its shape is not a column invariant.
 
 use super::Schema;
 
@@ -72,12 +79,16 @@ CREATE TABLE providers (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     name TEXT NOT NULL UNIQUE CHECK (name != ''),
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
-    model_prefix TEXT NOT NULL CHECK (model_prefix NOT GLOB '*[^!-~]*'),
+    model_prefix TEXT NOT NULL CHECK (
+        model_prefix NOT GLOB '*[^!-~]*' AND model_prefix NOT GLOB '*[/:]*'
+    ),
     type TEXT NOT NULL CHECK (
         type IN (
             'openai_response',
             'openai_chat_completion',
             'gemini_generate_content',
+            'gemini_interaction',
+            'anthropic_messages',
             'codex_oauth',
             'antigravity_oauth'
         )
@@ -95,6 +106,7 @@ CREATE TABLE models (
     provider_id INTEGER NOT NULL REFERENCES providers (id) ON DELETE CASCADE,
     upstream_id TEXT NOT NULL CHECK (
         upstream_id <> '' AND upstream_id NOT GLOB '*[^!-~]*'
+        AND upstream_id NOT GLOB '*[/:]*'
     ),
     is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0, 1)),
     discovery_state TEXT NOT NULL CHECK (
@@ -104,7 +116,10 @@ CREATE TABLE models (
         public_id <> '' AND public_id NOT GLOB '*[^!-~]*'
     ),
     id_override TEXT NULL CHECK (
-        id_override IS NULL OR (id_override <> '' AND id_override NOT GLOB '*[^!-~]*')
+        id_override IS NULL OR (
+            id_override <> '' AND id_override NOT GLOB '*[^!-~]*'
+            AND id_override NOT GLOB '*[/:]*'
+        )
     ),
     UNIQUE (provider_id, upstream_id)
 ) STRICT;
@@ -134,7 +149,10 @@ CREATE TABLE api_logs (
     provider_id INTEGER NOT NULL,
     model_id INTEGER NOT NULL,
     endpoint_type TEXT NOT NULL CHECK (
-        endpoint_type IN ('openai_chat_completions', 'openai_responses')
+        endpoint_type IN (
+            'openai_chat_completions', 'openai_responses', 'gemini_generate_content',
+            'gemini_interactions', 'anthropic_messages'
+        )
     ),
     is_stream INTEGER NOT NULL CHECK (is_stream IN (0, 1)),
     http_status INTEGER NULL,
@@ -298,18 +316,18 @@ mod tests {
         assert_identity_not_recycled(
             &connection,
             "INSERT INTO providers (name, model_prefix, type, credentials) \
-             VALUES ('a', 'a/', 'openai_chat_completion', '{}');",
+             VALUES ('a', 'a-', 'openai_chat_completion', '{}');",
             "INSERT INTO providers (name, model_prefix, type, credentials) \
-             VALUES ('b', 'b/', 'openai_chat_completion', '{}');",
+             VALUES ('b', 'b-', 'openai_chat_completion', '{}');",
             "DELETE FROM providers WHERE name = 'b';",
             "INSERT INTO providers (name, model_prefix, type, credentials) \
-             VALUES ('c', 'c/', 'openai_chat_completion', '{}');",
+             VALUES ('c', 'c-', 'openai_chat_completion', '{}');",
             "SELECT MAX(id) FROM providers;",
         )
         .await
     }
 
-    /// Verifies the `api_logs.endpoint_type` closed domain: an endpoint outside the two outward
+    /// Verifies the `api_logs.endpoint_type` closed domain: an endpoint outside the five outward
     /// completion endpoints is rejected at write time by the schema `CHECK`. First-party write
     /// paths only ever insert parsed endpoint types, so the probe uses a raw statement.
     ///
@@ -333,6 +351,26 @@ mod tests {
             .await;
 
         assert_constraint_violation(outcome, "endpoint_type");
+
+        // The five legal endpoint values all write cleanly.
+        for (index, endpoint) in [
+            "openai_chat_completions",
+            "openai_responses",
+            "gemini_generate_content",
+            "gemini_interactions",
+            "anthropic_messages",
+        ]
+        .iter()
+        .enumerate()
+        {
+            connection
+                .execute_batch(&format!(
+                    "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
+                     endpoint_type, is_stream, outcome, duration) \
+                     VALUES ({index}, 1, 1, 1, '{endpoint}', 0, 'completed', 1);",
+                ))
+                .await?;
+        }
 
         Ok(())
     }
@@ -391,11 +429,13 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the routing-token composition `CHECK`s (README §7): a model prefix, an upstream
-    /// identifier, a public ID, or a present override carrying a space, CJK text, or a control
-    /// character — or an empty identifier where empty is not a state — is rejected at write time.
-    /// An empty prefix stays writable: it means no prefix. First-party write paths validate before
-    /// the write, so the probes use raw statements.
+    /// Verifies the routing-token composition `CHECK`s (README §7, REFACTOR §7): a model prefix,
+    /// an upstream identifier, a public ID, or a present override carrying a space, CJK text, or a
+    /// control character — or an empty identifier where empty is not a state — is rejected at
+    /// write time. The routing columns `model_prefix`, `upstream_id`, and a present `id_override`
+    /// additionally reject `/` and `:` (the Gemini URL path cannot address them). An empty prefix
+    /// stays writable: it means no prefix. First-party write paths validate before the write, so
+    /// the probes use raw statements.
     ///
     /// # Errors
     ///
@@ -411,7 +451,7 @@ mod tests {
         connection
             .execute_batch(
                 "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES ('p', 'p/', 'openai_chat_completion', '{}');",
+                 VALUES ('p', 'p-', 'openai_chat_completion', '{}');",
             )
             .await?;
 
@@ -429,19 +469,39 @@ mod tests {
                  VALUES ('q-%ID%', '前缀', 'openai_chat_completion', '{}');",
             ),
             (
-                "upstream_id",
-                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
-                 VALUES (1, 'has space', 'manual', 'p/has-%ID%');",
+                "model_prefix",
+                "INSERT INTO providers (name, model_prefix, type, credentials) \
+                 VALUES ('q-%ID%', 'has/slash', 'openai_chat_completion', '{}');",
+            ),
+            (
+                "model_prefix",
+                "INSERT INTO providers (name, model_prefix, type, credentials) \
+                 VALUES ('q-%ID%', 'has:colon', 'openai_chat_completion', '{}');",
             ),
             (
                 "upstream_id",
                 "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
-                 VALUES (1, '', 'manual', 'p/empty-%ID%');",
+                 VALUES (1, 'has space', 'manual', 'p-has-%ID%');",
             ),
             (
                 "upstream_id",
                 "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
-                 VALUES (1, '模型', 'manual', 'p/cjk-%ID%');",
+                 VALUES (1, '', 'manual', 'p-empty-%ID%');",
+            ),
+            (
+                "upstream_id",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
+                 VALUES (1, '模型', 'manual', 'p-cjk-%ID%');",
+            ),
+            (
+                "upstream_id",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
+                 VALUES (1, 'with/slash-%ID%', 'manual', 'p-with-slash-%ID%');",
+            ),
+            (
+                "upstream_id",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
+                 VALUES (1, 'with:colon-%ID%', 'manual', 'p-with-colon-%ID%');",
             ),
             (
                 "public_id",
@@ -451,12 +511,22 @@ mod tests {
             (
                 "id_override",
                 "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id, \
-                 id_override) VALUES (1, 'm-%ID%', 'manual', 'p/m-%ID%', 'has space');",
+                 id_override) VALUES (1, 'm-%ID%', 'manual', 'p-m-%ID%', 'has space');",
             ),
             (
                 "id_override",
                 "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id, \
-                 id_override) VALUES (1, 'm-%ID%', 'manual', 'p/m-%ID%', '');",
+                 id_override) VALUES (1, 'm-%ID%', 'manual', 'p-m-%ID%', '');",
+            ),
+            (
+                "id_override",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id, \
+                 id_override) VALUES (1, 'm-%ID%', 'manual', 'p-m-%ID%', 'with/slash');",
+            ),
+            (
+                "id_override",
+                "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id, \
+                 id_override) VALUES (1, 'm-%ID%', 'manual', 'p-m-%ID%', 'with:colon');",
             ),
         ];
 
@@ -507,7 +577,7 @@ mod tests {
             let outcome = connection
                 .execute_batch(&format!(
                     "INSERT INTO providers (name, model_prefix, type, base_url, credentials) \
-                     VALUES ('u-{index}', 'u/', 'openai_chat_completion', '{base_url}', '{{}}');"
+                     VALUES ('u-{index}', 'u-', 'openai_chat_completion', '{base_url}', '{{}}');"
                 ))
                 .await;
             assert_constraint_violation(outcome, "base_url");
@@ -517,7 +587,7 @@ mod tests {
         connection
             .execute_batch(
                 "INSERT INTO providers (name, model_prefix, type, base_url, credentials) \
-                 VALUES ('oauth', 'o/', 'codex_oauth', NULL, '{}');",
+                 VALUES ('oauth', 'o-', 'codex_oauth', NULL, '{}');",
             )
             .await?;
 
@@ -558,19 +628,19 @@ mod tests {
         connection
             .execute_batch(
                 "INSERT INTO providers (name, model_prefix, type, credentials) \
-                 VALUES ('p', 'p/', 'openai_chat_completion', '{}');",
+                 VALUES ('p', 'p-', 'openai_chat_completion', '{}');",
             )
             .await?;
 
         assert_identity_not_recycled(
             &connection,
             "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
-             VALUES (1, 'm-1', 'manual', 'p/m-1');",
+             VALUES (1, 'm-1', 'manual', 'p-m-1');",
             "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
-             VALUES (1, 'm-2', 'manual', 'p/m-2');",
+             VALUES (1, 'm-2', 'manual', 'p-m-2');",
             "DELETE FROM models WHERE upstream_id = 'm-2';",
             "INSERT INTO models (provider_id, upstream_id, discovery_state, public_id) \
-             VALUES (1, 'm-3', 'manual', 'p/m-3');",
+             VALUES (1, 'm-3', 'manual', 'p-m-3');",
             "SELECT MAX(id) FROM models;",
         )
         .await

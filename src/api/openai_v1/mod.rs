@@ -1,16 +1,17 @@
 //! Outward OpenAI-compatible format sub-router (`/api/openai-v1`).
 
-use self::error::Error;
 use crate::{
+    api::{Error, log_error},
     api_keys,
     api_logs::{self, ApiLogDraft, ApiLogOutcome},
     context::Context,
     database::Database,
     format::{
-        ClientFormat, ClientSseRenderer, openai_chat_completion::Format as ChatCompletionFormat,
+        ClientFormat, ClientSseRenderer, RouteContext, error_openai,
+        openai_chat_completion::Format as ChatCompletionFormat,
         openai_response::Format as ResponseFormat,
     },
-    gateway::{self, Error as GatewayError, IrEventStream},
+    gateway::{self, IrEventStream},
     ir::{Aggregator, IrAggregation, IrEvent, IrUsage},
     provider::storage,
     security,
@@ -18,18 +19,19 @@ use crate::{
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, FromRequestParts, OriginalUri, Request, State},
-    http::{StatusCode, header, request::Parts as RequestParts},
+    extract::{
+        DefaultBodyLimit, FromRequestParts, OriginalUri, Request, State, rejection::BytesRejection,
+    },
+    http::{Method, StatusCode, header, request::Parts as RequestParts},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
+use axum_extra::extract::WithRejection;
 use log::debug;
 use serde::Serialize;
 use std::{convert::Infallible, io::Error as IoError};
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
-
-mod error;
 
 /// Maximum accepted request body size, large enough for inline image data.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
@@ -67,7 +69,8 @@ struct ModelObject<'a> {
     owned_by: &'a str,
 }
 
-/// Constructs the format sub-router with OpenAI bearer authentication and its own 404 response.
+/// Constructs the format sub-router with OpenAI bearer authentication and its own 404/405
+/// responses.
 ///
 /// `database` feeds the authentication middleware its own state, so every request checks the
 /// presented key against the live database rather than the router state.
@@ -77,6 +80,7 @@ pub(super) fn router(database: Database) -> Router<Context> {
         .route("/responses", post(responses))
         .route("/models", get(models))
         .fallback(fallback)
+        .method_not_allowed_fallback(method_not_allowed)
         .layer(middleware::from_fn_with_state(database, authenticate))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
@@ -133,7 +137,7 @@ async fn authenticate(State(database): State<Database>, request: Request, next: 
     let Some(presented) = presented else {
         debug!("rejected an unauthorized API request");
 
-        return Error::InvalidApiKey.into_response();
+        return error_response(Error::InvalidApiKey);
     };
 
     match api_keys::list_enabled_api_key_secrets(&database).await {
@@ -156,17 +160,17 @@ async fn authenticate(State(database): State<Database>, request: Request, next: 
                 None => {
                     debug!("rejected an unauthorized API request");
 
-                    Error::InvalidApiKey.into_response()
+                    error_response(Error::InvalidApiKey)
                 }
             }
         }
 
         Err(error) => {
-            let error = Error::Storage(error);
+            let error = Error::from(error);
 
-            error::log_error("request", &error);
+            log_error("request", &error);
 
-            error.into_response()
+            error_response(error)
         }
     }
 }
@@ -194,16 +198,57 @@ async fn fallback(OriginalUri(uri): OriginalUri, request: Request) -> Response {
         path: uri.path().to_string(),
     };
 
-    error::log_error("request", &error);
+    log_error("request", &error);
 
-    error.into_response()
+    error_response(error)
+}
+
+/// Handles a request whose method is not registered on an otherwise-matching path with an
+/// OpenAI-shaped 405, logging the rendered error once at this response boundary. Axum still
+/// attaches the `Allow` header listing the registered methods.
+async fn method_not_allowed(method: Method, OriginalUri(uri): OriginalUri) -> Response {
+    let error = Error::MethodNotAllowed;
+
+    log_error(
+        &format!("request {} {}", method.as_str(), uri.path()),
+        &error,
+    );
+
+    error_response(error)
+}
+
+/// Renders one API failure as an OpenAI JSON error response through the format's render module:
+/// the HTTP error path and the stream-frame path share this one classification (REFACTOR §3).
+fn error_response(error: Error) -> Response {
+    let (status, envelope) = error_openai::render(&error);
+
+    json_response(status, &envelope)
+}
+
+/// Body extractor rejection mapped into the surface's OpenAI error shape: an over-limit body
+/// renders the surface's 413, every other body failure renders as a malformed request.
+#[derive(Debug)]
+struct BodyError(Error);
+
+impl From<BytesRejection> for BodyError {
+    fn from(rejection: BytesRejection) -> Self {
+        Self(Error::from(rejection))
+    }
+}
+
+impl IntoResponse for BodyError {
+    fn into_response(self) -> Response {
+        log_error("request body", &self.0);
+
+        error_response(self.0)
+    }
 }
 
 /// Handles `POST /chat/completions`.
 async fn chat_completions(
     State(context): State<Context>,
     api_key: AuthenticatedApiKeyRow,
-    body: Bytes,
+    WithRejection(body, _): WithRejection<Bytes, BodyError>,
 ) -> Response {
     outcome_response(handle_completion::<ChatCompletionFormat>(&context, &body, api_key.0).await)
 }
@@ -212,7 +257,7 @@ async fn chat_completions(
 async fn responses(
     State(context): State<Context>,
     api_key: AuthenticatedApiKeyRow,
-    body: Bytes,
+    WithRejection(body, _): WithRejection<Bytes, BodyError>,
 ) -> Response {
     outcome_response(handle_completion::<ResponseFormat>(&context, &body, api_key.0).await)
 }
@@ -221,7 +266,7 @@ async fn responses(
 fn outcome_response(outcome: Result<Response, Error>) -> Response {
     match outcome {
         Ok(response) => response,
-        Err(error) => error.into_response(),
+        Err(error) => error_response(error),
     }
 }
 
@@ -251,13 +296,13 @@ where
     TFormat: ClientFormat,
     TFormat::JsonResponse: Serialize,
 {
-    let parsed = match TFormat::parse_request(body) {
+    let parsed = match TFormat::parse_request(body, &RouteContext::empty()) {
         Ok(parsed) => parsed,
 
         Err(error) => {
             let error = Error::from(error);
 
-            error::log_error("completion request", &error);
+            log_error("completion request", &error);
 
             return Err(error);
         }
@@ -269,7 +314,7 @@ where
         Err(error) => {
             let error = Error::from(error);
 
-            error::log_error(
+            log_error(
                 &format!("completion for model `{}`", parsed.ir.model),
                 &error,
             );
@@ -334,7 +379,7 @@ where
                 }
 
                 Err(error) => {
-                    let (outcome, http_status) = gateway::classify_failure(&error);
+                    let (outcome, http_status) = error.accounting();
 
                     api_logs::finalize_api_log(
                         &context.database,
@@ -352,10 +397,8 @@ where
     }
     .await;
 
-    let outcome = outcome.map_err(Error::from);
-
     if let Err(error) = &outcome {
-        error::log_error(&operation, error);
+        log_error(&operation, error);
     }
 
     outcome
@@ -387,9 +430,9 @@ async fn models(State(context): State<Context>) -> Response {
         Err(error) => {
             let error = Error::from(error);
 
-            error::log_error("model listing", &error);
+            log_error("model listing", &error);
 
-            error.into_response()
+            error_response(error)
         }
     }
 }
@@ -452,11 +495,11 @@ fn sse_response(
                 }
 
                 Err(gateway_error) => {
-                    let (outcome, _) = gateway::classify_failure(&gateway_error);
-                    let payload = Error::from(gateway_error).body();
+                    let error = Error::from(gateway_error);
+                    let (outcome, _) = error.accounting();
 
                     if sender
-                        .send(Ok(renderer.error_frame(&payload).into()))
+                        .send(Ok(renderer.error_frame(&error).into()))
                         .await
                         .is_err()
                     {
@@ -531,7 +574,7 @@ fn declared_status(is_status_declared: bool) -> Option<i64> {
 async fn aggregated_response<TBody>(
     events: IrEventStream,
     render_json_fn: impl Fn(&IrAggregation) -> TBody,
-) -> Result<(Response, Option<IrUsage>), GatewayError>
+) -> Result<(Response, Option<IrUsage>), Error>
 where
     TBody: Serialize,
 {
@@ -542,7 +585,7 @@ where
     while let Some(item) = events.next().await {
         match item {
             Ok(event) => aggregator.ingest(&event),
-            Err(error) => return Err(error),
+            Err(error) => return Err(Error::from(error)),
         }
     }
 

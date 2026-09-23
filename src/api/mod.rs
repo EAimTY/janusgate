@@ -1,9 +1,15 @@
-//! Outward client API routing.
+//! Outward client API routing: the `/api` parent router and the shared error domain every
+//! format surface renders through its own wire shape (REFACTOR §3).
 
 use super::{context::Context, database::Database, server};
 use axum::Router;
 
+mod anthropic_v1;
+pub(crate) mod error;
+mod gemini_v1beta;
 mod openai_v1;
+
+pub(crate) use self::error::{Error, log_error};
 
 /// Constructs the outward client API router, configured with CORS middleware.
 ///
@@ -18,7 +24,9 @@ pub(crate) fn router(database: Database) -> Router<Context> {
     // 0.9), which would leave that 404 unreachable. The declaration is deliberately the very
     // handler the root router uses, so an unmapped path is answered identically either way.
     Router::new()
-        .nest("/openai-v1", openai_v1::router(database))
+        .nest("/openai-v1", openai_v1::router(database.clone()))
+        .nest("/gemini-v1beta", gemini_v1beta::router(database.clone()))
+        .nest("/anthropic-v1", anthropic_v1::router(database))
         .fallback(server::fallback)
         .layer(crate::CONFIG.api_cors_layer())
 }

@@ -517,8 +517,8 @@ fn render_generate_content_request(
         max_output_tokens: ir.max_output_tokens,
         response_mime_type,
         response_schema,
-        thinking_config: ir.reasoning_effort.as_deref().map(|effort| ThinkingConfig {
-            thinking_level: effort,
+        thinking_config: ir.reasoning_effort.as_ref().map(|level| ThinkingConfig {
+            thinking_level: level.as_str(),
         }),
     };
 
@@ -598,7 +598,9 @@ fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, In
             thought_signature: thought_signature.as_deref(),
         }]),
 
-        IrPart::ToolOutput { call_id, content } => {
+        IrPart::ToolOutput {
+            call_id, content, ..
+        } => {
             let name = resolve_tool_output_name(call_id, ir)?;
 
             let response = match serde_json::from_str::<Value>(content) {
@@ -615,6 +617,11 @@ fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, In
                 },
             }])
         }
+
+        // Reasoning blocks carry no Gemini GenerateContent history slot: the text is a response
+        // channel, not a replayable request part for this family, and the opaque payload is
+        // family-bound — cross-family it is dropped (REFACTOR §2).
+        IrPart::Reasoning { .. } => Ok(Vec::new()),
     }
 }
 
@@ -1041,20 +1048,29 @@ mod tests {
             .and_then(Value::as_str)
     }
 
-    /// Verifies the Gemini thinking slot of the verbatim-passthrough contract (README §6.4): any
-    /// client string — an unknown vocabulary value or the empty string — renders into
-    /// `thinkingConfig.thinkingLevel` exactly as sent, an absent effort renders no thinking
-    /// configuration at all, and no rendered body ever carries a token budget.
+    /// Verifies the Gemini thinking slot of the closed-vocabulary contract (REFACTOR §1): every
+    /// vocabulary value renders into `thinkingConfig.thinkingLevel` verbatim, an absent effort
+    /// renders no thinking configuration at all, and no rendered body ever carries a token budget.
     ///
     /// # Panics
     ///
     /// Panics if a rendered slot diverges from the contract.
     #[test]
     fn renders_thinking_level_verbatim_and_never_a_budget() {
-        for effort in ["high", "xhigh", "ultra", ""] {
+        use crate::ir::IrReasoningLevel;
+
+        for (level, effort) in [
+            (IrReasoningLevel::None, "none"),
+            (IrReasoningLevel::Minimal, "minimal"),
+            (IrReasoningLevel::Low, "low"),
+            (IrReasoningLevel::Medium, "medium"),
+            (IrReasoningLevel::High, "high"),
+            (IrReasoningLevel::XHigh, "xhigh"),
+            (IrReasoningLevel::Max, "max"),
+        ] {
             let ir = IrRequest {
                 model: "m".to_string(),
-                reasoning_effort: Some(effort.to_string()),
+                reasoning_effort: Some(level),
                 ..IrRequest::default()
             };
 
@@ -1125,6 +1141,7 @@ mod tests {
         let frame = SseFrame {
             data: serde_json::json!({"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL"}]})
                 .to_string(),
+            event: None,
         };
 
         let mut parser = UpstreamParser::new();
@@ -1197,6 +1214,7 @@ mod tests {
 
         let frame = SseFrame {
             data: body.to_string(),
+            event: None,
         };
 
         let mut parser = UpstreamParser::new();
@@ -1245,6 +1263,7 @@ mod tests {
 
         let frame = SseFrame {
             data: body.to_string(),
+            event: None,
         };
 
         let mut parser = UpstreamParser::new();
@@ -1428,6 +1447,7 @@ mod tests {
                     parts: vec![IrPart::ToolOutput {
                         call_id: "call_a".to_string(),
                         content: r#"{"passed": true}"#.to_string(),
+                        is_error: false,
                     }],
                 },
                 IrMessage {
@@ -1435,6 +1455,7 @@ mod tests {
                     parts: vec![IrPart::ToolOutput {
                         call_id: "call_b".to_string(),
                         content: "all green".to_string(),
+                        is_error: false,
                     }],
                 },
             ],
@@ -1540,6 +1561,7 @@ mod tests {
                     parts: vec![IrPart::ToolOutput {
                         call_id,
                         content: r#"{"temp": 4}"#.to_string(),
+                        is_error: false,
                     }],
                 },
             ],
@@ -1647,6 +1669,7 @@ mod tests {
                     parts: vec![IrPart::ToolOutput {
                         call_id,
                         content: r#"{"temp": 21}"#.to_string(),
+                        is_error: false,
                     }],
                 },
             ],
@@ -1715,6 +1738,7 @@ mod tests {
                     parts: vec![IrPart::ToolOutput {
                         call_id: "up-2".to_string(),
                         content: r#"{"found": "b"}"#.to_string(),
+                        is_error: false,
                     }],
                 },
                 IrMessage {
@@ -1722,6 +1746,7 @@ mod tests {
                     parts: vec![IrPart::ToolOutput {
                         call_id: "up-1".to_string(),
                         content: r#"{"found": "a"}"#.to_string(),
+                        is_error: false,
                     }],
                 },
             ],

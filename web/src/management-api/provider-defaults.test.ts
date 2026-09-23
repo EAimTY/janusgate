@@ -54,8 +54,8 @@ describe("suggestProviderName", () => {
 });
 
 describe("defaultModelPrefix", () => {
-    it("is the provider name with one trailing slash", () => {
-        expect(defaultModelPrefix("codex")).toBe("codex/");
+    it("is the provider name with one trailing dash", () => {
+        expect(defaultModelPrefix("codex")).toBe("codex-");
     });
 
     it("is empty when there is no name to derive from", () => {

@@ -58,6 +58,8 @@ export function toUpdateProviderRequest(
         case "openai_response":
         case "openai_chat_completion":
         case "gemini_generate_content":
+        case "gemini_interaction":
+        case "anthropic_messages":
             return {
                 type: provider.type,
                 provider_id: provider.id,

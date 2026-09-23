@@ -188,6 +188,66 @@ pub enum UpdateProviderRequest {
         api_key: Option<String>,
     },
 
+    /// Static API key speaking the Gemini Interactions protocol.
+    #[serde(rename = "gemini_interaction")]
+    GeminiInteraction {
+        /// Addressed provider row.
+        provider_id: i64,
+
+        /// Unique provider name; must be non-empty. Renames the provider when it differs from the
+        /// stored name.
+        name: String,
+
+        /// Public model name prefix; may be empty, otherwise routing-safe (README §7).
+        model_prefix: String,
+
+        /// Serving state.
+        is_enabled: bool,
+
+        /// Upstream base URL; a non-empty http(s) URL of printable ASCII without whitespace.
+        base_url: String,
+
+        /// Replacement static API key; absent keeps the stored one, present must be non-empty
+        /// printable ASCII without whitespace.
+        #[serde(
+            default,
+            deserialize_with = "absent_keeps::deserialize",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
+        api_key: Option<String>,
+    },
+
+    /// Static API key speaking the Anthropic Messages protocol.
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages {
+        /// Addressed provider row.
+        provider_id: i64,
+
+        /// Unique provider name; must be non-empty. Renames the provider when it differs from the
+        /// stored name.
+        name: String,
+
+        /// Public model name prefix; may be empty, otherwise routing-safe (README §7).
+        model_prefix: String,
+
+        /// Serving state.
+        is_enabled: bool,
+
+        /// Upstream base URL; a non-empty http(s) URL of printable ASCII without whitespace.
+        base_url: String,
+
+        /// Replacement static API key; absent keeps the stored one, present must be non-empty
+        /// printable ASCII without whitespace.
+        #[serde(
+            default,
+            deserialize_with = "absent_keeps::deserialize",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
+        api_key: Option<String>,
+    },
+
     /// ChatGPT account speaking the Codex Responses protocol.
     #[serde(rename = "codex_oauth")]
     CodexOauth {
@@ -447,6 +507,22 @@ async fn handle_update(
             is_enabled,
             base_url,
             api_key,
+        }
+        | UpdateProviderRequest::GeminiInteraction {
+            provider_id,
+            name,
+            model_prefix,
+            is_enabled,
+            base_url,
+            api_key,
+        }
+        | UpdateProviderRequest::AnthropicMessages {
+            provider_id,
+            name,
+            model_prefix,
+            is_enabled,
+            base_url,
+            api_key,
         } => (
             *provider_id,
             name,
@@ -526,6 +602,8 @@ async fn handle_update(
         UpdateProviderRequest::OpenAiResponse { .. } => ProviderType::OpenAiResponse,
         UpdateProviderRequest::OpenAiChatCompletion { .. } => ProviderType::OpenAiChatCompletion,
         UpdateProviderRequest::GeminiGenerateContent { .. } => ProviderType::GeminiGenerateContent,
+        UpdateProviderRequest::GeminiInteraction { .. } => ProviderType::GeminiInteraction,
+        UpdateProviderRequest::AnthropicMessages { .. } => ProviderType::AnthropicMessages,
         UpdateProviderRequest::CodexOauth { .. } => ProviderType::CodexOauth,
         UpdateProviderRequest::AntigravityOauth { .. } => ProviderType::AntigravityOauth,
     };
@@ -580,7 +658,7 @@ mod tests {
         )]
         let parsed: UpdateProviderRequest = serde_json::from_str(
             r#"{"provider_id":7,"type":"openai_chat_completion","name":"acme",
-                "model_prefix":"acme/","is_enabled":true,
+                "model_prefix":"acme-","is_enabled":true,
                 "base_url":"https://upstream.example","api_key":"sk"}"#,
         )
         .unwrap();
@@ -595,7 +673,7 @@ mod tests {
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
                 r#"{"provider_id":7,"type":"openai_chat_completion","name":"acme",
-                    "model_prefix":"acme/","is_enabled":true,
+                    "model_prefix":"acme-","is_enabled":true,
                     "base_url":"https://upstream.example","expires_at":1}"#
             )
             .is_err()
@@ -605,7 +683,7 @@ mod tests {
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
                 r#"{"provider_id":3,"type":"codex_oauth","name":"codex",
-                    "model_prefix":"codex/","is_enabled":true,"base_url":"x"}"#
+                    "model_prefix":"codex-","is_enabled":true,"base_url":"x"}"#
             )
             .is_err()
         );
@@ -633,7 +711,7 @@ mod tests {
         assert!(
             serde_json::from_str::<UpdateProviderRequest>(
                 r#"{"provider_id":3,"type":"codex_oauth","name":"codex",
-                    "model_prefix":"codex/","is_enabled":true,"credentials":null}"#
+                    "model_prefix":"codex-","is_enabled":true,"credentials":null}"#
             )
             .is_err()
         );

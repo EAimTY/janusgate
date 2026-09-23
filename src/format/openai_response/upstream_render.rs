@@ -305,7 +305,10 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
 
             IrRole::Tool => {
                 for part in &message.parts {
-                    if let IrPart::ToolOutput { call_id, content } = part {
+                    if let IrPart::ToolOutput {
+                        call_id, content, ..
+                    } = part
+                    {
                         input.push(InputItem::FunctionCallOutput {
                             call_id,
                             output: content,
@@ -367,28 +370,27 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
         top_p: ir.top_p,
         max_output_tokens: ir.max_output_tokens,
         text,
-        reasoning: ir
-            .reasoning_effort
-            .as_deref()
-            .map(|effort| Reasoning { effort }),
+        reasoning: ir.reasoning_effort.as_ref().map(|level| Reasoning {
+            effort: level.as_str(),
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::render_request;
-    use crate::ir::IrRequest;
+    use crate::ir::{IrReasoningLevel, IrRequest};
     use serde_json::Value;
 
-    /// Renders one upstream body for the given opaque effort string.
+    /// Renders one upstream body for the given effort level.
     ///
     /// # Panics
     ///
     /// Panics if the rendered body fails to serialize.
-    fn render_body(reasoning_effort: Option<&str>) -> Value {
+    fn render_body(reasoning_effort: Option<IrReasoningLevel>) -> Value {
         let ir = IrRequest {
             model: "m".to_string(),
-            reasoning_effort: reasoning_effort.map(str::to_string),
+            reasoning_effort,
             ..IrRequest::default()
         };
 
@@ -401,17 +403,24 @@ mod tests {
         serde_json::to_value(body).expect("the body serializes")
     }
 
-    /// Verifies the Responses effort slot of the verbatim-passthrough contract (README §6.4): any
-    /// string — an unknown vocabulary value or the empty string — renders into `reasoning.effort`
-    /// exactly as sent, and an absent effort renders no reasoning object at all.
+    /// Verifies the Responses effort slot of the closed-vocabulary contract (REFACTOR §1): every
+    /// vocabulary value renders verbatim, and an absent effort renders no reasoning object at all.
     ///
     /// # Panics
     ///
     /// Panics if a rendered slot diverges from the contract.
     #[test]
-    fn renders_the_effort_string_verbatim_or_not_at_all() {
-        for effort in ["high", "xhigh", "ultra", ""] {
-            let body = render_body(Some(effort));
+    fn renders_the_effort_level_verbatim_or_not_at_all() {
+        for (level, effort) in [
+            (IrReasoningLevel::None, "none"),
+            (IrReasoningLevel::Minimal, "minimal"),
+            (IrReasoningLevel::Low, "low"),
+            (IrReasoningLevel::Medium, "medium"),
+            (IrReasoningLevel::High, "high"),
+            (IrReasoningLevel::XHigh, "xhigh"),
+            (IrReasoningLevel::Max, "max"),
+        ] {
+            let body = render_body(Some(level));
 
             assert_eq!(
                 body.get("reasoning")

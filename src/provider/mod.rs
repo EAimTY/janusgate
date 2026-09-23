@@ -35,6 +35,14 @@ pub enum ProviderType {
     #[serde(rename = "gemini_generate_content")]
     GeminiGenerateContent,
 
+    /// Static API key speaking the Gemini Interactions protocol.
+    #[serde(rename = "gemini_interaction")]
+    GeminiInteraction,
+
+    /// Static API key speaking the Anthropic Messages protocol.
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages,
+
     /// ChatGPT account speaking the Codex Responses protocol.
     #[serde(rename = "codex_oauth")]
     CodexOauth,
@@ -51,6 +59,8 @@ impl ProviderType {
             "openai_response" => Some(Self::OpenAiResponse),
             "openai_chat_completion" => Some(Self::OpenAiChatCompletion),
             "gemini_generate_content" => Some(Self::GeminiGenerateContent),
+            "gemini_interaction" => Some(Self::GeminiInteraction),
+            "anthropic_messages" => Some(Self::AnthropicMessages),
             "codex_oauth" => Some(Self::CodexOauth),
             "antigravity_oauth" => Some(Self::AntigravityOauth),
             _ => None,
@@ -63,6 +73,8 @@ impl ProviderType {
             Self::OpenAiResponse => "openai_response",
             Self::OpenAiChatCompletion => "openai_chat_completion",
             Self::GeminiGenerateContent => "gemini_generate_content",
+            Self::GeminiInteraction => "gemini_interaction",
+            Self::AnthropicMessages => "anthropic_messages",
             Self::CodexOauth => "codex_oauth",
             Self::AntigravityOauth => "antigravity_oauth",
         }
@@ -74,9 +86,11 @@ impl ProviderType {
     pub(crate) const fn is_oauth(self) -> bool {
         match self {
             Self::CodexOauth | Self::AntigravityOauth => true,
-            Self::OpenAiResponse | Self::OpenAiChatCompletion | Self::GeminiGenerateContent => {
-                false
-            }
+            Self::OpenAiResponse
+            | Self::OpenAiChatCompletion
+            | Self::GeminiGenerateContent
+            | Self::GeminiInteraction
+            | Self::AnthropicMessages => false,
         }
     }
 
@@ -89,6 +103,8 @@ impl ProviderType {
             Self::GeminiGenerateContent | Self::AntigravityOauth => {
                 UpstreamFormat::GeminiGenerateContent
             }
+            Self::GeminiInteraction => UpstreamFormat::GeminiInteraction,
+            Self::AnthropicMessages => UpstreamFormat::AnthropicMessages,
         }
     }
 }
@@ -430,7 +446,9 @@ impl Credentials {
 
             ProviderType::OpenAiResponse
             | ProviderType::OpenAiChatCompletion
-            | ProviderType::GeminiGenerateContent => {
+            | ProviderType::GeminiGenerateContent
+            | ProviderType::GeminiInteraction
+            | ProviderType::AnthropicMessages => {
                 let fields = read_lenient_fields::<StoredApiKeyFields>(json)?;
 
                 reject_extra_key(&fields.extra, &["apiKey"])?;
@@ -692,6 +710,8 @@ mod tests {
             ProviderType::OpenAiResponse,
             ProviderType::OpenAiChatCompletion,
             ProviderType::GeminiGenerateContent,
+            ProviderType::GeminiInteraction,
+            ProviderType::AnthropicMessages,
             ProviderType::CodexOauth,
             ProviderType::AntigravityOauth,
         ] {
@@ -848,6 +868,16 @@ mod tests {
             ),
             (
                 ProviderType::GeminiGenerateContent,
+                Credentials::ApiKey("sk-secret".to_string()),
+                r#"{"apiKey":"sk-secret"}"#,
+            ),
+            (
+                ProviderType::GeminiInteraction,
+                Credentials::ApiKey("sk-secret".to_string()),
+                r#"{"apiKey":"sk-secret"}"#,
+            ),
+            (
+                ProviderType::AnthropicMessages,
                 Credentials::ApiKey("sk-secret".to_string()),
                 r#"{"apiKey":"sk-secret"}"#,
             ),

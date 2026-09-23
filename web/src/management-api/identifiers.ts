@@ -1,12 +1,14 @@
 /**
  * Composition rules for machine-consumed management fields (gateway README
- * §7): routing identifiers, model prefixes, bearer secrets, and base URLs.
+ * §7, REFACTOR §7): routing identifiers, model prefixes, bearer secrets, and base URLs.
  * Every predicate mirrors the gateway's own validation and its schema
  * `CHECK` constraints, so the app rejects exactly what the gateway would
  * reject — before the round trip, with the field named.
  *
  * The shared rule is printable ASCII without whitespace (`U+0021–U+007E`):
- * no spaces, no control characters, no non-ASCII text such as CJK. Human
+ * no spaces, no control characters, no non-ASCII text such as CJK. Routing
+ * tokens — upstream IDs, present overrides, and model prefixes — additionally
+ * reject `/` and `:` (the Gemini URL path cannot address them). Human
  * labels (provider and serving-key names) stay free-form and are not
  * covered here.
  */
@@ -21,17 +23,31 @@ const COMPOSITION_OR_EMPTY_PATTERN = /^[!-~]*$/u;
  * Whether the value is a routing-safe token: an upstream ID, a public ID
  * override, or a bearer secret — non-empty printable ASCII without
  * whitespace.
+ *
+ * Routing tokens (`upstream_id`, a present `id_override`) additionally reject
+ * `/` and `:` — see [`isRoutingToken`]; this predicate stays the bearer-secret
+ * rule.
  */
 export function isModelIdentifier(value: string): boolean {
     return COMPOSITION_PATTERN.test(value);
 }
 
 /**
+ * Whether the value is a routing token: an upstream ID or a present override —
+ * non-empty printable ASCII without whitespace and without `/` or `:` (the Gemini
+ * URL path cannot address them).
+ */
+export function isRoutingToken(value: string): boolean {
+    return COMPOSITION_PATTERN.test(value) && !value.includes("/") && !value.includes(":");
+}
+
+/**
  * Whether the value is a valid model prefix: empty means no prefix,
- * otherwise the same composition every routing token carries.
+ * otherwise the routing-token composition — printable ASCII without whitespace
+ * and without `/` or `:`.
  */
 export function isModelPrefix(value: string): boolean {
-    return COMPOSITION_OR_EMPTY_PATTERN.test(value);
+    return COMPOSITION_OR_EMPTY_PATTERN.test(value) && !value.includes("/") && !value.includes(":");
 }
 
 /**
@@ -64,6 +80,11 @@ export function isBaseUrl(value: string): boolean {
  */
 export function compositionMessage(field: string): string {
     return `${field} accepts letters, numbers, and symbols only — no spaces or non-ASCII text.`;
+}
+
+/** Human wording for a routing-token rejection, shown where the value was typed. */
+export function routingTokenMessage(field: string): string {
+    return `${field} accepts letters, numbers, and symbols only — no spaces, non-ASCII text, "/", or ":".`;
 }
 
 /** Human wording for a base URL rejection, shown where the URL was typed. */

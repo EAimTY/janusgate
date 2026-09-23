@@ -15,6 +15,8 @@
 | `openai_response` | Static API Key | OpenAI Responses (`openai_response`) |
 | `openai_chat_completion` | Static API Key | OpenAI Chat Completions (`openai_chat_completion`) |
 | `gemini_generate_content` | Static API Key | Gemini GenerateContent (`gemini_generate_content`), bare request |
+| `gemini_interaction` | Static API Key | Gemini Interactions (`gemini_interaction`) |
+| `anthropic_messages` | Static API Key | Anthropic Messages (`anthropic_messages`) |
 | `codex_oauth` | ChatGPT Account | OpenAI Responses (`openai_response`) via Codex endpoint |
 | `antigravity_oauth` | Google Account | Gemini GenerateContent (`gemini_generate_content`) via Antigravity |
 
@@ -22,11 +24,17 @@
 - **Chat Completions**: `POST /api/openai-v1/chat/completions` (streaming SSE & non-streaming)
 - **Responses**: `POST /api/openai-v1/responses` (streaming SSE & non-streaming)
 - **Model Discovery**: `GET /api/openai-v1/models`
+- **Gemini GenerateContent**: `POST /api/gemini-v1beta/models/{model}:generateContent` (non-streaming) and `POST /api/gemini-v1beta/models/{model}:streamGenerateContent?alt=sse` (streaming, only the `alt=sse` form is supported)
+- **Gemini Interactions**: `POST /api/gemini-v1beta/interactions` (streaming per the API's own body `stream` + `alt=sse` convention)
+- **Gemini Model Discovery**: `GET /api/gemini-v1beta/models`
+- **Anthropic Messages**: `POST /api/anthropic-v1/messages` (stream via body `stream: true`)
+- **Anthropic Model Discovery**: `GET /api/anthropic-v1/models`
 
 ### Design Principles & Non-Goals
 - **Stateless execution**: zero persistence of *content* — prompts, completions, headers, and upstream error bodies are never written anywhere. Request accounting persists only usage's numeric facts as `ApiLog` rows (§3), governed by the `api_logs.is_enabled` switch (§8); with the switch off, not even those are written, while the existing rows stay readable.
+- **Interactions statelessness**: the gateway never stores or chains. Interactions upstream requests always render `store: false` and never `previous_interaction_id`. Inbound `previous_interaction_id`, `background`, and `last_event_id` are 400s on the Interactions surface; inbound `store` is accepted-and-ignored.
 - **Headless server**: The gateway serves no frontend of its own — no SPA, no static assets. Administration is conducted exclusively through `/management-api/v0/*` JSON endpoints; the repository's `web/` frontend is a separately deployed static application that talks to those endpoints over the network and is never served by the gateway.
-- **Strict model passthrough**: Zero automatic or hardcoded model mapping. Upstream calls pass the exact model identifiers yielded by upstream model discovery (`upstream_id`), even for OAuth providers, and reasoning effort values are forwarded verbatim — the gateway applies no mapping to them.
+- **Strict model passthrough**: Zero automatic or hardcoded model mapping. Upstream calls pass the exact model identifiers yielded by upstream model discovery (`upstream_id`), even for OAuth providers. Reasoning levels are parsed into one closed shared vocabulary and written verbatim into the target's own level parameter — there is no cross-vocabulary mapping, and there never will be (§6.4).
 - **Excluded**: Multi-tenancy, dynamic pooling/load balancing, automatic provider fallback, automatic model mapping/aliasing, prompt caching, content logging (prompts, completions, headers, and upstream error bodies are never persisted or logged), billing/rate-limiting, outbound proxying.
 
 ---
@@ -73,9 +81,9 @@
           │                                            │
           ▼                                            ▼
 ┌───────────────────┐                        ┌───────────────────┐
-│  Mgmt API v0 Rtr  │ (/management-api/v0/*) │ Format Sub-router │ (/openai-v1/*)
+│  Mgmt API v0 Rtr  │ (/management-api/v0/*) │ Format Sub-router │ (/openai-v1/*, …)  
 │ (Management Auth) │                        │ (Format Auth)     │
-│ (404: errno JSON) │                        │ (404: OpenAI JSON)│
+│ (404: errno JSON) │                        │ (404: format JSON)│
 └───────────────────┘                        └───────────────────┘
 ```
 
@@ -101,12 +109,12 @@ The server architecture separates low-level connection driving from hierarchical
      - Parent router for all external gateway protocols.
      - Nests isolated format sub-routers (e.g. `/openai-v1`).
      - Defines no route of its own: unmapped paths outside every format are answered with the same empty 404 the root router renders (§2.2).
-   - **Format-Specific Sub-routers (e.g. `/openai-v1`)**:
-     - Scoped to that protocol's endpoints (`/chat/completions`, `/responses`, `/models`).
-     - Wrapped with format-specific authentication middleware (e.g. `Authorization: Bearer <key>`).
-     - Answers unmapped paths beneath the format prefix with format-compliant 404 error payloads (e.g. OpenAI JSON error structure: `{"error": {"message": "Invalid URL", "type": "invalid_request_error", "code": null}}`).
+   - **Format-Specific Sub-routers** (`/openai-v1`, `/gemini-v1beta`, `/anthropic-v1`):
+     - Scoped to that protocol's endpoints: OpenAI (`/chat/completions`, `/responses`, `/models`); Gemini (`/models/{model}:generateContent`, `/models/{model}:streamGenerateContent`, `/interactions`, `/models` — the model rides the URL path, never the body); Anthropic (`/messages`, `/models`).
+     - Wrapped with format-specific authentication middleware: OpenAI `Authorization: Bearer <key>`; Gemini `x-goog-api-key` header only (no `?key=`); Anthropic `x-api-key` only with a required-present `anthropic-version` header (value not validated).
+     - Answers unmapped paths beneath the format prefix with format-compliant 404 error payloads (OpenAI JSON error structure; Gemini `{"error": {code, message, status}}`; Anthropic `{"type": "error", "error": {type, message}}`) and wrong-method requests with format-compliant 405 bodies.
 3. **Independent 404 Responses**:
-   - Each routing domain answers its own unmapped paths: the root router with an empty 404, the management API v0 version sub-router with version 0's errno error JSON (§7), and the `/openai-v1` format sub-router with the OpenAI error JSON. The `/api` and `/management-api` parent routers own no route, so their unmatched paths reach the same empty 404.
+   - Each routing domain answers its own unmapped paths: the root router with an empty 404, the management API v0 version sub-router with version 0's errno error JSON (§7), and each format sub-router with its own format's error JSON (`/openai-v1` OpenAI, `/gemini-v1beta` Gemini, `/anthropic-v1` Anthropic). The `/api` and `/management-api` parent routers own no route, so their unmatched paths reach the same empty 404.
    - That empty 404 is one shared handler: the root router declares it, and the two parent routers declare that same handler as their own fallback instead of inheriting it. axum 0.8 discards a nested router's fallback — together with every fallback collected from routers nested below it — when the router being nested declares none of its own (tokio-rs/axum#3138; axum 0.9 fixes the propagation through tokio-rs/axum#3158), so without the parents' declaration the sub-routers' 404s below them would never run. The parent declarations are marked `TODO(axum 0.9)` and disappear with that release; the observable behavior is identical either way, because all three name the same handler.
 4. **Method Mismatch on Routed Paths**:
    - A request whose method is not registered on an otherwise-matching routed path never reaches the 404 responses: axum's method routing answers HTTP 405 with an `Allow` header listing the registered methods. Within a management API version sub-router that 405 renders the version's error body (errno 8 `method_not_allowed`); the outward `/openai-v1` format sub-router answers it with an empty body.
@@ -118,7 +126,7 @@ The server architecture separates low-level connection driving from hierarchical
 
 ## 3. Storage & Schema (Turso)
 
-The database runs in-process via `turso` with SQLite-compatible syntax and strict column typing. The schema is versioned in `src/database/schema/`: every version is one `version_x.rs` module defining `const SCHEMA: Schema` — its `version`, its complete DDL (`schema`, hand-written SQL), and the `migration` SQL that transforms the previous version into it — registered in ascending order in the module's `SCHEMAS` table, starting at version 1 with no gaps.
+The database runs in-process via `turso` with SQLite-compatible syntax and strict column typing. The schema is versioned in `src/database/schema/`: every version is one `version_x.rs` module defining `const SCHEMA: Schema` — its `version`, its complete DDL (`schema`, hand-written SQL), and the `migration` SQL that transforms the previous version into it — registered in ascending order in the module's `SCHEMAS` table, starting at version 1 with no gaps. Exception, this once (pre-launch): version 1 is edited in place — no new `version_x` module, no migration text, `SCHEMAS` stays at one version — gaining the two new provider types, the three new endpoint values, and the `/`-and-`:` exclusion on routing tokens.
 
 ### Database Abstraction & Connection Pooling
 - **Connection Pool**: Database access is managed through an in-process connection pool (`deadpool`), maintaining up to `database.max_connections` concurrent `turso::Connection` instances. When every connection is checked out, connection acquisition waits at most `database.pool_timeout` milliseconds before failing with `PoolTimeout`.
@@ -139,8 +147,8 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 - **Provider**:
   - `id`: Integer primary key; the provider's public identifier. Every management reference to an existing provider — updating, renaming, deleting, discovering models, saving model overrides, re-authorizing — goes through it, and it never changes.
   - `name`: Non-empty, unique, renameable label. Its content — characters, case, length — is the administrator's choice and is never validated beyond non-emptiness; the gateway stores it verbatim. The column carries a `CHECK (name <> '')` constraint, so the empty string is a storage-level violation as well. Renaming is an ordinary `providers:update` request; the id and every model routing stay untouched.
-  - `model_prefix`: Non-null string prefixed to model names (e.g. `codex/` or `agy-`); may be the empty string, which means no prefix. Stored verbatim with no default: every write states the prefix explicitly. A non-empty prefix is routing-safe (§7) — printable ASCII without whitespace — pinned by a schema `CHECK` as well.
-  - `type`: `openai_response`, `openai_chat_completion`, `gemini_generate_content`, `codex_oauth`, or `antigravity_oauth` — one per upstream product, so the type pins the wire format outright and no second column qualifies it.
+  - `model_prefix`: Non-null string prefixed to model names (e.g. `codex-` or `agy-`); may be the empty string, which means no prefix. Stored verbatim with no default: every write states the prefix explicitly. A non-empty prefix is routing-safe (§7) — printable ASCII without whitespace and without `/` or `:` (the Gemini URL path cannot address them) — pinned by a schema `CHECK` as well. Existing stored rows carrying `/` or `:` are left as-is and are simply not addressable through the Gemini surface.
+  - `type`: `openai_response`, `openai_chat_completion`, `gemini_generate_content`, `gemini_interaction`, `anthropic_messages`, `codex_oauth`, or `antigravity_oauth` — one per upstream product, so the type pins the wire format outright and no second column qualifies it.
   - `base_url`: Upstream base URL for static-key providers (`openai_response`, `openai_chat_completion`, `gemini_generate_content`); `NULL` for OAuth logins, whose endpoints are fixed. Stored verbatim with no default: every static-key write states it explicitly. A present URL is a non-empty `http://` or `https://` URL of printable ASCII without whitespace (§7), pinned by a schema `CHECK` as well.
   - `credentials`: Plaintext JSON payload (`{accessToken, refreshToken, accountId/projectId}` or `{apiKey}`) stored directly in the database without encryption.
   - `expires_at`: Unix timestamp in microseconds when the OAuth access token expires. Credentials replaced through `providers:update` are stored with no expiry, which the gateway treats as not-fresh: the first inference request then performs one lease-guarded refresh (see `refresh_started_at`) using the stored refresh token. A token response reporting a zero or negative `expires_in` is rejected as malformed (502); the `exp`-claim fallback used when the token response omits `expires_in` rejects a non-future `exp` claim as a malformed token response the same way, and an opaque access token carrying no decodable `exp` claim falls back to the default 86400-second lifetime. A token grant rejected with a terminal failure code fails with 502 whose message names the code and the recovery: a dead refresh token — `invalid_grant` in the RFC 6749 §5.2 string form Google sends, or the `auth.openai.com` object-form codes `token_expired`, `invalid_token`, `refresh_token_expired`, `refresh_token_reused`, `refresh_token_invalidated` (compared case-insensitively, mirroring the CLI) — states the refresh token was rejected and the provider needs re-authorization — only user re-authorization recovers a revoked or expired grant, so re-attempting it is futile; a dead authorization code — `invalid_grant`, `token_expired`, `invalid_token`, or `token_exchange_user_error` — states the code is expired, already used, or invalid and directs a fresh flow completed promptly — authorization codes are single-use and die before the flow's own state does (§7.2). Any other token-endpoint rejection keeps the generic upstream rendering with the foreign status embedded. The management errno remains the upstream-error category (502, §7) in all cases.
@@ -149,9 +157,9 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 - **Model**:
   - `id`: Integer `AUTOINCREMENT` primary key; the row's identity, never recycled (see *Identity is never recycled* below). Every row-addressed write — `models:update`, `models:delete` — goes through it.
   - `(provider_id, upstream_id)`: the natural key, unique — one upstream identifier appears at most once per provider. It is the address creation uses, because the row does not exist yet.
-  - `upstream_id`: Exact model identifier discovered from upstream; used verbatim for upstream requests without automatic mapping. Routing-safe (§7): non-empty printable ASCII without whitespace, pinned by a schema `CHECK` as well.
+  - `upstream_id`: Exact model identifier discovered from upstream; used verbatim for upstream requests without automatic mapping. Routing-safe (§7): non-empty printable ASCII without whitespace and without `/` or `:`, pinned by a schema `CHECK` as well (existing rows carrying them are left as-is, not addressable through the Gemini surface).
   - `public_id`: Public routing ID (`id_override ?? (model_prefix + upstream_id)`), maintained at write time and unique across the gateway — two model rows can never route one out-facing ID. Composed from routing-safe inputs, so it is routing-safe by construction, and pinned by the same schema `CHECK`.
-  - `id_override`: Non-NULL explicitly sets the public routing ID directly, bypassing `model_prefix`; NULL computes the ID from `model_prefix + upstream_id`. A present override is routing-safe (§7) — non-empty printable ASCII without whitespace, pinned by a schema `CHECK` as well.
+  - `id_override`: Non-NULL explicitly sets the public routing ID directly, bypassing `model_prefix`; NULL computes the ID from `model_prefix + upstream_id`. A present override is routing-safe (§7) — non-empty printable ASCII without whitespace and without `/` or `:` — pinned by a schema `CHECK` as well.
   - `is_enabled`: Stored serving switch (`0` or `1`, default `1`), written only by administrators (`models:create`, `models:update`) and never by discovery. The provider's `is_enabled` status acts as the master switch.
   - `discovery_state`: `discovered`, `vanished`, or `manual` — no default; every write declares it explicitly. State machine:
     - `discovered`: listed by its provider's most recent successful discovery. Only rows in this state are ever marked `vanished`.
@@ -183,7 +191,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   - No foreign keys: `api-keys:delete`, `providers:delete`, and `models:delete` neither cascade into nor block log rows — a deleted row's logs remain intact and keep attributing by id, unchanged forever because the identities they name are never recycled. The model is referenced the same bare way: `model_id` is a plain `models.id` integer, exactly like `api_key_id` and `provider_id`, so a `models:delete` leaves the row untouched.
   - No name snapshot: labels are never stored beside the ids — a management client resolves them through `api-keys:list`, `providers:list`, and `models:list` (§7.0 rule 7).
   - `started_at`: dispatch-start instant in UTC microseconds, stamped the moment before `send()`. `duration` is the span from that stamp to the recording instant in whole milliseconds, so pre-dispatch work such as token refresh never counts.
-  - `endpoint_type`: `openai_chat_completions` or `openai_responses` — the outward completion endpoint the request arrived on; a closed set enforced by `CHECK` (`GET /models` dispatches nothing and never records).
+  - `endpoint_type`: `openai_chat_completions`, `openai_responses`, `gemini_generate_content`, `gemini_interactions`, or `anthropic_messages` — the outward completion endpoint the request arrived on; a closed set enforced by `CHECK` (streaming and non-streaming share one value; `is_stream` already distinguishes; model listings dispatch nothing and never record).
   - `is_stream`: whether the client requested a streamed response (`0` or `1`, `CHECK`-enforced).
   - `http_status`: the status delivered to the client; `NULL` exactly when no response was ever produced to it. A streaming client counts as answered from its first enqueued frame on: disconnecting before that records `NULL` with `client_aborted`, afterwards the declared 200 stands, and an error frame under a declared status never changes it. Failures record the status they rendered — the mirrored upstream status, 502 for a transport failure, 500 for an internal one.
   - `outcome`: `completed`, `client_aborted`, `upstream_error`, or `internal` — a closed set enforced by `CHECK`.
@@ -197,12 +205,12 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 1. **Inbound Authentication**:
    - Authentication is format-specific and enforced at the router layer via Tower middleware before requests reach endpoint handlers:
      - **Management Version Sub-router (`/management-api/v0/*`)**: Uses management authentication middleware applied to the version sub-router. Requires `Authorization: <token>` without any `Bearer` prefix, matching `management_api.token` in configuration.
-     - **Outward API Sub-router (`/api`)**: Performs no authentication itself and owns no route; it nests the format sub-routers and answers its unmatched paths with the same empty 404 the root router renders (§2.2). Each format-specific sub-router enforces authentication and protocol-compliant header parsing independently — the `/openai-v1` sub-router validates client requests against the enabled gateway API keys stored in the database and managed through the management API (§7.1), via `Authorization: Bearer <key>` conforming to the OpenAI specification. The `Bearer` scheme is compared case-insensitively (RFC 9110 §11.1) while the key itself is compared byte-exactly; malformed header forms (missing space, tab separator, glued scheme, leading whitespace, trailing content) are rejected.
+     - **Outward API Sub-router (`/api`)**: Performs no authentication itself and owns no route; it nests the format sub-routers and answers its unmatched paths with the same empty 404 the root router renders (§2.2). Each format-specific sub-router enforces authentication and protocol-compliant header parsing independently against the enabled gateway API keys stored in the database and managed through the management API (§7.1): the `/openai-v1` sub-router via `Authorization: Bearer <key>` conforming to the OpenAI specification (the `Bearer` scheme is compared case-insensitively per RFC 9110 §11.1 while the key itself is compared byte-exactly; malformed header forms — missing space, tab separator, glued scheme, leading whitespace, trailing content — are rejected); the `/gemini-v1beta` sub-router via the `x-goog-api-key` header only (no `?key=` query form); the `/anthropic-v1` sub-router via the `x-api-key` header only, with the `anthropic-version` header required present (value not validated).
    - All token comparisons use constant-time byte comparison. Mismatch yields HTTP 401. An empty or fully disabled key table authorizes nothing: a fresh database serves no outward traffic until the first key is created through the management API.
    - Error response bodies are router-domain specific:
      - Root router: plain HTTP 404 with an empty body.
      - Management API version sub-router (`/management-api/v0/*`): `{"errno": <numeric errno>, "message": <human-readable message>}`; the closed errno taxonomy and each errno's pinned HTTP status are defined in §7. An unmapped path outside every management API version reaches no version's 404 response and is answered with the shared empty 404 (§2.2).
-     - Outward API (`/openai-v1` format 404): OpenAI JSON error structure `{"error": {"message": ..., "type": ..., "param": null, "code": ...}}`; the 404 response carries `type: "invalid_request_error"`, `code: null` and `message: "Invalid URL (<METHOD> <path>)"` with HTTP 404.
+     - Outward API format 404s: OpenAI JSON error structure `{"error": {"message": ..., "type": ..., "param": null, "code": ...}}` (404 carries `type: "invalid_request_error"`, `code: null`, `message: "Invalid URL (<METHOD> <path>)"`); Gemini `{"error": {"code": "NOT_FOUND", "message": ..., "status": ...}}`; Anthropic `{"type": "error", "error": {"type": "not_found_error", "message": ...}}`. Each surface also owns its 401/405 bodies in its own shape (§6.7).
 2. **Plaintext Credential Storage**:
    - Upstream credentials and tokens are stored directly in plaintext JSON within the database, and gateway API keys are stored directly in plaintext alongside them. No encryption or decryption is performed.
 3. **Network Invariants**:
@@ -292,15 +300,36 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
   - No automatic model mapping or tiered rewriting is performed; upstream calls pass the exact discovered `upstream_id`.
 - **Model Discovery**: `POST https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels` with JSON body `{}`; the response payload's `models` object keys are the `upstream_id` values.
 
-### 5.3 Static-Key Providers (`openai_response`, `openai_chat_completion`, `gemini_generate_content`)
+### 5.3 Static-Key Providers (`openai_response`, `openai_chat_completion`, `gemini_generate_content`, `gemini_interaction`, `anthropic_messages`)
 - User-specified `baseUrl` and `apiKey`; the provider's `type` is its wire format outright.
-- Upstream calls target `baseUrl` with `Authorization: Bearer <apiKey>` (`openai_response`, `openai_chat_completion`) or `x-goog-api-key: <apiKey>` (`gemini_generate_content`).
+- Upstream calls target `baseUrl` with `Authorization: Bearer <apiKey>` (`openai_response`, `openai_chat_completion`), `x-goog-api-key: <apiKey>` (`gemini_generate_content`, `gemini_interaction` — the latter additionally pins `Api-Revision`), or `x-api-key: <apiKey>` with a pinned `anthropic-version` (`anthropic_messages`).
   - `openai_chat_completion`: `POST <baseUrl>/chat/completions`.
   - `openai_response`: `POST <baseUrl>/responses`.
+  - `gemini_generate_content`: `POST <baseUrl>/models/<upstream_id>:generateContent` and `:streamGenerateContent?alt=sse`; the request body is the bare GenerateContentRequest (no Antigravity envelope).
+  - `gemini_interaction`: `POST <baseUrl>/v1beta/interactions` (§5.4).
+  - `anthropic_messages`: `POST <baseUrl>/v1/messages` (§5.5).
   - `gemini_generate_content`: `POST <baseUrl>/models/<upstream_id>:generateContent` and `:streamGenerateContent?alt=sse`; the request body is the bare GenerateContentRequest (no Antigravity envelope).
 - **Model Discovery**:
   - `openai_response` / `openai_chat_completion`: `GET <baseUrl>/models`; response `{data: [{id, ...}]}`.
   - `gemini_generate_content`: `GET <baseUrl>/models`; response `{models: [{name, ...}]}` where `name` is either `"models/<id>"` or bare `<id>`.
+  - `gemini_interaction`: `GET <baseUrl>/v1beta/models` (`x-goog-api-key`, `Api-Revision` pinned); same `models[].name` shape.
+  - `anthropic_messages`: `GET <baseUrl>/v1/models` (`x-api-key`, `anthropic-version` pinned); response `{data: [{id, ...}]}`.
+
+### 5.4 Gemini Interactions Upstream (`gemini_interaction`)
+
+- `POST {base}/v1beta/interactions`, `x-goog-api-key`, `Api-Revision` pinned, always `store: false`, stateless full-history replay through the `input` Step array: `user_input` steps, model-generated steps (thought, function_call — ids and signatures) replayed verbatim, then `function_result` steps (`{type, name, call_id, result: [text blocks]}`).
+- Request body: `model` = `upstream_id`; `system_instruction`; typed function tools (`{"type": "function", name, description, parameters: JSON Schema}`); `generation_config` (`temperature`, `top_p`, `max_output_tokens`, `thinking_level` from the enum verbatim, `tool_choice`); `response_format` from IR response format; `stream`.
+- Streaming: SSE, event-name-discriminated (`interaction.created`, `step.start`, `step.delta` — delta kinds text / thought summary / thought signature / tool arguments, `step.stop`, terminal status event). Non-streaming: the Interaction resource's `steps`.
+- Status → finish mapping: `requires_action` → ToolCall; `incomplete` → Length; `completed` → Stop; `failed` → upstream failure per the error-mirroring policy.
+- Usage: `total_input_tokens` → input; `total_output_tokens + total_thought_tokens` → output (IR output includes reasoning, matching the existing GenerateContent codec); `total_thought_tokens` → reasoning; `total_cached_tokens` → cached; no cache-write; `total_tool_use_tokens` dropped.
+
+### 5.5 Anthropic Messages Upstream (`anthropic_messages`)
+
+- `POST {base}/v1/messages`, `x-api-key`, `anthropic-version` pinned. `max_tokens` is required by the API: the client's `max_output_tokens` renders when present, else the fixed synthesis constant **16384**.
+- Render: `system` string from IR instructions; IR messages grouped into strictly alternating user/assistant turns (first turn user; consecutive same-role IR messages merge; empty rendered content is not emitted); assistant reasoning blocks before their tool calls; `tool_result` blocks (`content` string or text blocks, `is_error`); tools (`name/description/input_schema`); `tool_choice`; `output_config.effort` or `thinking: disabled` per the enum (§6.4); `temperature`/`top_p` verbatim.
+- Streaming: `message_start` (usage: input + cache columns), `content_block_start/delta/stop` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`), `message_delta` (stop reason, cumulative output usage), `message_stop`, `ping`; mid-stream `error` events abort per policy.
+- stop_reason → finish: `end_turn` → Stop; `max_tokens` → Length; `tool_use` → ToolCall; `stop_sequence` → Stop; `refusal` → ContentFilter; `pause_turn` → Stop.
+- Usage: `input_tokens`, `output_tokens`, `cache_read_input_tokens` → cached, `cache_creation_input_tokens` → cache_write; no reasoning breakdown (stays null).
 
 ---
 
@@ -320,18 +349,19 @@ All incoming and outgoing payloads map through an internal Intermediate Represen
 - `instructions`: concatenated system instructions.
 - `messages`: ordered list of messages.
   - `role`: `user`, `assistant`, or `tool`.
-  - `parts`: `Text {text}`, `Image {Inline {mime_type, data_base64} | Url (url)}`, `ToolCall {call_id, name, arguments, thought_signature?}`, `ToolOutput {call_id, content}`.
+  - `parts`: `Text {text}`, `Image {Inline {mime_type, data_base64} | Url (url)}`, `ToolCall {call_id, name, arguments, thought_signature?}`, `ToolOutput {call_id, content, is_error}` (`is_error` read and rendered by the Anthropic pair only; other surfaces drop it), `Reasoning {text, signature?, opaque}` (assistant reasoning block: text plus the opaque family-bound replay payload — an Anthropic `thinking`/`redacted_thinking` block or an Interactions `thought` step verbatim).
 - `tools`: function declarations (`name`, `description?`, `parameters?` JSON Schema).
 - `tool_choice`: `Auto | None | Required | Function {name}`.
 - Sampling: `temperature`, `top_p`, `max_output_tokens` (all optional).
 - `response_format`: `Text | Json | JsonSchema {name, schema}`.
-- `reasoning_effort`: the client's own reasoning-effort string, opaque to the gateway — only its type is constrained (§6.4) — or absent.
+- `reasoning_effort`: the client's reasoning level in the closed shared vocabulary (§6.4), or absent.
 
 ### 6.2 IR Events
 
 - `MessageStart {id, model}` — identifies the completion; emitted exactly once, first.
 - `TextDelta (delta)` — incremental assistant text.
 - `ReasoningDelta (delta)` — incremental reasoning/summary text.
+- `ReasoningDone {text, signature?, opaque}` — a complete reasoning block terminating the streamed text with its signature, so streaming and aggregated renderings agree: parsers emit either deltas plus an empty-text done, or a done carrying the full text with no prior deltas — never both with overlapping text. OpenAI surfaces render the block's text through the existing reasoning channels and drop the opaque payload; same-family round-trip replays the opaque payload verbatim; cross-family it is dropped.
 - `ToolCallDelta {index, id?, name?, arguments_delta}` — incremental tool call assembly; `index` is stable per call within the response.
 - `ToolCallDone {index, call_id, name, arguments, thought_signature?}` — complete tool call.
 - `Finish (reason)` — `Stop | Length | ToolCall | ContentFilter`.
@@ -346,9 +376,15 @@ Upstream refusal text is delivered as assistant message text (`TextDelta`), so i
 
 | Outward Endpoint | Client Format | Upstream Formats |
 | :--- | :--- | :--- |
-| `POST /api/openai-v1/chat/completions` | OpenAI Chat Completions | all three |
-| `POST /api/openai-v1/responses` | OpenAI Responses | all three |
+| `POST /api/openai-v1/chat/completions` | OpenAI Chat Completions | all five |
+| `POST /api/openai-v1/responses` | OpenAI Responses | all five |
 | `GET /api/openai-v1/models` | OpenAI List Models | — |
+| `POST /api/gemini-v1beta/models/{model}:generateContent` | Gemini GenerateContent | all five |
+| `POST /api/gemini-v1beta/models/{model}:streamGenerateContent?alt=sse` | Gemini GenerateContent (streaming) | all five |
+| `POST /api/gemini-v1beta/interactions` | Gemini Interactions | all five |
+| `GET /api/gemini-v1beta/models` | Gemini List Models | — |
+| `POST /api/anthropic-v1/messages` | Anthropic Messages | all five |
+| `GET /api/anthropic-v1/models` | Anthropic List Models | — |
 
 | Provider Type | Upstream Format | Upstream Streaming |
 | :--- | :--- | :--- |
@@ -357,6 +393,8 @@ Upstream refusal text is delivered as assistant message text (`TextDelta`), so i
 | `openai_response` | OpenAI Responses | matches the client's requested mode |
 | `openai_chat_completion` | OpenAI Chat Completions | matches the client's requested mode |
 | `gemini_generate_content` | Gemini GenerateContent (bare request §5.3) | matches the client's requested mode |
+| `gemini_interaction` | Gemini Interactions (§5.4) | matches the client's requested mode |
+| `anthropic_messages` | Anthropic Messages (§5.5) | matches the client's requested mode |
 
 - Streaming clients receive live translated SSE chunks (`data: {json}\n\n`). Chat Completions streams end with a `data: [DONE]` sentinel; Responses streams end after the terminal `response.completed` or `response.incomplete` event. Every Responses SSE payload embeds its event name as a `"type"` field and a monotonically increasing `sequence_number`, so strict clients that discriminate on the JSON payload work without reading the `event:` line.
 - Streaming Chat Completions deliver usage in a single terminal usage chunk immediately before `data: [DONE]`; when an upstream reports usage repeatedly, the last observation wins and renders once. Delta chunks carry no `usage` field at all — usage appears only in the final chunk.
@@ -371,19 +409,48 @@ Upstream refusal text is delivered as assistant message text (`TextDelta`), so i
 - On a clean upstream end-of-stream the gateway flushes buffered parser state (e.g. pending Chat Completions tool calls) into the event stream before the terminal `Done` event; an aborted stream skips the flush. A clean end-of-stream that carried no finish reason (Chat Completions) or no terminal event (Responses/Gemini) degrades to a `Stop` finish, so streamed and aggregated renderings of the same stream agree.
 - Upstream deadlines: two upstream HTTP clients share a 10-second connect timeout. The data-plane client enforces a 300-second read timeout that resets after every successful read of the upstream body and sets no total request timeout: a stalled upstream therefore aborts the request (mapped to 502 per §6.7) instead of hanging it indefinitely, while a slow-but-flowing response is never truncated. The control-plane client (token exchange and refresh, model discovery, project onboarding) bounds each request at 30 seconds total, so a stalled control-plane request fails below the 90-second refresh-lease staleness window (§3).
 
-### 6.4 Reasoning Effort
+### 6.4 Reasoning Levels
 
-> **Reasoning Effort.** The value is opaque to the gateway: it is read as a string from the client's own parameter (Chat Completions `reasoning_effort`, Responses `reasoning.effort`) and written verbatim into the upstream's own parameter (Responses `reasoning.effort`, Chat Completions `reasoning_effort`, Gemini `generationConfig.thinkingConfig.thinkingLevel`). The gateway constrains only the type — a non-string value is a 400 malformed request — and otherwise defines, validates, enumerates, translates, clamps, and defaults nothing: there is no value list of any kind, and every value is forwarded as-is, including values the gateway does not recognize, values the target does not support, and the empty string. When the target rejects a value, the failure happens upstream and mirrors per §6.7; the upstream is the sole authority on what is supported, and the gateway keeps no per-model data. When the client omits the field, no upstream parameter is rendered and the upstream's own default applies — that is not "no thinking". Token budgets are never rendered (the Gemini 2.5-era `thinkingConfig.thinkingBudget` and its kind are never sent): the gateway renders only `thinkingLevel`, so reasoning control is supported only on Gemini 3 generation and later models. Consequently `models` carries no effort column, `models:list` and `GET /api/openai-v1/models` expose no effort, and logs record no requested effort. Reasoning content (reasoning deltas, thoughtSignature) is a separate concern, unaffected (§6.2/§6.6/§5.2).
+> **One reasoning vocabulary, forever.** All formats share the closed enum `none | minimal | low | medium | high | xhigh | max`. Inbound surfaces parse their own parameter into this enum; unknown strings are a 400 at the gateway (a deliberate reversal of the old opaque-passthrough contract). Upstream renderers write the enum verbatim into the target's own level parameter. **There is no cross-vocabulary mapping, and there never will be** — not deferred, out of scope permanently. A value the target does not support is rejected by the upstream and mirrored to the client per the existing error policy; that is the caller's configuration responsibility.
+>
+> - `none` renders as: OpenAI `reasoning.effort` / `reasoning_effort` `"none"`; Gemini `thinkingLevel` / `thinking_level` `"none"` verbatim; Anthropic `thinking: {"type": "disabled"}` (the native off spelling).
+> - **Gemini has no off**: it rejects `"none"` with a 400 that mirrors to the client per §6.7. Sending `none` to a Gemini target is therefore a caller error surfaced upstream, not a gateway default.
+> - Anthropic inbound: `output_config.effort` parses into the enum; `thinking: {"type": "disabled"}` parses into `none`; `thinking` `adaptive`/`enabled` is accepted-and-ignored; `budget_tokens` is a 400 naming the field (legacy numeric mechanism, same stance as Gemini `thinkingBudget`); `display` accepted-and-ignored.
+> - Summary/display controls (`reasoning.summary`, `thinking_summaries`, `thinking.display`) never enter the IR. Existing Responses behavior is unchanged (`summary` accepts `auto` only); the two new surfaces' equivalents are accepted-and-ignored.
+>
+> When the client omits the field, no upstream parameter is rendered and the upstream's own default applies — that is not "no thinking". Token budgets are never rendered (the Gemini 2.5-era `thinkingConfig.thinkingBudget` and its kind are never sent): the gateway renders only `thinkingLevel`, so reasoning control is supported only on Gemini 3 generation and later models. Consequently `models` carries no effort column, `models:list` and every `GET …/models` expose no effort, and logs record no requested effort.
+>
+> Reasoning content is a separate concern (§6.2, §5.2/§5.4/§5.5): same-family round-trip replays reasoning blocks byte-exact (both upstreams hard-require it — dropping or rebuilding them is a 400); OpenAI surfaces render a block's text through `ReasoningDelta`/`reasoning_content` and drop the opaque payload; cross-family the opaque payload is dropped.
 
 ### 6.5 Model Routing
 
-- Client-visible model IDs are resolved against `models.public_id` (the public routing ID). Resolution requires the model's three-input effective status (§3) to be on; a `vanished` row therefore falls into the pre-existing outcome with **no special-cased path** — its false effective status routes it into the same HTTP 404 OpenAI `model_not_found` error as an unknown or disabled model, with the same classification and message. Unknown or disabled models yield that 404 as well.
+- Client-visible model IDs are resolved against `models.public_id` (the public routing ID). Resolution requires the model's three-input effective status (§3) to be on; a `vanished` row therefore falls into the pre-existing outcome with **no special-cased path** — its false effective status routes it into the same model-not-found 404 as an unknown or disabled model, with the same classification and message. Unknown or disabled models yield that 404 as well.
+- Gemini GenerateContent surfaces route the model from the URL path (`/models/{model}:generateContent`, `/models/{model}:streamGenerateContent`); the body carries no model. The router threads route context (public model id, streaming mode — from the URL action, not the body) into request parsing; the pipeline's "model from parsed body" assumption is replaced accordingly. `POST /interactions` carries the model in the body (the path has no model slot); its route context carries only the streaming override (`?alt=sse` forces streaming). A public ID containing `/` or `:` cannot be addressed through the URL-pathed Gemini surface (the URL path cannot carry it); such rows — only pre-existing ones, since validation and discovery now reject both characters — are simply not routable there, while every other surface routes them normally.
 - The IR `model` is always the `upstream_id` of the resolved row; public IDs never reach an upstream.
-- `GET /api/openai-v1/models` lists exactly the rows the three-input definition (§3) marks effective — the same rule as routing, so `vanished` rows are excluded by that rule alone — as `{"object": "list", "data": [{"id": <public ID>, "object": "model", "created": 0, "owned_by": <provider name>}]}`; `created` is a fixed `0` because the gateway does not track model creation times. The management `models:list` instead lists every row, `vanished` included, carrying each row's inputs (`is_enabled`, `discovery_state`); the caller derives the same three-input status from those and the provider's switch (§7.0 rule 7).
+- Each surface's model listing renders its native shape over the same effective-model set (the three-input definition of §3 — `vanished` rows excluded by that rule alone), ignores pagination parameters, and returns the full list in one page: OpenAI `{"object": "list", "data": [{"id": <public ID>, "object": "model", "created": 0, "owned_by": <provider name>}]}` (`created` fixed `0`); Gemini `{"models": [...]}` with no `nextPageToken`; Anthropic `{"data": [...], "has_more": false}`. The management `models:list` instead lists every row, `vanished` included, carrying each row's inputs (`is_enabled`, `discovery_state`); the caller derives the same three-input status from those and the provider's switch (§7.0 rule 7).
 
 ### 6.6 Supported Request Fields
 
-Requests are parsed strictly: unknown fields and known-but-unsupported fields are rejected with HTTP 400 `invalid_request_error` naming the offending field. The carve-outs accept and ignore extra fields. For history replay: Responses `message` input items accept and ignore `id`, `phase`, and `status` (codex replays its parsed output items verbatim each turn, and the gateway's own rendered assistant `message` items carry `id` and `status`, so replaying them verbatim must parse); Responses `function_call` and `function_call_output` input items accept and ignore `id` and `status` (the gateway's own rendered `function_call` items carry `id` and `status`, so replaying them verbatim must parse); Responses `output_text` content parts accept and ignore `annotations` and `logprobs` (the gateway's own rendered `output_text` parts carry both, so replaying them verbatim must parse); and Chat Completions assistant messages accept and ignore `reasoning` and `reasoning_content`. Beyond history replay, the `strict` flag is accepted and ignored on Responses function tools, on Responses `text.format` `json_schema`, and on Chat Completions function tools and `json_schema`. Beyond history replay, the Responses request envelope accepts and ignores `parallel_tool_calls`, `include`, `prompt_cache_key`, `stream_options`, `service_tier`, `client_metadata`, and `access_programs`, and `text` accepts and ignores `verbosity` (typed clients — the codex CLI foremost — serialize these stateless-idempotent controls on every request, and a stateless gateway cannot honor any of them downstream, so rejecting them would 400 the client's first request before the item-level carve-outs are ever reached; they never affect routing or the upstream render). Image parts accept and ignore `detail` (typed SDK clients send it on every image part, and the gateway cannot honor it downstream) — Chat Completions `image_url` parts and Responses `input_image` parts. Chat Completions validates assistant `tool_calls[].function.arguments` as a JSON object at parse time, in parity with Responses `function_call` items. Supported fields:
+Requests are parsed strictly: unknown fields are 400s. Known-but-unsupported semantic controls are 400s; presentation-only controls are accepted-and-ignored. The carve-out lists below are exhaustive. History-replay carve-outs already present on the OpenAI surfaces stay; new surfaces define their own minimal carve-outs only where the gateway itself emits the fields (reasoning blocks and tool calls the gateway rendered must parse back on replay). Per-surface dispositions:
+
+| Control | Disposition |
+| :--- | :--- |
+| `is_error` (Anthropic tool_result) | Into IR (§6.1) |
+| `disable_parallel_tool_use` (Anthropic tool_choice) | accepted-and-ignored |
+| `stop_sequences` / `stop` (all surfaces) | 400 (known-unsupported; matches existing OpenAI `stop`) |
+| `budget_tokens` / `thinkingBudget` | 400 naming the field |
+| Interactions `tool_choice: "validated"` / multiple `allowed_tools` | 400 |
+| Built-in/server-side tools (`google_search`, `web_search`, `code_execution`, `url_context`, `maps`, `file_search`, computer use, …) | 400 — function tools only, on every surface |
+| Image content inside tool results (Anthropic blocks, Interactions content) | 400 this pass; a `ToolOutput` media channel is the first candidate for a future IR extension |
+| Object-shaped tool results (Interactions `function_result`, Gemini `functionResponse`) | flattened to JSON text in IR; rendered back as plain-string/text-block results |
+| Interactions `store` | accepted-and-ignored |
+| Interactions `previous_interaction_id` / `background` / `last_event_id` | 400 |
+| `seed`, speech/audio/video modality configs | 400 (unknown or out of scope) |
+| tool_choice mapping | IR four modes ↔ OpenAI modes; Anthropic `auto/any/tool/none`; Gemini GenerateContent `AUTO/ANY/NONE` + single allowed function; Interactions `auto/any/none` + single `allowed_tools` |
+
+Anthropic image blocks: `source.type` `base64` → inline IR image, `url` → URL IR image; `document` blocks are 400. Gemini part forms map onto the existing inline/URL IR images. Full inbound × upstream matrix: any surface routes any model; capability mismatches degrade by the documented rule, never by silent semantic rewriting; the upstream is the sole authority on level support, sampling-parameter support (Claude 4.7+ rejects non-default `temperature`/`top_p` — pass through and mirror), and everything else it rejects.
+
+OpenAI carve-outs accept and ignore extra fields. For history replay: Responses `message` input items accept and ignore `id`, `phase`, and `status` (codex replays its parsed output items verbatim each turn, and the gateway's own rendered assistant `message` items carry `id` and `status`, so replaying them verbatim must parse); Responses `function_call` and `function_call_output` input items accept and ignore `id` and `status` (the gateway's own rendered `function_call` items carry `id` and `status`, so replaying them verbatim must parse); Responses `output_text` content parts accept and ignore `annotations` and `logprobs` (the gateway's own rendered `output_text` parts carry both, so replaying them verbatim must parse); and Chat Completions assistant messages accept and ignore `reasoning` and `reasoning_content`. Beyond history replay, the `strict` flag is accepted and ignored on Responses function tools, on Responses `text.format` `json_schema`, and on Chat Completions function tools and `json_schema`. Beyond history replay, the Responses request envelope accepts and ignores `parallel_tool_calls`, `include`, `prompt_cache_key`, `stream_options`, `service_tier`, `client_metadata`, and `access_programs`, and `text` accepts and ignores `verbosity` (typed clients — the codex CLI foremost — serialize these stateless-idempotent controls on every request, and a stateless gateway cannot honor any of them downstream, so rejecting them would 400 the client's first request before the item-level carve-outs are ever reached; they never affect routing or the upstream render). Image parts accept and ignore `detail` (typed SDK clients send it on every image part, and the gateway cannot honor it downstream) — Chat Completions `image_url` parts and Responses `input_image` parts. Chat Completions validates assistant `tool_calls[].function.arguments` as a JSON object at parse time, in parity with Responses `function_call` items. Supported fields:
 
 - **Chat Completions**: `model`, `messages`, `tools` (function tools only), `tool_choice`, `temperature`, `top_p`, `max_tokens` / `max_completion_tokens` (both set is rejected), `response_format` (`text`, `json_object`, `json_schema`), `reasoning_effort`, `stream`, `stream_options` (`{include_usage}` only).
 - **Responses**: `model`, `input` (string or item array), `instructions`, `tools` (function tools only), `tool_choice`, `temperature`, `top_p`, `max_output_tokens`, `reasoning` (`{effort}` is constrained by its string type alone, §6.4; `summary` is validated — `"auto"` accepted, other values rejected), `stream`, `store` (must be absent or `false`), `text.format` (`text`, `json_object`, `json_schema`); the envelope controls carved out above are additional accepted-and-ignored fields.
@@ -398,18 +465,25 @@ Requests are parsed strictly: unknown fields and known-but-unsupported fields ar
 
 ### 6.7 Error Mapping
 
-| Situation | HTTP Status | Outward Body |
+The `/api` surfaces share one closed, format-neutral error taxonomy — `Error`, the `crate::api` module's own error type, defined once beside the API router and rendered per format. One variant per contract row, each pinning exactly one HTTP status. Domain errors convert in exactly one place (`From<gateway::Error>` with the inner conversions for parse, storage, and OAuth failures); surfaces stop owning domain-to-contract classification. The request-accounting classification (`outcome` + status) derives from the same variant, collapsing the HTTP response, stream frame, and accounting mappings into one. Mid-stream terminal frames come from the same source: the HTTP error path and the stream-frame path share one classification. Upstream mirroring policy (status mirror + bounded body excerpt) is unchanged.
+
+| Situation | Contract variant | HTTP Status |
 | :--- | :--- | :--- |
-| Malformed / unsupported request | 400 | OpenAI error, `type: "invalid_request_error"`, `code: null` |
-| Invalid API key | 401 | OpenAI error, `type: "invalid_request_error"`, `code: "invalid_api_key"` |
-| Unknown or disabled model | 404 | OpenAI error, `type: "invalid_request_error"`, `param: "model"`, `code: "model_not_found"` |
-| Upstream returned a non-2xx status | upstream status | OpenAI error, `type: "api_error"`, `code: "upstream_error"`; the response status mirrors the upstream status, and the message carries the upstream body excerpt |
-| Upstream transport failure / malformed upstream payload — a stalled or broken transport, a Gemini `MALFORMED_FUNCTION_CALL` finish, or an OpenAI-family 2xx body embedding a non-null `error` value | 502 | OpenAI error, `type: "api_error"`, `code: "upstream_error"` |
-| Gateway failure | 500 | OpenAI error object, `type: "api_error"`, `code: "internal"` |
+| Invalid API key | `InvalidApiKey` | 401 |
+| Unmapped path (per-surface fallback) | `InvalidUrl {method, path}` | 404 |
+| Wrong method on a routed path | `MethodNotAllowed` | 405 |
+| Body over the surface limit | `PayloadTooLarge` | 413 |
+| Malformed / unsupported request | `MalformedRequest {param, message}` | 400 |
+| Unknown or disabled model | `ModelNotFound {model}` | 404 |
+| Upstream returned a non-2xx status | `Upstream {status, message}` | mirrored upstream status |
+| Upstream transport failure / malformed upstream payload | `UpstreamUnavailable {message}` | 502 |
+| Gateway failure | `Internal` | 500 with a fixed message (the internal cause reaches the log only) |
 
-Error payloads for the `/responses` endpoint use the same OpenAI error JSON structure.
+Each format owns one render module with a closed `render(&Error)` match — compiler exhaustiveness forces every format to render a new variant, and a new format is one new render module:
 
----
+- OpenAI: the existing `type`/`code`/`param` rows verbatim (`invalid_request_error` + `invalid_api_key` for the key, `model_not_found` for the model, `api_error` + `upstream_error` for upstream failures, `api_error` + `internal` for the fixed-message internal).
+- Gemini: `{"error": {code, message, status}}` (`UNAUTHENTICATED`/`NOT_FOUND`/`INVALID_ARGUMENT`/`INTERNAL`, mirrored numeric code with `UNKNOWN` for upstream mirrors).
+- Anthropic: `{"type": "error", "error": {type, message}}` (`authentication_error`, `not_found_error`, `invalid_request_error`, `api_error`).
 
 ## 7. Management API (`/management-api/v0/*`)
 
@@ -439,7 +513,7 @@ Two strictness rules apply uniformly to every management request body.
 
 **Names are non-empty.** Every request field naming an entity — the `name` a provider is created with, `upstream_id`, and `id_override` when present — must be a non-empty string; an empty name is rejected with 400 naming the field instead of falling through to a 404 lookup miss. Human labels (`providers.name`, `api_keys.name`) end there: their content — characters, case, length — is the administrator's choice and is never validated further. `providers.name` additionally carries a `CHECK (name <> '')` constraint, so the empty string is a storage-level violation (§3).
 
-**Machine-consumed text is routing-safe.** Every field the gateway routes, addresses, or presents to an upstream — `upstream_id`, a present `id_override` (and through them the composed `public_id`), `model_prefix`, gateway API key secrets (`key`), upstream static keys (`api_key`), hand-replaced OAuth credential fields, and static-key `base_url`s — must contain only printable ASCII without whitespace (`U+0021–U+007E`): no spaces, no control characters, no non-ASCII text such as CJK. An empty value fails as the non-empty violation above; any other composition failure is rejected with 400 naming the field. The schema pins the same predicate as `CHECK` constraints wherever a column carries it (§3), so the application layer and the storage layer reject exactly the same values. `base_url` additionally requires a non-empty `http://` or `https://` scheme. Upstream discovery reports are validated the same way: an identifier the gateway cannot route fails the refresh with 502 before any row is written, so curated rows are never replaced by unroutable ones. Existing providers are addressed exclusively by their `provider_id`; an unknown id is rejected with 404.
+**Machine-consumed text is routing-safe.** Every field the gateway routes, addresses, or presents to an upstream — `upstream_id`, a present `id_override` (and through them the composed `public_id`), `model_prefix`, gateway API key secrets (`key`), upstream static keys (`api_key`), hand-replaced OAuth credential fields, and static-key `base_url`s — must contain only printable ASCII without whitespace (`U+0021–U+007E`): no spaces, no control characters, no non-ASCII text such as CJK. Routing tokens — `upstream_id`, a present `id_override`, and `model_prefix` (empty means no prefix) — additionally reject `/` and `:` (the Gemini URL path cannot address them); existing stored rows carrying them are left as-is and are simply not addressable through the Gemini surface. An empty value fails as the non-empty violation above; any other composition failure is rejected with 400 naming the field. The schema pins the same predicate as `CHECK` constraints wherever a column carries it (§3), so the application layer and the storage layer reject exactly the same values. `base_url` additionally requires a non-empty `http://` or `https://` scheme. Upstream discovery reports are validated the same way: an identifier the gateway cannot route fails the refresh with 502 before any row is written, so curated rows are never replaced by unroutable ones. Existing providers are addressed exclusively by their `provider_id`; an unknown id is rejected with 404.
 
 ### 7.0 Design Rules
 
@@ -476,10 +550,10 @@ The route surface follows seven rules. Every future route is designed against th
 
 ### 7.1 Endpoint Contracts
 
-- **`POST /providers:list`** — request `{}`. Response `{"providers": [<provider>]}`, ordered by name. A provider is a union discriminated by `type` (rule 4): `codex_oauth` and `antigravity_oauth` render `{"id", "name", "model_prefix", "is_enabled", "type", "expires_at"}`; `openai_response`, `openai_chat_completion`, and `gemini_generate_content` render `{"id", "name", "model_prefix", "is_enabled", "type", "base_url"}`. No provider renders another type's fields — a field never appears as a `null`-when-not-applicable placeholder — and the one nullable field, `expires_at`, mirrors its nullable storage column: `null` is the not-fresh state of a hand-replaced credential (§3), never an inapplicability marker. Credentials are never returned.
-- **`POST /providers:create`** — request `{"type", "name", "model_prefix", "is_enabled", "base_url", "api_key"}`, every field required: the request is the complete provider state (rule 3). The `type` names the provider's static-key kind outright — one of `openai_response`, `openai_chat_completion`, or `gemini_generate_content`; an OAuth kind is rejected with 400, because OAuth account kinds are created by `oauth:complete`, which is the only path that mints their credentials. A `name` that is already taken is rejected with 409. Response `{"provider": <provider>}`: the server-assigned `id` is the fact the caller cannot know (rule 7).
+- **`POST /providers:list`** — request `{}`. Response `{"providers": [<provider>]}`, ordered by name. A provider is a union discriminated by `type` (rule 4): `codex_oauth` and `antigravity_oauth` render `{"id", "name", "model_prefix", "is_enabled", "type", "expires_at"}`; `openai_response`, `openai_chat_completion`, `gemini_generate_content`, `gemini_interaction`, and `anthropic_messages` render `{"id", "name", "model_prefix", "is_enabled", "type", "base_url"}`. No provider renders another type's fields — a field never appears as a `null`-when-not-applicable placeholder — and the one nullable field, `expires_at`, mirrors its nullable storage column: `null` is the not-fresh state of a hand-replaced credential (§3), never an inapplicability marker. Credentials are never returned.
+- **`POST /providers:create`** — request `{"type", "name", "model_prefix", "is_enabled", "base_url", "api_key"}`, every field required: the request is the complete provider state (rule 3). The `type` names the provider's static-key kind outright — one of `openai_response`, `openai_chat_completion`, `gemini_generate_content`, `gemini_interaction`, or `anthropic_messages`; an OAuth kind is rejected with 400, because OAuth account kinds are created by `oauth:complete`, which is the only path that mints their credentials. A `name` that is already taken is rejected with 409. Response `{"provider": <provider>}`: the server-assigned `id` is the fact the caller cannot know (rule 7).
 - **`POST /providers:update`** — request is a union discriminated by the restated `type`, one variant per provider kind (rule 4):
-  - `openai_response`, `openai_chat_completion`, `gemini_generate_content`: `{"provider_id", "type", "name", "model_prefix", "is_enabled", "base_url", "api_key"?}`
+  - `openai_response`, `openai_chat_completion`, `gemini_generate_content`, `gemini_interaction`, `anthropic_messages`: `{"provider_id", "type", "name", "model_prefix", "is_enabled", "base_url", "api_key"?}`
   - `codex_oauth`: `{"provider_id", "type", "name", "model_prefix", "is_enabled", "credentials"?}` with `credentials` = `{"accessToken", "refreshToken", "accountId"}`
   - `antigravity_oauth`: `{"provider_id", "type", "name", "model_prefix", "is_enabled", "credentials"?}` with `credentials` = `{"accessToken", "refreshToken", "projectId"}`
 

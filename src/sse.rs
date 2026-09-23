@@ -13,16 +13,21 @@ const UTF8_BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
 pub(crate) struct SseFrame {
     /// Concatenated `data:` lines of the frame, joined with newlines.
     pub(crate) data: String,
+
+    /// Parsed `event:` name of the frame, when the upstream sent one. Anthropic and Interactions
+    /// upstream parsers discriminate on this name; the JSON payloads' own `type`/`event_type`
+    /// members are not relied on for discrimination (REFACTOR §3).
+    pub(crate) event: Option<String>,
 }
 
 /// Incremental Server-Sent Events parser fed with raw byte chunks.
 ///
 /// Implements the field subset of the SSE specification used by all upstream protocols: `data:`
-/// fields, `:` comment lines, optional field value prefixes, and line terminators of `\n`, `\r\n`,
-/// or `\r`. The other fields the specification defines (`event`, `id`, `retry`) are tolerated and
-/// ignored. A frame is dispatched on an empty line only when at least one `data:` line was seen, so
-/// heartbeat comments and eventless keep-alive frames never surface. One leading UTF-8 BOM is
-/// stripped as the specification's decoding step requires.
+/// and `event:` fields, `:` comment lines, optional field value prefixes, and line terminators of
+/// `\n`, `\r\n`, or `\r`. The other fields the specification defines (`id`, `retry`) are
+/// tolerated and ignored. A frame is dispatched on an empty line only when at least one `data:`
+/// line was seen, so heartbeat comments and eventless keep-alive frames never surface. One leading
+/// UTF-8 BOM is stripped as the specification's decoding step requires.
 #[derive(Debug, Default)]
 pub(crate) struct SseParser {
     /// Bytes received but not yet consumed as complete lines.
@@ -37,6 +42,9 @@ pub(crate) struct SseParser {
 
     /// `data:` lines of the frame being assembled across chunk boundaries.
     pending_data_lines: Vec<String>,
+
+    /// `event:` name of the frame being assembled, from the last `event:` line before dispatch.
+    pending_event: Option<String>,
 
     /// Accumulated size of the frame being assembled: every accepted `data:` line's bytes plus one
     /// join separator per line, an upper bound on the size the frame occupies once its lines are
@@ -137,10 +145,15 @@ impl SseParser {
                         if !self.pending_data_lines.is_empty() {
                             frames.push(SseFrame {
                                 data: self.pending_data_lines.join("\n"),
+                                event: self.pending_event.take(),
                             });
 
                             self.pending_data_lines = Vec::new();
                             self.pending_frame_bytes = 0;
+                        } else {
+                            // An event line without data never dispatches; drop its name so it
+                            // cannot leak into the next frame's assembly.
+                            self.pending_event = None;
                         }
 
                         continue;
@@ -151,9 +164,12 @@ impl SseParser {
                         None => (line.as_str(), ""),
                     };
 
-                    // Only `data` fields are parsed; every other field — including the
-                    // tolerated-and-ignored `event`, `id`, and `retry` — falls through.
-                    if field == "data" {
+                    // `data` lines accumulate the payload; the last `event` line names the frame
+                    // for event-name-discriminated upstreams. Every other field — including the
+                    // tolerated-and-ignored `id` and `retry` — falls through.
+                    if field == "event" {
+                        self.pending_event = Some(value.to_string());
+                    } else if field == "data" {
                         // One separator byte per line upper-bounds the line's eventual contribution
                         // to the dispatch-time `join`, so the cap is enforced before the line is
                         // materialized.

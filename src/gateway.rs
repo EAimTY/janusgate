@@ -2,12 +2,13 @@
 //! translation into IR event streams.
 
 use super::{
-    api_logs::{ApiLogDraft, ApiLogOutcome, finalize_api_log},
+    api::Error as ApiError,
+    api_logs::{ApiLogDraft, finalize_api_log},
     context::Context,
     database::Database,
     format::{
-        PayloadError, UpstreamEventParser, UpstreamFormat, gemini, openai_chat_completion,
-        openai_response,
+        PayloadError, UpstreamEventParser, UpstreamFormat, anthropic_messages, gemini,
+        gemini_interaction, openai_chat_completion, openai_response,
     },
     ids,
     ir::{InvalidRequest, IrEvent, IrRequest},
@@ -39,8 +40,8 @@ const EVENT_CHANNEL_BUFFER: usize = 64;
 /// before it (routing, validation, token refresh, payload rendering). The set of post-dispatch
 /// variants therefore contains every failure [`execute`] can report after it stamped the
 /// accounting draft, which is what lets [`execute`] finalize the request's accounting row itself,
-/// exactly once, and lets every later finalization point classify a stream failure through
-/// [`classify_failure`] (README §3 *ApiLog*).
+/// exactly once, and lets every later finalization point classify a stream failure after its
+/// conversion into [`ApiError`] (README §3 *ApiLog*).
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     /// The client's request was rejected while preparing the upstream call.
@@ -92,42 +93,12 @@ pub(crate) enum Error {
     },
 }
 
-/// Classifies a pipeline failure onto its accounting outcome and the HTTP status the client is (or
-/// would be) served — the one classification the three finalization points share (README §3
-/// *ApiLog*, §6.7):
-///
-/// - a mirrored upstream non-2xx [`Error::Upstream`] records `upstream_error` with that very
-///   status;
-/// - [`Error::Unavailable`] — a transport failure or malformed upstream payload — records
-///   `upstream_error` with 502;
-/// - every other variant — a gateway-side failure — records `internal` with 500.
-///
-/// Post-dispatch, only the first two variants can occur (the invariant on [`Error`]); the third
-/// branch keeps the classification total for stream failures rendered under an already-declared
-/// status, where only the outcome is consumed.
-pub(crate) fn classify_failure(error: &Error) -> (ApiLogOutcome, i64) {
-    match error {
-        Error::Upstream { status, .. } => {
-            (ApiLogOutcome::UpstreamError, i64::from(status.as_u16()))
-        }
-
-        Error::Unavailable { .. } => (
-            ApiLogOutcome::UpstreamError,
-            i64::from(StatusCode::BAD_GATEWAY.as_u16()),
-        ),
-
-        _ => (
-            ApiLogOutcome::Internal,
-            i64::from(StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
-        ),
-    }
-}
-
 /// Finalizes the accounting row of a post-dispatch failure inside [`execute`]: classifies the
-/// failure and hands the draft to [`finalize_api_log`], which never reports back — accounting
-/// failures stay out of the HTTP error domain (README §8).
-async fn finalize_dispatch_failure(context: &Context, log: &ApiLogDraft, error: &Error) {
-    let (outcome, http_status) = classify_failure(error);
+/// failure through the shared [`ApiError`] accounting — the one classification every finalization
+/// point shares — and hands the draft to [`finalize_api_log`], which never reports back —
+/// accounting failures stay out of the HTTP error domain (README §8).
+async fn finalize_dispatch_failure(context: &Context, log: &ApiLogDraft, error: &ApiError) {
+    let (outcome, http_status) = error.accounting();
 
     finalize_api_log(&context.database, log, outcome, Some(http_status), None).await;
 }
@@ -167,16 +138,17 @@ pub(crate) async fn resolve_routing(
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for routing, token, and upstream failures detected before the response stream
-/// starts, and — per the dispatch timing invariant on [`Error`] — for the two post-dispatch
-/// failures it finalizes itself.
+/// Returns [`ApiError`] — converted from the pipeline's own [`Error`] at the boundary, in one
+/// place per failure — for routing, token, and upstream failures detected before the response
+/// stream starts, and — per the dispatch timing invariant on [`Error`] — for the two
+/// post-dispatch failures it finalizes itself.
 pub(crate) async fn execute(
     context: &Context,
     routing: ModelRouting,
     mut ir: IrRequest,
     is_client_streaming: bool,
     log: &mut ApiLogDraft,
-) -> Result<IrEventStream, Error> {
+) -> Result<IrEventStream, ApiError> {
     // The client's reasoning effort string needs no interpretation here: it is opaque end to end
     // (README §6.4) — no stored override is consulted, nothing is filtered or clamped — and the
     // renderers write it verbatim into the upstream's own parameter.
@@ -228,9 +200,9 @@ pub(crate) async fn execute(
         Ok(response) => response,
 
         Err(error) => {
-            let error = Error::Unavailable {
+            let error = ApiError::from(Error::Unavailable {
                 detail: format!("upstream unreachable: {error}"),
-            };
+            });
 
             finalize_dispatch_failure(context, log, &error).await;
 
@@ -241,7 +213,7 @@ pub(crate) async fn execute(
     let status = response.status();
 
     if !status.is_success() {
-        let error = upstream_error_of(response).await;
+        let error = ApiError::from(upstream_error_of(response).await);
 
         finalize_dispatch_failure(context, log, &error).await;
 
@@ -401,6 +373,53 @@ fn build_upstream_request(
                 )
                 .json(&body))
         }
+
+        // Owned by the Interactions subagent: `POST {base}/v1beta/interactions` with the
+        // `x-goog-api-key` and pinned `Api-Revision` headers (REFACTOR §6). The scaffold
+        // renderer reports unimplemented until the subagent lands the real wire shape.
+        ProviderType::GeminiInteraction => {
+            let (url, body) = gemini_interaction::render_request(
+                ir,
+                compatible_base_url(provider)?,
+                &routing.model.upstream_id,
+                is_client_streaming,
+            )?;
+
+            Ok(http
+                .post(url)
+                .header(
+                    endpoints::GEMINI_API_KEY_HEADER,
+                    provider.credentials.secret(),
+                )
+                .header(
+                    endpoints::GEMINI_API_REVISION_HEADER,
+                    endpoints::GEMINI_API_REVISION,
+                )
+                .json(&body))
+        }
+
+        // Owned by the Anthropic subagent: `POST {base}/v1/messages` with the `x-api-key` and
+        // pinned `anthropic-version` headers (REFACTOR §6). The scaffold renderer reports
+        // unimplemented until the subagent lands the real wire shape.
+        ProviderType::AnthropicMessages => {
+            let (url, body) = anthropic_messages::render_request(
+                ir,
+                compatible_base_url(provider)?,
+                is_client_streaming,
+            )?;
+
+            Ok(http
+                .post(url)
+                .header(
+                    endpoints::ANTHROPIC_API_KEY_HEADER,
+                    provider.credentials.secret(),
+                )
+                .header(
+                    endpoints::ANTHROPIC_VERSION_HEADER,
+                    endpoints::ANTHROPIC_VERSION,
+                )
+                .json(&body))
+        }
     }
 }
 
@@ -423,6 +442,8 @@ fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventPars
             Box::new(openai_chat_completion::UpstreamParser::new())
         }
         UpstreamFormat::GeminiGenerateContent => Box::new(gemini::UpstreamParser::new()),
+        UpstreamFormat::GeminiInteraction => Box::new(gemini_interaction::UpstreamParser::new()),
+        UpstreamFormat::AnthropicMessages => Box::new(anthropic_messages::UpstreamParser::new()),
     }
 }
 
@@ -691,34 +712,37 @@ impl From<PayloadError> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{api::Error as ApiError, api_logs::ApiLogOutcome};
     use reqwest::StatusCode;
 
-    /// Verifies the three branches of the one classification every accounting finalization point
-    /// shares (README §3 *ApiLog*, §6.7): a mirrored upstream non-2xx records `upstream_error`
-    /// with that very status, a transport failure records `upstream_error` with 502, and a
-    /// gateway-side failure records `internal` with 500.
+    /// Verifies the dispatch accounting derives from the shared API classification: a mirrored
+    /// upstream non-2xx records `upstream_error` with that very status, a transport failure
+    /// records `upstream_error` with 502, and a gateway-side failure records `internal` with 500.
     ///
     /// # Panics
     ///
     /// Panics if a branch classifies differently from the documented mapping.
     #[test]
-    fn classifies_failures_in_three_branches() {
-        let (outcome, http_status) = classify_failure(&Error::Upstream {
+    fn classifies_dispatch_failures_through_the_shared_error() {
+        let (outcome, http_status) = ApiError::from(Error::Upstream {
             status: StatusCode::TOO_MANY_REQUESTS,
             detail: "rate limited".to_string(),
-        });
+        })
+        .accounting();
 
         assert_eq!((outcome, http_status), (ApiLogOutcome::UpstreamError, 429));
 
-        let (outcome, http_status) = classify_failure(&Error::Unavailable {
+        let (outcome, http_status) = ApiError::from(Error::Unavailable {
             detail: "upstream unreachable".to_string(),
-        });
+        })
+        .accounting();
 
         assert_eq!((outcome, http_status), (ApiLogOutcome::UpstreamError, 502));
 
-        let (outcome, http_status) = classify_failure(&Error::Internal {
+        let (outcome, http_status) = ApiError::from(Error::Internal {
             message: "stored configuration drift".to_string(),
-        });
+        })
+        .accounting();
 
         assert_eq!((outcome, http_status), (ApiLogOutcome::Internal, 500));
     }

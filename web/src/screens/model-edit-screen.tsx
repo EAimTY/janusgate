@@ -3,7 +3,7 @@ import { createEffect, createMemo, createSignal, Show } from "solid-js";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { compositionMessage, isModelIdentifier } from "/src/management-api/identifiers";
+import { isRoutingToken, routingTokenMessage } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import { describeCallFailure } from "/src/screens/failure";
@@ -203,9 +203,9 @@ function ModelSettingsForm(props: {
     /** Inline composition error for the override, shown where it was typed. */
     const overrideError = (): string | null => {
         const override = normalizedOverride();
-        return override === null || isModelIdentifier(override)
+        return override === null || isRoutingToken(override)
             ? null
-            : compositionMessage("Public ID override");
+            : routingTokenMessage("Public ID override");
     };
 
     const isDirty = (): boolean =>

@@ -30,6 +30,8 @@ const STATIC_PROVIDER_TYPE_LABELS: Record<StaticProviderType, string> = {
     openai_response: "OpenAI Responses API",
     openai_chat_completion: "OpenAI Chat Completions API",
     gemini_generate_content: "Gemini generateContent API",
+    gemini_interaction: "Gemini Interactions API",
+    anthropic_messages: "Anthropic Messages API",
 };
 
 const OAUTH_PROVIDER_TYPE_LABELS: Record<OAuthProviderType, string> = {
@@ -182,6 +184,9 @@ export function parseApiLogOutcome(value: unknown, context: string): ApiLogOutco
 const API_LOG_ENDPOINT_LABELS: Record<ApiLogEndpointType, string> = {
     openai_chat_completions: "Chat Completions",
     openai_responses: "Responses",
+    gemini_generate_content: "Gemini generateContent",
+    gemini_interactions: "Gemini Interactions",
+    anthropic_messages: "Anthropic Messages",
 };
 
 /** The outward endpoints as options; the record type is exhaustive. */

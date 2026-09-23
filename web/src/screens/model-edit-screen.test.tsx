@@ -11,7 +11,7 @@ const provider: ProviderResponse = {
     type: "openai_response",
     id: 3,
     name: "alpha",
-    model_prefix: "alpha/",
+    model_prefix: "alpha-",
     is_enabled: true,
     base_url: "https://alpha.example",
 };
@@ -21,7 +21,7 @@ const model: ModelResponse = {
     provider_id: 3,
     provider: "alpha",
     upstream_id: "gpt-x",
-    public_id: "alpha/gpt-x",
+    public_id: "alpha-gpt-x",
     id_override: null,
     is_enabled: true,
     discovery_state: "discovered",
@@ -212,13 +212,13 @@ describe("ModelEditScreen refresh against an open form", () => {
         mount(holder);
         await settle();
 
-        const override = await overridePublicId("custom/gpt-x");
+        const override = await overridePublicId("custom-gpt-x");
         expect(document.body.textContent).toContain("Unsaved changes");
 
         requestRefresh();
         await settle();
 
-        expect(labeledInput("Public ID override").value).toBe("custom/gpt-x");
+        expect(labeledInput("Public ID override").value).toBe("custom-gpt-x");
         expect(override.isConnected).toBe(true);
         expect(document.body.textContent).toContain("Unsaved changes");
     });
@@ -235,7 +235,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         mount(holder);
         await settle();
 
-        await overridePublicId("custom/gpt-x");
+        await overridePublicId("custom-gpt-x");
 
         holder.models = [
             {
@@ -246,7 +246,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         requestRefresh();
         await settle();
 
-        expect(labeledInput("Public ID override").value).toBe("custom/gpt-x");
+        expect(labeledInput("Public ID override").value).toBe("custom-gpt-x");
         expect(document.body.textContent).toContain("changed on the gateway");
     });
 
@@ -289,7 +289,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         mount(holder);
         await settle();
 
-        await overridePublicId("custom/gpt-x");
+        await overridePublicId("custom-gpt-x");
         holder.models = [
             {
                 ...model,
@@ -321,7 +321,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         mount(holder);
         await settle();
 
-        await overridePublicId("custom/gpt-x");
+        await overridePublicId("custom-gpt-x");
         holder.models = [
             {
                 ...model,
@@ -341,14 +341,14 @@ describe("ModelEditScreen refresh against an open form", () => {
                 // The form's own settings state is what Save writes over the
                 // gateway's version — the concurrent serving switch included.
                 is_enabled: true,
-                id_override: "custom/gpt-x",
-                public_id: "custom/gpt-x",
+                id_override: "custom-gpt-x",
+                public_id: "custom-gpt-x",
             },
         ]);
-        expect(labeledInput("Public ID override").value).toBe("custom/gpt-x");
+        expect(labeledInput("Public ID override").value).toBe("custom-gpt-x");
         expect(document.body.textContent).not.toContain("changed on the gateway");
         expect(document.body.textContent).not.toContain("Unsaved changes");
-        expect(document.body.textContent).toContain("Clients now call it custom/gpt-x.");
+        expect(document.body.textContent).toContain("Clients now call it custom-gpt-x.");
     });
 
     it("reloads the listing when a save answers gone, handing over to the not-found state", async () => {
@@ -383,7 +383,7 @@ describe("ModelEditScreen refresh against an open form", () => {
         );
         await settle();
 
-        await overridePublicId("custom/gpt-x");
+        await overridePublicId("custom-gpt-x");
         holder.models = [];
         buttonWithText("Save changes").click();
         await settle();

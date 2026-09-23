@@ -238,7 +238,7 @@ describe("createManagementApi", () => {
                         provider_id: 4,
                         provider: "local",
                         upstream_id: "gpt-4o",
-                        public_id: "local/gpt-4o",
+                        public_id: "local-gpt-4o",
                         id_override: null,
                         is_enabled: true,
                         discovery_state: "discovered",

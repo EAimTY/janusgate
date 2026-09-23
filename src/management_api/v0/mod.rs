@@ -306,17 +306,36 @@ fn validate_composition(param: &'static str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validates a model prefix (README §7): empty means no prefix, otherwise the same composition
-/// every other routing token carries.
+/// Validates a model prefix (README §7, REFACTOR §7): empty means no prefix, otherwise the
+/// routing-token composition — printable ASCII without whitespace and without `/` or `:` (the
+/// Gemini URL path cannot address them).
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when a non-empty prefix carries a character outside the allowed set.
 fn validate_model_prefix(value: &str) -> Result<(), Error> {
-    if !value.is_empty() && !is_valid_composition(value) {
-        return Err(Error::InvalidIdentifier {
-            param: "model_prefix",
-        });
+    if !value.is_empty() {
+        validate_routing_token("model_prefix", value)?;
+    }
+
+    Ok(())
+}
+
+/// Validates a routing token (REFACTOR §7): `upstream_id` or a present `id_override`. The value
+/// must be non-empty printable ASCII without whitespace and without `/` or `:` — the Gemini URL
+/// path (`/models/{model}:generateContent`) cannot address them. An empty value is
+/// [`Error::EmptyIdentifier`], any other composition failure [`Error::InvalidIdentifier`].
+/// Existing stored rows carrying `/` or `:` are left as-is and are simply not addressable through
+/// the Gemini surface.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the value is empty or carries a character outside the allowed set.
+fn validate_routing_token(param: &'static str, value: &str) -> Result<(), Error> {
+    validate_composition(param, value)?;
+
+    if value.contains('/') || value.contains(':') {
+        return Err(Error::InvalidIdentifier { param });
     }
 
     Ok(())
@@ -453,6 +472,44 @@ pub enum ProviderResponse {
         /// Upstream base URL.
         base_url: String,
     },
+
+    /// Static API key speaking the Gemini Interactions protocol.
+    #[serde(rename = "gemini_interaction")]
+    GeminiInteraction {
+        /// Provider row identifier.
+        id: i64,
+
+        /// Unique, renameable label.
+        name: String,
+
+        /// Prefix prepended to every public model name.
+        model_prefix: String,
+
+        /// Whether the provider serves traffic.
+        is_enabled: bool,
+
+        /// Upstream base URL.
+        base_url: String,
+    },
+
+    /// Static API key speaking the Anthropic Messages protocol.
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages {
+        /// Provider row identifier.
+        id: i64,
+
+        /// Unique, renameable label.
+        name: String,
+
+        /// Prefix prepended to every public model name.
+        model_prefix: String,
+
+        /// Whether the provider serves traffic.
+        is_enabled: bool,
+
+        /// Upstream base URL.
+        base_url: String,
+    },
 }
 
 impl ProviderResponse {
@@ -501,6 +558,22 @@ impl ProviderResponse {
             },
 
             ProviderType::GeminiGenerateContent => Self::GeminiGenerateContent {
+                id: provider.id,
+                name: provider.name.clone(),
+                model_prefix: provider.model_prefix.clone(),
+                is_enabled: provider.is_enabled,
+                base_url: stored_base_url(provider),
+            },
+
+            ProviderType::GeminiInteraction => Self::GeminiInteraction {
+                id: provider.id,
+                name: provider.name.clone(),
+                model_prefix: provider.model_prefix.clone(),
+                is_enabled: provider.is_enabled,
+                base_url: stored_base_url(provider),
+            },
+
+            ProviderType::AnthropicMessages => Self::AnthropicMessages {
                 id: provider.id,
                 name: provider.name.clone(),
                 model_prefix: provider.model_prefix.clone(),
@@ -683,7 +756,7 @@ pub(super) mod absent_keeps {
 mod tests {
     use super::{
         Error as ManagementError, Nullable, ProviderEnvelope, ProviderResponse, absent_keeps,
-        validate_base_url, validate_composition, validate_model_prefix,
+        validate_base_url, validate_composition, validate_model_prefix, validate_routing_token,
     };
     use crate::provider::{Credentials, Provider, ProviderType};
     use serde::Deserialize;
@@ -701,7 +774,7 @@ mod tests {
         let static_provider = Provider {
             id: 7,
             name: "acme".to_string(),
-            model_prefix: "acme/".to_string(),
+            model_prefix: "acme-".to_string(),
             provider_type: ProviderType::OpenAiChatCompletion,
             base_url: Some("https://upstream.example".to_string()),
             credentials: Credentials::ApiKey("sk-secret".to_string()),
@@ -719,7 +792,7 @@ mod tests {
             rendered,
             concat!(
                 r#"{"provider":{"type":"openai_chat_completion","id":7,"name":"acme","#,
-                r#""model_prefix":"acme/","is_enabled":true,"#,
+                r#""model_prefix":"acme-","is_enabled":true,"#,
                 r#""base_url":"https://upstream.example"}}"#,
             )
         );
@@ -727,7 +800,7 @@ mod tests {
         let oauth = Provider {
             id: 3,
             name: "codex".to_string(),
-            model_prefix: "codex/".to_string(),
+            model_prefix: "codex-".to_string(),
             provider_type: ProviderType::CodexOauth,
             base_url: None,
             credentials: Credentials::CodexOauth {
@@ -749,7 +822,7 @@ mod tests {
             rendered,
             concat!(
                 r#"{"provider":{"type":"codex_oauth","id":3,"name":"codex","#,
-                r#""model_prefix":"codex/","is_enabled":false,"expires_at":1800000000000000}}"#,
+                r#""model_prefix":"codex-","is_enabled":false,"expires_at":1800000000000000}}"#,
             )
         );
     }
@@ -768,7 +841,7 @@ mod tests {
             reason = "the documented payloads are constructed to parse"
         )]
         let parsed: ProviderResponse = serde_json::from_str(
-            r#"{"id":3,"name":"codex","model_prefix":"codex/","type":"codex_oauth",
+            r#"{"id":3,"name":"codex","model_prefix":"codex-","type":"codex_oauth",
                 "expires_at":1800000000000000,"is_enabled":true}"#,
         )
         .unwrap();
@@ -777,7 +850,7 @@ mod tests {
 
         assert!(
             serde_json::from_str::<ProviderResponse>(
-                r#"{"id":3,"name":"codex","model_prefix":"codex/","type":"codex_oauth",
+                r#"{"id":3,"name":"codex","model_prefix":"codex-","type":"codex_oauth",
                 "expires_at":1800000000000000,"is_enabled":true,"base_url":"https://x"}"#
             )
             .is_err()
@@ -785,7 +858,7 @@ mod tests {
 
         assert!(
             serde_json::from_str::<ProviderResponse>(
-                r#"{"id":3,"name":"codex","model_prefix":"c/","type":"bogus"}"#
+                r#"{"id":3,"name":"codex","model_prefix":"c-","type":"bogus"}"#
             )
             .is_err()
         );
@@ -862,7 +935,7 @@ mod tests {
             "qwen3:32b",
             "meta-llama/Llama-3.1-8B",
             "text-embedding-3-small",
-            "codex/",
+            "codex-",
             "agy-",
             "sk-live-123_~",
             "!",
@@ -900,8 +973,9 @@ mod tests {
         }
     }
 
-    /// Verifies the model prefix composition (README §7): empty means no prefix, otherwise the
-    /// same character set every routing token carries.
+    /// Verifies the model prefix composition (README §7, REFACTOR §7): empty means no prefix,
+    /// otherwise the routing-token composition — printable ASCII without whitespace and without
+    /// `/` or `:` (the Gemini URL path cannot address them).
     ///
     /// # Panics
     ///
@@ -909,22 +983,51 @@ mod tests {
     #[test]
     fn enforces_the_model_prefix_composition() {
         assert!(validate_model_prefix("").is_ok());
-        assert!(validate_model_prefix("codex/").is_ok());
+        assert!(validate_model_prefix("codex-").is_ok());
         assert!(validate_model_prefix("agy-").is_ok());
 
-        assert!(matches!(
-            validate_model_prefix("codex /"),
-            Err(ManagementError::InvalidIdentifier {
-                param: "model_prefix"
-            })
-        ));
+        for invalid in [
+            "codex /", "前缀/", "codex/", "agy/", "qwen:32b", "a:b", "a/b",
+        ] {
+            assert!(
+                matches!(
+                    validate_model_prefix(invalid),
+                    Err(ManagementError::InvalidIdentifier {
+                        param: "model_prefix"
+                    })
+                ),
+                "prefix accepted: {invalid:?}"
+            );
+        }
+    }
 
-        assert!(matches!(
-            validate_model_prefix("前缀/"),
-            Err(ManagementError::InvalidIdentifier {
-                param: "model_prefix"
-            })
-        ));
+    /// Verifies the routing-token composition (REFACTOR §7): `upstream_id` and a present
+    /// `id_override` reject `/` and `:` beside the generic composition, because the Gemini URL
+    /// path cannot address them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a token parses or rejects outside its contract.
+    #[test]
+    fn enforces_the_routing_token_composition() {
+        assert!(validate_routing_token("upstream_id", "gpt-4o").is_ok());
+        assert!(validate_routing_token("id_override", "custom-model_1.2").is_ok());
+
+        for invalid in [
+            "qwen3:32b",
+            "meta-llama/Llama-3.1-8B",
+            "codex/",
+            "a:b",
+            "a/b",
+            "has space",
+            "模型",
+            "",
+        ] {
+            assert!(
+                validate_routing_token("upstream_id", invalid).is_err(),
+                "routing token accepted: {invalid:?}"
+            );
+        }
     }
 
     /// Verifies the base URL composition (README §7): a non-empty `http://` or `https://` URL of

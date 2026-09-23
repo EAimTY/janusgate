@@ -17,7 +17,7 @@ const providerRow: ProviderResponse = {
     type: "openai_chat_completion",
     id: 1,
     name: "local",
-    model_prefix: "local/",
+    model_prefix: "local-",
     is_enabled: true,
     base_url: "https://upstream.example.com/v1",
 };
@@ -33,7 +33,7 @@ const modelRow: ModelResponse = {
     provider_id: 1,
     provider: "local",
     upstream_id: "qwen3:32b",
-    public_id: "local/qwen3:32b",
+    public_id: "local-qwen3-32b",
     id_override: null,
     is_enabled: true,
     discovery_state: "discovered",

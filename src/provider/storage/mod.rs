@@ -414,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn overrides_ids_and_recomputes_them_on_prefix_update() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
 
         // 1. Discovery composes public IDs from the prefix; the response carries every fresh row,
         //    ordered by public ID.
@@ -431,20 +431,20 @@ mod tests {
             discovered
                 .first()
                 .map(|entry| entry.model.public_id.as_str()),
-            Some("p1/claude")
+            Some("p1-claude")
         );
 
         assert_eq!(
             discovered
                 .get(1)
                 .map(|entry| entry.model.public_id.as_str()),
-            Some("p1/gpt-4")
+            Some("p1-gpt-4")
         );
 
         let entries = list_model_entries(&database, None).await?;
         let gpt4 = entry(&entries, "gpt-4");
 
-        assert_eq!(gpt4.model.public_id, "p1/gpt-4");
+        assert_eq!(gpt4.model.public_id, "p1-gpt-4");
         assert_eq!(gpt4.model.id_override, None);
         assert!(gpt4.model.is_enabled);
         assert_eq!(gpt4.model.discovery_state, DiscoveryState::Discovered);
@@ -479,7 +479,7 @@ mod tests {
         assert!(routing.is_effectively_enabled);
 
         // The old composed ID no longer routes.
-        assert!(find_routing(&database, "p1/gpt-4").await?.is_none());
+        assert!(find_routing(&database, "p1-gpt-4").await?.is_none());
 
         // 3. A prefix change recomputes unoverridden IDs; the overridden row keeps its override.
         update_provider(
@@ -487,7 +487,7 @@ mod tests {
             provider_id,
             ProviderUpdate {
                 name: "provider-1",
-                model_prefix: "new-p1/",
+                model_prefix: "new-p1-",
                 base_url: Some("http://localhost:8080"),
                 is_enabled: true,
                 credentials: None,
@@ -498,7 +498,7 @@ mod tests {
         let entries = list_model_entries(&database, None).await?;
 
         assert_eq!(entry(&entries, "gpt-4").model.public_id, "top-gpt");
-        assert_eq!(entry(&entries, "claude").model.public_id, "new-p1/claude");
+        assert_eq!(entry(&entries, "claude").model.public_id, "new-p1-claude");
 
         // 4. Clearing the override recomposes from the current prefix.
         let cleared = update_model_overrides_checked(
@@ -511,7 +511,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(cleared.model.public_id, "new-p1/gpt-4");
+        assert_eq!(cleared.model.public_id, "new-p1-gpt-4");
         assert_eq!(cleared.model.id_override, None);
 
         // 5. An ID already routed by another row collides and writes nothing.
@@ -521,7 +521,7 @@ mod tests {
             &database,
             ModelUpdate {
                 model_id: claude_id,
-                id_override: Some("new-p1/gpt-4"),
+                id_override: Some("new-p1-gpt-4"),
                 is_enabled: true,
             },
         )
@@ -531,7 +531,7 @@ mod tests {
 
         let entries = list_model_entries(&database, None).await?;
 
-        assert_eq!(entry(&entries, "claude").model.public_id, "new-p1/claude");
+        assert_eq!(entry(&entries, "claude").model.public_id, "new-p1-claude");
 
         // 6. Disabling one model takes it out of the enabled listing and its effective status.
         update_model_overrides_checked(
@@ -561,7 +561,7 @@ mod tests {
             enabled_models
                 .first()
                 .map(|(public_id, _)| public_id.as_str()),
-            Some("new-p1/gpt-4")
+            Some("new-p1-gpt-4")
         );
 
         // 7. The provider is the master switch: disabling it disables every model effectively while
@@ -571,7 +571,7 @@ mod tests {
             provider_id,
             ProviderUpdate {
                 name: "provider-1",
-                model_prefix: "new-p1/",
+                model_prefix: "new-p1-",
                 base_url: Some("http://localhost:8080"),
                 is_enabled: false,
                 credentials: None,
@@ -583,7 +583,7 @@ mod tests {
             clippy::expect_used,
             reason = "the row was just written and the lookup follows it"
         )]
-        let routing = find_routing(&database, "new-p1/gpt-4")
+        let routing = find_routing(&database, "new-p1-gpt-4")
             .await?
             .expect("the row still resolves");
 
@@ -604,7 +604,7 @@ mod tests {
     #[tokio::test]
     async fn creates_manual_rows_discovery_never_prunes() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
 
         // 1. An absent identifier becomes a manual row with the requested state.
         let created = insert_model_checked(
@@ -618,7 +618,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(created.model.public_id, "p1/manual-1");
+        assert_eq!(created.model.public_id, "p1-manual-1");
         assert_eq!(created.model.discovery_state, DiscoveryState::Manual);
         assert!(!created.model.is_enabled);
 
@@ -644,14 +644,14 @@ mod tests {
         );
 
         // 3. A public ID already routed by another provider's row conflicts and writes nothing.
-        let other_provider_id = insert_test_provider(&database, "provider-2", "p2/").await?;
+        let other_provider_id = insert_test_provider(&database, "provider-2", "p2-").await?;
 
         let colliding = insert_model_checked(
             &database,
             ModelCreate {
                 provider_id: other_provider_id,
                 upstream_id: "manual-1",
-                id_override: Some("p1/manual-1"),
+                id_override: Some("p1-manual-1"),
                 is_enabled: true,
             },
         )
@@ -690,7 +690,7 @@ mod tests {
 
         assert_eq!(manual.model.discovery_state, DiscoveryState::Manual);
         assert!(!manual.model.is_enabled);
-        assert_eq!(manual.model.public_id, "p1/manual-1");
+        assert_eq!(manual.model.public_id, "p1-manual-1");
 
         let fresh = entry(&entries, "fresh-1");
 
@@ -714,7 +714,7 @@ mod tests {
         assert_eq!(manual.model.id, manual_id);
         assert_eq!(manual.model.discovery_state, DiscoveryState::Discovered);
         assert!(!manual.model.is_enabled);
-        assert_eq!(manual.model.public_id, "p1/manual-1");
+        assert_eq!(manual.model.public_id, "p1-manual-1");
 
         Ok(())
     }
@@ -733,7 +733,7 @@ mod tests {
     async fn marks_vanished_rows_and_restores_them_by_state_flip_only()
     -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
 
         apply_discovered_models(
             &database,
@@ -789,11 +789,11 @@ mod tests {
         // Vanish touches only the state column: `b` stays curated off, `c` stays on.
         assert_eq!(b.model.discovery_state, DiscoveryState::Vanished);
         assert!(!b.model.is_enabled);
-        assert_eq!(b.model.public_id, "p1/b");
+        assert_eq!(b.model.public_id, "p1-b");
 
         assert_eq!(c.model.discovery_state, DiscoveryState::Vanished);
         assert!(c.model.is_enabled);
-        assert_eq!(c.model.public_id, "p1/c");
+        assert_eq!(c.model.public_id, "p1-c");
 
         // A vanished row with `is_enabled = 1` still resolves in routing — zero special-casing —
         // but its three-input effective status is false, which is what turns into the outward 404.
@@ -801,7 +801,7 @@ mod tests {
             clippy::expect_used,
             reason = "the row was just written and the lookup follows it"
         )]
-        let routing = find_routing(&database, "p1/c")
+        let routing = find_routing(&database, "p1-c")
             .await?
             .expect("a vanished row is still resolved by its public ID");
 
@@ -857,7 +857,7 @@ mod tests {
             clippy::expect_used,
             reason = "the row was just written and the lookup follows it"
         )]
-        let routing = find_routing(&database, "p1/c")
+        let routing = find_routing(&database, "p1-c")
             .await?
             .expect("the restored row routes");
 
@@ -882,14 +882,14 @@ mod tests {
         let (database, _guard) = create_test_database().await;
 
         // Provider A discovers `gpt-4`, then drops it: the vanished row keeps `p1/gpt-4` reserved.
-        let provider_a = insert_test_provider(&database, "provider-a", "p1/").await?;
+        let provider_a = insert_test_provider(&database, "provider-a", "p1-").await?;
 
         apply_discovered_models(&database, provider_a, &["gpt-4".to_string()]).await?;
         apply_discovered_models(&database, provider_a, &["other".to_string()]).await?;
 
         // Provider B shares the prefix and re-discovers the identifier: its brand-new row would
         // take the vanished holder's ID, so the refresh is rejected and B stays empty.
-        let provider_b = insert_test_provider(&database, "provider-b", "p1/").await?;
+        let provider_b = insert_test_provider(&database, "provider-b", "p1-").await?;
 
         let collision =
             apply_discovered_models(&database, provider_b, &["gpt-4".to_string()]).await;
@@ -903,20 +903,20 @@ mod tests {
 
         // An `id_override` holder reserves its ID the same way: a manual row of provider C holds
         // `d/m`, so provider D's discovery composing `d/m` is rejected.
-        let provider_c = insert_test_provider(&database, "provider-c", "c/").await?;
+        let provider_c = insert_test_provider(&database, "provider-c", "c-").await?;
 
         insert_model_checked(
             &database,
             ModelCreate {
                 provider_id: provider_c,
                 upstream_id: "m",
-                id_override: Some("d/m"),
+                id_override: Some("d-m"),
                 is_enabled: true,
             },
         )
         .await?;
 
-        let provider_d = insert_test_provider(&database, "provider-d", "d/").await?;
+        let provider_d = insert_test_provider(&database, "provider-d", "d-").await?;
 
         let collision = apply_discovered_models(&database, provider_d, &["m".to_string()]).await;
 
@@ -941,7 +941,7 @@ mod tests {
     #[tokio::test]
     async fn claims_a_vanished_row_keeping_its_identity() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
 
         apply_discovered_models(
             &database,
@@ -995,7 +995,7 @@ mod tests {
             .expect("the claimed row routes");
 
         assert!(routing.is_effectively_enabled);
-        assert!(find_routing(&database, "p1/gpt-4").await?.is_none());
+        assert!(find_routing(&database, "p1-gpt-4").await?.is_none());
 
         // A row the upstream currently lists is `discovered` and can never be claimed.
         let conflict = insert_model_checked(
@@ -1026,7 +1026,7 @@ mod tests {
     #[tokio::test]
     async fn updates_and_deletes_models_by_row_id() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1/").await?;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
 
         apply_discovered_models(&database, provider_id, &["a".to_string(), "b".to_string()])
             .await?;
@@ -1095,7 +1095,7 @@ mod tests {
         let entries = list_model_entries(&database, None).await?;
         let b = entry(&entries, "b");
 
-        assert_eq!(b.model.public_id, "p1/b");
+        assert_eq!(b.model.public_id, "p1-b");
         assert!(b.model.is_enabled);
 
         // Deleting by row id removes the row; the same id is then unknown.
@@ -1243,7 +1243,7 @@ mod tests {
             &database,
             &NewProvider {
                 name: "oauth-provider",
-                model_prefix: "openai/",
+                model_prefix: "openai-",
                 provider_type: consumed.state_type.as_provider_type(),
                 base_url: None,
                 credentials: &credentials,
@@ -1286,7 +1286,7 @@ mod tests {
         let outcome = database
             .execute(
                 "INSERT INTO providers (name, model_prefix, type, base_url, credentials) \
-                 VALUES ('drifted', 'd/', 'openai_compatible', 'https://x.example', '{}')",
+                 VALUES ('drifted', 'd-', 'openai_compatible', 'https://x.example', '{}')",
                 (),
             )
             .await;
@@ -1313,6 +1313,8 @@ mod tests {
             ProviderType::OpenAiResponse,
             ProviderType::OpenAiChatCompletion,
             ProviderType::GeminiGenerateContent,
+            ProviderType::GeminiInteraction,
+            ProviderType::AnthropicMessages,
             ProviderType::CodexOauth,
             ProviderType::AntigravityOauth,
         ] {

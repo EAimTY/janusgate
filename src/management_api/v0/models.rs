@@ -338,7 +338,7 @@ async fn handle_discover(
     // would reject the write as a constraint violation — a storage conflict instead of the
     // upstream failure it is (README §7.1).
     for upstream_id in &unique_ids {
-        if super::validate_composition("upstream_id", upstream_id).is_err() {
+        if super::validate_routing_token("upstream_id", upstream_id).is_err() {
             return Err(Error::UpstreamReportedInvalidModelId {
                 upstream_id: upstream_id.clone(),
             });
@@ -405,7 +405,7 @@ async fn handle_update(
     request: UpdateModelRequest,
 ) -> Result<ModelEntry, Error> {
     if let Some(id_override) = &request.id_override.0 {
-        super::validate_composition("id_override", id_override)?;
+        super::validate_routing_token("id_override", id_override)?;
     }
 
     // The checked update re-reads the row and its provider inside its transaction, so the
@@ -438,10 +438,10 @@ fn validate_model_identifiers(
     upstream_id: &str,
     id_override: &Nullable<String>,
 ) -> Result<(), Error> {
-    super::validate_composition("upstream_id", upstream_id)?;
+    super::validate_routing_token("upstream_id", upstream_id)?;
 
     if let Some(id_override) = &id_override.0 {
-        super::validate_composition("id_override", id_override)?;
+        super::validate_routing_token("id_override", id_override)?;
     }
 
     Ok(())
@@ -473,7 +473,7 @@ mod tests {
             model: Model {
                 id: 42,
                 upstream_id: "gpt-4".to_string(),
-                public_id: "acme/gpt-4".to_string(),
+                public_id: "acme-gpt-4".to_string(),
                 id_override: None,
                 is_enabled,
                 discovery_state,
@@ -494,7 +494,7 @@ mod tests {
                 "provider_id": 7,
                 "provider": "acme",
                 "upstream_id": "gpt-4",
-                "public_id": "acme/gpt-4",
+                "public_id": "acme-gpt-4",
                 "id_override": null,
                 "is_enabled": true,
                 "discovery_state": "discovered",
@@ -515,7 +515,7 @@ mod tests {
                 "provider_id": 7,
                 "provider": "acme",
                 "upstream_id": "gpt-4",
-                "public_id": "acme/gpt-4",
+                "public_id": "acme-gpt-4",
                 "id_override": null,
                 "is_enabled": true,
                 "discovery_state": "vanished",

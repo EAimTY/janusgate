@@ -11,7 +11,7 @@ const providers: ReadonlyArray<ProviderResponse> = [
         type: "openai_chat_completion",
         id: 1,
         name: "local",
-        model_prefix: "local/",
+        model_prefix: "local-",
         is_enabled: true,
         base_url: "https://upstream.example.com/v1",
     },
@@ -23,7 +23,7 @@ const models: ReadonlyArray<ModelResponse> = [
         provider_id: 1,
         provider: "local",
         upstream_id: "qwen3:32b",
-        public_id: "local/qwen3:32b",
+        public_id: "local-qwen3-32b",
         id_override: null,
         is_enabled: true,
         discovery_state: "discovered",
@@ -49,7 +49,7 @@ const entities = {
 describe("usage labels", () => {
     it("resolves a listed id through the entity lists", () => {
         expect(usageModelLabel(entities, 9)).toEqual({
-            text: "local/qwen3:32b",
+            text: "local-qwen3-32b",
             isListed: true,
         });
         expect(usageProviderLabel(entities, 1)).toEqual({

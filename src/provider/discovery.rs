@@ -121,6 +121,12 @@ pub(crate) async fn discover_upstream_models(
         ProviderType::OpenAiResponse
         | ProviderType::OpenAiChatCompletion
         | ProviderType::GeminiGenerateContent => discover_compatible(http, provider, secret).await,
+
+        ProviderType::GeminiInteraction => {
+            discover_gemini_interaction(http, provider, secret).await
+        }
+
+        ProviderType::AnthropicMessages => discover_anthropic(http, provider, secret).await,
     }
 }
 
@@ -262,7 +268,121 @@ async fn discover_compatible(
                 })
                 .collect()
         }
+
+        UpstreamFormat::GeminiInteraction | UpstreamFormat::AnthropicMessages => {
+            Err(Error::Internal {
+                message: "discovery for the new upstream format is handled by its own discover \
+                     function, not the compatible path"
+                    .to_string(),
+            })
+        }
     }
+}
+
+/// Discovers models from a Gemini Interactions upstream: `GET {base}/v1beta/models` with the
+/// `x-goog-api-key` header and the pinned `Api-Revision` (REFACTOR §6), in the existing
+/// `GET {base}/v1beta/models` shape (`models[].name`, `"models/<id>"` or bare `<id>`).
+async fn discover_gemini_interaction(
+    http: &Client,
+    provider: &Provider,
+    secret: &str,
+) -> Result<Vec<String>, Error> {
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .ok_or_else(|| Error::Internal {
+            message: format!(
+                "static-key provider `{}` lacks a stored base URL",
+                provider.name
+            ),
+        })?;
+
+    let base_url = base_url.trim_end_matches('/');
+
+    let request = http
+        .get(format!("{base_url}/v1beta/models"))
+        .header(endpoints::GEMINI_API_KEY_HEADER, secret)
+        .header(
+            endpoints::GEMINI_API_REVISION_HEADER,
+            endpoints::GEMINI_API_REVISION,
+        );
+
+    let response: GeminiModelsResponse =
+        http_body::send_and_parse_json(request, "upstream").await?;
+
+    let entries = response.models.ok_or_else(|| Error::Unavailable {
+        detail: "model discovery payload lacks a `models` array".to_string(),
+    })?;
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            let name = entry.name.ok_or_else(|| Error::Unavailable {
+                detail: "model discovery entry lacks a `name` string".to_string(),
+            })?;
+
+            Ok(name.strip_prefix("models/").unwrap_or(&name).to_string())
+        })
+        .collect()
+}
+
+/// An Anthropic model list: `GET {base}/v1/models` serving entries under `data` (REFACTOR §6).
+/// The payload is upstream-owned, so unknown fields are ignored.
+#[derive(Debug, Deserialize)]
+struct AnthropicModelsResponse {
+    /// Model entries the payload carries.
+    data: Option<Vec<AnthropicModelEntry>>,
+}
+
+/// One model entry of an Anthropic model list.
+#[derive(Debug, Deserialize)]
+struct AnthropicModelEntry {
+    /// Upstream model identifier the entry names.
+    id: Option<String>,
+}
+
+/// Discovers models from an Anthropic Messages upstream: `GET {base}/v1/models` with the
+/// `x-api-key` header and the pinned `anthropic-version` (REFACTOR §6).
+async fn discover_anthropic(
+    http: &Client,
+    provider: &Provider,
+    secret: &str,
+) -> Result<Vec<String>, Error> {
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .ok_or_else(|| Error::Internal {
+            message: format!(
+                "static-key provider `{}` lacks a stored base URL",
+                provider.name
+            ),
+        })?;
+
+    let base_url = base_url.trim_end_matches('/');
+
+    let request = http
+        .get(format!("{base_url}/v1/models"))
+        .header(endpoints::ANTHROPIC_API_KEY_HEADER, secret)
+        .header(
+            endpoints::ANTHROPIC_VERSION_HEADER,
+            endpoints::ANTHROPIC_VERSION,
+        );
+
+    let response: AnthropicModelsResponse =
+        http_body::send_and_parse_json(request, "upstream").await?;
+
+    let entries = response.data.ok_or_else(|| Error::Unavailable {
+        detail: "model discovery payload lacks a `data` array".to_string(),
+    })?;
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            entry.id.ok_or_else(|| Error::Unavailable {
+                detail: "model discovery entry lacks an `id` string".to_string(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

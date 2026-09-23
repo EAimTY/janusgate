@@ -16,6 +16,7 @@ import {
     isBaseUrl,
     isBearerSecret,
     isModelPrefix,
+    routingTokenMessage,
 } from "/src/management-api/identifiers";
 import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
@@ -218,13 +219,13 @@ function DetailsCard(props: {
     const [baseline, setBaseline] = createSignal(props.provider);
     const [isEnabled, setIsEnabled] = createSignal(props.provider.is_enabled);
     const [name, setName] = createSignal(props.provider.name);
-    // A stored prefix equal to the name with a slash is the default, so the
+    // A stored prefix equal to the default is the default, so the
     // switch opens off; anything else is a hand-set value worth keeping.
     const [isCustomPrefix, setIsCustomPrefix] = createSignal(
-        props.provider.model_prefix !== `${props.provider.name}/`,
+        props.provider.model_prefix !== defaultModelPrefix(props.provider.name),
     );
     const [customPrefix, setCustomPrefix] = createSignal(
-        props.provider.model_prefix !== `${props.provider.name}/`
+        props.provider.model_prefix !== defaultModelPrefix(props.provider.name)
             ? props.provider.model_prefix
             : "",
     );
@@ -252,7 +253,7 @@ function DetailsCard(props: {
 
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
     const prefixError = (): string | null =>
-        isModelPrefix(effectivePrefix()) ? null : compositionMessage("Model prefix");
+        isModelPrefix(effectivePrefix()) ? null : routingTokenMessage("Model prefix");
 
     const baseUrlError = (): string | null => {
         const trimmed = trimmedBaseUrl();
@@ -304,9 +305,11 @@ function DetailsCard(props: {
 
         setIsEnabled(baselineRow.is_enabled);
         setName(baselineRow.name);
-        setIsCustomPrefix(baselineRow.model_prefix !== `${baselineRow.name}/`);
+        setIsCustomPrefix(baselineRow.model_prefix !== defaultModelPrefix(baselineRow.name));
         setCustomPrefix(
-            baselineRow.model_prefix !== `${baselineRow.name}/` ? baselineRow.model_prefix : "",
+            baselineRow.model_prefix !== defaultModelPrefix(baselineRow.name)
+                ? baselineRow.model_prefix
+                : "",
         );
         setBaseUrl(isOAuthProviderRow(baselineRow) ? "" : baselineRow.base_url);
         setApiKey("");

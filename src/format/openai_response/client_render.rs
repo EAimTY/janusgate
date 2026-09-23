@@ -5,7 +5,7 @@
 //! the wire contract lives in the type system rather than in assembled JSON.
 
 use crate::{
-    format::{self, ClientSseRenderer, OpenAiErrorBody},
+    format::{self, ClientSseRenderer, error_openai::OpenAiErrorBody},
     ids,
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
     sse, unix_time,
@@ -737,6 +737,18 @@ impl ClientSseRenderer for SseRenderer {
                 frames
             }
 
+            // A done carrying text opens its block when no deltas preceded it; an empty-text done
+            // only marks the block the deltas already delivered. The opaque payload is dropped on
+            // OpenAI surfaces (REFACTOR §2); block closure happens on Finish via
+            // `close_open_items`.
+            IrEvent::ReasoningDone { text, .. } => {
+                if text.is_empty() {
+                    Vec::new()
+                } else {
+                    self.render(&IrEvent::ReasoningDelta(text.clone()))
+                }
+            }
+
             IrEvent::TextDelta(delta) => {
                 let (mut frames, item_id, output_index) = match &self.message {
                     Some(open) => (Vec::new(), open.item_id.clone(), open.output_index),
@@ -1025,19 +1037,15 @@ impl ClientSseRenderer for SseRenderer {
         }
     }
 
-    /// Renders a mid-stream error as a terminal `response.failed` event.
+    /// Renders a mid-stream error as a terminal `response.failed` event, classified once through
+    /// the shared API error (REFACTOR §3).
     ///
     /// Strict clients validate the embedded response object like any other, so it carries the full
     /// required shell rather than a bare id/status/error subset.
-    fn error_frame(&mut self, error: &OpenAiErrorBody) -> String {
+    fn error_frame(&mut self, error: &crate::api::Error) -> String {
         let mut shell = self.response_shell(ResponseStatus::Failed, Vec::new());
 
-        shell.error = Some(OpenAiErrorBody {
-            message: error.message.clone(),
-            r#type: error.r#type,
-            param: error.param.clone(),
-            code: error.code.clone(),
-        });
+        shell.error = Some(crate::format::error_openai::render_body(error));
 
         self.event_frame("response.failed", ResponseEvent { response: shell })
     }

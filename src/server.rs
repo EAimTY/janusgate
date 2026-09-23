@@ -843,7 +843,7 @@ mod tests {
             &database,
             &NewProvider {
                 name: "mock",
-                model_prefix: "e2e/",
+                model_prefix: "e2e-",
                 provider_type: ProviderType::OpenAiChatCompletion,
                 base_url: Some(mock_base.as_str()),
                 credentials: &Credentials::ApiKey("upstream-secret".to_string()),
@@ -868,7 +868,7 @@ mod tests {
             &database,
             &NewProvider {
                 name: "drift",
-                model_prefix: "drift/",
+                model_prefix: "drift-",
                 provider_type: ProviderType::OpenAiChatCompletion,
                 base_url: None,
                 credentials: &Credentials::ApiKey("drift-secret".to_string()),
@@ -893,7 +893,7 @@ mod tests {
             &database,
             &NewProvider {
                 name: "refresh",
-                model_prefix: "rf/",
+                model_prefix: "rf-",
                 provider_type: ProviderType::AntigravityOauth,
                 base_url: None,
                 credentials: &Credentials::AntigravityOauth {
@@ -939,7 +939,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         // Pre-dispatch failures: authentication, routing, rendering, refresh — zero rows each.
-        let response = send_completion(&client, &base, "sk-wrong", "e2e/model", false).await?;
+        let response = send_completion(&client, &base, "sk-wrong", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
         assert_eq!(recorded_rows(&database).await?.len(), 0);
 
@@ -947,7 +947,7 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(recorded_rows(&database).await?.len(), 0);
 
-        let response = send_completion(&client, &base, "sk-e2e", "drift/model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "drift-model", false).await?;
         assert_eq!(
             response.status(),
             reqwest::StatusCode::INTERNAL_SERVER_ERROR
@@ -956,7 +956,7 @@ mod tests {
 
         // The failed refresh happens before dispatch; whichever transport shape the token
         // endpoint rejection takes, no row may exist once the response is rendered.
-        let response = send_completion(&client, &base, "sk-e2e", "rf/model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "rf-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
         assert_eq!(recorded_rows(&database).await?.len(), 0);
 
@@ -965,7 +965,7 @@ mod tests {
 
         // Success (non-streaming): completed + 200, attributed ids, totals with a NULL breakdown.
         mock_mode.store(MOCK_JSON_SUCCESS, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let _body = response.text().await?;
 
@@ -989,7 +989,7 @@ mod tests {
 
         // Upstream non-2xx mirrored: upstream_error with the very status, no usage reported.
         mock_mode.store(MOCK_UPSTREAM_429, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 
         let rows = recorded_rows(&database).await?;
@@ -1004,7 +1004,7 @@ mod tests {
 
         // Transport failure: the client receives 502 and the row mirrors that 502 (README §6.7).
         mock_mode.store(MOCK_CLOSE_ON_ARRIVAL, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
 
         let rows = recorded_rows(&database).await?;
@@ -1015,7 +1015,7 @@ mod tests {
         // A clean streaming completion: completed + 200, recorded once the body ends — and the
         // body end happens strictly after the row landed.
         mock_mode.store(MOCK_SSE_COMPLETE, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", true).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", true).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
 
         let stream_body = response.text().await?;
@@ -1035,7 +1035,7 @@ mod tests {
         // A client that aborts after the first delivered frame: client_aborted under the
         // already-declared 200, with no usage ever reported — five NULL token columns.
         mock_mode.store(MOCK_SSE_FOREVER, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", true).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", true).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
 
         let mut stream = response.bytes_stream();
@@ -1070,7 +1070,7 @@ mod tests {
         // response ever reached the client (README §3 *ApiLog* streaming rules).
         mock_mode.store(MOCK_SSE_DELAYED, Ordering::SeqCst);
 
-        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", true).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", true).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         drop(response);
 
@@ -1101,7 +1101,7 @@ mod tests {
         let baseline = rows.len();
 
         mock_mode.store(MOCK_JSON_SUCCESS, Ordering::SeqCst);
-        let response = send_completion(&client, &base, "sk-e2e", "e2e/model", false).await?;
+        let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
 
         let rows = recorded_rows(&database).await?;

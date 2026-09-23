@@ -15,7 +15,7 @@ const compatible: ProviderResponse = {
     type: "openai_chat_completion",
     id: 4,
     name: "local",
-    model_prefix: "local/",
+    model_prefix: "local-",
     is_enabled: true,
     base_url: "https://upstream.example.com/v1",
 };
@@ -43,7 +43,7 @@ const model: ModelResponse = {
     provider_id: 4,
     provider: "local",
     upstream_id: "qwen3:32b",
-    public_id: "local/qwen3:32b",
+    public_id: "local-qwen3-32b",
     id_override: null,
     is_enabled: true,
     discovery_state: "discovered",
@@ -57,7 +57,7 @@ describe("toUpdateProviderRequest", () => {
             type: "openai_chat_completion",
             provider_id: 4,
             name: "local",
-            model_prefix: "local/",
+            model_prefix: "local-",
             is_enabled: true,
             base_url: "https://upstream.example.com/v1",
         });
@@ -78,22 +78,22 @@ describe("toUpdateProviderRequest", () => {
             type: "openai_chat_completion",
             provider_id: 4,
             name: "renamed",
-            model_prefix: "local/",
+            model_prefix: "local-",
             is_enabled: false,
             base_url: "https://other.example.com",
         });
     });
 
-    it("restates a typed prefix byte-for-byte, trailing slash included", () => {
+    it("restates a typed prefix byte-for-byte, trailing dash included", () => {
         // The gateway stores `model_prefix` verbatim and recomposes every
         // unoverridden public ID from exactly what the request states
         // (gateway README §7) — a prefix trimmed here would rewrite every
         // client's routing, so no edit value may ever be normalized.
         const request = toUpdateProviderRequest(compatible, {
-            model_prefix: "q/",
+            model_prefix: "q-",
         });
 
-        expect(request.model_prefix).toBe("q/");
+        expect(request.model_prefix).toBe("q-");
     });
 
     it("omits the write-only api_key when the secret is kept", () => {

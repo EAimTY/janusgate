@@ -45,6 +45,18 @@ pub enum ApiLogEndpointType {
     /// `POST /api/openai-v1/responses`.
     #[serde(rename = "openai_responses")]
     OpenaiResponses,
+
+    /// Gemini GenerateContent inbound surface (`POST /api/gemini-v1beta/models/...`).
+    #[serde(rename = "gemini_generate_content")]
+    GeminiGenerateContent,
+
+    /// Gemini Interactions inbound surface (`POST /api/gemini-v1beta/interactions`).
+    #[serde(rename = "gemini_interactions")]
+    GeminiInteractions,
+
+    /// Anthropic Messages inbound surface (`POST /api/anthropic-v1/messages`).
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages,
 }
 
 impl ApiLogEndpointType {
@@ -55,6 +67,9 @@ impl ApiLogEndpointType {
         match self {
             Self::OpenaiChatCompletions => "openai_chat_completions",
             Self::OpenaiResponses => "openai_responses",
+            Self::GeminiGenerateContent => "gemini_generate_content",
+            Self::GeminiInteractions => "gemini_interactions",
+            Self::AnthropicMessages => "anthropic_messages",
         }
     }
 
@@ -65,6 +80,9 @@ impl ApiLogEndpointType {
         match text {
             "openai_chat_completions" => Some(Self::OpenaiChatCompletions),
             "openai_responses" => Some(Self::OpenaiResponses),
+            "gemini_generate_content" => Some(Self::GeminiGenerateContent),
+            "gemini_interactions" => Some(Self::GeminiInteractions),
+            "anthropic_messages" => Some(Self::AnthropicMessages),
             _ => None,
         }
     }
@@ -848,6 +866,9 @@ mod tests {
         for endpoint_type in [
             ApiLogEndpointType::OpenaiChatCompletions,
             ApiLogEndpointType::OpenaiResponses,
+            ApiLogEndpointType::GeminiGenerateContent,
+            ApiLogEndpointType::GeminiInteractions,
+            ApiLogEndpointType::AnthropicMessages,
         ] {
             assert_eq!(
                 wire(&endpoint_type),
@@ -944,7 +965,7 @@ mod tests {
             &database,
             &NewProvider {
                 name: "acme",
-                model_prefix: "acme/",
+                model_prefix: "acme-",
                 provider_type: ProviderType::OpenAiChatCompletion,
                 base_url: Some("http://upstream.example"),
                 credentials: &Credentials::ApiKey("secret".to_string()),

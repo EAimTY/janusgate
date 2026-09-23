@@ -496,7 +496,7 @@ describe("row-identity predicates", () => {
         type: "openai_response",
         id: 3,
         name: "alpha",
-        model_prefix: "alpha/",
+        model_prefix: "alpha-",
         is_enabled: true,
         base_url: "https://alpha.example",
     };
@@ -505,7 +505,7 @@ describe("row-identity predicates", () => {
         type: "codex_oauth",
         id: 4,
         name: "codex",
-        model_prefix: "codex/",
+        model_prefix: "codex-",
         is_enabled: true,
         expires_at: 1_700_000_000_000_000,
     };
@@ -515,7 +515,7 @@ describe("row-identity predicates", () => {
         provider_id: 3,
         provider: "alpha",
         upstream_id: "gpt-x",
-        public_id: "alpha/gpt-x",
+        public_id: "alpha-gpt-x",
         id_override: null,
         is_enabled: true,
         discovery_state: "discovered",
@@ -556,7 +556,7 @@ describe("row-identity predicates", () => {
         expect(
             isSameProviderRow(staticProvider, {
                 ...staticProvider,
-                model_prefix: "beta/",
+                model_prefix: "beta-",
             }),
         ).toBe(false);
         expect(
@@ -628,13 +628,13 @@ describe("row-identity predicates", () => {
         expect(
             isSameModelRow(modelRow, {
                 ...modelRow,
-                public_id: "beta/gpt-x",
+                public_id: "beta-gpt-x",
             }),
         ).toBe(false);
         expect(
             isSameModelRow(modelRow, {
                 ...modelRow,
-                id_override: "beta/gpt-x",
+                id_override: "beta-gpt-x",
             }),
         ).toBe(false);
         expect(
@@ -828,7 +828,7 @@ describe("createPinnedRow", () => {
         type: "openai_response",
         id: 3,
         name: "alpha",
-        model_prefix: "alpha/",
+        model_prefix: "alpha-",
         is_enabled: true,
         base_url: "https://alpha.example",
     };

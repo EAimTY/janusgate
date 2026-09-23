@@ -6,6 +6,8 @@ import {
     isBearerSecret,
     isModelIdentifier,
     isModelPrefix,
+    isRoutingToken,
+    routingTokenMessage,
 } from "./identifiers";
 
 describe("isModelIdentifier", () => {
@@ -43,13 +45,38 @@ describe("isModelIdentifier", () => {
 describe("isModelPrefix", () => {
     it("accepts empty as no prefix and the usual prefix shapes", () => {
         expect(isModelPrefix("")).toBe(true);
-        expect(isModelPrefix("codex/")).toBe(true);
+        expect(isModelPrefix("codex-")).toBe(true);
         expect(isModelPrefix("agy-")).toBe(true);
     });
 
-    it("rejects whitespace and non-ASCII text in a set prefix", () => {
+    it("rejects whitespace, non-ASCII text, slashes, and colons in a set prefix", () => {
         expect(isModelPrefix("codex /")).toBe(false);
-        expect(isModelPrefix("前缀/")).toBe(false);
+        expect(isModelPrefix("前缀-")).toBe(false);
+        expect(isModelPrefix("codex/")).toBe(false);
+        expect(isModelPrefix("agy/")).toBe(false);
+        expect(isModelPrefix("qwen:32b")).toBe(false);
+    });
+});
+
+describe("isRoutingToken", () => {
+    it("accepts plain routing tokens", () => {
+        expect(isRoutingToken("gpt-4o")).toBe(true);
+        expect(isRoutingToken("custom-model_1.2")).toBe(true);
+    });
+
+    it("rejects slashes and colons beside the generic composition", () => {
+        for (const invalid of [
+            "qwen3:32b",
+            "meta-llama/Llama-3.1-8B",
+            "codex/",
+            "a:b",
+            "a/b",
+            "has space",
+            "模型",
+            "",
+        ]) {
+            expect(isRoutingToken(invalid), invalid).toBe(false);
+        }
     });
 });
 
@@ -90,6 +117,7 @@ describe("isBaseUrl", () => {
 describe("messages", () => {
     it("names the rejected field", () => {
         expect(compositionMessage("Upstream ID")).toContain("Upstream ID");
+        expect(routingTokenMessage("Upstream ID")).toContain("Upstream ID");
         expect(baseUrlMessage()).toContain("http");
     });
 });

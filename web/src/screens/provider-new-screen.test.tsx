@@ -117,14 +117,14 @@ describe("ProviderNewScreen creation", () => {
         disposes.push(render(() => <ProviderNewScreen api={screenApi(sent)} />, document.body));
         await settle();
 
-        // The typed prefix carries its own trailing slash, and the field
+        // The typed prefix carries its own trailing dash, and the field
         // promises it is used exactly as typed (gateway README §7 stores the
         // prefix verbatim and recomposes every unoverridden public ID from
         // exactly what the write states) — creation must match the edit
         // path's byte-for-byte rule.
         switchWithLabel("Custom model prefix").click();
         await settle();
-        typeInto(labeledInput("Model prefix"), "beta/");
+        typeInto(labeledInput("Model prefix"), "beta-");
         typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
         typeInto(labeledInput("API key"), "sk-test");
         await settle();
@@ -132,6 +132,6 @@ describe("ProviderNewScreen creation", () => {
         await settle();
 
         expect(sent).toHaveLength(1);
-        expect(sent[0]?.model_prefix).toBe("beta/");
+        expect(sent[0]?.model_prefix).toBe("beta-");
     });
 });

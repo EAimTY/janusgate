@@ -860,6 +860,7 @@ mod tests {
                 "error": {"message": "backend exploded"},
             })
             .to_string(),
+            event: None,
         };
 
         #[expect(
@@ -876,6 +877,7 @@ mod tests {
 
         let frame = SseFrame {
             data: serde_json::json!({"error": "hard failure"}).to_string(),
+            event: None,
         };
 
         #[expect(
@@ -905,6 +907,7 @@ mod tests {
                 "sequence_number": 7,
             })
             .to_string(),
+            event: None,
         };
 
         #[expect(
@@ -999,6 +1002,7 @@ mod tests {
                 },
             })
             .to_string(),
+            event: None,
         }
     }
 
@@ -1010,6 +1014,7 @@ mod tests {
                 "response": {"status": "completed", "output": output},
             })
             .to_string(),
+            event: None,
         }
     }
 
@@ -1179,6 +1184,7 @@ mod tests {
                 "delta": "live",
             })
             .to_string(),
+            event: None,
         };
 
         #[expect(
@@ -1237,6 +1243,7 @@ mod tests {
                 "delta": "{\"a\"",
             })
             .to_string(),
+            event: None,
         };
 
         #[expect(

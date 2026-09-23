@@ -15,7 +15,7 @@ const provider: ProviderResponse = {
     type: "openai_response",
     id: 3,
     name: "alpha",
-    model_prefix: "alpha/",
+    model_prefix: "alpha-",
     is_enabled: true,
     base_url: "https://alpha.example",
 };
@@ -25,7 +25,7 @@ const model: ModelResponse = {
     provider_id: 3,
     provider: "alpha",
     upstream_id: "gpt-x",
-    public_id: "alpha/gpt-x",
+    public_id: "alpha-gpt-x",
     id_override: null,
     is_enabled: true,
     discovery_state: "discovered",
@@ -277,26 +277,26 @@ describe("ProviderEditScreen refresh against an open form", () => {
         mount(holder, sent);
         await settle();
 
-        // The typed prefix carries its own trailing slash, and the field
+        // The typed prefix carries its own trailing dash, and the field
         // promises it is used exactly as typed (gateway README §7 stores the
         // prefix verbatim and recomposes every unoverridden public ID from
         // exactly what the write states).
         switchWithLabel("Custom model prefix").click();
         await settle();
-        typeInto(labeledInput("Model prefix"), "q/");
+        typeInto(labeledInput("Model prefix"), "q-");
         await settle();
         buttonWithText("Save changes").click();
         await settle();
 
         expect(sent).toHaveLength(1);
-        expect(sent[0]?.model_prefix).toBe("q/");
+        expect(sent[0]?.model_prefix).toBe("q-");
         expect(holder.providers).toEqual([
             {
                 ...provider,
-                model_prefix: "q/",
+                model_prefix: "q-",
             },
         ]);
-        expect(labeledInput("Model prefix").value).toBe("q/");
+        expect(labeledInput("Model prefix").value).toBe("q-");
         expect(document.body.textContent).not.toContain("Unsaved changes");
     });
 
@@ -322,28 +322,28 @@ describe("ProviderEditScreen refresh against an open form", () => {
         // The OAuth row already carries a hand-set prefix, so its field is
         // open at mount; the save must restate the typed value byte-for-byte
         // exactly as the static-key path must.
-        typeInto(labeledInput("Model prefix"), "gpt/");
+        typeInto(labeledInput("Model prefix"), "gpt2-");
         await settle();
         buttonWithText("Save changes").click();
         await settle();
 
         expect(sent).toHaveLength(1);
-        expect(sent[0]?.model_prefix).toBe("gpt/");
+        expect(sent[0]?.model_prefix).toBe("gpt2-");
         expect(sent[0] && "base_url" in sent[0]).toBe(false);
         expect(holder.providers).toEqual([
             {
                 ...codex,
-                model_prefix: "gpt/",
+                model_prefix: "gpt2-",
             },
         ]);
     });
 
-    it("opens clean when the stored prefix is a custom value ending in a slash", async () => {
+    it("opens clean when the stored prefix is a custom value ending in a dash", async () => {
         const holder = {
             providers: [
                 {
                     ...provider,
-                    model_prefix: "q/",
+                    model_prefix: "q-",
                 },
             ],
             models: [],
@@ -354,7 +354,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
         // The stored prefix is verbatim gateway state, so the form must
         // restate it byte-for-byte: a derived or normalized value would
         // present an untouched form as dirty at mount.
-        expect(labeledInput("Model prefix").value).toBe("q/");
+        expect(labeledInput("Model prefix").value).toBe("q-");
         expect(document.body.textContent).not.toContain("Unsaved changes");
         expect(buttonWithText("Save changes").disabled).toBe(true);
     });
@@ -376,7 +376,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
         // block a legal name.
         switchWithLabel("Custom model prefix").click();
         await settle();
-        typeInto(labeledInput("Model prefix"), "q/");
+        typeInto(labeledInput("Model prefix"), "q-");
         typeInto(labeledInput("Name"), " ");
         await settle();
 
@@ -391,7 +391,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: " ",
-                model_prefix: "q/",
+                model_prefix: "q-",
             },
         ]);
     });
@@ -422,7 +422,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere/",
+                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -475,7 +475,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere/",
+                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -600,7 +600,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere/",
+                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -625,7 +625,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere/",
+                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -654,7 +654,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "renamed-elsewhere",
-                model_prefix: "renamed-elsewhere/",
+                model_prefix: "renamed-elsewhere-",
             },
         ];
         requestRefresh();
@@ -668,7 +668,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "saved-here",
-                model_prefix: "saved-here/",
+                model_prefix: "saved-here-",
             },
         ]);
         expect(labeledInput("Name").value).toBe("saved-here");
@@ -698,14 +698,14 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "gamma",
-                model_prefix: "gamma/",
+                model_prefix: "gamma-",
             },
         ];
         holder.models = [
             {
                 ...model,
                 provider: "gamma",
-                public_id: "gamma/gpt-x",
+                public_id: "gamma-gpt-x",
             },
         ];
         requestRefresh();
@@ -740,7 +740,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
             {
                 ...provider,
                 name: "beta",
-                model_prefix: "beta/",
+                model_prefix: "beta-",
             },
         ]);
         expect(document.body.textContent).toContain("beta saved.");

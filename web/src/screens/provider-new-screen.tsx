@@ -12,6 +12,7 @@ import {
     isBaseUrl,
     isBearerSecret,
     isModelPrefix,
+    routingTokenMessage,
 } from "/src/management-api/identifiers";
 import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
@@ -91,7 +92,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
     const prefixError = (): string | null =>
-        isModelPrefix(resolvedPrefix()) ? null : compositionMessage("Model prefix");
+        isModelPrefix(resolvedPrefix()) ? null : routingTokenMessage("Model prefix");
 
     const trimmedBaseUrl = (): string => baseUrl().trim();
 

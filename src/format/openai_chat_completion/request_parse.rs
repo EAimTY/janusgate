@@ -4,8 +4,8 @@
 use crate::{
     format::{self, ParsedRequest, StringOrArray},
     ir::{
-        InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole, IrTool,
-        IrToolChoice,
+        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
+        IrRole, IrTool, IrToolChoice,
     },
 };
 use serde::{Deserialize, de::IgnoredAny};
@@ -447,6 +447,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                     parts: vec![IrPart::ToolOutput {
                         call_id: tool_call_id.clone(),
                         content: flatten_text_content(content, "tool")?,
+                        is_error: false,
                     }],
                 });
             }
@@ -523,10 +524,14 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             top_p: request.top_p,
             max_output_tokens: request.max_completion_tokens.or(request.max_tokens),
             response_format,
-            // The effort carries through verbatim: the DTO's string type is the whole constraint,
-            // and any string — unknown vocabulary or empty — reaches the upstream render as sent
-            // (README §6.4).
-            reasoning_effort: request.reasoning_effort,
+            // The closed vocabulary is enforced here: an unknown string is a 400 naming the
+            // field, and the parsed enum renders verbatim into the upstream's own parameter
+            // (REFACTOR §1).
+            reasoning_effort: request
+                .reasoning_effort
+                .as_deref()
+                .map(|effort| IrReasoningLevel::parse(effort, "reasoning_effort"))
+                .transpose()?,
         },
         is_streaming: request.stream.unwrap_or(false),
         should_include_usage: request
@@ -635,6 +640,7 @@ mod tests {
             vec![IrPart::ToolOutput {
                 call_id: "call_1".to_string(),
                 content: "{\"ok\": true}".to_string(),
+                is_error: false,
             }],
         );
     }
@@ -703,6 +709,7 @@ mod tests {
             vec![IrPart::ToolOutput {
                 call_id: "call_1".to_string(),
                 content: "x\n\ny".to_string(),
+                is_error: false,
             }],
         );
     }
@@ -856,30 +863,52 @@ mod tests {
         }
     }
 
-    /// The only constraint on `reasoning_effort` is its type: a non-string value is a 400
-    /// malformed request, while any string — an unknown vocabulary value such as `xhigh`, or the
-    /// empty string — parses and is carried into the IR verbatim (README §6.4); there is no value
-    /// list of any kind.
+    /// `reasoning_effort` parses into the closed seven-value vocabulary (REFACTOR §1): known
+    /// values parse, unknown strings are a 400 naming the field, and a non-string value is a 400
+    /// malformed request.
     ///
     /// # Panics
     ///
     /// Panics if the parsed request or rejection diverges from the contract.
     #[test]
-    fn reasoning_effort_is_type_checked_only_and_carried_verbatim() {
-        for effort in ["none", "xhigh", "ultra", ""] {
+    fn reasoning_effort_parses_the_closed_vocabulary() {
+        use crate::ir::IrReasoningLevel;
+
+        for (effort, level) in [
+            ("none", IrReasoningLevel::None),
+            ("minimal", IrReasoningLevel::Minimal),
+            ("low", IrReasoningLevel::Low),
+            ("medium", IrReasoningLevel::Medium),
+            ("high", IrReasoningLevel::High),
+            ("xhigh", IrReasoningLevel::XHigh),
+            ("max", IrReasoningLevel::Max),
+        ] {
             #[expect(
                 clippy::expect_used,
-                reason = "an arbitrary string is constructed to parse"
+                reason = "a vocabulary string is constructed to parse"
             )]
             let parsed = parse(serde_json::json!({
                 "model": "m",
                 "messages": [{"role": "user", "content": "hi"}],
                 "reasoning_effort": effort,
             }))
-            .expect("any effort string must parse");
+            .expect("a vocabulary effort string must parse");
 
-            assert_eq!(parsed.ir.reasoning_effort.as_deref(), Some(effort));
+            assert_eq!(parsed.ir.reasoning_effort, Some(level));
         }
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the unknown value is constructed to be rejected"
+        )]
+        let error = parse(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "ultra",
+        }))
+        .expect_err("an unknown effort must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("reasoning_effort"));
 
         #[expect(
             clippy::expect_used,
