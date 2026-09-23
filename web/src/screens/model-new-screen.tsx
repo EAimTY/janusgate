@@ -12,6 +12,7 @@ import {
     type ScreenNotice,
     screenFailureNotice,
 } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -24,11 +25,13 @@ import { ModelIdOverrideFields } from "/src/ui/model-form";
  * settings match the edit page field for field. Creating lands on the new
  * model's page, like a provider creation does. The same shape claims back a
  * model the upstream no longer reports: naming its provider and upstream ID
- * resumes service under the requested state instead of inserting a new row.
+ * resumes service under the requested state instead of inserting a new row —
+ * a link from that model's page carries its upstream ID here, prefilled.
  */
 export function ModelNewScreen(props: {
     readonly api: ManagementApi;
     readonly providerFilter: number | null;
+    readonly upstreamId: string | null;
 }): JSX.Element {
     const [providers, setProviders] = createSignal<ReadonlyArray<ProviderResponse>>([]);
 
@@ -63,18 +66,9 @@ export function ModelNewScreen(props: {
                 backLabel={backLabel()}
             />
 
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <Skeleton class="h-64 w-full rounded-2xl" />
             </Show>
 
@@ -102,6 +96,7 @@ export function ModelNewScreen(props: {
                         providers={providers()}
                         initialProviderId={props.providerFilter}
                         fixedProvider={fixedProvider()}
+                        initialUpstreamId={props.upstreamId}
                     />
                 </Show>
             </Show>
@@ -114,6 +109,8 @@ function ModelCreateForm(props: {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly initialProviderId: number | null;
     readonly fixedProvider: ProviderResponse | null;
+    /** The upstream ID the route carried (a vanished model's claim link): prefilled, never forced. */
+    readonly initialUpstreamId: string | null;
 }): JSX.Element {
     const initialSelection = (): string => {
         if (props.fixedProvider !== null) {
@@ -133,7 +130,7 @@ function ModelCreateForm(props: {
     };
 
     const [providerId, setProviderId] = createSignal(initialSelection());
-    const [upstreamId, setUpstreamId] = createSignal("");
+    const [upstreamId, setUpstreamId] = createSignal(props.initialUpstreamId ?? "");
     const [isEnabled, setIsEnabled] = createSignal(true);
     const [hasIdOverride, setHasIdOverride] = createSignal(false);
     const [idOverride, setIdOverride] = createSignal("");
@@ -293,7 +290,11 @@ function ModelCreateForm(props: {
                             placeholder="gpt-4o"
                             isDisabled={isCreating()}
                             error={upstreamError()}
-                            hint="Sent upstream verbatim — letters, numbers, and symbols only."
+                            hint={
+                                props.initialUpstreamId === null
+                                    ? "Sent upstream verbatim — letters, numbers, and symbols only."
+                                    : "Carried here from a model the upstream no longer reports — submitting claims it back under the settings below."
+                            }
                         />
                     </div>
                 </Card>

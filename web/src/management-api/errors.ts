@@ -10,9 +10,9 @@ import type { ErrorCode } from "/src/management-api/generated/v0";
  *   is reportable.
  * - `contract` — a 2xx body that does not match the expected shape.
  */
-export type ManagementFailureCategory = "gateway" | "transport" | "contract";
+type ManagementFailureCategory = "gateway" | "transport" | "contract";
 
-export type ManagementApiErrorDetails = {
+type ManagementApiErrorDetails = {
     readonly httpStatus?: number | null;
     readonly errno?: ErrorCode | null;
     readonly cause?: unknown;

@@ -2,25 +2,17 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { credentialExpiryLine, isCredentialExpired, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import type {
-    ApiKeyResponse,
-    ModelResponse,
-    ProviderResponse,
-} from "/src/management-api/generated/v0";
+import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { isModelEffectivelyServing } from "/src/management-api/serving";
 import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
-import { createScreenRead, readAll } from "/src/screens/read";
+import { createScreenRead, readOne } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
+import { readUsageEntities, type UsageEntities } from "/src/screens/usage-labels";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-
-type HomeData = {
-    readonly providers: ReadonlyArray<ProviderResponse>;
-    readonly models: ReadonlyArray<ModelResponse>;
-    readonly apiKeys: ReadonlyArray<ApiKeyResponse>;
-};
 
 /**
  * The overview: the gateway's health at a glance. Counts the operator can
@@ -29,7 +21,7 @@ type HomeData = {
  * figures live on the Usage pages.
  */
 export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element {
-    const [data, setData] = createSignal<HomeData>({
+    const [entities, setEntities] = createSignal<UsageEntities>({
         providers: [],
         models: [],
         apiKeys: [],
@@ -37,31 +29,14 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
 
     const read = createScreenRead({
         load: async (signal) => {
-            const [providersResult, modelsResult, apiKeysResult] = await readAll(
-                signal,
-                {
-                    run: (cycle) => props.api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) => props.api.listModels({}, cycle),
-                },
-                {
-                    run: (cycle) => props.api.listApiKeys(cycle),
-                },
-            );
-
-            setData({
-                providers: providersResult.providers,
-                models: modelsResult.models,
-                apiKeys: apiKeysResult.api_keys,
-            });
+            setEntities(await readOne(signal, readUsageEntities(props.api)));
         },
     });
 
     const providersById = createMemo(
         () =>
             new Map<number, ProviderResponse>(
-                data().providers.map((row) => [
+                entities().providers.map((row) => [
                     row.id,
                     row,
                 ]),
@@ -70,25 +45,27 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
 
     const servingModels = createMemo(
         () =>
-            data().models.filter((model) =>
+            entities().models.filter((model) =>
                 isModelEffectivelyServing(model, providersById().get(model.provider_id)),
             ).length,
     );
 
-    const enabledApiKeys = createMemo(() => data().apiKeys.filter((row) => row.is_enabled).length);
+    const enabledApiKeys = createMemo(
+        () => entities().apiKeys.filter((row) => row.is_enabled).length,
+    );
 
     const attentionProviders = createMemo(() =>
-        data().providers.filter((provider) => credentialAttention(provider) !== null),
+        entities().providers.filter((provider) => credentialAttention(provider) !== null),
     );
 
     const emptyProviders = createMemo(() => {
         const modelCounts = new Map<number, number>();
 
-        for (const model of data().models) {
+        for (const model of entities().models) {
             modelCounts.set(model.provider_id, (modelCounts.get(model.provider_id) ?? 0) + 1);
         }
 
-        return data().providers.filter((provider) => (modelCounts.get(provider.id) ?? 0) === 0);
+        return entities().providers.filter((provider) => (modelCounts.get(provider.id) ?? 0) === 0);
     });
 
     // Exactly what the list below counts: every item the section can show —
@@ -98,7 +75,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
         () =>
             attentionProviders().length +
             emptyProviders().length +
-            (data().apiKeys.length === 0 ? 1 : 0),
+            (entities().apiKeys.length === 0 ? 1 : 0),
     );
 
     return (
@@ -116,18 +93,9 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                     <For
                         each={[
@@ -150,34 +118,34 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
 
             <Show when={read.hasRead()}>
                 <Show
-                    when={data().providers.length > 0}
+                    when={entities().providers.length > 0}
                     fallback={<GettingStarted />}
                 >
                     <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                         <Card>
                             <Stat
-                                value={String(data().providers.length)}
+                                value={String(entities().providers.length)}
                                 label="Providers"
                                 hint="Upstream accounts"
                             />
                         </Card>
                         <Card>
                             <Stat
-                                value={String(data().models.length)}
+                                value={String(entities().models.length)}
                                 label="Models"
                                 hint="Discovered or added by hand"
                             />
                         </Card>
                         <Card>
                             <Stat
-                                value={`${servingModels()} / ${data().models.length}`}
+                                value={`${servingModels()} / ${entities().models.length}`}
                                 label="Serving"
                                 hint="Provider on, model on, reported"
                             />
                         </Card>
                         <Card>
                             <Stat
-                                value={String(data().apiKeys.length)}
+                                value={String(entities().apiKeys.length)}
                                 label="API keys"
                                 hint={`${enabledApiKeys()} enabled`}
                             />
@@ -205,7 +173,7 @@ export function HomeScreen(props: { readonly api: ManagementApi }): JSX.Element 
                         <Card>
                             <CardHeader title="Needs attention" />
                             <ul class="mt-4 flex flex-col divide-y divide-rule">
-                                <Show when={data().apiKeys.length === 0}>
+                                <Show when={entities().apiKeys.length === 0}>
                                     <li class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
                                         <Glyph
                                             name="key"

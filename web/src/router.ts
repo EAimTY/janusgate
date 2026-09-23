@@ -1,4 +1,5 @@
 import { type Accessor, createSignal } from "solid-js";
+import { isModelIdentifier } from "/src/management-api/identifiers";
 
 /**
  * The client-side routes. Each page does one job: the overview reads the
@@ -34,6 +35,8 @@ export type AppRoute =
     | {
           readonly name: "modelNew";
           readonly providerFilter: number | null;
+          /** A claim-back prefill: the upstream ID the route carried, or `null`. */
+          readonly upstreamId: string | null;
       }
     | {
           readonly name: "modelDetail";
@@ -67,7 +70,7 @@ export type AppRoute =
           readonly name: "notFound";
       };
 
-export type AppLocation = {
+type AppLocation = {
     readonly pathname: string;
     readonly search: string;
 };
@@ -81,8 +84,24 @@ export const hrefs = {
     providerEdit: (providerId: number): string => `/providers/${providerId}/edit`,
     models: (providerFilter: number | null): string =>
         providerFilter === null ? "/models" : `/models?provider=${providerFilter}`,
-    modelNew: (providerFilter: number | null): string =>
-        providerFilter === null ? "/models/new" : `/models/new?provider=${providerFilter}`,
+    /**
+     * `upstreamId` is the claim-back prefill a vanished model's page links
+     * with; it rides as the route's second query parameter.
+     */
+    modelNew: (providerFilter: number | null, upstreamId?: string): string => {
+        const parameters = new URLSearchParams();
+
+        if (providerFilter !== null) {
+            parameters.set("provider", String(providerFilter));
+        }
+
+        if (upstreamId !== undefined) {
+            parameters.set("upstream", upstreamId);
+        }
+
+        const query = parameters.toString();
+        return query === "" ? "/models/new" : `/models/new?${query}`;
+    },
     modelDetail: (modelId: number): string => `/models/${modelId}`,
     modelEdit: (modelId: number): string => `/models/${modelId}/edit`,
     apiKeys: (): string => "/api-keys",
@@ -170,9 +189,16 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
     }
 
     if (normalizedPath === "/models/new") {
+        // A prefill must be a value the create form could legally send, so a
+        // query value that is not a routing-safe upstream ID reads as absent —
+        // the same strictness a provider filter that is not a row identifier
+        // gets.
+        const upstream = readQueryParameter(search, "upstream");
+
         return {
             name: "modelNew",
             providerFilter: parseRowIdentifier(readQueryParameter(search, "provider")),
+            upstreamId: upstream !== null && isModelIdentifier(upstream) ? upstream : null,
         };
     }
 

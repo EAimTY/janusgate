@@ -1,12 +1,13 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, onCleanup, Show } from "solid-js";
-import { formatCreatedAt, formatTokenCount } from "/src/format";
+import { formatTimestamp, formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiLogOutcome, ApiLogResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { createScreenRead, readAll, screenFailureNotice } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import {
     readUsageEntities,
     type UsageEntities,
@@ -15,7 +16,7 @@ import {
     usageProviderLabel,
 } from "/src/screens/usage-labels";
 import { Button, ButtonLink } from "/src/ui/controls";
-import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Badge, type BadgeTone, EmptyState, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
 import { nextUsagePage, USAGE_PAGE_SIZE, usageCursor } from "./usage-pagination";
@@ -164,18 +165,9 @@ export function UsageScreen(props: { readonly api: ManagementApi }): JSX.Element
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <div class="flex flex-col gap-2">
                     <For
                         each={[
@@ -291,7 +283,7 @@ function UsageRow(props: {
         <li class="rounded-xl border border-rule bg-surface px-4 py-3">
             <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
                 <span class="tnum text-[13px] font-medium">
-                    {formatCreatedAt(props.row.started_at)}
+                    {formatTimestamp(props.row.started_at)}
                 </span>
                 <Badge
                     tone={outcome().tone}

@@ -14,13 +14,13 @@ import {
 import { describeManagementFailure, ManagementApiError } from "/src/management-api/errors";
 import { ErrorCode } from "/src/management-api/generated/v0";
 
-export type ConnectionServiceDependencies = {
+type ConnectionServiceDependencies = {
     readonly storage: Storage | null;
     /** The connection probe: `providers:list`, the first call of §3.1. */
     readonly probe: (connection: Connection) => Promise<void>;
 };
 
-export type ConnectionService = {
+type ConnectionService = {
     readonly connectionState: Accessor<ConnectionState>;
     /** The connection to administer with, or `null` while unconnected. */
     readonly currentConnection: () => Connection | null;

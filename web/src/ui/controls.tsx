@@ -5,7 +5,7 @@ import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Glyph, type GlyphName } from "/src/ui/glyph";
 
 /** A labelled field: what an input is for, what went wrong, and a hint. */
-export function FieldFrame(props: {
+function FieldFrame(props: {
     readonly label: string;
     readonly controlId: string;
     readonly hint?: string | null | undefined;
@@ -136,7 +136,50 @@ export function SelectField<T extends string>(props: {
     );
 }
 
-export type ButtonTone = "primary" | "secondary" | "danger" | "ghost";
+/**
+ * The glyph-wrapped search field a listing narrows with. The `label` is the
+ * field's accessible name; with `isLabelVisible` it also renders above the
+ * field, and then `id` pairs the two.
+ */
+export function SearchInput(props: {
+    readonly label: string;
+    readonly isLabelVisible?: boolean;
+    readonly id?: string | undefined;
+    readonly value: string;
+    readonly onInput: (value: string) => void;
+    readonly placeholder: string;
+    readonly class?: string | undefined;
+}): JSX.Element {
+    return (
+        <div class={props.class}>
+            <Show when={props.isLabelVisible === true}>
+                <label
+                    for={props.id}
+                    class="block text-[13px] font-medium text-ink"
+                >
+                    {props.label}
+                </label>
+            </Show>
+            <div class={props.isLabelVisible === true ? "relative mt-1.5" : "relative"}>
+                <Glyph
+                    name="search"
+                    class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint"
+                />
+                <input
+                    id={props.id}
+                    type="search"
+                    aria-label={props.isLabelVisible === true ? undefined : props.label}
+                    placeholder={props.placeholder}
+                    value={props.value}
+                    onInput={(event) => props.onInput(event.currentTarget.value)}
+                    class={joinClass(INPUT_CLASS, "pl-9")}
+                />
+            </div>
+        </div>
+    );
+}
+
+type ButtonTone = "primary" | "secondary" | "danger" | "ghost";
 
 const BUTTON_TONE_CLASS: Record<ButtonTone, string> = {
     primary: "bg-accent text-accent-ink hover:bg-accent-strong",

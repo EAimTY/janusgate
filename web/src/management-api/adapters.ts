@@ -14,7 +14,7 @@ import type {
  * secret when absent. Edits never carry the row's own `id`; the request
  * addresses the row through `provider_id`.
  */
-export type ProviderEdits = {
+type ProviderEdits = {
     readonly name?: string;
     readonly model_prefix?: string;
     readonly is_enabled?: boolean;
@@ -82,7 +82,7 @@ export function toUpdateProviderRequest(
  * `models:update` over the listed row. `discovery_state` is never among them:
  * neither route can restore a vanished row.
  */
-export type ModelOverrides = {
+type ModelOverrides = {
     readonly id_override?: string | null;
     readonly is_enabled?: boolean;
 };
@@ -109,7 +109,7 @@ export function toUpdateModelRequest(
  * Unlike provider credentials, the key secret is readable, so it is restated like every other
  * field.
  */
-export type ApiKeyEdits = {
+type ApiKeyEdits = {
     readonly name?: string;
     readonly key?: string;
     readonly is_enabled?: boolean;

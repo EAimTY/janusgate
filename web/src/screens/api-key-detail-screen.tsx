@@ -1,14 +1,15 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, Show } from "solid-js";
-import { formatCreatedAt } from "/src/format";
+import { createSignal, Show } from "solid-js";
+import { formatTimestamp } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
-import { createScreenRead, isSameApiKeyRow, readAll } from "/src/screens/read";
+import { createPinnedRow, createScreenRead, isSameApiKeyRow, readAll } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
 import { ButtonLink } from "/src/ui/controls";
-import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Badge, EmptyState, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 
 /**
@@ -33,33 +34,20 @@ export function ApiKeyDetailScreen(props: {
         },
     });
 
-    // The row memo keeps its previous answer when a re-read returns the same
-    // content, so a refresh never flips object identity and never remounts
-    // the cards (or restarts the usage read) over unchanged data.
-    const apiKey = createMemo((previous: ApiKeyResponse | null | undefined) => {
-        const fresh = keys().find((candidate) => candidate.id === props.apiKeyId) ?? null;
-
-        if (previous === null || previous === undefined || fresh === null) {
-            return fresh;
-        }
-
-        return isSameApiKeyRow(previous, fresh) ? previous : fresh;
-    });
+    // The row keeps its previous answer when a re-read returns the same
+    // content (`createPinnedRow`), so a refresh never flips object identity
+    // and never remounts the cards (or restarts the usage read) over
+    // unchanged data.
+    const apiKey = createPinnedRow(
+        () => keys().find((candidate) => candidate.id === props.apiKeyId) ?? null,
+        isSameApiKeyRow,
+    );
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <PageHeader
                     title="API key"
                     backHref={hrefs.apiKeys()}
@@ -96,7 +84,7 @@ export function ApiKeyDetailScreen(props: {
                     <>
                         <PageHeader
                             title={row.name}
-                            description={`Created ${formatCreatedAt(row.created_at)}`}
+                            description={`Created ${formatTimestamp(row.created_at)}`}
                             backHref={hrefs.apiKeys()}
                             backLabel="API keys"
                         >
@@ -123,7 +111,7 @@ export function ApiKeyDetailScreen(props: {
                                 </div>
                                 <div>
                                     <dt class="text-[12.5px] font-medium text-ink-dim">Created</dt>
-                                    <dd class="tnum mt-1">{formatCreatedAt(row.created_at)}</dd>
+                                    <dd class="tnum mt-1">{formatTimestamp(row.created_at)}</dd>
                                 </div>
                                 <div>
                                     <dt class="text-[12.5px] font-medium text-ink-dim">Enabled</dt>

@@ -18,7 +18,6 @@ import { performManagementCall } from "/src/management-api/outcome";
 import {
     defaultModelPrefix,
     defaultProviderBaseName,
-    normalizeModelPrefix,
     suggestProviderName,
 } from "/src/management-api/provider-defaults";
 import { findOAuthProviderType } from "/src/management-api/vocabulary";
@@ -80,11 +79,14 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     /** The name the request carries: what was typed, or the suggestion when untouched. */
     const resolvedName = createMemo(() => (name().trim() === "" ? suggestion() : name().trim()));
 
-    /** The prefix the request carries: the default, or the hand-set value. */
+    /**
+     * The prefix the request carries: the default, or the hand-set value.
+     * The typed prefix is the value on the wire, byte-for-byte — the field
+     * promises it is used exactly as typed (gateway README §7 stores the
+     * prefix verbatim), exactly as the edit path restates it.
+     */
     const resolvedPrefix = createMemo(() =>
-        isCustomPrefix()
-            ? normalizeModelPrefix(customPrefix())
-            : defaultModelPrefix(resolvedName()),
+        isCustomPrefix() ? customPrefix() : defaultModelPrefix(resolvedName()),
     );
 
     /** Inline composition errors, shown where the value was typed (gateway README §7). */

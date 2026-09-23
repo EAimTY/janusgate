@@ -1,7 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { navigate } from "/src/router";
 
-export type AppLinkProps = {
+type AppLinkProps = {
     readonly href: string;
     readonly children: JSX.Element;
     readonly class?: JSX.ClassValue | undefined;

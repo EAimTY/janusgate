@@ -48,12 +48,3 @@ export function suggestProviderName(kind: ProviderType, takenNames: ReadonlySet<
 export function defaultModelPrefix(name: string): string {
     return name === "" ? "" : `${name}/`;
 }
-
-/**
- * Normalizes a hand-set prefix: surrounding whitespace goes, and so do
- * trailing slashes. A manual prefix is used exactly as it normalizes to —
- * no slash is ever added — and an explicitly empty value stays empty.
- */
-export function normalizeModelPrefix(prefix: string): string {
-    return prefix.trim().replace(/\/+$/, "");
-}

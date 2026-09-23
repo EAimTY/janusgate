@@ -83,6 +83,39 @@ describe("readAll", () => {
         expect((failure as ReadCallFailure).notice.detail).toBe("gone row");
     });
 
+    it("carries a nested read's leaf diagnosis through a composite call instead of re-wrapping it", async () => {
+        const controller = new AbortController();
+
+        // The composite shape `readUsageEntities` builds: an outer read call
+        // whose own run() runs an inner readAll over the entity listings.
+        const composite: ReadCall<unknown> = {
+            run: (signal) =>
+                readAll(
+                    signal,
+                    {
+                        run: () =>
+                            Promise.resolve({
+                                providers: [],
+                            }),
+                    },
+                    {
+                        run: () =>
+                            Promise.reject(
+                                gatewayFailure(ErrorCode.NotFound, "the keys listing is gone"),
+                            ),
+                    },
+                ),
+        };
+
+        const failure = await readAll(controller.signal, composite).catch(
+            (error: unknown) => error,
+        );
+
+        expect(failure).toBeInstanceOf(ReadCallFailure);
+        expect((failure as ReadCallFailure).notice.title).toBe("The gateway holds no such row.");
+        expect((failure as ReadCallFailure).notice.detail).toBe("the keys listing is gone");
+    });
+
     it("treats an aborted call as the cycle's end, ahead of any failure", async () => {
         const controller = new AbortController();
 
@@ -335,6 +368,103 @@ describe("createScreenRead", () => {
         await settle();
 
         expect(state.cycles.length).toBe(settledCycleCount);
+    });
+
+    it("holds the skeleton window open exactly while the first read is in flight", async () => {
+        const state = manualLoad();
+        const { read } = mountedRead({
+            load: state.load,
+        });
+        await waitForCycles(state, 1);
+        expect(read.isFirstRead()).toBe(true);
+
+        state.cycles[0]?.succeed();
+        await settle();
+        expect(read.hasRead()).toBe(true);
+        expect(read.isFirstRead()).toBe(false);
+    });
+
+    it("closes the skeleton window behind a failed first read, also while the re-read runs", async () => {
+        const state = manualLoad();
+        const { read } = mountedRead({
+            load: state.load,
+        });
+        await waitForCycles(state, 1);
+        state.cycles[0]?.fail();
+        await settle();
+        expect(read.notice()).not.toBeNull();
+        expect(read.isFirstRead()).toBe(false);
+
+        requestRefresh();
+        await waitForCycles(state, 2);
+
+        // The re-read is in flight and no read has succeeded yet, but the
+        // standing failure keeps the window closed: the skeleton never
+        // replaces a stated failure.
+        expect(read.isReading()).toBe(true);
+        expect(read.isFirstRead()).toBe(false);
+
+        state.cycles[1]?.succeed();
+        await settle();
+        expect(read.isFirstRead()).toBe(false);
+        expect(read.notice()).toBeNull();
+    });
+
+    it("keeps a kept-notice screen's first-read failure visible while a re-read runs", async () => {
+        const state = manualLoad();
+        const { read } = mountedRead({
+            load: state.load,
+            isNoticeKeptOnSuccess: true,
+        });
+        await waitForCycles(state, 1);
+        state.cycles[0]?.fail();
+        await settle();
+
+        requestRefresh();
+        await waitForCycles(state, 2);
+
+        // On an isNoticeKeptOnSuccess screen the first-read failure is also
+        // an action's reported outcome: it must stay stated while the
+        // re-read runs, never swapped for the skeleton.
+        expect(read.isReading()).toBe(true);
+        expect(read.isFirstRead()).toBe(false);
+        expect(read.notice()).not.toBeNull();
+    });
+
+    it("renders a nested read's leaf diagnosis as the standing notice", async () => {
+        const { read } = mountedRead({
+            load: async (signal) => {
+                await readAll(signal, {
+                    run: (cycle) =>
+                        readAll(
+                            cycle,
+                            {
+                                run: () =>
+                                    Promise.resolve({
+                                        providers: [],
+                                    }),
+                            },
+                            {
+                                run: () =>
+                                    Promise.reject(
+                                        gatewayFailure(
+                                            ErrorCode.NotFound,
+                                            "the keys listing is gone",
+                                        ),
+                                    ),
+                            },
+                        ),
+                });
+            },
+        });
+        await settle();
+
+        expect(read.notice()).toEqual({
+            tone: "bad",
+            title: "The gateway holds no such row.",
+            detail: "the keys listing is gone",
+            fix: null,
+        });
     });
 
     it("re-runs on a route-identity change and aborts the prior cycle", async () => {

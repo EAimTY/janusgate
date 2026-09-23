@@ -1,13 +1,14 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { formatCreatedAt } from "/src/format";
+import { formatTimestamp } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
 import { createScreenRead, readAll } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
 import { CopyButton } from "/src/ui/clipboard";
-import { ButtonLink } from "/src/ui/controls";
+import { ButtonLink, SearchInput } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
@@ -62,18 +63,9 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <div class="flex flex-col gap-2">
                     <For
                         each={[
@@ -106,20 +98,13 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                         </EmptyState>
                     }
                 >
-                    <div class="relative">
-                        <Glyph
-                            name="search"
-                            class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint"
-                        />
-                        <input
-                            type="search"
-                            aria-label="Search API keys"
-                            placeholder="Search by name or key"
-                            value={search()}
-                            onInput={(event) => setSearch(event.currentTarget.value)}
-                            class="w-full rounded-lg border border-rule-strong bg-surface py-2 pr-3 pl-9 text-ink placeholder:text-ink-faint transition-colors duration-150 ease-out hover:border-ink-faint focus:border-accent focus:outline-none sm:max-w-xs"
-                        />
-                    </div>
+                    <SearchInput
+                        label="Search API keys"
+                        placeholder="Search by name or key"
+                        value={search()}
+                        onInput={setSearch}
+                        class="sm:max-w-xs"
+                    />
 
                     <p
                         class="text-[12.5px] text-ink-faint"
@@ -159,7 +144,7 @@ function ApiKeyRow(props: { readonly apiKey: ApiKeyResponse }): JSX.Element {
                         {props.apiKey.name}
                     </span>
                     <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
-                        {`Created ${formatCreatedAt(props.apiKey.created_at)}`}
+                        {`Created ${formatTimestamp(props.apiKey.created_at)}`}
                     </span>
                     <span class="tnum mt-1 block truncate text-[12.5px] text-ink-dim">
                         {props.apiKey.key}

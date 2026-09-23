@@ -122,7 +122,7 @@ import {
     readonly deleteApiKey: (request: DeleteApiKeyRequest, signal?: AbortSignal) => Promise<void>;
 };
 
-export type ManagementApiOptions = {
+type ManagementApiOptions = {
     /**
      * Called when a call is answered with the version's `unauthorized` errno:
      * the stored pair is proven dead (README §3.1), and the caller continues

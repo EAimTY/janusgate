@@ -5,9 +5,9 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { providerTypeLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { createScreenRead, readAll } from "/src/screens/read";
-import { ButtonLink } from "/src/ui/controls";
+import { ReadNotice } from "/src/screens/read-notice";
+import { ButtonLink, SearchInput } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
-import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
 import { ProviderList } from "/src/ui/providers-table";
 
@@ -78,18 +78,9 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <div class="flex flex-col gap-2">
                     <For
                         each={[
@@ -122,20 +113,13 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                         </EmptyState>
                     }
                 >
-                    <div class="relative">
-                        <Glyph
-                            name="search"
-                            class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint"
-                        />
-                        <input
-                            type="search"
-                            aria-label="Search providers"
-                            placeholder="Search by name or type"
-                            value={search()}
-                            onInput={(event) => setSearch(event.currentTarget.value)}
-                            class="w-full rounded-lg border border-rule-strong bg-surface py-2 pr-3 pl-9 text-ink placeholder:text-ink-faint transition-colors duration-150 ease-out hover:border-ink-faint focus:border-accent focus:outline-none sm:max-w-xs"
-                        />
-                    </div>
+                    <SearchInput
+                        label="Search providers"
+                        placeholder="Search by name or type"
+                        value={search()}
+                        onInput={setSearch}
+                        class="sm:max-w-xs"
+                    />
 
                     <Show
                         when={visibleProviders().length > 0}

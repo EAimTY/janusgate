@@ -5,12 +5,13 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { UsageBucket } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
 import { createScreenRead, readOne } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
 
 /** Which recorded rows the stats count: exactly one subject's. */
-export type UsageSubjectFilter =
+type UsageSubjectFilter =
     | {
           readonly provider_id: number;
       }
@@ -87,18 +88,9 @@ export function EntityUsageCard(props: {
             </CardHeader>
 
             <div class="mt-4">
-                <Show when={read.notice()}>
-                    {(current) => (
-                        <Notice
-                            tone={current().tone}
-                            title={current().title}
-                            detail={current().detail}
-                            fix={current().fix}
-                        />
-                    )}
-                </Show>
+                <ReadNotice read={read} />
 
-                <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+                <Show when={read.isFirstRead()}>
                     <div class="grid gap-3 sm:grid-cols-3">
                         <Skeleton class="h-16 w-full" />
                         <Skeleton class="h-16 w-full" />

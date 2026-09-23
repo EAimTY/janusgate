@@ -7,12 +7,14 @@ import { performManagementCall } from "/src/management-api/outcome";
 import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
+    createPinnedRow,
     createScreenRead,
     isSameProviderRow,
     readAll,
     type ScreenNotice,
     screenFailureNotice,
 } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
@@ -181,15 +183,10 @@ export function ProviderDetailScreen(props: {
         read.reload();
     };
 
-    const provider = createMemo((previous: ProviderResponse | null | undefined) => {
-        const fresh = providers().find((candidate) => candidate.id === props.providerId) ?? null;
-
-        if (previous === null || previous === undefined || fresh === null) {
-            return fresh;
-        }
-
-        return isSameProviderRow(previous, fresh) ? previous : fresh;
-    });
+    const provider = createPinnedRow(
+        () => providers().find((candidate) => candidate.id === props.providerId) ?? null,
+        isSameProviderRow,
+    );
 
     const providersById = createMemo(
         () =>
@@ -203,18 +200,9 @@ export function ProviderDetailScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <PageHeader
                     title="Provider"
                     backHref={hrefs.providers()}

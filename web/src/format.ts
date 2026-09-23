@@ -3,11 +3,6 @@ export function formatTimestamp(unixMicros: number): string {
     return new Date(unixMicros / 1000).toLocaleString();
 }
 
-/** A gateway-stamped creation time (UTC microseconds) in the browser's locale. */
-export function formatCreatedAt(createdAtMicros: number): string {
-    return new Date(createdAtMicros / 1000).toLocaleString();
-}
-
 /** The current moment as a unix timestamp in microseconds, matching the gateway's stamps. */
 export function nowMicros(): number {
     return Date.now() * 1000;

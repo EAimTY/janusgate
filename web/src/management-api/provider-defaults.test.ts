@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
     defaultModelPrefix,
     defaultProviderBaseName,
-    normalizeModelPrefix,
     suggestProviderName,
 } from "./provider-defaults";
 
@@ -61,23 +60,5 @@ describe("defaultModelPrefix", () => {
 
     it("is empty when there is no name to derive from", () => {
         expect(defaultModelPrefix("")).toBe("");
-    });
-});
-
-describe("normalizeModelPrefix", () => {
-    it("keeps a hand-set prefix exactly as typed, minus padding", () => {
-        expect(normalizeModelPrefix("my-prefix")).toBe("my-prefix");
-        expect(normalizeModelPrefix("  my-prefix  ")).toBe("my-prefix");
-    });
-
-    it("strips trailing slashes so a manual prefix never carries one", () => {
-        expect(normalizeModelPrefix("my-prefix/")).toBe("my-prefix");
-        expect(normalizeModelPrefix("my-prefix//")).toBe("my-prefix");
-    });
-
-    it("keeps an explicitly empty prefix empty", () => {
-        expect(normalizeModelPrefix("")).toBe("");
-        expect(normalizeModelPrefix("   ")).toBe("");
-        expect(normalizeModelPrefix("/")).toBe("");
     });
 });

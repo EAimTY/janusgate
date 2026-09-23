@@ -4,9 +4,9 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { hrefs, navigate } from "/src/router";
 import { createScreenRead, readAll } from "/src/screens/read";
-import { ButtonLink, SelectField } from "/src/ui/controls";
+import { ReadNotice } from "/src/screens/read-notice";
+import { ButtonLink, SearchInput, SelectField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
-import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
 
@@ -100,18 +100,9 @@ export function ModelsScreen(props: {
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <div class="flex flex-col gap-2">
                     <For
                         each={[
@@ -145,28 +136,15 @@ export function ModelsScreen(props: {
                     }
                 >
                     <div class="flex flex-wrap items-end gap-3">
-                        <div class="min-w-0 flex-1 basis-56 sm:max-w-xs">
-                            <label
-                                for="models-search"
-                                class="block text-[13px] font-medium text-ink"
-                            >
-                                Search
-                            </label>
-                            <div class="relative mt-1.5">
-                                <Glyph
-                                    name="search"
-                                    class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint"
-                                />
-                                <input
-                                    id="models-search"
-                                    type="search"
-                                    placeholder="Public or upstream ID"
-                                    value={search()}
-                                    onInput={(event) => setSearch(event.currentTarget.value)}
-                                    class="w-full rounded-lg border border-rule-strong bg-surface py-2 pr-3 pl-9 text-ink placeholder:text-ink-faint transition-colors duration-150 ease-out hover:border-ink-faint focus:border-accent focus:outline-none"
-                                />
-                            </div>
-                        </div>
+                        <SearchInput
+                            label="Search"
+                            isLabelVisible={true}
+                            id="models-search"
+                            placeholder="Public or upstream ID"
+                            value={search()}
+                            onInput={setSearch}
+                            class="min-w-0 flex-1 basis-56 sm:max-w-xs"
+                        />
                         <SelectField
                             label="Provider"
                             value={

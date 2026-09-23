@@ -26,10 +26,13 @@
                 document.documentElement.classList.add("dark");
             }
         </script>
-        <!-- Inline icon: the app ships no asset files, so the mark is the same geometry the panel draws. -->
+        <!-- Inline icon: the JanusMark geometry from src/ui/glyph.tsx — two gates
+             mirrored about one axis on one baseline — on the dark-theme canvas
+             ground (#0d1412) stroked in the dark-theme accent (#3ecfa4). A
+             favicon cannot read the CSS tokens, so its two colors are stated here. -->
         <link
             rel="icon"
-            href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Crect%20width='16'%20height='16'%20fill='%23151a1c'/%3E%3Cg%20fill='none'%20stroke='%23d2ae6a'%20stroke-width='1.25'%3E%3Cpath%20d='M2.5%2013.5%20V7.5%20A3.25%203.25%200%200%201%208%207.5%20V13.5'/%3E%3Cpath%20d='M13.5%2013.5%20V7.5%20A3.25%203.25%200%200%200%208%207.5%20V13.5'/%3E%3Cpath%20d='M2.5%2013.5%20H13.5'%20opacity='.55'/%3E%3C/g%3E%3C/svg%3E"
+            href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Crect%20width='16'%20height='16'%20fill='%230d1412'/%3E%3Cg%20fill='none'%20stroke='%233ecfa4'%20stroke-width='1.25'%20stroke-linecap='square'%3E%3Cpath%20d='M1.5%2014.5%20V7.5%20A3.25%203.25%200%200%201%208%207.5%20V14.5'/%3E%3Cpath%20d='M14.5%2014.5%20V7.5%20A3.25%203.25%200%200%200%208%207.5%20V14.5'/%3E%3Cpath%20d='M1.5%2014.5%20H14.5'%20opacity='.55'/%3E%3C/g%3E%3C/svg%3E"
         />
         <title>JanusGate</title>
     </head>

@@ -1,10 +1,17 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, Show } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { discoveryStateLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
-import { createScreenRead, isSameModelRow, isSameProviderRow, readAll } from "/src/screens/read";
+import {
+    createPinnedRow,
+    createScreenRead,
+    isSameModelRow,
+    isSameProviderRow,
+    readAll,
+} from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
@@ -41,47 +48,28 @@ export function ModelDetailScreen(props: {
         },
     });
 
-    // Each row memo keeps its previous answer when a re-read returns the same
-    // content, so a refresh never flips object identity and never remounts
-    // the cards (or restarts the usage read) over unchanged data.
-    const model = createMemo((previous: ModelResponse | null | undefined) => {
-        const fresh = models().find((row) => row.id === props.modelId) ?? null;
+    // Each row keeps its previous answer when a re-read returns the same
+    // content (`createPinnedRow`), so a refresh never flips object identity
+    // and never remounts the cards (or restarts the usage read) over
+    // unchanged data. The owning provider is a lookup beside the model, not
+    // the screen's subject, so it pins without holding.
+    const model = createPinnedRow(
+        () => models().find((row) => row.id === props.modelId) ?? null,
+        isSameModelRow,
+    );
 
-        if (previous === null || previous === undefined || fresh === null) {
-            return fresh;
-        }
-
-        return isSameModelRow(previous, fresh) ? previous : fresh;
-    });
-
-    const provider = createMemo((previous: ProviderResponse | null | undefined) => {
+    const provider = createPinnedRow(() => {
         const current = model();
-        const fresh =
-            current === null
-                ? null
-                : (providers().find((row) => row.id === current.provider_id) ?? null);
-
-        if (previous === null || previous === undefined || fresh === null) {
-            return fresh;
-        }
-
-        return isSameProviderRow(previous, fresh) ? previous : fresh;
-    });
+        return current === null
+            ? null
+            : (providers().find((row) => row.id === current.provider_id) ?? null);
+    }, isSameProviderRow);
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <PageHeader
                     title="Model"
                     backHref={hrefs.models(null)}
@@ -184,7 +172,10 @@ function ModelFacts(props: {
                             </AppLink>
                             {" when the upstream lists it, or "}
                             <AppLink
-                                href={hrefs.modelNew(props.model.provider_id)}
+                                href={hrefs.modelNew(
+                                    props.model.provider_id,
+                                    props.model.upstream_id,
+                                )}
                                 class="font-medium text-accent hover:text-accent-strong"
                             >
                                 claim it back from the Create model page

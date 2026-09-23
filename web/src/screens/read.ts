@@ -60,7 +60,13 @@ export type ReadCall<TResult> = {
  * Runs a read cycle's calls in parallel under one signal, answering every
  * result in call order. An aborted call ends the cycle ahead of any failure
  * (README §6.4); the first failed call in call order becomes the cycle's
- * `ReadCallFailure`, exactly as the call list is written.
+ * `ReadCallFailure`, exactly as the call list is written. A failure that is
+ * itself a nested read's `ReadCallFailure` — a composite read call runs an
+ * inner `readAll` — is adopted whole rather than re-wrapped: its notice
+ * already carries the leaf call's diagnosis, and adoption at every level lets
+ * that diagnosis survive any nesting depth, where a re-wrap would bury it
+ * under the generic "The call failed." rendering and lose the gateway's
+ * verbatim message (README §6.4).
  */
 export async function readAll<TResults extends readonly unknown[]>(
     signal: AbortSignal,
@@ -80,6 +86,10 @@ export async function readAll<TResults extends readonly unknown[]>(
 
     for (const [index, outcome] of outcomes.entries()) {
         if (outcome.status === "failed") {
+            if (outcome.cause instanceof ReadCallFailure) {
+                throw outcome.cause;
+            }
+
             throw new ReadCallFailure(outcome.cause, {
                 action: calls[index]?.action,
             });
@@ -109,6 +119,14 @@ export type ScreenRead = {
     readonly hasRead: Accessor<boolean>;
     /** Whether a read cycle is in flight — including the first one. */
     readonly isReading: Accessor<boolean>;
+    /**
+     * Whether the skeleton window is open: a read is in flight, no read has
+     * ever succeeded, and nothing stands in the notice. The notice clause is
+     * load-bearing — it keeps a standing failure visible while its re-read
+     * runs (on an `isNoticeKeptOnSuccess` screen that notice is also an
+     * action's reported outcome), so the skeleton never replaces it.
+     */
+    readonly isFirstRead: Accessor<boolean>;
     /** Whether the screen has gone away: actions answering later must stop. */
     readonly isDisposed: Accessor<boolean>;
     /** The standing notice: the last read failure, or the last action's outcome. */
@@ -212,9 +230,14 @@ export function createScreenRead(options: {
         controller?.abort();
     });
 
+    // Computed once, so every screen states the skeleton's window through the
+    // same one accessor instead of re-spelling the three-clause gate.
+    const isFirstRead = createMemo(() => isReading() && !hasRead() && notice() === null);
+
     return {
         hasRead,
         isReading,
+        isFirstRead,
         isDisposed,
         notice,
         showNotice: (standing) => {

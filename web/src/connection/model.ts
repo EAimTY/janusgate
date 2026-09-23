@@ -10,7 +10,7 @@ export type Connection = {
     readonly token: string;
 };
 
-export type BaseUrlNormalization =
+type BaseUrlNormalization =
     | {
           readonly ok: true;
           readonly baseUrl: string;

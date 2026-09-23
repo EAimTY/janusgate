@@ -6,7 +6,7 @@ import type { Connection } from "/src/connection/model";
  * diagnosis needs, and `baseUrl` is the address the rejected candidate
  * carried, so a later edit of the field cannot misattribute the failure.
  */
-export type ConnectionFailure = {
+type ConnectionFailure = {
     readonly message: string;
     readonly cause: unknown;
     readonly baseUrl: string | null;
