@@ -1,13 +1,9 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, Show } from "solid-js";
 import { formatTimestamp } from "/src/format";
 import type { StartProviderOauthResponse } from "/src/management-api/generated/v0";
-import { Button } from "/src/ui/controls";
+import { Button, buttonClass } from "/src/ui/controls";
 import { Glyph } from "/src/ui/glyph";
-import { copyText } from "./clipboard";
-
-/** Whether the authorize address reached the clipboard, and how that went. */
-type CopyState = "idle" | "copied" | "refused";
+import { CopyButton } from "./clipboard";
 
 /**
  * The step between `oauth:start` and pasting the code back: the address to
@@ -21,15 +17,6 @@ export function AuthorizeStep(props: {
     readonly onStartOver: () => void;
     readonly children: JSX.Element;
 }): JSX.Element {
-    const [copyState, setCopyState] = createSignal<CopyState>("idle");
-
-    const copyAuthorizeUrl = async (): Promise<void> => {
-        // A browser may refuse the clipboard — an insecure context, a denied
-        // permission. The flow is untouched: the address stays selectable in
-        // its box, and the app says so rather than pretending.
-        setCopyState((await copyText(props.flow.authorize_url)) ? "copied" : "refused");
-    };
-
     return (
         <div class="flex flex-col gap-4">
             <div class="rounded-lg border border-rule bg-canvas px-3 py-2.5 dark:bg-muted">
@@ -38,35 +25,22 @@ export function AuthorizeStep(props: {
             </div>
 
             <div class="flex flex-wrap items-center gap-2">
+                {/* An external page, not an in-app route — the anchor carries
+                    its own target and `rel`, styled by the button grammar. */}
                 <a
                     href={props.flow.authorize_url}
                     target="_blank"
                     rel="noreferrer noopener"
-                    class="inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-3.5 py-2 text-[13.5px] font-medium text-accent-ink transition-colors duration-150 ease-out hover:bg-accent-strong"
+                    class={buttonClass("primary")}
                 >
                     <Glyph name="out" />
                     Open the authorization page
                 </a>
-                <Button
-                    glyph="copy"
-                    onClick={() => void copyAuthorizeUrl()}
-                >
-                    Copy the URL
-                </Button>
-                <Show when={copyState() !== "idle"}>
-                    <span
-                        class={
-                            copyState() === "copied"
-                                ? "text-[13px] font-medium text-ok"
-                                : "text-[13px] font-medium text-bad"
-                        }
-                        role="status"
-                    >
-                        {copyState() === "copied"
-                            ? "Copied."
-                            : "This browser refused the clipboard — select the URL above and copy it by hand."}
-                    </span>
-                </Show>
+                <CopyButton
+                    value={props.flow.authorize_url}
+                    subject="the URL above"
+                    label="Copy the URL"
+                />
             </div>
 
             <dl class="flex flex-wrap gap-x-8 gap-y-3">

@@ -1,7 +1,7 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, Show } from "solid-js";
+import { Show } from "solid-js";
 import { Button, TextField } from "/src/ui/controls";
-import { copyText } from "./clipboard";
+import { CopyButton } from "./clipboard";
 
 /**
  * Mints one serving-key secret locally: 32 random bytes, base64url without
@@ -19,59 +19,6 @@ function generateApiKey(): string {
     }
 
     return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-/** Whether the copy attempt reached the clipboard, and how that went. */
-type CopyState = "idle" | "copied" | "refused";
-
-/**
- * Copies one value to the clipboard; the label confirms where it was taken.
- * A clipboard the browser refuses is stated — the value stays selectable
- * beside the button, so the operator can copy it by hand.
- */
-export function CopyButton(props: {
-    readonly value: string;
-    readonly isDisabled?: boolean;
-    readonly label?: string | undefined;
-}): JSX.Element {
-    const [copyState, setCopyState] = createSignal<CopyState>("idle");
-    let timer: number | undefined;
-
-    const copy = async (): Promise<void> => {
-        if (props.value === "") {
-            return;
-        }
-
-        window.clearTimeout(timer);
-
-        if (await copyText(props.value)) {
-            setCopyState("copied");
-            timer = window.setTimeout(() => setCopyState("idle"), 1500);
-        } else {
-            setCopyState("refused");
-        }
-    };
-
-    return (
-        <>
-            <Button
-                glyph="copy"
-                title={props.label ?? "Copy to clipboard"}
-                isDisabled={(props.isDisabled ?? false) || props.value === ""}
-                onClick={() => void copy()}
-            >
-                {copyState() === "copied" ? "Copied" : (props.label ?? "Copy")}
-            </Button>
-            <Show when={copyState() === "refused"}>
-                <span
-                    class="text-[13px] font-medium text-bad"
-                    role="status"
-                >
-                    This browser refused the clipboard — select the secret here and copy it by hand.
-                </span>
-            </Show>
-        </>
-    );
 }
 
 /**
@@ -137,7 +84,10 @@ export function ApiKeySecretField(props: {
                     Generate
                 </Button>
                 <Show when={props.secret !== ""}>
-                    <CopyButton value={props.secret} />
+                    <CopyButton
+                        value={props.secret}
+                        subject="the secret here"
+                    />
                 </Show>
             </div>
         </div>
@@ -151,7 +101,10 @@ export function ApiKeySecretValue(props: { readonly secret: string }): JSX.Eleme
             <p class="tnum min-w-0 flex-1 basis-56 rounded-lg border border-rule-strong bg-canvas px-3 py-2 break-all dark:bg-muted">
                 {props.secret}
             </p>
-            <CopyButton value={props.secret} />
+            <CopyButton
+                value={props.secret}
+                subject="the secret here"
+            />
         </div>
     );
 }

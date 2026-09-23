@@ -1,5 +1,6 @@
+import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { copyText } from "./clipboard";
+import { CopyButton, copyText } from "./clipboard";
 
 /**
  * The clipboard is exercised against stubs: the helper's contract is the
@@ -31,7 +32,14 @@ function stubExecCommand(isCopied: boolean) {
     return execCommand;
 }
 
+const disposes: Array<() => void> = [];
+
 afterEach(() => {
+    vi.useRealTimers();
+    for (const dispose of disposes.reverse()) {
+        dispose();
+    }
+    disposes.length = 0;
     delete (
         navigator as {
             clipboard?: unknown;
@@ -104,5 +112,86 @@ describe("copyText", () => {
         stubExecCommand(false);
 
         await expect(copyText("sk-live")).resolves.toBe(false);
+    });
+});
+
+describe("CopyButton", () => {
+    function buttonWithText(text: string): HTMLButtonElement {
+        for (const candidate of document.querySelectorAll("button")) {
+            if (candidate.textContent?.includes(text) === true) {
+                return candidate as HTMLButtonElement;
+            }
+        }
+
+        throw new Error(`No button reading ${text}`);
+    }
+
+    /** Mounts one CopyButton over a fixed value, naming `subject` when given. */
+    function mountCopyButton(subject?: string): void {
+        disposes.push(
+            render(
+                () => (
+                    <CopyButton
+                        value="sk-live"
+                        subject={subject}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("confirms a successful copy on the label and reverts shortly after", async () => {
+        vi.useFakeTimers();
+        stubClipboard({
+            writeText: () => Promise.resolve(),
+        });
+        mountCopyButton();
+
+        buttonWithText("Copy").click();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(document.body.textContent).toContain("Copied");
+        expect(document.body.textContent).not.toContain("refused the clipboard");
+
+        await vi.advanceTimersByTimeAsync(1500);
+
+        expect(document.body.textContent).not.toContain("Copied");
+        expect(buttonWithText("Copy").textContent).toContain("Copy");
+    });
+
+    it("names the subject in a refusal that stands until a later copy succeeds", async () => {
+        vi.useFakeTimers();
+        let isDenied = true;
+        stubClipboard({
+            writeText: () =>
+                isDenied
+                    ? Promise.reject(new DOMException("denied", "NotAllowedError"))
+                    : Promise.resolve(),
+        });
+        stubExecCommand(false);
+        mountCopyButton("the URL above");
+
+        buttonWithText("Copy").click();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(document.body.textContent).toContain(
+            "This browser refused the clipboard — select the URL above and copy it by hand.",
+        );
+
+        // The refusal is not on the copied label's clock; it stands until a
+        // later copy says something else.
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(document.body.textContent).toContain("refused the clipboard");
+
+        isDenied = false;
+        buttonWithText("Copy").click();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(document.body.textContent).not.toContain("refused the clipboard");
+        expect(document.body.textContent).toContain("Copied");
+
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(document.body.textContent).not.toContain("Copied");
     });
 });

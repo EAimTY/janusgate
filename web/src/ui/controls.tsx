@@ -146,7 +146,12 @@ const BUTTON_TONE_CLASS: Record<ButtonTone, string> = {
     ghost: "text-ink-dim hover:bg-hover hover:text-ink",
 };
 
-function buttonClass(tone: ButtonTone, className?: string): string {
+/**
+ * The composed class of one button tone — the shared visual grammar for
+ * elements `Button` and `ButtonLink` cannot carry, such as an anchor to an
+ * external page.
+ */
+export function buttonClass(tone: ButtonTone, className?: string): string {
     return joinClass(
         "inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-[13.5px] font-medium transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-50",
         BUTTON_TONE_CLASS[tone],

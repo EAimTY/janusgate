@@ -5,8 +5,8 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
 import { createScreenRead, readAll } from "/src/screens/read";
-import { CopyButton } from "/src/ui/api-key-form";
 import { AppLink } from "/src/ui/app-link";
+import { CopyButton } from "/src/ui/clipboard";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
@@ -176,7 +176,10 @@ function ApiKeyRow(props: { readonly apiKey: ApiKeyResponse }): JSX.Element {
                     />
                 </span>
             </AppLink>
-            <CopyButton value={props.apiKey.key} />
+            <CopyButton
+                value={props.apiKey.key}
+                subject="the secret here"
+            />
         </li>
     );
 }
