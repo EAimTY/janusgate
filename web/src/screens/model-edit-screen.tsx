@@ -17,10 +17,11 @@ import {
     readAll,
     type ScreenNotice,
 } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { ButtonLink, Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { EmptyState, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelIdOverrideFields } from "/src/ui/model-form";
 
@@ -98,18 +99,9 @@ export function ModelEditScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <PageHeader
                     title="Edit model"
                     backHref={hrefs.modelDetail(props.modelId)}
@@ -189,11 +181,12 @@ function ModelSettingsForm(props: {
 }): JSX.Element {
     // The settings as the gateway last returned them; a save re-baselines
     // them onto the write's answer, because the public ID is recomposed
-    // inside that write.
+    // inside that write. The initial fields seed from the props directly, so
+    // the setup reads stay out of the `current` signal's tracking contract.
     const [current, setCurrent] = createSignal(props.initialModel);
-    const [isEnabled, setIsEnabled] = createSignal(current().is_enabled);
-    const [hasIdOverride, setHasIdOverride] = createSignal(current().id_override !== null);
-    const [idOverride, setIdOverride] = createSignal(current().id_override ?? "");
+    const [isEnabled, setIsEnabled] = createSignal(props.initialModel.is_enabled);
+    const [hasIdOverride, setHasIdOverride] = createSignal(props.initialModel.id_override !== null);
+    const [idOverride, setIdOverride] = createSignal(props.initialModel.id_override ?? "");
     const [isSaving, setIsSaving] = createSignal(false);
 
     const composedId = (): string => {

@@ -31,10 +31,11 @@ import {
     readAll,
     type ScreenNotice,
 } from "/src/screens/read";
+import { ReadNotice } from "/src/screens/read-notice";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Button, ButtonLink, TextField } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { EmptyState, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { AuthorizeStep } from "/src/ui/oauth-flow";
 import {
@@ -111,18 +112,9 @@ export function ProviderEditScreen(props: {
 
     return (
         <div class="rise-in flex flex-col gap-5">
-            <Show when={read.notice()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <ReadNotice read={read} />
 
-            <Show when={read.isReading() && !read.hasRead() && read.notice() === null}>
+            <Show when={read.isFirstRead()}>
                 <PageHeader
                     title="Edit provider"
                     backHref={hrefs.providerDetail(props.providerId)}
@@ -700,20 +692,21 @@ function DangerCard(props: {
 
     // A provider with no models cascades nothing: the count phrase and the
     // clients' 404s name consequences that do not exist and must not fire.
-    const description =
-        props.modelCount === 0
-            ? "Deleting removes the provider. It has no models, so nothing else is removed."
-            : `Deleting removes the provider and, by cascade, its ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}.`;
-    const question =
-        props.modelCount === 0
-            ? `Delete ${props.provider.name}?`
-            : `Delete ${props.provider.name}? Clients calling those public IDs will start getting 404s.`;
-
+    // The wording reads the props inline, so the reads land in the card's
+    // tracking scope instead of this component's setup.
     return (
         <ConfirmDeleteCard
             title="Delete this provider"
-            description={description}
-            question={question}
+            description={
+                props.modelCount === 0
+                    ? "Deleting removes the provider. It has no models, so nothing else is removed."
+                    : `Deleting removes the provider and, by cascade, its ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}.`
+            }
+            question={
+                props.modelCount === 0
+                    ? `Delete ${props.provider.name}?`
+                    : `Delete ${props.provider.name}? Clients calling those public IDs will start getting 404s.`
+            }
             onConfirm={confirmDelete}
         />
     );
