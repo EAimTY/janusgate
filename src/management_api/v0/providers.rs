@@ -89,8 +89,9 @@ pub struct CreateProviderRequest {
 }
 
 /// Strictly parsed `providers:update` request (README §7.1): a union discriminated by the restated
-/// `type`, one variant per provider kind, each stating the provider's complete desired
-/// readable state (rule 3). The restated `type` must equal the stored, immutable one. The
+/// `type`, one member per distinct field set — the three static-key kinds share one, and each OAuth
+/// kind states its own because their credential types differ — each stating the provider's complete
+/// desired readable state (rule 3). The restated `type` must equal the stored, immutable one. The
 /// write-only credential field is the one absent-keeps exception (rule 2): absent keeps the stored
 /// secret, present replaces it; it is never `null`.
 #[derive(Debug, Serialize, Deserialize)]

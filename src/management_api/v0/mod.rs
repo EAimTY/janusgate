@@ -347,10 +347,10 @@ fn validate_base_url(value: &str) -> Result<(), Error> {
 pub struct EmptyResponse {}
 
 /// A provider row in its management wire shape (README §7.1): a union discriminated by `type`, one
-/// variant per account kind, each carrying exactly the fields that kind has — so no response ever
-/// renders another kind's field as a `null` placeholder. Credentials are never returned. `id` is
-/// the provider's public identifier — every management reference to an existing provider goes
-/// through `provider_id` — while `name` is the unique, renameable label.
+/// member per distinct field set, its `type` the union of the account kinds sharing that set —
+/// so no response ever renders another kind's field as a `null` placeholder. Credentials are never
+/// returned. `id` is the provider's public identifier — every management reference to an existing
+/// provider goes through `provider_id` — while `name` is the unique, renameable label.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
