@@ -131,7 +131,7 @@ async fn messages(
             &body,
             api_key.0,
             RouteContext::empty(),
-            "completion",
+            serving::OperationKind::Completion,
         )
         .await,
     )

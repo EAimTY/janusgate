@@ -1,8 +1,11 @@
 //! Gemini Interactions wire codec (`gemini_interaction`).
 //!
 //! Speaks the `gemini_interaction` upstream protocol — `POST {base}/v1beta/interactions` — and
-//! serves the outward `POST /interactions` client surface (see [`inbound`]). Both directions share
-//! the one wire vocabulary defined here, so the family is self-consistent by construction.
+//! serves the outward `POST /interactions` client surface. Both directions share the one wire
+//! vocabulary defined here, so the family is self-consistent by construction. The family splits
+//! by concern: `request_parse` parses the inbound body, `client_render` renders the native
+//! completion (SSE frames plus the aggregated resource), `upstream_render` renders the upstream
+//! request, and `upstream_parse` parses upstream streams and bodies.
 //!
 //! # Wire contract (this module's design choice, normative in README §5.4)
 //!
@@ -45,14 +48,47 @@
 //! reads and ignore every other member, while a member the codec reads whose JSON kind contradicts
 //! the contract fails the request as a malformed upstream payload.
 
-pub(crate) mod inbound;
+use self::client_render::{JsonResponse, SseRenderer};
+use crate::{
+    format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
+    ids,
+    ir::{InvalidRequest, IrAggregation},
+    storage::api_logs::ApiLogEndpointType,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+mod client_render;
+mod request_parse;
 mod upstream_parse;
 mod upstream_render;
 
 pub(crate) use self::{upstream_parse::UpstreamParser, upstream_render::render_request};
-use crate::ids;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+/// Marker of the inbound Gemini Interactions client format.
+#[derive(Debug)]
+pub(crate) struct Format;
+
+impl ClientFormat for Format {
+    type JsonResponse = JsonResponse;
+
+    const ENDPOINT_TYPE: ApiLogEndpointType = ApiLogEndpointType::GeminiInteractions;
+
+    fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, InvalidRequest> {
+        request_parse::parse_request(body, route)
+    }
+
+    fn sse_renderer(
+        _should_include_usage: bool,
+        public_id: String,
+    ) -> Box<dyn ClientSseRenderer + Send> {
+        Box::new(SseRenderer::new(public_id))
+    }
+
+    fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse {
+        client_render::render_json_response(public_id, aggregation)
+    }
+}
 
 /// SSE event opening an upstream stream, carrying the interaction identity.
 const EVENT_CREATED: &str = "interaction.created";

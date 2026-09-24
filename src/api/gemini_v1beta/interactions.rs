@@ -4,7 +4,7 @@
 //! whose model rides the URL path), so parsing takes the public model id from the body; only the
 //! streaming mode may arrive from the route — the `?alt=sse` query ([`super::has_alt_sse`])
 //! forces streaming, otherwise the body's `stream` member decides. Request parsing and rendering
-//! go through [`crate::format::gemini_interaction::inbound`]; errors render through the prefix
+//! go through [`crate::format::gemini_interaction`]; errors render through the prefix
 //! [`super::error_response`] (the Gemini envelope); accounting records the endpoint as
 //! [`ApiLogEndpointType::GeminiInteractions`](crate::storage::api_logs::ApiLogEndpointType).
 //!
@@ -15,7 +15,7 @@
 use crate::{
     api::serving,
     context::Context,
-    format::{RouteContext, gemini_interaction::inbound::Format as InteractionsFormat},
+    format::{RouteContext, gemini_interaction::Format as InteractionsFormat},
 };
 use axum::{
     Router,
@@ -51,7 +51,7 @@ async fn interactions(
                 public_id: None,
                 is_streaming: is_alt_sse.then_some(true),
             },
-            "interaction",
+            serving::OperationKind::Interaction,
         )
         .await,
     )

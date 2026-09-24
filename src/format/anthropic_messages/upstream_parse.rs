@@ -843,7 +843,11 @@ impl UpstreamEventParser for UpstreamParser {
 fn finish_reason_from_stop(stop_reason: &str) -> IrFinishReason {
     match stop_reason {
         "end_turn" | "stop_sequence" | "pause_turn" => IrFinishReason::Stop,
-        "max_tokens" => IrFinishReason::Length,
+        // Both truncation reasons — an output cap and a turn cut off because the context
+        // window filled — map onto the canonical truncation finish, so clients can
+        // distinguish either from a clean stop and resubmit a shortened history instead of
+        // looping on an over-context one.
+        "max_tokens" | "model_context_window_exceeded" => IrFinishReason::Length,
         "tool_use" => IrFinishReason::ToolCall,
         "refusal" => IrFinishReason::ContentFilter,
         _ => IrFinishReason::Stop,
@@ -1020,6 +1024,7 @@ mod tests {
             ("stop_sequence", IrFinishReason::Stop),
             ("refusal", IrFinishReason::ContentFilter),
             ("pause_turn", IrFinishReason::Stop),
+            ("model_context_window_exceeded", IrFinishReason::Length),
             ("future_reason", IrFinishReason::Stop),
         ] {
             assert_eq!(finish_reason_from_stop(stop_reason), expected);

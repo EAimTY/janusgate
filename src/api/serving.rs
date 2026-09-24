@@ -247,14 +247,39 @@ where
     }
 }
 
+/// The closed request-kind vocabulary [`run_completion`] names in its log lines: a completion —
+/// every surface's endpoint but one — or a Gemini Interactions interaction (`POST
+/// /api/gemini-v1beta/interactions`). [`OperationKind::as_str`] renders the exact log spelling,
+/// so the composed log templates stay one vocabulary with the call sites.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum OperationKind {
+    /// A completion request: any surface endpoint except Gemini Interactions.
+    Completion,
+
+    /// A Gemini Interactions interaction request (`POST /interactions`).
+    Interaction,
+}
+
+impl OperationKind {
+    /// Renders the log-line spelling of the request kind.
+    #[must_use]
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completion => "completion",
+            Self::Interaction => "interaction",
+        }
+    }
+}
+
 /// Routes one completion request through the gateway in the given client format: parse to IR,
 /// resolve routing, execute upstream, and render the event stream live or aggregated.
 ///
 /// `route` is the URL-path facts the request's format parses under ([`RouteContext`]): empty on
 /// the body-routed surfaces, the public model id (and streaming mode) on the Gemini
 /// GenerateContent surface, the streaming override on Interactions. `operation` names the request
-/// kind in every log line the pipeline records (`"completion"` or `"interaction"`), composed into
-/// `{operation} request`, `{operation} for model …`, and `{operation} for model … via provider …`.
+/// kind in every log line the pipeline records ([`OperationKind`]), composed through
+/// [`OperationKind::as_str`] into `{operation} request`, `{operation} for model …`, and
+/// `{operation} for model … via provider …`.
 ///
 /// Every failure that reaches this boundary is logged exactly once here, with the request context
 /// available at each stage: a parse rejection names only the endpoint, a routing rejection names
@@ -275,7 +300,7 @@ pub(super) async fn run_completion<TFormat>(
     body: &[u8],
     api_key_id: i64,
     route: RouteContext,
-    operation: &str,
+    operation: OperationKind,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat,
@@ -287,7 +312,7 @@ where
         Err(error) => {
             let error = Error::from(error);
 
-            log_error(&format!("{operation} request"), &error);
+            log_error(&format!("{} request", operation.as_str()), &error);
 
             return Err(error);
         }
@@ -300,7 +325,7 @@ where
             let error = Error::from(error);
 
             log_error(
-                &format!("{operation} for model `{}`", parsed.ir.model),
+                &format!("{} for model `{}`", operation.as_str(), parsed.ir.model),
                 &error,
             );
 
@@ -308,9 +333,11 @@ where
         }
     };
 
-    let operation = format!(
-        "{operation} for model `{}` via provider `{}`",
-        routing.model.public_id, routing.provider.name
+    let log_context = format!(
+        "{} for model `{}` via provider `{}`",
+        operation.as_str(),
+        routing.model.public_id,
+        routing.provider.name
     );
 
     let public_id = routing.model.public_id.clone();
@@ -383,7 +410,7 @@ where
     .await;
 
     if let Err(error) = &outcome {
-        log_error(&operation, error);
+        log_error(&log_context, error);
     }
 
     outcome

@@ -9,7 +9,7 @@ import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
 import { createScreenRead, readOne } from "./read";
-import { readUsageBuckets } from "./usage-labels";
+import { readUsageBuckets } from "./usage-read";
 
 /** Which recorded rows the stats count: exactly one subject's. */
 type UsageSubjectFilter =

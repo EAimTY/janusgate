@@ -5,7 +5,7 @@ import {
     parseUsageFilterDraft,
     serializeUsageFilterDraft,
     type UsageFilterDraft,
-} from "/src/screens/usage-filter";
+} from "./usage-filter";
 
 /**
  * The client-side routes. Each page does one job: the overview reads the

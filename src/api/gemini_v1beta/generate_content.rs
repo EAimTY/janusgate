@@ -134,7 +134,7 @@ async fn dispatch(
             &body,
             api_key.0,
             RouteContext::with_model(action.model, Some(action.is_streaming)),
-            "completion",
+            serving::OperationKind::Completion,
         )
         .await,
     )

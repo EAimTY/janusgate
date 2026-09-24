@@ -154,10 +154,11 @@ struct FunctionFields {
 }
 
 /// Upstream token accounting: the totals always, beside the official detail objects when the
-/// upstream reports them — `prompt_tokens_details.cached_tokens`,
-/// `prompt_tokens_details.cache_write_tokens`, and
-/// `completion_tokens_details.reasoning_tokens` ride into the IR breakdowns (README §6.2),
-/// while the members the gateway does not read are ignored.
+/// upstream reports them — `prompt_tokens_details.cached_tokens` and
+/// `completion_tokens_details.reasoning_tokens`, plus
+/// `prompt_tokens_details.cache_write_tokens`, an official member some upstreams omit — ride
+/// into the IR breakdowns (README §6.2), while the members the gateway does not read are
+/// ignored.
 #[derive(Debug, Default, Deserialize)]
 struct UpstreamUsage {
     /// Tokens consumed by the input.

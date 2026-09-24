@@ -17,7 +17,7 @@
 //! [`providers::find_provider_by_id_in_transaction`].
 
 use crate::{
-    database::{Error as DatabaseError, Row, Transaction, Value, params::IntoValue},
+    database::{Error as DatabaseError, Row, Transaction, Value, params, params::IntoValue},
     provider::{Credentials, DiscoveryState, Model, OAuthProviderType, Provider, ProviderType},
 };
 use std::collections::HashMap;
@@ -325,6 +325,97 @@ fn ensure_ids_pairwise_distinct(
     Ok(())
 }
 
+/// The holder facts of one routed model row that the public-ID collision checks consult.
+struct RoutedHolder {
+    /// Owning provider's row identifier.
+    provider_id: i64,
+
+    /// The holder's upstream identifier — half of the natural key that exempts a row from
+    /// colliding with itself.
+    upstream_id: String,
+
+    /// Owning provider's name, rendered by the conflict message.
+    provider_name: String,
+}
+
+/// Parses a routed-holder row in `(provider_id, upstream_id, provider_name)` column order at the
+/// given column offset.
+fn routed_holder_from_row_offset(row: &Row, offset: usize) -> Result<RoutedHolder, Error> {
+    Ok(RoutedHolder {
+        provider_id: row.get(offset)?,
+        upstream_id: row.get(offset + 1)?,
+        provider_name: row.get(offset + 2)?,
+    })
+}
+
+/// Whether a routed holder genuinely collides with a write: every holder collides except the very
+/// row being written, identified by its natural key `(provider_id, upstream_id)`.
+fn is_id_collision(holder: &RoutedHolder, provider_id: i64, upstream_id: &str) -> bool {
+    holder.provider_id != provider_id || holder.upstream_id != upstream_id
+}
+
+/// The conflict for a composed public ID already routed by another model row.
+fn id_collision_error(new_id: &str, holder: &RoutedHolder) -> Error {
+    Error::Conflict {
+        message: format!(
+            "Public model ID `{new_id}` is already routed by provider `{}`",
+            holder.provider_name
+        ),
+    }
+}
+
+/// Reads one routed-map snapshot inside a transaction: every model row's public ID mapped to its
+/// [`RoutedHolder`] — a `vanished` or `manual` row and an `id_override` holder all appear, since
+/// every holder reserves its public ID regardless of its discovery state.
+///
+/// Runs inside the caller's transaction, so the routed rows it observes cannot interleave with the
+/// caller's writes.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the query fails or a row is malformed.
+async fn read_routed_holders_in_transaction(
+    transaction: &mut Transaction,
+) -> Result<HashMap<String, RoutedHolder>, Error> {
+    let routed_rows = transaction
+        .query(
+            "SELECT m.public_id, m.provider_id, m.upstream_id, p.name \
+             FROM models m JOIN providers p ON p.id = m.provider_id",
+            (),
+        )
+        .await?;
+
+    let mut routed: HashMap<String, RoutedHolder> = HashMap::with_capacity(routed_rows.len());
+
+    for row in &routed_rows {
+        routed.insert(row.get(0)?, routed_holder_from_row_offset(row, 1)?);
+    }
+
+    Ok(routed)
+}
+
+/// Rejects a freshly composed public ID that a [`read_routed_holders_in_transaction`] snapshot
+/// shows to be routed by another model row. The caller owns the snapshot's freshness: the check is
+/// exact only while no write since the snapshot can have introduced a holder of `new_id`.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the ID collides.
+fn ensure_id_routable_against(
+    routed: &HashMap<String, RoutedHolder>,
+    provider_id: i64,
+    new_id: &str,
+    upstream_id: &str,
+) -> Result<(), Error> {
+    if let Some(holder) = routed.get(new_id)
+        && is_id_collision(holder, provider_id, upstream_id)
+    {
+        return Err(id_collision_error(new_id, holder));
+    }
+
+    Ok(())
+}
+
 /// Rejects freshly composed public IDs that are already routed by another model row — of any
 /// provider, including another model of the same provider, and regardless of the holder's
 /// discovery state: a `vanished` or `manual` row and an `id_override` holder all keep their public
@@ -343,32 +434,49 @@ async fn ensure_ids_routable(
     provider_id: i64,
     composed: &[(&str, &str)],
 ) -> Result<(), Error> {
-    let routed_rows = transaction
+    let routed = read_routed_holders_in_transaction(transaction).await?;
+
+    for (new_id, upstream_id) in composed {
+        ensure_id_routable_against(&routed, provider_id, new_id, upstream_id)?;
+    }
+
+    Ok(())
+}
+
+/// Rejects a freshly composed public ID that is already routed by another model row — the
+/// single-pair form of [`ensure_ids_routable`] with identical collision semantics: of any
+/// provider, regardless of the holder's discovery state, exempting the row being written by its
+/// natural key `(provider_id, upstream_id)`.
+///
+/// The probe reads only the rows matching the candidate — `models.public_id` is unique, so this is
+/// an indexed single-row read rather than the batch form's full-table scan — and a holder of a
+/// different public ID is never consulted, exactly as the batch form's map lookup never consulted
+/// one. Runs inside the caller's transaction, so the routed rows it observes cannot interleave
+/// with the caller's writes.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the query fails or the ID collides.
+async fn ensure_id_routable_in_transaction(
+    transaction: &mut Transaction,
+    provider_id: i64,
+    new_id: &str,
+    upstream_id: &str,
+) -> Result<(), Error> {
+    let rows = transaction
         .query(
-            "SELECT m.public_id, m.provider_id, m.upstream_id, p.name \
-             FROM models m JOIN providers p ON p.id = m.provider_id",
-            (),
+            "SELECT m.provider_id, m.upstream_id, p.name \
+             FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.public_id = ?1",
+            params![new_id],
         )
         .await?;
 
-    let mut routed: HashMap<String, (i64, String, String)> =
-        HashMap::with_capacity(routed_rows.len());
+    // `models.public_id` is unique: at most one holder row matches the probe.
+    if let Some(row) = rows.first() {
+        let holder = routed_holder_from_row_offset(row, 0)?;
 
-    for row in &routed_rows {
-        routed.insert(row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?));
-    }
-
-    for (new_id, upstream_id) in composed {
-        if let Some((holder_provider_id, holder_upstream_id, holder_provider_name)) =
-            routed.get(*new_id)
-            && (*holder_provider_id != provider_id || holder_upstream_id != upstream_id)
-        {
-            return Err(Error::Conflict {
-                message: format!(
-                    "Public model ID `{new_id}` is already routed by provider \
-                     `{holder_provider_name}`"
-                ),
-            });
+        if is_id_collision(&holder, provider_id, upstream_id) {
+            return Err(id_collision_error(new_id, &holder));
         }
     }
 

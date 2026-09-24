@@ -1,4 +1,5 @@
 import { render } from "@solidjs/web";
+import { createSignal } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
@@ -9,7 +10,7 @@ import type {
 import { requestRefresh } from "/src/refresh-state";
 import { USAGE_PAGE_SIZE } from "/src/screens/usage-pagination";
 import { UsageScreen } from "/src/screens/usage-screen";
-import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "./usage-filter";
+import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filter";
 
 /**
  * One accounting row whose only distinguishing rendering is `<duration> ms`:
@@ -371,6 +372,61 @@ describe("UsageScreen filtering", () => {
         // The rolling window is resolved once per cycle: pages carrying
         // different bounds could skip or repeat rows at the seam.
         expect(next?.filter).toEqual(first?.filter);
+    });
+
+    it("keeps the continuation on the rows' own filter when a refresh cycle fails", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        // The route owns the filter, so the screen sees a changed filter the
+        // way a navigation delivers it: through the prop.
+        const [filter, setFilter] = createSignal<UsageFilterDraft>(EMPTY_USAGE_FILTER_DRAFT);
+        disposes.push(
+            render(
+                () => (
+                    <UsageScreen
+                        api={streamApi(holder)}
+                        filter={filter()}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The unfiltered stream's first full page is the rows in hand.
+        answerLastPage(holder, page(1050, USAGE_PAGE_SIZE));
+        await settle();
+
+        // A new filter navigates: the refresh cycle starts, and its page is
+        // the only open call — under the new filter.
+        setFilter({
+            ...EMPTY_USAGE_FILTER_DRAFT,
+            outcome: "failures",
+        });
+        await settle();
+        expect(holder.pages.at(-1)?.request.filter?.outcome).toEqual([
+            "upstream_error",
+            "internal",
+        ]);
+
+        // The refresh cycle fails. The rows in hand are still the unfiltered
+        // stream's, so the continuation must stay on their own filter — not
+        // the failed cycle's.
+        holder.pages.at(-1)?.refuse(new Error("refresh refused"));
+        await settle();
+        expect(bodyText()).toContain("refresh refused");
+        expect(bodyText()).toContain("Load more");
+
+        buttonWithText("Load more").click();
+        await settle();
+
+        const continued = holder.pages.at(-1)?.request;
+
+        expect(continued?.before_id).toBe(951);
+        expect(continued?.filter).toBeUndefined();
     });
 
     it("sends no filter at all for the unfiltered stream", async () => {

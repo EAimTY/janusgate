@@ -334,6 +334,16 @@ pub(crate) async fn apply_discovered_models(
         )
         .await?;
 
+    // One routed snapshot serves every collision check of the loop below. A check consults the map
+    // only by the candidate's public ID, and nothing the loop writes between iterations can enter
+    // that set: the state flips touch no routing column, and a fresh insert composes
+    // `model_prefix + upstream_id`, which equals a later candidate's composed ID only for the same
+    // upstream identifier — but that occurrence finds the just-inserted row through
+    // `find_model_in_transaction` and never reaches the check. Batch-internal convergence is
+    // impossible anyway (distinct upstream identifiers, new rows carry no override — step 4 of the
+    // doc above), so the pre-loop snapshot is exact, not an approximation.
+    let routed = super::read_routed_holders_in_transaction(&mut transaction).await?;
+
     for upstream_id in upstream_ids {
         if let Some(existing) =
             find_model_in_transaction(&mut transaction, provider.id, upstream_id).await?
@@ -353,12 +363,7 @@ pub(crate) async fn apply_discovered_models(
         // `vanished`/`manual` rows and `id_override` holders reserve their IDs — before inserting.
         let public_id = Model::public_id(&provider.model_prefix, upstream_id, None);
 
-        super::ensure_ids_routable(
-            &mut transaction,
-            provider.id,
-            &[(public_id.as_str(), upstream_id.as_str())],
-        )
-        .await?;
+        super::ensure_id_routable_against(&routed, provider.id, &public_id, upstream_id)?;
 
         transaction
             .execute(
@@ -438,10 +443,11 @@ pub(crate) async fn insert_model_checked(
 
     match stored {
         None => {
-            super::ensure_ids_routable(
+            super::ensure_id_routable_in_transaction(
                 &mut transaction,
                 provider.id,
-                &[(public_id.as_str(), create.upstream_id)],
+                &public_id,
+                create.upstream_id,
             )
             .await?;
 
@@ -462,10 +468,11 @@ pub(crate) async fn insert_model_checked(
         }
 
         Some(existing) if existing.discovery_state == DiscoveryState::Vanished => {
-            super::ensure_ids_routable(
+            super::ensure_id_routable_in_transaction(
                 &mut transaction,
                 provider.id,
-                &[(public_id.as_str(), create.upstream_id)],
+                &public_id,
+                create.upstream_id,
             )
             .await?;
 
@@ -541,10 +548,11 @@ pub(crate) async fn update_model_overrides_checked(
         update.id_override,
     );
 
-    super::ensure_ids_routable(
+    super::ensure_id_routable_in_transaction(
         &mut transaction,
         joined.provider.id,
-        &[(public_id.as_str(), joined.model.upstream_id.as_str())],
+        &public_id,
+        &joined.model.upstream_id,
     )
     .await?;
 

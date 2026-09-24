@@ -4,7 +4,6 @@ use super::{
     Credentials, MissingBaseUrl, Provider, ProviderType, endpoints, http_body,
     http_body::ExchangeFailure, oauth,
 };
-use crate::format::UpstreamFormat;
 use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use std::collections::BTreeMap;
@@ -120,9 +119,13 @@ pub(crate) async fn discover_upstream_models(
 
         ProviderType::AntigravityOauth => discover_antigravity(http, secret).await,
 
-        ProviderType::OpenAiResponse
-        | ProviderType::OpenAiChatCompletion
-        | ProviderType::GeminiGenerateContent => discover_compatible(http, provider, secret).await,
+        ProviderType::OpenAiResponse | ProviderType::OpenAiChatCompletion => {
+            discover_openai(http, provider, secret).await
+        }
+
+        ProviderType::GeminiGenerateContent => {
+            discover_gemini_generate_content(http, provider, secret).await
+        }
 
         ProviderType::GeminiInteraction => {
             discover_gemini_interaction(http, provider, secret).await
@@ -268,35 +271,32 @@ async fn fetch_gemini_model_list(request: RequestBuilder) -> Result<Vec<String>,
         .collect()
 }
 
-/// Discovers models from a static-key upstream, shaped by the wire format its type pins.
-async fn discover_compatible(
+/// Discovers models from an OpenAI-protocol (Responses or Chat Completions) static-key upstream:
+/// `GET {base}/models` with bearer auth, the list served under `data` (README §5.3).
+async fn discover_openai(
     http: &Client,
     provider: &Provider,
     secret: &str,
 ) -> Result<Vec<String>, Error> {
     let base_url = provider.upstream_base_url()?;
 
-    match provider.upstream_format() {
-        UpstreamFormat::OpenAiResponse | UpstreamFormat::OpenAiChatCompletion => {
-            fetch_data_model_list(http.get(format!("{base_url}/models")).bearer_auth(secret)).await
-        }
+    fetch_data_model_list(http.get(format!("{base_url}/models")).bearer_auth(secret)).await
+}
 
-        UpstreamFormat::GeminiGenerateContent => {
-            fetch_gemini_model_list(
-                http.get(format!("{base_url}/models"))
-                    .header(endpoints::GEMINI_API_KEY_HEADER, secret),
-            )
-            .await
-        }
+/// Discovers models from a Gemini GenerateContent static-key upstream: `GET {base}/models` with
+/// the `x-goog-api-key` header, the list served under `models` (README §5.3).
+async fn discover_gemini_generate_content(
+    http: &Client,
+    provider: &Provider,
+    secret: &str,
+) -> Result<Vec<String>, Error> {
+    let base_url = provider.upstream_base_url()?;
 
-        UpstreamFormat::GeminiInteraction | UpstreamFormat::AnthropicMessages => {
-            Err(Error::Internal {
-                message: "discovery for the new upstream format is handled by its own discover \
-                     function, not the compatible path"
-                    .to_string(),
-            })
-        }
-    }
+    fetch_gemini_model_list(
+        http.get(format!("{base_url}/models"))
+            .header(endpoints::GEMINI_API_KEY_HEADER, secret),
+    )
+    .await
 }
 
 /// Discovers models from a Gemini Interactions upstream: `GET {base}/v1beta/models` with the

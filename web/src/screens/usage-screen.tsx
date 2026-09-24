@@ -17,24 +17,23 @@ import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/fee
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { UsageFilterControls } from "/src/ui/usage-filter-controls";
-import { createScreenRead, readAll, screenFailureNotice } from "./read";
 import {
     draftUsageFilter,
     EMPTY_USAGE_FILTER_DRAFT,
     hasUsageFilter,
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
-} from "./usage-filter";
+} from "/src/usage-filter";
+import { createScreenRead, readAll, screenFailureNotice } from "./read";
 import {
     indexUsageEntities,
-    readUsageEntities,
-    type UsageEntities,
     type UsageEntityIndex,
     usageApiKeyLabel,
     usageModelLabel,
     usageProviderLabel,
 } from "./usage-labels";
 import { nextUsagePage, USAGE_PAGE_SIZE, usageCursor } from "./usage-pagination";
+import { readUsageEntities, type UsageEntities } from "./usage-read";
 
 /**
  * Every dispatched request, newest first, under the shared filter its route
@@ -90,7 +89,6 @@ export function UsageScreen(props: {
             setIsLoadingMore(false);
 
             const filter = draftUsageFilter(props.filter, nowMicros());
-            setActiveFilter(filter);
 
             const [entitiesResult, pageResult] = await readAll(
                 signal,
@@ -101,6 +99,11 @@ export function UsageScreen(props: {
                 },
             );
 
+            // The filter is installed only once its rows have landed: a cycle
+            // that fails leaves the previous filter standing, so "Load more"
+            // keeps carrying the rows in hand's own filter instead of pairing
+            // their cursor with a filter they never answered.
+            setActiveFilter(filter);
             setEntities(entitiesResult);
 
             const continuation = nextUsagePage([], pageResult.api_logs);

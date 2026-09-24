@@ -288,18 +288,11 @@ export function createScreenRead(options: {
             }
 
             if (outcome.status === "failed") {
-                const diagnosis = describeCallFailure(outcome.cause, call);
-
-                if (diagnosis.kind === "gone") {
+                if (describeCallFailure(outcome.cause, call).kind === "gone") {
                     options?.onGone?.();
                 }
 
-                setNotice({
-                    tone: "bad",
-                    title: diagnosis.title,
-                    detail: diagnosis.detail,
-                    fix: diagnosis.fix,
-                });
+                setNotice(screenFailureNotice(outcome.cause, call));
 
                 return false;
             }

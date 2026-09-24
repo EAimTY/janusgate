@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_USAGE_FILTER_DRAFT } from "/src/screens/usage-filter";
 import { hrefs, matchAppRoute, parseRowIdentifier } from "./router";
+import { EMPTY_USAGE_FILTER_DRAFT } from "./usage-filter";
 
 function match(target: string) {
     const [pathname = "/", search = ""] = target
