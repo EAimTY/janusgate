@@ -150,7 +150,7 @@ impl RouteContext {
 /// run. A contribution carrying no parts is transparent — it neither extends nor splits a run.
 ///
 /// The role-merging request parsers share this accumulator: the Anthropic Messages parser chunks
-/// a user turn's mixed content into user and tool messages (README §5.5), and the Interactions
+/// a user turn's mixed content into user and tool messages (README §5.8), and the Interactions
 /// parser coalesces consecutive same-role steps into one message per run.
 #[derive(Default)]
 pub(in crate::format) struct RoleRun {

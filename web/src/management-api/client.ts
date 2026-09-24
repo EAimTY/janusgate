@@ -10,9 +10,12 @@ import {
 import {
     type ApiKeyEnvelope,
     type CompleteProviderOauthRequest,
+    type CompleteProviderOauthResponse,
     type CreateApiKeyRequest,
-    type CreateModelRequest,
+    type CreateProviderDefinitionRequest,
     type CreateProviderRequest,
+    type DefinitionEnvelope,
+    type CreateModelRequest,
     type DeleteApiKeyRequest,
     type DeleteModelRequest,
     type DeleteProviderRequest,
@@ -22,6 +25,8 @@ import {
     type ListApiKeysResponse,
     type ListModelsRequest,
     type ListModelsResponse,
+    type ListProviderDefinitionsRequest,
+    type ListProviderDefinitionsResponse,
     type ListProvidersRequest,
     type ListProvidersResponse,
     type ListUsageRequest,
@@ -32,14 +37,13 @@ import {
     type QueryUsageRequest,
     type QueryUsageResponse,
     type ReauthorizeProviderRequest,
-    type ReauthorizeProviderResponse,
     type StartProviderOauthRequest,
     type StartProviderOauthResponse,
     type UpdateApiKeyRequest,
     type UpdateModelRequest,
+    type UpdateProviderDefinitionRequest,
     type UpdateProviderRequest,
 } from "/src/management-api/generated/v0";
-
 import {
     parseApiKeyEnvelope,
     parseDiscoverModelsResponse,
@@ -47,12 +51,14 @@ import {
     parseErrorResponse,
     parseListApiKeysResponse,
     parseListModelsResponse,
+    parseCompleteProviderOauthResponse,
+    parseDefinitionEnvelope,
+    parseListProviderDefinitionsResponse,
     parseListProvidersResponse,
     parseListUsageResponse,
     parseModelEnvelope,
     parseProviderEnvelope,
     parseQueryUsageResponse,
-    parseReauthorizeProviderResponse,
     parseStartProviderOauthResponse,
 } from "/src/management-api/validation";
 
@@ -82,6 +88,17 @@ const MANAGEMENT_API_PATH = "/management-api/v0";
  * with a `ManagementApiError` whose category and errno drive the caller's
  * reaction, and an `AbortSignal` cancels the call at the transport.
  */ export type ManagementApi = {
+    readonly listProviderDefinitions: (
+        signal?: AbortSignal,
+    ) => Promise<ListProviderDefinitionsResponse>;
+    readonly createProviderDefinition: (
+        request: CreateProviderDefinitionRequest,
+        signal?: AbortSignal,
+    ) => Promise<DefinitionEnvelope>;
+    readonly updateProviderDefinition: (
+        request: UpdateProviderDefinitionRequest,
+        signal?: AbortSignal,
+    ) => Promise<DefinitionEnvelope>;
     readonly listProviders: (signal?: AbortSignal) => Promise<ListProvidersResponse>;
     readonly createProvider: (
         request: CreateProviderRequest,
@@ -102,11 +119,11 @@ const MANAGEMENT_API_PATH = "/management-api/v0";
     readonly completeProviderOauth: (
         request: CompleteProviderOauthRequest,
         signal?: AbortSignal,
-    ) => Promise<ProviderEnvelope>;
+    ) => Promise<CompleteProviderOauthResponse>;
     readonly reauthorizeProvider: (
         request: ReauthorizeProviderRequest,
         signal?: AbortSignal,
-    ) => Promise<ReauthorizeProviderResponse>;
+    ) => Promise<StartProviderOauthResponse>;
     readonly listModels: (
         request: ListModelsRequest,
         signal?: AbortSignal,
@@ -152,6 +169,9 @@ type ManagementApiOptions = {
 
 /** A no-argument route's empty request body (README §4.2). */
 const emptyRequest: ListProvidersRequest = {};
+
+/** The definitions listing's empty request body. */
+const emptyDefinitionsRequest: ListProviderDefinitionsRequest = {};
 
 const isJsonBody = (
     bodyText: string,
@@ -298,6 +318,21 @@ export function createManagementApi(
     }
 
     return {
+        listProviderDefinitions: async (signal) =>
+            decodeResponse(
+                await post("/provider-definitions:list", emptyDefinitionsRequest, signal),
+                parseListProviderDefinitionsResponse,
+            ),
+        createProviderDefinition: async (request, signal) =>
+            decodeResponse(
+                await post("/provider-definitions:create", request, signal),
+                parseDefinitionEnvelope,
+            ),
+        updateProviderDefinition: async (request, signal) =>
+            decodeResponse(
+                await post("/provider-definitions:update", request, signal),
+                parseDefinitionEnvelope,
+            ),
         listProviders: async (signal) =>
             decodeResponse(
                 await post("/providers:list", emptyRequest, signal),
@@ -317,11 +352,14 @@ export function createManagementApi(
                 parseStartProviderOauthResponse,
             ),
         completeProviderOauth: async (request, signal) =>
-            decodeResponse(await post("/oauth:complete", request, signal), parseProviderEnvelope),
+            decodeResponse(
+                await post("/oauth:complete", request, signal),
+                parseCompleteProviderOauthResponse,
+            ),
         reauthorizeProvider: async (request, signal) =>
             decodeResponse(
                 await post("/oauth:reauthorize", request, signal),
-                parseReauthorizeProviderResponse,
+                parseStartProviderOauthResponse,
             ),
         listModels: async (request, signal) =>
             decodeResponse(await post("/models:list", request, signal), parseListModelsResponse),

@@ -9,71 +9,53 @@ import type {
 } from "/src/management-api/generated/v0";
 
 /**
- * Read-modify-write edits for `providers:update` (README §4.5): an omitted
+ * Read-modify-write edits for `providers:update` (README §6.1): an omitted
  * field keeps the row's value, and the write-only `api_key` keeps the stored
  * secret when absent. Edits never carry the row's own `id`; the request
- * addresses the row through `provider_id`.
+ * addresses the row through `provider_id`. A definition rebind names both
+ * parts of the target reference or neither.
  */
 type ProviderEdits = {
     readonly name?: string;
     readonly model_prefix?: string;
     readonly is_enabled?: boolean;
-    readonly base_url?: string;
+    readonly base_url?: string | null;
     /** Present replaces the stored static API key; absent keeps it. */
     readonly api_key?: string;
+    /** The exact definition version to rebind to; absent keeps the stored one. */
+    readonly rebind?:
+        | {
+              readonly provider_definition_name: string;
+              readonly provider_definition_version: number;
+          }
+        | undefined;
 };
 
 /**
  * Builds one `providers:update` request from a listed row and the fields the
  * administrator changed, restating the row's complete desired readable state
- * (README §4.5). The five static-key kinds share one wire shape, so they
- * share one branch; the two OAuth kinds carry different credential types on
- * the wire, so each restates its own discriminant. OAuth credentials are never
- * carried here: replacing them is the `oauth:reauthorize` flow's job, and
- * omitting the field keeps the stored secret.
+ * (README §6.1). Every row shares one wire shape — the definition pair, the
+ * derived format, and the nullable base URL — so there is one branch. OAuth
+ * credentials are never carried here: replacing them is an OAuth flow's job,
+ * and omitting `api_key` keeps the stored secret.
  */
 export function toUpdateProviderRequest(
     provider: ProviderResponse,
     edits: ProviderEdits = {},
 ): UpdateProviderRequest {
-    switch (provider.type) {
-        case "codex_oauth":
-            return {
-                type: provider.type,
-                provider_id: provider.id,
-                name: edits.name ?? provider.name,
-                model_prefix: edits.model_prefix ?? provider.model_prefix,
-                is_enabled: edits.is_enabled ?? provider.is_enabled,
-            };
-
-        case "antigravity_oauth":
-            return {
-                type: provider.type,
-                provider_id: provider.id,
-                name: edits.name ?? provider.name,
-                model_prefix: edits.model_prefix ?? provider.model_prefix,
-                is_enabled: edits.is_enabled ?? provider.is_enabled,
-            };
-
-        case "openai_response":
-        case "openai_chat_completion":
-        case "gemini_generate_content":
-        case "gemini_interaction":
-        case "anthropic_messages":
-            return {
-                type: provider.type,
-                provider_id: provider.id,
-                name: edits.name ?? provider.name,
-                model_prefix: edits.model_prefix ?? provider.model_prefix,
-                is_enabled: edits.is_enabled ?? provider.is_enabled,
-                base_url: edits.base_url ?? provider.base_url,
-                ...(edits.api_key === undefined
-                    ? {}
-                    : {
-                          api_key: edits.api_key,
-                      }),
-            };
-    }
+    return {
+        provider_id: provider.id,
+        name: edits.name ?? provider.name,
+        model_prefix: edits.model_prefix ?? provider.model_prefix,
+        is_enabled: edits.is_enabled ?? provider.is_enabled,
+        base_url: edits.base_url ?? provider.base_url,
+        ...(edits.rebind === undefined ? {} : edits.rebind),
+        ...(edits.api_key === undefined
+            ? {}
+            : {
+                  api_key: edits.api_key,
+              }),
+    };
 }
 
 /**

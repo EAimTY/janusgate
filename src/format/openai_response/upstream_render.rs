@@ -4,7 +4,10 @@
 //! The rendered payload is a first-party type in the upstream wire shape, so field presence per
 //! request is declared by `skip_serializing_if` rather than assembled conditionally.
 
-use crate::ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice};
+use crate::{
+    ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
+    provider::definition::inference::RenderOption,
+};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -219,35 +222,27 @@ struct Reasoning<'a> {
     effort: &'a str,
 }
 
-/// Renders the Codex-flavored upstream request URL and payload: streaming is forced on (README §5.1
-/// invariant 2) and `max_output_tokens` is omitted — the ChatGPT Codex backend rejects it as an
-/// unsupported parameter, and the model's own output bound applies instead of the client's cap.
+/// Renders the upstream Responses payload: the body only — the URL, the headers, and the
+/// streaming decision belong to the provider definition (README §5.2).
 ///
-/// `url` is the fixed Codex inference endpoint; the provider layer owns endpoint knowledge, so it
-/// is threaded in rather than owned by the codec.
-pub(crate) fn render_codex_request<'a>(ir: &'a IrRequest, url: &str) -> (String, RequestBody<'a>) {
-    let mut body = render_request_body(ir, true);
-
-    body.max_output_tokens = None;
-
-    (url.to_string(), body)
-}
-
-/// Renders the upstream request URL and payload for an OpenAI-compatible Responses upstream: `POST
-/// <base_url>/responses` (README §5.3).
-pub(crate) fn render_request<'a>(
+/// The `omit_max_output_tokens` render option drops the client-requested cap: the upstream
+/// rejects the parameter as unsupported, and the model's own output bound applies instead.
+pub(crate) fn render_request_body<'a>(
     ir: &'a IrRequest,
-    base_url: &str,
     is_streaming: bool,
-) -> (String, RequestBody<'a>) {
-    let url = format!("{}/responses", base_url.trim_end_matches('/'));
+    render_options: &[RenderOption],
+) -> RequestBody<'a> {
+    let mut body = render_body(ir, is_streaming);
 
-    (url, render_request_body(ir, is_streaming))
+    if render_options.contains(&RenderOption::OmitMaxOutputTokens) {
+        body.max_output_tokens = None;
+    }
+
+    body
 }
 
-/// Renders an IR request into the upstream Responses payload shared by the Codex and compatible
-/// entry points.
-fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
+/// Renders an IR request into the plain upstream Responses payload.
+fn render_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
     let mut input: Vec<InputItem<'_>> = Vec::new();
 
     for message in &ir.messages {
@@ -378,7 +373,7 @@ fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::render_request;
+    use super::render_request_body;
     use crate::ir::{IrReasoningLevel, IrRequest};
     use serde_json::Value;
 
@@ -394,7 +389,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (_, body) = render_request(&ir, "https://upstream.example", false);
+        let body = render_request_body(&ir, false, &[]);
 
         #[expect(
             clippy::expect_used,

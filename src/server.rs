@@ -336,7 +336,6 @@ mod tests {
     use crate::{
         config::ConfigLoader,
         database::Database,
-        provider::{Credentials, NewProvider, ProviderType},
         storage::{
             self,
             api_keys::{self, NewApiKey},
@@ -840,19 +839,24 @@ mod tests {
 
         let mock_base = format!("http://{mock_address}");
 
-        let provider = storage::providers::insert_provider(
+        let definition = crate::test_support::insert_static_key_definition(
             &database,
-            &NewProvider {
-                name: "mock",
-                model_prefix: "e2e-",
-                provider_type: ProviderType::OpenAiChatCompletion,
-                base_url: Some(mock_base.as_str()),
-                credentials: &Credentials::ApiKey("upstream-secret".to_string()),
-                expires_at: None,
-                is_enabled: true,
+            "static-key",
+            crate::format::UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        let provider = crate::test_support::insert_provider(
+            &database,
+            &definition,
+            "mock",
+            "e2e-",
+            Some(&mock_base),
+            crate::provider::StoredCredentials::ApiKey {
+                api_key: "upstream-secret".to_string(),
             },
         )
-        .await?;
+        .await;
 
         let model = storage::models::insert_model_checked(
             &database,
@@ -865,19 +869,17 @@ mod tests {
         )
         .await?;
 
-        let drift_provider = storage::providers::insert_provider(
+        let drift_provider = crate::test_support::insert_provider(
             &database,
-            &NewProvider {
-                name: "drift",
-                model_prefix: "drift-",
-                provider_type: ProviderType::OpenAiChatCompletion,
-                base_url: None,
-                credentials: &Credentials::ApiKey("drift-secret".to_string()),
-                expires_at: None,
-                is_enabled: true,
+            &definition,
+            "drift",
+            "drift-",
+            None,
+            crate::provider::StoredCredentials::ApiKey {
+                api_key: "drift-secret".to_string(),
             },
         )
-        .await?;
+        .await;
 
         storage::models::insert_model_checked(
             &database,
@@ -890,23 +892,29 @@ mod tests {
         )
         .await?;
 
-        let refresh_provider = storage::providers::insert_provider(
+        let refresh_definition =
+            crate::test_support::insert_failing_refresh_definition(&database, "failing-refresh")
+                .await;
+
+        let refresh_provider = crate::test_support::insert_provider(
             &database,
-            &NewProvider {
-                name: "refresh",
-                model_prefix: "rf-",
-                provider_type: ProviderType::AntigravityOauth,
-                base_url: None,
-                credentials: &Credentials::AntigravityOauth {
-                    access_token: "stale".to_string(),
-                    refresh_token: "garbage".to_string(),
-                    project_id: "project".to_string(),
+            &refresh_definition,
+            "refresh",
+            "rf-",
+            None,
+            crate::provider::StoredCredentials::OAuth {
+                access_token: "stale".to_string(),
+                refresh_token: Some("garbage".to_string()),
+                slots: {
+                    let mut slots = std::collections::BTreeMap::new();
+                    slots.insert("project".to_string(), "project".to_string());
+                    slots
                 },
                 expires_at: Some(1),
-                is_enabled: true,
+                refresh_started_at: None,
             },
         )
-        .await?;
+        .await;
 
         storage::models::insert_model_checked(
             &database,

@@ -71,9 +71,10 @@ pub(crate) async fn find_routing(
     public_id: &str,
 ) -> Result<Option<ModelRouting>, Error> {
     let sql = format!(
-        "SELECT {} FROM models m \
-         JOIN providers p ON p.id = m.provider_id WHERE m.public_id = ?1",
-        super::PROVIDER_MODEL_COLUMNS
+        "SELECT {}, {} {} WHERE m.public_id = ?1",
+        super::PROVIDER_COLUMNS,
+        super::MODEL_COLUMNS_JOINED,
+        super::PROVIDER_JOINED_FROM_MODELS
     );
 
     let rows = database.query(sql, params![public_id]).await?;
@@ -147,9 +148,10 @@ async fn find_provider_model_in_transaction(
     let rows = transaction
         .query(
             format!(
-                "SELECT {} FROM models m \
-                 JOIN providers p ON p.id = m.provider_id WHERE m.id = ?1",
-                super::PROVIDER_MODEL_COLUMNS
+                "SELECT {}, {} {} WHERE m.id = ?1",
+                super::PROVIDER_COLUMNS,
+                super::MODEL_COLUMNS_JOINED,
+                super::PROVIDER_JOINED_FROM_MODELS
             ),
             params![model_id],
         )

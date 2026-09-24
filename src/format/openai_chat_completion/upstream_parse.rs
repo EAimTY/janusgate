@@ -47,7 +47,7 @@ struct PendingToolCall {
     arguments: String,
 
     /// Upstream thought signature carried on the delta entries; the gateway extension must survive
-    /// into the completion (README §5.2).
+    /// into the completion (README §5).
     thought_signature: Option<String>,
 }
 
@@ -136,7 +136,7 @@ struct ToolCallEntry {
     #[serde(default)]
     function: Option<FunctionFields>,
 
-    /// Upstream thought signature the gateway extension carries (README §5.2).
+    /// Upstream thought signature the gateway extension carries (README §5).
     #[serde(default)]
     thought_signature: Option<String>,
 }

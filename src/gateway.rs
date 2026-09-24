@@ -12,8 +12,10 @@ use super::{
     ids,
     ir::{InvalidRequest, IrEvent, IrRequest},
     provider::{
-        Credentials, MissingBaseUrl, ModelRouting, Provider, ProviderType, endpoints, http_body,
-        oauth, oauth::Error as OAuthError,
+        ModelRouting, Provider,
+        definition::inference::{Inference, RenderOption, UpstreamStreaming},
+        http_body, oauth,
+        oauth::Error as OAuthError,
     },
     sse::{SseFrame, SseParser},
     storage::{
@@ -162,8 +164,8 @@ pub(crate) async fn execute(
     // client the failure becomes a terminal mid-stream error frame that never passes a response
     // boundary, so the detecting pump logs it; for a non-streaming client it becomes the aggregated
     // HTTP error response, so the response boundary rendering it logs it and the pumps stay silent.
-    // The client's mode is distinct from the upstream's: the Codex upstream always streams while
-    // its client may not (README §5.1).
+    // The client's mode is distinct from the upstream's: an `always`-streaming definition streams
+    // upstream while its client may not (README §5.2).
     let upstream_label = format!(
         "provider `{}` upstream model `{}`",
         routing.provider.name, ir.model
@@ -176,8 +178,8 @@ pub(crate) async fn execute(
             .await?;
 
     // The wire format is resolved once per request and shared by request building and event
-    // parsing: the provider type pins it outright.
-    let upstream_format = provider.provider_type.upstream_format();
+    // parsing: the definition pins it outright.
+    let upstream_format = provider.definition.payload.format;
 
     debug!(
         "dispatching public model `{}` via {upstream_label} ({}, streaming: {})",
@@ -230,12 +232,20 @@ pub(crate) async fn execute(
     // `Content-Type` header, and a 200 response to a streaming request is contractually a stream
     // while a 200 response to a non-streaming request is contractually a JSON document (README
     // §6.2).
-    let is_upstream_streaming = is_upstream_streaming(provider.provider_type, is_client_streaming);
+    let is_upstream_streaming =
+        is_upstream_streaming(&provider.definition.payload.inference, is_client_streaming);
 
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<Result<IrEvent, Error>>(EVENT_CHANNEL_BUFFER);
 
     let parser = upstream_parser(upstream_format);
+
+    let response_unwrap = provider
+        .definition
+        .payload
+        .inference
+        .response_unwrap
+        .clone();
 
     if is_upstream_streaming {
         tokio::spawn(pump_sse(
@@ -245,6 +255,7 @@ pub(crate) async fn execute(
             sender,
             upstream_label,
             is_client_streaming,
+            response_unwrap,
         ));
     } else {
         tokio::spawn(pump_json(
@@ -253,25 +264,33 @@ pub(crate) async fn execute(
             sender,
             upstream_label,
             is_client_streaming,
+            response_unwrap,
         ));
     }
 
     Ok(Box::pin(ReceiverStream::new(receiver)))
 }
 
-/// Decides the upstream streaming mode the gateway requests: Codex always streams upstream — the
-/// ChatGPT Codex endpoint requires `stream: true` (README §5.1 invariant 2) — and every other
-/// built-in upstream matches the client's requested mode (README §6.3). The same decision selects
-/// the SSE or JSON response parser.
-fn is_upstream_streaming(provider_type: ProviderType, is_client_streaming: bool) -> bool {
-    matches!(provider_type, ProviderType::CodexOauth) || is_client_streaming
+/// The upstream streaming mode one dispatch requests: the definition's mode decides — always
+/// streaming upstream (the forced-streaming upstreams, such as Codex), or matching the client's
+/// requested mode. The same decision selects the SSE or JSON response parser.
+fn is_upstream_streaming(inference: &Inference, is_client_streaming: bool) -> bool {
+    match inference.upstream_streaming {
+        UpstreamStreaming::Always => true,
+        UpstreamStreaming::MatchClient => is_client_streaming,
+    }
 }
 
-/// Builds the upstream HTTP request for the provider's wire format.
+/// Builds the upstream HTTP request for one dispatch, entirely from the provider definition
+/// (README §5.2): the evaluated URL (the streaming URL when this dispatch streams and
+/// the definition carries one), the codec-rendered body wrapped in the definition's envelope,
+/// the engine-owned `Accept` with the definition's header rows overriding it, and one
+/// request-UUID cached across every expression of the dispatch.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the provider configuration cannot render a request.
+/// Returns [`Error`] when the definition's expressions reference a value this dispatch does not
+/// carry — stored drift — or when the client request cannot be rendered into the body.
 fn build_upstream_request(
     http: &Client,
     provider: &Provider,
@@ -279,149 +298,148 @@ fn build_upstream_request(
     ir: &IrRequest,
     is_client_streaming: bool,
 ) -> Result<reqwest::RequestBuilder, Error> {
-    match provider.provider_type {
-        ProviderType::CodexOauth => {
-            let Credentials::CodexOauth {
-                access_token,
-                account_id,
-                ..
-            } = &provider.credentials
-            else {
-                return Err(Error::Internal {
-                    message: "codex provider lacks OpenAI OAuth credentials".to_string(),
-                });
-            };
+    let inference = &provider.definition.payload.inference;
 
-            let (url, body) =
-                openai_response::render_codex_request(ir, endpoints::CODEX_INFERENCE_URL);
+    let is_upstream_streaming = is_upstream_streaming(inference, is_client_streaming);
 
-            Ok(http
-                .post(url)
-                .bearer_auth(access_token)
-                .header(endpoints::CODEX_ACCOUNT_ID_HEADER, account_id)
-                .header("Originator", endpoints::CODEX_ORIGINATOR)
-                .header("User-Agent", endpoints::codex_user_agent())
-                .header("Session-Id", ids::new_uuid())
-                .header("Accept", "text/event-stream")
-                .json(&body))
-        }
+    // One request UUID per dispatch, reused by every expression reference in it.
+    let request_uuid = ids::new_uuid();
 
-        ProviderType::OpenAiResponse => {
-            let (url, body) = openai_response::render_request(
-                ir,
-                provider.upstream_base_url()?,
-                is_client_streaming,
-            );
+    let slots = provider.credentials.slots();
 
-            Ok(http
-                .post(url)
-                .bearer_auth(provider.credentials.secret())
-                .json(&body))
-        }
+    let env = crate::provider::definition::eval::ValueEnv {
+        base_url: provider.base_url.as_deref(),
+        secret: Some(provider.credentials.secret()),
+        slots,
+        client_id: None,
+        client_secret: None,
+        authorization_code: None,
+        code_verifier: None,
+        redirect_uri: None,
+        oauth_state: None,
+        device_code: None,
+        refresh_token: None,
+        request_uuid: Some(&request_uuid),
+        model: Some(&routing.model.upstream_id),
+    };
 
-        ProviderType::OpenAiChatCompletion => {
-            let (url, body) = openai_chat_completion::render_request(
-                ir,
-                provider.upstream_base_url()?,
-                is_client_streaming,
-            );
+    let url_expr = match is_upstream_streaming && inference.stream_url.is_some() {
+        true => inference.stream_url.as_ref().unwrap_or(&inference.url),
+        false => &inference.url,
+    };
 
-            Ok(http
-                .post(url)
-                .bearer_auth(provider.credentials.secret())
-                .json(&body))
-        }
+    let url = env
+        .evaluate(url_expr, "inference URL")
+        .map_err(|error| Error::Internal {
+            message: error.to_string(),
+        })?;
 
-        ProviderType::AntigravityOauth => {
-            let Credentials::AntigravityOauth {
-                access_token,
-                project_id,
-                ..
-            } = &provider.credentials
-            else {
-                return Err(Error::Internal {
-                    message: "antigravity provider lacks Google OAuth credentials".to_string(),
-                });
-            };
+    let body = render_body(provider, ir, is_upstream_streaming)?;
 
-            let (url, envelope) = gemini_generate_content::render_antigravity_request(
-                ir,
-                endpoints::ANTIGRAVITY_BASE_URL,
-                endpoints::ANTIGRAVITY_USER_AGENT,
-                &routing.model.upstream_id,
-                project_id,
-                is_client_streaming,
-            )?;
+    let body = match &inference.envelope {
+        None => body,
 
-            Ok(http
-                .post(url)
-                .bearer_auth(access_token)
-                .header("User-Agent", endpoints::ANTIGRAVITY_USER_AGENT)
-                .json(&envelope))
-        }
+        Some(envelope) => env
+            .render_json(envelope, body, "inference envelope")
+            .map_err(|error| Error::Internal {
+                message: error.to_string(),
+            })?,
+    };
 
-        ProviderType::GeminiGenerateContent => {
-            let (url, body) = gemini_generate_content::render_compatible_request(
-                ir,
-                provider.upstream_base_url()?,
-                &routing.model.upstream_id,
-                is_client_streaming,
-            )?;
+    let mut headers = reqwest::header::HeaderMap::new();
 
-            Ok(http
-                .post(url)
-                .header(
-                    endpoints::GEMINI_API_KEY_HEADER,
-                    provider.credentials.secret(),
-                )
-                .json(&body))
-        }
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static(if is_upstream_streaming {
+            "text/event-stream"
+        } else {
+            "application/json"
+        }),
+    );
 
-        // The Interactions upstream wire shape: `POST {base}/v1beta/interactions` with the
-        // `x-goog-api-key` and pinned `Api-Revision` headers (README §5.4).
-        ProviderType::GeminiInteraction => {
-            let (url, body) = gemini_interaction::render_request(
-                ir,
-                provider.upstream_base_url()?,
-                &routing.model.upstream_id,
-                is_client_streaming,
-            )?;
+    for row in &inference.headers {
+        let value = env
+            .evaluate(&row.value, "inference header")
+            .map_err(|error| Error::Internal {
+                message: error.to_string(),
+            })?;
 
-            Ok(http
-                .post(url)
-                .header(
-                    endpoints::GEMINI_API_KEY_HEADER,
-                    provider.credentials.secret(),
-                )
-                .header(
-                    endpoints::GEMINI_API_REVISION_HEADER,
-                    endpoints::GEMINI_API_REVISION,
-                )
-                .json(&body))
-        }
+        let name = reqwest::header::HeaderName::from_bytes(row.name.as_bytes()).map_err(|_| {
+            Error::Internal {
+                message: format!(
+                    "the definition carries an invalid header name `{}`",
+                    row.name
+                ),
+            }
+        })?;
 
-        // The Anthropic Messages upstream wire shape: `POST {base}/v1/messages` with the
-        // `x-api-key` and pinned `anthropic-version` headers (README §5.5).
-        ProviderType::AnthropicMessages => {
-            let (url, body) = anthropic_messages::render_request(
-                ir,
-                provider.upstream_base_url()?,
-                is_client_streaming,
-            )?;
+        let value =
+            reqwest::header::HeaderValue::from_str(&value).map_err(|_| Error::Internal {
+                message: "the definition carries an unrenderable header value".to_string(),
+            })?;
 
-            Ok(http
-                .post(url)
-                .header(
-                    endpoints::ANTHROPIC_API_KEY_HEADER,
-                    provider.credentials.secret(),
-                )
-                .header(
-                    endpoints::ANTHROPIC_VERSION_HEADER,
-                    endpoints::ANTHROPIC_VERSION,
-                )
-                .json(&body))
-        }
+        headers.insert(name, value);
     }
+
+    Ok(http.post(url).headers(headers).json(&body))
+}
+
+/// Renders the upstream body through the definition format's codec, applying the render options
+/// and the routed upstream model (README §5.2).
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidRequest`] when the client request cannot be rendered into the
+/// definition format's body, and [`Error::Internal`] when a first-party payload fails to
+/// serialize, which cannot occur.
+fn render_body(
+    provider: &Provider,
+    ir: &IrRequest,
+    is_upstream_streaming: bool,
+) -> Result<serde_json::Value, Error> {
+    let render_options: &[RenderOption] = &provider.definition.payload.inference.render_options;
+
+    let value = match provider.definition.payload.format {
+        UpstreamFormat::OpenAiResponse => serialize_body(&openai_response::render_request_body(
+            ir,
+            is_upstream_streaming,
+            render_options,
+        )),
+
+        UpstreamFormat::OpenAiChatCompletion => serialize_body(
+            &openai_chat_completion::render_request_body(ir, is_upstream_streaming),
+        ),
+
+        UpstreamFormat::GeminiGenerateContent => serialize_body(
+            &gemini_generate_content::render_generate_content_request(ir).map_err(Error::from)?,
+        ),
+
+        UpstreamFormat::GeminiInteraction => serialize_body(
+            &gemini_interaction::render_request_body(ir, &ir.model, is_upstream_streaming)
+                .map_err(Error::from)?,
+        ),
+
+        UpstreamFormat::AnthropicMessages => serialize_body(
+            &anthropic_messages::render_request_body(ir, is_upstream_streaming)
+                .map_err(Error::from)?,
+        ),
+    };
+
+    Ok(value)
+}
+
+/// Serializes one codec-rendered body: a first-party serde type always renders, so the failure
+/// arm is the documented unreachable invariant.
+///
+/// # Panics
+///
+/// Panics if serialization fails, which cannot occur for a first-party serde type.
+fn serialize_body<T: serde::Serialize>(body: &T) -> serde_json::Value {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "a codec-rendered body is a first-party serde type, which always renders"
+    )]
+    serde_json::to_value(body).unwrap()
 }
 
 /// Boxes the upstream event parser for the given wire format.
@@ -532,6 +550,7 @@ async fn pump_sse(
     sender: tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
     upstream_label: String,
     is_client_streaming: bool,
+    response_unwrap: Option<String>,
 ) {
     let mut body = response.bytes_stream();
 
@@ -559,7 +578,14 @@ async fn pump_sse(
         };
 
         let frames = match sse_parser.ingest(&chunk) {
-            Ok(frames) => frames,
+            Ok(frames) => frames
+                .into_iter()
+                .map(|mut frame| {
+                    unwrap_frame(&mut frame, &response_unwrap);
+
+                    frame
+                })
+                .collect(),
             Err(_) => {
                 abort_stream(
                     &mut is_aborted,
@@ -647,15 +673,18 @@ async fn pump_json(
     sender: tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
     upstream_label: String,
     is_client_streaming: bool,
+    response_unwrap: Option<String>,
 ) {
     let outcome = async {
         let bytes = response.bytes().await.map_err(|error| Error::Unavailable {
             detail: format!("upstream read failed: {error}"),
         })?;
 
-        let value = serde_json::from_slice(&bytes).map_err(|error| Error::Unavailable {
+        let mut value = serde_json::from_slice(&bytes).map_err(|error| Error::Unavailable {
             detail: format!("malformed upstream response: {error}"),
         })?;
+
+        unwrap_response(&mut value, &response_unwrap);
 
         parser.parse_json_response(value).map_err(Error::from)
     }
@@ -678,6 +707,50 @@ async fn pump_json(
     let _ = sender.send(Ok(IrEvent::Done)).await;
 }
 
+/// Unwraps one JSON response through the definition's configured envelope member: when
+/// configured and present, the member's value becomes the parser's document. Absent or not
+/// configured, the document is ingested as-is (README §5.2 `response_unwrap`).
+fn unwrap_response(value: &mut serde_json::Value, response_unwrap: &Option<String>) {
+    let Some(member) = response_unwrap else {
+        return;
+    };
+
+    if let Some(wrapped) = value.get(member) {
+        *value = wrapped.clone();
+    }
+}
+
+/// Unwraps one SSE frame's payload the same way the JSON responses unwrap: the frame's data is
+/// rewritten to the configured member's value when the frame carries a JSON object with it.
+/// Frames whose data is not such a JSON object — a `[DONE]` sentinel, for instance — pass
+/// through unchanged.
+fn unwrap_frame(frame: &mut SseFrame, response_unwrap: &Option<String>) {
+    let Some(member) = response_unwrap else {
+        return;
+    };
+
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame.data) else {
+        return;
+    };
+
+    if let Some(wrapped) = value.get(member) {
+        frame.data = serialize_frame(wrapped);
+    }
+}
+
+/// Re-serializes one unwrapped frame payload.
+///
+/// # Panics
+///
+/// Panics if serialization fails, which cannot occur for a parsed JSON value.
+fn serialize_frame(value: &serde_json::Value) -> String {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "a re-serialized JSON value always renders"
+    )]
+    serde_json::to_string(value).unwrap()
+}
+
 /// Builds the upstream error for a non-2xx response through the shared bounded error-body read
 /// ([`http_body::read_error_body`]) and the one excerpt policy ([`http_body::truncate_excerpt`]):
 /// the full body is never buffered, because a hostile upstream must not be able to stream unbounded
@@ -697,14 +770,6 @@ impl From<PayloadError> for Error {
     fn from(error: PayloadError) -> Self {
         Self::Unavailable {
             detail: error.to_string(),
-        }
-    }
-}
-
-impl From<MissingBaseUrl> for Error {
-    fn from(error: MissingBaseUrl) -> Self {
-        Self::Internal {
-            message: error.to_string(),
         }
     }
 }

@@ -5,7 +5,7 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { indexRowsById } from "/src/management-api/serving";
-import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
+import { credentialKindLabel, isOAuthProviderRow, upstreamFormatLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
     createPinnedRow,
@@ -135,7 +135,7 @@ export function ProviderDetailScreen(props: {
             setDiscoveryNotice(
                 screenFailureNotice(outcome.cause, {
                     action: "discover-models",
-                    providerType: current.type,
+                    isOAuthProvider: isOAuthProviderRow(current),
                 }),
             );
             return;
@@ -232,7 +232,7 @@ export function ProviderDetailScreen(props: {
                     <>
                         <PageHeader
                             title={row.name}
-                            description={`${providerTypeLabel(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
+                            description={`${upstreamFormatLabel(row.format)} · ${credentialKindLabel(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
                             backHref={hrefs.providers()}
                             backLabel="Providers"
                         >
@@ -292,7 +292,7 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
             <dl class="mt-4 grid gap-x-8 gap-y-3 sm:grid-cols-2">
                 <div>
                     <dt class="text-[12.5px] font-medium text-ink-dim">Type</dt>
-                    <dd class="mt-1">{providerTypeLabel(props.provider.type)}</dd>
+                    <dd class="mt-1">{upstreamFormatLabel(props.provider.format)}</dd>
                 </div>
                 <div>
                     <dt class="text-[12.5px] font-medium text-ink-dim">Model prefix</dt>

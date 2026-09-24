@@ -184,6 +184,16 @@ where
                 return;
             }
 
+            // ts-rs's serde-json feature implements `serde_json::Value` through a private shadow
+            // type whose TypeScript name is the same `JsonValue` the value type itself carries;
+            // visiting the shadow would collide with the value it shadows, so it is skipped — the
+            // value type's entry renders the shared declaration.
+            if T::ident(self.config) == "JsonValue"
+                && TypeId::of::<T>() != TypeId::of::<serde_json::Value>()
+            {
+                return;
+            }
+
             self.visited.push(ClosureType {
                 type_id: TypeId::of::<T>(),
                 ident: T::ident(self.config),

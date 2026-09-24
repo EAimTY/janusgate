@@ -3,7 +3,7 @@
 use super::{EmptyResponse, Error, Nullable, route};
 use crate::{
     context::Context,
-    provider::{DiscoveryState, discovery, oauth},
+    provider::{DiscoveryState, discovery},
     storage::{
         self,
         models::{ModelCreate, ModelEntry, ModelUpdate},
@@ -330,10 +330,10 @@ async fn handle_discover(
             id: request.provider_id,
         })?;
 
-    let fresh = oauth::ensure_fresh_token(database, control_plane, &provider).await?;
-
-    let unique_ids =
-        unique_upstream_ids(discovery::discover_upstream_models(control_plane, &fresh).await?)?;
+    // The discovery engine refreshes the access token itself when a known expiry requires it.
+    let unique_ids = unique_upstream_ids(
+        discovery::discover_upstream_models(database, control_plane, &provider).await?,
+    )?;
 
     // An upstream reporting an identifier the gateway cannot route fails the refresh before any
     // row is written: the composed public ID would carry the same characters, and the schema

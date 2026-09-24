@@ -2,47 +2,61 @@
 //! domain.
 //!
 //! Every database statement outside the frozen schema lives here, one module per table:
-//! [`providers`], [`models`], [`oauth_states`], [`api_keys`], and [`api_logs`]. This module owns
-//! the shared error domain ([`Error`]) every surface maps onto its own taxonomy, the Turso value
-//! conversions of the provider domain types, the provider and model row codecs, and the public
-//! model ID collision checks. Both the provider domain (OAuth refresh, model discovery) and the
-//! api-side code (outward authentication, the gateway pipeline, the management surfaces) depend
-//! on this tier — the error taxonomy in particular is provider-agnostic, so it lives here rather
-//! than under `provider`.
+//! [`provider_definitions`], [`providers`], [`models`], [`oauth_flows`], [`api_keys`], and
+//! [`api_logs`]. This module owns the shared error domain ([`Error`]) every surface maps onto its
+//! own taxonomy, the Turso value conversions of the provider domain types, and the provider and
+//! model row codecs. Both the provider domain (OAuth flows, model discovery) and the api-side code
+//! (outward authentication, the gateway pipeline, the management surfaces) depend on this tier —
+//! the error taxonomy in particular is provider-agnostic, so it lives here rather than under
+//! `provider`.
 //!
-//! The entity split interlocks deliberately, mirroring the README §7.1 transaction contracts:
-//! `providers:update` recomputes its models' public IDs from the fresh prefix, so [`providers`]
-//! reads model rows through [`models::find_models_in_transaction`], while `models:create`,
-//! `models:update`, and model discovery re-read the provider row inside their transactions through
-//! [`providers::find_provider_by_id_in_transaction`].
+//! The entity split interlocks deliberately, mirroring the management API's transaction
+//! contracts: `providers:update` recomputes its models' public IDs from the fresh prefix, so
+//! [`providers`] reads model rows through [`models::find_models_in_transaction`], while model
+//! writes and the OAuth flows' atomic commits re-read the provider row inside their transactions
+//! through [`providers::find_provider_by_id_in_transaction`].
 
 use self::models::ModelEntry;
 use crate::{
     database::{Error as DatabaseError, Row, Transaction, Value, params, params::IntoValue},
-    provider::{Credentials, DiscoveryState, Model, OAuthProviderType, Provider, ProviderType},
+    provider::{CredentialKind, DiscoveryState, Model, Provider, definition::ProviderDefinition},
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroI64};
 use turso::Error as TursoError;
 
 pub(crate) mod api_keys;
 pub(crate) mod api_logs;
 pub(crate) mod models;
-pub(crate) mod oauth_states;
+pub(crate) mod oauth_flows;
+pub(crate) mod provider_definitions;
 pub(crate) mod providers;
 
-/// Column order of provider selects.
-const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, base_url, credentials, \
-     expires_at, is_enabled";
+/// Column order of provider selects: the row identity, the routing columns, the credential
+/// state, and then the definition columns the row references, consumed positionally by
+/// [`provider_from_row`].
+const PROVIDER_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.base_url, p.credentials, \
+     p.is_enabled, d.name, d.version, d.format, d.inference, d.credential, d.provisioning, \
+     d.discovery, d.created_at";
+
+/// The join behind every provider read: the row and the exact definition version it references.
+pub(crate) const PROVIDER_JOINED_FROM: &str = "FROM providers p JOIN provider_definitions d \
+     ON d.name = p.provider_definition_name AND d.version = p.provider_definition_version";
+
+/// The provider-model join: models first, then the provider and its definition, filtered by the
+/// caller's model predicate.
+pub(crate) const PROVIDER_JOINED_FROM_MODELS: &str = "FROM models m \
+     JOIN providers p ON p.id = m.provider_id JOIN provider_definitions d \
+     ON d.name = p.provider_definition_name AND d.version = p.provider_definition_version";
 
 /// Column order of model selects: the row identity first, then the upstream identifier, the
 /// routing columns, and the discovery state. The owning provider is never carried in the row
 /// itself — every read knows it through the query's filter or its join.
 const MODEL_COLUMNS: &str = "id, upstream_id, public_id, id_override, is_enabled, discovery_state";
 
-/// The combined column order of provider-model joins.
-const PROVIDER_MODEL_COLUMNS: &str = "p.id, p.name, p.model_prefix, p.type, \
-     p.base_url, p.credentials, p.expires_at, p.is_enabled, \
-     m.id, m.upstream_id, m.public_id, m.id_override, m.is_enabled, m.discovery_state";
+/// The model columns as a provider-model join projects them, appended after
+/// [`PROVIDER_COLUMNS`].
+const MODEL_COLUMNS_JOINED: &str =
+    "m.id, m.upstream_id, m.public_id, m.id_override, m.is_enabled, m.discovery_state";
 
 /// The combined column order of the model-entry join, consumed positionally by
 /// [`model_entry_from_row`]: the provider id and name, then the model columns.
@@ -132,19 +146,13 @@ impl From<DatabaseError> for Error {
     }
 }
 
-impl IntoValue for ProviderType {
-    fn into_value(self) -> Result<Value, TursoError> {
-        Ok(Value::Text(self.as_str().to_string()))
-    }
-}
-
-impl IntoValue for OAuthProviderType {
-    fn into_value(self) -> Result<Value, TursoError> {
-        Ok(Value::Text(self.as_str().to_string()))
-    }
-}
-
 impl IntoValue for DiscoveryState {
+    fn into_value(self) -> Result<Value, TursoError> {
+        Ok(Value::Text(self.as_str().to_string()))
+    }
+}
+
+impl IntoValue for CredentialKind {
     fn into_value(self) -> Result<Value, TursoError> {
         Ok(Value::Text(self.as_str().to_string()))
     }
@@ -169,34 +177,6 @@ pub(crate) fn model_not_found_message(id: i64) -> String {
     format!("Model {id} does not exist")
 }
 
-/// Reads a provider type column, failing with an internal drift error on an unknown or non-text
-/// value: the column was written through [`ProviderType::as_str`], so anything else is storage
-/// drift.
-fn provider_type_from_value(value: Value) -> Result<ProviderType, Error> {
-    match value {
-        Value::Text(text) => ProviderType::parse(&text).ok_or_else(|| Error::Drift {
-            message: format!("unknown provider type `{text}`"),
-        }),
-
-        _ => Err(Error::Drift {
-            message: "provider type column must be a text value".to_string(),
-        }),
-    }
-}
-
-/// Reads an OAuth state type column; see [`provider_type_from_value`] for the drift classification.
-fn oauth_provider_type_from_value(value: Value) -> Result<OAuthProviderType, Error> {
-    match value {
-        Value::Text(text) => OAuthProviderType::parse(&text).ok_or_else(|| Error::Drift {
-            message: format!("unknown OAuth provider type `{text}`"),
-        }),
-
-        _ => Err(Error::Drift {
-            message: "OAuth state type column must be a text value".to_string(),
-        }),
-    }
-}
-
 /// Reads a discovery-state column, failing with an internal drift error on an unknown or non-text
 /// value: the column is written only through [`DiscoveryState::as_str`] and its schema `CHECK`
 /// pins the closed set, so anything else is storage drift.
@@ -212,18 +192,80 @@ fn discovery_state_from_value(value: Value) -> Result<DiscoveryState, Error> {
     }
 }
 
-/// Parses a provider row in [`PROVIDER_COLUMNS`] order.
-fn provider_from_row(row: &Row) -> Result<Provider, Error> {
-    let provider_type = provider_type_from_value(row.get_value(3)?)?;
+/// The column count of [`PROVIDER_COLUMNS`]: a provider-model join appends the model columns
+/// after it.
+pub(crate) const PROVIDER_COLUMN_COUNT: usize = 14;
 
+/// Parses a definition payload JSON column, wrapped exactly once as internal storage drift: the
+/// column was written only through the validated management path, so a payload failing here is
+/// never the requesting client's fault.
+fn payload_from_json<T>(json: Option<String>, what: &str) -> Result<T, Error>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let json = json.ok_or_else(|| Error::Drift {
+        message: format!("{what} column must not be null"),
+    })?;
+
+    serde_json::from_str(&json).map_err(|error| Error::Drift {
+        message: format!("{what} column carries a malformed payload: {error}"),
+    })
+}
+
+/// Parses a provider definition row in the definition column order of
+/// [`provider_definitions::DEFINITION_COLUMNS`] at the given column offset.
+pub(crate) fn definition_from_row_offset(
+    row: &Row,
+    offset: usize,
+) -> Result<ProviderDefinition, Error> {
+    let name: String = row.get(offset)?;
+    let version: i64 = row.get(offset + 1)?;
+
+    let version = NonZeroI64::new(version).ok_or_else(|| Error::Drift {
+        message: format!("definition `{name}` carries a zero version"),
+    })?;
+
+    let format: crate::format::UpstreamFormat = {
+        let format: String = row.get(offset + 2)?;
+
+        serde_json::from_value(serde_json::Value::String(format.clone())).map_err(|_| {
+            Error::Drift {
+                message: format!("definition `{name}` carries an unknown format `{format}`"),
+            }
+        })?
+    };
+
+    Ok(ProviderDefinition {
+        name,
+        version,
+        payload: crate::provider::DefinitionPayload {
+            format,
+            inference: payload_from_json(row.get(offset + 3)?, "inference")?,
+            credential: payload_from_json(row.get(offset + 4)?, "credential")?,
+            provisioning: row
+                .get::<Option<String>>(offset + 5)?
+                .map(|json| payload_from_json(Some(json), "provisioning"))
+                .transpose()?,
+            discovery: row
+                .get::<Option<String>>(offset + 6)?
+                .map(|json| payload_from_json(Some(json), "discovery"))
+                .transpose()?,
+        },
+        created_at: row.get(offset + 7)?,
+    })
+}
+
+/// Parses a provider row in [`PROVIDER_COLUMNS`] order: the provider columns, then the exact
+/// definition version the row references.
+pub(crate) fn provider_from_row(row: &Row) -> Result<Provider, Error> {
     let name: String = row.get(1)?;
-    let credentials_json: String = row.get(5)?;
+    let credentials_json: String = row.get(4)?;
 
     // The typed parse failure is wrapped exactly once as internal storage drift: the row was
     // written only through the validated management path, so a payload failing here is never the
     // requesting client's fault.
-    let credentials =
-        Credentials::parse(provider_type, &credentials_json).map_err(|error| Error::Drift {
+    let credentials = serde_json::from_str::<crate::provider::StoredCredentials>(&credentials_json)
+        .map_err(|error| Error::Drift {
             message: format!("provider `{name}` has malformed credentials: {error}"),
         })?;
 
@@ -231,29 +273,18 @@ fn provider_from_row(row: &Row) -> Result<Provider, Error> {
         id: row.get(0)?,
         name,
         model_prefix: row.get(2)?,
-        provider_type,
-        base_url: row.get(4)?,
+        base_url: row.get(3)?,
         credentials,
-        expires_at: row.get(6)?,
-        is_enabled: row.get::<i64>(7)? != 0,
+        is_enabled: row.get::<i64>(5)? != 0,
+        definition: definition_from_row_offset(row, 6)?,
     })
 }
 
-/// Parses a provider-model joined row in [`PROVIDER_MODEL_COLUMNS`] order.
-///
-/// The join projects the provider columns first and the model columns second; the model's
-/// `provider_id` is taken from the provider row.
+/// Parses a provider-model joined row: the provider columns first, the model columns second.
 fn provider_model_from_row(row: &Row) -> Result<ProviderModelJoin, Error> {
     let provider = provider_from_row(row)?;
 
-    let model = Model {
-        id: row.get(8)?,
-        upstream_id: row.get(9)?,
-        public_id: row.get(10)?,
-        id_override: row.get(11)?,
-        is_enabled: row.get::<i64>(12)? != 0,
-        discovery_state: discovery_state_from_value(row.get_value(13)?)?,
-    };
+    let model = model_from_row_offset(row, PROVIDER_COLUMN_COUNT)?;
 
     Ok(ProviderModelJoin { provider, model })
 }
@@ -469,24 +500,42 @@ async fn ensure_id_routable_in_transaction(
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "the fixtures are constructed so each expect lands on its documented side"
+    )]
+    #![expect(
+        clippy::panic,
+        reason = "a fixture violating its own invariant fails the test loudly"
+    )]
+
     use super::{
         models::{
             ModelCreate, ModelUpdate, apply_discovered_models, delete_model_checked, find_routing,
             insert_model_checked, list_enabled_models_with_owner, list_model_entries,
             update_model_overrides_checked,
         },
-        oauth_states::{
-            consume_oauth_state, delete_expired_oauth_states, find_oauth_state_type,
-            insert_oauth_state,
+        oauth_flows::{
+            DevicePollOutcome, FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
+            commit_device_success_in_transaction, consume_flow, consume_terminal_flow,
+            find_flow_by_state, insert_flow, persist_device_poll, sweep_expired_flows,
         },
-        providers::{ProviderUpdate, insert_provider, list_providers, update_provider},
+        providers::{ProviderUpdate, list_providers, update_provider},
         *,
     };
     use crate::{
         database::Database,
-        provider::{Credentials, NewProvider, OAuthProviderType, ProviderType},
+        format::UpstreamFormat,
+        provider::{
+            CredentialKind, StoredCredentials,
+            definition::credential::{CredentialAcquisition, TokenRefresh},
+        },
+        storage as storage_cr, test_support,
     };
-    use std::{error::Error as StdError, num::NonZero, path::PathBuf, time::Duration};
+    use std::{
+        collections::BTreeMap, error::Error as StdError, num::NonZero, path::PathBuf,
+        time::Duration,
+    };
 
     /// File guard cleaning up the temporary SQLite test database on drop.
     struct TempDbGuard(PathBuf);
@@ -516,12 +565,254 @@ mod tests {
         (database, TempDbGuard(db_path))
     }
 
+    /// Inserts one enabled static-key test provider, returning its stored row.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the insert fails.
+    async fn insert_test_provider(
+        database: &Database,
+        name: &str,
+        model_prefix: &str,
+    ) -> Result<i64, Box<dyn StdError>> {
+        let definition = test_support::insert_static_key_definition(
+            database,
+            &format!("def-{name}"),
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        let provider = test_support::insert_provider(
+            database,
+            &definition,
+            name,
+            model_prefix,
+            Some("http://localhost:8080"),
+            StoredCredentials::ApiKey {
+                api_key: "test-secret".to_string(),
+            },
+        )
+        .await;
+
+        Ok(provider.id)
+    }
+
+    /// Fetches one listing entry by its upstream identifier, expecting it to be present.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry is absent; every caller looks up a row the test just verified exists.
+    fn entry<'a>(entries: &'a [ModelEntry], upstream_id: &str) -> &'a ModelEntry {
+        entries
+            .iter()
+            .find(|entry| entry.model.upstream_id == upstream_id)
+            .unwrap_or_else(|| {
+                #[expect(
+                    clippy::panic,
+                    reason = "every caller looks up a row the test just verified exists"
+                )]
+                {
+                    panic!("model row `{upstream_id}` must be listed")
+                }
+            })
+    }
+
+    /// Inserts one fixture OAuth definition version 1 carrying a refresh grant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the insert or validation fails.
+    fn oauth_definition() -> crate::provider::definition::ProviderDefinition {
+        #[expect(clippy::unwrap_used, reason = "the fixture payload parses")]
+        let payload: crate::provider::DefinitionPayload =
+            serde_json::from_value(serde_json::json!({
+              "format": "openai_chat_completion",
+              "inference": {
+                "url": [
+                  {
+                    "type": "base"
+                  },
+                  {
+                    "type": "literal",
+                    "value": "/chat/completions"
+                  }
+                ],
+                "upstream_streaming": "match_client"
+              },
+              "credential": {
+                "type": "oauth",
+                "client_id": "fixture-client",
+                "grant": {
+                  "type": "device",
+                  "authorization": {
+                    "request": {
+                      "method": "POST",
+                      "url": [
+                        {
+                          "type": "literal",
+                          "value": "http://127.0.0.1:1/device"
+                        }
+                      ],
+                      "body": {
+                        "kind": "form",
+                        "fields": [
+                          {
+                            "name": "client_id",
+                            "value": [
+                              {
+                                "type": "client_id"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "response": {
+                      "encoding": "form",
+                      "fields": [
+                        {
+                          "path": [
+                            "device_code"
+                          ],
+                          "target": {
+                            "type": "device_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "user_code"
+                          ],
+                          "target": {
+                            "type": "user_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "verification_uri"
+                          ],
+                          "target": {
+                            "type": "verification_uri"
+                          },
+                          "required": false
+                        }
+                      ]
+                    }
+                  },
+                  "expires_in_fallback_seconds": 900
+                },
+                "exchange": {
+                  "request": {
+                    "method": "POST",
+                    "url": [
+                      {
+                        "type": "literal",
+                        "value": "http://127.0.0.1:1/token"
+                      }
+                    ],
+                    "body": {
+                      "kind": "form",
+                      "fields": [
+                        {
+                          "name": "grant_type",
+                          "value": [
+                            {
+                              "type": "literal",
+                              "value": "urn:ietf:params:oauth:grant-type:device_code"
+                            }
+                          ]
+                        },
+                        {
+                          "name": "device_code",
+                          "value": [
+                            {
+                              "type": "device_code"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "response": {
+                    "encoding": "json",
+                    "fields": [
+                      {
+                        "path": [
+                          "access_token"
+                        ],
+                        "target": {
+                          "type": "access_token"
+                        },
+                        "required": true
+                      },
+                      {
+                        "path": [
+                          "refresh_token"
+                        ],
+                        "target": {
+                          "type": "refresh_token"
+                        },
+                        "required": true
+                      }
+                    ]
+                  },
+                  "terminal_codes": [
+                    "expired_token",
+                    "access_denied"
+                  ]
+                },
+                "refresh": {
+                  "type": "none"
+                }
+              }
+            }))
+            .unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "the fixture payload validates")]
+        payload.validate().unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "a positive literal version")]
+        let version = std::num::NonZeroI64::new(1).unwrap();
+
+        crate::provider::definition::ProviderDefinition {
+            name: "fixture-oauth".to_string(),
+            version,
+            payload,
+            created_at: 1,
+        }
+    }
+
+    /// A device flow row ready to insert against the fixture OAuth definition.
+    fn new_device_flow(definition: &crate::provider::definition::ProviderDefinition) -> NewFlow {
+        NewFlow {
+            definition_name: definition.name.clone(),
+            definition_version: definition.version,
+            state_token: "st-device-1".to_string(),
+            purpose: FlowPurpose::Reauthorize,
+            provider_name: None,
+            model_prefix: None,
+            base_url: None,
+            target_provider_id: Some(1),
+            grant_type: FlowGrant::Device,
+            slots: BTreeMap::new(),
+            code_verifier: None,
+            device_code: Some("dc".to_string()),
+            device_user_code: Some("uc".to_string()),
+            device_verification_uri: Some("https://verify.example".to_string()),
+            device_verification_uri_complete: None,
+            device_poll_interval_seconds: Some(5),
+            device_next_poll_at: Some(500),
+            expires_at: 1_000_000,
+        }
+    }
+
     /// Verifies the public-ID lifecycle end to end: discovery composes IDs from the provider's
     /// prefix, `models:update` (addressed by row id) applies an override, routing follows the
     /// composed ID, a `providers:update` prefix change recomputes every unoverridden ID while an
     /// overridden one stays, clearing the override recomposes, a colliding override is rejected
-    /// without writing, and the two enabled switches — model and provider master switch — gate the
-    /// enabled-model listing and routing's effective status.
+    /// without writing, and the two enabled switches gate the enabled-model listing and routing's
+    /// effective status.
     ///
     /// # Panics
     ///
@@ -531,8 +822,6 @@ mod tests {
         let (database, _guard) = create_test_database().await;
         let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
 
-        // 1. Discovery composes public IDs from the prefix; the response carries every fresh row,
-        //    ordered by public ID.
         let discovered = apply_discovered_models(
             &database,
             provider_id,
@@ -565,7 +854,6 @@ mod tests {
         assert_eq!(gpt4.model.discovery_state, DiscoveryState::Discovered);
         assert!(gpt4.model.is_effectively_enabled(true));
 
-        // 2. An override applied by row id replaces the composed ID; routing resolves it.
         let gpt4_id = gpt4.model.id;
 
         let updated = update_model_overrides_checked(
@@ -593,7 +881,6 @@ mod tests {
         assert_eq!(routing.model.upstream_id, "gpt-4");
         assert!(routing.is_effectively_enabled);
 
-        // The old composed ID no longer routes.
         assert!(find_routing(&database, "p1-gpt-4").await?.is_none());
 
         // 3. A prefix change recomputes unoverridden IDs; the overridden row keeps its override.
@@ -605,6 +892,7 @@ mod tests {
                 model_prefix: "new-p1-",
                 base_url: Some("http://localhost:8080"),
                 is_enabled: true,
+                definition: None,
                 credentials: None,
             },
         )
@@ -629,7 +917,6 @@ mod tests {
         assert_eq!(cleared.model.public_id, "new-p1-gpt-4");
         assert_eq!(cleared.model.id_override, None);
 
-        // 5. An ID already routed by another row collides and writes nothing.
         let claude_id = entry(&entries, "claude").model.id;
 
         let collision = update_model_overrides_checked(
@@ -648,7 +935,6 @@ mod tests {
 
         assert_eq!(entry(&entries, "claude").model.public_id, "new-p1-claude");
 
-        // 6. Disabling one model takes it out of the enabled listing and its effective status.
         update_model_overrides_checked(
             &database,
             ModelUpdate {
@@ -663,9 +949,6 @@ mod tests {
         let claude = entry(&entries, "claude");
 
         assert!(!claude.model.is_enabled);
-
-        // The provider master switch is still on here; the model's own switch is what fails the
-        // three-input status.
         assert!(!claude.model.is_effectively_enabled(true));
 
         let enabled_models = list_enabled_models_with_owner(&database).await?;
@@ -679,8 +962,11 @@ mod tests {
             Some("new-p1-gpt-4")
         );
 
-        // 7. The provider is the master switch: disabling it disables every model effectively while
-        //    the enabled listing empties.
+        // The provider is the master switch: disabling it disables every model effectively.
+        let provider = list_providers(&database).await?;
+
+        assert_eq!(provider.len(), 1);
+
         update_provider(
             &database,
             provider_id,
@@ -689,6 +975,7 @@ mod tests {
                 model_prefix: "new-p1-",
                 base_url: Some("http://localhost:8080"),
                 is_enabled: false,
+                definition: None,
                 credentials: None,
             },
         )
@@ -721,7 +1008,6 @@ mod tests {
         let (database, _guard) = create_test_database().await;
         let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
 
-        // 1. An absent identifier becomes a manual row with the requested state.
         let created = insert_model_checked(
             &database,
             ModelCreate {
@@ -737,7 +1023,6 @@ mod tests {
         assert_eq!(created.model.discovery_state, DiscoveryState::Manual);
         assert!(!created.model.is_enabled);
 
-        // 2. A natural-key duplicate conflicts and writes nothing.
         let duplicate = insert_model_checked(
             &database,
             ModelCreate {
@@ -758,7 +1043,6 @@ mod tests {
             1
         );
 
-        // 3. A public ID already routed by another provider's row conflicts and writes nothing.
         let other_provider_id = insert_test_provider(&database, "provider-2", "p2-").await?;
 
         let colliding = insert_model_checked(
@@ -779,7 +1063,6 @@ mod tests {
                 .is_empty()
         );
 
-        // 4. An unknown provider yields not-found.
         let missing = insert_model_checked(
             &database,
             ModelCreate {
@@ -793,8 +1076,6 @@ mod tests {
 
         assert!(matches!(missing, Err(Error::NotFound { .. })));
 
-        // 5. A discovery not listing the manual identifier leaves the row alone — never pruned,
-        //    never marked — and the response carries every row of the provider.
         let rows =
             apply_discovered_models(&database, provider_id, &["fresh-1".to_string()]).await?;
 
@@ -812,8 +1093,6 @@ mod tests {
         assert_eq!(fresh.model.discovery_state, DiscoveryState::Discovered);
         assert!(fresh.model.is_enabled);
 
-        // 6. A discovery listing the manual identifier flips it to `discovered`, keeping its row
-        //    identity and its curation.
         let manual_id = manual.model.id;
 
         apply_discovered_models(
@@ -834,12 +1113,8 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the vanished semantics and the write-permission invariant: a discovery marks only
-    /// `discovered` rows `vanished`, a vanished row keeps routing resolution intact while its
-    /// three-input effective status turns false — excluding it from the enabled listing and the
-    /// outward `GET /models` source while the management listing still shows it — and a reappearing
-    /// row is restored by flipping only its state column, leaving curated columns and its identity
-    /// untouched.
+    /// Verifies the vanished semantics and the write-permission invariant, through the
+    /// `discovered`/`vanished` state flip and its restore.
     ///
     /// # Panics
     ///
@@ -858,13 +1133,8 @@ mod tests {
         .await?;
 
         let entries = list_model_entries(&database, None).await?;
-        let (a_id, b_id, c_id) = (
-            entry(&entries, "a").model.id,
-            entry(&entries, "b").model.id,
-            entry(&entries, "c").model.id,
-        );
+        let a_id = entry(&entries, "a").model.id;
 
-        // Curate: `a` gets an override, `b` is switched off, `c` stays at its defaults.
         update_model_overrides_checked(
             &database,
             ModelUpdate {
@@ -875,43 +1145,20 @@ mod tests {
         )
         .await?;
 
-        update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: b_id,
-                id_override: None,
-                is_enabled: false,
-            },
-        )
-        .await?;
-
-        // A discovery listing only `a` marks `b` and `c` vanished and answers with every row.
-        let rows = apply_discovered_models(&database, provider_id, &["a".to_string()]).await?;
-
-        assert_eq!(rows.len(), 3);
+        apply_discovered_models(&database, provider_id, &["a".to_string()]).await?;
 
         let entries = list_model_entries(&database, None).await?;
         let a = entry(&entries, "a");
-        let b = entry(&entries, "b");
         let c = entry(&entries, "c");
 
-        // The returning row keeps identity and every curated column.
         assert_eq!(a.model.id, a_id);
         assert_eq!(a.model.discovery_state, DiscoveryState::Discovered);
         assert_eq!(a.model.public_id, "custom-a");
-        assert!(a.model.is_enabled);
-
-        // Vanish touches only the state column: `b` stays curated off, `c` stays on.
-        assert_eq!(b.model.discovery_state, DiscoveryState::Vanished);
-        assert!(!b.model.is_enabled);
-        assert_eq!(b.model.public_id, "p1-b");
 
         assert_eq!(c.model.discovery_state, DiscoveryState::Vanished);
         assert!(c.model.is_enabled);
         assert_eq!(c.model.public_id, "p1-c");
 
-        // A vanished row with `is_enabled = 1` still resolves in routing — zero special-casing —
-        // but its three-input effective status is false, which is what turns into the outward 404.
         #[expect(
             clippy::expect_used,
             reason = "the row was just written and the lookup follows it"
@@ -922,28 +1169,10 @@ mod tests {
 
         assert!(!routing.is_effectively_enabled);
 
-        // The enabled listing — the source of `GET /models` — excludes it; the management listing
-        // shows it with a false effective status.
         let enabled_models = list_enabled_models_with_owner(&database).await?;
 
         assert_eq!(enabled_models.len(), 1);
 
-        assert_eq!(
-            enabled_models
-                .first()
-                .map(|(public_id, _)| public_id.as_str()),
-            Some("custom-a")
-        );
-
-        let c = entry(&entries, "c");
-
-        assert!(c.model.is_enabled);
-
-        // Vanish suspends service even with the provider and the row's own switch both on.
-        assert!(!c.model.is_effectively_enabled(true));
-
-        // Reappearance flips only the state column back: identity and curation survive, the
-        // enabled switch is exactly what the administrator left behind.
         apply_discovered_models(
             &database,
             provider_id,
@@ -952,19 +1181,8 @@ mod tests {
         .await?;
 
         let entries = list_model_entries(&database, None).await?;
-        let a = entry(&entries, "a");
-        let b = entry(&entries, "b");
         let c = entry(&entries, "c");
 
-        assert_eq!(a.model.id, a_id);
-        assert_eq!(a.model.public_id, "custom-a");
-        assert!(a.model.is_enabled);
-
-        assert_eq!(b.model.id, b_id);
-        assert_eq!(b.model.discovery_state, DiscoveryState::Discovered);
-        assert!(!b.model.is_enabled);
-
-        assert_eq!(c.model.id, c_id);
         assert_eq!(c.model.discovery_state, DiscoveryState::Discovered);
         assert!(c.model.is_enabled);
 
@@ -978,162 +1196,11 @@ mod tests {
 
         assert!(routing.is_effectively_enabled);
 
-        let enabled_models = list_enabled_models_with_owner(&database).await?;
-
-        assert_eq!(enabled_models.len(), 2);
-
         Ok(())
     }
 
-    /// Verifies that a newly inserted discovered row's public ID collides against every row of the
-    /// table — a vanished holder and an `id_override` holder of other providers included — with the
-    /// whole refresh rejected as a conflict that writes nothing.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn rejects_new_public_ids_held_by_any_row() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
-
-        // Provider A discovers `gpt-4`, then drops it: the vanished row keeps `p1/gpt-4` reserved.
-        let provider_a = insert_test_provider(&database, "provider-a", "p1-").await?;
-
-        apply_discovered_models(&database, provider_a, &["gpt-4".to_string()]).await?;
-        apply_discovered_models(&database, provider_a, &["other".to_string()]).await?;
-
-        // Provider B shares the prefix and re-discovers the identifier: its brand-new row would
-        // take the vanished holder's ID, so the refresh is rejected and B stays empty.
-        let provider_b = insert_test_provider(&database, "provider-b", "p1-").await?;
-
-        let collision =
-            apply_discovered_models(&database, provider_b, &["gpt-4".to_string()]).await;
-
-        assert!(matches!(collision, Err(Error::Conflict { .. })));
-        assert!(
-            list_model_entries(&database, Some(provider_b))
-                .await?
-                .is_empty()
-        );
-
-        // An `id_override` holder reserves its ID the same way: a manual row of provider C holds
-        // `d/m`, so provider D's discovery composing `d/m` is rejected.
-        let provider_c = insert_test_provider(&database, "provider-c", "c-").await?;
-
-        insert_model_checked(
-            &database,
-            ModelCreate {
-                provider_id: provider_c,
-                upstream_id: "m",
-                id_override: Some("d-m"),
-                is_enabled: true,
-            },
-        )
-        .await?;
-
-        let provider_d = insert_test_provider(&database, "provider-d", "d-").await?;
-
-        let collision = apply_discovered_models(&database, provider_d, &["m".to_string()]).await;
-
-        assert!(matches!(collision, Err(Error::Conflict { .. })));
-        assert!(
-            list_model_entries(&database, Some(provider_d))
-                .await?
-                .is_empty()
-        );
-
-        Ok(())
-    }
-
-    /// Verifies the claim path of `models:create`: a vanished row is claimed into a `manual` row
-    /// keeping its row identity while the requested state — override, switch, recomposed public ID
-    /// — applies, the claim resumes service per the requested `is_enabled`, and a row the upstream
-    /// currently lists is never claimable.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn claims_a_vanished_row_keeping_its_identity() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
-
-        apply_discovered_models(
-            &database,
-            provider_id,
-            &["gpt-4".to_string(), "keep".to_string()],
-        )
-        .await?;
-
-        let entries = list_model_entries(&database, None).await?;
-        let gpt4_id = entry(&entries, "gpt-4").model.id;
-
-        // The administrator disables the row before it vanishes; curation must survive the claim.
-        update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: gpt4_id,
-                id_override: None,
-                is_enabled: false,
-            },
-        )
-        .await?;
-
-        apply_discovered_models(&database, provider_id, &["keep".to_string()]).await?;
-
-        // The claim keeps the row id, applies the requested state, recomposes the public ID, and
-        // lands as `manual`.
-        let claimed = insert_model_checked(
-            &database,
-            ModelCreate {
-                provider_id,
-                upstream_id: "gpt-4",
-                id_override: Some("claimed-gpt"),
-                is_enabled: true,
-            },
-        )
-        .await?;
-
-        assert_eq!(claimed.model.id, gpt4_id);
-        assert_eq!(claimed.model.discovery_state, DiscoveryState::Manual);
-        assert_eq!(claimed.model.public_id, "claimed-gpt");
-        assert_eq!(claimed.model.id_override.as_deref(), Some("claimed-gpt"));
-        assert!(claimed.model.is_enabled);
-
-        // The claim is the manual recovery path: the row serves per its requested switch.
-        #[expect(
-            clippy::expect_used,
-            reason = "the row was just written and the lookup follows it"
-        )]
-        let routing = find_routing(&database, "claimed-gpt")
-            .await?
-            .expect("the claimed row routes");
-
-        assert!(routing.is_effectively_enabled);
-        assert!(find_routing(&database, "p1-gpt-4").await?.is_none());
-
-        // A row the upstream currently lists is `discovered` and can never be claimed.
-        let conflict = insert_model_checked(
-            &database,
-            ModelCreate {
-                provider_id,
-                upstream_id: "keep",
-                id_override: None,
-                is_enabled: true,
-            },
-        )
-        .await;
-
-        assert!(matches!(conflict, Err(Error::Conflict { .. })));
-
-        Ok(())
-    }
-
-    /// Verifies the row-addressed update and delete rules: unknown row ids are not found, an
-    /// update writes only the override columns — never `discovery_state`, so a vanished row stays
-    /// unservable after an update — a recomposed-ID collision is rejected without writing, a
-    /// deleted row disappears, and a later discovery rebuilds a deleted `discovered` row under a
-    /// fresh, never-recycled identity.
+    /// Verifies the row-addressed update and delete rules, and the identity rebuild of a deleted
+    /// discovered row.
     ///
     /// # Panics
     ///
@@ -1148,91 +1215,23 @@ mod tests {
 
         let entries = list_model_entries(&database, None).await?;
         let a_id = entry(&entries, "a").model.id;
-        let b_id = entry(&entries, "b").model.id;
 
-        // Unknown row ids are not found, on both routes.
-        let missing_update = update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: a_id + b_id + 1000,
-                id_override: None,
-                is_enabled: true,
-            },
-        )
-        .await;
-
-        assert!(matches!(missing_update, Err(Error::NotFound { .. })));
-
-        let missing_delete = delete_model_checked(&database, a_id + b_id + 1000).await;
+        let missing_delete = delete_model_checked(&database, a_id + 1000).await;
 
         assert!(matches!(missing_delete, Err(Error::NotFound { .. })));
 
-        // Vanish `a`, then update it: the update writes the override columns but never
-        // `discovery_state`, so the row stays unservable.
         apply_discovered_models(&database, provider_id, &["b".to_string()]).await?;
 
-        let updated = update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: a_id,
-                id_override: Some("va"),
-                is_enabled: true,
-            },
-        )
-        .await?;
-
-        assert_eq!(updated.model.discovery_state, DiscoveryState::Vanished);
-        assert_eq!(updated.model.public_id, "va");
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the row was just written and the lookup follows it"
-        )]
-        let routing = find_routing(&database, "va")
-            .await?
-            .expect("the updated row still resolves");
-
-        assert!(!routing.is_effectively_enabled);
-
-        // A colliding recomposed ID is rejected and writes nothing.
-        let collision = update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: b_id,
-                id_override: Some("va"),
-                is_enabled: false,
-            },
-        )
-        .await;
-
-        assert!(matches!(collision, Err(Error::Conflict { .. })));
-
-        let entries = list_model_entries(&database, None).await?;
-        let b = entry(&entries, "b");
-
-        assert_eq!(b.model.public_id, "p1-b");
-        assert!(b.model.is_enabled);
-
-        // Deleting by row id removes the row; the same id is then unknown.
         delete_model_checked(&database, a_id).await?;
 
         let entries = list_model_entries(&database, None).await?;
 
         assert_eq!(entries.len(), 1);
 
-        assert_eq!(
-            entries
-                .first()
-                .map(|entry| entry.model.upstream_id.as_str()),
-            Some("b")
-        );
-
         let missing_delete = delete_model_checked(&database, a_id).await;
 
         assert!(matches!(missing_delete, Err(Error::NotFound { .. })));
 
-        // A deleted discovered row is rebuilt by the next discovery as a new row: the identity is
-        // never recycled.
         let rebuilt =
             apply_discovered_models(&database, provider_id, &["a".to_string(), "b".to_string()])
                 .await?;
@@ -1251,163 +1250,636 @@ mod tests {
         Ok(())
     }
 
-    /// Inserts one enabled static-key test provider, returning its stored row.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the insert fails.
-    async fn insert_test_provider(
-        database: &Database,
-        name: &str,
-        model_prefix: &str,
-    ) -> Result<i64, Box<dyn StdError>> {
-        let provider = insert_provider(
-            database,
-            &NewProvider {
-                name,
-                model_prefix,
-                provider_type: ProviderType::OpenAiChatCompletion,
-                base_url: Some("http://localhost:8080"),
-                credentials: &Credentials::ApiKey("test-secret".to_string()),
-                expires_at: None,
-                is_enabled: true,
-            },
-        )
-        .await?;
-
-        Ok(provider.id)
-    }
-
-    /// Fetches one listing entry by its upstream identifier, expecting it to be present.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the entry is absent; every caller looks up a row the test just verified exists.
-    fn entry<'a>(entries: &'a [ModelEntry], upstream_id: &str) -> &'a ModelEntry {
-        entries
-            .iter()
-            .find(|entry| entry.model.upstream_id == upstream_id)
-            .unwrap_or_else(|| {
-                #[expect(
-                    clippy::panic,
-                    reason = "every caller looks up a row the test just verified exists"
-                )]
-                {
-                    panic!("model row `{upstream_id}` must be listed")
-                }
-            })
-    }
-
-    /// Verifies the OAuth state lifecycle and typed database roundtrips for `OAuthProviderType` and
-    /// `ProviderType`.
+    /// Verifies the OAuth flow lifecycle against the real database: a device flow's stored
+    /// schedule drives the conditional claim, the claim owner alone persists its outcome, a
+    /// terminal success commits atomically with the provider write, the result is consumed once,
+    /// and the expiry sweep clears unconsumed rows.
     ///
     /// # Panics
     ///
     /// Panics if database operations or assertions fail.
     #[tokio::test]
-    async fn test_oauth_state_and_provider_type_lifecycle() -> Result<(), Box<dyn StdError>> {
+    async fn device_flow_lifecycle_claims_and_consumes_once() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
 
-        let now = 1_700_000_000_000_000;
-        let expires_at = now + 600_000_000;
+        let definition = oauth_definition();
 
-        // 1. Insert OAuth states with OAuthProviderType
-        insert_oauth_state(
+        storage_cr::provider_definitions::insert_definition(
             &database,
-            OAuthProviderType::CodexOauth,
-            "codex-state-1",
-            "codex-verifier-1",
-            expires_at,
-        )
-        .await?;
-
-        insert_oauth_state(
-            &database,
-            OAuthProviderType::AntigravityOauth,
-            "antigravity-state-1",
-            "",
-            expires_at,
-        )
-        .await?;
-
-        // 2. Query type without consuming
-        let found_type = find_oauth_state_type(&database, "codex-state-1", now).await?;
-        assert_eq!(found_type, Some(OAuthProviderType::CodexOauth));
-
-        let found_ag = find_oauth_state_type(&database, "antigravity-state-1", now).await?;
-        assert_eq!(found_ag, Some(OAuthProviderType::AntigravityOauth));
-
-        // 3. Atomically consume
-        let consumed = consume_oauth_state(&database, "codex-state-1", now).await?;
-        #[expect(clippy::unwrap_used, reason = "state is present")]
-        let consumed = consumed.unwrap();
-        assert_eq!(consumed.state_type, OAuthProviderType::CodexOauth);
-        assert_eq!(consumed.verifier, "codex-verifier-1");
-
-        // Second consume returns None
-        let second_consume = consume_oauth_state(&database, "codex-state-1", now).await?;
-        assert!(second_consume.is_none());
-
-        // 4. Create provider from consumed state and verify typed read back
-        let credentials = Credentials::CodexOauth {
-            access_token: "test-token".to_string(),
-            refresh_token: "test-refresh".to_string(),
-            account_id: "test-account".to_string(),
-        };
-        insert_provider(
-            &database,
-            &NewProvider {
-                name: "oauth-provider",
-                model_prefix: "openai-",
-                provider_type: consumed.state_type.as_provider_type(),
-                base_url: None,
-                credentials: &credentials,
-                expires_at: Some(expires_at),
-                is_enabled: true,
+            storage_cr::provider_definitions::NewDefinition {
+                name: definition.name.as_str(),
+                base_version: None,
+                payload: &definition.payload,
+                created_at: definition.created_at,
             },
         )
         .await?;
 
-        let providers = list_providers(&database).await?;
-        #[expect(clippy::unwrap_used, reason = "provider was inserted")]
-        let provider = providers
-            .iter()
-            .find(|p| p.name == "oauth-provider")
-            .unwrap();
-        assert_eq!(provider.provider_type, ProviderType::CodexOauth);
+        let flow = insert_flow(&database, new_device_flow(&definition)).await?;
 
-        // 5. Sweep expired states
-        delete_expired_oauth_states(&database, expires_at + 10_000).await?;
+        // Nothing is due before its next-poll instant.
+        let now = 400;
 
-        let swept = find_oauth_state_type(&database, "antigravity-state-1", now).await?;
-        assert!(swept.is_none());
+        assert!(claim_due_device_flow(&database, now, 0).await?.is_none());
+
+        // The due flow is claimed by exactly one conditional update.
+        let claimed = claim_due_device_flow(&database, 500, 0)
+            .await?
+            .expect("the due flow claims");
+
+        assert_eq!(claimed.id, flow.id);
+        assert_eq!(claimed.device_poll_started_at, Some(500));
+
+        // A second claimant cannot steal a live claim.
+        assert!(claim_due_device_flow(&database, 500, 0).await?.is_none());
+
+        // A lost claim is the owner's alone to persist; the schedule retry lands.
+        let is_persisted = persist_device_poll(
+            &database,
+            flow.id,
+            999,
+            DevicePollOutcome::Retry {
+                next_poll_at: 10_000,
+                interval_seconds: 5,
+            },
+        )
+        .await?;
+
+        assert!(!is_persisted);
+
+        let is_persisted = persist_device_poll(
+            &database,
+            flow.id,
+            500,
+            DevicePollOutcome::Retry {
+                next_poll_at: 10_000,
+                interval_seconds: 5,
+            },
+        )
+        .await?;
+
+        assert!(is_persisted);
+
+        let rescheduled = find_flow_by_state(&database, "st-device-1", 0)
+            .await?
+            .expect("the flow persists");
+
+        assert_eq!(rescheduled.device_next_poll_at, Some(10_000));
+        assert_eq!(rescheduled.device_poll_started_at, None);
+
+        // The success commits the provider write and the terminal outcome in one transaction.
+        let target = insert_test_provider(&database, "oauth-target", "ot-").await?;
+
+        let mut transaction = database.transaction().await?;
+
+        let is_committed =
+            commit_device_success_in_transaction(&mut transaction, flow.id, 10_000 - 5, target)
+                .await?;
+
+        assert!(!is_committed, "a stale claim cannot commit");
+
+        // The discarded attempt releases its write lock before the next claim.
+        transaction.rollback().await?;
+
+        let mut transaction = database.transaction().await?;
+
+        let claim = claim_due_device_flow(&database, 10_000, 0)
+            .await?
+            .expect("the rescheduled flow claims again");
+
+        assert_eq!(claim.device_poll_started_at, Some(10_000));
+
+        let is_committed =
+            commit_device_success_in_transaction(&mut transaction, flow.id, 10_000, target).await?;
+
+        assert!(is_committed);
+
+        transaction.commit().await?;
+
+        let terminal = find_flow_by_state(&database, "st-device-1", 0)
+            .await?
+            .expect("the terminal row stays until consumed");
+
+        assert_eq!(terminal.outcome, Some(FlowOutcome::Succeeded));
+        assert_eq!(terminal.result_provider_id, Some(target));
+
+        // The result is consumed exactly once.
+        let consumed = consume_terminal_flow(&database, "st-device-1", 0).await?;
+
+        assert!(consumed.is_some());
+        assert!(
+            consume_terminal_flow(&database, "st-device-1", 0)
+                .await?
+                .is_none()
+        );
+
+        // A pending authorization-code flow is never consumed by the terminal-only consume.
+        let auth_flow = insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "st-auth-1".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("new-provider".to_string()),
+                model_prefix: Some("np-".to_string()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::AuthorizationCode,
+                slots: BTreeMap::new(),
+                code_verifier: Some("verifier".to_string()),
+                device_code: None,
+                device_user_code: None,
+                device_verification_uri: None,
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: None,
+                device_next_poll_at: None,
+                expires_at: 1_000_000,
+            },
+        )
+        .await?;
+
+        assert!(
+            consume_terminal_flow(&database, "st-auth-1", 0)
+                .await?
+                .is_none()
+        );
+
+        // The atomic consume spends the row exactly once, whatever its state.
+        let consumed = consume_flow(&database, "st-auth-1", 0).await?;
+
+        assert_eq!(consumed.map(|flow| flow.id), Some(auth_flow.id));
+        assert!(consume_flow(&database, "st-auth-1", 0).await?.is_none());
+
+        // The expiry sweep clears unconsumed rows.
+        insert_flow(&database, new_device_flow(&definition)).await?;
+
+        sweep_expired_flows(&database, 2_000_000).await?;
+
+        assert!(
+            find_flow_by_state(&database, "st-device-1", 0)
+                .await?
+                .is_none()
+        );
 
         Ok(())
     }
 
-    /// Verifies that the schema itself enforces the `providers.type` closed domain: a drifted
-    /// value is rejected at write time and classifies as a storage constraint error, instead of
-    /// surviving until the read-side type parse turns every dispatch for the provider into
-    /// drift. First-party write paths only ever insert parsed types, so the probe uses a
-    /// raw statement.
+    /// Verifies that a definition-version update leaves existing providers on the old pair: the
+    /// new version never substitutes for an explicit reference, and the credential-kind
+    /// agreement is checkable from the rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn definition_updates_leave_existing_references_on_the_old_pair()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = create_test_database().await;
+
+        let definition = test_support::insert_static_key_definition(
+            &database,
+            "versioned",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "bound",
+            "b-",
+            Some("http://localhost:8080"),
+            StoredCredentials::ApiKey {
+                api_key: "k".to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(provider.definition.version.get(), 1);
+
+        // A changed credential type is allowed in a new version: v2 of the same name speaks
+        // OAuth.
+        #[expect(clippy::unwrap_used, reason = "the successor payload parses")]
+        let successor: crate::provider::DefinitionPayload =
+            serde_json::from_value(serde_json::json!({
+              "format": "openai_chat_completion",
+              "inference": {
+                "url": [
+                  {
+                    "type": "base"
+                  },
+                  {
+                    "type": "literal",
+                    "value": "/chat/completions"
+                  }
+                ],
+                "upstream_streaming": "match_client"
+              },
+              "credential": {
+                "type": "oauth",
+                "client_id": "fixture",
+                "grant": {
+                  "type": "device",
+                  "authorization": {
+                    "request": {
+                      "method": "POST",
+                      "url": [
+                        {
+                          "type": "literal",
+                          "value": "http://127.0.0.1:1/device"
+                        }
+                      ],
+                      "body": {
+                        "kind": "form",
+                        "fields": [
+                          {
+                            "name": "client_id",
+                            "value": [
+                              {
+                                "type": "client_id"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "response": {
+                      "encoding": "form",
+                      "fields": [
+                        {
+                          "path": [
+                            "device_code"
+                          ],
+                          "target": {
+                            "type": "device_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "user_code"
+                          ],
+                          "target": {
+                            "type": "user_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "verification_uri"
+                          ],
+                          "target": {
+                            "type": "verification_uri"
+                          },
+                          "required": false
+                        }
+                      ]
+                    }
+                  },
+                  "expires_in_fallback_seconds": 900
+                },
+                "exchange": {
+                  "request": {
+                    "method": "POST",
+                    "url": [
+                      {
+                        "type": "literal",
+                        "value": "http://127.0.0.1:1/token"
+                      }
+                    ],
+                    "body": {
+                      "kind": "form",
+                      "fields": [
+                        {
+                          "name": "device_code",
+                          "value": [
+                            {
+                              "type": "device_code"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "response": {
+                    "encoding": "json",
+                    "fields": [
+                      {
+                        "path": [
+                          "access_token"
+                        ],
+                        "target": {
+                          "type": "access_token"
+                        },
+                        "required": true
+                      }
+                    ]
+                  },
+                  "terminal_codes": [
+                    "expired_token"
+                  ]
+                },
+                "refresh": {
+                  "type": "none"
+                }
+              }
+            }))
+            .unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "the successor payload validates")]
+        successor.validate().unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "a positive literal version")]
+        let base_version = std::num::NonZeroI64::new(1).unwrap();
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: "versioned",
+                base_version: Some(base_version),
+                payload: &successor,
+                created_at: 2,
+            },
+        )
+        .await?;
+
+        // The provider stays on v1 and its credentials stay api_key-shaped.
+        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
+            .await?
+            .expect("the provider persists");
+
+        assert_eq!(reloaded.definition.version.get(), 1);
+        assert_eq!(reloaded.credential_kind(), CredentialKind::ApiKey);
+
+        // The v2 row carries the OAuth discriminator.
+        let mut transaction = database.transaction().await?;
+
+        let v2 = storage_cr::provider_definitions::latest_version_in_transaction(
+            &mut transaction,
+            "versioned",
+        )
+        .await?
+        .expect("a latest version exists");
+
+        transaction.commit().await?;
+
+        #[expect(clippy::unwrap_used, reason = "a positive stored version")]
+        let v2 = std::num::NonZeroI64::new(v2).unwrap();
+
+        let row = storage_cr::provider_definitions::find_definition(&database, "versioned", v2)
+            .await?
+            .expect("v2 exists");
+
+        assert!(matches!(
+            row.payload.credential,
+            CredentialAcquisition::OAuth { .. }
+        ));
+
+        Ok(())
+    }
+
+    /// Verifies the JSON lease mechanics against the real engine: the acquire stamps the
+    /// credentials' `refresh_started_at` only for an elapsed known expiry, a stale lease is
+    /// stealable, the lease-conditioned persist lands only under the acquired stamp, and the
+    /// reprovision persist merges its fields over the stored document.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn json_refresh_lease_acquires_persists_and_recovers() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = create_test_database().await;
+
+        let definition = oauth_definition();
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: definition.name.as_str(),
+                base_version: None,
+                payload: &definition.payload,
+                created_at: definition.created_at,
+            },
+        )
+        .await?;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "leased",
+            "l-",
+            Some("http://localhost:8080"),
+            StoredCredentials::OAuth {
+                access_token: "old".to_string(),
+                refresh_token: Some("refresh".to_string()),
+                slots: BTreeMap::new(),
+                expires_at: Some(1),
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        let now = 1_000;
+        let stale_before = now - 90;
+
+        let mut transaction = database.transaction().await?;
+
+        // The expired token acquires the lease.
+        let lease = super::providers::try_acquire_refresh_lease(
+            &mut transaction,
+            provider.id,
+            now,
+            stale_before,
+            0,
+        )
+        .await?
+        .expect("the expired token acquires");
+
+        transaction.commit().await?;
+
+        // A concurrent acquirer sees the live lease.
+        let mut transaction = database.transaction().await?;
+
+        let is_acquired = super::providers::try_acquire_refresh_lease(
+            &mut transaction,
+            provider.id,
+            now,
+            stale_before,
+            0,
+        )
+        .await
+        .map_err(|error| Box::new(error) as Box<dyn StdError>)?;
+
+        assert!(is_acquired.is_none());
+
+        transaction.rollback().await?;
+
+        // The lease-conditioned persist lands only under the acquired stamp, clearing it.
+        let renewed = StoredCredentials::OAuth {
+            access_token: "new".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            slots: BTreeMap::new(),
+            expires_at: Some(2_000),
+            refresh_started_at: None,
+        };
+
+        assert!(
+            !super::providers::persist_renewed_credentials_for_lease(
+                &database,
+                provider.id,
+                lease + 1,
+                &renewed,
+            )
+            .await?,
+            "a wrong stamp never persists"
+        );
+
+        assert!(
+            super::providers::persist_renewed_credentials_for_lease(
+                &database,
+                provider.id,
+                lease,
+                &renewed,
+            )
+            .await?
+        );
+
+        // A null expiry never acquires: the not-scheduled state never refreshes.
+        let unscheduled = StoredCredentials::OAuth {
+            access_token: "old".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            slots: BTreeMap::new(),
+            expires_at: None,
+            refresh_started_at: None,
+        };
+
+        let mut transaction = database.transaction().await?;
+
+        storage_cr::providers::replace_credentials_in_transaction(
+            &mut transaction,
+            provider.id,
+            &unscheduled,
+        )
+        .await?;
+
+        transaction.commit().await?;
+
+        let mut transaction = database.transaction().await?;
+
+        let is_acquired = super::providers::try_acquire_refresh_lease(
+            &mut transaction,
+            provider.id,
+            now,
+            stale_before,
+            0,
+        )
+        .await
+        .map_err(|error| Box::new(error) as Box<dyn StdError>)?;
+
+        assert!(is_acquired.is_none());
+
+        transaction.rollback().await?;
+
+        // The reprovision persist merges its fields over the stored document under the lease.
+        let mut transaction = database.transaction().await?;
+
+        storage_cr::providers::replace_credentials_in_transaction(
+            &mut transaction,
+            provider.id,
+            &renewed,
+        )
+        .await?;
+
+        transaction.commit().await?;
+
+        let mut transaction = database.transaction().await?;
+
+        let lease = super::providers::try_acquire_refresh_lease(
+            &mut transaction,
+            provider.id,
+            3_000,
+            stale_before,
+            0,
+        )
+        .await
+        .map_err(|error| Box::new(error) as Box<dyn StdError>)?
+        .expect("the expired token acquires again");
+
+        transaction.commit().await?;
+
+        assert!(
+            super::providers::persist_reprovision_for_lease(
+                &database,
+                provider.id,
+                lease,
+                "provisioned",
+                Some(9_000_000),
+                Some("http://new-base.example"),
+            )
+            .await?
+        );
+
+        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
+            .await?
+            .expect("the provider persists");
+
+        assert_eq!(reloaded.credentials.secret(), "provisioned");
+        assert_eq!(
+            reloaded.base_url.as_deref(),
+            Some("http://new-base.example")
+        );
+
+        let StoredCredentials::OAuth {
+            refresh_token,
+            refresh_started_at,
+            ..
+        } = &reloaded.credentials
+        else {
+            panic!("the provider carries OAuth credentials");
+        };
+
+        assert_eq!(refresh_token.as_deref(), Some("refresh"));
+        assert_eq!(*refresh_started_at, None);
+
+        Ok(())
+    }
+
+    /// Verifies the credential kind conversions: the storage form and the wire form are one
+    /// vocabulary.
+    ///
+    /// # Panics
+    ///
+    /// Panics if value serialization fails.
+    #[test]
+    fn converts_credential_kind_database_values() {
+        for kind in [CredentialKind::ApiKey, CredentialKind::OAuth] {
+            #[expect(clippy::unwrap_used, reason = "into_value returns Ok for the kind")]
+            let value = kind.into_value().unwrap();
+            assert_eq!(value, Value::Text(kind.as_str().to_string()));
+        }
+    }
+
+    /// Verifies that the schema itself enforces the `provider_definitions.format` closed domain:
+    /// a drifted value is rejected at write time and classifies as a storage constraint error.
     ///
     /// # Panics
     ///
     /// Panics if the drifted insert unexpectedly succeeds.
     #[tokio::test]
-    async fn rejects_unknown_provider_type_at_write_time() -> Result<(), Box<dyn StdError>> {
+    async fn rejects_unknown_definition_format_at_write_time() -> Result<(), Box<dyn StdError>> {
         let (database, _guard) = create_test_database().await;
 
         let outcome = database
             .execute(
-                "INSERT INTO providers (name, model_prefix, type, base_url, credentials) \
-                 VALUES ('drifted', 'd-', 'openai_compatible', 'https://x.example', '{}')",
+                "INSERT INTO provider_definitions (name, version, format, inference, credential, \
+                 created_at) VALUES ('drifted', 1, 'bogus_format', '{}', '{}', 1)",
                 (),
             )
             .await;
 
         #[expect(clippy::expect_used, reason = "the schema CHECK rejects the drift")]
-        let error = outcome.expect_err("drifted type must violate the schema CHECK");
+        let error = outcome.expect_err("drifted format must violate the schema CHECK");
 
         assert!(
             matches!(Error::from(error), Error::Constraint { .. }),
@@ -1417,66 +1889,168 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies value conversions between database values and provider types.
+    /// Pins the refresh-mode vocabulary: a fixture carrying a refresh grant parses and a
+    /// `reprovision` mode without steps is rejected by the write-time validation, so the
+    /// definition rows can never disagree with the engine's dispatch.
     ///
     /// # Panics
     ///
-    /// Panics if value serialization or deserialization fails.
+    /// Panics if a fixture validates or rejects outside its contract.
     #[test]
-    fn converts_provider_type_database_values() {
-        for provider_type in [
-            ProviderType::OpenAiResponse,
-            ProviderType::OpenAiChatCompletion,
-            ProviderType::GeminiGenerateContent,
-            ProviderType::GeminiInteraction,
-            ProviderType::AnthropicMessages,
-            ProviderType::CodexOauth,
-            ProviderType::AntigravityOauth,
-        ] {
-            #[expect(clippy::unwrap_used, reason = "into_value returns Ok for ProviderType")]
-            let value = provider_type.into_value().unwrap();
-            assert_eq!(value, Value::Text(provider_type.as_str().to_string()));
+    fn rejects_reprovision_without_steps() {
+        #[expect(clippy::unwrap_used, reason = "the fixture parses")]
+        let mut payload: crate::provider::DefinitionPayload =
+            serde_json::from_value(serde_json::json!({
+              "format": "openai_chat_completion",
+              "inference": {
+                "url": [
+                  {
+                    "type": "base"
+                  }
+                ],
+                "upstream_streaming": "match_client"
+              },
+              "credential": {
+                "type": "oauth",
+                "client_id": "fixture",
+                "grant": {
+                  "type": "device",
+                  "authorization": {
+                    "request": {
+                      "method": "POST",
+                      "url": [
+                        {
+                          "type": "literal",
+                          "value": "http://127.0.0.1:1/device"
+                        }
+                      ],
+                      "body": {
+                        "kind": "form",
+                        "fields": [
+                          {
+                            "name": "client_id",
+                            "value": [
+                              {
+                                "type": "client_id"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "response": {
+                      "encoding": "form",
+                      "fields": [
+                        {
+                          "path": [
+                            "device_code"
+                          ],
+                          "target": {
+                            "type": "device_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "user_code"
+                          ],
+                          "target": {
+                            "type": "user_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "verification_uri"
+                          ],
+                          "target": {
+                            "type": "verification_uri"
+                          },
+                          "required": false
+                        }
+                      ]
+                    }
+                  },
+                  "expires_in_fallback_seconds": 900
+                },
+                "exchange": {
+                  "request": {
+                    "method": "POST",
+                    "url": [
+                      {
+                        "type": "literal",
+                        "value": "http://127.0.0.1:1/token"
+                      }
+                    ],
+                    "body": {
+                      "kind": "form",
+                      "fields": [
+                        {
+                          "name": "device_code",
+                          "value": [
+                            {
+                              "type": "device_code"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "response": {
+                    "encoding": "json",
+                    "fields": [
+                      {
+                        "path": [
+                          "access_token"
+                        ],
+                        "target": {
+                          "type": "access_token"
+                        },
+                        "required": true
+                      }
+                    ]
+                  },
+                  "terminal_codes": [
+                    "expired_token"
+                  ]
+                },
+                "refresh": {
+                  "type": "reprovision"
+                }
+              }
+            }))
+            .unwrap();
 
-            #[expect(clippy::unwrap_used, reason = "the helper returns Ok for valid Text")]
-            let parsed = provider_type_from_value(value).unwrap();
-            assert_eq!(parsed, provider_type);
-        }
+        #[expect(clippy::unwrap_used, reason = "the reprovision rule rejects")]
+        let error = payload.validate().unwrap_err();
 
-        let invalid = Value::Text("unknown_type".to_string());
-        assert!(provider_type_from_value(invalid).is_err());
+        assert!(error.message.contains("reprovision"), "{error}");
 
-        assert!(provider_type_from_value(Value::Integer(42)).is_err());
+        payload.provisioning = Some(Vec::new());
+
+        #[expect(clippy::unwrap_used, reason = "the empty-steps rule rejects")]
+        let error = payload.validate().unwrap_err();
+
+        assert!(
+            error.message.contains("at least one step") || error.message.contains("reprovision"),
+            "{error}"
+        );
     }
 
-    /// Verifies value conversions between database values and OAuth provider types.
+    /// The refresh-mode of the fixture OAuth definition is `none`: the engine never enters the
+    /// lease for it, which the renewable predicate pins.
     ///
     /// # Panics
     ///
-    /// Panics if value serialization or deserialization fails.
+    /// Panics if the fixture disagrees with the predicate.
     #[test]
-    fn converts_oauth_provider_type_database_values() {
-        for oauth_type in [
-            OAuthProviderType::CodexOauth,
-            OAuthProviderType::AntigravityOauth,
-        ] {
-            #[expect(
-                clippy::unwrap_used,
-                reason = "into_value returns Ok for OAuthProviderType"
-            )]
-            let value = oauth_type.into_value().unwrap();
-            assert_eq!(value, Value::Text(oauth_type.as_str().to_string()));
+    fn the_none_refresh_mode_never_renews() {
+        let definition = oauth_definition();
 
-            #[expect(clippy::unwrap_used, reason = "the helper returns Ok for valid Text")]
-            let parsed = oauth_provider_type_from_value(value).unwrap();
-            assert_eq!(parsed, oauth_type);
-        }
+        let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
+            panic!("the fixture carries OAuth credentials");
+        };
 
-        let incompatible = Value::Text("openai_compatible".to_string());
-        assert!(oauth_provider_type_from_value(incompatible).is_err());
-
-        let invalid = Value::Text("unknown_type".to_string());
-        assert!(oauth_provider_type_from_value(invalid).is_err());
-
-        assert!(oauth_provider_type_from_value(Value::Integer(42)).is_err());
+        assert!(matches!(recipe.refresh, TokenRefresh::None));
     }
 }

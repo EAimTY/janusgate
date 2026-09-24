@@ -4,11 +4,14 @@ import type { BadgeTone } from "/src/ui/feedback";
 import { modelServingBadge } from "/src/ui/models-table";
 
 const enabledProvider: ProviderResponse = {
-    type: "openai_chat_completion",
+    type: "api_key",
     id: 4,
     name: "local",
     model_prefix: "local-",
     is_enabled: true,
+    provider_definition_name: "generic-openai-chat-completions",
+    provider_definition_version: 1,
+    format: "openai_chat_completion",
     base_url: "https://upstream.example.com/v1",
 };
 

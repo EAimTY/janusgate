@@ -495,7 +495,10 @@ describe("createScreenRead", () => {
 
 describe("row-identity predicates", () => {
     const staticProvider: ProviderResponse = {
-        type: "openai_response",
+        type: "api_key",
+    provider_definition_name: "generic-openai-responses",
+    provider_definition_version: 1,
+    format: "openai_response",
         id: 3,
         name: "alpha",
         model_prefix: "alpha-",
@@ -504,7 +507,11 @@ describe("row-identity predicates", () => {
     };
 
     const oauthProvider: ProviderResponse = {
-        type: "codex_oauth",
+        type: "oauth",
+    provider_definition_name: "codex",
+    provider_definition_version: 1,
+    format: "openai_response",
+    base_url: null,
         id: 4,
         name: "codex",
         model_prefix: "codex-",
@@ -540,7 +547,10 @@ describe("row-identity predicates", () => {
         expect(
             isSameProviderRow(staticProvider, {
                 ...staticProvider,
-                type: "openai_chat_completion",
+                type: "api_key",
+                provider_definition_name: "other",
+                provider_definition_version: 1,
+                format: "openai_chat_completion",
             }),
         ).toBe(false);
         expect(
@@ -989,7 +999,10 @@ describe("createPinnedRow", () => {
     }
 
     const provider: ProviderResponse = {
-        type: "openai_response",
+        type: "api_key",
+    provider_definition_name: "generic-openai-responses",
+    provider_definition_version: 1,
+    format: "openai_response",
         id: 3,
         name: "alpha",
         model_prefix: "alpha-",

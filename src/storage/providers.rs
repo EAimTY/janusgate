@@ -1,55 +1,42 @@
-//! Provider row persistence: CRUD, credential replacement, and the token refresh lease.
+//! Provider row persistence: CRUD, definition rebinding, credential replacement, and the JSON
+//! token-refresh lease.
+//!
+//! The refresh lease lives inside the `credentials` JSON document (the OAuth variant's
+//! `refresh_started_at` member), and every lease transition conditions on
+//! `json_extract(credentials, …)` — the acquire on the stored expiry and a live competing lease,
+//! the persist on the acquired stamp — so a concurrent reauthorization or stale-lease
+//! reacquisition is never overwritten by a refresh derived from superseded credentials.
 
-use super::{Error, models};
+use super::{Error, models, provider_from_row};
 use crate::{
     database::{Database, Error as DatabaseError, Transaction, params},
-    provider::{Credentials, Model, NewProvider, Provider},
+    provider::{Model, Provider, StoredCredentials, definition::ProviderDefinition},
 };
 
-/// The `providers:update` field state for an existing provider (README §7.1): the caller restates
-/// the row's complete readable state, so every field is total — the write applies each one
-/// verbatim, and only the write-only `credentials` is supplied-or-absent, with `None` meaning
-/// absent and keeping the stored secret.
-pub(crate) struct ProviderUpdate<'a> {
-    /// Unique provider name; may rename the provider.
-    pub(crate) name: &'a str,
-
-    /// Prefix prepended to every public model name; may be empty.
-    pub(crate) model_prefix: &'a str,
-
-    /// Upstream base URL; `None` for the OAuth account kinds.
-    pub(crate) base_url: Option<&'a str>,
-
-    /// Whether the provider serves traffic.
-    pub(crate) is_enabled: bool,
-
-    /// Replacement credentials; `None` keeps the stored ones.
-    pub(crate) credentials: Option<&'a Credentials>,
-}
-
 /// Inserts one provider row and returns the stored row constructed from the supplied fields,
-/// mirroring [`update_provider`]'s contract: the returned row is exactly what the statement wrote,
-/// so callers never re-read after creation.
+/// mirroring [`update_provider`]'s contract: the returned row is exactly what the statement
+/// wrote, so callers never re-read after creation.
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when the insert fails.
 pub(crate) async fn insert_provider(
     database: &Database,
-    provider: &NewProvider<'_>,
+    provider: NewProvider<'_>,
 ) -> Result<Provider, Error> {
     let rows = database
         .query(
-            "INSERT INTO providers (name, model_prefix, type, base_url, credentials, \
-             expires_at, is_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
+            "INSERT INTO providers (name, provider_definition_name, provider_definition_version, \
+             is_enabled, model_prefix, base_url, credentials) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
             params![
                 provider.name,
+                provider.definition.name.as_str(),
+                provider.definition.version.get(),
+                i64::from(provider.is_enabled),
                 provider.model_prefix,
-                provider.provider_type,
                 provider.base_url,
                 provider.credentials.to_json(),
-                provider.expires_at,
-                i64::from(provider.is_enabled),
             ],
         )
         .await?;
@@ -64,49 +51,49 @@ pub(crate) async fn insert_provider(
         id,
         name: provider.name.to_string(),
         model_prefix: provider.model_prefix.to_string(),
-        provider_type: provider.provider_type,
         base_url: provider.base_url.map(str::to_string),
         credentials: provider.credentials.clone(),
-        expires_at: provider.expires_at,
         is_enabled: provider.is_enabled,
+        definition: provider.definition.clone(),
     })
 }
 
-/// Lists every stored provider.
+/// Lists every stored provider with its definition, ordered by name.
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when the query fails or a row is malformed.
 pub(crate) async fn list_providers(database: &Database) -> Result<Vec<Provider>, Error> {
     let sql = format!(
-        "SELECT {} FROM providers ORDER BY name",
-        super::PROVIDER_COLUMNS
+        "SELECT {} {} ORDER BY p.name",
+        super::PROVIDER_COLUMNS,
+        super::PROVIDER_JOINED_FROM
     );
 
     let rows = database.query(sql, ()).await?;
 
-    rows.iter().map(super::provider_from_row).collect()
+    rows.iter().map(provider_from_row).collect()
 }
 
 /// Fetches one provider by name, for creation-time name-taken checks.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the query fails or the row is malformed.
+/// Returns [`Error`] when the query fails or a row is malformed.
 pub(crate) async fn find_provider(
     database: &Database,
     name: &str,
 ) -> Result<Option<Provider>, Error> {
     let rows = database.query(find_provider_sql(), params![name]).await?;
 
-    rows.first().map(super::provider_from_row).transpose()
+    rows.first().map(provider_from_row).transpose()
 }
 
 /// Fetches one provider by id.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the query fails or the row is malformed.
+/// Returns [`Error`] when the query fails or a row is malformed.
 pub(crate) async fn find_provider_by_id(
     database: &Database,
     provider_id: i64,
@@ -115,7 +102,7 @@ pub(crate) async fn find_provider_by_id(
         .query(find_provider_by_id_sql(), params![provider_id])
         .await?;
 
-    rows.first().map(super::provider_from_row).transpose()
+    rows.first().map(provider_from_row).transpose()
 }
 
 /// Fetches one provider by id inside a transaction, mirroring [`find_provider_by_id`] against the
@@ -123,7 +110,7 @@ pub(crate) async fn find_provider_by_id(
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the query fails or the row is malformed.
+/// Returns [`Error`] when the query fails or a row is malformed.
 pub(crate) async fn find_provider_by_id_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
@@ -132,7 +119,7 @@ pub(crate) async fn find_provider_by_id_in_transaction(
         .query(find_provider_by_id_sql(), params![provider_id])
         .await?;
 
-    rows.first().map(super::provider_from_row).transpose()
+    rows.first().map(provider_from_row).transpose()
 }
 
 /// Fetches one provider by id after a write, failing with an internal error when the row is gone: a
@@ -167,54 +154,51 @@ pub(crate) async fn delete_provider(database: &Database, provider_id: i64) -> Re
     Ok(changes == 1)
 }
 
-/// Replaces provider credentials, resets the token expiry, and clears any refresh lease, returning
-/// whether a provider row was still there to update.
-///
-/// Reporting `false` lets a caller whose outer read observed the row — the OAuth reauthorization —
-/// fail with the refresh path's 404 classification when a concurrent `providers:delete` won the
-/// race, instead of a silent no-op followed by a storage-drift 500 from the reload.
+/// Replaces the whole credentials document inside the caller's transaction; see
+/// [`replace_credentials`].
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when the update fails.
-pub(crate) async fn update_credentials(
-    database: &Database,
+pub(crate) async fn replace_credentials_in_transaction(
+    transaction: &mut Transaction,
     provider_id: i64,
-    credentials: &Credentials,
-    expires_at: Option<i64>,
-) -> Result<bool, Error> {
-    let changes = database
+    credentials: &StoredCredentials,
+) -> Result<(), Error> {
+    transaction
         .execute(
-            "UPDATE providers SET credentials = ?1, expires_at = ?2, refresh_started_at = NULL \
-             WHERE id = ?3",
-            params![credentials.to_json(), expires_at, provider_id],
+            "UPDATE providers SET credentials = ?1 WHERE id = ?2",
+            params![credentials.to_json(), provider_id],
         )
         .await?;
 
-    Ok(changes == 1)
+    Ok(())
 }
 
 /// Applies one `providers:update` rewrite to an existing provider inside a single transaction.
 ///
-/// The provider row is re-read inside the transaction for the rename check, the immutable-type pin,
-/// and the public-ID recompute, so a caller's stale outer snapshot can never write through a
-/// concurrent change's results (README §7.1). An unknown provider — including one deleted between
-/// the caller's outer read and this call — is rejected with 404 and nothing is written.
+/// The provider row is re-read inside the transaction for the rename check, the definition-rebind
+/// validation, and the public-ID recompute, so a caller's stale outer snapshot can never write
+/// through a concurrent change's results. An unknown provider — including one deleted between the
+/// caller's outer read and this call — is rejected with 404 and nothing is written.
 ///
 /// The write owns the provider row — the restated `name` included, so a different name renames the
-/// provider — an optional credentials replacement (which resets `expires_at` and clears any refresh
-/// lease), and — upholding the README §3 invariant — the `public_id` of unoverridden model rows,
-/// recomputed from the effective prefix through the shared composition rule [`Model::public_id`].
-/// Nothing is written when the new name is already taken by another provider, when any recomputed
-/// public ID would collide with an existing model row of another provider, or when two of the
-/// provider's own models would converge on one public ID; all rejections are 409 conflicts.
-/// Abandoning the transaction on any error discards every partial write, so the provider row and
-/// its model IDs can never drift apart.
+/// provider — an optional credentials replacement, and — upholding the model invariant — the
+/// `public_id` of unoverridden model rows, recomputed from the effective prefix through the shared
+/// composition rule [`Model::public_id`]. A named definition rebind validates the target version's
+/// existence and the credential-kind agreement against the replacement (or stored) credentials in
+/// the same transaction; the model routing is untouched beyond the prefix recompute, because the
+/// gateway never judges whether a model supports the target format. Nothing is written when the
+/// new name is already taken by another provider, when any recomputed public ID would collide with
+/// an existing model row of another provider, or when two of the provider's own models would
+/// converge on one public ID; all rejections are 409 conflicts. Abandoning the transaction on any
+/// error discards every partial write, so the provider row and its model IDs can never drift
+/// apart.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for an unknown provider, a failed statement, a taken name, or a recomputed
-/// public ID collision.
+/// Returns [`Error`] for an unknown provider or definition, a failed statement, a taken name, a
+/// credential-kind disagreement, or a recomputed public ID collision.
 pub(crate) async fn update_provider(
     database: &Database,
     provider_id: i64,
@@ -222,8 +206,7 @@ pub(crate) async fn update_provider(
 ) -> Result<(), Error> {
     let mut transaction = database.transaction().await?;
 
-    // The re-read pins the rename check and the public-ID recompute to the transaction's snapshot;
-    // the caller's outer type check cannot drift, because the stored type is immutable.
+    // The re-read pins the rename check and the public-ID recompute to the transaction's snapshot.
     let Some(provider) = find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
     else {
         return Err(Error::NotFound {
@@ -245,6 +228,47 @@ pub(crate) async fn update_provider(
             message: super::provider_name_taken_message(update.name),
         });
     }
+
+    // The definition rebind: validate the target version and the credential-kind agreement inside
+    // the transaction, so the reference and its compatible credentials commit together or not at
+    // all.
+    let (definition_name, definition_version) = match update.definition {
+        Some((name, version)) => {
+            let Some(definition) = super::provider_definitions::find_definition_in_transaction(
+                &mut transaction,
+                name,
+                version,
+            )
+            .await?
+            else {
+                return Err(Error::NotFound {
+                    message: format!(
+                        "Provider definition `{name}` version {version} does not exist"
+                    ),
+                });
+            };
+
+            let credentials = update.credentials.unwrap_or(&provider.credentials);
+
+            if credentials.kind() != definition.credential_kind() {
+                return Err(Error::Conflict {
+                    message: format!(
+                        "Provider definition `{name}` version {version} carries `{}` credentials, \
+                         but the provider carries `{}` credentials",
+                        definition.credential_kind().as_str(),
+                        credentials.kind().as_str(),
+                    ),
+                });
+            }
+
+            (name.to_string(), version)
+        }
+
+        None => (
+            provider.definition.name.clone(),
+            provider.definition.version,
+        ),
+    };
 
     let models = models::find_models_in_transaction(&mut transaction, provider.id).await?;
 
@@ -272,10 +296,13 @@ pub(crate) async fn update_provider(
 
     transaction
         .execute(
-            "UPDATE providers SET name = ?1, model_prefix = ?2, base_url = ?3, \
-             is_enabled = ?4 WHERE id = ?5",
+            "UPDATE providers SET name = ?1, provider_definition_name = ?2, \
+             provider_definition_version = ?3, model_prefix = ?4, base_url = ?5, \
+             is_enabled = ?6 WHERE id = ?7",
             params![
                 update.name,
+                definition_name,
+                definition_version.get(),
                 update.model_prefix,
                 update.base_url,
                 i64::from(update.is_enabled),
@@ -285,13 +312,7 @@ pub(crate) async fn update_provider(
         .await?;
 
     if let Some(credentials) = update.credentials {
-        transaction
-            .execute(
-                "UPDATE providers SET credentials = ?1, expires_at = NULL, \
-                 refresh_started_at = NULL WHERE id = ?2",
-                params![credentials.to_json(), provider.id],
-            )
-            .await?;
+        replace_credentials_in_transaction(&mut transaction, provider.id, credentials).await?;
     }
 
     for (new_id, model) in &recomputed {
@@ -312,15 +333,17 @@ pub(crate) async fn update_provider(
     Ok(())
 }
 
-/// Attempts to acquire the token refresh lease inside a transaction.
+/// Attempts to acquire the token refresh lease inside a transaction, stamping the OAuth
+/// credentials' `refresh_started_at` member.
 ///
-/// The lease is granted only when the token is still expired (no later than `freshness_margin`
-/// seconds into the future) and no other holder owns a lease acquired after `lease_stale_before`.
-/// Returns the acquired lease stamp, or `None` when another holder owns a live lease.
+/// The lease is granted only when the stored expiry is known and elapsed (no later than
+/// `freshness_margin` microseconds into the future — a `null` expiry never refreshes) and no
+/// other holder owns a lease acquired after `lease_stale_before`. Returns the acquired lease
+/// stamp, or `None` when another holder owns a live lease.
 ///
-/// The raw [`DatabaseError`] is returned instead of an [`Error`] because the caller must classify a
-/// stale-snapshot busy failure — a concurrent commit invalidating the read-then-write upgrade — as
-/// "not acquired" and retry through its poll loop, rather than render it as a failed request.
+/// The raw [`DatabaseError`] is returned instead of an [`Error`] because the caller must classify
+/// a stale-snapshot busy failure — a concurrent commit invalidating the read-then-write upgrade —
+/// as "not acquired" and retry through its poll loop, rather than render it as a failed request.
 ///
 /// # Errors
 ///
@@ -334,44 +357,83 @@ pub(crate) async fn try_acquire_refresh_lease(
 ) -> Result<Option<i64>, DatabaseError> {
     let changes = transaction
         .execute(
-            "UPDATE providers SET refresh_started_at = ?1 \
-             WHERE id = ?2 AND (expires_at IS NULL OR expires_at <= ?1 + ?4) \
-             AND (refresh_started_at IS NULL OR refresh_started_at < ?3)",
-            params![now, provider_id, lease_stale_before, freshness_margin],
+            "UPDATE providers SET credentials = json_set(credentials, \
+             '$.refresh_started_at', ?1) \
+             WHERE id = ?2 \
+             AND json_extract(credentials, '$.refresh_started_at') IS NULL \
+             AND json_extract(credentials, '$.expires_at') IS NOT NULL \
+             AND json_extract(credentials, '$.expires_at') <= ?1 + ?3 \
+             OR (id = ?2 \
+                 AND json_extract(credentials, '$.refresh_started_at') IS NOT NULL \
+                 AND json_extract(credentials, '$.refresh_started_at') < ?4 \
+                 AND json_extract(credentials, '$.expires_at') IS NOT NULL \
+                 AND json_extract(credentials, '$.expires_at') <= ?1 + ?3)",
+            params![now, provider_id, freshness_margin, lease_stale_before],
         )
         .await?;
 
     Ok((changes == 1).then_some(now))
 }
 
-/// Replaces provider credentials and resets the token expiry, but only while the caller still owns
-/// the refresh lease stamped `lease_started_at`.
+/// Persists the renewed credentials — the refreshed access token, its expiry, any rotation, and
+/// the cleared lease stamp — but only while the caller still owns the refresh lease stamped
+/// `lease_started_at`.
 ///
 /// Conditioning the persist on lease ownership closes the lost-update window against a concurrent
-/// credentials replacement or stale-lease reacquisition (README §3): when the stored stamp no
-/// longer matches, tokens derived from superseded credentials are discarded, the newer state's row
-/// — its lease included — is left untouched, and `false` is returned.
+/// credentials replacement or stale-lease reacquisition: when the stored stamp no longer matches,
+/// tokens derived from superseded credentials are discarded, the newer state's row — its lease
+/// included — is left untouched, and `false` is returned.
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when the update fails.
-pub(crate) async fn update_credentials_for_lease(
+pub(crate) async fn persist_renewed_credentials_for_lease(
     database: &Database,
     provider_id: i64,
     lease_started_at: i64,
-    credentials: &Credentials,
-    expires_at: Option<i64>,
+    credentials: &StoredCredentials,
 ) -> Result<bool, Error> {
     let changes = database
         .execute(
-            "UPDATE providers SET credentials = ?1, expires_at = ?2, refresh_started_at = NULL \
-             WHERE id = ?3 AND refresh_started_at = ?4",
-            params![
-                credentials.to_json(),
-                expires_at,
-                provider_id,
-                lease_started_at
-            ],
+            "UPDATE providers SET credentials = ?1 WHERE id = ?2 \
+             AND json_extract(credentials, '$.refresh_started_at') = ?3",
+            params![credentials.to_json(), provider_id, lease_started_at],
+        )
+        .await?;
+
+    Ok(changes == 1)
+}
+
+/// Persists a reprovisioning outcome — the new access token, its expiry, and optionally a new
+/// base URL — while the caller still owns the refresh lease stamped `lease_started_at`. The
+/// merge happens in SQL over the stored document, so the durable slots and refresh token a
+/// concurrent write renewed are never read stale into Rust and overwritten.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the update fails.
+pub(crate) async fn persist_reprovision_for_lease(
+    database: &Database,
+    provider_id: i64,
+    lease_started_at: i64,
+    access_token: &str,
+    expires_at: Option<i64>,
+    base_url: Option<&str>,
+) -> Result<bool, Error> {
+    // The patch document carries the JSON-null lease stamp explicitly, so the merge never
+    // depends on json_set's handling of SQL NULL.
+    let patch = serde_json::json!({
+        "access_token": access_token,
+        "expires_at": expires_at,
+        "refresh_started_at": null,
+    });
+
+    let changes = database
+        .execute(
+            "UPDATE providers SET credentials = json_patch(credentials, ?1), \
+             base_url = COALESCE(?2, base_url) \
+             WHERE id = ?3 AND json_extract(credentials, '$.refresh_started_at') = ?4",
+            params![patch.to_string(), base_url, provider_id, lease_started_at],
         )
         .await?;
 
@@ -389,8 +451,96 @@ pub(crate) async fn clear_refresh_lease(
 ) -> Result<(), Error> {
     database
         .execute(
-            "UPDATE providers SET refresh_started_at = NULL WHERE id = ?1",
+            "UPDATE providers SET credentials = json_set(\
+             credentials, '$.refresh_started_at', json('null')) WHERE id = ?1",
             params![provider_id],
+        )
+        .await?;
+
+    Ok(())
+}
+
+/// Inserts one provider row inside the caller's transaction — the device poller's atomic
+/// provider-write-plus-outcome commit — returning the new row's id.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the insert fails.
+pub(crate) async fn insert_provider_in_transaction(
+    transaction: &mut Transaction,
+    provider: NewProvider<'_>,
+) -> Result<i64, Error> {
+    let rows = transaction
+        .query(
+            "INSERT INTO providers (name, provider_definition_name, provider_definition_version, \
+             is_enabled, model_prefix, base_url, credentials) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
+            params![
+                provider.name,
+                provider.definition.name.as_str(),
+                provider.definition.version.get(),
+                i64::from(provider.is_enabled),
+                provider.model_prefix,
+                provider.base_url,
+                provider.credentials.to_json(),
+            ],
+        )
+        .await?;
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a single-row INSERT RETURNING yields exactly the inserted row, or errors"
+    )]
+    let id: i64 = rows[0].get(0)?;
+
+    Ok(id)
+}
+
+/// Replaces one provider's credentials and definition reference inside the caller's transaction —
+/// the reauthorize flow's atomic credentials-plus-reference commit — returning whether the row
+/// was still there to update.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the update fails.
+pub(crate) async fn rebind_credentials_in_transaction(
+    transaction: &mut Transaction,
+    provider_id: i64,
+    definition: &ProviderDefinition,
+    credentials: &StoredCredentials,
+) -> Result<bool, Error> {
+    let changes = transaction
+        .execute(
+            "UPDATE providers SET provider_definition_name = ?1, \
+             provider_definition_version = ?2, credentials = ?3 \
+             WHERE id = ?4",
+            params![
+                definition.name.as_str(),
+                definition.version.get(),
+                credentials.to_json(),
+                provider_id
+            ],
+        )
+        .await?;
+
+    Ok(changes == 1)
+}
+
+/// Updates one provider's base URL inside the caller's transaction — the working URL a
+/// provisioning sequence extracted, committed with the reauthorization.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the update fails.
+pub(crate) async fn set_base_url_in_transaction(
+    transaction: &mut Transaction,
+    provider_id: i64,
+    base_url: &str,
+) -> Result<(), Error> {
+    transaction
+        .execute(
+            "UPDATE providers SET base_url = ?1 WHERE id = ?2",
+            params![base_url, provider_id],
         )
         .await?;
 
@@ -401,8 +551,9 @@ pub(crate) async fn clear_refresh_lease(
 /// creation; all addressing of an existing provider goes through its id.
 fn find_provider_sql() -> String {
     format!(
-        "SELECT {} FROM providers WHERE name = ?1",
-        super::PROVIDER_COLUMNS
+        "SELECT {} {} WHERE p.name = ?1",
+        super::PROVIDER_COLUMNS,
+        super::PROVIDER_JOINED_FROM
     )
 }
 
@@ -410,7 +561,54 @@ fn find_provider_sql() -> String {
 /// share no query trait.
 fn find_provider_by_id_sql() -> String {
     format!(
-        "SELECT {} FROM providers WHERE id = ?1",
-        super::PROVIDER_COLUMNS
+        "SELECT {} {} WHERE p.id = ?1",
+        super::PROVIDER_COLUMNS,
+        super::PROVIDER_JOINED_FROM
     )
+}
+
+/// The fields of a provider about to be inserted.
+pub(crate) struct NewProvider<'a> {
+    /// Unique, non-empty, renameable label; a later `providers:update` request may rename it.
+    pub(crate) name: &'a str,
+
+    /// Prefix prepended to every public model name.
+    pub(crate) model_prefix: &'a str,
+
+    /// Upstream base URL; required by definitions whose URLs reference the base.
+    pub(crate) base_url: Option<&'a str>,
+
+    /// Parsed plaintext credentials.
+    pub(crate) credentials: &'a StoredCredentials,
+
+    /// The exact definition version the row binds to.
+    pub(crate) definition: &'a ProviderDefinition,
+
+    /// Whether the provider serves traffic.
+    pub(crate) is_enabled: bool,
+}
+
+/// The `providers:update` field state for an existing provider: the caller restates the row's
+/// complete readable state, so every readable field is total — the write applies each one
+/// verbatim — and only the write-only `credentials` is supplied-or-absent, with `None` meaning
+/// absent and keeping the stored secret. A named definition rebind is explicit and validated
+/// inside the write's transaction.
+pub(crate) struct ProviderUpdate<'a> {
+    /// Unique provider name; may rename the provider.
+    pub(crate) name: &'a str,
+
+    /// Prefix prepended to every public model name; may be empty.
+    pub(crate) model_prefix: &'a str,
+
+    /// Upstream base URL; `null` when the definition's URLs never reference the base.
+    pub(crate) base_url: Option<&'a str>,
+
+    /// Whether the provider serves traffic.
+    pub(crate) is_enabled: bool,
+
+    /// The definition version to rebind to; absent keeps the stored reference.
+    pub(crate) definition: Option<(&'a str, std::num::NonZeroI64)>,
+
+    /// Replacement credentials; `None` keeps the stored ones.
+    pub(crate) credentials: Option<&'a StoredCredentials>,
 }

@@ -15,10 +15,7 @@ mod request_parse;
 mod upstream_parse;
 mod upstream_render;
 
-pub(crate) use self::{
-    upstream_parse::UpstreamParser,
-    upstream_render::{render_codex_request, render_request},
-};
+pub(crate) use self::{upstream_parse::UpstreamParser, upstream_render::render_request_body};
 
 /// Marker of the outward Responses client format.
 #[derive(Debug)]

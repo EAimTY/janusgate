@@ -16,7 +16,10 @@ import { requestRefresh } from "/src/refresh-state";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
 
 const providerRow: ProviderResponse = {
-    type: "openai_chat_completion",
+    type: "api_key",
+    provider_definition_name: "generic-openai-chat-completions",
+    provider_definition_version: 1,
+    format: "openai_chat_completion",
     id: 1,
     name: "local",
     model_prefix: "local-",
@@ -117,7 +120,11 @@ function screenApi(
 ): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
+
     return {
+        listProviderDefinitions: refused,
+        createProviderDefinition: refused,
+        updateProviderDefinition: refused,
         listProviders: (signal) => heldCall(signal, holder.providers),
         listModels: (_request, signal) => heldCall(signal, holder.models),
         listApiKeys: (signal) => heldCall(signal, holder.apiKeys),

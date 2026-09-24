@@ -114,11 +114,12 @@ describe("createManagementApi", () => {
 
         const error = await createManagementApi(connection)
             .createProvider({
+                provider_definition_name: "generic-openai-responses",
+                provider_definition_version: 1,
                 name: "taken",
                 model_prefix: "",
                 is_enabled: true,
                 base_url: "https://upstream.example.com",
-                type: "openai_response",
                 api_key: "key",
             })
             .catch((failure: unknown) => failure);
@@ -354,11 +355,11 @@ describe("createManagementApi", () => {
 
         await expect(
             createManagementApi(connection).updateProvider({
-                type: "codex_oauth",
                 provider_id: 5,
                 name: "chatgpt",
                 model_prefix: "",
                 is_enabled: true,
+                base_url: null,
             }),
         ).resolves.toBeUndefined();
     });

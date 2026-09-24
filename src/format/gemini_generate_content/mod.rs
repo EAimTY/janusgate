@@ -38,8 +38,7 @@ mod upstream_parse;
 mod upstream_render;
 
 pub(crate) use self::{
-    upstream_parse::UpstreamParser,
-    upstream_render::{render_antigravity_request, render_compatible_request},
+    upstream_parse::UpstreamParser, upstream_render::render_generate_content_request,
 };
 
 /// Marker of the inbound Gemini GenerateContent client format.

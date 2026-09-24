@@ -8,7 +8,10 @@ import { requestRefresh } from "/src/refresh-state";
 import { ModelEditScreen } from "/src/screens/model-edit-screen";
 
 const provider: ProviderResponse = {
-    type: "openai_response",
+    type: "api_key",
+    provider_definition_name: "generic-openai-responses",
+    provider_definition_version: 1,
+    format: "openai_response",
     id: 3,
     name: "alpha",
     model_prefix: "alpha-",
@@ -41,7 +44,11 @@ function screenApi(holder: {
 }): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
+
     return {
+        listProviderDefinitions: refused,
+        createProviderDefinition: refused,
+        updateProviderDefinition: refused,
         listProviders: (signal) => {
             signal?.throwIfAborted();
             return Promise.resolve({

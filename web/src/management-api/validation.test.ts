@@ -12,52 +12,77 @@ import {
     parseListUsageResponse,
     parseModelEnvelope,
     parseProviderEnvelope,
+    parseCompleteProviderOauthResponse,
     parseQueryUsageResponse,
-    parseReauthorizeProviderResponse,
     parseStartProviderOauthResponse,
 } from "./validation";
 
-const compatibleProvider = {
-    type: "openai_chat_completion",
+const sharedFields = (overrides: Record<string, unknown> = {}) => ({
     id: 1,
     name: "local",
     model_prefix: "local-",
     is_enabled: true,
+    provider_definition_name: "generic-openai-chat-completions",
+    provider_definition_version: 1,
+    format: "openai_chat_completion",
     base_url: "https://upstream.example.com",
+    ...overrides,
+});
+
+const compatibleProvider = {
+    type: "api_key",
+    ...sharedFields(),
 };
 
 const oauthProvider = {
-    type: "codex_oauth",
-    id: 2,
-    name: "chatgpt",
-    model_prefix: "",
-    is_enabled: false,
-    expires_at: 1_800_000_000_000_000,
+    type: "oauth",
+    ...sharedFields({
+        id: 2,
+        name: "chatgpt",
+        model_prefix: "",
+        is_enabled: false,
+        provider_definition_name: "codex",
+        format: "openai_response",
+        base_url: null,
+        expires_at: 1_800_000_000_000_000,
+    }),
 };
 
 const antigravityProvider = {
-    type: "antigravity_oauth",
-    id: 3,
-    name: "antigravity",
-    model_prefix: "ag-",
-    is_enabled: true,
-    expires_at: null,
+    type: "oauth",
+    ...sharedFields({
+        id: 3,
+        name: "antigravity",
+        model_prefix: "ag-",
+        is_enabled: true,
+        provider_definition_name: "antigravity",
+        format: "gemini_generate_content",
+        base_url: null,
+        expires_at: null,
+    }),
 };
 
 const responsesProvider = {
-    type: "openai_response",
-    id: 4,
-    name: "responses",
-    model_prefix: "",
-    is_enabled: true,
-    base_url: "https://api.openai.com/v1",
+    type: "api_key",
+    ...sharedFields({
+        id: 4,
+        name: "responses",
+        model_prefix: "",
+        provider_definition_name: "generic-openai-responses",
+        format: "openai_response",
+        base_url: "https://api.openai.com/v1",
+    }),
 };
 
 const geminiProvider = {
-    type: "gemini_generate_content",
-    id: 5,
-    name: "gemini",
-    model_prefix: "gemini-",
+    type: "api_key",
+    ...sharedFields({
+        id: 5,
+        name: "gemini",
+        model_prefix: "gemini-",
+        provider_definition_name: "generic-gemini-generate-content",
+        format: "gemini_generate_content",
+    }),
     is_enabled: false,
     base_url: "https://generativelanguage.googleapis.com",
 };
@@ -186,7 +211,7 @@ describe("response validation", () => {
                     },
                 ],
             }),
-        ).toThrow(/response\.providers\[0\]\.type is not a known provider type/);
+        ).toThrow(/response\.providers\[0\]\.type is not a known credential kind/);
     });
 
     it("rejects a non-object response and a non-array listing", () => {
@@ -297,22 +322,24 @@ describe("response validation", () => {
 
         expect(
             parseStartProviderOauthResponse({
+                grant: "authorization_code",
                 authorize_url: "https://auth.example.com/authorize",
                 state: "opaque",
                 expires_at: 1_800_000_600_000_000,
             }),
         ).toEqual({
+            grant: "authorization_code",
             authorize_url: "https://auth.example.com/authorize",
             state: "opaque",
             expires_at: 1_800_000_600_000_000,
         });
 
         expect(
-            parseReauthorizeProviderResponse({
-                expires_at: 1_800_000_600_000_000,
+            parseCompleteProviderOauthResponse({
+                status: "pending",
             }),
         ).toEqual({
-            expires_at: 1_800_000_600_000_000,
+            status: "pending",
         });
     });
 

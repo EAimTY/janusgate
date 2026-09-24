@@ -647,37 +647,19 @@ mod tests {
         assert!(first.contains("export enum ErrorCode"));
         assert!(!first.contains("import "), "a single file needs no imports");
 
-        // Structurally identical variants of one tagged union collapse into a
-        // single member discriminated by the union of their kinds (README
-        // §7.3): each shared field list renders exactly once, never once per
-        // kind, while the accepted JSON documents are unchanged.
-        assert!(first.contains(
-            r#"export type ProviderResponse = { "type": "codex_oauth" | "antigravity_oauth","#,
-        ));
-        assert!(first.contains(
-            r#""type": "openai_response" | "openai_chat_completion" | "gemini_generate_content""#,
-        ));
-        assert!(first.contains(
-            r#""gemini_generate_content" | "gemini_interaction" | "anthropic_messages""#,
-        ));
-        assert!(
-            first
-                .contains("export type UpdateProviderRequest = { \"type\": \"openai_response\" |",)
-        );
-        assert!(first.contains(
-            r#""gemini_generate_content" | "gemini_interaction" | "anthropic_messages", "#,
-        ));
-        assert!(first.contains(r#""type": "codex_oauth" | "antigravity_oauth","#));
+        // The provider union is discriminated by the row's credential kind:
+        // one member per kind, each carrying the shared definition fields.
+        assert!(first.contains(r#"export type ProviderResponse = { "type": "oauth","#));
+        assert!(first.contains(r#""type": "api_key","#));
 
-        // The rule collapses only field-identical variants: the two OAuth
-        // update variants carry different credential types, so each stays a
-        // member of its own.
-        assert!(first.contains(
-            r#"credentials?: CodexOauthCredentials, } | { "type": "antigravity_oauth","#,
-        ));
+        // The complete-provider-union route payloads carry the shared fields
+        // through the flattened helper, so no member restates them.
+        assert!(first.contains("provider_definition_name"));
+        assert!(first.contains("provider_definition_version"));
+        assert!(first.contains("format: UpstreamFormat"));
 
-        // The static-key variants are field-identical in both provider unions,
-        // so no member restates their shared field list per kind.
+        // The union previously carried one member per provider kind; none of
+        // the old kinds survives as a ProviderResponse discriminant.
         for kind in [
             "openai_response",
             "openai_chat_completion",

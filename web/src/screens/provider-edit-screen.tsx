@@ -1,13 +1,11 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createMemo, createSignal, Show } from "solid-js";
-import { credentialExpiryLine, formatTimestamp, nowMicros } from "/src/format";
+import { credentialExpiryLine, nowMicros } from "/src/format";
 import { toUpdateProviderRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ModelResponse,
-    OAuthProviderType,
     ProviderResponse,
-    ReauthorizeProviderResponse,
     StartProviderOauthResponse,
 } from "/src/management-api/generated/v0";
 import {
@@ -21,7 +19,7 @@ import {
 import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
 import { defaultModelPrefix } from "/src/management-api/provider-defaults";
-import { findOAuthProviderType, isOAuthProviderRow } from "/src/management-api/vocabulary";
+import { isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
 import {
     createEditRow,
@@ -36,7 +34,7 @@ import { Button, ButtonLink, TextField } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { EmptyState, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { AuthorizeStep } from "/src/ui/oauth-flow";
+import { AuthorizeStep, DeviceStep } from "/src/ui/oauth-flow";
 import {
     CompatibleConnectionFields,
     ProviderEnabledSwitch,
@@ -158,14 +156,13 @@ export function ProviderEditScreen(props: {
                         />
 
                         <Show
-                            when={findOAuthProviderType(row.type)}
+                            when={isOAuthProviderRow(row) ? row : false}
                             keyed
                         >
-                            {(oauthType) => (
+                            {(oauthRow) => (
                                 <CredentialsCard
                                     api={props.api}
-                                    provider={row}
-                                    oauthType={oauthType}
+                                    provider={oauthRow}
                                     read={read}
                                 />
                             )}
@@ -217,7 +214,7 @@ function DetailsCard(props: {
     const [apiKey, setApiKey] = createSignal("");
     const [isSaving, setIsSaving] = createSignal(false);
 
-    const isStatic = (): boolean => findOAuthProviderType(baseline().type) === null;
+    const isStatic = (): boolean => !isOAuthProviderRow(baseline());
 
     // The typed prefix is the value on the wire, byte-for-byte: the gateway
     // stores `model_prefix` verbatim and recomposes every unoverridden
@@ -230,7 +227,7 @@ function DetailsCard(props: {
         isCustomPrefix() ? customPrefix() : defaultModelPrefix(name()),
     );
 
-    const trimmedBaseUrl = (): string => baseUrl().trim();
+    const trimmedBaseUrl = (): string => (baseUrl() ?? "").trim();
 
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
     const prefixError = (): string | null =>
@@ -238,7 +235,9 @@ function DetailsCard(props: {
 
     const baseUrlError = (): string | null => {
         const trimmed = trimmedBaseUrl();
-        return trimmed === "" || isBaseUrl(trimmed) ? null : baseUrlMessage();
+        const baselineRow = baseline();
+        const unchanged = trimmed === "" && (baselineRow === null || baselineRow.base_url === null);
+        return isBaseUrl(trimmed) || unchanged ? null : baseUrlMessage();
     };
 
     const apiKeyError = (): string | null =>
@@ -420,7 +419,7 @@ function DetailsCard(props: {
 
                 <Show when={isStatic()}>
                     <CompatibleConnectionFields
-                        baseUrl={baseUrl()}
+                        baseUrl={baseUrl() ?? ""}
                         apiKey={apiKey()}
                         onBaseUrlInput={setBaseUrl}
                         onApiKeyInput={setApiKey}
@@ -447,7 +446,6 @@ function DetailsCard(props: {
 function CredentialsCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
-    readonly oauthType: OAuthProviderType;
     readonly read: ScreenRead;
 }): JSX.Element {
     const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
@@ -471,8 +469,8 @@ function CredentialsCard(props: {
         setIsStarting(true);
 
         const outcome = await performManagementCall(() =>
-            props.api.startProviderOauth({
-                type: props.oauthType,
+            props.api.reauthorizeProvider({
+                provider_id: props.provider.id,
             }),
         );
 
@@ -510,10 +508,10 @@ function CredentialsCard(props: {
         setIsCompleting(true);
 
         const outcome = await performManagementCall(() =>
-            props.api.reauthorizeProvider({
+            props.api.completeProviderOauth({
+                grant: "authorization_code",
                 state: startedFlow.state,
                 code: pasted,
-                provider_id: props.provider.id,
             }),
         );
 
@@ -539,13 +537,12 @@ function CredentialsCard(props: {
             return;
         }
 
-        const replacement: ReauthorizeProviderResponse = outcome.result;
         setFlow(null);
         setCode("");
         props.read.showNotice({
             tone: "ok",
             title: "Credentials replaced.",
-            detail: `The new credentials expire ${formatTimestamp(replacement.expires_at)}.`,
+            detail: "The provider's listing now carries the new expiry.",
         });
         props.read.reload();
     };
@@ -553,6 +550,46 @@ function CredentialsCard(props: {
     const submit = (event: SubmitEvent): void => {
         event.preventDefault();
         void complete();
+    };
+
+    /** One device-poll ask; the step panel schedules the next one. */
+    const completeDevice = async (): Promise<"pending" | "done"> => {
+        const startedFlow = flow();
+
+        if (startedFlow === null || startedFlow.grant !== "device") {
+            return "done";
+        }
+
+        const outcome = await performManagementCall(() =>
+            props.api.completeProviderOauth({
+                grant: "device",
+                state: startedFlow.state,
+            }),
+        );
+
+        if (outcome.status !== "ok") {
+            return "pending";
+        }
+
+        if (outcome.result.status === "pending") {
+            return "pending";
+        }
+
+        setFlow(null);
+        props.read.showNotice({
+            tone: outcome.result.status === "succeeded" ? "ok" : "bad",
+            title:
+                outcome.result.status === "succeeded"
+                    ? "Credentials replaced."
+                    : "The flow failed.",
+            detail:
+                outcome.result.status === "failed"
+                    ? outcome.result.failure_message
+                    : "The provider's listing now carries the new expiry.",
+        });
+        props.read.reload();
+
+        return "done";
     };
 
     return (
@@ -580,7 +617,19 @@ function CredentialsCard(props: {
                         </div>
                     }
                 >
-                    {(startedFlow) => (
+                    {(startedFlow) =>
+                        startedFlow.grant === "device" ? (
+                            <DeviceStep
+                                flow={startedFlow}
+                                onComplete={completeDevice}
+                                onSucceeded={() => {}}
+                                onFailed={() => {}}
+                                onStartOver={() => {
+                                    setFlow(null);
+                                    setCode("");
+                                }}
+                            />
+                        ) : (
                         <form
                             novalidate={true}
                             class="flex flex-col gap-4"

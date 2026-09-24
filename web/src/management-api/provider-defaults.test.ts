@@ -6,59 +6,51 @@ import {
 } from "./provider-defaults";
 
 describe("defaultProviderBaseName", () => {
-    it("names each kind after the account it connects", () => {
-        expect(defaultProviderBaseName("codex_oauth")).toBe("codex");
-        expect(defaultProviderBaseName("antigravity_oauth")).toBe("antigravity");
+    it("names each format after the product family it connects", () => {
         expect(defaultProviderBaseName("openai_response")).toBe("openai");
         expect(defaultProviderBaseName("openai_chat_completion")).toBe("openai");
         expect(defaultProviderBaseName("gemini_generate_content")).toBe("gemini");
+        expect(defaultProviderBaseName("gemini_interaction")).toBe("gemini");
+        expect(defaultProviderBaseName("anthropic_messages")).toBe("anthropic");
     });
 });
 
 describe("suggestProviderName", () => {
     it("uses the base name while it is free", () => {
-        expect(suggestProviderName("codex_oauth", new Set())).toBe("codex");
+        expect(suggestProviderName("codex", new Set())).toBe("codex");
     });
 
     it("counts up from the base name while taken names collide", () => {
         expect(
             suggestProviderName(
-                "codex_oauth",
+                "codex",
                 new Set([
                     "codex",
                 ]),
             ),
         ).toBe("codex-1");
+    });
+
+    it("reuses the lowest free suffix", () => {
         expect(
             suggestProviderName(
-                "codex_oauth",
+                "codex",
                 new Set([
                     "codex",
                     "codex-1",
+                    "codex-3",
                 ]),
             ),
         ).toBe("codex-2");
     });
-
-    it("reuses the lowest freed suffix", () => {
-        expect(
-            suggestProviderName(
-                "codex_oauth",
-                new Set([
-                    "codex",
-                    "codex-2",
-                ]),
-            ),
-        ).toBe("codex-1");
-    });
 });
 
 describe("defaultModelPrefix", () => {
-    it("is the provider name with one trailing dash", () => {
+    it("derives from the name with one trailing dash", () => {
         expect(defaultModelPrefix("codex")).toBe("codex-");
     });
 
-    it("is empty when there is no name to derive from", () => {
+    it("stays empty while there is no name", () => {
         expect(defaultModelPrefix("")).toBe("");
     });
 });

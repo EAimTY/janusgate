@@ -1,104 +1,54 @@
 import type { JSX } from "@solidjs/web";
 import { For, Show } from "solid-js";
-import type { ProviderType } from "/src/management-api/generated/v0";
-import { providerTypeLabel } from "/src/management-api/vocabulary";
+import type { ProviderPreset } from "/src/management-api/presets";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
+import { Badge } from "/src/ui/feedback";
 import { Switch, TextField } from "/src/ui/controls";
 
-/** The seven provider kinds, exactly the wire contract's provider types. */
-export type ProviderKind = ProviderType;
-
-const PROVIDER_KIND_DESCRIPTIONS: Record<ProviderKind, string> = {
-    openai_response: "Any Responses API with a static key.",
-    openai_chat_completion: "Any Chat Completions API with a static key.",
-    gemini_generate_content: "Any generateContent API with a static key.",
-    gemini_interaction: "Any Interactions API with a static key.",
-    anthropic_messages: "Any Messages API with a static key.",
-    codex_oauth: "A ChatGPT account via its login page.",
-    antigravity_oauth: "A Google account via its login page.",
-};
-
-/** The kind picker groups wire formats by family: OAuth logins, OpenAI-compatible keys, Gemini, Anthropic. */
-const PROVIDER_KIND_GROUPS: ReadonlyArray<{
-    readonly title: string;
-    readonly kinds: ReadonlyArray<ProviderKind>;
-}> = [
-    {
-        title: "OAuth",
-        kinds: [
-            "codex_oauth",
-            "antigravity_oauth",
-        ],
-    },
-    {
-        title: "OpenAI-compatible",
-        kinds: [
-            "openai_response",
-            "openai_chat_completion",
-        ],
-    },
-    {
-        title: "Gemini",
-        kinds: [
-            "gemini_generate_content",
-            "gemini_interaction",
-        ],
-    },
-    {
-        title: "Anthropic",
-        kinds: [
-            "anthropic_messages",
-        ],
-    },
-];
-
 /**
- * The provider kind as grouped options. The five static-key wire formats
- * and the two OAuth logins are one choice here — not different creations —
- * because they are all providers whose credential paths merely differ.
+ * The preset picker: one card per catalog entry, the static-key compatible
+ * APIs first and the OAuth products after. A preset prefills the definition
+ * the creation flow registers; the operator edits the JSON it produced, the
+ * picker is only the starting point.
  */
-export function ProviderKindPicker(props: {
-    readonly value: ProviderKind;
-    readonly onChange: (value: ProviderKind) => void;
+export function ProviderPresetPicker(props: {
+    readonly presets: ReadonlyArray<ProviderPreset>;
+    readonly value: string;
+    readonly onChange: (id: string) => void;
     readonly isDisabled?: boolean;
 }): JSX.Element {
     return (
-        <div class="flex flex-col gap-4">
-            <For each={PROVIDER_KIND_GROUPS}>
-                {(group) => (
-                    <fieldset>
-                        <legend class="text-[13px] font-medium text-ink-dim">{group.title}</legend>
-                        <div class="mt-1.5 grid gap-2 sm:grid-cols-2">
-                            <For each={group.kinds}>
-                                {(kind) => {
-                                    const isSelected = (): boolean => props.value === kind;
+        <div class="grid gap-2 sm:grid-cols-2">
+            <For each={props.presets}>
+                {(preset) => {
+                    const isSelected = (): boolean => props.value === preset.id;
 
-                                    return (
-                                        <button
-                                            type="button"
-                                            aria-pressed={ariaBoolean(isSelected())}
-                                            disabled={props.isDisabled ?? false}
-                                            onClick={() => props.onChange(kind)}
-                                            class={joinClass(
-                                                "cursor-pointer rounded-xl border px-3.5 py-3 text-left transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60",
-                                                isSelected()
-                                                    ? "border-accent bg-accent-soft"
-                                                    : "border-rule-strong bg-surface hover:border-ink-faint",
-                                            )}
-                                        >
-                                            <span class="block text-[13.5px] font-semibold">
-                                                {providerTypeLabel(kind)}
-                                            </span>
-                                            <span class="mt-1 block text-[12.5px] leading-snug text-ink-dim">
-                                                {PROVIDER_KIND_DESCRIPTIONS[kind]}
-                                            </span>
-                                        </button>
-                                    );
-                                }}
-                            </For>
-                        </div>
-                    </fieldset>
-                )}
+                    return (
+                        <button
+                            type="button"
+                            aria-pressed={ariaBoolean(isSelected())}
+                            disabled={props.isDisabled ?? false}
+                            onClick={() => props.onChange(preset.id)}
+                            class={joinClass(
+                                "cursor-pointer rounded-xl border px-3.5 py-3 text-left transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60",
+                                isSelected()
+                                    ? "border-accent bg-accent-soft"
+                                    : "border-rule-strong bg-surface hover:border-ink-faint",
+                            )}
+                        >
+                            <span class="flex items-center gap-2">
+                                <span class="block text-[13.5px] font-semibold">{preset.title}</span>
+                                <Badge
+                                    tone={preset.verification === "live" ? "ok" : "muted"}
+                                    label={preset.verification === "live" ? "Verified live" : "Unverified"}
+                                />
+                            </span>
+                            <span class="mt-1 block text-[12.5px] leading-snug text-ink-dim">
+                                {preset.description}
+                            </span>
+                        </button>
+                    );
+                }}
             </For>
         </div>
     );

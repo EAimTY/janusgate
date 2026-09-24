@@ -13,7 +13,7 @@ use turso::{Builder as TursoBuilder, Connection, Database as TursoDatabase, Erro
 #[rustfmt::skip]
 pub(crate) use turso::{IntoParams, Row, Value, params};
 
-mod schema;
+pub(crate) mod schema;
 
 /// Maximum duration a database write waits for the database file lock held by another connection
 /// before failing.

@@ -9,7 +9,7 @@ import {
     isModelEffectivelyServing,
     modelCountsByProvider,
 } from "/src/management-api/serving";
-import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
+import { credentialKindLabel, isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
     buildOverviewDailySeries,
@@ -431,7 +431,7 @@ function AttentionRow(props: ProviderAttention): JSX.Element {
             />
             <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
                 <span class="font-medium">{props.provider.name}</span>
-                <span class="text-ink-dim">{` · ${providerTypeLabel(props.provider.type)} · ${props.attention.detail}`}</span>
+                <span class="text-ink-dim">{` · ${credentialKindLabel(props.provider.type)} · ${props.attention.detail}`}</span>
             </p>
             <ButtonLink href={hrefs.providerDetail(props.provider.id)}>Reconnect</ButtonLink>
         </li>

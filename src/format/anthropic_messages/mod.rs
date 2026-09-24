@@ -1,5 +1,5 @@
 //! Anthropic Messages codec: the `anthropic_messages` upstream format and the inbound
-//! `/api/anthropic-v1/messages` client surface (README §§5.5, 6.2–6.6).
+//! `/api/anthropic-v1/messages` client surface (README §§5.8, 6.2–6.6).
 //!
 //! The family splits by concern: `request_parse` parses the inbound body, `client_render` renders
 //! native Messages completions, `upstream_render` renders the upstream request, and
@@ -25,7 +25,7 @@ mod request_parse;
 mod upstream_parse;
 mod upstream_render;
 
-pub(crate) use self::{upstream_parse::UpstreamParser, upstream_render::render_request};
+pub(crate) use self::{upstream_parse::UpstreamParser, upstream_render::render_request_body};
 
 /// Marker of the inbound Anthropic Messages client format.
 #[derive(Debug)]

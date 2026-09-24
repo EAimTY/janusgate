@@ -1,14 +1,12 @@
 import { connectionService } from "/src/connection/app-service";
 import { type ActionName, type Diagnosis, diagnoseFailure } from "/src/management-api/diagnosis";
 import { managementFailureBaseUrl } from "/src/management-api/errors";
-import type { ProviderType } from "/src/management-api/generated/v0";
-
 /** The management call whose failure is being explained. */
 export type FailureCall = {
     /** The action the call attempted, which several diagnoses specialize on. */
     readonly action?: ActionName | undefined;
-    /** The provider type the call addressed, which a discovery failure's fix specializes on. */
-    readonly providerType?: ProviderType | undefined;
+    /** Whether the provider the call addressed logs in upstream, which a discovery failure's fix specializes on. */
+    readonly isOAuthProvider?: boolean | undefined;
 };
 
 /**
@@ -27,6 +25,6 @@ export function describeCallFailure(error: unknown, call?: FailureCall): Diagnos
             connectionService.currentConnection()?.baseUrl ?? managementFailureBaseUrl(error) ?? "",
         pageOrigin: window.location.origin,
         action: call?.action,
-        providerType: call?.providerType,
+        isOAuthProvider: call?.isOAuthProvider,
     });
 }

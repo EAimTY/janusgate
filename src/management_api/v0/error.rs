@@ -18,8 +18,7 @@
 use crate::{
     ir::InvalidRequest,
     provider::{
-        OAuthProviderType, ProviderType, discovery::Error as DiscoveryError,
-        oauth::Error as OAuthError,
+        definition::ValidationError, discovery::Error as DiscoveryError, oauth::Error as OAuthError,
     },
     storage::Error as StorageError,
 };
@@ -206,50 +205,56 @@ pub(super) enum Error {
     #[error("`base_url` must be an http:// or https:// URL of printable ASCII without whitespace")]
     InvalidBaseUrl,
 
-    /// A `providers:update` request restates a provider type that differs from the stored,
-    /// immutable one.
-    #[error(
-        "Provider `{name}` has type `{}` and cannot become `{}`",
-        stored.as_str(),
-        requested.as_str()
-    )]
-    ProviderTypeMismatch {
-        /// Name of the provider whose type is pinned.
-        name: String,
+    /// A provider-definition payload failed its write-time validation; the message names the
+    /// offending descriptor element.
+    #[error(transparent)]
+    InvalidDefinition(#[from] ValidationError),
 
-        /// The stored, immutable provider type.
-        stored: ProviderType,
-
-        /// The rejected, differing restated provider type.
-        requested: ProviderType,
+    /// A provider-definition update names a base version that is not the stored latest one.
+    #[error("{message}")]
+    StaleDefinitionVersion {
+        /// The stale-version conflict message.
+        message: String,
     },
 
-    /// A creation names an OAuth provider type, which `oauth:complete` alone mints.
-    #[error(
-        "Provider type `{}` cannot be created here; OAuth providers are minted by `oauth:complete`",
-        requested.as_str()
-    )]
-    OAuthTypeNotCreatable {
-        /// The rejected OAuth provider type.
-        requested: ProviderType,
+    /// A creation names a definition name that already exists.
+    #[error("Provider definition `{name}` already exists")]
+    DefinitionNameTaken {
+        /// The taken name.
+        name: String,
     },
 
-    /// A reauthorization's OAuth state carries a provider type that differs from the provider's
-    /// stored one.
-    #[error(
-        "Provider `{name}` has type `{}` and cannot be authorized as `{}`",
-        provider_type.as_str(),
-        state_type.as_str()
-    )]
-    OauthStateTypeMismatch {
-        /// Name of the provider whose type is pinned.
+    /// A creation references a definition version that does not exist.
+    #[error("Provider definition `{name}` version {version} does not exist")]
+    DefinitionNotFound {
+        /// The definition name the request referenced.
         name: String,
 
-        /// The stored provider type.
-        provider_type: ProviderType,
+        /// The definition version the request referenced.
+        version: i64,
+    },
 
-        /// The OAuth state's flow type.
-        state_type: OAuthProviderType,
+    /// A provider row's credential kind disagrees with its definition version's credential
+    /// recipe.
+    #[error("{message}")]
+    CredentialKindMismatch {
+        /// The disagreement message.
+        message: String,
+    },
+
+    /// A gateway invariant was violated mid-request — stored configuration drift, never a
+    /// client fault. The cause rides in the log record.
+    #[error("{message}")]
+    Internal {
+        /// Human-readable failure message for the log record.
+        message: String,
+    },
+
+    /// A completion names a state whose flow runs the other grant.
+    #[error("The flow at this state runs a `{state_grant}` grant and cannot complete here")]
+    OauthGrantMismatch {
+        /// The grant kind the flow actually runs.
+        state_grant: String,
     },
 
     /// The addressed provider row does not exist.
@@ -372,6 +377,7 @@ impl Error {
             | Self::ProviderNotFound { .. }
             | Self::ApiKeyNotFound { .. }
             | Self::UnknownOauthState
+            | Self::OauthGrantMismatch { .. }
             | Self::ProviderVanishedDuringReauthorization { .. } => ErrorCode::NotFound,
 
             Self::MethodNotAllowed { .. } => ErrorCode::MethodNotAllowed,
@@ -380,11 +386,15 @@ impl Error {
             | Self::InvalidIdentifier { .. }
             | Self::InvalidBaseUrl
             | Self::MalformedAuthorizationCode
-            | Self::ProviderTypeMismatch { .. }
-            | Self::OAuthTypeNotCreatable { .. }
-            | Self::Validation(_) => ErrorCode::InvalidRequest,
+            | Self::Validation(_)
+            | Self::InvalidDefinition(_)
+            | Self::CredentialKindMismatch { .. }
+            | Self::DefinitionNotFound { .. } => ErrorCode::InvalidRequest,
 
-            Self::OauthStateTypeMismatch { .. }
+            Self::Internal { .. } => ErrorCode::Internal,
+
+            Self::StaleDefinitionVersion { .. }
+            | Self::DefinitionNameTaken { .. }
             | Self::ProviderNameTaken { .. }
             | Self::ApiKeyTaken => ErrorCode::Conflict,
 
@@ -494,10 +504,7 @@ mod tests {
     use crate::{
         database::Error as DatabaseError,
         ir::InvalidRequest,
-        provider::{
-            OAuthProviderType, ProviderType, discovery::Error as DiscoveryError,
-            oauth::Error as OAuthError,
-        },
+        provider::{discovery::Error as DiscoveryError, oauth::Error as OAuthError},
         storage::Error as StorageError,
     };
     use as_http_status_code::{AsStatusCode as _, StatusCode};
@@ -763,18 +770,23 @@ mod tests {
             ),
             (Error::InvalidBaseUrl, ErrorCode::InvalidRequest),
             (
-                Error::OAuthTypeNotCreatable {
-                    requested: ProviderType::CodexOauth,
+                Error::StaleDefinitionVersion {
+                    message: "stale".to_string(),
+                },
+                ErrorCode::Conflict,
+            ),
+            (
+                Error::DefinitionNotFound {
+                    name: "acme".to_string(),
+                    version: 2,
                 },
                 ErrorCode::InvalidRequest,
             ),
             (
-                Error::OauthStateTypeMismatch {
-                    name: "acme".to_string(),
-                    provider_type: ProviderType::CodexOauth,
-                    state_type: OAuthProviderType::AntigravityOauth,
+                Error::CredentialKindMismatch {
+                    message: "kinds disagree".to_string(),
                 },
-                ErrorCode::Conflict,
+                ErrorCode::InvalidRequest,
             ),
             (Error::UpstreamReportedNoModels, ErrorCode::UpstreamError),
             (
@@ -812,8 +824,8 @@ mod tests {
             (Error::InvalidBaseUrl, true),
             (Error::MalformedAuthorizationCode, true),
             (
-                Error::OAuthTypeNotCreatable {
-                    requested: ProviderType::CodexOauth,
+                Error::CredentialKindMismatch {
+                    message: "kinds disagree".to_string(),
                 },
                 true,
             ),

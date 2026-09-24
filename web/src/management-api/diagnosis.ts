@@ -1,6 +1,5 @@
 import { isAbortFailure, ManagementApiError } from "/src/management-api/errors";
-import { ErrorCode, type ProviderType } from "/src/management-api/generated/v0";
-import { findOAuthProviderType } from "/src/management-api/vocabulary";
+import { ErrorCode } from "/src/management-api/generated/v0";
 
 /**
  * Whether the browser reached the instance's origin while the failed call was
@@ -39,11 +38,11 @@ export type ActionContext = {
     readonly pageOrigin: string;
     readonly action?: ActionName | undefined;
     /**
-     * The provider type the action addressed, where one is known: the
-     * recovery a discovery failure names depends on whether the provider
-     * logs in upstream (OAuth) or holds a static key.
+     * Whether the provider the action addressed logs in upstream, where one
+     * is known: the recovery a discovery failure names depends on whether the
+     * provider reconnects (OAuth) or holds a static key corrected in place.
      */
-    readonly providerType?: ProviderType | undefined;
+    readonly isOAuthProvider?: boolean | undefined;
     readonly reachability?: Reachability;
 };
 
@@ -105,18 +104,16 @@ function conflictFix(action: ActionName | undefined): string {
 }
 
 function upstreamFix(context: ActionContext): string {
-    const { action, providerType } = context;
+    const { action, isOAuthProvider } = context;
 
     if (action === "discover-models") {
         // The recovery a discovery refusal names depends on how the provider
-        // authenticates: an OAuth login is reconnected, a static key is
+        // authenticates: an OAuth account reconnects, a static key is
         // corrected in place.
-        if (providerType !== undefined && findOAuthProviderType(providerType) !== null) {
-            return "The provider's authorization expired; reconnect it on the provider's edit page.";
-        }
-
-        if (providerType !== undefined) {
-            return "Check the provider's base URL and API key on its edit page.";
+        if (isOAuthProvider !== undefined) {
+            return isOAuthProvider
+                ? "The provider's authorization expired; reconnect it on the provider's edit page."
+                : "Check the provider's base URL and API key on its edit page.";
         }
 
         return "Check the provider's state and credentials.";

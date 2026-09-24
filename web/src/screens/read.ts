@@ -444,9 +444,13 @@ export function isSameProviderRow(previous: ProviderResponse, fresh: ProviderRes
         previous.name === fresh.name &&
         previous.model_prefix === fresh.model_prefix &&
         previous.is_enabled === fresh.is_enabled &&
+        previous.provider_definition_name === fresh.provider_definition_name &&
+        previous.provider_definition_version === fresh.provider_definition_version &&
+        previous.format === fresh.format &&
+        previous.base_url === fresh.base_url &&
         (isOAuthProviderRow(previous)
             ? isOAuthProviderRow(fresh) && previous.expires_at === fresh.expires_at
-            : !isOAuthProviderRow(fresh) && previous.base_url === fresh.base_url)
+            : !isOAuthProviderRow(fresh))
     );
 }
 

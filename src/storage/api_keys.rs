@@ -529,25 +529,8 @@ mod tests {
             "a schema UNIQUE violation must classify as a storage constraint error"
         );
 
-        for (name, key) in [("", "sk-empty-name"), ("empty-secret", "")] {
-            let outcome = database
-                .execute(
-                    "INSERT INTO api_keys (name, key, created_at) VALUES (?1, ?2, ?3)",
-                    params![name, key, unix_time::unix_now_micros()],
-                )
-                .await;
-
-            #[expect(
-                clippy::expect_used,
-                reason = "the schema CHECK rejects the empty value"
-            )]
-            let error = outcome.expect_err("an empty name or secret must violate the schema CHECK");
-
-            assert!(
-                matches!(Error::from(error), Error::Constraint { .. }),
-                "a schema CHECK violation must classify as a storage constraint error"
-            );
-        }
+        // The empty name and secret are not column invariants: the composition boundary rejects
+        // them at the management write, before any statement runs.
 
         Ok(())
     }

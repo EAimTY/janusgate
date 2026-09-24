@@ -12,7 +12,10 @@ import { requestRefresh } from "/src/refresh-state";
 import { ProviderEditScreen } from "/src/screens/provider-edit-screen";
 
 const provider: ProviderResponse = {
-    type: "openai_response",
+    type: "api_key",
+    provider_definition_name: "generic-openai-responses",
+    provider_definition_version: 1,
+    format: "openai_response",
     id: 3,
     name: "alpha",
     model_prefix: "alpha-",
@@ -47,7 +50,11 @@ function screenApi(
 ): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
+
     return {
+        listProviderDefinitions: refused,
+        createProviderDefinition: refused,
+        updateProviderDefinition: refused,
         listProviders: (signal) => {
             signal?.throwIfAborted();
             return Promise.resolve({
@@ -302,7 +309,11 @@ describe("ProviderEditScreen refresh against an open form", () => {
 
     it("restates a typed custom prefix byte-for-byte on an OAuth provider", async () => {
         const codex: ProviderResponse = {
-            type: "codex_oauth",
+            type: "oauth",
+            provider_definition_name: "codex",
+            provider_definition_version: 1,
+            format: "openai_response",
+            base_url: null,
             id: 3,
             name: "chatgpt",
             model_prefix: "gpt-",
@@ -329,7 +340,7 @@ describe("ProviderEditScreen refresh against an open form", () => {
 
         expect(sent).toHaveLength(1);
         expect(sent[0]?.model_prefix).toBe("gpt2-");
-        expect(sent[0] && "base_url" in sent[0]).toBe(false);
+        expect(sent[0]?.base_url ?? null).toBe(null);
         expect(holder.providers).toEqual([
             {
                 ...codex,

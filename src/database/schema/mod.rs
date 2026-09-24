@@ -229,7 +229,7 @@ fn last_schema(schemas: &[Schema]) -> &Schema {
 ///
 /// Panics if building or connecting to the in-memory database fails.
 #[cfg(test)]
-pub(super) async fn open_memory_connection() -> Connection {
+pub(crate) async fn open_memory_connection() -> Connection {
     #[expect(
         clippy::expect_used,
         reason = "an in-memory test database always builds"

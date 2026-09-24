@@ -90,7 +90,11 @@ function heldPage(
 function streamApi(holder: { readonly pages: Array<HeldPage> }): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
+
     return {
+        listProviderDefinitions: refused,
+        createProviderDefinition: refused,
+        updateProviderDefinition: refused,
         listProviders: () =>
             Promise.resolve({
                 providers: [],

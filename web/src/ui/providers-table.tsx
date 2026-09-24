@@ -2,7 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { For } from "solid-js";
 import { isCredentialExpired, nowMicros } from "/src/format";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
-import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
+import { credentialKindLabel, isOAuthProviderRow, upstreamFormatLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { AppLink } from "/src/ui/app-link";
 import { Badge, type BadgeTone } from "/src/ui/feedback";
@@ -67,7 +67,7 @@ function ProviderRow(props: {
                         {props.provider.name}
                     </span>
                     <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
-                        {`${providerTypeLabel(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
+                        {`${upstreamFormatLabel(props.provider.format)} · ${credentialKindLabel(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
                     </span>
                 </span>
                 <span class="flex items-center gap-2">

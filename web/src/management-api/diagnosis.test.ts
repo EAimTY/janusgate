@@ -99,7 +99,7 @@ describe("diagnoseFailure", () => {
             {
                 ...context,
                 action: "discover-models",
-                providerType: "codex_oauth",
+                isOAuthProvider: true,
             },
         );
 
@@ -115,7 +115,7 @@ describe("diagnoseFailure", () => {
             {
                 ...context,
                 action: "discover-models",
-                providerType: "gemini_generate_content",
+                isOAuthProvider: false,
             },
         );
 

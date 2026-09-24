@@ -12,7 +12,30 @@ import { ProviderNewScreen } from "/src/screens/provider-new-screen";
 function screenApi(sent: CreateProviderRequest[] = []): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
+
     return {
+        listProviderDefinitions: () =>
+            Promise.resolve({
+                provider_definitions: [],
+            }),
+        createProviderDefinition: () =>
+            Promise.resolve({
+                provider_definition: {
+                    name: "generic-openai-responses",
+                    version: 1,
+                    format: "openai_response",
+                    inference: {
+                        url: [
+                            { type: "base" },
+                            { type: "literal", value: "/responses" },
+                        ],
+                        upstream_streaming: "match_client",
+                    },
+                    credential: { type: "api_key" },
+                    created_at: 1_700_000_000_000_000,
+                },
+            }),
+        updateProviderDefinition: refused,
         listProviders: () =>
             Promise.resolve({
                 providers: [],
@@ -21,12 +44,15 @@ function screenApi(sent: CreateProviderRequest[] = []): ManagementApi {
             sent.push(request);
             return Promise.resolve({
                 provider: {
-                    type: "openai_response",
+                    type: "api_key",
                     id: 1,
                     name: request.name,
                     model_prefix: request.model_prefix,
                     is_enabled: true,
-                    base_url: "https://upstream.example.com",
+                    provider_definition_name: request.provider_definition_name,
+                    provider_definition_version: request.provider_definition_version,
+                    format: "openai_response",
+                    base_url: request.base_url,
                 },
             });
         },

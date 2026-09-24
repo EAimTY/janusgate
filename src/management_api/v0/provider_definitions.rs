@@ -1,0 +1,230 @@
+//! Management routes listing, creating, and versioning provider definitions (README §6).
+//!
+//! `create` inserts version 1 under a new name; `update` must name the current latest
+//! `(name, version)` and atomically inserts the successor version under that name, rejecting a
+//! stale base version. Existing rows are never updated or deleted through the management API, so
+//! a composite identity is never reused; every payload passes the write-time validation once,
+//! here, and runtime never re-validates.
+
+use super::{Error, route};
+use crate::{
+    context::Context,
+    provider::definition::{DefinitionPayload, ProviderDefinition, ValidationError},
+    storage, unix_time,
+};
+use axum::{Json, extract::State};
+use axum_extra::extract::WithRejection;
+use log::info;
+use serde::{Deserialize, Serialize};
+use std::num::NonZeroI64;
+
+route! {
+    pub ListProviderDefinitions: {
+        path: "/provider-definitions:list",
+        method: http::Method::POST,
+        request: ListProviderDefinitionsRequest,
+        response: ListProviderDefinitionsResponse,
+    }
+}
+
+route! {
+    pub CreateProviderDefinition: {
+        path: "/provider-definitions:create",
+        method: http::Method::POST,
+        request: CreateProviderDefinitionRequest,
+        response: DefinitionEnvelope,
+    }
+}
+
+route! {
+    pub UpdateProviderDefinition: {
+        path: "/provider-definitions:update",
+        method: http::Method::POST,
+        request: UpdateProviderDefinitionRequest,
+        response: DefinitionEnvelope,
+    }
+}
+
+/// The `provider-definitions:list` request body: the empty request of a no-argument route.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ListProviderDefinitionsRequest {}
+
+/// The `provider-definitions:list` success body: every stored version, ordered by name then
+/// version. The latest version of a name is the client's derivation (`MAX(version)` over the
+/// listing), never a movable alias the server substitutes.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct ListProviderDefinitionsResponse {
+    /// Every stored definition version.
+    pub provider_definitions: Vec<DefinitionResponse>,
+}
+
+/// Strictly parsed `provider-definitions:create` request: the complete state of one definition's
+/// first version (rule 3), under a fresh name.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct CreateProviderDefinitionRequest {
+    /// The new definition's name; must be non-empty.
+    pub name: String,
+
+    /// The definition's payload; validated once at this boundary.
+    #[serde(flatten)]
+    pub payload: DefinitionPayload,
+}
+
+/// Strictly parsed `provider-definitions:update` request: the successor version's payload plus
+/// the exact current version the caller believes it is updating from. The stored latest version
+/// must equal the named base, or the write is rejected as stale.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct UpdateProviderDefinitionRequest {
+    /// The definition name whose history the successor version extends.
+    pub name: String,
+
+    /// The base version the successor succeeds; must be the stored latest.
+    pub base_version: i64,
+
+    /// The successor version's payload; validated once at this boundary.
+    #[serde(flatten)]
+    pub payload: DefinitionPayload,
+}
+
+/// One stored definition version in its management wire shape: the `(name, version)` identity,
+/// the payload, and the creation timestamp.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct DefinitionResponse {
+    /// The definition name; versions accumulate under it.
+    pub name: String,
+
+    /// The definition's positive, monotonically increasing version.
+    pub version: i64,
+
+    /// The definition's payload, flattened into the row.
+    #[serde(flatten)]
+    pub payload: DefinitionPayload,
+
+    /// Creation timestamp in UTC microseconds.
+    pub created_at: i64,
+}
+
+impl DefinitionResponse {
+    /// Renders one stored definition version.
+    #[must_use]
+    pub(crate) fn from_definition(definition: &ProviderDefinition) -> Self {
+        Self {
+            name: definition.name.clone(),
+            version: definition.version.get(),
+            payload: definition.payload.clone(),
+            created_at: definition.created_at,
+        }
+    }
+}
+
+/// The definition write routes' success body (rule 7): the stored version's identity is the fact
+/// the caller cannot know.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct DefinitionEnvelope {
+    /// The stored definition version.
+    pub provider_definition: DefinitionResponse,
+}
+
+/// Handles `POST /provider-definitions:list`.
+pub(super) async fn list(
+    State(context): State<Context>,
+) -> Result<Json<ListProviderDefinitionsResponse>, Error> {
+    let definitions = storage::provider_definitions::list_definitions(&context.database).await?;
+
+    Ok(Json(ListProviderDefinitionsResponse {
+        provider_definitions: definitions
+            .iter()
+            .map(DefinitionResponse::from_definition)
+            .collect(),
+    }))
+}
+
+/// Handles `POST /provider-definitions:create`.
+pub(super) async fn create(
+    State(context): State<Context>,
+    WithRejection(Json(request), _): WithRejection<Json<CreateProviderDefinitionRequest>, Error>,
+) -> Result<Json<DefinitionEnvelope>, Error> {
+    super::validate_identifier("name", &request.name)?;
+
+    request
+        .payload
+        .validate()
+        .map_err(Error::InvalidDefinition)?;
+
+    let stored = storage::provider_definitions::insert_definition(
+        &context.database,
+        storage::provider_definitions::NewDefinition {
+            name: &request.name,
+            base_version: None,
+            payload: &request.payload,
+            created_at: unix_time::unix_now_micros(),
+        },
+    )
+    .await
+    .map_err(|error| match error {
+        storage::Error::Constraint { .. } => Error::DefinitionNameTaken {
+            name: request.name.clone(),
+        },
+        other => other.into(),
+    })?;
+
+    info!("created provider definition `{}` version 1", request.name);
+
+    Ok(Json(DefinitionEnvelope {
+        provider_definition: DefinitionResponse::from_definition(&stored),
+    }))
+}
+
+/// Handles `POST /provider-definitions:update`.
+pub(super) async fn update(
+    State(context): State<Context>,
+    WithRejection(Json(request), _): WithRejection<Json<UpdateProviderDefinitionRequest>, Error>,
+) -> Result<Json<DefinitionEnvelope>, Error> {
+    super::validate_identifier("name", &request.name)?;
+
+    let Some(base_version) = NonZeroI64::new(request.base_version) else {
+        return Err(Error::InvalidDefinition(ValidationError::new(
+            "`base_version` must be a positive version number",
+        )));
+    };
+
+    request
+        .payload
+        .validate()
+        .map_err(Error::InvalidDefinition)?;
+
+    let stored = storage::provider_definitions::insert_definition(
+        &context.database,
+        storage::provider_definitions::NewDefinition {
+            name: &request.name,
+            base_version: Some(base_version),
+            payload: &request.payload,
+            created_at: unix_time::unix_now_micros(),
+        },
+    )
+    .await
+    .map_err(|error| match error {
+        storage::Error::Conflict { message } => Error::StaleDefinitionVersion { message },
+        storage::Error::NotFound { message } => Error::StaleDefinitionVersion { message },
+        other => other.into(),
+    })?;
+
+    info!(
+        "created provider definition `{}` version {}",
+        request.name,
+        stored.version.get()
+    );
+
+    Ok(Json(DefinitionEnvelope {
+        provider_definition: DefinitionResponse::from_definition(&stored),
+    }))
+}

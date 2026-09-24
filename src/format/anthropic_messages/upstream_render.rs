@@ -19,7 +19,7 @@ use serde_json::Value;
 
 /// Fixed synthesis constant rendered as `max_tokens` when the client sent no
 /// `max_output_tokens`: the API requires the field, so the gateway documents this stand-in
-/// rather than inventing a caller-specific budget (README §5.5).
+/// rather than inventing a caller-specific budget (README §5.8).
 const SYNTHESIZED_MAX_TOKENS: u64 = 16384;
 
 /// The upstream Anthropic Messages request payload.
@@ -163,18 +163,17 @@ fn default_input_schema() -> Value {
         .expect("first-party wire types serialize")
 }
 
-/// Renders the upstream request URL and payload for an Anthropic Messages upstream:
-/// `POST {base}/v1/messages` (README §5.5).
+/// Renders the upstream Anthropic Messages payload: the body only — the URL, the headers, and the
+/// streaming decision belong to the provider definition (README §5.2).
 ///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] when the IR carries a control the upstream has no slot for — tool
 /// arguments that do not encode a JSON object, or a response format stricter than plain text.
-pub(crate) fn render_request<'a>(
+pub(crate) fn render_request_body<'a>(
     ir: &'a IrRequest,
-    base_url: &str,
     is_streaming: bool,
-) -> Result<(String, RequestBody<'a>), InvalidRequest> {
+) -> Result<RequestBody<'a>, InvalidRequest> {
     if let Some(response_format) = &ir.response_format {
         match response_format {
             // Plain text is the absence of a constraint, so it renders as nothing.
@@ -190,8 +189,6 @@ pub(crate) fn render_request<'a>(
             }
         }
     }
-
-    let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
 
     let tools = ir
         .tools
@@ -226,22 +223,19 @@ pub(crate) fn render_request<'a>(
         ),
     };
 
-    Ok((
-        url,
-        RequestBody {
-            model: &ir.model,
-            max_tokens: ir.max_output_tokens.unwrap_or(SYNTHESIZED_MAX_TOKENS),
-            system: ir.instructions.as_deref(),
-            messages: render_messages(ir)?,
-            tools,
-            tool_choice,
-            temperature: ir.temperature,
-            top_p: ir.top_p,
-            stream: is_streaming,
-            output_config,
-            thinking,
-        },
-    ))
+    Ok(RequestBody {
+        model: &ir.model,
+        max_tokens: ir.max_output_tokens.unwrap_or(SYNTHESIZED_MAX_TOKENS),
+        system: ir.instructions.as_deref(),
+        messages: render_messages(ir)?,
+        tools,
+        tool_choice,
+        temperature: ir.temperature,
+        top_p: ir.top_p,
+        stream: is_streaming,
+        output_config,
+        thinking,
+    })
 }
 
 /// Groups IR messages into strictly alternating user/assistant turns: consecutive same-role IR
@@ -433,8 +427,7 @@ mod tests {
             clippy::expect_used,
             reason = "fixture requests render; a failing render is the failure"
         )]
-        let (_, body) = render_request(ir, "https://api.example", is_streaming)
-            .expect("the fixture request renders");
+        let body = render_request_body(ir, is_streaming).expect("the fixture request renders");
 
         #[expect(
             clippy::expect_used,
@@ -739,8 +732,7 @@ mod tests {
                 clippy::expect_used,
                 reason = "the tool choice is constructed to render"
             )]
-            let (_, rendered_body) =
-                render_request(&ir, "https://api.example", false).expect("the tool choice renders");
+            let rendered_body = render_request_body(&ir, false).expect("the tool choice renders");
 
             #[expect(
                 clippy::expect_used,
@@ -763,7 +755,7 @@ mod tests {
             clippy::expect_used,
             reason = "the response format is constructed to be rejected"
         )]
-        let error = render_request(&ir, "https://api.example", false)
+        let error = render_request_body(&ir, false)
             .expect_err("a JSON response format has no Anthropic slot");
 
         assert_eq!(error.param.as_deref(), Some("response_format"));

@@ -12,29 +12,40 @@ import {
 } from "./adapters";
 
 const compatible: ProviderResponse = {
-    type: "openai_chat_completion",
+    type: "api_key",
     id: 4,
     name: "local",
     model_prefix: "local-",
     is_enabled: true,
+    provider_definition_name: "generic-openai-chat-completions",
+    provider_definition_version: 1,
+    format: "openai_chat_completion",
     base_url: "https://upstream.example.com/v1",
 };
 
 const codexOauth: ProviderResponse = {
-    type: "codex_oauth",
+    type: "oauth",
     id: 5,
     name: "chatgpt",
     model_prefix: "gpt-",
     is_enabled: false,
+    provider_definition_name: "codex",
+    provider_definition_version: 1,
+    format: "openai_response",
+    base_url: null,
     expires_at: 1_800_000_000_000_000,
 };
 
 const antigravityOauth: ProviderResponse = {
-    type: "antigravity_oauth",
+    type: "oauth",
     id: 6,
     name: "antigravity",
     model_prefix: "",
     is_enabled: true,
+    provider_definition_name: "antigravity",
+    provider_definition_version: 1,
+    format: "gemini_generate_content",
+    base_url: null,
     expires_at: null,
 };
 
@@ -54,7 +65,6 @@ describe("toUpdateProviderRequest", () => {
         const request = toUpdateProviderRequest(compatible);
 
         expect(request).toEqual({
-            type: "openai_chat_completion",
             provider_id: 4,
             name: "local",
             model_prefix: "local-",
@@ -75,7 +85,6 @@ describe("toUpdateProviderRequest", () => {
         });
 
         expect(request).toEqual({
-            type: "openai_chat_completion",
             provider_id: 4,
             name: "renamed",
             model_prefix: "local-",
@@ -115,38 +124,37 @@ describe("toUpdateProviderRequest", () => {
         });
     });
 
-    it("maps OAuth variants without a credentials field", () => {
+    it("restates the nullable base URL and never carries the expiry", () => {
         const openAiRequest = toUpdateProviderRequest(codexOauth, {
             model_prefix: "acct-",
             is_enabled: true,
         });
 
         expect(openAiRequest).toEqual({
-            type: "codex_oauth",
             provider_id: 5,
             name: "chatgpt",
             model_prefix: "acct-",
             is_enabled: true,
+            base_url: null,
         });
 
         expect("credentials" in openAiRequest).toBe(false);
+        // The request carries no expiry: it is the flow's product, not an input.
+        expect("expires_at" in openAiRequest).toBe(false);
 
         const antigravityRequest = toUpdateProviderRequest(antigravityOauth, {
             name: "google",
         });
 
         expect(antigravityRequest).toEqual({
-            type: "antigravity_oauth",
             provider_id: 6,
             name: "google",
             model_prefix: "",
             is_enabled: true,
+            base_url: null,
         });
 
-        expect("credentials" in antigravityRequest).toBe(false);
-        // The OAuth variants carry no upstream fields and no expiry in a request.
         expect("expires_at" in antigravityRequest).toBe(false);
-        expect("base_url" in antigravityRequest).toBe(false);
     });
 });
 

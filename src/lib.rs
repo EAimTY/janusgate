@@ -22,6 +22,8 @@ mod security;
 mod server;
 mod sse;
 mod storage;
+#[cfg(test)]
+mod test_support;
 mod unix_time;
 
 /// Global application configuration loader, installed once during process startup, hot-reloaded by
@@ -70,10 +72,14 @@ pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
     .expect("failed to open database");
 
     let context = Context {
-        database,
+        database: database.clone(),
         data_plane: http_client::data_plane(),
         control_plane: http_client::control_plane(),
     };
+
+    // The background device poller resumes every unexpired pending device flow from its stored
+    // schedule and keeps polling newly started flows.
+    provider::oauth::spawn_device_poller(database, http_client::control_plane());
 
     Server::new(context).run().await
 }

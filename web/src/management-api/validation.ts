@@ -4,12 +4,16 @@ import {
     type ApiKeyEnvelope,
     type ApiKeyResponse,
     type ApiLogResponse,
+    type CompleteProviderOauthResponse,
+    type DefinitionEnvelope,
+    type DefinitionResponse,
     type DiscoverModelsResponse,
     type EmptyResponse,
     ErrorCode,
     type ErrorResponse,
     type ListApiKeysResponse,
     type ListModelsResponse,
+    type ListProviderDefinitionsResponse,
     type ListProvidersResponse,
     type ListUsageResponse,
     type ModelEnvelope,
@@ -17,15 +21,14 @@ import {
     type ProviderEnvelope,
     type ProviderResponse,
     type QueryUsageResponse,
-    type ReauthorizeProviderResponse,
     type StartProviderOauthResponse,
     type UsageBucket,
     type UsageBucketKey,
 } from "/src/management-api/generated/v0";
 
 import {
-    findOAuthProviderType,
-    findStaticProviderType,
+    findCredentialKind,
+    findUpstreamFormat,
     parseApiLogEndpointType,
     parseApiLogOutcome,
     parseDiscoveryState,
@@ -152,35 +155,58 @@ function expectBucketKey(value: unknown, context: string): UsageBucketKey {
 }
 
 /**
- * One provider row; the union is discriminated by the restated `type`. The
- * bindings collapse the field-identical kinds into one member per field set,
- * and the parser branches the same way: the OAuth kinds all carry the nullable
- * `expires_at`, the static-key kinds all carry the `base_url`. Both branches
- * read their membership from the closed vocabularies, so a kind added to the
- * contract cannot compile past a vocabulary and then fail here at runtime.
+ * The definition pair, the derived format, and the nullable base URL: the
+ * fields both credential kinds share, flattened into each union member.
+ */
+function parseSharedProviderFields(
+    record: object,
+    context: string,
+): {
+    readonly id: number;
+    readonly name: string;
+    readonly model_prefix: string;
+    readonly is_enabled: boolean;
+    readonly provider_definition_name: string;
+    readonly provider_definition_version: number;
+    readonly format: ProviderResponse["format"];
+    readonly base_url: string | null;
+} {
+    return {
+        id: expectInteger(Reflect.get(record, "id"), `${context}.id`),
+        name: expectString(Reflect.get(record, "name"), `${context}.name`),
+        model_prefix: expectString(Reflect.get(record, "model_prefix"), `${context}.model_prefix`),
+        is_enabled: expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`),
+        provider_definition_name: expectString(
+            Reflect.get(record, "provider_definition_name"),
+            `${context}.provider_definition_name`,
+        ),
+        provider_definition_version: expectInteger(
+            Reflect.get(record, "provider_definition_version"),
+            `${context}.provider_definition_version`,
+        ),
+        format: parseUpstreamFormat(Reflect.get(record, "format"), `${context}.format`),
+        base_url: expectNullableString(Reflect.get(record, "base_url"), `${context}.base_url`),
+    };
+}
+
+/**
+ * One provider row; the union is discriminated by the row's credential kind.
+ * Both members share the definition pair and the derived format; the OAuth
+ * member alone carries the nullable `expires_at`. The kind membership reads
+ * from the closed vocabulary, so a kind added to the contract cannot compile
+ * past it and then fail here at runtime.
  */
 function parseProviderResponse(value: unknown, context: string): ProviderResponse {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
-    const id = expectInteger(Reflect.get(record, "id"), `${context}.id`);
-    const name = expectString(Reflect.get(record, "name"), `${context}.name`);
+    const shared = parseSharedProviderFields(record, context);
 
-    const modelPrefix = expectString(
-        Reflect.get(record, "model_prefix"),
-        `${context}.model_prefix`,
-    );
+    const kind = findCredentialKind(type);
 
-    const isEnabled = expectBoolean(Reflect.get(record, "is_enabled"), `${context}.is_enabled`);
-
-    const oauthType = findOAuthProviderType(type);
-
-    if (oauthType !== null) {
+    if (kind === "oauth") {
         return {
-            type: oauthType,
-            id,
-            name,
-            model_prefix: modelPrefix,
-            is_enabled: isEnabled,
+            type: kind,
+            ...shared,
             expires_at: expectNullableInteger(
                 Reflect.get(record, "expires_at"),
                 `${context}.expires_at`,
@@ -188,20 +214,25 @@ function parseProviderResponse(value: unknown, context: string): ProviderRespons
         };
     }
 
-    const staticType = findStaticProviderType(type);
-
-    if (staticType !== null) {
+    if (kind === "api_key") {
         return {
-            type: staticType,
-            id,
-            name,
-            model_prefix: modelPrefix,
-            is_enabled: isEnabled,
-            base_url: expectString(Reflect.get(record, "base_url"), `${context}.base_url`),
+            type: kind,
+            ...shared,
         };
     }
 
-    throw new ContractViolationError(`${context}.type is not a known provider type: ${type}`);
+    throw new ContractViolationError(`${context}.type is not a known credential kind: ${type}`);
+}
+
+/** Narrows a wire value that must be one of the five upstream wire formats. */
+function parseUpstreamFormat(value: unknown, context: string): ProviderResponse["format"] {
+    const format = findUpstreamFormat(value);
+
+    if (format === null) {
+        throw new ContractViolationError(`${context} is not an upstream format: ${String(value)}`);
+    }
+
+    return format;
 }
 
 /**
@@ -400,22 +431,55 @@ export function parseApiKeyEnvelope(value: unknown): ApiKeyEnvelope {
     };
 }
 
+/**
+ * One begun flow: a union discriminated by the grant, because an
+ * authorization-code flow answers with the URL to open and a device flow
+ * answers with the verification facts to approve through.
+ */
 export function parseStartProviderOauthResponse(value: unknown): StartProviderOauthResponse {
     const record = expectRecord(value, "response");
+    const grant = expectString(Reflect.get(record, "grant"), "response.grant");
+    const state = expectString(Reflect.get(record, "state"), "response.state");
+    const expiresAt = expectInteger(Reflect.get(record, "expires_at"), "response.expires_at");
 
-    return {
-        authorize_url: expectString(Reflect.get(record, "authorize_url"), "response.authorize_url"),
-        state: expectString(Reflect.get(record, "state"), "response.state"),
-        expires_at: expectInteger(Reflect.get(record, "expires_at"), "response.expires_at"),
-    };
-}
+    if (grant === "authorization_code") {
+        return {
+            grant,
+            state,
+            expires_at: expiresAt,
+            authorize_url: expectString(
+                Reflect.get(record, "authorize_url"),
+                "response.authorize_url",
+            ),
+        };
+    }
 
-export function parseReauthorizeProviderResponse(value: unknown): ReauthorizeProviderResponse {
-    const record = expectRecord(value, "response");
+    if (grant === "device") {
+        const verificationUri = Reflect.get(record, "verification_uri");
+        const verificationUriComplete = Reflect.get(record, "verification_uri_complete");
 
-    return {
-        expires_at: expectInteger(Reflect.get(record, "expires_at"), "response.expires_at"),
-    };
+        return {
+            grant,
+            state,
+            expires_at: expiresAt,
+            user_code: expectString(Reflect.get(record, "user_code"), "response.user_code"),
+            ...(verificationUri === undefined
+                ? {}
+                : {
+                      verification_uri: expectString(verificationUri, "response.verification_uri"),
+                  }),
+            ...(verificationUriComplete === undefined
+                ? {}
+                : {
+                      verification_uri_complete: expectString(
+                          verificationUriComplete,
+                          "response.verification_uri_complete",
+                      ),
+                  }),
+        };
+    }
+
+    throw new ContractViolationError(`response.grant is not a known grant: ${grant}`);
 }
 
 /** `providers:update` and `providers:delete` answer an empty JSON object. */
@@ -457,4 +521,363 @@ export function parseErrorResponse(value: unknown): ErrorResponse | null {
         errno: errno as ErrorCode,
         message,
     };
+}
+
+/**
+ * The provider-definition descriptors (README §5): a definition payload is
+ * authored JSON, so the parser walks its structure once — every closed
+ * vocabulary is checked against the generated types, every expression and
+ * template node against its own node kind. A payload the gateway would reject
+ * at write time fails here the same way, as a contract violation.
+ */
+function expectExpressionParts(value: unknown, context: string): unknown[] {
+    return expectArray(value, context).map((part, index) =>
+        expectExpressionPart(part, `${context}[${index}]`),
+    );
+}
+
+function expectExpressionPart(part: unknown, context: string): unknown {
+    const record = expectRecord(part, context);
+    const kind = expectString(Reflect.get(record, "type"), `${context}.type`);
+
+    const slots = new Set([
+        "literal",
+        "secret",
+        "slot",
+        "client_id",
+        "client_secret",
+        "authorization_code",
+        "code_verifier",
+        "redirect_uri",
+        "oauth_state",
+        "device_code",
+        "refresh_token",
+        "request_uuid",
+        "model",
+        "base",
+        "coalesce",
+    ]);
+
+    if (!slots.has(kind)) {
+        throw new ContractViolationError(`${context}.type is not an expression kind: ${kind}`);
+    }
+
+    if (kind === "literal" || kind === "slot") {
+        expectString(
+            Reflect.get(record, kind === "literal" ? "value" : "name"),
+            kind === "literal" ? `${context}.value` : `${context}.name`,
+        );
+    }
+
+    if (kind === "coalesce") {
+        expectExpressionParts(Reflect.get(record, "parts"), `${context}.parts`);
+    }
+
+    return part;
+}
+
+/** Validates one string expression: an ordered array of expression parts. */
+function expectStringExpr(value: unknown, context: string): unknown[] {
+    return expectExpressionParts(value, context);
+}
+
+/** Validates one param row: a name and its expression. */
+function expectParamRows(value: unknown, context: string): unknown[] {
+    return expectArray(value, context).map((row, index) => {
+        const record = expectRecord(row, `${context}[${index}]`);
+        expectString(Reflect.get(record, "name"), `${context}[${index}].name`);
+        expectStringExpr(Reflect.get(record, "value"), `${context}[${index}].value`);
+
+        return row;
+    });
+}
+
+/** Validates one template tree node, body placeholders included. */
+function expectTemplateNode(value: unknown, context: string): unknown {
+    const record = expectRecord(value, context);
+    const kind = expectString(Reflect.get(record, "type"), `${context}.type`);
+
+    switch (kind) {
+        case "json":
+            Reflect.get(record, "value");
+            return value;
+
+        case "string":
+            expectStringExpr(Reflect.get(record, "expr"), `${context}.expr`);
+            return value;
+
+        case "body":
+            return value;
+
+        case "object": {
+            const fields = expectRecord(
+                Reflect.get(record, "fields"),
+                `${context}.fields`,
+            );
+
+            for (const name of Object.keys(fields)) {
+                expectTemplateNode(
+                    Reflect.get(fields, name),
+                    `${context}.fields.${name}`,
+                );
+            }
+
+            return value;
+        }
+
+        case "array":
+            expectArray(Reflect.get(record, "items"), `${context}.items`).map((item, index) =>
+                expectTemplateNode(item, `${context}.items[${index}]`),
+            );
+            return value;
+
+        default:
+            throw new ContractViolationError(`${context}.type is not a template node: ${kind}`);
+    }
+}
+
+/** Validates one control request: method, URL, headers, query, and body. */
+function expectControlRequest(value: unknown, context: string): void {
+    const record = expectRecord(value, context);
+    const method = expectString(Reflect.get(record, "method"), `${context}.method`);
+
+    if (method !== "GET" && method !== "POST") {
+        throw new ContractViolationError(`${context}.method is not a control method: ${method}`);
+    }
+
+    expectStringExpr(Reflect.get(record, "url"), `${context}.url`);
+
+    for (const key of ["headers", "query"] as const) {
+        const rows = Reflect.get(record, key);
+        if (rows !== undefined) {
+            expectParamRows(rows, `${context}.${key}`);
+        }
+    }
+
+    const body = Reflect.get(record, "body");
+
+    if (body === undefined || body === null) {
+        return;
+    }
+
+    const bodyRecord = expectRecord(body, `${context}.body`);
+    const bodyKind = expectString(Reflect.get(bodyRecord, "kind"), `${context}.body.kind`);
+
+    if (bodyKind === "form") {
+        expectParamRows(Reflect.get(bodyRecord, "fields"), `${context}.body.fields`);
+    } else if (bodyKind === "json") {
+        expectTemplateNode(Reflect.get(bodyRecord, "node"), `${context}.body.node`);
+    } else {
+        throw new ContractViolationError(`${context}.body.kind is not a control body: ${bodyKind}`);
+    }
+}
+
+/** Validates one response path: a chain of non-empty member names. */
+function expectResponsePath(value: unknown, context: string): void {
+    for (const [index, member] of expectArray(value, context).entries()) {
+        expectString(member, `${context}[${index}]`);
+    }
+}
+
+/** Validates one provisioning sequence with its polls. */
+function expectProvisioning(value: unknown, context: string): void {
+    const steps = expectArray(value, context);
+
+    for (const [index, step] of steps.entries()) {
+        const record = expectRecord(step, `${context}[${index}]`);
+        expectControlRequest(Reflect.get(record, "request"), `${context}[${index}].request`);
+
+        const encoding = expectString(
+            Reflect.get(record, "response_encoding"),
+            `${context}[${index}].response_encoding`,
+        );
+
+        if (encoding !== "json" && encoding !== "form") {
+            throw new ContractViolationError(
+                `${context}[${index}].response_encoding is not a response encoding`,
+            );
+        }
+
+        const extractions = Reflect.get(record, "extract");
+
+        if (extractions !== undefined) {
+            for (const [extractionIndex, extraction] of expectArray(
+                extractions,
+                `${context}[${index}].extract`,
+            ).entries()) {
+                const extractionRecord = expectRecord(
+                    extraction,
+                    `${context}[${index}].extract[${extractionIndex}]`,
+                );
+                expectResponsePath(
+                    Reflect.get(extractionRecord, "path"),
+                    `${context}[${index}].extract[${extractionIndex}].path`,
+                );
+            }
+        }
+
+        const poll = Reflect.get(record, "poll");
+
+        if (poll !== undefined) {
+            const pollRecord = expectRecord(poll, `${context}[${index}].poll`);
+            expectControlRequest(
+                Reflect.get(pollRecord, "request"),
+                `${context}[${index}].poll.request`,
+            );
+            expectResponsePath(
+                Reflect.get(pollRecord, "done_path"),
+                `${context}[${index}].poll.done_path`,
+            );
+            expectResponsePath(
+                Reflect.get(pollRecord, "error_path"),
+                `${context}[${index}].poll.error_path`,
+            );
+            expectInteger(
+                Reflect.get(pollRecord, "interval_ms"),
+                `${context}[${index}].poll.interval_ms`,
+            );
+            expectInteger(
+                Reflect.get(pollRecord, "budget_ms"),
+                `${context}[${index}].poll.budget_ms`,
+            );
+        }
+    }
+}
+
+const FORMATS: ReadonlySet<string> = new Set([
+    "openai_response",
+    "openai_chat_completion",
+    "gemini_generate_content",
+    "gemini_interaction",
+    "anthropic_messages",
+]);
+
+/**
+ * One stored definition version: the `(name, version)` identity, the
+ * descriptor payload, and the creation timestamp. The payload is authored
+ * JSON, validated structurally here; the gateway's write-time boundary owns
+ * the semantic rules.
+ */
+function parseDefinitionResponse(value: unknown, context: string): DefinitionResponse {
+    const record = expectRecord(value, context);
+    const name = expectString(Reflect.get(record, "name"), `${context}.name`);
+    const version = expectInteger(Reflect.get(record, "version"), `${context}.version`);
+    const createdAt = expectInteger(Reflect.get(record, "created_at"), `${context}.created_at`);
+    const format = expectString(Reflect.get(record, "format"), `${context}.format`);
+
+    if (!FORMATS.has(format)) {
+        throw new ContractViolationError(`${context}.format is not an upstream format: ${format}`);
+    }
+
+    const inference = expectRecord(Reflect.get(record, "inference"), `${context}.inference`);
+    expectStringExpr(Reflect.get(inference, "url"), `${context}.inference.url`);
+    expectString(Reflect.get(inference, "upstream_streaming"), `${context}.inference.upstream_streaming`);
+
+    const credential = expectRecord(Reflect.get(record, "credential"), `${context}.credential`);
+    const credentialKind = expectString(
+        Reflect.get(credential, "type"),
+        `${context}.credential.type`,
+    );
+
+    if (credentialKind !== "api_key" && credentialKind !== "oauth") {
+        throw new ContractViolationError(
+            `${context}.credential.type is not a credential kind: ${credentialKind}`,
+        );
+    }
+
+    if (credentialKind === "oauth") {
+        expectString(Reflect.get(credential, "client_id"), `${context}.credential.client_id`);
+        expectControlRequest(
+            Reflect.get(credential, "grant") === undefined
+                ? undefined
+                : Reflect.get(expectRecord(Reflect.get(credential, "grant"), `${context}.credential.grant`), "authorization") ?? {},
+            `${context}.credential.grant`,
+        );
+    }
+
+    const provisioning = Reflect.get(record, "provisioning");
+    if (provisioning !== undefined && provisioning !== null) {
+        expectProvisioning(provisioning, `${context}.provisioning`);
+    }
+
+    const discovery = Reflect.get(record, "discovery");
+    if (discovery !== undefined && discovery !== null) {
+        const discoveryRecord = expectRecord(discovery, `${context}.discovery`);
+        expectControlRequest(
+            Reflect.get(discoveryRecord, "request"),
+            `${context}.discovery.request`,
+        );
+    }
+
+    return {
+        name,
+        version,
+        format: format as DefinitionResponse["format"],
+        // The payload's descriptor sections ride the record verbatim: the
+        // structural walk above has checked each section this app renders.
+        ...record,
+        created_at: createdAt,
+    } as DefinitionResponse;
+}
+
+export function parseListProviderDefinitionsResponse(
+    value: unknown,
+): ListProviderDefinitionsResponse {
+    const record = expectRecord(value, "response");
+    const definitions = expectArray(
+        Reflect.get(record, "provider_definitions"),
+        "response.provider_definitions",
+    );
+
+    return {
+        provider_definitions: definitions.map((entry, index) =>
+            parseDefinitionResponse(entry, `response.provider_definitions[${index}]`),
+        ),
+    };
+}
+
+export function parseDefinitionEnvelope(value: unknown): DefinitionEnvelope {
+    const record = expectRecord(value, "response");
+
+    return {
+        provider_definition: parseDefinitionResponse(
+            Reflect.get(record, "provider_definition"),
+            "response.provider_definition",
+        ),
+    };
+}
+
+/**
+ * One finished or polled flow: succeeded carries the provider row, pending
+ * carries nothing, failed carries the gateway-owned failure pair.
+ */
+export function parseCompleteProviderOauthResponse(
+    value: unknown,
+): CompleteProviderOauthResponse {
+    const record = expectRecord(value, "response");
+    const status = expectString(Reflect.get(record, "status"), "response.status");
+
+    if (status === "succeeded") {
+        return {
+            status,
+            provider: parseProviderResponse(Reflect.get(record, "provider"), "response.provider"),
+        };
+    }
+
+    if (status === "pending") {
+        return { status };
+    }
+
+    if (status === "failed") {
+        return {
+            status,
+            failure_code: expectString(Reflect.get(record, "failure_code"), "response.failure_code"),
+            failure_message: expectString(
+                Reflect.get(record, "failure_message"),
+                "response.failure_message",
+            ),
+        };
+    }
+
+    throw new ContractViolationError(`response.status is not a flow outcome: ${status}`);
 }

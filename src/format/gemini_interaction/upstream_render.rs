@@ -20,14 +20,11 @@ use serde_json::Value;
 ///
 /// Returns [`InvalidRequest`] when a tool output answers an unknown call id, or when tool call
 /// arguments are not a JSON object.
-pub(crate) fn render_request(
+pub(crate) fn render_request_body(
     ir: &IrRequest,
-    base_url: &str,
     upstream_id: &str,
     is_streaming: bool,
-) -> Result<(String, RequestBody), InvalidRequest> {
-    let url = format!("{}/v1beta/interactions", base_url.trim_end_matches('/'));
-
+) -> Result<RequestBody, InvalidRequest> {
     let body = RequestBody {
         model: upstream_id.to_string(),
         system_instruction: ir.instructions.clone(),
@@ -40,7 +37,7 @@ pub(crate) fn render_request(
         store: false,
     };
 
-    Ok((url, body))
+    Ok(body)
 }
 
 /// The upstream Interactions request payload.
@@ -393,13 +390,12 @@ mod tests {
         clippy::expect_used,
         reason = "the fixture IR is constructed to render"
     )]
-    fn render(ir: &IrRequest) -> (String, RequestBody) {
-        render_request(ir, "https://upstream.example/", "upstream-model", false)
-            .expect("the fixture IR renders")
+    fn render(ir: &IrRequest) -> RequestBody {
+        render_request_body(ir, "upstream-model", false).expect("the fixture IR renders")
     }
 
-    /// Verifies the request envelope: the URL pins the Interactions action, the body carries the
-    /// upstream id as `model`, `store` is always false, and `stream` follows the requested mode.
+    /// Verifies the request envelope: the body carries the upstream id as `model`, `store` is
+    /// always false, and `stream` follows the requested mode.
     ///
     /// # Panics
     ///
@@ -411,16 +407,13 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (url, _) = render(&ir);
-
-        assert_eq!(url, "https://upstream.example/v1beta/interactions");
+        let _ = render(&ir);
 
         #[expect(
             clippy::expect_used,
             reason = "the fixture IR is constructed to render"
         )]
-        let (_, streaming) = render_request(&ir, "https://upstream.example", "m", true)
-            .expect("the fixture IR renders");
+        let streaming = render_request_body(&ir, "m", true).expect("the fixture IR renders");
 
         let rendered = body_json(&streaming);
 
@@ -456,7 +449,7 @@ mod tests {
                 ..IrRequest::default()
             };
 
-            let (_, body) = render(&ir);
+            let body = render(&ir);
             let rendered = body_json(&body);
 
             assert_eq!(
@@ -477,7 +470,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (_, body) = render(&ir);
+        let body = render(&ir);
         let rendered = body_json(&body);
 
         assert!(
@@ -515,7 +508,7 @@ mod tests {
                 ..IrRequest::default()
             };
 
-            let (_, body) = render(&ir);
+            let body = render(&ir);
             let rendered = body_json(&body);
 
             assert_eq!(
@@ -529,7 +522,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (_, body) = render(&ir);
+        let body = render(&ir);
 
         assert!(
             body_json(&body).pointer("/generation_config").is_none(),
@@ -552,7 +545,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (_, body) = render(&ir);
+        let body = render(&ir);
         let rendered = body_json(&body);
 
         assert!(
@@ -584,7 +577,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (_, body) = render(&ir);
+        let body = render(&ir);
 
         assert_eq!(
             body_json(&body).pointer("/response_format"),
@@ -601,7 +594,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (_, body) = render(&ir);
+        let body = render(&ir);
 
         assert_eq!(
             body_json(&body).pointer("/response_format"),
@@ -617,7 +610,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (_, body) = render(&ir);
+        let body = render(&ir);
 
         assert!(
             body_json(&body).get("response_format").is_none(),
@@ -706,7 +699,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (_, body) = render(&ir);
+        let body = render(&ir);
         let rendered = body_json(&body);
 
         assert_eq!(
@@ -812,7 +805,7 @@ mod tests {
             ..IrRequest::default()
         };
 
-        let (_, body) = render(&ir);
+        let body = render(&ir);
         let rendered = body_json(&body);
 
         assert_eq!(
@@ -860,7 +853,7 @@ mod tests {
             clippy::expect_used,
             reason = "the orphan output is constructed to be rejected"
         )]
-        let error = render_request(&ir, "https://upstream.example", "m", false)
+        let error = render_request_body(&ir, "m", false)
             .expect_err("an orphan tool output must fail rendering");
 
         assert_eq!(error.param.as_deref(), Some("messages"));

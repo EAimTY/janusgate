@@ -888,7 +888,6 @@ mod tests {
     use super::*;
     use crate::{
         database::{Database, Value},
-        provider::{Credentials, NewProvider, ProviderType},
         storage::{
             self,
             api_keys::{self, NewApiKey},
@@ -1180,19 +1179,24 @@ mod tests {
         )
         .await?;
 
-        let provider = storage::providers::insert_provider(
+        let definition = crate::test_support::insert_static_key_definition(
             &database,
-            &NewProvider {
-                name: "acme",
-                model_prefix: "acme-",
-                provider_type: ProviderType::OpenAiChatCompletion,
-                base_url: Some("http://upstream.example"),
-                credentials: &Credentials::ApiKey("secret".to_string()),
-                expires_at: None,
-                is_enabled: true,
+            "static-key",
+            crate::format::UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        let provider = crate::test_support::insert_provider(
+            &database,
+            &definition,
+            "acme",
+            "acme-",
+            Some("http://upstream.example"),
+            crate::provider::StoredCredentials::ApiKey {
+                api_key: "secret".to_string(),
             },
         )
-        .await?;
+        .await;
 
         let model = storage::models::insert_model_checked(
             &database,

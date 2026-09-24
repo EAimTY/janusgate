@@ -11,7 +11,10 @@ import type {
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
 
 const provider: ProviderResponse = {
-    type: "openai_chat_completion",
+    type: "api_key",
+    provider_definition_name: "generic-openai-chat-completions",
+    provider_definition_version: 1,
+    format: "openai_chat_completion",
     id: 5,
     name: "local",
     model_prefix: "local-",
@@ -44,7 +47,11 @@ function screenApi(options: {
 }): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
+
     return {
+        listProviderDefinitions: refused,
+        createProviderDefinition: refused,
+        updateProviderDefinition: refused,
         listProviders: (signal) => {
             options.onListProviders?.();
             signal?.throwIfAborted();

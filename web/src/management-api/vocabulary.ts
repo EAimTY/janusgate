@@ -4,11 +4,18 @@ import type {
     ApiLogEndpointType,
     ApiLogOutcome,
     DiscoveryState,
-    OAuthProviderType,
     ProviderResponse,
-    ProviderType,
+    UpstreamFormat,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
+
+/**
+ * The credential kinds a provider row or a definition carries. The generated
+ * bindings render the kinds as their literal union discriminants, so the
+ * vocabulary states them here — the `ProviderResponse` union's own `type`
+ * members keep the record below exhaustive.
+ */
+export type CredentialKind = "api_key" | "oauth";
 
 type VocabularyOption<TValue extends string> = {
     readonly value: TValue;
@@ -16,57 +23,49 @@ type VocabularyOption<TValue extends string> = {
 };
 
 /**
- * The static-key provider kinds — the ones `providers:create` mints outright,
- * as opposed to the OAuth logins `oauth:complete` mints.
+ * The credential kinds with the label each is presented under. The record
+ * type is exhaustive, so a kind added to the generated union fails to compile
+ * until it is listed here.
  */
-type StaticProviderType = Exclude<ProviderType, OAuthProviderType>;
+const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
+    api_key: "Static API key",
+    oauth: "OAuth account",
+};
+
+/** The credential kinds as options; the record type is exhaustive as above. */
+export const CREDENTIAL_KIND_OPTIONS: ReadonlyArray<VocabularyOption<CredentialKind>> = [
+    { value: "api_key", label: CREDENTIAL_KIND_LABELS.api_key },
+    { value: "oauth", label: CREDENTIAL_KIND_LABELS.oauth },
+];
+
+/** The label a provider row's credential kind is presented under. */
+export function credentialKindLabel(kind: CredentialKind): string {
+    return CREDENTIAL_KIND_LABELS[kind];
+}
 
 /**
- * The static-key provider kinds with the label each is presented under. The
- * record type is exhaustive, so a kind added to the generated union fails to
- * compile until it is listed here.
+ * The upstream wire formats with the label each is presented under. The
+ * record type is exhaustive, so a format added to the generated union fails
+ * to compile until it is listed here.
  */
-const STATIC_PROVIDER_TYPE_LABELS: Record<StaticProviderType, string> = {
-    openai_response: "OpenAI Responses API",
-    openai_chat_completion: "OpenAI Chat Completions API",
-    gemini_generate_content: "Gemini generateContent API",
-    gemini_interaction: "Gemini Interactions API",
-    anthropic_messages: "Anthropic Messages API",
+const UPSTREAM_FORMAT_LABELS: Record<UpstreamFormat, string> = {
+    openai_response: "OpenAI Responses",
+    openai_chat_completion: "OpenAI Chat Completions",
+    gemini_generate_content: "Gemini GenerateContent",
+    gemini_interaction: "Gemini Interactions",
+    anthropic_messages: "Anthropic Messages",
 };
 
-const OAUTH_PROVIDER_TYPE_LABELS: Record<OAuthProviderType, string> = {
-    codex_oauth: "Codex OAuth",
-    antigravity_oauth: "Antigravity OAuth",
-};
-
-/**
- * Every provider kind with the label each is presented under — the two
- * sub-vocabularies above, composed. The record type is exhaustive, so a kind
- * added to the generated union fails to compile until its sub-vocabulary
- * lists it.
- */
-const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
-    ...STATIC_PROVIDER_TYPE_LABELS,
-    ...OAUTH_PROVIDER_TYPE_LABELS,
-};
-
-/** The static-key provider kinds as options; the record type is exhaustive as above. */
-const STATIC_PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<StaticProviderType>> =
-    Object.entries(STATIC_PROVIDER_TYPE_LABELS).map(([value, label]) => ({
-        value: value as StaticProviderType,
+/** The upstream wire formats as options; the record type is exhaustive as above. */
+export const UPSTREAM_FORMAT_OPTIONS: ReadonlyArray<VocabularyOption<UpstreamFormat>> =
+    Object.entries(UPSTREAM_FORMAT_LABELS).map(([value, label]) => ({
+        value: value as UpstreamFormat,
         label,
     }));
 
-/** The OAuth provider kinds as options; the record type is exhaustive as above. */
-const OAUTH_PROVIDER_TYPE_OPTIONS: ReadonlyArray<VocabularyOption<OAuthProviderType>> =
-    Object.entries(OAUTH_PROVIDER_TYPE_LABELS).map(([value, label]) => ({
-        value: value as OAuthProviderType,
-        label,
-    }));
-
-/** The label a provider row's own `type` is presented under. */
-export function providerTypeLabel(type: ProviderResponse["type"]): string {
-    return PROVIDER_TYPE_LABELS[type];
+/** The label one wire format is presented under. */
+export function upstreamFormatLabel(format: UpstreamFormat): string {
+    return UPSTREAM_FORMAT_LABELS[format];
 }
 
 /** Looks a value up in a vocabulary, returning `null` when it is not a member. */
@@ -83,26 +82,24 @@ function findOption<TValue extends string>(
     return null;
 }
 
-export function findOAuthProviderType(value: unknown): OAuthProviderType | null {
-    return findOption(OAUTH_PROVIDER_TYPE_OPTIONS, value);
+/** Looks a credential kind up, returning `null` when the value is not one. */
+export function findCredentialKind(value: unknown): CredentialKind | null {
+    return findOption(CREDENTIAL_KIND_OPTIONS, value);
 }
 
-/** Looks a static-key kind up, returning `null` when the value is not one. */
-export function findStaticProviderType(value: unknown): StaticProviderType | null {
-    return findOption(STATIC_PROVIDER_TYPE_OPTIONS, value);
+/** Looks a wire format up, returning `null` when the value is not one. */
+export function findUpstreamFormat(value: unknown): UpstreamFormat | null {
+    return findOption(UPSTREAM_FORMAT_OPTIONS, value);
 }
 
 /**
- * Whether a stored row is an OAuth login: exactly the variants carrying
+ * Whether a stored row is an OAuth account: exactly the variant carrying
  * `expires_at`. Narrows the row, so the expiry is readable past the guard.
  */
-export function isOAuthProviderRow(provider: ProviderResponse): provider is Extract<
-    ProviderResponse,
-    {
-        type: OAuthProviderType;
-    }
-> {
-    return findOAuthProviderType(provider.type) !== null;
+export function isOAuthProviderRow(
+    provider: ProviderResponse,
+): provider is Extract<ProviderResponse, { type: "oauth" }> {
+    return provider.type === "oauth";
 }
 
 const DISCOVERY_STATE_LABELS: Record<DiscoveryState, string> = {

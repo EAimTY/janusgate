@@ -1,71 +1,39 @@
-//! OAuth authorization flows, token exchange, refresh leasing, and Antigravity project
-//! resolution for OAuth-backed providers.
+//! OAuth authorization flows: flow begin and completion, the token exchange with terminal-code
+//! classification, the lease-guarded renewal, and the background device poller.
 //!
-//! The submodule layout mirrors the concerns: [`flow`] is the OAuth protocol (authorization begin,
-//! code exchange, refresh grant), [`project`] is the Antigravity project onboarding,
-//! [`refresh`] is the lease-guarded refresh loop, [`antigravity`] is the shared Antigravity
-//! transport, and [`token`] holds the JWT claim and token-lifetime helpers shared by the
-//! flow and refresh paths.
+//! The submodule layout mirrors the concerns: [`flow`] is the grant mechanics (authorize-URL
+//! building, device authorization, token exchange, expiry resolution), [`refresh`] is the
+//! lease-guarded renewal loop over the definition's refresh mode, and [`poller`] is the
+//! background scheduler resuming every unexpired pending device flow from its stored schedule.
 //!
-//! # Reference implementations
-//!
-//! Both provider flows mirror their canonical clients wire-for-wire, pinned below; the gateway
-//! speaks the same protocol so the same upstream accepts it. Deliberate divergences are
-//! documented where they occur, and every mirrored fact was verified live against the real
-//! endpoints.
-//!
-//! ## OpenAI Codex (`codex_oauth`)
-//!
-//! Mirrors `openai/codex` at rev `fcf05456bb27e6c3d5677550f54011db6a2a0817` (main, 2026-09-17):
-//! `codex-rs/login/src/server.rs` (authorize URL, code exchange, token-endpoint error shapes),
-//! `codex-rs/login/src/pkce.rs` (PKCE generation), `codex-rs/login/src/token_data.rs` (identity
-//! claims), `codex-rs/login/src/auth/manager.rs` (refresh grant, terminal refresh codes).
-//!
-//! End to end: [`flow::begin_flow`] mints the PKCE pair and the authorize URL the administrator
-//! opens; the provider redirects to the loopback callback with a single-use code, which the
-//! administrator pastes back; [`flow::exchange_code`] redeems it for the token set and reads the
-//! ChatGPT account id from the identity token; [`refresh::ensure_fresh_token`] renews the access
-//! token under the database lease once it expires.
-//!
-//! ## Google Antigravity (`antigravity_oauth`)
-//!
-//! Mirrors `NoeFabris/opencode-antigravity-auth` at rev `16e0056` (2026-08-28), the most widely
-//! ported open implementation of the IDE's flow: `src/constants.ts` (client, scopes, redirect,
-//! endpoints, headers), `src/antigravity/oauth.ts` (authorize, exchange, project lookup),
-//! `src/plugin/project.ts` (onboarding), `src/plugin/quota.ts` (`fetchAvailableModels`),
-//! `src/plugin/request.ts` (inference envelope and headers). Google's own `google-antigravity/*`
-//! repositories carry no OAuth login code (verified by inspection), so the port stands in as the
-//! reference.
-//!
-//! End to end: [`flow::begin_flow`] mints the authorize URL (client-secret style, no PKCE); the
-//! pasted code is redeemed by [`flow::exchange_code`], which resolves the Antigravity project id
-//! via [`project::resolve_project_id`] (`loadCodeAssist`, then `onboardUser`); the credentials
-//! then serve inference and [`refresh::ensure_fresh_token`] renews them under the database
-//! lease.
+//! Every provider-specific fact lives in the definition the flow references; the engines carry
+//! the grant mechanics alone and never special-case a provider.
 
-use super::{http_body, http_body::ExchangeFailure};
 use crate::storage::Error as StorageError;
 
-mod antigravity;
 mod flow;
-mod project;
+mod poller;
 mod refresh;
-mod token;
 
-pub(in crate::provider) use antigravity::post_antigravity;
-pub(crate) use flow::{OAuthFlow, begin_flow, exchange_code};
+pub(crate) use flow::{
+    AUTHORIZATION_CODE_TTL, DEFAULT_DEVICE_INTERVAL_SECONDS, ExchangeProduct,
+    apply_id_token_claims, build_authorize_url, execute_device_authorization, execute_exchange,
+    random_url_safe, resolve_expiry,
+};
+pub(crate) use poller::spawn_device_poller;
 pub(crate) use refresh::ensure_fresh_token;
 
-/// OAuth token acquisition failures: authorization code exchange, refresh grants, Antigravity
-/// project resolution, and the lease-guarded refresh loop over them.
+/// OAuth token acquisition failures: the device authorization, token exchange, refresh grants,
+/// reprovisioning, and the lease-guarded renewal loop over them.
 ///
-/// Every upstream-facing variant renders the complete human message both HTTP surfaces display; the
-/// surfaces only decide the status and the machine-readable code. Upstream rejections on these
-/// paths always pin 502, so the foreign status rides in the message and the variant payload.
-#[derive(Debug, thiserror::Error)]
+/// Every upstream-facing variant renders the complete human message both HTTP surfaces display;
+/// the surfaces only decide the status and the machine-readable code. Upstream rejections on
+/// these paths always pin 502, so the foreign status rides in the message and the variant
+/// payload.
+#[derive(Debug, Clone, thiserror::Error)]
 pub(crate) enum Error {
-    /// The upstream endpoint answered a non-2xx status. These paths never forward foreign statuses,
-    /// so the status rides in the message.
+    /// The upstream endpoint answered a non-2xx status. These paths never forward foreign
+    /// statuses, so the status rides in the message.
     #[error("Upstream request failed with status {status}: {detail}")]
     Rejected {
         /// Upstream status code, embedded in the message.
@@ -113,19 +81,25 @@ impl From<StorageError> for Error {
     }
 }
 
-/// Converts the shared upstream exchange failure into the generic upstream-facing variants: the
-/// rejection detail is the body excerpt under the one truncation policy
-/// ([`http_body::truncate_excerpt`]). The token-grant paths classify the untruncated body
-/// themselves and do not go through this conversion.
-impl From<ExchangeFailure> for Error {
-    fn from(failure: ExchangeFailure) -> Self {
+impl From<crate::database::Error> for Error {
+    fn from(error: crate::database::Error) -> Self {
+        Self::Internal {
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<crate::provider::control::ControlFailure> for Error {
+    fn from(failure: crate::provider::control::ControlFailure) -> Self {
         match failure {
-            ExchangeFailure::Rejected { status, body } => Self::Rejected {
+            crate::provider::control::ControlFailure::Rejected { status, body } => Self::Rejected {
                 status,
-                detail: http_body::truncate_excerpt(&body),
+                detail: crate::provider::http_body::truncate_excerpt(&body),
             },
 
-            ExchangeFailure::Unavailable { detail } => Self::Unavailable { detail },
+            crate::provider::control::ControlFailure::Unavailable { detail } => {
+                Self::Unavailable { detail }
+            }
         }
     }
 }

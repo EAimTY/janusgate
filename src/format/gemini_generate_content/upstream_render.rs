@@ -1,10 +1,10 @@
-//! Upstream-request rendering for the Gemini GenerateContent codec: renders an IR request into the
-//! `gemini_generate_content` upstream payload — the bare GenerateContentRequest carried in the
-//! Antigravity envelope `request` field or sent directly to a compatible upstream (README §5.2,
-//! §5.3).
+//! Upstream-request rendering for the Gemini GenerateContent codec: renders an IR request into
+//! the bare GenerateContentRequest upstream payload. The URL — including the envelope the
+//! Antigravity definition wraps the body in — belongs to the provider definition (README
+//! §5.2).
 
 use crate::{
-    format, ids,
+    format,
     ir::{InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
 };
 use serde::Serialize;
@@ -13,112 +13,7 @@ use serde_json::{Map, Value};
 /// The `responseMimeType` value requesting a JSON response.
 const JSON_MIME_TYPE: &str = "application/json";
 
-/// Renders the upstream request URL and payload for an Antigravity provider.
-///
-/// `base_url` and `user_agent` are the provider's Antigravity endpoint and the `User-Agent` value
-/// it requires; the provider layer owns endpoint knowledge, so both are threaded in rather than
-/// owned by the codec.
-///
-/// # Errors
-///
-/// Returns [`InvalidRequest`] when the request cannot be rendered.
-pub(crate) fn render_antigravity_request<'a>(
-    ir: &'a IrRequest,
-    base_url: &str,
-    user_agent: &'a str,
-    upstream_id: &'a str,
-    project: &'a str,
-    is_streaming: bool,
-) -> Result<(String, AntigravityEnvelope<'a>), InvalidRequest> {
-    let url = render_request_url(base_url, upstream_id, is_streaming, true);
-
-    let envelope = AntigravityEnvelope {
-        project,
-        model: upstream_id,
-        request: render_generate_content_request(ir)?,
-        request_type: "agent",
-        user_agent,
-        request_id: format!("agent-{}", ids::new_uuid()),
-    };
-
-    Ok((url, envelope))
-}
-
-/// The Antigravity envelope wrapping one GenerateContentRequest (README §5.2).
-#[derive(Debug, Serialize)]
-pub(crate) struct AntigravityEnvelope<'a> {
-    /// Antigravity project the request bills to.
-    project: &'a str,
-
-    /// Upstream model name.
-    model: &'a str,
-
-    /// The wrapped request.
-    request: GenerateContentRequest<'a>,
-
-    /// Always `agent`.
-    #[serde(rename = "requestType")]
-    request_type: &'static str,
-
-    /// `User-Agent` value the Antigravity endpoint requires, echoed in the
-    /// body.
-    #[serde(rename = "userAgent")]
-    user_agent: &'a str,
-
-    /// Gateway-minted request identifier.
-    #[serde(rename = "requestId")]
-    request_id: String,
-}
-
-/// Renders the upstream request URL and payload for an OpenAI-compatible Gemini provider, whose
-/// body is the bare GenerateContentRequest.
-///
-/// # Errors
-///
-/// Returns [`InvalidRequest`] when the request cannot be rendered.
-pub(crate) fn render_compatible_request<'a>(
-    ir: &'a IrRequest,
-    base_url: &str,
-    upstream_id: &str,
-    is_streaming: bool,
-) -> Result<(String, GenerateContentRequest<'a>), InvalidRequest> {
-    let url = render_request_url(base_url, upstream_id, is_streaming, false);
-
-    Ok((url, render_generate_content_request(ir)?))
-}
-
-/// Renders the GenerateContent URL for one call, the single place where the action segment
-/// (including its leading colon) is assembled: enveloped Antigravity upstreams take the action
-/// directly on the base URL, compatible upstreams insert `/models/<upstream_id>` before it.
-fn render_request_url(
-    base_url: &str,
-    upstream_id: &str,
-    is_streaming: bool,
-    is_enveloped: bool,
-) -> String {
-    /// Action segment selecting plain generation.
-    const GENERATE_ACTION: &str = ":generateContent";
-
-    /// Action segment selecting SSE streaming generation.
-    const STREAM_GENERATE_ACTION: &str = ":streamGenerateContent?alt=sse";
-
-    let base_url = base_url.trim_end_matches('/');
-
-    let action = if is_streaming {
-        STREAM_GENERATE_ACTION
-    } else {
-        GENERATE_ACTION
-    };
-
-    if is_enveloped {
-        format!("{base_url}{action}")
-    } else {
-        format!("{base_url}/models/{upstream_id}{action}")
-    }
-}
-
-/// The bare GenerateContentRequest carried in the envelope `request` field or sent directly to a
-/// compatible upstream.
+/// The bare GenerateContentRequest an upstream `:generateContent` action carries (README §5.3).
 #[derive(Debug, Serialize)]
 pub(crate) struct GenerateContentRequest<'a> {
     /// Conversation contents, in alternating-role runs.
@@ -397,7 +292,7 @@ struct ThinkingConfig<'a> {
 ///
 /// Returns [`InvalidRequest`] for tool call arguments that are not JSON objects and tool outputs
 /// whose invocation cannot be resolved.
-fn render_generate_content_request(
+pub(crate) fn render_generate_content_request(
     ir: &IrRequest,
 ) -> Result<GenerateContentRequest<'_>, InvalidRequest> {
     let mut contents: Vec<Content<'_>> = Vec::new();

@@ -1,125 +1,470 @@
-//! The OAuth protocol: authorization begin, authorization code exchange, and the refresh grant,
-//! over the OpenAI Codex and Google Antigravity clients.
+//! The OAuth protocol engine: flow begin (both grants), token exchange with terminal-code
+//! classification, identity-claim extraction, and expiry resolution (README §5.3).
+//!
+//! Every provider-specific fact — endpoints, client credentials, parameter names, header sets —
+//! lives in the definition the flow references; this engine carries the grant mechanics alone.
+//! The control-request executor runs each stage's request, and the stage's response descriptor
+//! maps its product.
 
-use super::{Error, project, token};
+use super::Error;
 use crate::{
-    provider::{Credentials, OAuthProviderType, endpoints, http_body, http_body::ExchangeFailure},
+    provider::{
+        control::{self, ControlFailure, DecodedBody, Extracted},
+        definition::{
+            credential::{Exchange, Grant, Pkce},
+            eval::ValueEnv,
+            template::ResponseTarget as Target,
+        },
+    },
     unix_time,
 };
 use base64::{Engine as _, engine::general_purpose};
-use log::debug;
-use reqwest::{Client, RequestBuilder};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use reqwest::Client;
+use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
+use std::collections::BTreeMap;
 
-/// OpenAI OAuth client identifier of the Codex CLI.
-const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+/// Lifetime of a pending authorization-code flow, in database-clock microseconds.
+pub(crate) const AUTHORIZATION_CODE_TTL: i64 = 600 * unix_time::MICROS_PER_SEC;
 
-/// OpenAI OAuth issuer root.
-const OPENAI_ISSUER: &str = "https://auth.openai.com";
+/// The polling interval a device authorization response implies when it reports none: five
+/// seconds per RFC 8628 §3.2.
+pub(crate) const DEFAULT_DEVICE_INTERVAL_SECONDS: i64 = 5;
 
-/// OpenAI OAuth loopback redirect.
-const OPENAI_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
+/// The permanent interval increase a `slow_down` response applies, in seconds, per RFC 8628
+/// §3.5.
+pub(crate) const SLOW_DOWN_PENALTY_SECONDS: i64 = 5;
 
-/// OpenAI OAuth scopes requested during authorization, mirroring the Codex CLI: the identity
-/// scopes plus the connectors scopes its tools invoke with.
-const OPENAI_SCOPES: &str =
-    "openid profile email offline_access api.connectors.read api.connectors.invoke";
+/// The expiry of a token response, resolved per README §5.3: a positive reported `expires_in`,
+/// else a future `exp` claim of the access token, else the definition's explicitly configured
+/// lifetime, else no expiry at all. A reported non-positive `expires_in` or a non-future `exp`
+/// claim is a malformed token response, never silently treated as missing.
+pub(crate) fn resolve_expiry(
+    expires_in_seconds: Option<i64>,
+    access_token: Option<&str>,
+    configured_lifetime_seconds: Option<std::num::NonZeroU64>,
+) -> Result<Option<i64>, Error> {
+    if let Some(lifetime) = expires_in_seconds
+        && lifetime <= 0
+    {
+        return Err(Error::Unavailable {
+            detail: format!(
+                "malformed token response: `expires_in` must be positive, got {lifetime}"
+            ),
+        });
+    }
 
-/// Google OAuth client identifier of the Antigravity IDE.
-const ANTIGRAVITY_CLIENT_ID: &str =
-    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+    if let Some(lifetime) = expires_in_seconds {
+        let micros = lifetime
+            .checked_mul(unix_time::MICROS_PER_SEC)
+            .ok_or_else(|| Error::Unavailable {
+                detail: format!("malformed token response: `expires_in` overflow, got {lifetime}"),
+            })?;
 
-/// Google OAuth client secret of the Antigravity IDE.
-const ANTIGRAVITY_CLIENT_SECRET: &str = "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";
+        return Ok(Some(
+            unix_time::unix_now_micros()
+                .checked_add(micros)
+                .ok_or_else(|| Error::Unavailable {
+                    detail: format!(
+                        "malformed token response: `expires_in` overflow, got {lifetime}"
+                    ),
+                })?,
+        ));
+    }
 
-/// Google OAuth authorization endpoint.
-const ANTIGRAVITY_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+    if let Some(access_token) = access_token
+        && let Some(exp) = jwt_exp_claim(access_token)
+    {
+        let exp_micros =
+            exp.checked_mul(unix_time::MICROS_PER_SEC)
+                .ok_or_else(|| Error::Unavailable {
+                    detail: format!(
+                        "malformed token response: `exp` claim must be in the future, got {exp}"
+                    ),
+                })?;
 
-/// Google OAuth token endpoint.
-const ANTIGRAVITY_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+        let now = unix_time::unix_now_micros();
 
-/// Google OAuth loopback redirect.
-const ANTIGRAVITY_REDIRECT_URI: &str = "http://localhost:51121/oauth-callback";
+        if exp_micros <= now {
+            return Err(Error::Unavailable {
+                detail: format!(
+                    "malformed token response: `exp` claim must be in the future, got {exp}"
+                ),
+            });
+        }
 
-/// Google OAuth scopes requested during authorization.
-const ANTIGRAVITY_SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform \
-     https://www.googleapis.com/auth/userinfo.email \
-     https://www.googleapis.com/auth/userinfo.profile \
-     https://www.googleapis.com/auth/cclog \
-     https://www.googleapis.com/auth/experimentsandconfigs";
+        return Ok(Some(exp_micros));
+    }
 
-/// Lifetime of a pending OAuth state row, in database-clock microseconds.
-const OAUTH_STATE_TTL: i64 = 600 * unix_time::MICROS_PER_SEC;
+    let Some(lifetime) =
+        configured_lifetime_seconds.and_then(|lifetime| i64::try_from(lifetime.get()).ok())
+    else {
+        return Ok(None);
+    };
 
-/// A freshly begun OAuth authorization flow.
+    let micros = lifetime
+        .checked_mul(unix_time::MICROS_PER_SEC)
+        .ok_or_else(|| Error::Unavailable {
+            detail: format!(
+                "malformed definition: `access_token_lifetime_seconds` overflow, got {lifetime}"
+            ),
+        })?;
+
+    Ok(Some(
+        unix_time::unix_now_micros()
+            .checked_add(micros)
+            .ok_or_else(|| Error::Unavailable {
+                detail: format!(
+                    "malformed definition: `access_token_lifetime_seconds` overflow, got {lifetime}"
+                ),
+            })?,
+    ))
+}
+
+/// Reads the `exp` claim of an access token JWT, or `None` when the token is not a decodable JWT
+/// or carries no `exp` claim.
+fn jwt_exp_claim(jwt: &str) -> Option<i64> {
+    jwt_claims(jwt)?.get("exp")?.as_i64()
+}
+
+/// Decodes the JSON object a JWT payload carries, or `None` when the token is not a decodable
+/// JWT.
+#[must_use]
+pub(crate) fn jwt_claims(jwt: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let payload = jwt.split('.').nth(1)?;
+
+    serde_json::from_slice(&general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?).ok()
+}
+
+/// Copies the definition's identity-token claims into the working slots.
+pub(crate) fn apply_id_token_claims(
+    id_token: &str,
+    claims: &[crate::provider::definition::credential::IdTokenClaim],
+    slots: &mut BTreeMap<String, String>,
+) {
+    let Some(payload) = jwt_claims(id_token) else {
+        return;
+    };
+
+    for claim in claims {
+        let mut value = serde_json::Value::Object(payload.clone());
+
+        let mut resolved = true;
+
+        for member in &claim.claim.0 {
+            match value.get(member) {
+                Some(found) => value = found.clone(),
+                None => {
+                    resolved = false;
+                    break;
+                }
+            }
+        }
+
+        if resolved && let Some(text) = value.as_str() {
+            slots.insert(claim.slot.clone(), text.to_string());
+        }
+    }
+}
+
+/// Derives the PKCE S256 challenge of a verifier: Base64URL (unpadded) of SHA-256 over the
+/// ASCII verifier bytes (RFC 7636 §4.2).
+#[must_use]
+pub(crate) fn pkce_challenge(verifier: &str) -> String {
+    general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+/// Generates `byte_count` random bytes encoded as unpadded URL-safe Base64.
+#[must_use]
+pub(crate) fn random_url_safe(byte_count: usize) -> String {
+    let mut bytes = vec![0_u8; byte_count];
+
+    rand::fill(&mut bytes[..]);
+
+    general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Percent-encodes one authorize-URL query component: every byte outside the RFC 3986 unreserved
+/// set renders as `%XX`, so scopes render their spaces as `%20` exactly like the mirrored CLIs.
+#[must_use]
+pub(crate) fn authorize_url_encode(component: &str) -> String {
+    let mut encoded = String::with_capacity(component.len());
+
+    for byte in component.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+
+            other => {
+                encoded.push_str(&format!("%{other:02X}"));
+            }
+        }
+    }
+
+    encoded
+}
+
+/// Builds the authorize URL of an authorization-code grant: the evaluated base URL, the standard
+/// parameters the builder appends itself (`response_type`, `client_id`, `redirect_uri`,
+/// `state`, and the PKCE pair when configured), and the definition's extra parameters in order.
+pub(crate) fn build_authorize_url(
+    grant: &Grant,
+    env: &ValueEnv<'_>,
+    state_token: &str,
+    code_verifier: Option<&str>,
+) -> Result<String, Error> {
+    let Grant::AuthorizationCode {
+        authorize_url,
+        redirect_uri,
+        pkce,
+        extra_params,
+    } = grant
+    else {
+        return Err(Error::Internal {
+            message: "the flow's definition carries no authorization-code grant".to_string(),
+        });
+    };
+
+    let mut url = env
+        .evaluate(authorize_url, "authorize URL")
+        .map_err(|error| Error::Internal {
+            message: error.to_string(),
+        })?;
+
+    let mut append = |name: &str, value: &str| {
+        url.push_str(if url.contains('?') { "&" } else { "?" });
+        url.push_str(name);
+        url.push('=');
+        url.push_str(&authorize_url_encode(value));
+    };
+
+    append("response_type", "code");
+
+    append("client_id", env.client_id.unwrap_or_default());
+
+    append("redirect_uri", redirect_uri);
+
+    if let Some(verifier) = code_verifier
+        && matches!(pkce, Pkce::S256)
+    {
+        append("code_challenge", &pkce_challenge(verifier));
+        append("code_challenge_method", "S256");
+    }
+
+    for param in extra_params {
+        let value = env
+            .evaluate(&param.value, "authorize-URL parameter")
+            .map_err(|error| Error::Internal {
+                message: error.to_string(),
+            })?;
+
+        append(&param.name, &value);
+    }
+
+    // The builder owns `state`: it is appended last, after every configured parameter.
+    append("state", state_token);
+
+    Ok(url)
+}
+
+/// The decoded product of a device authorization response (README §5.3).
 #[derive(Debug, Clone)]
-pub(crate) struct OAuthFlow {
-    /// Opaque state token identifying the flow.
-    pub(crate) state: String,
+pub(crate) struct DeviceAuthorization {
+    /// The device code the polling exchange presents.
+    pub(crate) device_code: String,
 
-    /// PKCE verifier; empty for flows without PKCE.
-    pub(crate) verifier: String,
+    /// The human-readable code the administrator enters at the verification URI.
+    pub(crate) user_code: String,
 
-    /// URL the administrator opens to authorize.
-    pub(crate) authorize_url: String,
+    /// The URI the administrator opens, when the response carries one.
+    pub(crate) verification_uri: Option<String>,
 
-    /// Unix timestamp in microseconds when the flow expires.
-    pub(crate) expires_at: i64,
+    /// The verification URI carrying the user code, when the response carries one.
+    pub(crate) verification_uri_complete: Option<String>,
+
+    /// The device code's lifetime in seconds, when the response reports it.
+    pub(crate) expires_in_seconds: Option<i64>,
+
+    /// The polling interval in seconds, when the response requires one.
+    pub(crate) interval_seconds: Option<i64>,
 }
 
-/// Result of an authorization code exchange.
-#[derive(Debug, Clone)]
-pub(crate) struct ExchangedTokens {
-    /// Credentials built from the exchanged tokens.
-    pub(crate) credentials: Credentials,
+/// Executes the device authorization request of a definition and decodes its response.
+pub(crate) async fn execute_device_authorization(
+    http: &Client,
+    grant: &Grant,
+    env: &ValueEnv<'_>,
+) -> Result<DeviceAuthorization, Error> {
+    let Grant::Device { authorization, .. } = grant else {
+        return Err(Error::Internal {
+            message: "the flow's definition carries no device grant".to_string(),
+        });
+    };
 
-    /// Unix timestamp in microseconds when the access token expires.
-    pub(crate) expires_at: i64,
+    let body = control::execute(
+        http,
+        &authorization.request,
+        env,
+        authorization.response.encoding,
+        "device authorization",
+    )
+    .await?;
+
+    let required =
+        |field: Result<Option<Extracted>, ControlFailure>, name: &str| -> Result<String, Error> {
+            match field {
+                Ok(Some(Extracted::Text(text))) => Ok(text),
+                Ok(Some(Extracted::Integer(value))) => Ok(value.to_string()),
+                Ok(None) => Err(Error::Unavailable {
+                    detail: format!("device authorization response lacks a `{name}` value"),
+                }),
+                Err(failure) => Err(failure.into()),
+            }
+        };
+
+    let optional =
+        |field: Result<Option<Extracted>, ControlFailure>| -> Result<Option<String>, Error> {
+            match field {
+                Ok(Some(extracted)) => Ok(Some(extracted.as_text())),
+                Ok(None) => Ok(None),
+                Err(failure) => Err(failure.into()),
+            }
+        };
+
+    let find = |target: &Target| {
+        authorization
+            .response
+            .fields
+            .iter()
+            .find(|field| &field.target == target)
+            .map(|field| {
+                control::extract_field(&body, &field.path, &FIELD_SHAPE, "device authorization")
+            })
+            .unwrap_or(Ok(None))
+    };
+
+    let device_code = required(find(&Target::DeviceCode), "device_code")?;
+    let user_code = required(find(&Target::UserCode), "user_code")?;
+
+    let verification_uri = optional(find(&Target::VerificationUri))?;
+    let verification_uri_complete = optional(find(&Target::VerificationUriComplete))?;
+
+    if verification_uri.is_none() && verification_uri_complete.is_none() {
+        return Err(Error::Unavailable {
+            detail: "device authorization response lacks a verification URI".to_string(),
+        });
+    }
+
+    let expires_in_seconds = match optional(find(&Target::ExpiresInSeconds))? {
+        Some(text) => Some(text.parse::<i64>().map_err(|_| Error::Unavailable {
+            detail: "device authorization response carries a non-integer `expires_in`".to_string(),
+        })?),
+        None => None,
+    };
+
+    let interval_seconds = match optional(find(&Target::IntervalSeconds))? {
+        Some(text) => Some(text.parse::<i64>().map_err(|_| Error::Unavailable {
+            detail: "device authorization response carries a non-integer `interval`".to_string(),
+        })?),
+        None => None,
+    };
+
+    Ok(DeviceAuthorization {
+        device_code,
+        user_code,
+        verification_uri,
+        verification_uri_complete,
+        expires_in_seconds,
+        interval_seconds,
+    })
 }
 
-/// Result of a refresh grant.
-#[derive(Debug, Clone)]
-pub(super) struct RefreshedTokens {
-    /// New access token.
-    pub(super) access_token: String,
+/// The extraction shape of an exchange or device field: every such value is read as text, with
+/// the lifetime targets decoded by their consumers.
+const FIELD_SHAPE: crate::provider::definition::template::ExtractionShape =
+    crate::provider::definition::template::ExtractionShape::String;
 
-    /// Replacement refresh token, when the endpoint rotated it.
-    pub(super) refresh_token: Option<String>,
+/// The product of one token exchange (README §5.3).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ExchangeOutcome {
+    /// The access token, when the response mapped it.
+    pub(crate) access_token: Option<String>,
 
-    /// Replacement identity token, when issued.
-    pub(super) id_token: Option<String>,
+    /// The refresh token, when the response mapped it.
+    pub(crate) refresh_token: Option<String>,
 
-    /// Lifetime of the access token in seconds, when the endpoint reports it.
-    pub(super) expires_in: Option<i64>,
+    /// The access token's lifetime in seconds, when the response reported it.
+    pub(crate) expires_in_seconds: Option<i64>,
+
+    /// The identity token, when the response mapped it.
+    pub(crate) id_token: Option<String>,
+
+    /// The upstream base URL the response supplied.
+    pub(crate) base_url: Option<String>,
+
+    /// The slots the response placed.
+    pub(crate) slots: BTreeMap<String, String>,
 }
 
-/// Tokens returned by an OAuth token endpoint.
-#[derive(Debug, Clone, Default, Deserialize)]
-struct TokenResponse {
-    /// New access token.
-    access_token: Option<String>,
+/// How one executed exchange classifies, combining the transport outcome with the terminal-code
+/// configuration (README §5.3 device grant).
+pub(crate) enum ExchangeProduct {
+    /// The exchange succeeded and its response was mapped.
+    Completed(ExchangeOutcome),
 
-    /// Replacement refresh token.
-    refresh_token: Option<String>,
+    /// The upstream reported `authorization_pending`.
+    Pending,
 
-    /// OpenAI identity token.
-    id_token: Option<String>,
+    /// The upstream reported `slow_down`: the flow's interval permanently grows.
+    SlowDown,
 
-    /// Lifetime of the access token in seconds.
-    expires_in: Option<i64>,
+    /// The upstream reported a configured terminal code: the flow fails.
+    Terminal(String),
+
+    /// The upstream reported a failure code outside the configuration: the stage fails without
+    /// consuming the flow's schedule.
+    Other(String),
 }
 
-/// The rejected token request's error payload: either the RFC 6749 §5.2 string form Google's
-/// token endpoint sends (`{"error": "invalid_grant", ...}`) or the object form
-/// `auth.openai.com` sends (`{"error": {"code": "token_expired", ...}}`). Both shapes are
-/// read like the CLI's `parse_token_endpoint_error` in `server.rs` at rev `fcf0545`. The payload
-/// is upstream-owned, so unknown fields are ignored and an unrecognized shape classifies
-/// nothing.
+/// The error code of one token-endpoint rejection body, read in every wire shape the researched
+/// upstreams send: the RFC 6749 §5.2 string form, the object form carrying the code in a `code`
+/// member, and the form-encoded `error=` field. A body carrying none yields `None`.
+#[must_use]
+pub(crate) fn token_error_code(body: &str) -> Option<String> {
+    if let Ok(decoded) = serde_json::from_str::<TokenErrorResponse>(body)
+        && let Some(code) = decoded.error_code()
+    {
+        return Some(code);
+    }
+
+    if let Ok(fields) = serde_json::from_str::<BTreeMap<String, String>>(body)
+        && let Some(code) = fields.get("error")
+    {
+        return Some(code.clone());
+    }
+
+    let form = control::parse_form(body);
+
+    form.get("error").cloned()
+}
+
+/// The rejection body's error field in either JSON wire shape.
 #[derive(Debug, Deserialize)]
 struct TokenErrorResponse {
     /// Machine-readable failure name, in either wire shape.
     error: Option<TokenErrorName>,
+}
+
+impl TokenErrorResponse {
+    /// The failure name this body carries.
+    fn error_code(&self) -> Option<String> {
+        match &self.error {
+            Some(TokenErrorName::Name(code)) => Some(code.clone()),
+            Some(TokenErrorName::Object(object)) => object.code.clone(),
+            None => None,
+        }
+    }
 }
 
 /// One token-endpoint failure name in either wire shape it arrives in.
@@ -129,604 +474,251 @@ enum TokenErrorName {
     /// RFC 6749 §5.2 string form, such as `invalid_grant`.
     Name(String),
 
-    /// `auth.openai.com` object form, carrying the failure in its `code` field.
+    /// Object form, carrying the failure in its `code` field.
     Object(TokenErrorObject),
 }
 
-/// The `auth.openai.com` object-form failure: the machine-readable failure is its `code` field.
-/// The payload is upstream-owned, so only the code is modeled and unknown fields are ignored.
+/// The object-form failure: the machine-readable failure is its `code` field. The payload is
+/// upstream-owned, so only the code is modeled and unknown fields are ignored.
 #[derive(Debug, Deserialize)]
 struct TokenErrorObject {
     /// Machine-readable failure code, such as `token_expired`.
     code: Option<String>,
 }
 
-/// Which token grant a token-endpoint request redeems: the single-use authorization code of an
-/// OAuth completion, or the stored refresh token of a lease-guarded refresh. The kind decides the
-/// recovery a terminal rejection names: a dead code needs a fresh flow completed promptly, while
-/// a dead refresh token needs the provider re-authorized.
-#[derive(Debug, Clone, Copy)]
-enum TokenGrant {
-    /// The authorization code of `oauth:complete` and `oauth:reauthorize`.
-    AuthorizationCode,
-
-    /// The stored refresh token of the lease-guarded refresh loop.
-    RefreshToken,
-}
-
-impl TokenGrant {
-    /// Human-readable grant name carried in failure messages.
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::AuthorizationCode => "authorization code",
-            Self::RefreshToken => "refresh token",
-        }
-    }
-
-    /// Whether the named failure code dooms this grant, so retrying it is futile: the RFC 6749
-    /// `invalid_grant`, the refresh codes the CLI classifies as terminal
-    /// (`classify_refresh_token_failure` in `auth/manager.rs` at rev `fcf0545`:
-    /// `refresh_token_expired`, `refresh_token_reused`, `refresh_token_invalidated`), plus the
-    /// object-form codes observed live on `auth.openai.com`. Codes compare case-insensitively,
-    /// mirroring the CLI's normalization. An authorization code is single-use and short-lived —
-    /// an expired, consumed, or malformed code never revives — while a refresh token dies only
-    /// by revocation or expiry.
-    fn is_terminal_code(self, code: &str) -> bool {
-        let normalized = code.to_ascii_lowercase();
-        let code = normalized.as_str();
-
-        match self {
-            Self::AuthorizationCode => matches!(
-                code,
-                "invalid_grant" | "token_expired" | "invalid_token" | "token_exchange_user_error"
-            ),
-
-            Self::RefreshToken => matches!(
-                code,
-                "invalid_grant"
-                    | "token_expired"
-                    | "invalid_token"
-                    | "refresh_token_expired"
-                    | "refresh_token_reused"
-                    | "refresh_token_invalidated"
-            ),
-        }
-    }
-
-    /// Recovery a terminal rejection of this grant names.
-    const fn recovery(self) -> &'static str {
-        match self {
-            Self::AuthorizationCode => {
-                "the code is expired, already used, or invalid — including a code issued for an \
-                 earlier flow; start a fresh flow, authorize its URL, and complete it promptly"
-            }
-
-            Self::RefreshToken => {
-                "the grant is revoked or expired and the provider needs re-authorization"
-            }
-        }
-    }
-}
-
-/// The OpenAI refresh-grant request body (README §5.1): mirrors `RefreshRequest` in
-/// `auth/manager.rs` at rev `fcf0545`, which the CLI posts as JSON.
-#[derive(Debug, Serialize)]
-struct OpenAiRefreshGrantRequest<'a> {
-    /// OAuth client identifier of the Codex CLI.
-    client_id: &'a str,
-
-    /// Grant type; always `refresh_token`.
-    grant_type: &'a str,
-
-    /// Grant being refreshed.
-    refresh_token: &'a str,
-}
-
-/// Begins a pending OAuth authorization flow for the requested OAuth provider kind, generating a
-/// random state, optional PKCE verifier, and the provider's authorization URL.
-pub(crate) fn begin_flow(oauth_type: OAuthProviderType) -> OAuthFlow {
-    let state = random_url_safe(32);
-
-    let (verifier, authorize_url) = match oauth_type {
-        OAuthProviderType::CodexOauth => {
-            let verifier = random_url_safe(64);
-
-            let challenge = pkce_challenge(&verifier);
-
-            // The `originator` parameter carries the same Codex CLI value as the inference-time
-            // `Originator` header (README §5.1), so both source it from the endpoints module's
-            // single home. The organizations and simplified-flow flags mirror the CLI's
-            // `build_authorize_url` in `server.rs` at rev `fcf0545` in the same position, so the
-            // issued code is redeemable by the same exchange.
-            let authorize_url = format!(
-                "{OPENAI_ISSUER}/oauth/authorize?response_type=code&client_id={OPENAI_CLIENT_ID}\
-                 &redirect_uri={OPENAI_REDIRECT_URI}&scope={}&code_challenge={challenge}\
-                 &code_challenge_method=S256&id_token_add_organizations=true\
-                 &codex_cli_simplified_flow=true&state={state}&originator={}",
-                encode_scopes(OPENAI_SCOPES),
-                endpoints::CODEX_ORIGINATOR
-            );
-
-            (verifier, authorize_url)
-        }
-
-        OAuthProviderType::AntigravityOauth => {
-            // The reference (`authorizeAntigravity` in `oauth.ts` at rev `16e0056`) drives the
-            // same Google installed-app client with PKCE; the gateway authenticates the exchange
-            // with the client secret instead — Google accepts the secret-only style for this
-            // client, and the flow is verified live — so no verifier is minted or stored here.
-            let authorize_url = format!(
-                "{ANTIGRAVITY_AUTH_URL}?access_type=offline&client_id={ANTIGRAVITY_CLIENT_ID}\
-                 &prompt=consent&redirect_uri={ANTIGRAVITY_REDIRECT_URI}&response_type=code\
-                 &scope={}&state={state}",
-                encode_scopes(ANTIGRAVITY_SCOPES)
-            );
-
-            (String::new(), authorize_url)
-        }
-    };
-
-    OAuthFlow {
-        state,
-        verifier,
-        authorize_url,
-        expires_at: unix_time::unix_now_micros() + OAUTH_STATE_TTL,
-    }
-}
-
-/// Builds the Codex authorization-code exchange form in the CLI's field set and order
-/// (`server.rs` `exchange_code_for_tokens` at rev `fcf0545`): `grant_type`, `code`,
-/// `redirect_uri`, `client_id`, `code_verifier`. The caller form-encodes the pairs.
-fn openai_exchange_form<'a>(code: &'a str, verifier: &'a str) -> [(&'static str, &'a str); 5] {
-    [
-        ("grant_type", "authorization_code"),
-        ("code", code),
-        ("redirect_uri", OPENAI_REDIRECT_URI),
-        ("client_id", OPENAI_CLIENT_ID),
-        ("code_verifier", verifier),
-    ]
-}
-
-/// Exchanges an OAuth authorization code for stored credentials.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the token endpoint fails or the response omits required fields.
-pub(crate) async fn exchange_code(
+/// Executes one token exchange against the definition's exchange request and classifies the
+/// outcome (README §5.3).
+pub(crate) async fn execute_exchange(
     http: &Client,
-    oauth_type: OAuthProviderType,
-    code: &str,
-    verifier: &str,
-) -> Result<ExchangedTokens, Error> {
-    let request = match oauth_type {
-        OAuthProviderType::CodexOauth => {
-            // Lengths only: the values are secrets, but their shapes diagnose paste mistakes
-            // (a truncated or URL-pasted code) without leaking them.
-            debug!(
-                "exchanging authorization code (code_len={}, verifier_len={})",
-                code.len(),
-                verifier.len()
-            );
+    exchange: &Exchange,
+    env: &ValueEnv<'_>,
+) -> Result<ExchangeProduct, Error> {
+    let outcome = control::execute(
+        http,
+        &exchange.request,
+        env,
+        exchange.response.encoding,
+        "token exchange",
+    )
+    .await;
 
-            http.post(format!("{OPENAI_ISSUER}/oauth/token"))
-                .form(&openai_exchange_form(code, verifier))
+    let decoded = match outcome {
+        Ok(decoded) => decoded,
+
+        Err(ControlFailure::Rejected { status, body }) => {
+            return classify_exchange_rejection(status, &body, &exchange.terminal_codes);
         }
 
-        // The reference (`exchangeAntigravity` in `oauth.ts` at rev `16e0056`) sends the client
-        // secret alongside its PKCE verifier; the gateway sends the secret alone — Google accepts
-        // it for this client, and the exchange is verified live — so the empty verifier minted by
-        // `begin_flow` stays out of the form.
-        OAuthProviderType::AntigravityOauth => http.post(ANTIGRAVITY_TOKEN_URL).form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("client_id", ANTIGRAVITY_CLIENT_ID),
-            ("client_secret", ANTIGRAVITY_CLIENT_SECRET),
-            ("redirect_uri", ANTIGRAVITY_REDIRECT_URI),
-        ]),
+        Err(failure) => return Err(failure.into()),
     };
 
-    let response: TokenResponse =
-        post_token_request(request, TokenGrant::AuthorizationCode).await?;
+    // A 2xx body can still carry a failure name: GitHub's device token endpoint reports
+    // `authorization_pending` with a success status.
+    if let Some(code) = decoded_error_code(&decoded) {
+        return Ok(classify_error_code(&code, &exchange.terminal_codes));
+    }
 
-    // Cloned rather than moved because the raw response still feeds the `token_expiry_from`
-    // fallback below.
-    let access_token = response
-        .access_token
-        .clone()
-        .ok_or_else(|| Error::Unavailable {
-            detail: "token exchange response lacks an access token".to_string(),
-        })?;
-
-    let refresh_token = response.refresh_token.ok_or_else(|| Error::Unavailable {
-        detail: "token exchange response lacks a refresh token".to_string(),
-    })?;
-
-    let credentials = match oauth_type {
-        OAuthProviderType::CodexOauth => {
-            let id_token = response
-                .id_token
-                .clone()
-                .ok_or_else(|| Error::Unavailable {
-                    detail: "token exchange response lacks an id token".to_string(),
-                })?;
-
-            let account_id =
-                token::openai_account_claim(&id_token).ok_or_else(|| Error::Unavailable {
-                    detail: "id token lacks a ChatGPT account claim".to_string(),
-                })?;
-
-            Credentials::CodexOauth {
-                access_token,
-                refresh_token,
-                account_id,
-            }
-        }
-
-        OAuthProviderType::AntigravityOauth => {
-            let project_id = project::resolve_project_id(http, &access_token).await?;
-
-            Credentials::AntigravityOauth {
-                access_token,
-                refresh_token,
-                project_id,
-            }
-        }
-    };
-
-    let expires_at =
-        token::token_expiry_from(response.expires_in, response.access_token.as_deref())?;
-
-    Ok(ExchangedTokens {
-        credentials,
-        expires_at,
-    })
+    map_exchange_fields(&decoded, exchange)
 }
 
-/// Refreshes an OAuth access token with the provider's refresh grant.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the token endpoint fails or omits an access token.
-pub(super) async fn refresh_tokens(
-    http: &Client,
-    oauth_type: OAuthProviderType,
-    refresh_token: &str,
-) -> Result<RefreshedTokens, Error> {
-    let request = match oauth_type {
-        OAuthProviderType::CodexOauth => {
-            http.post(format!("{OPENAI_ISSUER}/oauth/token"))
-                .json(&OpenAiRefreshGrantRequest {
-                    client_id: OPENAI_CLIENT_ID,
-                    grant_type: "refresh_token",
-                    refresh_token,
-                })
-        }
-
-        OAuthProviderType::AntigravityOauth => http.post(ANTIGRAVITY_TOKEN_URL).form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", ANTIGRAVITY_CLIENT_ID),
-            ("client_secret", ANTIGRAVITY_CLIENT_SECRET),
-        ]),
-    };
-
-    let response: TokenResponse = post_token_request(request, TokenGrant::RefreshToken).await?;
-
-    let access_token = response.access_token.ok_or_else(|| Error::Unavailable {
-        detail: "token refresh response lacks an access token".to_string(),
-    })?;
-
-    Ok(RefreshedTokens {
-        access_token,
-        refresh_token: response.refresh_token,
-        id_token: response.id_token,
-        expires_in: response.expires_in,
-    })
-}
-
-/// Classifies a token-endpoint rejection body: a terminal failure code — a grant whose retry is
-/// futile — is diagnosed with the grant's recovery instead of the generic upstream rendering,
-/// while any other rejection keeps the generic rendering with the status embedded. The code is
-/// read in either wire shape: the RFC 6749 §5.2 string form Google sends, or the object form
-/// `auth.openai.com` sends.
-fn token_grant_rejection(status: u16, body: &str, grant: TokenGrant) -> Error {
-    let error_code = serde_json::from_str::<TokenErrorResponse>(body)
-        .ok()
-        .and_then(|response| response.error)
-        .and_then(|name| match name {
-            TokenErrorName::Name(code) => Some(code),
-            TokenErrorName::Object(object) => object.code,
+/// Classifies a non-2xx token-endpoint rejection: a configured terminal code fails the flow, the
+/// RFC polling codes classify as their schedule outcomes, and anything else is a generic
+/// rejection carrying the status.
+fn classify_exchange_rejection(
+    status: u16,
+    body: &str,
+    terminal_codes: &[String],
+) -> Result<ExchangeProduct, Error> {
+    let Some(code) = token_error_code(body) else {
+        return Err(Error::Rejected {
+            status,
+            detail: crate::provider::http_body::truncate_excerpt(body),
         });
+    };
 
-    if let Some(code) = error_code
-        .as_deref()
-        .filter(|code| grant.is_terminal_code(code))
-    {
-        let grant_name = grant.as_str();
-        let recovery = grant.recovery();
+    match classify_error_code(&code, terminal_codes) {
+        ExchangeProduct::Other(code) => Err(Error::Rejected {
+            status,
+            detail: crate::provider::http_body::truncate_excerpt(&format!(
+                "upstream error `{code}`"
+            ))
+            .to_string(),
+        }),
 
-        return Error::Unavailable {
-            detail: format!(
-                "the token endpoint rejected the {grant_name} with `{code}`: {recovery}"
-            ),
-        };
-    }
-
-    Error::Rejected {
-        status,
-        detail: http_body::truncate_excerpt(body),
+        classified => Ok(classified),
     }
 }
 
-/// POSTs the prepared token-endpoint request and deserializes the JSON response, classifying
-/// non-success statuses through [`token_grant_rejection`] for the given grant. The body
-/// classification needs the full bounded error body, so the token grants map the shared exchange
-/// failure here instead of through the generic conversion on [`Error`].
+/// Reads the failure code a decoded 2xx body carries, when any: the same closed set of shapes the
+/// rejection bodies use, consulted on the decoded tree.
+fn decoded_error_code(decoded: &DecodedBody) -> Option<String> {
+    match decoded {
+        DecodedBody::Json(json) => match json.get("error") {
+            Some(serde_json::Value::String(code)) => Some(code.clone()),
+            Some(serde_json::Value::Object(object)) => object
+                .get("code")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            _ => None,
+        },
+
+        DecodedBody::Form(fields) => fields.get("error").cloned(),
+    }
+}
+
+/// Classifies one upstream failure code against the definition's terminal codes: the RFC 8628
+/// polling codes are engine-owned, the configured terminal codes end the flow, and anything else
+/// is `Other`.
+fn classify_error_code(code: &str, terminal_codes: &[String]) -> ExchangeProduct {
+    match code {
+        "authorization_pending" => return ExchangeProduct::Pending,
+        "slow_down" => return ExchangeProduct::SlowDown,
+        _ => {}
+    }
+
+    let is_terminal = terminal_codes
+        .iter()
+        .any(|terminal| terminal.eq_ignore_ascii_case(code));
+
+    if is_terminal {
+        ExchangeProduct::Terminal(code.to_string())
+    } else {
+        ExchangeProduct::Other(code.to_string())
+    }
+}
+
+/// Maps the exchange response's fields into the outcome per the definition's targets.
+fn map_exchange_fields(
+    decoded: &DecodedBody,
+    exchange: &Exchange,
+) -> Result<ExchangeProduct, Error> {
+    let mut outcome = ExchangeOutcome::default();
+
+    for field in &exchange.response.fields {
+        let extracted =
+            control::extract_field(decoded, &field.path, &FIELD_SHAPE, "token exchange")?;
+
+        let Some(extracted) = extracted else {
+            if field.required {
+                return Err(Error::Unavailable {
+                    detail: "token exchange response lacks a required field".to_string(),
+                });
+            }
+
+            continue;
+        };
+
+        apply_exchange_target(&mut outcome, &field.target, extracted)?;
+    }
+
+    Ok(ExchangeProduct::Completed(outcome))
+}
+
+/// Folds one extracted exchange value into the outcome per its target.
+fn apply_exchange_target(
+    outcome: &mut ExchangeOutcome,
+    target: &Target,
+    extracted: Extracted,
+) -> Result<(), Error> {
+    match target {
+        Target::AccessToken => outcome.access_token = Some(extracted.as_text()),
+
+        Target::RefreshToken => outcome.refresh_token = Some(extracted.as_text()),
+
+        Target::ExpiresInSeconds => {
+            outcome.expires_in_seconds = extracted
+                .as_integer()
+                .or_else(|| extracted.as_text().parse::<i64>().ok());
+        }
+
+        Target::IdToken => outcome.id_token = Some(extracted.as_text()),
+
+        Target::BaseUrl => outcome.base_url = Some(extracted.as_text()),
+
+        Target::Slot { name } => {
+            outcome.slots.insert(name.clone(), extracted.as_text());
+        }
+
+        // The write-time validation rejects a device-authorization or provisioning target in an
+        // exchange mapping, so these arms are stored drift and fail fast.
+        _ => {
+            return Err(Error::Internal {
+                message: "the exchange response maps a target its stage does not produce"
+                    .to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Executes one refresh grant and maps its response through the carried descriptor — the
+/// definition's refresh mapping, or the exchange mapping when the grant declares none.
+///
+/// A rejection whose failure code is in the grant's terminal list diagnoses the dead refresh
+/// token — the grant is revoked or expired and the provider needs re-authorization — while any
+/// other rejection keeps the generic upstream rendering with the status embedded.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for transport failures, non-success statuses, and malformed response bodies.
-async fn post_token_request<T>(request: RequestBuilder, grant: TokenGrant) -> Result<T, Error>
-where
-    T: DeserializeOwned,
-{
-    match http_body::send_and_parse_json(request, "token endpoint").await {
-        Ok(parsed) => Ok(parsed),
+/// Returns [`Error`] for transport failures, rejections, and malformed response bodies.
+pub(crate) async fn execute_refresh_grant(
+    http: &Client,
+    request: &crate::provider::definition::template::ControlRequest,
+    env: &ValueEnv<'_>,
+    response: &crate::provider::definition::template::ResponseDescriptor,
+    terminal_codes: &[String],
+) -> Result<ExchangeOutcome, Error> {
+    let outcome = control::execute(http, request, env, response.encoding, "token refresh").await;
 
-        Err(ExchangeFailure::Rejected { status, body }) => {
-            Err(token_grant_rejection(status, &body, grant))
+    let decoded = match outcome {
+        Ok(decoded) => decoded,
+
+        Err(ControlFailure::Rejected { status, body }) => {
+            if let Some(code) = token_error_code(&body)
+                && terminal_codes
+                    .iter()
+                    .any(|terminal| terminal.eq_ignore_ascii_case(&code))
+            {
+                return Err(Error::Unavailable {
+                    detail: format!(
+                        "the token endpoint rejected the refresh token with `{code}`: the grant \
+                         is revoked or expired and the provider needs re-authorization"
+                    ),
+                });
+            }
+
+            return Err(Error::Rejected {
+                status,
+                detail: crate::provider::http_body::truncate_excerpt(&body),
+            });
         }
 
-        Err(ExchangeFailure::Unavailable { detail }) => Err(Error::Unavailable { detail }),
-    }
-}
+        Err(failure) => return Err(failure.into()),
+    };
 
-/// Percent-encodes a space-joined OAuth scope list for placement in an authorize URL query: RFC
-/// 3986 forbids raw spaces and README §5.1/§5.2 document the `%20` form. Scope values are HTTPS
-/// URLs whose colons and slashes are legal query characters, so spaces are the only bytes that need
-/// escaping.
-fn encode_scopes(scopes: &str) -> String {
-    scopes.replace(' ', "%20")
-}
+    let mut mapped = ExchangeOutcome::default();
 
-/// Derives the PKCE S256 challenge of a verifier: Base64URL (unpadded) of SHA-256 over the
-/// ASCII verifier bytes (RFC 7636 §4.2).
-fn pkce_challenge(verifier: &str) -> String {
-    general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
-}
+    for field in &response.fields {
+        let extracted =
+            control::extract_field(&decoded, &field.path, &FIELD_SHAPE, "token refresh").map_err(
+                |failure| Error::Unavailable {
+                    detail: failure.to_string(),
+                },
+            )?;
 
-/// Generates `byte_count` random bytes encoded as unpadded URL-safe Base64.
-fn random_url_safe(byte_count: usize) -> String {
-    let mut bytes = vec![0_u8; byte_count];
+        let Some(extracted) = extracted else {
+            if field.required {
+                return Err(Error::Unavailable {
+                    detail: "token refresh response lacks a required field".to_string(),
+                });
+            }
 
-    rand::fill(&mut bytes[..]);
-
-    general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// RFC 7636 appendix B pins the S256 challenge of a known verifier, so the PKCE transform
-    /// the gateway advertises is verified against the standard itself rather than the
-    /// implementation: a verifier the gateway mints always matches the challenge its authorize
-    /// URL carries, and a challenge mismatch — which the token endpoint rejects opaquely — cannot
-    /// slip in.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the derived challenge differs from the RFC vector.
-    #[test]
-    fn derives_the_pkce_challenge_per_rfc7636() {
-        assert_eq!(
-            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
-            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-        );
-    }
-
-    /// `auth.openai.com` rejects a dead refresh token with the object-form error observed live:
-    /// a 401 carrying `{"error": {"code": "token_expired", ...}}`. The rejection must
-    /// diagnose re-authorization instead of rendering the generic upstream excerpt.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the rejection is not the diagnosed re-authorization failure.
-    #[test]
-    fn diagnoses_a_dead_refresh_token_from_the_object_form() {
-        let body = concat!(
-            r#"{"error": {"message": "Could not validate your token. "#,
-            r#"Please try signing in again.", "type": "invalid_request_error", "#,
-            r#""param": null, "code": "token_expired"}}"#
-        );
-
-        #[expect(
-            clippy::panic,
-            reason = "a dead refresh token must diagnose, which is what the test asserts"
-        )]
-        let Error::Unavailable { detail } =
-            token_grant_rejection(401, body, TokenGrant::RefreshToken)
-        else {
-            panic!("a dead refresh token must diagnose re-authorization");
+            continue;
         };
 
-        assert!(
-            detail.contains("`token_expired`") && detail.contains("needs re-authorization"),
-            "unexpected diagnosis: {detail}"
-        );
+        apply_exchange_target(&mut mapped, &field.target, extracted)?;
     }
 
-    /// The same object form on the authorization-code grant means the code is expired, already
-    /// used, or invalid, so the rejection must direct a fresh flow instead of a retry of the dead
-    /// code.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the rejection is not the diagnosed fresh-flow failure.
-    #[test]
-    fn diagnoses_a_dead_authorization_code_from_the_object_form() {
-        let body = concat!(
-            r#"{"error": {"message": "Could not validate your token. "#,
-            r#"Please try signing in again.", "type": "invalid_request_error", "#,
-            r#""param": null, "code": "token_expired"}}"#
-        );
-
-        #[expect(
-            clippy::panic,
-            reason = "a dead authorization code must diagnose, which is what the test asserts"
-        )]
-        let Error::Unavailable { detail } =
-            token_grant_rejection(401, body, TokenGrant::AuthorizationCode)
-        else {
-            panic!("a dead authorization code must direct a fresh flow");
-        };
-
-        assert!(
-            detail.contains("`token_expired`") && detail.contains("fresh flow"),
-            "unexpected diagnosis: {detail}"
-        );
-    }
-
-    /// The RFC 6749 string form Google's token endpoint sends keeps its re-authorization
-    /// diagnosis.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the rejection is not the diagnosed re-authorization failure.
-    #[test]
-    fn keeps_the_rfc6749_invalid_grant_diagnosis() {
-        let body = concat!(
-            r#"{"error": "invalid_grant", "#,
-            r#""error_description": "Token has been expired or revoked."}"#
-        );
-
-        #[expect(
-            clippy::panic,
-            reason = "an invalid_grant must diagnose, which is what the test asserts"
-        )]
-        let Error::Unavailable { detail } =
-            token_grant_rejection(400, body, TokenGrant::RefreshToken)
-        else {
-            panic!("an invalid_grant must diagnose re-authorization");
-        };
-
-        assert!(
-            detail.contains("`invalid_grant`") && detail.contains("needs re-authorization"),
-            "unexpected diagnosis: {detail}"
-        );
-    }
-
-    /// Failure codes outside the terminal set — and bodies carrying no machine-readable code at
-    /// all — keep the generic upstream rendering with the foreign status embedded.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a non-terminal rejection leaves the generic rendering.
-    #[test]
-    fn keeps_generic_rendering_for_non_terminal_rejections() {
-        let unrecognized = r#"{"error": {"message": "Rate limited.", "code": "rate_limited"}}"#;
-
-        for (status, body) in [(429, unrecognized), (500, "not json at all")] {
-            #[expect(
-                clippy::panic,
-                reason = "a non-terminal rejection stays generic, which is what the test asserts"
-            )]
-            let Error::Rejected {
-                status: rendered,
-                detail,
-            } = token_grant_rejection(status, body, TokenGrant::RefreshToken)
-            else {
-                panic!("a non-terminal rejection must stay generic");
-            };
-
-            assert_eq!(rendered, status);
-            assert!(detail.contains(body), "unexpected excerpt: {detail}");
-        }
-    }
-
-    /// The Codex token exchange carries exactly the CLI's form fields in their order
-    /// (`server.rs` `exchange_code_for_tokens`): a drift in set or order would redeem against a
-    /// different binding and fail opaquely at the token endpoint.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the exchange form diverges from the CLI's fields.
-    #[test]
-    fn builds_the_codex_exchange_form_like_the_cli() {
-        assert_eq!(
-            openai_exchange_form("code-value", "verifier-value"),
-            [
-                ("grant_type", "authorization_code"),
-                ("code", "code-value"),
-                ("redirect_uri", OPENAI_REDIRECT_URI),
-                ("client_id", OPENAI_CLIENT_ID),
-                ("code_verifier", "verifier-value"),
-            ]
-        );
-    }
-
-    /// The Codex CLI authorizes the identity scopes plus the connectors scopes its tools invoke
-    /// with, and marks the request with the organizations and simplified-flow flags: the gateway
-    /// mints the same authorize URL, so the issued code is redeemable by the same exchange.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the authorize URL diverges from the CLI's parameters.
-    #[test]
-    fn builds_the_codex_authorize_url_like_the_cli() {
-        let flow = begin_flow(OAuthProviderType::CodexOauth);
-
-        assert!(
-            flow.authorize_url.contains(concat!(
-                "scope=openid%20profile%20email%20offline_access",
-                "%20api.connectors.read%20api.connectors.invoke"
-            )),
-            "unexpected scopes: {}",
-            flow.authorize_url
-        );
-        assert!(
-            flow.authorize_url
-                .contains("id_token_add_organizations=true"),
-            "unexpected authorize URL: {}",
-            flow.authorize_url
-        );
-        assert!(
-            flow.authorize_url
-                .contains("codex_cli_simplified_flow=true"),
-            "unexpected authorize URL: {}",
-            flow.authorize_url
-        );
-        assert!(
-            flow.authorize_url.contains(&pkce_challenge(&flow.verifier)),
-            "the advertised challenge must match the stored verifier"
-        );
-    }
-
-    /// Terminal failure codes compare case-insensitively and include the CLI-classified refresh
-    /// code: a backend `refresh_token_expired` in any letter case diagnoses re-authorization.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the rejection is not the diagnosed re-authorization failure.
-    #[test]
-    fn diagnoses_cli_classified_refresh_codes_in_any_case() {
-        for code in ["refresh_token_expired", "REFRESH_TOKEN_EXPIRED"] {
-            let body = format!(r#"{{"error": {{"code": "{code}"}}}}"#);
-
-            #[expect(
-                clippy::panic,
-                reason = "a dead refresh token must diagnose, which is what the test asserts"
-            )]
-            let Error::Unavailable { detail } =
-                token_grant_rejection(401, &body, TokenGrant::RefreshToken)
-            else {
-                panic!("a dead refresh token must diagnose re-authorization");
-            };
-
-            assert!(
-                detail.contains("needs re-authorization"),
-                "unexpected diagnosis: {detail}"
-            );
-        }
-    }
+    Ok(mapped)
 }

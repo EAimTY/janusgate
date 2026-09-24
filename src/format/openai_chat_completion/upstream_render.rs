@@ -245,20 +245,10 @@ struct JsonSchema<'a> {
     schema: &'a Value,
 }
 
-/// Renders the upstream request URL and payload for an OpenAI-compatible Chat Completions upstream:
-/// `POST <base_url>/chat/completions` (README §5.3).
-pub(crate) fn render_request<'a>(
-    ir: &'a IrRequest,
-    base_url: &str,
-    is_streaming: bool,
-) -> (String, RequestBody<'a>) {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-
-    (url, render_request_body(ir, is_streaming))
-}
-
-/// Renders an IR request into the upstream Chat Completions payload.
-fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
+/// Renders the upstream Chat Completions payload: the body only — the URL, the headers, and the
+/// streaming decision belong to the provider definition (README §5.2).
+#[must_use]
+pub(crate) fn render_request_body(ir: &IrRequest, is_streaming: bool) -> RequestBody<'_> {
     let mut messages: Vec<Message<'_>> = Vec::new();
 
     if let Some(instructions) = &ir.instructions {

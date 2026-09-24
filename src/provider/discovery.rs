@@ -1,12 +1,22 @@
-//! Upstream model discovery per provider type.
+//! Upstream model discovery, driven entirely by the provider definition's discovery descriptor
+//! (README §5.5, §5.6).
+//!
+//! Discovery configures a request, a response extraction, and a pagination loop; it discovers
+//! upstream model identifiers and never assigns protocol capabilities. A discovered model that
+//! does not support its definition's format produces the upstream error when called. The
+//! existing `discovered`/`vanished`/`manual` state machine is untouched: an empty or failed
+//! upstream list never mass-vanishes existing rows, because a failed refresh is rejected before
+//! the storage layer is reached.
 
-use super::{
-    Credentials, MissingBaseUrl, Provider, ProviderType, endpoints, http_body,
-    http_body::ExchangeFailure, oauth,
+use super::{Provider, control, http_body, oauth};
+use crate::provider::definition::{
+    discovery as descriptor,
+    discovery::{Discovery, DiscoveryExtract, Pagination},
+    eval::ValueEnv,
+    template::{ControlRequest, ResponseEncoding},
 };
-use reqwest::{Client, RequestBuilder};
-use serde::{Deserialize, Serialize, de::IgnoredAny};
-use std::collections::BTreeMap;
+use reqwest::Client;
+use serde_json::Value as Json;
 
 /// Upstream model discovery failures. These paths never forward foreign statuses, so an upstream
 /// rejection pins 502 with the status embedded in the message.
@@ -39,359 +49,292 @@ pub(crate) enum Error {
     },
 }
 
-/// The `fetchAvailableModels` request body (README §5.2): the action takes no inputs, so the body
-/// is the empty object.
-#[derive(Debug, Serialize)]
-struct FetchAvailableModelsRequest {}
-
-/// A Codex model list (README §5.1): the vendor serves the model entries under `items` or `models`.
-/// The payload is upstream-owned, so unknown fields are ignored.
-#[derive(Debug, Deserialize)]
-struct CodexModelsResponse {
-    /// Model entries the payload carries.
-    #[serde(alias = "models")]
-    items: Option<Vec<CodexModelEntry>>,
-}
-
-/// One model entry of a Codex model list.
-#[derive(Debug, Deserialize)]
-struct CodexModelEntry {
-    /// Upstream model identifier the entry names.
-    slug: Option<String>,
-}
-
-/// An Antigravity `fetchAvailableModels` response (README §5.2): the available models keyed by
-/// model name. The payload is upstream-owned, so unknown fields are ignored.
-#[derive(Debug, Deserialize)]
-struct AvailableModelsResponse {
-    /// The available models. Each value is a provider-specific model descriptor the gateway never
-    /// reads — discovery takes only the map's keys as `upstream_id` values — so its shape is not
-    /// the gateway's to define.
-    models: Option<BTreeMap<String, IgnoredAny>>,
-}
-
-/// A model list serving its entries under `data` (README §5.3): the OpenAI protocols' `/models`
-/// and Anthropic Messages' `/v1/models` answer this one shape. The payload is upstream-owned, so
-/// unknown fields are ignored.
-#[derive(Debug, Deserialize)]
-struct DataModelsResponse {
-    /// Model entries the payload carries.
-    data: Option<Vec<DataModelEntry>>,
-}
-
-/// One model entry of a model list served under `data`.
-#[derive(Debug, Deserialize)]
-struct DataModelEntry {
-    /// Upstream model identifier the entry names.
-    id: Option<String>,
-}
-
-/// A Gemini `models.list` response (README §5.3): the entries are served under `models`. The
-/// payload is upstream-owned, so unknown fields are ignored.
-#[derive(Debug, Deserialize)]
-struct GeminiModelsResponse {
-    /// Model entries the payload carries.
-    models: Option<Vec<GeminiModelEntry>>,
-}
-
-/// One model entry of a Gemini model list.
-#[derive(Debug, Deserialize)]
-struct GeminiModelEntry {
-    /// Model resource name, `models/<id>`.
-    name: Option<String>,
-}
-
-/// Fetches the upstream model identifiers (`upstream_id` values) of a provider.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the upstream call fails or the payload shape is not recognized.
-pub(crate) async fn discover_upstream_models(
-    http: &Client,
-    provider: &Provider,
-) -> Result<Vec<String>, Error> {
-    // Every credential kind carries an upstream secret; the codex path below still fails with an
-    // explicit internal error when the credentials are not of the kind its provider type requires.
-    let secret = provider.credentials.secret();
-
-    match provider.provider_type {
-        ProviderType::CodexOauth => discover_codex(http, provider, secret).await,
-
-        ProviderType::AntigravityOauth => discover_antigravity(http, secret).await,
-
-        ProviderType::OpenAiResponse | ProviderType::OpenAiChatCompletion => {
-            discover_openai(http, provider, secret).await
+impl From<oauth::Error> for Error {
+    fn from(error: oauth::Error) -> Self {
+        match error {
+            oauth::Error::Rejected { status, detail } => Self::Rejected { status, detail },
+            oauth::Error::Unavailable { detail } | oauth::Error::NotFound { message: detail } => {
+                Self::Unavailable { detail }
+            }
+            oauth::Error::Internal { message } => Self::Internal { message },
         }
-
-        ProviderType::GeminiGenerateContent => {
-            discover_gemini_generate_content(http, provider, secret).await
-        }
-
-        ProviderType::GeminiInteraction => {
-            discover_gemini_interaction(http, provider, secret).await
-        }
-
-        ProviderType::AnthropicMessages => discover_anthropic(http, provider, secret).await,
     }
 }
 
-/// Converts the shared upstream exchange failure into the discovery error domain: the rejection
-/// detail is the body excerpt under the one truncation policy ([`http_body::truncate_excerpt`]).
-impl From<ExchangeFailure> for Error {
-    fn from(failure: ExchangeFailure) -> Self {
+impl From<control::ControlFailure> for Error {
+    fn from(failure: control::ControlFailure) -> Self {
         match failure {
-            ExchangeFailure::Rejected { status, body } => Self::Rejected {
+            control::ControlFailure::Rejected { status, body } => Self::Rejected {
                 status,
                 detail: http_body::truncate_excerpt(&body),
             },
-
-            ExchangeFailure::Unavailable { detail } => Self::Unavailable { detail },
+            control::ControlFailure::Unavailable { detail } => Self::Unavailable { detail },
         }
     }
 }
 
-/// Converts the shared missing-base-url fault into the discovery error domain: a static-key row
-/// without its stored base URL is internal drift, never the requesting client's fault.
-impl From<MissingBaseUrl> for Error {
-    fn from(error: MissingBaseUrl) -> Self {
-        Self::Internal {
-            message: error.to_string(),
-        }
-    }
+/// Whether one discovered identifier is routing-safe: non-empty printable ASCII without
+/// whitespace and without `/` or `:` — the Gemini URL path cannot address them. The check runs at
+/// the discovery ingestion boundary, before any row is written, so curated rows are never
+/// replaced by unroutable ones.
+#[must_use]
+fn is_routable_upstream_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_graphic())
+        && !value.contains('/')
+        && !value.contains(':')
 }
 
-/// Discovers Codex models from the ChatGPT backend.
+/// Fetches the upstream model identifiers (`upstream_id` values) of a provider through its
+/// definition's discovery descriptor, refreshing the access token first when a known expiry
+/// requires it.
 ///
-/// The payload must contain an `items` or `models` array whose entries carry a `slug` string.
-async fn discover_codex(
+/// # Errors
+///
+/// Returns [`Error`] when the token refresh fails, the upstream call fails, the payload does not
+/// carry the configured shape, or a discovered identifier is not routing-safe.
+pub(crate) async fn discover_upstream_models(
+    database: &crate::database::Database,
     http: &Client,
     provider: &Provider,
-    secret: &str,
 ) -> Result<Vec<String>, Error> {
-    let account_id = match &provider.credentials {
-        Credentials::CodexOauth { account_id, .. } => account_id.clone(),
+    let provider = oauth::ensure_fresh_token(database, http, provider).await?;
 
-        _ => {
-            return Err(Error::Internal {
-                message: "codex discovery requires OpenAI OAuth credentials".to_string(),
-            });
-        }
+    let Some(discovery) = &provider.definition.payload.discovery else {
+        return Err(Error::Internal {
+            message: format!(
+                "provider `{}` carries no discovery configuration",
+                provider.name
+            ),
+        });
     };
 
-    let request = http
-        .get(endpoints::CODEX_MODELS_URL)
-        .query(&[("client_version", endpoints::CODEX_CLIENT_VERSION)])
-        .bearer_auth(secret)
-        .header(endpoints::CODEX_ACCOUNT_ID_HEADER, account_id);
+    let env = discovery_env(&provider);
 
-    let response: CodexModelsResponse = http_body::send_and_parse_json(request, "upstream").await?;
-
-    let entries = response.items.ok_or_else(|| Error::Unavailable {
-        detail: "model discovery payload lacks an `items` or `models` array".to_string(),
-    })?;
-
-    entries
-        .into_iter()
-        .map(|entry| {
-            entry.slug.ok_or_else(|| Error::Unavailable {
-                detail: "model discovery entry lacks a `slug` string".to_string(),
-            })
-        })
-        .collect()
+    run_discovery(http, discovery, &env).await
 }
 
-/// Discovers Antigravity models.
-///
-/// The reference (`fetchAvailableModels` in `src/plugin/quota.ts` at rev `16e0056`) posts
-/// `{project}` to the production base URL; the gateway posts the empty object to the daily base
-/// URL — both shapes are accepted, and the discovery is verified live.
-async fn discover_antigravity(http: &Client, secret: &str) -> Result<Vec<String>, Error> {
-    let response: AvailableModelsResponse = oauth::post_antigravity(
-        http,
-        endpoints::ANTIGRAVITY_FETCH_AVAILABLE_MODELS_ACTION,
-        secret,
-        &FetchAvailableModelsRequest {},
-    )
-    .await?;
-
-    let models = response.models.ok_or_else(|| Error::Unavailable {
-        detail: "model discovery payload lacks a `models` object".to_string(),
-    })?;
-
-    Ok(models.into_keys().collect())
-}
-
-/// Fetches a model list served under `data` (README §5.3) — the OpenAI protocols' `/models` and
-/// Anthropic Messages' `/v1/models` — and yields the entries' identifiers.
+/// Runs one discovery descriptor to completion against its environment: the request, the
+/// extraction, and the pagination loop.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the request fails or the payload does not carry the list.
-async fn fetch_data_model_list(request: RequestBuilder) -> Result<Vec<String>, Error> {
-    let response: DataModelsResponse = http_body::send_and_parse_json(request, "upstream").await?;
-
-    let entries = response.data.ok_or_else(|| Error::Unavailable {
-        detail: "model discovery payload lacks a `data` array".to_string(),
-    })?;
-
-    entries
-        .into_iter()
-        .map(|entry| {
-            entry.id.ok_or_else(|| Error::Unavailable {
-                detail: "model discovery entry lacks an `id` string".to_string(),
-            })
-        })
-        .collect()
-}
-
-/// Fetches a Gemini model list (README §5.3) and yields the entries' identifiers: each entry's
-/// resource name with the `models/` prefix stripped, so a bare `<id>` and a `models/<id>` name
-/// yield the same identifier.
-///
-/// # Errors
-///
-/// Returns [`Error`] when the request fails or the payload does not carry the list.
-async fn fetch_gemini_model_list(request: RequestBuilder) -> Result<Vec<String>, Error> {
-    let response: GeminiModelsResponse =
-        http_body::send_and_parse_json(request, "upstream").await?;
-
-    let entries = response.models.ok_or_else(|| Error::Unavailable {
-        detail: "model discovery payload lacks a `models` array".to_string(),
-    })?;
-
-    entries
-        .into_iter()
-        .map(|entry| {
-            let name = entry.name.ok_or_else(|| Error::Unavailable {
-                detail: "model discovery entry lacks a `name` string".to_string(),
-            })?;
-
-            Ok(name.strip_prefix("models/").unwrap_or(&name).to_string())
-        })
-        .collect()
-}
-
-/// Discovers models from an OpenAI-protocol (Responses or Chat Completions) static-key upstream:
-/// `GET {base}/models` with bearer auth, the list served under `data` (README §5.3).
-async fn discover_openai(
+/// Returns [`Error`] per the discovery failure contract.
+pub(crate) async fn run_discovery(
     http: &Client,
-    provider: &Provider,
-    secret: &str,
+    discovery: &Discovery,
+    env: &ValueEnv<'_>,
 ) -> Result<Vec<String>, Error> {
-    let base_url = provider.upstream_base_url()?;
+    let mut ids = Vec::new();
 
-    fetch_data_model_list(http.get(format!("{base_url}/models")).bearer_auth(secret)).await
-}
+    let mut request = discovery.request.clone();
 
-/// Discovers models from a Gemini GenerateContent static-key upstream: `GET {base}/models` with
-/// the `x-goog-api-key` header, the list served under `models` (README §5.3).
-async fn discover_gemini_generate_content(
-    http: &Client,
-    provider: &Provider,
-    secret: &str,
-) -> Result<Vec<String>, Error> {
-    let base_url = provider.upstream_base_url()?;
+    match &discovery.pagination {
+        None | Some(Pagination::None) => {
+            let body =
+                control::execute(http, &request, env, encoding_of(discovery), "upstream").await?;
 
-    fetch_gemini_model_list(
-        http.get(format!("{base_url}/models"))
-            .header(endpoints::GEMINI_API_KEY_HEADER, secret),
-    )
-    .await
-}
+            ids = extract_ids(&body, &discovery.extract)?;
+        }
 
-/// Discovers models from a Gemini Interactions upstream: `GET {base}/v1beta/models` with the
-/// `x-goog-api-key` header and the pinned `Api-Revision` (README §5.3), in the existing
-/// `GET {base}/v1beta/models` shape (`models[].name`, `"models/<id>"` or bare `<id>`).
-async fn discover_gemini_interaction(
-    http: &Client,
-    provider: &Provider,
-    secret: &str,
-) -> Result<Vec<String>, Error> {
-    let base_url = provider.upstream_base_url()?;
+        Some(Pagination::Token {
+            request_param,
+            response_path,
+            max_pages,
+        }) => {
+            for _ in 0..max_pages.get() {
+                let body =
+                    control::execute(http, &request, env, encoding_of(discovery), "upstream")
+                        .await?;
 
-    fetch_gemini_model_list(
-        http.get(format!("{base_url}/v1beta/models"))
-            .header(endpoints::GEMINI_API_KEY_HEADER, secret)
-            .header(
-                endpoints::GEMINI_API_REVISION_HEADER,
-                endpoints::GEMINI_API_REVISION,
-            ),
-    )
-    .await
-}
+                ids.extend(extract_ids(&body, &discovery.extract)?);
 
-/// Discovers models from an Anthropic Messages upstream: `GET {base}/v1/models` with the
-/// `x-api-key` header and the pinned `anthropic-version` (README §5.3).
-async fn discover_anthropic(
-    http: &Client,
-    provider: &Provider,
-    secret: &str,
-) -> Result<Vec<String>, Error> {
-    let base_url = provider.upstream_base_url()?;
+                let next = value_at(&body, response_path)
+                    .and_then(Json::as_str)
+                    .map(str::to_string);
 
-    fetch_data_model_list(
-        http.get(format!("{base_url}/v1/models"))
-            .header(endpoints::ANTHROPIC_API_KEY_HEADER, secret)
-            .header(
-                endpoints::ANTHROPIC_VERSION_HEADER,
-                endpoints::ANTHROPIC_VERSION,
-            ),
-    )
-    .await
-}
+                let Some(next) = next.filter(|token| !token.is_empty()) else {
+                    break;
+                };
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+                set_query_param(&mut request, request_param, &next);
+            }
+        }
 
-    /// The `fetchAvailableModels` action takes no inputs, so its body is the empty JSON object
-    /// (README §5.2): the request keeps its shape however the request struct is refactored.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the empty request body does not render as JSON.
-    #[test]
-    fn renders_the_empty_model_discovery_body() {
-        #[expect(
-            clippy::unwrap_used,
-            reason = "the empty request body always serializes"
-        )]
-        let body = serde_json::to_string(&FetchAvailableModelsRequest {}).unwrap();
+        Some(Pagination::Cursor {
+            has_more_path,
+            last_id_path,
+            request_param,
+            max_pages,
+        }) => {
+            for _ in 0..max_pages.get() {
+                let body =
+                    control::execute(http, &request, env, encoding_of(discovery), "upstream")
+                        .await?;
 
-        assert_eq!(body, "{}");
-    }
+                ids.extend(extract_ids(&body, &discovery.extract)?);
 
-    /// The vendor serves the Codex model list under `items` or `models` (README §5.1), and the
-    /// upstream payload carries fields the gateway does not model: both key spellings yield the
-    /// same entries, and unknown fields are ignored rather than failing discovery.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the payload or its entries do not parse.
-    #[test]
-    fn codex_model_list_accepts_both_key_spellings() {
-        for json in [
-            r#"{"items": [{"slug": "gpt-5", "unmodeled": true}], "unknown": 1}"#,
-            r#"{"models": [{"slug": "gpt-5", "unmodeled": true}], "unknown": 1}"#,
-        ] {
-            #[expect(
-                clippy::unwrap_used,
-                reason = "both payload spellings are constructed to parse"
-            )]
-            let response: CodexModelsResponse = serde_json::from_str(json).unwrap();
+                let has_more = value_at(&body, has_more_path).is_some_and(|value| match value {
+                    Json::Bool(done) => *done,
+                    Json::Number(number) => number.as_i64() == Some(1),
+                    Json::String(text) => text == "true",
+                    _ => false,
+                });
 
-            #[expect(
-                clippy::unwrap_used,
-                reason = "both payloads carry the items array and each entry a slug"
-            )]
-            let slugs = response
-                .items
-                .unwrap()
-                .into_iter()
-                .map(|entry| entry.slug.unwrap())
-                .collect::<Vec<_>>();
+                if !has_more {
+                    break;
+                }
 
-            assert_eq!(slugs, ["gpt-5"]);
+                let Some(last_id) = value_at(&body, last_id_path)
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+                else {
+                    return Err(Error::Unavailable {
+                        detail: "model discovery page lacks its last identifier".to_string(),
+                    });
+                };
+
+                set_query_param(&mut request, request_param, &last_id);
+            }
         }
     }
+
+    // Every discovered identifier is validated before any row is written (README §7): one
+    // unroutable identifier fails the whole refresh.
+    if let Some(invalid) = ids.iter().find(|id| !is_routable_upstream_id(id)) {
+        return Err(Error::Unavailable {
+            detail: format!("model discovery reported the unroutable identifier `{invalid}`"),
+        });
+    }
+
+    Ok(ids)
+}
+
+/// The environment one discovery request carries: the current secret, the stored slots, and the
+/// stored base URL.
+fn discovery_env(provider: &Provider) -> ValueEnv<'_> {
+    ValueEnv {
+        base_url: provider.base_url.as_deref(),
+        secret: Some(provider.credentials.secret()),
+        slots: provider.credentials.slots(),
+        client_id: None,
+        client_secret: None,
+        authorization_code: None,
+        code_verifier: None,
+        redirect_uri: None,
+        oauth_state: None,
+        device_code: None,
+        refresh_token: None,
+        request_uuid: None,
+        model: None,
+    }
+}
+
+/// The response encoding a discovery's responses arrive in: the descriptor declares one encoding
+/// for the whole paginated exchange.
+fn encoding_of(discovery: &Discovery) -> ResponseEncoding {
+    match discovery.extract {
+        DiscoveryExtract::Array { .. } | DiscoveryExtract::MapKeys { .. } => {
+            // The extraction is JSON-shaped or form-flat per the request's response declaration;
+            // discovery responses are JSON documents in every researched shape, and the form
+            // encoding is only meaningful for token endpoints.
+            ResponseEncoding::Json
+        }
+    }
+}
+
+/// Reads the JSON value one member chain addresses, or `None` when any member is missing.
+fn value_at<'a>(
+    body: &'a control::DecodedBody,
+    path: &crate::provider::definition::template::ResponsePath,
+) -> Option<&'a Json> {
+    let control::DecodedBody::Json(json) = body else {
+        return None;
+    };
+
+    let mut value = json;
+
+    for member in &path.0 {
+        value = value.get(member)?;
+    }
+
+    Some(value)
+}
+
+/// Appends or replaces one query parameter of the paginated request.
+fn set_query_param(request: &mut ControlRequest, name: &str, value: &str) {
+    if let Some(existing) = request.query.iter_mut().find(|row| row.name == name) {
+        existing.value = crate::provider::definition::template::StringExpr::literal(value);
+    } else {
+        request
+            .query
+            .push(crate::provider::definition::template::ParamRow {
+                name: name.to_string(),
+                value: crate::provider::definition::template::StringExpr::literal(value),
+            });
+    }
+}
+
+/// Extracts one page's identifiers per the discovery extraction shape.
+fn extract_ids(
+    body: &control::DecodedBody,
+    extract: &descriptor::DiscoveryExtract,
+) -> Result<Vec<String>, Error> {
+    let control::DecodedBody::Json(json) = body else {
+        return Err(Error::Unavailable {
+            detail: "model discovery response must be a JSON document".to_string(),
+        });
+    };
+
+    match extract {
+        DiscoveryExtract::Array {
+            array_at,
+            id_field,
+            strip_prefix,
+        } => {
+            let Some(array) = walk(json, &array_at.0).and_then(Json::as_array) else {
+                return Err(Error::Unavailable {
+                    detail: "model discovery payload lacks the configured array".to_string(),
+                });
+            };
+
+            array
+                .iter()
+                .map(|entry| {
+                    let id = walk(entry, &id_field.0)
+                        .and_then(Json::as_str)
+                        .map(str::to_string)
+                        .ok_or_else(|| Error::Unavailable {
+                            detail: "model discovery entry lacks its identifier".to_string(),
+                        })?;
+
+                    Ok(match strip_prefix {
+                        Some(prefix) => id.strip_prefix(prefix).map(str::to_string).unwrap_or(id),
+                        None => id,
+                    })
+                })
+                .collect()
+        }
+
+        DiscoveryExtract::MapKeys { at } => {
+            let Some(object) = walk(json, &at.0).and_then(Json::as_object) else {
+                return Err(Error::Unavailable {
+                    detail: "model discovery payload lacks the configured object".to_string(),
+                });
+            };
+
+            Ok(object.keys().cloned().collect())
+        }
+    }
+}
+
+/// Walks one member chain into a JSON value.
+fn walk<'a>(json: &'a Json, members: &[String]) -> Option<&'a Json> {
+    let mut value = json;
+
+    for member in members {
+        value = value.get(member)?;
+    }
+
+    Some(value)
 }

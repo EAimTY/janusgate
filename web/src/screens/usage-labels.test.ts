@@ -15,7 +15,10 @@ import {
 
 const providers: ReadonlyArray<ProviderResponse> = [
     {
-        type: "openai_chat_completion",
+        type: "api_key",
+    provider_definition_name: "generic-openai-chat-completions",
+    provider_definition_version: 1,
+    format: "openai_chat_completion",
         id: 1,
         name: "local",
         model_prefix: "local-",
