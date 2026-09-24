@@ -341,6 +341,6 @@ fn is_family_thought_step(opaque: &Value) -> bool {
         step_type: String,
     }
 
-    serde_json::from_value::<ThoughtProbe>(opaque.clone())
-        .is_ok_and(|probe| probe.step_type == STEP_THOUGHT)
+    // Deserializing from the borrowed value copies only the tag String, never the stored step.
+    ThoughtProbe::deserialize(opaque).is_ok_and(|probe| probe.step_type == STEP_THOUGHT)
 }

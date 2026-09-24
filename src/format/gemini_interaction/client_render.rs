@@ -725,9 +725,8 @@ impl ClientSseRenderer for SseRenderer {
                     Some(position) => {
                         let open = self.open_calls.remove(position);
 
-                        if arguments.len() >= open.arguments.len()
-                            && arguments.starts_with(open.arguments.as_str())
-                        {
+                        // The prefix match is what proves the residual slice in bounds.
+                        if arguments.starts_with(open.arguments.as_str()) {
                             let residual = &arguments[open.arguments.len()..];
 
                             if !residual.is_empty() {

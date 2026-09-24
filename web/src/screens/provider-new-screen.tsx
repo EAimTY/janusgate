@@ -108,6 +108,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const canCreateStatic = (): boolean =>
         prefixError() === null && isBaseUrl(trimmedBaseUrl()) && isBearerSecret(apiKey());
 
+    /** An OAuth completion is submittable with a valid, routable prefix. */
+    const canComplete = (): boolean => prefixError() === null;
+
     const pickKind = (next: ProviderKind): void => {
         setKind(next);
         setFailure(null);
@@ -387,6 +390,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                                 <Button
                                                     type="submit"
                                                     tone="primary"
+                                                    isDisabled={!canComplete()}
                                                     isBusy={isCompleting()}
                                                 >
                                                     {isCompleting()

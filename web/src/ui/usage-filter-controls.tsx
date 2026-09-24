@@ -103,10 +103,6 @@ export function UsageFilterControls(props: {
         })),
     ]);
 
-    const update = (edits: Partial<UsageFilterFields>): void => {
-        props.onEdit(edits);
-    };
-
     return (
         <>
             <SelectField
@@ -114,7 +110,7 @@ export function UsageFilterControls(props: {
                 value={props.fields.providerId}
                 options={providerOptions()}
                 onChange={(providerId) =>
-                    update({
+                    props.onEdit({
                         providerId,
                     })
                 }
@@ -125,7 +121,7 @@ export function UsageFilterControls(props: {
                 value={props.fields.modelId}
                 options={modelOptions()}
                 onChange={(modelId) =>
-                    update({
+                    props.onEdit({
                         modelId,
                     })
                 }
@@ -136,7 +132,7 @@ export function UsageFilterControls(props: {
                 value={props.fields.apiKeyId}
                 options={apiKeyOptions()}
                 onChange={(apiKeyId) =>
-                    update({
+                    props.onEdit({
                         apiKeyId,
                     })
                 }
@@ -153,7 +149,7 @@ export function UsageFilterControls(props: {
                     ...API_LOG_ENDPOINT_OPTIONS,
                 ]}
                 onChange={(endpointType) =>
-                    update({
+                    props.onEdit({
                         endpointType,
                     })
                 }
@@ -164,7 +160,7 @@ export function UsageFilterControls(props: {
                 value={props.fields.outcome}
                 options={OUTCOME_CHOICE_OPTIONS}
                 onChange={(outcome) =>
-                    update({
+                    props.onEdit({
                         outcome,
                     })
                 }
@@ -175,7 +171,7 @@ export function UsageFilterControls(props: {
                 value={props.fields.streamChoice}
                 options={STREAM_CHOICE_OPTIONS}
                 onChange={(streamChoice) =>
-                    update({
+                    props.onEdit({
                         streamChoice,
                     })
                 }
@@ -185,7 +181,7 @@ export function UsageFilterControls(props: {
                 label="HTTP statuses"
                 value={props.fields.statusInput}
                 onInput={(statusInput) =>
-                    update({
+                    props.onEdit({
                         statusInput,
                     })
                 }

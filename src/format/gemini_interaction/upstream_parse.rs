@@ -128,21 +128,20 @@ struct InteractionBody {
     error: Option<UpstreamError>,
 }
 
-/// Minimal probe reading the failure member an upstream may embed in any frame or body.
+/// Minimal probe reading a frame's official `event_type` member and any failure member the
+/// upstream may embed, so the one payload parse both discriminates the frame and vetoes failures —
+/// recognized event or not.
 #[derive(Debug, Deserialize)]
-struct ErrorProbe {
+struct FrameProbe {
+    /// The official event discriminator; absent, null, or empty reads as no self-description, so
+    /// the frame is ignored as a heartbeat unless the `event:` line discriminates, and a
+    /// type-invalid value makes the payload malformed.
+    #[serde(rename = "event_type", default)]
+    event_type: Option<String>,
+
     /// Failure the upstream attached, absent on success.
     #[serde(default)]
     error: Option<UpstreamError>,
-}
-
-/// Minimal probe reading a frame's `event_type` member, used when the frame carries no `event:`
-/// line: the official payloads self-describe their event.
-#[derive(Debug, Deserialize)]
-struct EventNameProbe {
-    /// The official event discriminator, empty when the frame carries none.
-    #[serde(rename = "event_type", default)]
-    event_type: String,
 }
 
 /// Minimal probe reading a step's type tag; the per-kind payloads are modelled separately.
@@ -414,22 +413,6 @@ impl UpstreamParser {
         self.open_steps
             .iter_mut()
             .find(|open| open.index() == index)
-    }
-
-    /// Resolves a frame's event name: the `event:` line when the frame carries one, else the
-    /// payload's official `event_type` member. Neither present yields `None` — heartbeats.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PayloadError`] when an eventless frame's data is not a JSON object.
-    fn frame_event(frame: &SseFrame) -> Result<Option<String>, PayloadError> {
-        if let Some(event) = &frame.event {
-            return Ok(Some(event.clone()));
-        }
-
-        let probe: EventNameProbe = format::parse_frame(frame)?;
-
-        Ok((!probe.event_type.is_empty()).then_some(probe.event_type))
     }
 
     /// Ingests one complete Interaction body: message start, one event group per step, then the
@@ -825,49 +808,56 @@ impl UpstreamParser {
 impl UpstreamEventParser for UpstreamParser {
     /// Ingests one upstream SSE frame, discriminated by its `event:` line or, failing that, the
     /// payload's `event_type` member. A frame bearing a non-null `error` member aborts as an
-    /// upstream failure whatever its event name; frames with an unknown or missing event name are
-    /// ignored for forward compatibility.
+    /// upstream failure whatever its event name; frames with an unknown, absent, null, or empty
+    /// event name are ignored for forward compatibility, and a type-invalid `event_type` member
+    /// aborts the payload as malformed.
     ///
     /// # Errors
     ///
     /// Returns [`PayloadError`] for malformed JSON, upstream error members, and payloads whose
     /// kind contradicts the contract.
     fn ingest_frame(&mut self, frame: &SseFrame) -> Result<Vec<IrEvent>, PayloadError> {
-        // The error probe is typed: any frame bearing a failure aborts, recognized event or
-        // not.
-        let probe: ErrorProbe = format::parse_frame(frame)?;
+        // One lex per frame: the payload parses once, the probe borrows it, and the matched arm
+        // consumes it without a re-parse.
+        let payload: Value = format::parse_frame(frame)?;
+
+        // The probe is typed: any frame bearing a failure aborts, recognized event or not.
+        let probe: FrameProbe = FrameProbe::deserialize(&payload)
+            .map_err(|_| PayloadError::new("malformed upstream payload in SSE frame"))?;
 
         if let Some(error) = probe.error {
             return Err(error.failure());
         }
 
-        match Self::frame_event(frame)?.as_deref() {
+        // The `event:` line discriminates when the frame carries one, else the payload's official
+        // `event_type` member self-describes it. Neither present yields a heartbeat.
+        match frame.event.as_deref().or(probe.event_type.as_deref()) {
             Some(EVENT_CREATED) => {
-                let created: CreatedFrame = format::parse_frame(frame)?;
+                let created: CreatedFrame = format::parse_body(payload)?;
 
                 Ok(self.open_events(created.interaction.id, created.interaction.model))
             }
 
             Some(EVENT_STEP_START) => {
-                let start: StepStartFrame = format::parse_frame(frame)?;
+                let start: StepStartFrame = format::parse_body(payload)?;
 
                 Ok(self.ingest_start(start))
             }
 
             Some(EVENT_STEP_DELTA) => {
-                let delta: StepDeltaFrame = format::parse_frame(frame)?;
+                let delta: StepDeltaFrame = format::parse_body(payload)?;
 
                 Ok(self.ingest_delta(delta))
             }
 
             Some(EVENT_STEP_STOP) => {
-                let stop: StepStopFrame = format::parse_frame(frame)?;
+                let stop: StepStopFrame = format::parse_body(payload)?;
 
                 self.ingest_stop(stop)
             }
 
             Some(EVENT_COMPLETED) => {
-                let completed: CompletedFrame = format::parse_frame(frame)?;
+                let completed: CompletedFrame = format::parse_body(payload)?;
 
                 self.ingest_completed(completed)
             }
@@ -888,23 +878,9 @@ impl UpstreamEventParser for UpstreamParser {
     /// Returns [`PayloadError`] for upstream error objects, malformed bodies, and the failed
     /// terminal status.
     fn parse_json_response(&mut self, value: Value) -> Result<Vec<IrEvent>, PayloadError> {
-        let body: InteractionBody = format::parse_body(value)?;
-
-        // A missing status degrades to a clean stop here rather than in the finish hook: the JSON
-        // pump never calls it, so the body must close its own stream.
-        if body.status.is_none() {
-            let mut events = self.ingest_body(body)?;
-
-            if !self.is_finished {
-                self.is_finished = true;
-
-                events.push(IrEvent::Finish(IrFinishReason::Stop));
-            }
-
-            return Ok(events);
-        }
-
-        self.ingest_body(body)
+        // Ingesting the body always ingests the terminal status, which emits the body's own finish
+        // and marks the parser finished — the body closes its stream, never the finish hook.
+        self.ingest_body(format::parse_body(value)?)
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {

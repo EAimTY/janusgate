@@ -76,7 +76,8 @@
 ┌───────────────────┐                        ┌───────────────────┐
 │ Management API Rtr│ (/management-api/*)    │    API Router     │ (/api/*)
 │ (CORS)            │                        │ (CORS)            │
-│ (No fallback)     │                        │ (No fallback)     │
+│ (Fallback: shared │                        │ (Fallback: shared │
+│ empty 404)        │                        │ empty 404)        │
 └─────────┬─────────┘                        └─────────┬─────────┘
           │                                            │
           ▼                                            ▼
