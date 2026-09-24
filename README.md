@@ -331,7 +331,7 @@ The database runs in-process via `turso` with SQLite-compatible syntax and stric
 - Render: `system` string from IR instructions; IR messages grouped into strictly alternating user/assistant turns (first turn user; consecutive same-role IR messages merge; empty rendered content is not emitted); assistant reasoning blocks before their tool calls; `tool_result` blocks (`content` string or text blocks, `is_error`); tools (`name/description/input_schema`); `tool_choice`; `output_config.effort` or `thinking: disabled` per the enum (§6.4); `temperature`/`top_p` verbatim.
 - Streaming: `message_start` (usage: input + cache columns), `content_block_start/delta/stop` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`), `message_delta` (stop reason, cumulative output usage), `message_stop`, `ping`; mid-stream `error` events abort per policy.
 - stop_reason → finish: `end_turn` → Stop; `max_tokens` → Length; `model_context_window_exceeded` → Length (the turn truncated because the context window filled); `tool_use` → ToolCall; `stop_sequence` → Stop; `refusal` → ContentFilter; `pause_turn` → Stop.
-- Usage: `input_tokens`, `output_tokens`, `cache_read_input_tokens` → cached, `cache_creation_input_tokens` → cache_write; no reasoning breakdown (stays null).
+- Usage: `input_tokens`, `output_tokens`, `cache_read_input_tokens` → cached, `cache_creation_input_tokens` → cache_write; `output_tokens_details.thinking_tokens` → reasoning (reported on the complete body's usage; in streaming only on the final `message_delta` event).
 
 ---
 

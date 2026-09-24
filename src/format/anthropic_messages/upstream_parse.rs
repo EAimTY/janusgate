@@ -34,6 +34,9 @@ pub(crate) struct UpstreamParser {
     /// Cache-write input tokens reported by `message_start`.
     cache_write_tokens: Option<u64>,
 
+    /// Output tokens spent on extended thinking, reported by the usage breakdown.
+    reasoning_tokens: Option<u64>,
+
     /// Whether a usage report was emitted; guards the end-of-stream best-effort report.
     is_usage_emitted: bool,
 
@@ -110,6 +113,19 @@ struct UpstreamUsage {
     /// Input tokens written to the upstream prompt cache.
     #[serde(default)]
     cache_creation_input_tokens: Option<u64>,
+
+    /// Output token breakdown, absent when the upstream reports totals only — in streaming it
+    /// rides only the terminal `message_delta` event.
+    #[serde(default)]
+    output_tokens_details: Option<OutputTokensDetails>,
+}
+
+/// The upstream output token breakdown.
+#[derive(Debug, Default, Deserialize)]
+struct OutputTokensDetails {
+    /// Output tokens spent on extended thinking.
+    #[serde(default)]
+    thinking_tokens: Option<u64>,
 }
 
 /// Head of a `message_start` event: the response identity beside its input usage.
@@ -380,8 +396,10 @@ impl UpstreamParser {
         }]
     }
 
-    /// Records the input usage columns carried by a usage fragment.
-    fn record_input_usage(&mut self, usage: &UpstreamUsage) {
+    /// Records the cumulative usage columns carried by a usage fragment: the input columns on
+    /// `message_start`, and the output-side thinking breakdown on the terminal `message_delta`
+    /// or complete body. Every reported column is kept; absent ones leave the stored value.
+    fn record_usage(&mut self, usage: &UpstreamUsage) {
         if let Some(input_tokens) = usage.input_tokens {
             self.input_tokens = Some(input_tokens);
         }
@@ -393,10 +411,18 @@ impl UpstreamParser {
         if let Some(cache_write_tokens) = usage.cache_creation_input_tokens {
             self.cache_write_tokens = Some(cache_write_tokens);
         }
+
+        if let Some(thinking_tokens) = usage
+            .output_tokens_details
+            .as_ref()
+            .and_then(|details| details.thinking_tokens)
+        {
+            self.reasoning_tokens = Some(thinking_tokens);
+        }
     }
 
-    /// Renders the terminal usage report from the stored input columns and one output
-    /// observation, marking usage emitted.
+    /// Renders the terminal usage report from the stored columns and one output observation,
+    /// marking usage emitted.
     fn terminal_usage(&mut self, output_tokens: u64) -> IrEvent {
         self.is_usage_emitted = true;
 
@@ -405,7 +431,7 @@ impl UpstreamParser {
             output_tokens,
             cached_tokens: self.cached_tokens,
             cache_write_tokens: self.cache_write_tokens,
-            reasoning_tokens: None,
+            reasoning_tokens: self.reasoning_tokens,
         })
     }
 
@@ -627,7 +653,7 @@ impl UpstreamParser {
         let mut events = Vec::new();
 
         if let Some(usage) = &event.usage {
-            self.record_input_usage(usage);
+            self.record_usage(usage);
 
             events.push(self.terminal_usage(usage.output_tokens.unwrap_or_default()));
         }
@@ -660,7 +686,7 @@ impl UpstreamEventParser for UpstreamParser {
             "message_start" => {
                 let event = crate::format::parse_frame::<MessageStartEvent>(frame)?;
 
-                self.record_input_usage(
+                self.record_usage(
                     event
                         .message
                         .usage
@@ -806,7 +832,7 @@ impl UpstreamEventParser for UpstreamParser {
         ));
 
         if let Some(usage) = &message.usage {
-            self.record_input_usage(usage);
+            self.record_usage(usage);
 
             events.push(self.terminal_usage(usage.output_tokens.unwrap_or_default()));
         }
@@ -823,7 +849,8 @@ impl UpstreamEventParser for UpstreamParser {
         if !self.is_usage_emitted
             && (self.input_tokens.is_some()
                 || self.cached_tokens.is_some()
-                || self.cache_write_tokens.is_some())
+                || self.cache_write_tokens.is_some()
+                || self.reasoning_tokens.is_some())
         {
             events.push(self.terminal_usage(0));
         }
@@ -865,8 +892,9 @@ mod tests {
 
     /// Streams one upstream SSE conversation through the event-name-discriminated parser:
     /// `message_start` opens with its input usage, text/thinking/signature/tool deltas assemble
-    /// their blocks, `message_delta` finishes with `tool_use` and joins the output usage onto
-    /// the stored input columns, and `ping` plus unknown events never surface.
+    /// their blocks, `message_delta` finishes with `tool_use` and joins the output usage and its
+    /// `output_tokens_details.thinking_tokens` breakdown onto the stored columns, and `ping`
+    /// plus unknown events never surface.
     ///
     /// # Panics
     ///
@@ -935,7 +963,8 @@ mod tests {
             frames(
                 "message_delta",
                 json!({"delta": {"stop_reason": "tool_use", "stop_sequence": Value::Null},
-                       "usage": {"output_tokens": 25}}),
+                       "usage": {"output_tokens": 25,
+                                 "output_tokens_details": {"thinking_tokens": 7}}}),
             ),
             frames("message_stop", json!({})),
             frames("custom_future_event", json!({"anything": true})),
@@ -998,7 +1027,7 @@ mod tests {
                     output_tokens: 25,
                     cached_tokens: Some(2),
                     cache_write_tokens: Some(3),
-                    reasoning_tokens: None,
+                    reasoning_tokens: Some(7),
                 }),
                 IrEvent::Finish(IrFinishReason::ToolCall),
             ],
@@ -1102,7 +1131,8 @@ mod tests {
 
     /// Parses a complete non-streaming message: text rides one delta, the thinking block
     /// arrives as a full-text done with no prior deltas, the tool call as a delta/done pair,
-    /// and the usage joins every reported column with no reasoning breakdown.
+    /// and the usage joins every reported column, the `output_tokens_details.thinking_tokens`
+    /// breakdown included.
     ///
     /// # Panics
     ///
@@ -1124,7 +1154,8 @@ mod tests {
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 5, "output_tokens": 9,
                       "cache_read_input_tokens": 1,
-                      "cache_creation_input_tokens": 2},
+                      "cache_creation_input_tokens": 2,
+                      "output_tokens_details": {"thinking_tokens": 4}},
         });
 
         #[expect(
@@ -1176,7 +1207,7 @@ mod tests {
                     output_tokens: 9,
                     cached_tokens: Some(1),
                     cache_write_tokens: Some(2),
-                    reasoning_tokens: None,
+                    reasoning_tokens: Some(4),
                 }),
             ],
         );

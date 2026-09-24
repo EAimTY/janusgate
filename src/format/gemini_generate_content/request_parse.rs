@@ -876,7 +876,7 @@ fn parse_tool_config(
 }
 
 /// Parses sampling, reasoning, and response-format controls from the generation config.
-#[allow(
+#[expect(
     clippy::type_complexity,
     reason = "the generation config yields five IR controls at once"
 )]
