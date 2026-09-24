@@ -70,7 +70,7 @@ pub struct ListProvidersResponse {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct CreateProviderRequest {
-    /// Provider type: one of the three static-key kinds.
+    /// Provider type: one of the five static-key kinds.
     pub r#type: ProviderType,
 
     /// Unique provider name; must be non-empty.
@@ -90,7 +90,7 @@ pub struct CreateProviderRequest {
 }
 
 /// Strictly parsed `providers:update` request (README §7.1): a union discriminated by the restated
-/// `type`, one member per distinct field set — the three static-key kinds share one, and each OAuth
+/// `type`, one member per distinct field set — the five static-key kinds share one, and each OAuth
 /// kind states its own because their credential types differ — each stating the provider's complete
 /// desired readable state (rule 3). The restated `type` must equal the stored, immutable one. The
 /// write-only credential field is the one absent-keeps exception (rule 2): absent keeps the stored
