@@ -29,9 +29,21 @@ function at<T = unknown>(entry: ProviderPreset, path: ReadonlyArray<string | num
 }
 
 /** Every header row of one control request. */
-function headerNames(request: unknown): ReadonlyArray<{ name: string; value: unknown[] }> {
-    return ((request as { headers?: ReadonlyArray<{ name: string; value: unknown[] }> })
-        .headers ?? []) as ReadonlyArray<{ name: string; value: unknown[] }>;
+function headerNames(request: unknown): ReadonlyArray<{
+    name: string;
+    value: unknown[];
+}> {
+    return ((
+        request as {
+            headers?: ReadonlyArray<{
+                name: string;
+                value: unknown[];
+            }>;
+        }
+    ).headers ?? []) as ReadonlyArray<{
+        name: string;
+        value: unknown[];
+    }>;
 }
 
 /** The payload document of one preset, as an indexable record. */
@@ -41,11 +53,21 @@ function payloadOf(entry: ProviderPreset): Record<string, unknown> {
 
 /** The provisioning steps of one preset's payload, when it carries any. */
 function payloadSteps(entry: ProviderPreset): ReadonlyArray<{
-    extract: ReadonlyArray<{ target: { type: string } }>;
+    extract: ReadonlyArray<{
+        target: {
+            type: string;
+        };
+    }>;
 }> {
-    return ((entry.payload as Record<string, unknown>)["provisioning"] as ReadonlyArray<{
-        extract: ReadonlyArray<{ target: { type: string } }>;
-    }>) ?? [];
+    return (
+        ((entry.payload as Record<string, unknown>)["provisioning"] as ReadonlyArray<{
+            extract: ReadonlyArray<{
+                target: {
+                    type: string;
+                };
+            }>;
+        }>) ?? []
+    );
 }
 
 describe("preset catalog", () => {
@@ -84,7 +106,11 @@ describe("preset catalog", () => {
     });
 
     it("marks the researched-but-unconfirmed products unverified and the rest live", () => {
-        for (const id of ["codex", "antigravity", "generic-openai-chat-completions"]) {
+        for (const id of [
+            "codex",
+            "antigravity",
+            "generic-openai-chat-completions",
+        ]) {
             expect(findPreset(id).verification).toBe("live");
         }
 
@@ -110,7 +136,10 @@ describe("preset catalog", () => {
                 upstream_streaming: string;
             };
             expect(inference.url.length, candidate.id).toBeGreaterThan(0);
-            expect(["always", "match_client"]).toContain(inference.upstream_streaming);
+            expect([
+                "always",
+                "match_client",
+            ]).toContain(inference.upstream_streaming);
 
             const credential = payload["credential"] as Record<string, unknown>;
 
@@ -118,13 +147,17 @@ describe("preset catalog", () => {
                 expect(credential["type"], candidate.id).toBe("oauth");
                 expect(credential["client_id"], candidate.id).toBeTypeOf("string");
 
-                const exchange = credential["exchange"] as { terminal_codes: string[] };
+                const exchange = credential["exchange"] as {
+                    terminal_codes: string[];
+                };
                 expect(
                     exchange.terminal_codes.length,
                     `${candidate.id} terminal codes`,
                 ).toBeGreaterThan(0);
             } else {
-                expect(credential, candidate.id).toEqual({ type: "api_key" });
+                expect(credential, candidate.id).toEqual({
+                    type: "api_key",
+                });
                 expect(candidate.grant, candidate.id).toBeNull();
             }
 
@@ -156,9 +189,9 @@ describe("claude-code preset", () => {
             (claude.payload as Record<string, unknown>)["inference"] as unknown,
         );
         const discoveryHeaders = headerNames(
-            (
-                (claude.payload as Record<string, unknown>)["discovery"] as Record<string, unknown>
-            )["request"] as unknown,
+            ((claude.payload as Record<string, unknown>)["discovery"] as Record<string, unknown>)[
+                "request"
+            ] as unknown,
         );
 
         const beta = (rows: ReturnType<typeof headerNames>): boolean =>
@@ -173,7 +206,10 @@ describe("claude-code preset", () => {
     });
 
     it("uses PKCE with the hosted paste-back callback", () => {
-        const grant = at<Record<string, unknown>>(claude, ["credential", "grant"]);
+        const grant = at<Record<string, unknown>>(claude, [
+            "credential",
+            "grant",
+        ]);
 
         expect(grant["pkce"]).toBe("s256");
         expect(grant["redirect_uri"]).toBe("https://console.anthropic.com/oauth/code/callback");
@@ -184,11 +220,18 @@ describe("claude-code preset", () => {
     });
 
     it("walks the paginated model list by has_more and last_id", () => {
-        const pagination = at<Record<string, unknown>>(claude, ["discovery", "pagination"]);
+        const pagination = at<Record<string, unknown>>(claude, [
+            "discovery",
+            "pagination",
+        ]);
 
         expect(pagination["type"]).toBe("cursor");
-        expect(pagination["has_more_path"]).toEqual(["has_more"]);
-        expect(pagination["last_id_path"]).toEqual(["last_id"]);
+        expect(pagination["has_more_path"]).toEqual([
+            "has_more",
+        ]);
+        expect(pagination["last_id_path"]).toEqual([
+            "last_id",
+        ]);
         expect((pagination["request_param"] as string).length).toBeGreaterThan(0);
     });
 });
@@ -200,32 +243,43 @@ describe("kimi-code preset", () => {
         const credential = payloadOf(kimi)["credential"] as Record<string, unknown>;
 
         // The slot is initialized once per flow.
-        const initial = (credential["initial_slots"] as ReadonlyArray<{ name: string }>).map(
-            (initializer) => initializer.name,
-        );
+        const initial = (
+            credential["initial_slots"] as ReadonlyArray<{
+                name: string;
+            }>
+        ).map((initializer) => initializer.name);
         expect(initial).toContain("device_id");
 
         // The device authorization request sends it.
         const grant = credential["grant"] as Record<string, unknown>;
-        const authorizationRequest = (grant["authorization"] as Record<string, unknown>)[
-            "request"
-        ];
+        const authorizationRequest = (grant["authorization"] as Record<string, unknown>)["request"];
         expect(JSON.stringify(headerNames(authorizationRequest))).toContain("device_id");
 
         // The polling exchange and the refresh grant send the same slot.
-        const exchange = credential["exchange"] as { request: unknown };
+        const exchange = credential["exchange"] as {
+            request: unknown;
+        };
         expect(JSON.stringify(headerNames(exchange.request))).toContain("device_id");
 
-        const refresh = credential["refresh"] as { request: unknown };
+        const refresh = credential["refresh"] as {
+            request: unknown;
+        };
         expect(JSON.stringify(headerNames(refresh.request))).toContain("device_id");
     });
 
     it("maps the device response including the complete verification URI", () => {
-        const grant = (payloadOf(kimi)["credential"] as Record<string, unknown>)[
-            "grant"
-        ] as Record<string, unknown>;
+        const grant = (payloadOf(kimi)["credential"] as Record<string, unknown>)["grant"] as Record<
+            string,
+            unknown
+        >;
         const authorization = grant["authorization"] as {
-            response: { fields: ReadonlyArray<{ target: { type: string } }> };
+            response: {
+                fields: ReadonlyArray<{
+                    target: {
+                        type: string;
+                    };
+                }>;
+            };
         };
 
         const targets = authorization.response.fields.map((field) => field.target.type);
@@ -244,7 +298,11 @@ describe("github-copilot preset", () => {
 
         // The exchange's product is the durable slot, not the access token.
         const exchange = credential["exchange"] as {
-            response: { fields: ReadonlyArray<{ target: Record<string, string> }> };
+            response: {
+                fields: ReadonlyArray<{
+                    target: Record<string, string>;
+                }>;
+            };
         };
         expect(exchange.response.fields.map((field) => field.target)).toContainEqual({
             type: "slot",
@@ -253,26 +311,48 @@ describe("github-copilot preset", () => {
 
         // The renewal is reprovisioning, so the durable token re-mints the
         // short-lived session token, its expiry, and the account API endpoint.
-        expect(credential["refresh"]).toEqual({ type: "reprovision" });
+        expect(credential["refresh"]).toEqual({
+            type: "reprovision",
+        });
 
         const extracted = payloadSteps(copilot).flatMap((step) => step.extract);
 
         expect(extracted).toContainEqual(
-            expect.objectContaining({ target: { type: "access_token" } }),
+            expect.objectContaining({
+                target: {
+                    type: "access_token",
+                },
+            }),
         );
         expect(extracted).toContainEqual(
-            expect.objectContaining({ target: { type: "expires_at_unix_seconds" } }),
+            expect.objectContaining({
+                target: {
+                    type: "expires_at_unix_seconds",
+                },
+            }),
         );
-        expect(extracted).toContainEqual(expect.objectContaining({ target: { type: "base_url" } }));
+        expect(extracted).toContainEqual(
+            expect.objectContaining({
+                target: {
+                    type: "base_url",
+                },
+            }),
+        );
     });
 
     it("points inference and discovery at the account's returned endpoint", () => {
         const payload = payloadOf(copilot);
 
-        const inference = payload["inference"] as { url: unknown[] };
+        const inference = payload["inference"] as {
+            url: unknown[];
+        };
         expect(JSON.stringify(inference.url)).toContain('"base"');
 
-        const discovery = payload["discovery"] as { request: { url: unknown[] } };
+        const discovery = payload["discovery"] as {
+            request: {
+                url: unknown[];
+            };
+        };
         expect(JSON.stringify(discovery.request.url)).toContain('"base"');
     });
 });
@@ -284,7 +364,14 @@ describe("devin preset", () => {
         const credential = payloadOf(devin)["credential"] as Record<string, unknown>;
         const exchange = credential["exchange"] as {
             request: unknown;
-            response: { fields: ReadonlyArray<{ path: string[]; target: { type: string } }> };
+            response: {
+                fields: ReadonlyArray<{
+                    path: string[];
+                    target: {
+                        type: string;
+                    };
+                }>;
+            };
         };
 
         // The ConnectRPC exchange carries its protocol header.
@@ -295,12 +382,22 @@ describe("devin preset", () => {
 
         const [apiKey, serverUrl] = fields;
 
-        expect(apiKey?.path).toEqual(["api_key"]);
-        expect(apiKey?.target).toEqual({ type: "access_token" });
-        expect(serverUrl?.path).toEqual(["api_server_url"]);
-        expect(serverUrl?.target).toEqual({ type: "base_url" });
+        expect(apiKey?.path).toEqual([
+            "api_key",
+        ]);
+        expect(apiKey?.target).toEqual({
+            type: "access_token",
+        });
+        expect(serverUrl?.path).toEqual([
+            "api_server_url",
+        ]);
+        expect(serverUrl?.target).toEqual({
+            type: "base_url",
+        });
 
-        expect(credential["refresh"]).toEqual({ type: "none" });
+        expect(credential["refresh"]).toEqual({
+            type: "none",
+        });
     });
 
     it("ships manual models only — no discovery descriptor", () => {
@@ -321,7 +418,9 @@ describe("opencode zen presets", () => {
 
         for (const candidate of zen) {
             expect(candidate.credentialKind).toBe("api_key");
-            expect(payloadOf(candidate)["credential"]).toEqual({ type: "api_key" });
+            expect(payloadOf(candidate)["credential"]).toEqual({
+                type: "api_key",
+            });
         }
     });
 
@@ -331,8 +430,12 @@ describe("opencode zen presets", () => {
 
             expect(discovery["extract"]).toEqual({
                 mode: "array",
-                array_at: ["data"],
-                id_field: ["id"],
+                array_at: [
+                    "data",
+                ],
+                id_field: [
+                    "id",
+                ],
             });
         }
     });

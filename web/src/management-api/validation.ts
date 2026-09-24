@@ -262,14 +262,13 @@ function parseModelResponse(value: unknown, context: string): ModelResponse {
 }
 
 /**
- * One accounting row, verbatim: the table's own fifteen columns, ids and
- * numeric facts only — no name rides along (rule 7).
+ * One accounting row, verbatim: the row's own fourteen published columns,
+ * stamps and numeric facts only — no row id, no name rides along (rule 7).
  */
 function parseApiLogResponse(value: unknown, context: string): ApiLogResponse {
     const record = expectRecord(value, context);
 
     return {
-        id: expectInteger(Reflect.get(record, "id"), `${context}.id`),
         started_at: expectInteger(Reflect.get(record, "started_at"), `${context}.started_at`),
         api_key_id: expectInteger(Reflect.get(record, "api_key_id"), `${context}.api_key_id`),
         provider_id: expectInteger(Reflect.get(record, "provider_id"), `${context}.provider_id`),
@@ -610,16 +609,10 @@ function expectTemplateNode(value: unknown, context: string): unknown {
             return value;
 
         case "object": {
-            const fields = expectRecord(
-                Reflect.get(record, "fields"),
-                `${context}.fields`,
-            );
+            const fields = expectRecord(Reflect.get(record, "fields"), `${context}.fields`);
 
             for (const name of Object.keys(fields)) {
-                expectTemplateNode(
-                    Reflect.get(fields, name),
-                    `${context}.fields.${name}`,
-                );
+                expectTemplateNode(Reflect.get(fields, name), `${context}.fields.${name}`);
             }
 
             return value;
@@ -647,7 +640,10 @@ function expectControlRequest(value: unknown, context: string): void {
 
     expectStringExpr(Reflect.get(record, "url"), `${context}.url`);
 
-    for (const key of ["headers", "query"] as const) {
+    for (const key of [
+        "headers",
+        "query",
+    ] as const) {
         const rows = Reflect.get(record, key);
         if (rows !== undefined) {
             expectParamRows(rows, `${context}.${key}`);
@@ -771,7 +767,10 @@ function parseDefinitionResponse(value: unknown, context: string): DefinitionRes
 
     const inference = expectRecord(Reflect.get(record, "inference"), `${context}.inference`);
     expectStringExpr(Reflect.get(inference, "url"), `${context}.inference.url`);
-    expectString(Reflect.get(inference, "upstream_streaming"), `${context}.inference.upstream_streaming`);
+    expectString(
+        Reflect.get(inference, "upstream_streaming"),
+        `${context}.inference.upstream_streaming`,
+    );
 
     const credential = expectRecord(Reflect.get(record, "credential"), `${context}.credential`);
     const credentialKind = expectString(
@@ -790,7 +789,10 @@ function parseDefinitionResponse(value: unknown, context: string): DefinitionRes
         expectControlRequest(
             Reflect.get(credential, "grant") === undefined
                 ? undefined
-                : Reflect.get(expectRecord(Reflect.get(credential, "grant"), `${context}.credential.grant`), "authorization") ?? {},
+                : (Reflect.get(
+                      expectRecord(Reflect.get(credential, "grant"), `${context}.credential.grant`),
+                      "authorization",
+                  ) ?? {}),
             `${context}.credential.grant`,
         );
     }
@@ -851,9 +853,7 @@ export function parseDefinitionEnvelope(value: unknown): DefinitionEnvelope {
  * One finished or polled flow: succeeded carries the provider row, pending
  * carries nothing, failed carries the gateway-owned failure pair.
  */
-export function parseCompleteProviderOauthResponse(
-    value: unknown,
-): CompleteProviderOauthResponse {
+export function parseCompleteProviderOauthResponse(value: unknown): CompleteProviderOauthResponse {
     const record = expectRecord(value, "response");
     const status = expectString(Reflect.get(record, "status"), "response.status");
 
@@ -865,13 +865,18 @@ export function parseCompleteProviderOauthResponse(
     }
 
     if (status === "pending") {
-        return { status };
+        return {
+            status,
+        };
     }
 
     if (status === "failed") {
         return {
             status,
-            failure_code: expectString(Reflect.get(record, "failure_code"), "response.failure_code"),
+            failure_code: expectString(
+                Reflect.get(record, "failure_code"),
+                "response.failure_code",
+            ),
             failure_message: expectString(
                 Reflect.get(record, "failure_message"),
                 "response.failure_message",

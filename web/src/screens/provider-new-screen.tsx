@@ -2,7 +2,6 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Match, onCleanup, Show, Switch } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { StartProviderOauthResponse } from "/src/management-api/generated/v0";
-import { PROVIDER_PRESETS, type ProviderPreset } from "/src/management-api/presets";
 import {
     baseUrlMessage,
     compositionMessage,
@@ -13,8 +12,8 @@ import {
 } from "/src/management-api/identifiers";
 import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
-import { defaultModelPrefix } from "/src/management-api/provider-defaults";
-import { suggestProviderName } from "/src/management-api/provider-defaults";
+import { PROVIDER_PRESETS, type ProviderPreset } from "/src/management-api/presets";
+import { defaultModelPrefix, suggestProviderName } from "/src/management-api/provider-defaults";
 import { hrefs, navigate } from "/src/router";
 import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
@@ -39,10 +38,12 @@ import { type ScreenNotice, screenFailureNotice } from "./read";
  */
 export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.Element {
     const [presetId, setPresetId] = createSignal(PROVIDER_PRESETS[0]?.id ?? "");
-    const [definitions, setDefinitions] = createSignal<ReadonlyArray<{
-        readonly name: string;
-        readonly version: number;
-    }>>([]);
+    const [definitions, setDefinitions] = createSignal<
+        ReadonlyArray<{
+            readonly name: string;
+            readonly version: number;
+        }>
+    >([]);
     const [name, setName] = createSignal("");
     const [isNameTouched, setIsNameTouched] = createSignal(false);
     const [takenNames, setTakenNames] = createSignal<ReadonlySet<string>>(new Set());
@@ -72,8 +73,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         setFlow(null);
         setCode("");
 
-        const nextPreset =
-            PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? preset();
+        const nextPreset = PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? preset();
 
         setIsDefinitionTouched(false);
         setDefinitionJson(JSON.stringify(nextPreset.payload, null, 2));
@@ -156,11 +156,21 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         isBearerSecret(apiKey());
 
     /** The parsed definition payload, or the parse error naming it. */
-    const parsedDefinition = (): { payload: unknown } | { error: string } => {
+    const parsedDefinition = ():
+        | {
+              payload: unknown;
+          }
+        | {
+              error: string;
+          } => {
         try {
-            return { payload: JSON.parse(definitionJson()) };
+            return {
+                payload: JSON.parse(definitionJson()),
+            };
         } catch (error) {
-            return { error: error instanceof Error ? error.message : String(error) };
+            return {
+                error: error instanceof Error ? error.message : String(error),
+            };
         }
     };
 
@@ -175,7 +185,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
      * version 1, an edited stored name registers the next version.
      */
     const ensureDefinition = async (): Promise<
-        { name: string; version: number } | { error: ScreenNotice }
+        | {
+              name: string;
+              version: number;
+          }
+        | {
+              error: ScreenNotice;
+          }
     > => {
         const parsed = parsedDefinition();
 
@@ -193,12 +209,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         const payload = parsed.payload as Record<string, unknown>;
         const current = stored();
 
-        if (
-            current !== undefined &&
-            !isDefinitionTouched() &&
-            Object.keys(payload).length > 0
-        ) {
-            return { name: current.name, version: current.version };
+        if (current !== undefined && !isDefinitionTouched() && Object.keys(payload).length > 0) {
+            return {
+                name: current.name,
+                version: current.version,
+            };
         }
 
         if (current === undefined) {
@@ -206,9 +221,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 props.api.createProviderDefinition({
                     name: preset().id,
                     ...(payload as {
-                        format: Parameters<
-                            typeof props.api.createProviderDefinition
-                        >[0]["format"];
+                        format: Parameters<typeof props.api.createProviderDefinition>[0]["format"];
                         inference: never;
                         credential: never;
                     }),
@@ -216,7 +229,14 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             );
 
             if (outcome.status === "aborted") {
-                return { error: { tone: "info", title: "Cancelled.", detail: "", fix: null } };
+                return {
+                    error: {
+                        tone: "info",
+                        title: "Cancelled.",
+                        detail: "",
+                        fix: null,
+                    },
+                };
             }
 
             if (outcome.status === "failed") {
@@ -238,9 +258,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 name: current.name,
                 base_version: current.version,
                 ...(payload as {
-                    format: Parameters<
-                        typeof props.api.updateProviderDefinition
-                    >[0]["format"];
+                    format: Parameters<typeof props.api.updateProviderDefinition>[0]["format"];
                     inference: never;
                     credential: never;
                 }),
@@ -248,7 +266,14 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         );
 
         if (outcome.status === "aborted") {
-            return { error: { tone: "info", title: "Cancelled.", detail: "", fix: null } };
+            return {
+                error: {
+                    tone: "info",
+                    title: "Cancelled.",
+                    detail: "",
+                    fix: null,
+                },
+            };
         }
 
         if (outcome.status === "failed") {
@@ -370,7 +395,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 name: resolvedName(),
                 model_prefix: resolvedPrefix(),
                 ...(needsBaseUrl() && isBaseUrl(trimmedBaseUrl())
-                    ? { base_url: trimmedBaseUrl() }
+                    ? {
+                          base_url: trimmedBaseUrl(),
+                      }
                     : {}),
             }),
         );
@@ -654,7 +681,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                                 flow={
                                                     startedFlow as Extract<
                                                         StartProviderOauthResponse,
-                                                        { grant: "authorization_code" }
+                                                        {
+                                                            grant: "authorization_code";
+                                                        }
                                                     >
                                                 }
                                                 onStartOver={startOver}

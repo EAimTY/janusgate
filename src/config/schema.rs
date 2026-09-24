@@ -43,11 +43,14 @@ pub(crate) struct Config {
     /// Outward client API configuration.
     pub(crate) api: ApiConfig,
 
-    /// Request accounting (`api_logs`) configuration. The write path reads `is_enabled` live per
-    /// dispatched request, so a reload takes effect on the next dispatch; the management reads
-    /// are never gated by it and keep reading existing rows.
+    /// Request accounting (`api_logs`) configuration. The section's presence is the recording
+    /// switch: present, dispatched requests are recorded into the day-partitioned shard store
+    /// (README §3 *ApiLog Shard Store*); absent, none are, while existing shards stay readable.
+    /// The write path reads the presence live per dispatched request, so a reload applies to the
+    /// next dispatch; the section itself is consumed once at startup when the shard store is
+    /// constructed, so adding it applies after restart.
     #[serde(default)]
-    pub(crate) api_logs: ApiLogsConfig,
+    pub(crate) api_logs: Option<ApiLogsConfig>,
 }
 
 /// Inbound TLS termination schema.
@@ -137,28 +140,22 @@ pub(crate) struct ApiConfig {
     pub(crate) cors: CorsConfig,
 }
 
-/// Request accounting configuration (`api_logs`, README §3 *ApiLog*).
+/// Request accounting configuration (`api_logs`, README §3 *ApiLog Shard Store*).
 ///
-/// Unknown fields are strictly rejected. The section and its field may both be omitted: the
-/// whole section defaults through [`Default`], and `is_enabled` defaults to `true`.
+/// Unknown fields are strictly rejected. The section itself is the recording switch and carries
+/// no further switch field: present, rows are written; absent, none are.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApiLogsConfig {
-    /// Whether dispatched inference requests are recorded as `api_logs` rows. When recording is
-    /// off no row is ever written, while the management reads keep serving existing rows.
-    /// Defaults to `true`.
-    #[serde(default = "super::defaults::api_logs_enabled")]
-    pub(crate) is_enabled: bool,
-}
+    /// Directory holding the day-partitioned shard files (`YYYY-MM-DD.db`). Consumed once at
+    /// startup when the shard store is constructed; a changed path applies after restart.
+    pub(crate) path: PathBuf,
 
-/// The default request-accounting state — recording on — which the omitted `api_logs` section
-/// falls back to; a single source of truth with the field's own serde default.
-impl Default for ApiLogsConfig {
-    fn default() -> Self {
-        Self {
-            is_enabled: super::defaults::api_logs_enabled(),
-        }
-    }
+    /// Retention of the shard files, in whole days: when a new shard file is created, the sweep
+    /// deletes shard files whose day-end is strictly older than now minus this many days.
+    /// Defaults to 90.
+    #[serde(default = "super::defaults::api_logs_retention_days")]
+    pub(crate) retention_days: NonZero<u32>,
 }
 
 #[cfg(test)]
@@ -203,7 +200,14 @@ mod tests {
 
         assert_eq!(schema.log_level, LevelFilter::Info);
         assert!(schema.tls.is_some());
-        assert!(schema.api_logs.is_enabled);
+
+        #[expect(clippy::expect_used, reason = "the example carries the section")]
+        let api_logs = schema
+            .api_logs
+            .as_ref()
+            .expect("the example carries api_logs");
+
+        assert_eq!(api_logs.retention_days.get(), 90);
     }
 
     /// Verifies that every documented default applies when only the required
@@ -232,23 +236,46 @@ mod tests {
         assert!(!schema.management_api.cors.allow_private_network);
         assert!(!schema.api.cors.allow_private_network);
         assert!(
-            schema.api_logs.is_enabled,
-            "request accounting defaults to on"
+            schema.api_logs.is_none(),
+            "the omitted api_logs section means recording is off"
         );
 
-        // The section may state the switch itself, and only that field: an unknown member of the
-        // strictly rejected section is a rejected schema (README §8).
+        // The section's presence is the recording switch: present, it must state the shard
+        // directory, and retention may ride along or fall back to its default.
         let schema = parse(
             br#"{
                 "listen": "127.0.0.1:8080",
                 "database": {"path": "janusgate.db"},
                 "management_api": {"token": "management-token"},
                 "api": {},
-                "api_logs": {"is_enabled": false}
+                "api_logs": {"path": "api-logs"}
             }"#,
         );
 
-        assert!(!schema.api_logs.is_enabled);
+        #[expect(clippy::expect_used, reason = "the section is present")]
+        let api_logs = schema.api_logs.as_ref().expect("the section parses");
+
+        assert_eq!(api_logs.path.to_string_lossy(), "api-logs");
+        assert_eq!(
+            api_logs.retention_days.get(),
+            90,
+            "retention defaults to 90"
+        );
+
+        let schema = parse(
+            br#"{
+                "listen": "127.0.0.1:8080",
+                "database": {"path": "janusgate.db"},
+                "management_api": {"token": "management-token"},
+                "api": {},
+                "api_logs": {"path": "api-logs", "retention_days": 7}
+            }"#,
+        );
+
+        #[expect(clippy::expect_used, reason = "the section is present")]
+        let api_logs = schema.api_logs.as_ref().expect("the section parses");
+
+        assert_eq!(api_logs.retention_days.get(), 7);
 
         assert!(
             parse_result(
@@ -257,7 +284,35 @@ mod tests {
                     "database": {"path": "janusgate.db"},
                     "management_api": {"token": "management-token"},
                     "api": {},
-                    "api_logs": {"enabled": false}
+                    "api_logs": {"retention_days": 7}
+                }"#
+            )
+            .is_err(),
+            "a present api_logs section must state its path"
+        );
+
+        assert!(
+            parse_result(
+                br#"{
+                    "listen": "127.0.0.1:8080",
+                    "database": {"path": "janusgate.db"},
+                    "management_api": {"token": "management-token"},
+                    "api": {},
+                    "api_logs": {"path": "api-logs", "retention_days": 0}
+                }"#
+            )
+            .is_err(),
+            "a zero retention must be rejected"
+        );
+
+        assert!(
+            parse_result(
+                br#"{
+                    "listen": "127.0.0.1:8080",
+                    "database": {"path": "janusgate.db"},
+                    "management_api": {"token": "management-token"},
+                    "api": {},
+                    "api_logs": {"enabled": true}
                 }"#
             )
             .is_err(),

@@ -14,12 +14,14 @@ import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filt
 
 /**
  * One accounting row whose only distinguishing rendering is `<duration> ms`:
- * every stream assertion below marks rows by that number.
+ * every stream assertion below marks rows by that number. The row's stamp is
+ * the base instant plus the same offset, so a page's cursor derives from it.
  */
-function logRow(id: number): ApiLogResponse {
+const CURSOR_BASE = 1_700_000_000_000_000;
+
+function logRow(offset: number): ApiLogResponse {
     return {
-        id,
-        started_at: 1_700_000_000_000_000 + id,
+        started_at: CURSOR_BASE + offset,
         api_key_id: 7,
         provider_id: 1,
         model_id: 9,
@@ -27,7 +29,7 @@ function logRow(id: number): ApiLogResponse {
         is_stream: false,
         http_status: 200,
         outcome: "completed",
-        duration: id,
+        duration: offset,
         input_tokens: null,
         output_tokens: null,
         cached_tokens: null,
@@ -36,13 +38,13 @@ function logRow(id: number): ApiLogResponse {
     };
 }
 
-/** One page of `count` rows, newest first, ids counting down from `newestId`. */
-function page(newestId: number, count: number): ReadonlyArray<ApiLogResponse> {
+/** One page of `count` rows, newest first, stamps counting down from `newest`. */
+function page(newest: number, count: number): ReadonlyArray<ApiLogResponse> {
     return Array.from(
         {
             length: count,
         },
-        (_, index) => logRow(newestId - index),
+        (_, index) => logRow(newest - index),
     );
 }
 
@@ -89,7 +91,6 @@ function heldPage(
  */
 function streamApi(holder: { readonly pages: Array<HeldPage> }): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
 
     return {
         listProviderDefinitions: refused,
@@ -209,13 +210,13 @@ describe("UsageScreen stream continuation", () => {
 
         expect(bodyText()).toContain("Loading…");
         const stalePage = holder.pages.at(-1);
-        expect(stalePage?.request.before_id).toBe(951);
+        expect(stalePage?.request.before).toBe(CURSOR_BASE + 951);
 
         // The refresh takes the stream over wholesale: the loader dies
         // mid-flight and the refresh's own first page is the only open call.
         requestRefresh();
         await settle();
-        expect(holder.pages.at(-1)?.request.before_id).toBeUndefined();
+        expect(holder.pages.at(-1)?.request.before).toBeUndefined();
 
         // The superseded page answers late — after its cycle died — and
         // writes nothing.
@@ -284,7 +285,7 @@ describe("UsageScreen stream continuation", () => {
 
         buttonWithText("Load more").click();
         await settle();
-        expect(holder.pages.at(-1)?.request.before_id).toBe(951);
+        expect(holder.pages.at(-1)?.request.before).toBe(CURSOR_BASE + 951);
 
         holder.pages.at(-1)?.refuse(new Error("page load refused"));
         await settle();
@@ -300,7 +301,7 @@ describe("UsageScreen stream continuation", () => {
 
         // The retry carries the stream's own cursor: the failure never
         // displaced it.
-        expect(holder.pages.at(-1)?.request.before_id).toBe(951);
+        expect(holder.pages.at(-1)?.request.before).toBe(CURSOR_BASE + 951);
 
         answerLastPage(holder, page(950, 3));
         await settle();
@@ -372,7 +373,7 @@ describe("UsageScreen filtering", () => {
 
         const next = holder.pages.at(-1)?.request;
 
-        expect(next?.before_id).toBe(951);
+        expect(next?.before).toBe(CURSOR_BASE + 951);
         // The rolling window is resolved once per cycle: pages carrying
         // different bounds could skip or repeat rows at the seam.
         expect(next?.filter).toEqual(first?.filter);
@@ -429,7 +430,7 @@ describe("UsageScreen filtering", () => {
 
         const continued = holder.pages.at(-1)?.request;
 
-        expect(continued?.before_id).toBe(951);
+        expect(continued?.before).toBe(CURSOR_BASE + 951);
         expect(continued?.filter).toBeUndefined();
     });
 

@@ -2,8 +2,8 @@
 //!
 //! Both reads answer `POST` with typed bodies (README §7.0 rule 6), share one filter type,
 //! serve rows and aggregates that carry only the log's own facts — never a name, never content
-//! (rule 7) — and are never gated by the `api_logs.is_enabled` write switch: existing rows stay
-//! readable (README §3 *ApiLog*).
+//! (rule 7) — and are never gated by the `api_logs` write switch: existing shards stay readable
+//! (README §3 *ApiLog*).
 
 use super::{Error, Nullable, route};
 use crate::{
@@ -45,17 +45,15 @@ const MAX_LIMIT: i64 = 1000;
 /// users, and every value becomes a bound SQL parameter.
 const FILTER_VALUES_CAP: usize = 100;
 
-/// One accounting row in its management wire shape (README §7.1): the table row as-is — all
-/// fifteen columns, `id` included because it *is* the pagination cursor. `http_status` and the
-/// five token columns mirror their nullable storage columns (`T | null`, rule 2), and no field
-/// carries a name or content: labels are resolved through the entity list routes (rule 7).
+/// One accounting row in its management wire shape (README §7.1): the row's fourteen published
+/// columns — the rowid never appears, serving only as the per-shard tie-break of the read
+/// ordering. `http_status` and the five token columns mirror their nullable storage columns
+/// (`T | null`, rule 2), and no field carries a name or content: labels are resolved through the
+/// entity list routes (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ApiLogResponse {
-    /// Row identifier; the strictly-older pagination cursor of `usage:list`.
-    pub id: i64,
-
-    /// Dispatch-start instant in UTC microseconds.
+    /// Dispatch-start instant in UTC microseconds; the `usage:list` pagination cursor.
     pub started_at: i64,
 
     /// Row id of the authenticated gateway API key.
@@ -108,7 +106,6 @@ impl ApiLogResponse {
     /// Mirrors one stored row verbatim.
     fn from_log(log: &ApiLog) -> Self {
         Self {
-            id: log.id,
             started_at: log.started_at,
             api_key_id: log.api_key_id,
             provider_id: log.provider_id,
@@ -255,16 +252,17 @@ pub struct ListUsageRequest {
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub limit: Option<i64>,
 
-    /// Exclusive upper cursor: only strictly older rows — `id < before_id` — are listed. Absent
-    /// starts at the newest row; the next page's cursor is the last returned row's `id`, which
-    /// the client derives and the response never echoes (rule 7).
+    /// Exclusive upper cursor bound: only strictly older rows — `started_at < before`, in UTC
+    /// microseconds — are listed. Absent starts at the newest row; the next page's cursor is the
+    /// last returned row's `started_at`, which the client derives and the response never echoes
+    /// (rule 7).
     #[serde(
         default,
         deserialize_with = "super::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub before_id: Option<i64>,
+    pub before: Option<i64>,
 
     /// The shared filter (README §7.1); absent lists every row.
     #[serde(
@@ -276,7 +274,8 @@ pub struct ListUsageRequest {
     pub filter: Option<UsageFilter>,
 }
 
-/// The `usage:list` success body (README §7.1): rows ordered by `id` descending.
+/// The `usage:list` success body (README §7.1): rows ordered by `started_at` descending, the
+/// per-shard rowid breaking ties.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct ListUsageResponse {
@@ -538,7 +537,13 @@ pub(super) async fn list(
     let limit = resolve_limit(request.limit)?;
     let filter = resolve_filter(request.filter)?;
 
-    let logs = list_api_logs(&context.database, limit, request.before_id, &filter).await?;
+    let logs = list_api_logs(
+        context.api_log_store.as_ref(),
+        limit,
+        request.before,
+        &filter,
+    )
+    .await?;
 
     Ok(Json(ListUsageResponse {
         api_logs: logs.iter().map(ApiLogResponse::from_log).collect(),
@@ -554,7 +559,7 @@ pub(super) async fn query(
     let filter = resolve_filter(request.filter)?;
 
     let aggregates = query_usage(
-        &context.database,
+        context.api_log_store.as_ref(),
         &api_logs::UsageSelection {
             group_by: group_by.clone(),
             filter,
@@ -608,11 +613,10 @@ mod tests {
             reason = "the documented payload is constructed to parse"
         )]
         let listed: ListUsageRequest =
-            serde_json::from_str(r#"{"limit":50,"before_id":7,"filter":{"model_id":[3]}}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"limit":50,"before":7,"filter":{"model_id":[3]}}"#).unwrap();
 
         assert_eq!(listed.limit, Some(50));
-        assert_eq!(listed.before_id, Some(7));
+        assert_eq!(listed.before, Some(7));
         assert_eq!(
             listed.filter.map(|filter| filter.model_id),
             Some(Some(list1(&[3])))
@@ -625,7 +629,7 @@ mod tests {
         let defaulted: ListUsageRequest = serde_json::from_str(r#"{}"#).unwrap();
 
         assert_eq!(defaulted.limit, None);
-        assert_eq!(defaulted.before_id, None);
+        assert_eq!(defaulted.before, None);
         assert_eq!(defaulted.filter, None);
 
         // Absent-keeps: an explicit null is rejected, an unknown field is rejected.
@@ -635,6 +639,8 @@ mod tests {
             serde_json::from_str::<ListUsageRequest>(r#"{"oldest":true}"#).is_err(),
             "the request payload is strictly parsed"
         );
+        // The retired row-id cursor is gone: its field is unknown now.
+        assert!(serde_json::from_str::<ListUsageRequest>(r#"{"before_id":7}"#).is_err());
 
         // The filter is strict at its own level too: unknown fields and present-but-null
         // fields are rejected inside it.
@@ -806,9 +812,9 @@ mod tests {
     }
 
     /// Pins the wire shapes at the JSON level (README §7.1, §7.0 rule 7): the row renders its
-    /// `id` and fifteen columns with the nullable mirrors as `null` — and positively carries no
-    /// name and no content column — while a bucket renders its composite key with exactly the
-    /// requested dimensions beside plain numeric sums.
+    /// fourteen published columns with the nullable mirrors as `null` — and positively carries
+    /// no row id, no name, and no content column — while a bucket renders its composite key with
+    /// exactly the requested dimensions beside plain numeric sums.
     ///
     /// # Panics
     ///
@@ -816,7 +822,6 @@ mod tests {
     #[test]
     fn renders_the_documented_wire_shapes() {
         let log = crate::storage::api_logs::ApiLog {
-            id: 9,
             started_at: 1_700_000_000_000_000,
             api_key_id: 3,
             provider_id: 5,
@@ -840,7 +845,6 @@ mod tests {
         assert_eq!(
             rendered,
             serde_json::json!({
-                "id": 9,
                 "started_at": 1_700_000_000_000_000_i64,
                 "api_key_id": 3,
                 "provider_id": 5,
@@ -858,9 +862,10 @@ mod tests {
             })
         );
 
-        // The row carries the log's own facts alone: no name, no label, no content column.
+        // The row carries the log's own facts alone: no row id, no name, no content column.
         #[expect(clippy::expect_used, reason = "the row renders as an object")]
         let rendered = rendered.as_object().expect("the row renders as an object");
+        assert!(!rendered.contains_key("id"));
         assert!(!rendered.contains_key("name"));
         assert!(!rendered.contains_key("provider"));
         assert!(!rendered.contains_key("prompt"));

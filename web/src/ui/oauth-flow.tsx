@@ -14,7 +14,12 @@ import { CopyButton } from "./clipboard";
  * composes any address out of them.
  */
 export function AuthorizeStep(props: {
-    readonly flow: Extract<StartProviderOauthResponse, { grant: "authorization_code" }>;
+    readonly flow: Extract<
+        StartProviderOauthResponse,
+        {
+            grant: "authorization_code";
+        }
+    >;
     readonly onStartOver: () => void;
     readonly children: JSX.Element;
 }): JSX.Element {
@@ -83,16 +88,19 @@ export function AuthorizeStep(props: {
  * the flow — succeeded lands on the provider, failed states the recovery.
  */
 export function DeviceStep(props: {
-    readonly flow: Extract<StartProviderOauthResponse, { grant: "device" }>;
+    readonly flow: Extract<
+        StartProviderOauthResponse,
+        {
+            grant: "device";
+        }
+    >;
     readonly onComplete: () => Promise<"pending" | "done">;
     readonly onSucceeded: () => void;
     readonly onFailed: (failureCode: string, failureMessage: string) => void;
     readonly onStartOver: () => void;
 }): JSX.Element {
     const completeUri = (): string =>
-        props.flow.verification_uri_complete ??
-        props.flow.verification_uri ??
-        "";
+        props.flow.verification_uri_complete ?? props.flow.verification_uri ?? "";
 
     let timer: ReturnType<typeof setTimeout> | null = null;
 

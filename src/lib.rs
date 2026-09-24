@@ -1,7 +1,13 @@
 #![doc = include_str!("../README.md")]
 #![recursion_limit = "256"]
 
-use crate::{config::ConfigLoader, context::Context, database::Database, server::Server};
+use crate::{
+    config::ConfigLoader,
+    context::Context,
+    database::{Database, schema::Registry},
+    server::Server,
+    storage::api_logs::ApiLogStore,
+};
 use deref_once_lock::OnceLock;
 use lexopt::{Arg as Argument, Parser as ArgumentsParser};
 use std::{ffi::OsString, path::PathBuf};
@@ -65,14 +71,24 @@ pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
     )]
     let database = Database::open(
         &database.path,
+        Registry::Main,
         database.max_connections,
         database.pool_timeout,
     )
     .await
     .expect("failed to open database");
 
+    // The shard store is constructed once at startup from the `api_logs` section; its presence is
+    // the recording switch, and the section's absence is the empty store (README §3 *ApiLog Shard
+    // Store*).
+    let api_log_store = CONFIG
+        .api_logs
+        .as_ref()
+        .map(|api_logs| ApiLogStore::new(api_logs.path.clone(), api_logs.retention_days));
+
     let context = Context {
         database: database.clone(),
+        api_log_store,
         data_plane: http_client::data_plane(),
         control_plane: http_client::control_plane(),
     };

@@ -11,15 +11,15 @@ type UsageContinuation = {
 };
 
 /**
- * The `before_id` cursor the next `usage:list` request carries: the last returned row's
- * id, whose semantics are strictly older (`id < before_id`), so the cursor row itself
- * never reappears. `null` when nothing is listed — the first page starts at the latest
- * row instead.
+ * The `before` cursor the next `usage:list` request carries: the last returned row's
+ * `started_at`, whose semantics are strictly older (`started_at < before`), so the cursor
+ * row itself never reappears. `null` when nothing is listed — the first page starts at the
+ * latest row instead.
  */
 export function usageCursor(rows: ReadonlyArray<ApiLogResponse>): number | null {
     const last = rows[rows.length - 1];
 
-    return last === undefined ? null : last.id;
+    return last === undefined ? null : last.started_at;
 }
 
 /**

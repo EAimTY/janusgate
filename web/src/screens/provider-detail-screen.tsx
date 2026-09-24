@@ -5,7 +5,11 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { indexRowsById } from "/src/management-api/serving";
-import { credentialKindLabel, isOAuthProviderRow, upstreamFormatLabel } from "/src/management-api/vocabulary";
+import {
+    credentialKindLabel,
+    isOAuthProviderRow,
+    upstreamFormatLabel,
+} from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
     createPinnedRow,

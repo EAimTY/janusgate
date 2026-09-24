@@ -630,37 +630,40 @@ function CredentialsCard(props: {
                                 }}
                             />
                         ) : (
-                        <form
-                            novalidate={true}
-                            class="flex flex-col gap-4"
-                            onSubmit={submit}
-                        >
-                            <AuthorizeStep
-                                flow={startedFlow}
-                                onStartOver={() => {
-                                    setFlow(null);
-                                    setCode("");
-                                }}
+                            <form
+                                novalidate={true}
+                                class="flex flex-col gap-4"
+                                onSubmit={submit}
                             >
-                                <TextField
-                                    label="Callback URL or authorization code"
-                                    value={code()}
-                                    onInput={setCode}
-                                    placeholder="Paste the whole callback URL"
-                                    isDisabled={isCompleting()}
-                                />
-                                <div>
-                                    <Button
-                                        type="submit"
-                                        tone="primary"
-                                        isBusy={isCompleting()}
-                                    >
-                                        {isCompleting() ? "Replacing…" : "Replace the credentials"}
-                                    </Button>
-                                </div>
-                            </AuthorizeStep>
-                        </form>
-                    )}
+                                <AuthorizeStep
+                                    flow={startedFlow}
+                                    onStartOver={() => {
+                                        setFlow(null);
+                                        setCode("");
+                                    }}
+                                >
+                                    <TextField
+                                        label="Callback URL or authorization code"
+                                        value={code()}
+                                        onInput={setCode}
+                                        placeholder="Paste the whole callback URL"
+                                        isDisabled={isCompleting()}
+                                    />
+                                    <div>
+                                        <Button
+                                            type="submit"
+                                            tone="primary"
+                                            isBusy={isCompleting()}
+                                        >
+                                            {isCompleting()
+                                                ? "Replacing…"
+                                                : "Replace the credentials"}
+                                        </Button>
+                                    </div>
+                                </AuthorizeStep>
+                            </form>
+                        )
+                    }
                 </Show>
             </div>
         </Card>

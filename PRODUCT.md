@@ -52,7 +52,7 @@ The gateway it fronts carries the same posture: strict model passthrough (no aut
 
 **Planned, confirmed by the user, mechanism not yet decided:**
 
-- **Observability of gateway state and credential health** — OAuth expiry and refresh state, upstream reachability, discovery results, model counts, serving state. Request-level insight is no longer part of this pending work: it ships through the administered usage reads above, fed by request accounting that retains one numeric row per dispatched request (README §3 *ApiLog*, governed by `api_logs.is_enabled`), while content — prompts, completions, headers, upstream error bodies — remains forbidden by the stateless-execution principle.
+- **Observability of gateway state and credential health** — OAuth expiry and refresh state, upstream reachability, discovery results, model counts, serving state. Request-level insight is no longer part of this pending work: it ships through the administered usage reads above, fed by request accounting that retains one numeric row per dispatched request (README §3 *ApiLog*, governed by the presence of the `api_logs` configuration section), while content — prompts, completions, headers, upstream error bodies — remains forbidden by the stateless-execution principle.
 
 **Resolved (2026-09-22):** model rows are addressed by their never-recycled row id; the previous `(provider_id, upstream_id)` deep links are not preserved. Discovery state (`discovered` / `vanished` / `manual`) plus the client-derived effective status is the status language; a vanished row states its recovery paths (upstream reappearance or a `models:create` claim).
 

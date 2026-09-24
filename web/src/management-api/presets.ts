@@ -1,7 +1,4 @@
-import type {
-    DefinitionResponse,
-    UpstreamFormat,
-} from "/src/management-api/generated/v0";
+import type { DefinitionResponse, UpstreamFormat } from "/src/management-api/generated/v0";
 
 /**
  * The preset catalog (README §6): hardcoded, versioned definition documents
@@ -68,34 +65,65 @@ const STATIC_KEY_PRESETS: ReadonlyArray<ProviderPreset> = [
         suggestedName: "openai",
         suggestedPrefix: "openai-",
         needsBaseUrl: true,
-        provenance: "OpenAI Responses API reference (platform.openai.com/docs/api-reference/responses)",
+        provenance:
+            "OpenAI Responses API reference (platform.openai.com/docs/api-reference/responses)",
         verification: "live",
         payload: {
             format: "openai_response",
             inference: {
                 url: [
-                    { type: "base" },
-                    { type: "literal", value: "/responses" },
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "literal",
+                        value: "/responses",
+                    },
                 ],
                 upstream_streaming: "match_client",
             },
-            credential: { type: "api_key" },
+            credential: {
+                type: "api_key",
+            },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "base" }, { type: "literal", value: "/models" }],
+                    url: [
+                        {
+                            type: "base",
+                        },
+                        {
+                            type: "literal",
+                            value: "/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "Authorization",
                             value: [
-                                { type: "literal", value: "Bearer " },
-                                { type: "secret" },
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
                             ],
                         },
                     ],
                 },
-                extract: { mode: "array", array_at: ["data"], id_field: ["id"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -109,34 +137,65 @@ const STATIC_KEY_PRESETS: ReadonlyArray<ProviderPreset> = [
         suggestedName: "openai",
         suggestedPrefix: "openai-",
         needsBaseUrl: true,
-        provenance: "OpenAI Chat Completions API reference (platform.openai.com/docs/api-reference/chat)",
+        provenance:
+            "OpenAI Chat Completions API reference (platform.openai.com/docs/api-reference/chat)",
         verification: "live",
         payload: {
             format: "openai_chat_completion",
             inference: {
                 url: [
-                    { type: "base" },
-                    { type: "literal", value: "/chat/completions" },
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "literal",
+                        value: "/chat/completions",
+                    },
                 ],
                 upstream_streaming: "match_client",
             },
-            credential: { type: "api_key" },
+            credential: {
+                type: "api_key",
+            },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "base" }, { type: "literal", value: "/models" }],
+                    url: [
+                        {
+                            type: "base",
+                        },
+                        {
+                            type: "literal",
+                            value: "/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "Authorization",
                             value: [
-                                { type: "literal", value: "Bearer " },
-                                { type: "secret" },
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
                             ],
                         },
                     ],
                 },
-                extract: { mode: "array", array_at: ["data"], id_field: ["id"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -156,42 +215,80 @@ const STATIC_KEY_PRESETS: ReadonlyArray<ProviderPreset> = [
             format: "gemini_generate_content",
             inference: {
                 url: [
-                    { type: "base" },
-                    { type: "model" },
-                    { type: "literal", value: ":generateContent" },
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "model",
+                    },
+                    {
+                        type: "literal",
+                        value: ":generateContent",
+                    },
                 ],
                 stream_url: [
-                    { type: "base" },
-                    { type: "model" },
-                    { type: "literal", value: ":streamGenerateContent?alt=sse" },
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "model",
+                    },
+                    {
+                        type: "literal",
+                        value: ":streamGenerateContent?alt=sse",
+                    },
                 ],
                 headers: [
                     {
                         name: "x-goog-api-key",
-                        value: [{ type: "secret" }],
+                        value: [
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
             },
-            credential: { type: "api_key" },
+            credential: {
+                type: "api_key",
+            },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "base" }, { type: "literal", value: "/models" }],
+                    url: [
+                        {
+                            type: "base",
+                        },
+                        {
+                            type: "literal",
+                            value: "/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "x-goog-api-key",
-                            value: [{ type: "secret" }],
+                            value: [
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                     ],
                 },
                 extract: {
                     mode: "array",
-                    array_at: ["models"],
-                    id_field: ["name"],
+                    array_at: [
+                        "models",
+                    ],
+                    id_field: [
+                        "name",
+                    ],
                     strip_prefix: "models/",
                 },
-                pagination: { type: "none" },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -211,44 +308,83 @@ const STATIC_KEY_PRESETS: ReadonlyArray<ProviderPreset> = [
             format: "gemini_interaction",
             inference: {
                 url: [
-                    { type: "base" },
-                    { type: "literal", value: "/v1beta/interactions" },
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "literal",
+                        value: "/v1beta/interactions",
+                    },
                 ],
                 headers: [
                     {
                         name: "x-goog-api-key",
-                        value: [{ type: "secret" }],
+                        value: [
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                     {
                         name: "Api-Revision",
-                        value: [{ type: "literal", value: "2026-09-01" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "2026-09-01",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
             },
-            credential: { type: "api_key" },
+            credential: {
+                type: "api_key",
+            },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "base" }, { type: "literal", value: "/v1beta/models" }],
+                    url: [
+                        {
+                            type: "base",
+                        },
+                        {
+                            type: "literal",
+                            value: "/v1beta/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "x-goog-api-key",
-                            value: [{ type: "secret" }],
+                            value: [
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                         {
                             name: "Api-Revision",
-                            value: [{ type: "literal", value: "2026-09-01" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "2026-09-01",
+                                },
+                            ],
                         },
                     ],
                 },
                 extract: {
                     mode: "array",
-                    array_at: ["models"],
-                    id_field: ["name"],
+                    array_at: [
+                        "models",
+                    ],
+                    id_field: [
+                        "name",
+                    ],
                     strip_prefix: "models/",
                 },
-                pagination: { type: "none" },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -268,46 +404,87 @@ const STATIC_KEY_PRESETS: ReadonlyArray<ProviderPreset> = [
             format: "anthropic_messages",
             inference: {
                 url: [
-                    { type: "base" },
-                    { type: "literal", value: "/v1/messages" },
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "literal",
+                        value: "/v1/messages",
+                    },
                 ],
                 headers: [
                     {
                         name: "x-api-key",
-                        value: [{ type: "secret" }],
+                        value: [
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                     {
                         name: "anthropic-version",
-                        value: [{ type: "literal", value: "2023-06-01" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "2023-06-01",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
             },
-            credential: { type: "api_key" },
+            credential: {
+                type: "api_key",
+            },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "base" }, { type: "literal", value: "/v1/models" }],
+                    url: [
+                        {
+                            type: "base",
+                        },
+                        {
+                            type: "literal",
+                            value: "/v1/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "x-api-key",
-                            value: [{ type: "secret" }],
+                            value: [
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                         {
                             name: "anthropic-version",
-                            value: [{ type: "literal", value: "2023-06-01" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "2023-06-01",
+                                },
+                            ],
                         },
                     ],
                 },
                 extract: {
                     mode: "array",
-                    array_at: ["data"],
-                    id_field: ["id"],
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
                 },
                 pagination: {
                     type: "cursor",
-                    has_more_path: ["has_more"],
-                    last_id_path: ["last_id"],
+                    has_more_path: [
+                        "has_more",
+                    ],
+                    last_id_path: [
+                        "last_id",
+                    ],
                     request_param: "after_id",
                     max_pages: 10,
                 },
@@ -335,23 +512,51 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
         payload: {
             format: "anthropic_messages",
             inference: {
-                url: [{ type: "literal", value: "https://api.anthropic.com/v1/messages" }],
+                url: [
+                    {
+                        type: "literal",
+                        value: "https://api.anthropic.com/v1/messages",
+                    },
+                ],
                 headers: [
                     {
                         name: "Authorization",
-                        value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "Bearer ",
+                            },
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                     {
                         name: "anthropic-beta",
-                        value: [{ type: "literal", value: "oauth-2025-04-20" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "oauth-2025-04-20",
+                            },
+                        ],
                     },
                     {
                         name: "anthropic-version",
-                        value: [{ type: "literal", value: "2023-06-01" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "2023-06-01",
+                            },
+                        ],
                     },
                     {
                         name: "User-Agent",
-                        value: [{ type: "literal", value: "claude-cli/1.0.0 (external, cli)" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "claude-cli/1.0.0 (external, cli)",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
@@ -361,14 +566,32 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                 client_id: "9d1c250a-e61b-44e9-88ed-594feddb3c84",
                 grant: {
                     type: "authorization_code",
-                    authorize_url: [{ type: "literal", value: "https://claude.ai/oauth/authorize" }],
+                    authorize_url: [
+                        {
+                            type: "literal",
+                            value: "https://claude.ai/oauth/authorize",
+                        },
+                    ],
                     redirect_uri: "https://console.anthropic.com/oauth/code/callback",
                     pkce: "s256",
                     extra_params: [
-                        { name: "code", value: [{ type: "literal", value: "true" }] },
+                        {
+                            name: "code",
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "true",
+                                },
+                            ],
+                        },
                         {
                             name: "scope",
-                            value: [{ type: "literal", value: "org:create_api_key user:profile user:inference" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "org:create_api_key user:profile user:inference",
+                                },
+                            ],
                         },
                     ],
                 },
@@ -376,12 +599,20 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                     request: {
                         method: "POST",
                         url: [
-                            { type: "literal", value: "https://console.anthropic.com/v1/oauth/token" },
+                            {
+                                type: "literal",
+                                value: "https://console.anthropic.com/v1/oauth/token",
+                            },
                         ],
                         headers: [
                             {
                                 name: "User-Agent",
-                                value: [{ type: "literal", value: "claude-cli/1.0.0 (external, cli)" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "claude-cli/1.0.0 (external, cli)",
+                                    },
+                                ],
                             },
                         ],
                         body: {
@@ -391,23 +622,44 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                 fields: {
                                     grant_type: {
                                         type: "string",
-                                        expr: [{ type: "literal", value: "authorization_code" }],
+                                        expr: [
+                                            {
+                                                type: "literal",
+                                                value: "authorization_code",
+                                            },
+                                        ],
                                     },
                                     client_id: {
                                         type: "string",
-                                        expr: [{ type: "client_id" }],
+                                        expr: [
+                                            {
+                                                type: "client_id",
+                                            },
+                                        ],
                                     },
                                     code: {
                                         type: "string",
-                                        expr: [{ type: "authorization_code" }],
+                                        expr: [
+                                            {
+                                                type: "authorization_code",
+                                            },
+                                        ],
                                     },
                                     code_verifier: {
                                         type: "string",
-                                        expr: [{ type: "code_verifier" }],
+                                        expr: [
+                                            {
+                                                type: "code_verifier",
+                                            },
+                                        ],
                                     },
                                     redirect_uri: {
                                         type: "string",
-                                        expr: [{ type: "redirect_uri" }],
+                                        expr: [
+                                            {
+                                                type: "redirect_uri",
+                                            },
+                                        ],
                                     },
                                 },
                             },
@@ -417,18 +669,30 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                         encoding: "json",
                         fields: [
                             {
-                                path: ["access_token"],
-                                target: { type: "access_token" },
+                                path: [
+                                    "access_token",
+                                ],
+                                target: {
+                                    type: "access_token",
+                                },
                                 required: true,
                             },
                             {
-                                path: ["refresh_token"],
-                                target: { type: "refresh_token" },
+                                path: [
+                                    "refresh_token",
+                                ],
+                                target: {
+                                    type: "refresh_token",
+                                },
                                 required: true,
                             },
                             {
-                                path: ["expires_in"],
-                                target: { type: "expires_in_seconds" },
+                                path: [
+                                    "expires_in",
+                                ],
+                                target: {
+                                    type: "expires_in_seconds",
+                                },
                                 required: false,
                             },
                         ],
@@ -445,12 +709,20 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                     request: {
                         method: "POST",
                         url: [
-                            { type: "literal", value: "https://console.anthropic.com/v1/oauth/token" },
+                            {
+                                type: "literal",
+                                value: "https://console.anthropic.com/v1/oauth/token",
+                            },
                         ],
                         headers: [
                             {
                                 name: "User-Agent",
-                                value: [{ type: "literal", value: "claude-cli/1.0.0 (external, cli)" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "claude-cli/1.0.0 (external, cli)",
+                                    },
+                                ],
                             },
                         ],
                         body: {
@@ -460,43 +732,89 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                 fields: {
                                     grant_type: {
                                         type: "string",
-                                        expr: [{ type: "literal", value: "refresh_token" }],
+                                        expr: [
+                                            {
+                                                type: "literal",
+                                                value: "refresh_token",
+                                            },
+                                        ],
                                     },
                                     client_id: {
                                         type: "string",
-                                        expr: [{ type: "client_id" }],
+                                        expr: [
+                                            {
+                                                type: "client_id",
+                                            },
+                                        ],
                                     },
                                     refresh_token: {
                                         type: "string",
-                                        expr: [{ type: "refresh_token" }],
+                                        expr: [
+                                            {
+                                                type: "refresh_token",
+                                            },
+                                        ],
                                     },
                                 },
                             },
                         },
                     },
-                    terminal_codes: ["invalid_grant", "expired_token"],
+                    terminal_codes: [
+                        "invalid_grant",
+                        "expired_token",
+                    ],
                 },
             },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "literal", value: "https://api.anthropic.com/v1/models" }],
+                    url: [
+                        {
+                            type: "literal",
+                            value: "https://api.anthropic.com/v1/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "Authorization",
-                            value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                         {
                             name: "anthropic-beta",
-                            value: [{ type: "literal", value: "oauth-2025-04-20" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "oauth-2025-04-20",
+                                },
+                            ],
                         },
                     ],
                 },
-                extract: { mode: "array", array_at: ["data"], id_field: ["id"] },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
                 pagination: {
                     type: "cursor",
-                    has_more_path: ["has_more"],
-                    last_id_path: ["last_id"],
+                    has_more_path: [
+                        "has_more",
+                    ],
+                    last_id_path: [
+                        "last_id",
+                    ],
                     request_param: "after_id",
                     max_pages: 10,
                 },
@@ -521,44 +839,105 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
             format: "openai_chat_completion",
             inference: {
                 url: [
-                    { type: "literal", value: "https://api.kimi.com/coding/v1" },
-                    { type: "literal", value: "/chat/completions" },
+                    {
+                        type: "literal",
+                        value: "https://api.kimi.com/coding/v1",
+                    },
+                    {
+                        type: "literal",
+                        value: "/chat/completions",
+                    },
                 ],
                 headers: [
                     {
                         name: "Authorization",
-                        value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "Bearer ",
+                            },
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
-                    { name: "X-Msh-Device-Id", value: [{ type: "slot", name: "device_id" }] },
-                    { name: "X-Msh-Platform", value: [{ type: "literal", value: "macos" }] },
-                    { name: "User-Agent", value: [{ type: "literal", value: "KimiCLI/1.0.0" }] },
+                    {
+                        name: "X-Msh-Device-Id",
+                        value: [
+                            {
+                                type: "slot",
+                                name: "device_id",
+                            },
+                        ],
+                    },
+                    {
+                        name: "X-Msh-Platform",
+                        value: [
+                            {
+                                type: "literal",
+                                value: "macos",
+                            },
+                        ],
+                    },
+                    {
+                        name: "User-Agent",
+                        value: [
+                            {
+                                type: "literal",
+                                value: "KimiCLI/1.0.0",
+                            },
+                        ],
+                    },
                 ],
                 upstream_streaming: "match_client",
             },
             credential: {
                 type: "oauth",
                 client_id: "17e5f67c-37e0-44de-a1c1-33a124c8d3f5",
-                initial_slots: [{ name: "device_id", generator: "uuid_hex" }],
+                initial_slots: [
+                    {
+                        name: "device_id",
+                        generator: "uuid_hex",
+                    },
+                ],
                 grant: {
                     type: "device",
                     authorization: {
                         request: {
                             method: "POST",
                             url: [
-                                { type: "literal", value: "https://auth.kimi.com/oauth/device_authorization" },
+                                {
+                                    type: "literal",
+                                    value: "https://auth.kimi.com/oauth/device_authorization",
+                                },
                             ],
                             headers: [
                                 {
                                     name: "X-Msh-Device-Id",
-                                    value: [{ type: "slot", name: "device_id" }],
+                                    value: [
+                                        {
+                                            type: "slot",
+                                            name: "device_id",
+                                        },
+                                    ],
                                 },
                                 {
                                     name: "X-Msh-Platform",
-                                    value: [{ type: "literal", value: "macos" }],
+                                    value: [
+                                        {
+                                            type: "literal",
+                                            value: "macos",
+                                        },
+                                    ],
                                 },
                                 {
                                     name: "User-Agent",
-                                    value: [{ type: "literal", value: "KimiCLI/1.0.0" }],
+                                    value: [
+                                        {
+                                            type: "literal",
+                                            value: "KimiCLI/1.0.0",
+                                        },
+                                    ],
                                 },
                             ],
                             body: {
@@ -566,7 +945,11 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                 fields: [
                                     {
                                         name: "client_id",
-                                        value: [{ type: "client_id" }],
+                                        value: [
+                                            {
+                                                type: "client_id",
+                                            },
+                                        ],
                                     },
                                 ],
                             },
@@ -575,33 +958,57 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                             encoding: "json",
                             fields: [
                                 {
-                                    path: ["device_code"],
-                                    target: { type: "device_code" },
+                                    path: [
+                                        "device_code",
+                                    ],
+                                    target: {
+                                        type: "device_code",
+                                    },
                                     required: true,
                                 },
                                 {
-                                    path: ["user_code"],
-                                    target: { type: "user_code" },
+                                    path: [
+                                        "user_code",
+                                    ],
+                                    target: {
+                                        type: "user_code",
+                                    },
                                     required: true,
                                 },
                                 {
-                                    path: ["verification_uri_complete"],
-                                    target: { type: "verification_uri_complete" },
+                                    path: [
+                                        "verification_uri_complete",
+                                    ],
+                                    target: {
+                                        type: "verification_uri_complete",
+                                    },
                                     required: false,
                                 },
                                 {
-                                    path: ["verification_uri"],
-                                    target: { type: "verification_uri" },
+                                    path: [
+                                        "verification_uri",
+                                    ],
+                                    target: {
+                                        type: "verification_uri",
+                                    },
                                     required: false,
                                 },
                                 {
-                                    path: ["expires_in"],
-                                    target: { type: "expires_in_seconds" },
+                                    path: [
+                                        "expires_in",
+                                    ],
+                                    target: {
+                                        type: "expires_in_seconds",
+                                    },
                                     required: false,
                                 },
                                 {
-                                    path: ["interval"],
-                                    target: { type: "interval_seconds" },
+                                    path: [
+                                        "interval",
+                                    ],
+                                    target: {
+                                        type: "interval_seconds",
+                                    },
                                     required: false,
                                 },
                             ],
@@ -612,19 +1019,39 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                 exchange: {
                     request: {
                         method: "POST",
-                        url: [{ type: "literal", value: "https://auth.kimi.com/oauth/token" }],
+                        url: [
+                            {
+                                type: "literal",
+                                value: "https://auth.kimi.com/oauth/token",
+                            },
+                        ],
                         headers: [
                             {
                                 name: "X-Msh-Device-Id",
-                                value: [{ type: "slot", name: "device_id" }],
+                                value: [
+                                    {
+                                        type: "slot",
+                                        name: "device_id",
+                                    },
+                                ],
                             },
                             {
                                 name: "X-Msh-Platform",
-                                value: [{ type: "literal", value: "macos" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "macos",
+                                    },
+                                ],
                             },
                             {
                                 name: "User-Agent",
-                                value: [{ type: "literal", value: "KimiCLI/1.0.0" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "KimiCLI/1.0.0",
+                                    },
+                                ],
                             },
                         ],
                         body: {
@@ -639,8 +1066,22 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                         },
                                     ],
                                 },
-                                { name: "client_id", value: [{ type: "client_id" }] },
-                                { name: "device_code", value: [{ type: "device_code" }] },
+                                {
+                                    name: "client_id",
+                                    value: [
+                                        {
+                                            type: "client_id",
+                                        },
+                                    ],
+                                },
+                                {
+                                    name: "device_code",
+                                    value: [
+                                        {
+                                            type: "device_code",
+                                        },
+                                    ],
+                                },
                             ],
                         },
                     },
@@ -648,41 +1089,76 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                         encoding: "json",
                         fields: [
                             {
-                                path: ["access_token"],
-                                target: { type: "access_token" },
+                                path: [
+                                    "access_token",
+                                ],
+                                target: {
+                                    type: "access_token",
+                                },
                                 required: true,
                             },
                             {
-                                path: ["refresh_token"],
-                                target: { type: "refresh_token" },
+                                path: [
+                                    "refresh_token",
+                                ],
+                                target: {
+                                    type: "refresh_token",
+                                },
                                 required: true,
                             },
                             {
-                                path: ["expires_in"],
-                                target: { type: "expires_in_seconds" },
+                                path: [
+                                    "expires_in",
+                                ],
+                                target: {
+                                    type: "expires_in_seconds",
+                                },
                                 required: false,
                             },
                         ],
                     },
-                    terminal_codes: ["expired_token", "access_denied"],
+                    terminal_codes: [
+                        "expired_token",
+                        "access_denied",
+                    ],
                 },
                 refresh: {
                     type: "grant",
                     request: {
                         method: "POST",
-                        url: [{ type: "literal", value: "https://auth.kimi.com/oauth/token" }],
+                        url: [
+                            {
+                                type: "literal",
+                                value: "https://auth.kimi.com/oauth/token",
+                            },
+                        ],
                         headers: [
                             {
                                 name: "X-Msh-Device-Id",
-                                value: [{ type: "slot", name: "device_id" }],
+                                value: [
+                                    {
+                                        type: "slot",
+                                        name: "device_id",
+                                    },
+                                ],
                             },
                             {
                                 name: "X-Msh-Platform",
-                                value: [{ type: "literal", value: "macos" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "macos",
+                                    },
+                                ],
                             },
                             {
                                 name: "User-Agent",
-                                value: [{ type: "literal", value: "KimiCLI/1.0.0" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "KimiCLI/1.0.0",
+                                    },
+                                ],
                             },
                         ],
                         body: {
@@ -690,34 +1166,73 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                             fields: [
                                 {
                                     name: "grant_type",
-                                    value: [{ type: "literal", value: "refresh_token" }],
+                                    value: [
+                                        {
+                                            type: "literal",
+                                            value: "refresh_token",
+                                        },
+                                    ],
                                 },
                                 {
                                     name: "refresh_token",
-                                    value: [{ type: "refresh_token" }],
+                                    value: [
+                                        {
+                                            type: "refresh_token",
+                                        },
+                                    ],
                                 },
-                                { name: "client_id", value: [{ type: "client_id" }] },
+                                {
+                                    name: "client_id",
+                                    value: [
+                                        {
+                                            type: "client_id",
+                                        },
+                                    ],
+                                },
                             ],
                         },
                     },
-                    terminal_codes: ["invalid_grant"],
+                    terminal_codes: [
+                        "invalid_grant",
+                    ],
                 },
             },
             discovery: {
                 request: {
                     method: "GET",
                     url: [
-                        { type: "literal", value: "https://api.kimi.com/coding/v1/models" },
+                        {
+                            type: "literal",
+                            value: "https://api.kimi.com/coding/v1/models",
+                        },
                     ],
                     headers: [
                         {
                             name: "Authorization",
-                            value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                     ],
                 },
-                extract: { mode: "array", array_at: ["data"], id_field: ["id"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -738,23 +1253,54 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
         payload: {
             format: "openai_chat_completion",
             inference: {
-                url: [{ type: "base" }, { type: "literal", value: "/chat/completions" }],
+                url: [
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "literal",
+                        value: "/chat/completions",
+                    },
+                ],
                 headers: [
                     {
                         name: "Authorization",
-                        value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "Bearer ",
+                            },
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                     {
                         name: "Copilot-Integration-Id",
-                        value: [{ type: "literal", value: "vscode-chat" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "vscode-chat",
+                            },
+                        ],
                     },
                     {
                         name: "Editor-Version",
-                        value: [{ type: "literal", value: "vscode/1.99.0" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "vscode/1.99.0",
+                            },
+                        ],
                     },
                     {
                         name: "User-Agent",
-                        value: [{ type: "literal", value: "GitHubCopilotChat/1.0.0" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "GitHubCopilotChat/1.0.0",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
@@ -762,19 +1308,32 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
             credential: {
                 type: "oauth",
                 client_id: "Iv1.b507a08c87ecfe98",
-                initial_slots: [{ name: "device_id", generator: "uuid" }],
+                initial_slots: [
+                    {
+                        name: "device_id",
+                        generator: "uuid",
+                    },
+                ],
                 grant: {
                     type: "device",
                     authorization: {
                         request: {
                             method: "POST",
                             url: [
-                                { type: "literal", value: "https://github.com/login/device/code" },
+                                {
+                                    type: "literal",
+                                    value: "https://github.com/login/device/code",
+                                },
                             ],
                             headers: [
                                 {
                                     name: "Accept",
-                                    value: [{ type: "literal", value: "application/json" }],
+                                    value: [
+                                        {
+                                            type: "literal",
+                                            value: "application/json",
+                                        },
+                                    ],
                                 },
                             ],
                             body: {
@@ -782,7 +1341,11 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                 fields: [
                                     {
                                         name: "client_id",
-                                        value: [{ type: "client_id" }],
+                                        value: [
+                                            {
+                                                type: "client_id",
+                                            },
+                                        ],
                                     },
                                 ],
                             },
@@ -791,28 +1354,48 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                             encoding: "json",
                             fields: [
                                 {
-                                    path: ["device_code"],
-                                    target: { type: "device_code" },
+                                    path: [
+                                        "device_code",
+                                    ],
+                                    target: {
+                                        type: "device_code",
+                                    },
                                     required: true,
                                 },
                                 {
-                                    path: ["user_code"],
-                                    target: { type: "user_code" },
+                                    path: [
+                                        "user_code",
+                                    ],
+                                    target: {
+                                        type: "user_code",
+                                    },
                                     required: true,
                                 },
                                 {
-                                    path: ["verification_uri"],
-                                    target: { type: "verification_uri" },
+                                    path: [
+                                        "verification_uri",
+                                    ],
+                                    target: {
+                                        type: "verification_uri",
+                                    },
                                     required: false,
                                 },
                                 {
-                                    path: ["expires_in"],
-                                    target: { type: "expires_in_seconds" },
+                                    path: [
+                                        "expires_in",
+                                    ],
+                                    target: {
+                                        type: "expires_in_seconds",
+                                    },
                                     required: false,
                                 },
                                 {
-                                    path: ["interval"],
-                                    target: { type: "interval_seconds" },
+                                    path: [
+                                        "interval",
+                                    ],
+                                    target: {
+                                        type: "interval_seconds",
+                                    },
                                     required: false,
                                 },
                             ],
@@ -824,12 +1407,20 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                     request: {
                         method: "POST",
                         url: [
-                            { type: "literal", value: "https://github.com/login/oauth/access_token" },
+                            {
+                                type: "literal",
+                                value: "https://github.com/login/oauth/access_token",
+                            },
                         ],
                         headers: [
                             {
                                 name: "Accept",
-                                value: [{ type: "literal", value: "application/json" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "application/json",
+                                    },
+                                ],
                             },
                         ],
                         body: {
@@ -844,8 +1435,22 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                         },
                                     ],
                                 },
-                                { name: "client_id", value: [{ type: "client_id" }] },
-                                { name: "device_code", value: [{ type: "device_code" }] },
+                                {
+                                    name: "client_id",
+                                    value: [
+                                        {
+                                            type: "client_id",
+                                        },
+                                    ],
+                                },
+                                {
+                                    name: "device_code",
+                                    value: [
+                                        {
+                                            type: "device_code",
+                                        },
+                                    ],
+                                },
                             ],
                         },
                     },
@@ -853,8 +1458,13 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                         encoding: "json",
                         fields: [
                             {
-                                path: ["access_token"],
-                                target: { type: "slot", name: "github_token" },
+                                path: [
+                                    "access_token",
+                                ],
+                                target: {
+                                    type: "slot",
+                                    name: "github_token",
+                                },
                                 required: true,
                             },
                         ],
@@ -869,7 +1479,9 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                         "personal_access_token",
                     ],
                 },
-                refresh: { type: "reprovision" },
+                refresh: {
+                    type: "reprovision",
+                },
             },
             provisioning: [
                 {
@@ -885,38 +1497,73 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                             {
                                 name: "Authorization",
                                 value: [
-                                    { type: "literal", value: "Bearer " },
-                                    { type: "slot", name: "github_token" },
+                                    {
+                                        type: "literal",
+                                        value: "Bearer ",
+                                    },
+                                    {
+                                        type: "slot",
+                                        name: "github_token",
+                                    },
                                 ],
                             },
                             {
                                 name: "Editor-Version",
-                                value: [{ type: "literal", value: "vscode/1.99.0" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "vscode/1.99.0",
+                                    },
+                                ],
                             },
                             {
                                 name: "Copilot-Integration-Id",
-                                value: [{ type: "literal", value: "vscode-chat" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "vscode-chat",
+                                    },
+                                ],
                             },
                         ],
                     },
                     response_encoding: "json",
                     extract: [
                         {
-                            path: ["token"],
-                            target: { type: "access_token" },
-                            shape: { type: "string" },
+                            path: [
+                                "token",
+                            ],
+                            target: {
+                                type: "access_token",
+                            },
+                            shape: {
+                                type: "string",
+                            },
                             required: true,
                         },
                         {
-                            path: ["expires_at"],
-                            target: { type: "expires_at_unix_seconds" },
-                            shape: { type: "integer" },
+                            path: [
+                                "expires_at",
+                            ],
+                            target: {
+                                type: "expires_at_unix_seconds",
+                            },
+                            shape: {
+                                type: "integer",
+                            },
                             required: true,
                         },
                         {
-                            path: ["endpoints", "api"],
-                            target: { type: "base_url" },
-                            shape: { type: "string" },
+                            path: [
+                                "endpoints",
+                                "api",
+                            ],
+                            target: {
+                                type: "base_url",
+                            },
+                            shape: {
+                                type: "string",
+                            },
                             required: true,
                         },
                     ],
@@ -925,20 +1572,51 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "base" }, { type: "literal", value: "/models" }],
+                    url: [
+                        {
+                            type: "base",
+                        },
+                        {
+                            type: "literal",
+                            value: "/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "Authorization",
-                            value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                         {
                             name: "Copilot-Integration-Id",
-                            value: [{ type: "literal", value: "vscode-chat" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "vscode-chat",
+                                },
+                            ],
                         },
                     ],
                 },
-                extract: { mode: "array", array_at: ["data"], id_field: ["id"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -959,15 +1637,36 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
         payload: {
             format: "anthropic_messages",
             inference: {
-                url: [{ type: "base" }, { type: "literal", value: "/v1/messages" }],
+                url: [
+                    {
+                        type: "base",
+                    },
+                    {
+                        type: "literal",
+                        value: "/v1/messages",
+                    },
+                ],
                 headers: [
                     {
                         name: "Authorization",
-                        value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "Bearer ",
+                            },
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                     {
                         name: "anthropic-version",
-                        value: [{ type: "literal", value: "2023-06-01" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "2023-06-01",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
@@ -977,7 +1676,12 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                 client_id: "devin-oauth-client",
                 grant: {
                     type: "authorization_code",
-                    authorize_url: [{ type: "literal", value: "https://app.devin.ai/oauth/authorize" }],
+                    authorize_url: [
+                        {
+                            type: "literal",
+                            value: "https://app.devin.ai/oauth/authorize",
+                        },
+                    ],
                     redirect_uri: "http://localhost:1455/auth/callback",
                     pkce: "s256",
                     extra_params: [],
@@ -986,12 +1690,20 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                     request: {
                         method: "POST",
                         url: [
-                            { type: "literal", value: "https://api.devin.ai/v1/oauth/exchange_token" },
+                            {
+                                type: "literal",
+                                value: "https://api.devin.ai/v1/oauth/exchange_token",
+                            },
                         ],
                         headers: [
                             {
                                 name: "connect-protocol-version",
-                                value: [{ type: "literal", value: "1" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "1",
+                                    },
+                                ],
                             },
                         ],
                         body: {
@@ -1001,19 +1713,36 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                 fields: {
                                     grantType: {
                                         type: "string",
-                                        expr: [{ type: "literal", value: "authorization_code" }],
+                                        expr: [
+                                            {
+                                                type: "literal",
+                                                value: "authorization_code",
+                                            },
+                                        ],
                                     },
                                     code: {
                                         type: "string",
-                                        expr: [{ type: "authorization_code" }],
+                                        expr: [
+                                            {
+                                                type: "authorization_code",
+                                            },
+                                        ],
                                     },
                                     codeVerifier: {
                                         type: "string",
-                                        expr: [{ type: "code_verifier" }],
+                                        expr: [
+                                            {
+                                                type: "code_verifier",
+                                            },
+                                        ],
                                     },
                                     redirectUri: {
                                         type: "string",
-                                        expr: [{ type: "redirect_uri" }],
+                                        expr: [
+                                            {
+                                                type: "redirect_uri",
+                                            },
+                                        ],
                                     },
                                 },
                             },
@@ -1023,20 +1752,33 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                         encoding: "json",
                         fields: [
                             {
-                                path: ["api_key"],
-                                target: { type: "access_token" },
+                                path: [
+                                    "api_key",
+                                ],
+                                target: {
+                                    type: "access_token",
+                                },
                                 required: true,
                             },
                             {
-                                path: ["api_server_url"],
-                                target: { type: "base_url" },
+                                path: [
+                                    "api_server_url",
+                                ],
+                                target: {
+                                    type: "base_url",
+                                },
                                 required: true,
                             },
                         ],
                     },
-                    terminal_codes: ["invalid_grant", "unauthenticated"],
+                    terminal_codes: [
+                        "invalid_grant",
+                        "unauthenticated",
+                    ],
                 },
-                refresh: { type: "none" },
+                refresh: {
+                    type: "none",
+                },
             },
         },
     },
@@ -1057,19 +1799,65 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
         payload: {
             format: "openai_response",
             inference: {
-                url: [{ type: "literal", value: "https://chatgpt.com/backend-api/codex/responses" }],
+                url: [
+                    {
+                        type: "literal",
+                        value: "https://chatgpt.com/backend-api/codex/responses",
+                    },
+                ],
                 headers: [
                     {
                         name: "Authorization",
-                        value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "Bearer ",
+                            },
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
-                    { name: "chatgpt-account-id", value: [{ type: "slot", name: "account_id" }] },
-                    { name: "Originator", value: [{ type: "literal", value: "codex_cli_rs" }] },
-                    { name: "User-Agent", value: [{ type: "literal", value: "codex_cli_rs/0.147.0" }] },
-                    { name: "Session-Id", value: [{ type: "request_uuid" }] },
+                    {
+                        name: "chatgpt-account-id",
+                        value: [
+                            {
+                                type: "slot",
+                                name: "account_id",
+                            },
+                        ],
+                    },
+                    {
+                        name: "Originator",
+                        value: [
+                            {
+                                type: "literal",
+                                value: "codex_cli_rs",
+                            },
+                        ],
+                    },
+                    {
+                        name: "User-Agent",
+                        value: [
+                            {
+                                type: "literal",
+                                value: "codex_cli_rs/0.147.0",
+                            },
+                        ],
+                    },
+                    {
+                        name: "Session-Id",
+                        value: [
+                            {
+                                type: "request_uuid",
+                            },
+                        ],
+                    },
                 ],
                 upstream_streaming: "always",
-                render_options: ["omit_max_output_tokens"],
+                render_options: [
+                    "omit_max_output_tokens",
+                ],
             },
             credential: {
                 type: "oauth",
@@ -1077,7 +1865,10 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                 grant: {
                     type: "authorization_code",
                     authorize_url: [
-                        { type: "literal", value: "https://auth.openai.com/oauth/authorize" },
+                        {
+                            type: "literal",
+                            value: "https://auth.openai.com/oauth/authorize",
+                        },
                     ],
                     redirect_uri: "http://localhost:1455/auth/callback",
                     pkce: "s256",
@@ -1087,40 +1878,92 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                             value: [
                                 {
                                     type: "literal",
-                                    value:
-                                        "openid profile email offline_access api.connectors.read api.connectors.invoke",
+                                    value: "openid profile email offline_access api.connectors.read api.connectors.invoke",
                                 },
                             ],
                         },
                         {
                             name: "id_token_add_organizations",
-                            value: [{ type: "literal", value: "true" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "true",
+                                },
+                            ],
                         },
                         {
                             name: "codex_cli_simplified_flow",
-                            value: [{ type: "literal", value: "true" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "true",
+                                },
+                            ],
                         },
                         {
                             name: "originator",
-                            value: [{ type: "literal", value: "codex_cli_rs" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "codex_cli_rs",
+                                },
+                            ],
                         },
                     ],
                 },
                 exchange: {
                     request: {
                         method: "POST",
-                        url: [{ type: "literal", value: "https://auth.openai.com/oauth/token" }],
+                        url: [
+                            {
+                                type: "literal",
+                                value: "https://auth.openai.com/oauth/token",
+                            },
+                        ],
                         body: {
                             kind: "form",
                             fields: [
                                 {
                                     name: "grant_type",
-                                    value: [{ type: "literal", value: "authorization_code" }],
+                                    value: [
+                                        {
+                                            type: "literal",
+                                            value: "authorization_code",
+                                        },
+                                    ],
                                 },
-                                { name: "code", value: [{ type: "authorization_code" }] },
-                                { name: "redirect_uri", value: [{ type: "redirect_uri" }] },
-                                { name: "client_id", value: [{ type: "client_id" }] },
-                                { name: "code_verifier", value: [{ type: "code_verifier" }] },
+                                {
+                                    name: "code",
+                                    value: [
+                                        {
+                                            type: "authorization_code",
+                                        },
+                                    ],
+                                },
+                                {
+                                    name: "redirect_uri",
+                                    value: [
+                                        {
+                                            type: "redirect_uri",
+                                        },
+                                    ],
+                                },
+                                {
+                                    name: "client_id",
+                                    value: [
+                                        {
+                                            type: "client_id",
+                                        },
+                                    ],
+                                },
+                                {
+                                    name: "code_verifier",
+                                    value: [
+                                        {
+                                            type: "code_verifier",
+                                        },
+                                    ],
+                                },
                             ],
                         },
                     },
@@ -1128,19 +1971,39 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                         encoding: "json",
                         fields: [
                             {
-                                path: ["access_token"],
-                                target: { type: "access_token" },
+                                path: [
+                                    "access_token",
+                                ],
+                                target: {
+                                    type: "access_token",
+                                },
                                 required: true,
                             },
                             {
-                                path: ["refresh_token"],
-                                target: { type: "refresh_token" },
+                                path: [
+                                    "refresh_token",
+                                ],
+                                target: {
+                                    type: "refresh_token",
+                                },
                                 required: true,
                             },
-                            { path: ["id_token"], target: { type: "id_token" }, required: true },
                             {
-                                path: ["expires_in"],
-                                target: { type: "expires_in_seconds" },
+                                path: [
+                                    "id_token",
+                                ],
+                                target: {
+                                    type: "id_token",
+                                },
+                                required: true,
+                            },
+                            {
+                                path: [
+                                    "expires_in",
+                                ],
+                                target: {
+                                    type: "expires_in_seconds",
+                                },
                                 required: false,
                             },
                         ],
@@ -1154,7 +2017,10 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                 },
                 id_token_claims: [
                     {
-                        claim: ["https://api.openai.com/auth", "chatgpt_account_id"],
+                        claim: [
+                            "https://api.openai.com/auth",
+                            "chatgpt_account_id",
+                        ],
                         slot: "account_id",
                     },
                 ],
@@ -1162,9 +2028,22 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                     type: "grant",
                     request: {
                         method: "POST",
-                        url: [{ type: "literal", value: "https://auth.openai.com/oauth/token" }],
+                        url: [
+                            {
+                                type: "literal",
+                                value: "https://auth.openai.com/oauth/token",
+                            },
+                        ],
                         headers: [
-                            { name: "User-Agent", value: [{ type: "literal", value: "codex_cli_rs/0.147.0" }] },
+                            {
+                                name: "User-Agent",
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "codex_cli_rs/0.147.0",
+                                    },
+                                ],
+                            },
                         ],
                         body: {
                             kind: "json",
@@ -1173,15 +2052,28 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                 fields: {
                                     client_id: {
                                         type: "string",
-                                        expr: [{ type: "client_id" }],
+                                        expr: [
+                                            {
+                                                type: "client_id",
+                                            },
+                                        ],
                                     },
                                     grant_type: {
                                         type: "string",
-                                        expr: [{ type: "literal", value: "refresh_token" }],
+                                        expr: [
+                                            {
+                                                type: "literal",
+                                                value: "refresh_token",
+                                            },
+                                        ],
                                     },
                                     refresh_token: {
                                         type: "string",
-                                        expr: [{ type: "refresh_token" }],
+                                        expr: [
+                                            {
+                                                type: "refresh_token",
+                                            },
+                                        ],
                                     },
                                 },
                             },
@@ -1201,24 +2093,58 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                 request: {
                     method: "GET",
                     url: [
-                        { type: "literal", value: "https://chatgpt.com/backend-api/codex/models" },
+                        {
+                            type: "literal",
+                            value: "https://chatgpt.com/backend-api/codex/models",
+                        },
                     ],
                     query: [
                         {
                             name: "client_version",
-                            value: [{ type: "literal", value: "0.147.0" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "0.147.0",
+                                },
+                            ],
                         },
                     ],
                     headers: [
                         {
                             name: "Authorization",
-                            value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
-                        { name: "chatgpt-account-id", value: [{ type: "slot", name: "account_id" }] },
+                        {
+                            name: "chatgpt-account-id",
+                            value: [
+                                {
+                                    type: "slot",
+                                    name: "account_id",
+                                },
+                            ],
+                        },
                     ],
                 },
-                extract: { mode: "array", array_at: ["items"], id_field: ["slug"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "items",
+                    ],
+                    id_field: [
+                        "slug",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -1248,16 +2174,31 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                 stream_url: [
                     {
                         type: "literal",
-                        value:
-                            "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+                        value: "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
                     },
                 ],
                 headers: [
                     {
                         name: "Authorization",
-                        value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "Bearer ",
+                            },
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
-                    { name: "User-Agent", value: [{ type: "literal", value: "antigravity" }] },
+                    {
+                        name: "User-Agent",
+                        value: [
+                            {
+                                type: "literal",
+                                value: "antigravity",
+                            },
+                        ],
+                    },
                 ],
                 upstream_streaming: "match_client",
                 envelope: {
@@ -1265,17 +2206,42 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                     fields: {
                         project: {
                             type: "string",
-                            expr: [{ type: "slot", name: "project" }],
+                            expr: [
+                                {
+                                    type: "slot",
+                                    name: "project",
+                                },
+                            ],
                         },
-                        model: { type: "string", expr: [{ type: "model" }] },
-                        request: { type: "body" },
-                        requestType: { type: "json", value: "agent" },
-                        userAgent: { type: "json", value: "antigravity" },
+                        model: {
+                            type: "string",
+                            expr: [
+                                {
+                                    type: "model",
+                                },
+                            ],
+                        },
+                        request: {
+                            type: "body",
+                        },
+                        requestType: {
+                            type: "json",
+                            value: "agent",
+                        },
+                        userAgent: {
+                            type: "json",
+                            value: "antigravity",
+                        },
                         requestId: {
                             type: "string",
                             expr: [
-                                { type: "literal", value: "agent-" },
-                                { type: "request_uuid" },
+                                {
+                                    type: "literal",
+                                    value: "agent-",
+                                },
+                                {
+                                    type: "request_uuid",
+                                },
                             ],
                         },
                     },
@@ -1287,7 +2253,12 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                 client_id:
                     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
                 client_secret: "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",
-                initial_slots: [{ name: "device_id", generator: "uuid_hex" }],
+                initial_slots: [
+                    {
+                        name: "device_id",
+                        generator: "uuid_hex",
+                    },
+                ],
                 grant: {
                     type: "authorization_code",
                     authorize_url: [
@@ -1299,15 +2270,30 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                     redirect_uri: "http://localhost:51121/oauth-callback",
                     pkce: "none",
                     extra_params: [
-                        { name: "access_type", value: [{ type: "literal", value: "offline" }] },
-                        { name: "prompt", value: [{ type: "literal", value: "consent" }] },
+                        {
+                            name: "access_type",
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "offline",
+                                },
+                            ],
+                        },
+                        {
+                            name: "prompt",
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "consent",
+                                },
+                            ],
+                        },
                         {
                             name: "scope",
                             value: [
                                 {
                                     type: "literal",
-                                    value:
-                                        "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs",
+                                    value: "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs",
                                 },
                             ],
                         },
@@ -1316,18 +2302,56 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                 exchange: {
                     request: {
                         method: "POST",
-                        url: [{ type: "literal", value: "https://oauth2.googleapis.com/token" }],
+                        url: [
+                            {
+                                type: "literal",
+                                value: "https://oauth2.googleapis.com/token",
+                            },
+                        ],
                         body: {
                             kind: "form",
                             fields: [
                                 {
                                     name: "grant_type",
-                                    value: [{ type: "literal", value: "authorization_code" }],
+                                    value: [
+                                        {
+                                            type: "literal",
+                                            value: "authorization_code",
+                                        },
+                                    ],
                                 },
-                                { name: "code", value: [{ type: "authorization_code" }] },
-                                { name: "client_id", value: [{ type: "client_id" }] },
-                                { name: "client_secret", value: [{ type: "client_secret" }] },
-                                { name: "redirect_uri", value: [{ type: "redirect_uri" }] },
+                                {
+                                    name: "code",
+                                    value: [
+                                        {
+                                            type: "authorization_code",
+                                        },
+                                    ],
+                                },
+                                {
+                                    name: "client_id",
+                                    value: [
+                                        {
+                                            type: "client_id",
+                                        },
+                                    ],
+                                },
+                                {
+                                    name: "client_secret",
+                                    value: [
+                                        {
+                                            type: "client_secret",
+                                        },
+                                    ],
+                                },
+                                {
+                                    name: "redirect_uri",
+                                    value: [
+                                        {
+                                            type: "redirect_uri",
+                                        },
+                                    ],
+                                },
                             ],
                         },
                     },
@@ -1335,46 +2359,90 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                         encoding: "json",
                         fields: [
                             {
-                                path: ["access_token"],
-                                target: { type: "access_token" },
+                                path: [
+                                    "access_token",
+                                ],
+                                target: {
+                                    type: "access_token",
+                                },
                                 required: true,
                             },
                             {
-                                path: ["refresh_token"],
-                                target: { type: "refresh_token" },
+                                path: [
+                                    "refresh_token",
+                                ],
+                                target: {
+                                    type: "refresh_token",
+                                },
                                 required: true,
                             },
                             {
-                                path: ["expires_in"],
-                                target: { type: "expires_in_seconds" },
+                                path: [
+                                    "expires_in",
+                                ],
+                                target: {
+                                    type: "expires_in_seconds",
+                                },
                                 required: false,
                             },
                         ],
                     },
-                    terminal_codes: ["invalid_grant"],
+                    terminal_codes: [
+                        "invalid_grant",
+                    ],
                 },
                 refresh: {
                     type: "grant",
                     request: {
                         method: "POST",
-                        url: [{ type: "literal", value: "https://oauth2.googleapis.com/token" }],
+                        url: [
+                            {
+                                type: "literal",
+                                value: "https://oauth2.googleapis.com/token",
+                            },
+                        ],
                         body: {
                             kind: "form",
                             fields: [
                                 {
                                     name: "grant_type",
-                                    value: [{ type: "literal", value: "refresh_token" }],
+                                    value: [
+                                        {
+                                            type: "literal",
+                                            value: "refresh_token",
+                                        },
+                                    ],
                                 },
                                 {
                                     name: "refresh_token",
-                                    value: [{ type: "refresh_token" }],
+                                    value: [
+                                        {
+                                            type: "refresh_token",
+                                        },
+                                    ],
                                 },
-                                { name: "client_id", value: [{ type: "client_id" }] },
-                                { name: "client_secret", value: [{ type: "client_secret" }] },
+                                {
+                                    name: "client_id",
+                                    value: [
+                                        {
+                                            type: "client_id",
+                                        },
+                                    ],
+                                },
+                                {
+                                    name: "client_secret",
+                                    value: [
+                                        {
+                                            type: "client_secret",
+                                        },
+                                    ],
+                                },
                             ],
                         },
                     },
-                    terminal_codes: ["invalid_grant"],
+                    terminal_codes: [
+                        "invalid_grant",
+                    ],
                 },
             },
             provisioning: [
@@ -1391,13 +2459,23 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                             {
                                 name: "Authorization",
                                 value: [
-                                    { type: "literal", value: "Bearer " },
-                                    { type: "secret" },
+                                    {
+                                        type: "literal",
+                                        value: "Bearer ",
+                                    },
+                                    {
+                                        type: "secret",
+                                    },
                                 ],
                             },
                             {
                                 name: "User-Agent",
-                                value: [{ type: "literal", value: "antigravity" }],
+                                value: [
+                                    {
+                                        type: "literal",
+                                        value: "antigravity",
+                                    },
+                                ],
                             },
                         ],
                         body: {
@@ -1420,21 +2498,45 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                     response_encoding: "json",
                     extract: [
                         {
-                            path: ["cloudaicompanionProject"],
-                            target: { type: "slot", name: "project" },
-                            shape: { type: "string_or_field", field: "id" },
+                            path: [
+                                "cloudaicompanionProject",
+                            ],
+                            target: {
+                                type: "slot",
+                                name: "project",
+                            },
+                            shape: {
+                                type: "string_or_field",
+                                field: "id",
+                            },
                             required: false,
                         },
                         {
-                            path: ["paidTier", "id"],
-                            target: { type: "slot", name: "paid_tier" },
-                            shape: { type: "string" },
+                            path: [
+                                "paidTier",
+                                "id",
+                            ],
+                            target: {
+                                type: "slot",
+                                name: "paid_tier",
+                            },
+                            shape: {
+                                type: "string",
+                            },
                             required: false,
                         },
                         {
-                            path: ["currentTier", "id"],
-                            target: { type: "slot", name: "current_tier" },
-                            shape: { type: "string" },
+                            path: [
+                                "currentTier",
+                                "id",
+                            ],
+                            target: {
+                                type: "slot",
+                                name: "current_tier",
+                            },
+                            shape: {
+                                type: "string",
+                            },
                             required: false,
                         },
                     ],
@@ -1452,13 +2554,23 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                 {
                                     name: "Authorization",
                                     value: [
-                                        { type: "literal", value: "Bearer " },
-                                        { type: "secret" },
+                                        {
+                                            type: "literal",
+                                            value: "Bearer ",
+                                        },
+                                        {
+                                            type: "secret",
+                                        },
                                     ],
                                 },
                                 {
                                     name: "User-Agent",
-                                    value: [{ type: "literal", value: "antigravity" }],
+                                    value: [
+                                        {
+                                            type: "literal",
+                                            value: "antigravity",
+                                        },
+                                    ],
                                 },
                             ],
                             body: {
@@ -1472,8 +2584,14 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                                                 {
                                                     type: "coalesce",
                                                     parts: [
-                                                        { type: "slot", name: "paid_tier" },
-                                                        { type: "slot", name: "current_tier" },
+                                                        {
+                                                            type: "slot",
+                                                            name: "paid_tier",
+                                                        },
+                                                        {
+                                                            type: "slot",
+                                                            name: "current_tier",
+                                                        },
                                                         {
                                                             type: "literal",
                                                             value: "free-tier",
@@ -1495,13 +2613,26 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                             },
                         },
                         response_encoding: "json",
-                        done_path: ["done"],
-                        error_path: ["error"],
+                        done_path: [
+                            "done",
+                        ],
+                        error_path: [
+                            "error",
+                        ],
                         result_extract: [
                             {
-                                path: ["response", "cloudaicompanionProject"],
-                                target: { type: "slot", name: "project" },
-                                shape: { type: "string_or_field", field: "id" },
+                                path: [
+                                    "response",
+                                    "cloudaicompanionProject",
+                                ],
+                                target: {
+                                    type: "slot",
+                                    name: "project",
+                                },
+                                shape: {
+                                    type: "string_or_field",
+                                    field: "id",
+                                },
                                 required: true,
                             },
                         ],
@@ -1522,19 +2653,47 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
                     headers: [
                         {
                             name: "Authorization",
-                            value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
-                        { name: "User-Agent", value: [{ type: "literal", value: "antigravity" }] },
+                        {
+                            name: "User-Agent",
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "antigravity",
+                                },
+                            ],
+                        },
                     ],
-                    body: { kind: "json", node: { type: "object", fields: {} } },
+                    body: {
+                        kind: "json",
+                        node: {
+                            type: "object",
+                            fields: {},
+                        },
+                    },
                 },
-                extract: { mode: "map_keys", at: ["models"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "map_keys",
+                    at: [
+                        "models",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
 ];
-
 
 /**
  * The OpenCode Zen presets: one static-key definition per wire format, each
@@ -1560,31 +2719,70 @@ const ZEN_PRESETS: ReadonlyArray<ProviderPreset> = [
             format: "openai_chat_completion",
             inference: {
                 url: [
-                    { type: "literal", value: "https://opencode.ai/zen/v1" },
-                    { type: "literal", value: "/chat/completions" },
+                    {
+                        type: "literal",
+                        value: "https://opencode.ai/zen/v1",
+                    },
+                    {
+                        type: "literal",
+                        value: "/chat/completions",
+                    },
                 ],
                 headers: [
                     {
                         name: "Authorization",
-                        value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "Bearer ",
+                            },
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
             },
-            credential: { type: "api_key" },
+            credential: {
+                type: "api_key",
+            },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "literal", value: "https://opencode.ai/zen/v1/models" }],
+                    url: [
+                        {
+                            type: "literal",
+                            value: "https://opencode.ai/zen/v1/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "Authorization",
-                            value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                     ],
                 },
-                extract: { mode: "array", array_at: ["data"], id_field: ["id"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -1604,31 +2802,70 @@ const ZEN_PRESETS: ReadonlyArray<ProviderPreset> = [
             format: "openai_response",
             inference: {
                 url: [
-                    { type: "literal", value: "https://opencode.ai/zen/v1" },
-                    { type: "literal", value: "/responses" },
+                    {
+                        type: "literal",
+                        value: "https://opencode.ai/zen/v1",
+                    },
+                    {
+                        type: "literal",
+                        value: "/responses",
+                    },
                 ],
                 headers: [
                     {
                         name: "Authorization",
-                        value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "Bearer ",
+                            },
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
             },
-            credential: { type: "api_key" },
+            credential: {
+                type: "api_key",
+            },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "literal", value: "https://opencode.ai/zen/v1/models" }],
+                    url: [
+                        {
+                            type: "literal",
+                            value: "https://opencode.ai/zen/v1/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "Authorization",
-                            value: [{ type: "literal", value: "Bearer " }, { type: "secret" }],
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "Bearer ",
+                                },
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                     ],
                 },
-                extract: { mode: "array", array_at: ["data"], id_field: ["id"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -1648,35 +2885,71 @@ const ZEN_PRESETS: ReadonlyArray<ProviderPreset> = [
             format: "anthropic_messages",
             inference: {
                 url: [
-                    { type: "literal", value: "https://opencode.ai/zen/v1" },
-                    { type: "literal", value: "/v1/messages" },
+                    {
+                        type: "literal",
+                        value: "https://opencode.ai/zen/v1",
+                    },
+                    {
+                        type: "literal",
+                        value: "/v1/messages",
+                    },
                 ],
                 headers: [
                     {
                         name: "x-api-key",
-                        value: [{ type: "secret" }],
+                        value: [
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                     {
                         name: "anthropic-version",
-                        value: [{ type: "literal", value: "2023-06-01" }],
+                        value: [
+                            {
+                                type: "literal",
+                                value: "2023-06-01",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
             },
-            credential: { type: "api_key" },
+            credential: {
+                type: "api_key",
+            },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "literal", value: "https://opencode.ai/zen/v1/models" }],
+                    url: [
+                        {
+                            type: "literal",
+                            value: "https://opencode.ai/zen/v1/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "x-api-key",
-                            value: [{ type: "secret" }],
+                            value: [
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                     ],
                 },
-                extract: { mode: "array", array_at: ["data"], id_field: ["id"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },
@@ -1696,37 +2969,78 @@ const ZEN_PRESETS: ReadonlyArray<ProviderPreset> = [
             format: "gemini_generate_content",
             inference: {
                 url: [
-                    { type: "literal", value: "https://opencode.ai/zen/v1" },
-                    { type: "model" },
-                    { type: "literal", value: ":generateContent" },
+                    {
+                        type: "literal",
+                        value: "https://opencode.ai/zen/v1",
+                    },
+                    {
+                        type: "model",
+                    },
+                    {
+                        type: "literal",
+                        value: ":generateContent",
+                    },
                 ],
                 stream_url: [
-                    { type: "literal", value: "https://opencode.ai/zen/v1" },
-                    { type: "model" },
-                    { type: "literal", value: ":streamGenerateContent?alt=sse" },
+                    {
+                        type: "literal",
+                        value: "https://opencode.ai/zen/v1",
+                    },
+                    {
+                        type: "model",
+                    },
+                    {
+                        type: "literal",
+                        value: ":streamGenerateContent?alt=sse",
+                    },
                 ],
                 headers: [
                     {
                         name: "x-goog-api-key",
-                        value: [{ type: "secret" }],
+                        value: [
+                            {
+                                type: "secret",
+                            },
+                        ],
                     },
                 ],
                 upstream_streaming: "match_client",
             },
-            credential: { type: "api_key" },
+            credential: {
+                type: "api_key",
+            },
             discovery: {
                 request: {
                     method: "GET",
-                    url: [{ type: "literal", value: "https://opencode.ai/zen/v1/models" }],
+                    url: [
+                        {
+                            type: "literal",
+                            value: "https://opencode.ai/zen/v1/models",
+                        },
+                    ],
                     headers: [
                         {
                             name: "x-goog-api-key",
-                            value: [{ type: "secret" }],
+                            value: [
+                                {
+                                    type: "secret",
+                                },
+                            ],
                         },
                     ],
                 },
-                extract: { mode: "array", array_at: ["data"], id_field: ["id"] },
-                pagination: { type: "none" },
+                extract: {
+                    mode: "array",
+                    array_at: [
+                        "data",
+                    ],
+                    id_field: [
+                        "id",
+                    ],
+                },
+                pagination: {
+                    type: "none",
+                },
             },
         },
     },

@@ -105,7 +105,14 @@ pub(crate) enum Error {
 async fn finalize_dispatch_failure(context: &Context, log: &ApiLogDraft, error: &ApiError) {
     let (outcome, http_status) = error.accounting();
 
-    finalize_api_log(&context.database, log, outcome, Some(http_status), None).await;
+    finalize_api_log(
+        context.api_log_store.as_ref(),
+        log,
+        outcome,
+        Some(http_status),
+        None,
+    )
+    .await;
 }
 
 /// A stream of translated IR events; always terminates with [`IrEvent::Done`].

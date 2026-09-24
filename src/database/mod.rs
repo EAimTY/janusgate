@@ -93,12 +93,14 @@ struct Manager {
 impl Database {
     /// Opens the in-process SQLite database at the specified path and initializes a connection pool
     /// with at most `max_connections` concurrent connections, waiting at most `pool_timeout` for a
-    /// free connection when every connection is checked out.
+    /// free connection when every connection is checked out. The `registry` names the schema
+    /// version registry the database migrates under — the main control-plane schema, or the
+    /// api-log shard schema for shard files.
     ///
     /// Before the pool is created, the schema version stored in `PRAGMA user_version` is verified
-    /// and the database is migrated forward to the latest schema version: a fresh database
-    /// receives the initial schema, an outdated one is migrated step by step, and an unknown
-    /// version is fatal. See the [`schema`] module for the versioning and migration design.
+    /// and the database is migrated forward to the latest schema version of the registry: a fresh
+    /// database receives the initial schema, an outdated one is migrated step by step, and an
+    /// unknown version is fatal. See the [`schema`] module for the versioning and migration design.
     ///
     /// # Errors
     ///
@@ -110,6 +112,7 @@ impl Database {
     /// stored schema version is unknown.
     pub(crate) async fn open(
         path: impl AsRef<Path>,
+        registry: schema::Registry,
         max_connections: NonZero<usize>,
         pool_timeout: Duration,
     ) -> Result<Self, Error> {
@@ -129,7 +132,7 @@ impl Database {
 
         let database = TursoBuilder::new_local(path_str).build().await?;
 
-        bootstrap_schema(&database, path_str).await;
+        bootstrap_schema(&database, registry, path_str).await;
 
         let manager = Manager { database };
 
@@ -446,15 +449,15 @@ async fn configure_connection(connection: &Connection) -> Result<(), TursoError>
     Ok(())
 }
 
-/// Brings the database schema up to the latest version before the connection pool is created,
-/// logging progress under the database's path. See the [`schema`] module for the versioning and
-/// migration design.
+/// Brings the database schema up to the latest version of `registry` before the connection pool is
+/// created, logging progress under the database's path. See the [`schema`] module for the
+/// versioning and migration design.
 ///
 /// # Panics
 ///
 /// Panics if connecting fails, configuring the bootstrap connection fails, or the migration
 /// workflow fails.
-async fn bootstrap_schema(database: &TursoDatabase, path: &str) {
+async fn bootstrap_schema(database: &TursoDatabase, registry: schema::Registry, path: &str) {
     #[expect(
         clippy::expect_used,
         reason = "opening the bootstrap connection for schema migration is fatal on failure"
@@ -471,5 +474,5 @@ async fn bootstrap_schema(database: &TursoDatabase, path: &str) {
         .await
         .expect("failed to configure database connection");
 
-    schema::migrate(&connection, path).await;
+    schema::migrate(&connection, registry, path).await;
 }

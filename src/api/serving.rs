@@ -365,7 +365,7 @@ where
             Ok(sse_response(
                 events,
                 TFormat::sse_renderer(should_include_usage, public_id),
-                context.database.clone(),
+                context.api_log_store.clone(),
                 log,
             ))
         } else {
@@ -379,7 +379,7 @@ where
             {
                 Ok((response, usage)) => {
                     api_logs::finalize_api_log(
-                        &context.database,
+                        context.api_log_store.as_ref(),
                         &log,
                         ApiLogOutcome::Completed,
                         Some(i64::from(StatusCode::OK.as_u16())),
@@ -394,7 +394,7 @@ where
                     let (outcome, http_status) = error.accounting();
 
                     api_logs::finalize_api_log(
-                        &context.database,
+                        context.api_log_store.as_ref(),
                         &log,
                         outcome,
                         Some(http_status),
@@ -456,7 +456,7 @@ where
 }
 
 /// Wraps an IR event stream into a live `text/event-stream` response, carrying the request's
-/// accounting draft and database handle into the render task: that task is the streaming
+/// accounting draft and shard store handle into the render task: that task is the streaming
 /// finalization point (README §3 *ApiLog*) and records exactly one row when the stream closes —
 /// `completed` + 200 for a clean end, the classified outcome under the already-declared 200 for
 /// an error frame (the first enqueued frame declares the status, so an error frame never changes
@@ -470,7 +470,7 @@ where
 fn sse_response(
     events: IrEventStream,
     mut renderer: Box<dyn ClientSseRenderer + Send>,
-    database: Database,
+    api_log_store: Option<api_logs::ApiLogStore>,
     log: ApiLogDraft,
 ) -> Response {
     let (sender, receiver) =
@@ -497,7 +497,7 @@ fn sse_response(
                             // The client's body channel is gone: a client abort, keyed only on
                             // what was actually enqueued before it broke.
                             api_logs::finalize_api_log(
-                                &database,
+                                api_log_store.as_ref(),
                                 &log,
                                 ApiLogOutcome::ClientAborted,
                                 declared_status(is_status_declared),
@@ -524,7 +524,7 @@ fn sse_response(
                         // The channel broke before the error frame could be enqueued: the client
                         // left, so the disconnect rules decide alone.
                         api_logs::finalize_api_log(
-                            &database,
+                            api_log_store.as_ref(),
                             &log,
                             ApiLogOutcome::ClientAborted,
                             declared_status(is_status_declared),
@@ -538,7 +538,7 @@ fn sse_response(
                     // The error frame never changes the status already declared; only the
                     // outcome moves to the classified failure (README §3 *ApiLog*).
                     api_logs::finalize_api_log(
-                        &database,
+                        api_log_store.as_ref(),
                         &log,
                         outcome,
                         Some(i64::from(StatusCode::OK.as_u16())),
@@ -553,7 +553,7 @@ fn sse_response(
 
         // A clean end of stream: every event rendered and the body closed normally.
         api_logs::finalize_api_log(
-            &database,
+            api_log_store.as_ref(),
             &log,
             ApiLogOutcome::Completed,
             Some(i64::from(StatusCode::OK.as_u16())),

@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { ApiLogResponse } from "/src/management-api/generated/v0";
 import { nextUsagePage, USAGE_PAGE_SIZE, usageCursor } from "./usage-pagination";
 
-function row(id: number): ApiLogResponse {
+/** The base instant every fixture row's stamp offsets, marking rows by it. */
+const CURSOR_BASE = 1_700_000_000_000_000;
+
+function row(offset: number): ApiLogResponse {
     return {
-        id,
-        started_at: 1_700_000_000_000_000 + id,
+        started_at: CURSOR_BASE + offset,
         api_key_id: 7,
         provider_id: 1,
         model_id: 9,
@@ -72,7 +74,7 @@ describe("usage pagination", () => {
         expect(continuation.hasMore).toBe(false);
     });
 
-    it("takes the next request's cursor from the last returned row's id", () => {
+    it("takes the next request's cursor from the last returned row's stamp", () => {
         expect(
             usageCursor(
                 rowsFromIds([
@@ -81,7 +83,7 @@ describe("usage pagination", () => {
                     2,
                 ]),
             ),
-        ).toBe(2);
+        ).toBe(CURSOR_BASE + 2);
         expect(usageCursor([])).toBe(null);
     });
 
@@ -97,11 +99,11 @@ describe("usage pagination", () => {
             ]),
         );
 
-        expect(continuation.rows.map((listed) => listed.id)).toEqual([
-            5,
-            4,
-            3,
-            2,
+        expect(continuation.rows.map((listed) => listed.started_at)).toEqual([
+            CURSOR_BASE + 5,
+            CURSOR_BASE + 4,
+            CURSOR_BASE + 3,
+            CURSOR_BASE + 2,
         ]);
     });
 });

@@ -118,10 +118,10 @@ export function UsageScreen(props: {
     /** Reads one `usage:list` page, stating a failure and answering nothing. */
     const readPage = async (
         signal: AbortSignal,
-        beforeId: number,
+        before: number,
     ): Promise<ReadonlyArray<ApiLogResponse> | null> => {
         const outcome = await performManagementCall(() =>
-            props.api.listUsage(usageListRequest(activeFilter(), beforeId), signal),
+            props.api.listUsage(usageListRequest(activeFilter(), before), signal),
         );
 
         if (outcome.status === "aborted") {
@@ -302,7 +302,7 @@ export function UsageScreen(props: {
                                 <EmptyState
                                     glyph="activity"
                                     title="No requests recorded yet"
-                                    description="One row appears per dispatched serving request — the moment the gateway sends upstream. If traffic flows and nothing appears, check api_logs.is_enabled in the gateway's configuration file."
+                                    description="One row appears per dispatched serving request — the moment the gateway sends upstream. If traffic flows and nothing appears, check the api_logs section in the gateway's configuration file."
                                 >
                                     <ButtonLink
                                         href={hrefs.usageQuery()}
@@ -365,13 +365,13 @@ export function UsageScreen(props: {
  * is the wire's own spelling of "every row", so the unfiltered stream sends
  * exactly what it always did.
  */
-function usageListRequest(filter: UsageFilter, beforeId: number | null): ListUsageRequest {
+function usageListRequest(filter: UsageFilter, before: number | null): ListUsageRequest {
     return {
         limit: USAGE_PAGE_SIZE,
-        ...(beforeId === null
+        ...(before === null
             ? {}
             : {
-                  before_id: beforeId,
+                  before,
               }),
         ...(Object.keys(filter).length === 0
             ? {}

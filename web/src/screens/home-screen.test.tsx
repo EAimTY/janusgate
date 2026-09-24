@@ -80,7 +80,6 @@ function utcDay(offsetDays: number): string {
 function overviewApi(requests: Array<QueryUsageRequest>): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
-
     return {
         listProviderDefinitions: refused,
         createProviderDefinition: refused,

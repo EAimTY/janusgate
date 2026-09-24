@@ -12,7 +12,6 @@ import { ProviderNewScreen } from "/src/screens/provider-new-screen";
 function screenApi(sent: CreateProviderRequest[] = []): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
-
     return {
         listProviderDefinitions: () =>
             Promise.resolve({
@@ -26,12 +25,19 @@ function screenApi(sent: CreateProviderRequest[] = []): ManagementApi {
                     format: "openai_response",
                     inference: {
                         url: [
-                            { type: "base" },
-                            { type: "literal", value: "/responses" },
+                            {
+                                type: "base",
+                            },
+                            {
+                                type: "literal",
+                                value: "/responses",
+                            },
                         ],
                         upstream_streaming: "match_client",
                     },
-                    credential: { type: "api_key" },
+                    credential: {
+                        type: "api_key",
+                    },
                     created_at: 1_700_000_000_000_000,
                 },
             }),

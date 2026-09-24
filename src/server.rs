@@ -388,6 +388,9 @@ mod tests {
     /// One recorded row as the scenario assertions read it.
     #[derive(Debug)]
     struct RecordedRow {
+        /// Dispatch-start instant, ordering the rows merged from the shard files.
+        started_at: i64,
+
         /// Recorded outcome.
         outcome: String,
 
@@ -641,18 +644,27 @@ mod tests {
             .map(|position| position + 4)
     }
 
-    /// Renders the end-to-end configuration with the given recording switch, pointed at the
-    /// temporary database and an ephemeral listen port.
-    fn configuration_body(database_path: &Path, is_enabled: bool) -> String {
+    /// Renders the end-to-end configuration, pointed at the temporary database and an ephemeral
+    /// listen port. The `api_logs` section rides exactly when `shard_directory` is given: the
+    /// section's presence is the recording switch.
+    fn configuration_body(database_path: &Path, shard_directory: Option<&Path>) -> String {
         let database_path = database_path.to_string_lossy().replace('\\', "/");
+
+        let api_logs = shard_directory.map(|directory| {
+            format!(
+                ",\"api_logs\": {{\"path\": \"{}\"}}",
+                directory.to_string_lossy().replace('\\', "/")
+            )
+        });
+
+        let api_logs = api_logs.as_deref().unwrap_or("");
 
         format!(
             r#"{{
                 "listen": "127.0.0.1:0",
                 "database": {{"path": "{database_path}"}},
                 "management_api": {{"token": "e2e-token"}},
-                "api": {{}},
-                "api_logs": {{"is_enabled": {is_enabled}}}
+                "api": {{}}{api_logs}
             }}"#
         )
     }
@@ -688,39 +700,76 @@ mod tests {
             .await
     }
 
-    /// Reads every recorded row in insertion order.
+    /// Reads every recorded row of the shard store's directory, ordered by the dispatch stamp.
     ///
     /// # Errors
     ///
-    /// Returns an error when the query fails.
-    async fn recorded_rows(database: &Database) -> Result<Vec<RecordedRow>, Box<dyn StdError>> {
-        let rows = database
-            .query(
-                "SELECT outcome, http_status, is_stream, endpoint_type, api_key_id, provider_id, \
-                 model_id, input_tokens, output_tokens, cached_tokens, cache_write_tokens, \
-                 reasoning_tokens FROM api_logs ORDER BY id",
-                (),
+    /// Returns an error when a shard cannot be opened or a query fails.
+    ///
+    /// # Panics
+    ///
+    /// Never: the fixed pool-size literal is nonzero, and the `expect` states that invariant.
+    async fn recorded_rows(shard_directory: &Path) -> Result<Vec<RecordedRow>, Box<dyn StdError>> {
+        let mut recorded = Vec::new();
+
+        // The directory listing is the only truth: every shard file answers its own rows, and
+        // an absent directory is the empty store.
+        let entries = match std::fs::read_dir(shard_directory) {
+            Ok(entries) => entries,
+
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(recorded);
+            }
+
+            Err(failure) => return Err(failure.into()),
+        };
+
+        for entry in entries {
+            let path = entry?.path();
+
+            if path.extension().is_none_or(|extension| extension != "db") {
+                continue;
+            }
+
+            #[expect(clippy::unwrap_used, reason = "non-zero literal")]
+            let max_connections = NonZero::new(1).unwrap();
+            let database = Database::open(
+                &path,
+                crate::database::schema::Registry::ApiLogShard,
+                max_connections,
+                Duration::from_secs(5),
             )
             .await?;
 
-        let mut recorded = Vec::with_capacity(rows.len());
+            let rows = database
+                .query(
+                    "SELECT started_at, outcome, http_status, is_stream, endpoint_type, \
+                     api_key_id, provider_id, model_id, input_tokens, output_tokens, \
+                     cached_tokens, cache_write_tokens, reasoning_tokens FROM api_logs",
+                    (),
+                )
+                .await?;
 
-        for row in &rows {
-            recorded.push(RecordedRow {
-                outcome: row.get(0)?,
-                http_status: row.get(1)?,
-                is_stream: row.get::<i64>(2)? != 0,
-                endpoint_type: row.get(3)?,
-                api_key_id: row.get(4)?,
-                provider_id: row.get(5)?,
-                model_id: row.get(6)?,
-                input_tokens: row.get(7)?,
-                output_tokens: row.get(8)?,
-                cached_tokens: row.get(9)?,
-                cache_write_tokens: row.get(10)?,
-                reasoning_tokens: row.get(11)?,
-            });
+            for row in &rows {
+                recorded.push(RecordedRow {
+                    started_at: row.get(0)?,
+                    outcome: row.get(1)?,
+                    http_status: row.get(2)?,
+                    is_stream: row.get::<i64>(3)? != 0,
+                    endpoint_type: row.get(4)?,
+                    api_key_id: row.get(5)?,
+                    provider_id: row.get(6)?,
+                    model_id: row.get(7)?,
+                    input_tokens: row.get(8)?,
+                    output_tokens: row.get(9)?,
+                    cached_tokens: row.get(10)?,
+                    cache_write_tokens: row.get(11)?,
+                    reasoning_tokens: row.get(12)?,
+                });
+            }
         }
+
+        recorded.sort_by_key(|row| row.started_at);
 
         Ok(recorded)
     }
@@ -732,11 +781,11 @@ mod tests {
     ///
     /// Returns an error when the rows never appear or the query fails.
     async fn wait_for_rows(
-        database: &Database,
+        shard_directory: &Path,
         count: usize,
     ) -> Result<Vec<RecordedRow>, Box<dyn StdError>> {
         for _ in 0..100 {
-            let rows = recorded_rows(database).await?;
+            let rows = recorded_rows(shard_directory).await?;
 
             if rows.len() >= count {
                 return Ok(rows);
@@ -800,10 +849,14 @@ mod tests {
 
         let database_path = directory.join("e2e.db");
         let config_path = directory.join("config.jsonc");
+        let shard_directory = directory.join("api-logs");
 
         let (mock_address, mock_mode) = spawn_mock_upstream().await?;
 
-        std::fs::write(&config_path, configuration_body(&database_path, true))?;
+        std::fs::write(
+            &config_path,
+            configuration_body(&database_path, Some(&shard_directory)),
+        )?;
 
         let (loader, watcher) = ConfigLoader::new(config_path.clone())?;
 
@@ -821,8 +874,13 @@ mod tests {
         #[expect(clippy::unwrap_used, reason = "non-zero literal")]
         let max_connections = NonZero::new(4).unwrap();
 
-        let database =
-            Database::open(&database_path, max_connections, Duration::from_secs(5)).await?;
+        let database = Database::open(
+            &database_path,
+            crate::database::schema::Registry::Main,
+            max_connections,
+            Duration::from_secs(5),
+        )
+        .await?;
 
         // Seed: the authenticated key, a mock-backed provider and model, a drift provider whose
         // missing base URL fails rendering before dispatch, and a stale OAuth provider whose
@@ -928,8 +986,14 @@ mod tests {
         .await?;
 
         // Real startup: the server binds its own ephemeral port from the loaded configuration.
+        #[expect(clippy::unwrap_used, reason = "non-zero test retention")]
+        let retention_days = NonZero::new(90).unwrap();
         let server = Server::new(Context {
             database: database.clone(),
+            api_log_store: Some(crate::storage::api_logs::ApiLogStore::new(
+                shard_directory.clone(),
+                retention_days,
+            )),
             data_plane: crate::http_client::data_plane(),
             control_plane: crate::http_client::control_plane(),
         });
@@ -950,27 +1014,27 @@ mod tests {
         // Pre-dispatch failures: authentication, routing, rendering, refresh — zero rows each.
         let response = send_completion(&client, &base, "sk-wrong", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
-        assert_eq!(recorded_rows(&database).await?.len(), 0);
+        assert_eq!(recorded_rows(&shard_directory).await?.len(), 0);
 
         let response = send_completion(&client, &base, "sk-e2e", "ghost", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
-        assert_eq!(recorded_rows(&database).await?.len(), 0);
+        assert_eq!(recorded_rows(&shard_directory).await?.len(), 0);
 
         let response = send_completion(&client, &base, "sk-e2e", "drift-model", false).await?;
         assert_eq!(
             response.status(),
             reqwest::StatusCode::INTERNAL_SERVER_ERROR
         );
-        assert_eq!(recorded_rows(&database).await?.len(), 0);
+        assert_eq!(recorded_rows(&shard_directory).await?.len(), 0);
 
         // The failed refresh happens before dispatch; whichever transport shape the token
         // endpoint rejection takes, no row may exist once the response is rendered.
         let response = send_completion(&client, &base, "sk-e2e", "rf-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
-        assert_eq!(recorded_rows(&database).await?.len(), 0);
+        assert_eq!(recorded_rows(&shard_directory).await?.len(), 0);
 
         // Dispatched scenarios, one row each.
-        let mut baseline = recorded_rows(&database).await?.len();
+        let mut baseline = recorded_rows(&shard_directory).await?.len();
 
         // Success (non-streaming): completed + 200, attributed ids, totals with a NULL breakdown.
         mock_mode.store(MOCK_JSON_SUCCESS, Ordering::SeqCst);
@@ -978,7 +1042,7 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let _body = response.text().await?;
 
-        let rows = recorded_rows(&database).await?;
+        let rows = recorded_rows(&shard_directory).await?;
         assert_one_new_row(&rows, baseline, "completed", Some(200));
 
         #[expect(clippy::expect_used, reason = "the row was just asserted present")]
@@ -1001,7 +1065,7 @@ mod tests {
         let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 
-        let rows = recorded_rows(&database).await?;
+        let rows = recorded_rows(&shard_directory).await?;
         assert_one_new_row(&rows, baseline, "upstream_error", Some(429));
 
         #[expect(clippy::expect_used, reason = "the row was just asserted present")]
@@ -1016,7 +1080,7 @@ mod tests {
         let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
 
-        let rows = recorded_rows(&database).await?;
+        let rows = recorded_rows(&shard_directory).await?;
         assert_one_new_row(&rows, baseline, "upstream_error", Some(502));
 
         baseline = rows.len();
@@ -1030,7 +1094,7 @@ mod tests {
         let stream_body = response.text().await?;
         assert!(stream_body.contains("data: [DONE]"));
 
-        let rows = recorded_rows(&database).await?;
+        let rows = recorded_rows(&shard_directory).await?;
         assert_one_new_row(&rows, baseline, "completed", Some(200));
 
         #[expect(clippy::expect_used, reason = "the row was just asserted present")]
@@ -1061,7 +1125,7 @@ mod tests {
 
         drop(stream);
 
-        let rows = wait_for_rows(&database, baseline + 1).await?;
+        let rows = wait_for_rows(&shard_directory, baseline + 1).await?;
         assert_one_new_row(&rows, baseline, "client_aborted", Some(200));
 
         #[expect(clippy::expect_used, reason = "the row was just asserted present")]
@@ -1083,19 +1147,20 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         drop(response);
 
-        let rows = wait_for_rows(&database, baseline + 1).await?;
+        let rows = wait_for_rows(&shard_directory, baseline + 1).await?;
         assert_one_new_row(&rows, baseline, "client_aborted", None);
 
         #[expect(clippy::expect_used, reason = "the row was just asserted present")]
         let silent = rows.last().expect("the silent abort row exists");
         assert!(silent.is_stream);
 
-        // The switch: a live reload turns recording off, so the next successful dispatch writes
-        // nothing — while both management reads keep serving everything already stored.
-        std::fs::write(&config_path, configuration_body(&database_path, false))?;
+        // The switch: a live reload removes the `api_logs` section, so the next successful
+        // dispatch writes nothing — while both management reads keep serving everything already
+        // stored.
+        std::fs::write(&config_path, configuration_body(&database_path, None))?;
 
         for _ in 0..300 {
-            if !crate::CONFIG.api_logs.is_enabled {
+            if crate::CONFIG.api_logs.is_none() {
                 break;
             }
 
@@ -1103,7 +1168,7 @@ mod tests {
         }
 
         assert!(
-            !crate::CONFIG.api_logs.is_enabled,
+            crate::CONFIG.api_logs.is_none(),
             "the reload must apply within fifteen seconds"
         );
 
@@ -1113,7 +1178,7 @@ mod tests {
         let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
 
-        let rows = recorded_rows(&database).await?;
+        let rows = recorded_rows(&shard_directory).await?;
         assert_eq!(
             rows.len(),
             baseline,

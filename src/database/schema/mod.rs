@@ -1,15 +1,16 @@
 //! Versioned database schema definitions and the startup migration workflow.
 //!
-//! The schema is versioned linearly: every modification to the database schema is a new version,
+//! The schema is versioned linearly: every modification to a database schema is a new version,
 //! defined by one `version_x.rs` submodule whose only item is `const SCHEMA: Schema` and
-//! registered in [`SCHEMAS`]. A version's `schema` field carries the complete DDL of that version
-//! as hand-written SQL, and its `migration` field carries the SQL that transforms the previous
-//! version's database into it.
+//! registered in its registry — [`MAIN_SCHEMAS`] for the main database, [`SHARD_SCHEMAS`] for the
+//! api-log shard files, selected by [`Registry`]. A version's `schema` field carries the complete
+//! DDL of that version as hand-written SQL, and its `migration` field carries the SQL that
+//! transforms the previous version's database into it.
 //!
-//! [`migrate`] runs at startup: it reads `PRAGMA user_version`, applies the first version's DDL to
-//! a fresh database and walks forward from there, applying one migration per version, each
-//! committed atomically together with its `user_version` advance — so a fresh database and an
-//! outdated one both end at the latest version.
+//! [`migrate`] runs when a database is opened: it reads `PRAGMA user_version`, applies the first
+//! version's DDL to a fresh database and walks forward from there, applying one migration per
+//! version, each committed atomically together with its `user_version` advance — so a fresh
+//! database and an outdated one both end at the latest version of their registry.
 //!
 //! Migration texts run under foreign key enforcement: the bootstrap connection enables
 //! `PRAGMA foreign_keys` before the walk, and each text executes inside its own transaction, where
@@ -19,6 +20,7 @@
 //! statement — a table rebuild, for instance, orders its steps so referential integrity holds at
 //! every intermediate state.
 
+mod shard_version_1;
 mod version_1;
 
 use log::{debug, info};
@@ -26,7 +28,7 @@ use log::{debug, info};
 use turso::Builder as TursoBuilder;
 use turso::Connection;
 
-/// One version of the SQLite database schema.
+/// One version of a SQLite database schema.
 ///
 /// Both text fields are statement sequences in which every statement is terminated by `;`; the
 /// workflow embeds them into its transaction batches.
@@ -34,7 +36,7 @@ struct Schema {
     /// The version's number, stored in `PRAGMA user_version`.
     ///
     /// Versions start at 1 and increase by exactly one per version; the ordering test enforces
-    /// this over [`SCHEMAS`].
+    /// this over both registries.
     version: i64,
 
     /// The complete DDL creating the version's schema from an empty database, hand-written
@@ -53,22 +55,46 @@ struct Schema {
     migration: &'static str,
 }
 
-/// Every schema version, ordered by ascending version starting at 1 with no gaps.
-///
-/// [`migrate`] binary-searches this table by version; the contiguity invariant — which makes every
-/// positive version at or below the latest resolvable — is enforced by tests.
-const SCHEMAS: &[Schema] = &[version_1::SCHEMA];
+/// Every schema version of the main database, ordered by ascending version starting at 1 with no
+/// gaps.
+const MAIN_SCHEMAS: &[Schema] = &[version_1::SCHEMA];
 
-/// Brings the schema of the database behind `connection` up to the latest known version, logging
-/// progress under the database's `path`.
+/// Every schema version of an api-log shard file, ordered by ascending version starting at 1 with
+/// no gaps. Shards are immutable history: a column added later is a new version whose migration
+/// existing shard files walk when opened, so they stay readable.
+const SHARD_SCHEMAS: &[Schema] = &[shard_version_1::SCHEMA];
+
+/// The schema registry a database migrates under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Registry {
+    /// The main control-plane database.
+    Main,
+
+    /// One api-log shard file (README §3 *ApiLog Shard Store*).
+    ApiLogShard,
+}
+
+impl Registry {
+    /// The registry's schema versions in ascending order.
+    fn schemas(self) -> &'static [Schema] {
+        match self {
+            Self::Main => MAIN_SCHEMAS,
+            Self::ApiLogShard => SHARD_SCHEMAS,
+        }
+    }
+}
+
+/// Brings the schema of the database behind `connection` up to the latest version of `registry`,
+/// logging progress under the database's `path`.
 ///
-/// Delegates to [`bring_up_to_latest`] over [`SCHEMAS`]; see that function for the workflow.
+/// Delegates to [`bring_up_to_latest`] over the registry's versions; see that function for the
+/// workflow.
 ///
 /// # Panics
 ///
 /// Panics under the same conditions as [`bring_up_to_latest`].
-pub(super) async fn migrate(connection: &Connection, path: &str) {
-    bring_up_to_latest(connection, SCHEMAS, path).await;
+pub(super) async fn migrate(connection: &Connection, registry: Registry, path: &str) {
+    bring_up_to_latest(connection, registry.schemas(), path).await;
 }
 
 /// Walks `schemas` — schema versions in ascending order — forward from the database's stored
@@ -263,8 +289,8 @@ mod tests {
         parser::Parser,
     };
 
-    /// Verifies that [`SCHEMAS`] is non-empty, starts at version 1, and increases by exactly one
-    /// per version — the invariant that makes every positive version at or below the latest
+    /// Verifies that every registry is non-empty, starts at version 1, and increases by exactly
+    /// one per version — the invariant that makes every positive version at or below the latest
     /// resolvable by binary search and every version reachable by walking forward.
     ///
     /// # Panics
@@ -272,35 +298,39 @@ mod tests {
     /// Panics if an assertion fails.
     #[test]
     fn schema_versions_are_contiguous_from_one() {
-        assert_eq!(
-            first_schema(SCHEMAS).version,
-            1,
-            "schema versions must start at 1",
-        );
-
-        for (previous, schema) in SCHEMAS.iter().zip(SCHEMAS.iter().skip(1)) {
+        for schemas in [MAIN_SCHEMAS, SHARD_SCHEMAS] {
             assert_eq!(
-                schema.version,
-                previous.version + 1,
-                "schema versions must increase by exactly one",
+                first_schema(schemas).version,
+                1,
+                "schema versions must start at 1",
             );
+
+            for (previous, schema) in schemas.iter().zip(schemas.iter().skip(1)) {
+                assert_eq!(
+                    schema.version,
+                    previous.version + 1,
+                    "schema versions must increase by exactly one",
+                );
+            }
         }
     }
 
-    /// Verifies that version 1's migration is empty: a fresh database receives the first
-    /// version's DDL directly and joins the walk from there, so there is no previous version
-    /// to migrate from.
+    /// Verifies that every registry's version 1 migration is empty: a fresh database receives the
+    /// first version's DDL directly and joins the walk from there, so there is no previous
+    /// version to migrate from.
     ///
     /// # Panics
     ///
     /// Panics if an assertion fails.
     #[test]
     fn first_migration_is_empty() {
-        assert_eq!(
-            first_schema(SCHEMAS).migration,
-            "",
-            "version 1 has no predecessor, so its migration must be empty",
-        );
+        for schemas in [MAIN_SCHEMAS, SHARD_SCHEMAS] {
+            assert_eq!(
+                first_schema(schemas).migration,
+                "",
+                "version 1 has no predecessor, so its migration must be empty",
+            );
+        }
     }
 
     /// Verifies that every version's declared schema is exactly what a database built for it
@@ -321,42 +351,47 @@ mod tests {
     /// DDL fails to parse.
     #[tokio::test]
     async fn migrations_produce_their_target_schemas() -> Result<(), Box<dyn StdError>> {
-        let first = first_schema(SCHEMAS);
-        let connection = open_memory_connection().await;
-        connection.execute_batch(first.schema).await?;
-        assert_declared_schema(&connection, first).await?;
-
-        for (previous, schema) in SCHEMAS.iter().zip(SCHEMAS.iter().skip(1)) {
+        for schemas in [MAIN_SCHEMAS, SHARD_SCHEMAS] {
+            let first = first_schema(schemas);
             let connection = open_memory_connection().await;
-            connection.execute_batch(previous.schema).await?;
-            connection.execute_batch(schema.migration).await?;
-            assert_declared_schema(&connection, schema).await?;
+            connection.execute_batch(first.schema).await?;
+            assert_declared_schema(&connection, first).await?;
+
+            for (previous, schema) in schemas.iter().zip(schemas.iter().skip(1)) {
+                let connection = open_memory_connection().await;
+                connection.execute_batch(previous.schema).await?;
+                connection.execute_batch(schema.migration).await?;
+                assert_declared_schema(&connection, schema).await?;
+            }
         }
 
         Ok(())
     }
 
-    /// Verifies the full startup workflow on a fresh database: [`migrate`] brings `user_version`
-    /// to the latest version, and a second run over the now-current database is a no-op.
+    /// Verifies the full startup workflow on a fresh database for each registry: [`migrate`]
+    /// brings `user_version` to the registry's latest version, and a second run over the
+    /// now-current database is a no-op.
     ///
     /// # Panics
     ///
     /// Panics if the workflow fails or `user_version` does not reach the latest version.
     #[tokio::test]
     async fn migrate_bringup_is_complete_and_idempotent() -> Result<(), Box<dyn StdError>> {
-        let connection = open_memory_connection().await;
+        for registry in [Registry::Main, Registry::ApiLogShard] {
+            let connection = open_memory_connection().await;
 
-        migrate(&connection, ":memory:").await;
-        assert_eq!(
-            query_user_version(&connection).await,
-            last_schema(SCHEMAS).version,
-        );
+            migrate(&connection, registry, ":memory:").await;
+            assert_eq!(
+                query_user_version(&connection).await,
+                last_schema(registry.schemas()).version,
+            );
 
-        migrate(&connection, ":memory:").await;
-        assert_eq!(
-            query_user_version(&connection).await,
-            last_schema(SCHEMAS).version,
-        );
+            migrate(&connection, registry, ":memory:").await;
+            assert_eq!(
+                query_user_version(&connection).await,
+                last_schema(registry.schemas()).version,
+            );
+        }
 
         Ok(())
     }

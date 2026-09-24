@@ -2,7 +2,11 @@ import type { JSX } from "@solidjs/web";
 import { For } from "solid-js";
 import { isCredentialExpired, nowMicros } from "/src/format";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
-import { credentialKindLabel, isOAuthProviderRow, upstreamFormatLabel } from "/src/management-api/vocabulary";
+import {
+    credentialKindLabel,
+    isOAuthProviderRow,
+    upstreamFormatLabel,
+} from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { AppLink } from "/src/ui/app-link";
 import { Badge, type BadgeTone } from "/src/ui/feedback";

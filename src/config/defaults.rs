@@ -26,7 +26,14 @@ pub(super) fn pool_timeout() -> Duration {
     Duration::from_millis(5000)
 }
 
-/// Default request-accounting switch: recording is on unless the configuration says otherwise.
-pub(super) fn api_logs_enabled() -> bool {
-    true
+/// Default request-accounting shard retention, in whole days.
+///
+/// # Panics
+///
+/// Never: the literal 90 is nonzero, and the `expect` states that invariant.
+pub(super) fn api_logs_retention_days() -> NonZero<u32> {
+    #[expect(clippy::expect_used, reason = "the literal 90 is nonzero")]
+    let days = NonZero::new(90).expect("90 is nonzero");
+
+    days
 }

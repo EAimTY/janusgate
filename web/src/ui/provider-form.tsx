@@ -2,8 +2,8 @@ import type { JSX } from "@solidjs/web";
 import { For, Show } from "solid-js";
 import type { ProviderPreset } from "/src/management-api/presets";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
-import { Badge } from "/src/ui/feedback";
 import { Switch, TextField } from "/src/ui/controls";
+import { Badge } from "/src/ui/feedback";
 
 /**
  * The preset picker: one card per catalog entry, the static-key compatible
@@ -37,10 +37,16 @@ export function ProviderPresetPicker(props: {
                             )}
                         >
                             <span class="flex items-center gap-2">
-                                <span class="block text-[13.5px] font-semibold">{preset.title}</span>
+                                <span class="block text-[13.5px] font-semibold">
+                                    {preset.title}
+                                </span>
                                 <Badge
                                     tone={preset.verification === "live" ? "ok" : "muted"}
-                                    label={preset.verification === "live" ? "Verified live" : "Unverified"}
+                                    label={
+                                        preset.verification === "live"
+                                            ? "Verified live"
+                                            : "Unverified"
+                                    }
                                 />
                             </span>
                             <span class="mt-1 block text-[12.5px] leading-snug text-ink-dim">

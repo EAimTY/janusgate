@@ -3,6 +3,7 @@ import { ContractViolationError } from "./errors";
 
 import {
     parseApiKeyEnvelope,
+    parseCompleteProviderOauthResponse,
     parseDiscoverModelsResponse,
     parseEmptyResponse,
     parseErrorResponse,
@@ -12,7 +13,6 @@ import {
     parseListUsageResponse,
     parseModelEnvelope,
     parseProviderEnvelope,
-    parseCompleteProviderOauthResponse,
     parseQueryUsageResponse,
     parseStartProviderOauthResponse,
 } from "./validation";
@@ -99,7 +99,6 @@ const model = {
 };
 
 const apiLog = {
-    id: 42,
     started_at: 1_780_000_000_000_000,
     api_key_id: 7,
     provider_id: 1,

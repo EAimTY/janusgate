@@ -558,9 +558,14 @@ mod tests {
         #[expect(clippy::unwrap_used, reason = "non-zero literal")]
         let max_connections = NonZero::new(2).unwrap();
         #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
-        let database = Database::open(&db_path, max_connections, Duration::from_secs(5))
-            .await
-            .unwrap();
+        let database = Database::open(
+            &db_path,
+            crate::database::schema::Registry::Main,
+            max_connections,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
 
         (database, TempDbGuard(db_path))
     }

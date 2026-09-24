@@ -34,8 +34,14 @@ const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
 
 /** The credential kinds as options; the record type is exhaustive as above. */
 export const CREDENTIAL_KIND_OPTIONS: ReadonlyArray<VocabularyOption<CredentialKind>> = [
-    { value: "api_key", label: CREDENTIAL_KIND_LABELS.api_key },
-    { value: "oauth", label: CREDENTIAL_KIND_LABELS.oauth },
+    {
+        value: "api_key",
+        label: CREDENTIAL_KIND_LABELS.api_key,
+    },
+    {
+        value: "oauth",
+        label: CREDENTIAL_KIND_LABELS.oauth,
+    },
 ];
 
 /** The label a provider row's credential kind is presented under. */
@@ -96,9 +102,12 @@ export function findUpstreamFormat(value: unknown): UpstreamFormat | null {
  * Whether a stored row is an OAuth account: exactly the variant carrying
  * `expires_at`. Narrows the row, so the expiry is readable past the guard.
  */
-export function isOAuthProviderRow(
-    provider: ProviderResponse,
-): provider is Extract<ProviderResponse, { type: "oauth" }> {
+export function isOAuthProviderRow(provider: ProviderResponse): provider is Extract<
+    ProviderResponse,
+    {
+        type: "oauth";
+    }
+> {
     return provider.type === "oauth";
 }
 
