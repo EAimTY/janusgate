@@ -443,7 +443,7 @@ Requests are parsed strictly: unknown fields are 400s. Known-but-unsupported sem
 | `budget_tokens` / `thinkingBudget` | 400 naming the field |
 | Interactions `tool_choice: "validated"` / multiple `allowed_tools` | 400 |
 | Built-in/server-side tools (`google_search`, `web_search`, `code_execution`, `url_context`, `maps`, `file_search`, computer use, …) | 400 — function tools only, on every surface |
-| Image content inside tool results (Anthropic blocks, Interactions content) | 400 this pass; a `ToolOutput` media channel is the first candidate for a future IR extension |
+| Image content inside tool results (Anthropic blocks, Interactions content) | 400; a `ToolOutput` media channel is the first candidate for a future IR extension |
 | Object-shaped tool results (Interactions `function_result`, Gemini `functionResponse`) | flattened to JSON text in IR; rendered back as plain-string/text-block results |
 | Interactions `store` / `service_tier` / `labels` / `generation_config.thinking_summaries` | accepted-and-ignored |
 | Interactions `previous_interaction_id` / `background` / `cached_content` / `webhook_config` | 400 (the gateway is stateless and never chains) |

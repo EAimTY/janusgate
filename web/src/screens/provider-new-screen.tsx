@@ -36,7 +36,7 @@ import { describeCallFailure } from "./failure";
 import { type ScreenNotice, screenFailureNotice } from "./read";
 
 /**
- * One creation page for every provider kind. The three static-key wire
+ * One creation page for every provider kind. The five static-key wire
  * formats and the two OAuth logins are the same creation — the kind picker
  * only swaps the credential path that follows the shared identity fields.
  * Every provider starts enabled; switching one off lives on its edit page.

@@ -26,7 +26,7 @@ type ProviderEdits = {
 /**
  * Builds one `providers:update` request from a listed row and the fields the
  * administrator changed, restating the row's complete desired readable state
- * (README §4.5). The three static-key kinds share one wire shape, so they
+ * (README §4.5). The five static-key kinds share one wire shape, so they
  * share one branch; the two OAuth kinds carry different credential types on
  * the wire, so each restates its own discriminant. OAuth credentials are never
  * carried here: replacing them is the `oauth:reauthorize` flow's job, and

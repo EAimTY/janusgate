@@ -4,43 +4,10 @@ import {
     compositionMessage,
     isBaseUrl,
     isBearerSecret,
-    isModelIdentifier,
     isModelPrefix,
     isRoutingToken,
     routingTokenMessage,
 } from "./identifiers";
-
-describe("isModelIdentifier", () => {
-    it("accepts the punctuation real model IDs carry", () => {
-        for (const valid of [
-            "gpt-4o",
-            "qwen3:32b",
-            "meta-llama/Llama-3.1-8B",
-            "text-embedding-3-small",
-            "codex/",
-            "sk-live-123_~",
-            "!",
-        ]) {
-            expect(isModelIdentifier(valid), valid).toBe(true);
-        }
-    });
-
-    it("rejects emptiness, whitespace, and non-ASCII text", () => {
-        for (const invalid of [
-            "",
-            "gpt 4o",
-            " leading",
-            "trailing ",
-            "\ttab",
-            "new\nline",
-            "模型",
-            "gpt-4o💥",
-            "caf\x7fe",
-        ]) {
-            expect(isModelIdentifier(invalid), JSON.stringify(invalid)).toBe(false);
-        }
-    });
-});
 
 describe("isModelPrefix", () => {
     it("accepts empty as no prefix and the usual prefix shapes", () => {

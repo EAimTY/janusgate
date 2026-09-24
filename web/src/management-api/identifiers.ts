@@ -20,19 +20,6 @@ const COMPOSITION_PATTERN = /^[!-~]+$/u;
 const COMPOSITION_OR_EMPTY_PATTERN = /^[!-~]*$/u;
 
 /**
- * Whether the value is a routing-safe token: an upstream ID, a public ID
- * override, or a bearer secret — non-empty printable ASCII without
- * whitespace.
- *
- * Routing tokens (`upstream_id`, a present `id_override`) additionally reject
- * `/` and `:` — see [`isRoutingToken`]; this predicate stays the bearer-secret
- * rule.
- */
-export function isModelIdentifier(value: string): boolean {
-    return COMPOSITION_PATTERN.test(value);
-}
-
-/**
  * Whether the value is a routing token: an upstream ID or a present override —
  * non-empty printable ASCII without whitespace and without `/` or `:` (the Gemini
  * URL path cannot address them).
