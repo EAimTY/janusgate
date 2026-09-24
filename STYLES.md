@@ -3,7 +3,6 @@ This file contains the coding style guide that applies to the whole project. Per
 ## Language-agnostic
 
 - Separate a multi-line statement from every adjacent statement with a blank line. Single-line statements may be adjacent only when they are closely related siblings. Separate large code blocks, including match arms with substantial bodies, with blank lines.
-- Never add source newlines to string literals, templates, or document files, and never wrap their content, solely to limit line length; preserve only semantically intentional line breaks.
 
 ## Rust
 

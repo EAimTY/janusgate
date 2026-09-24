@@ -7,6 +7,7 @@ This repository is JanusGate. It is a self-hosted, lightweight AI gateway writte
 ### Language-agnostic
 
 - English is the repository's written language: documentation, code, and comments always use it. User-facing UI text in another language is deliberate and stays untranslated.
+- Never insert line breaks solely to limit line length — not in string literals, templates, or document files; preserve only semantically intentional breaks. Editors soft-wrap, so hard-wrapping only degrades how the content displays.
 - Read `README.md` before starting non-trivial work. Treat `README.md` as the source of truth for the whole system's design and architecture. Follow a documentation-first approach: update documentation alongside every change.
 - Be strict. Avoid fuzzy, ambiguous, or weakly specified behavior; make semantics explicit.
 - Do not preserve backward compatibility in code. This project is new; implement the design in the most elegant and idiomatic form available. Avoid historical debt.
