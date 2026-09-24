@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Connection } from "/src/connection/model";
 import { createManagementApi } from "./client";
 import { ManagementApiError } from "./errors";
 import { ErrorCode } from "./generated/v0";
@@ -15,7 +14,7 @@ type RecordedCall = {
     readonly init: RequestInit;
 };
 
-const connection: Connection = {
+const connection = {
     baseUrl: "http://127.0.0.1:47182",
     token: "management-token",
 };

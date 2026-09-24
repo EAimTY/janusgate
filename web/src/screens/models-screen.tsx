@@ -2,6 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
+import { indexRowsById } from "/src/management-api/serving";
 import { hrefs, navigate } from "/src/router";
 import { createScreenRead, readAll } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
@@ -50,15 +51,7 @@ export function ModelsScreen(props: {
         },
     });
 
-    const providersById = createMemo(
-        () =>
-            new Map<number, ProviderResponse>(
-                providers().map((row) => [
-                    row.id,
-                    row,
-                ]),
-            ),
-    );
+    const providersById = createMemo(() => indexRowsById(providers()));
 
     const filterOptions = createMemo(() => [
         {

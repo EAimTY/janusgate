@@ -4,11 +4,12 @@ import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { UsageBucket, UsageFilter } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
-import { ReadNotice } from "/src/screens/read-notice";
 import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
 import { createScreenRead, readOne } from "./read";
+import { ReadNotice } from "./read-notice";
+import { bucketKeyField } from "./usage-labels";
 import { readUsageBuckets } from "./usage-read";
 
 /** Which recorded rows the stats count: exactly one subject's. */
@@ -53,6 +54,11 @@ function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
  * day, newest first. The gateway counts rows and sums tokens; names never
  * ride along, so this card shows numbers only. A failed read states its
  * diagnosis in place, like every other card that reads.
+ *
+ * The buckets arrive through `readUsageBuckets`, which proved inside the read
+ * cycle that every key carries the `day` its request asked for; the
+ * `bucketKeyField` read in the table is the fatal assert on that proven
+ * invariant, never the guard that would discover a gateway/bindings skew.
  */
 export function EntityUsageCard(props: {
     readonly api: ManagementApi;
@@ -189,7 +195,7 @@ export function EntityUsageCard(props: {
                                                     scope="row"
                                                     class="px-3 py-2 font-medium"
                                                 >
-                                                    {bucket.key.day ?? ""}
+                                                    {bucketKeyField(bucket.key.day, "day")}
                                                 </th>
                                                 <td class="px-3 py-2 text-right">
                                                     {formatTokenCount(bucket.requests)}

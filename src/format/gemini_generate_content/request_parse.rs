@@ -364,46 +364,84 @@ pub(super) fn parse_request(
     })
 }
 
+/// A known-but-unsupported control rejected identically at the body and generation-config
+/// levels: the shared rejection vocabulary, owned here once.
+#[derive(Debug, Clone, Copy)]
+enum UnsupportedControl {
+    /// The `stop` control.
+    Stop,
+
+    /// The `stopSequences` control.
+    StopSequences,
+
+    /// The `seed` control.
+    Seed,
+
+    /// The `speechConfig` control.
+    SpeechConfig,
+
+    /// The `audioConfig` control.
+    AudioConfig,
+
+    /// The `videoConfig` control.
+    VideoConfig,
+}
+
+impl UnsupportedControl {
+    /// The rejection's parameter name and message for this control.
+    fn rejection(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Stop => (
+                "stop",
+                "Unsupported field `stop`; stop sequences are not supported",
+            ),
+            Self::StopSequences => (
+                "stopSequences",
+                "Unsupported field `stopSequences`; stop sequences are not supported",
+            ),
+            Self::Seed => ("seed", "Unsupported field `seed`"),
+            Self::SpeechConfig => ("speechConfig", "Unsupported field `speechConfig`"),
+            Self::AudioConfig => ("audioConfig", "Unsupported field `audioConfig`"),
+            Self::VideoConfig => ("videoConfig", "Unsupported field `videoConfig`"),
+        }
+    }
+}
+
+/// Rejects one known-but-unsupported control when present, naming its field with the shared
+/// vocabulary.
+fn reject_unsupported_control(
+    is_present: bool,
+    control: UnsupportedControl,
+) -> Result<(), InvalidRequest> {
+    if is_present {
+        let (field, detail) = control.rejection();
+
+        return Err(InvalidRequest::field(field, detail));
+    }
+
+    Ok(())
+}
+
 /// Rejects known-but-unsupported top-level controls, each naming its field.
 fn reject_top_level_controls(request: &RequestBody) -> Result<(), InvalidRequest> {
-    if request.stop.is_some() {
-        return Err(InvalidRequest::field(
-            "stop",
-            "Unsupported field `stop`; stop sequences are not supported",
-        ));
-    }
-
-    if request.stop_sequences.is_some() {
-        return Err(InvalidRequest::field(
-            "stopSequences",
-            "Unsupported field `stopSequences`; stop sequences are not supported",
-        ));
-    }
-
-    if request.seed.is_some() {
-        return Err(InvalidRequest::field("seed", "Unsupported field `seed`"));
-    }
-
-    if request.speech_config.is_some() {
-        return Err(InvalidRequest::field(
-            "speechConfig",
-            "Unsupported field `speechConfig`",
-        ));
-    }
-
-    if request.audio_config.is_some() {
-        return Err(InvalidRequest::field(
-            "audioConfig",
-            "Unsupported field `audioConfig`",
-        ));
-    }
-
-    if request.video_config.is_some() {
-        return Err(InvalidRequest::field(
-            "videoConfig",
-            "Unsupported field `videoConfig`",
-        ));
-    }
+    reject_unsupported_control(request.stop.is_some(), UnsupportedControl::Stop)?;
+    reject_unsupported_control(
+        request.stop_sequences.is_some(),
+        UnsupportedControl::StopSequences,
+    )?;
+    reject_unsupported_control(request.seed.is_some(), UnsupportedControl::Seed)?;
+    reject_unsupported_control(
+        request.speech_config.is_some(),
+        UnsupportedControl::SpeechConfig,
+    )?;
+    reject_unsupported_control(
+        request.audio_config.is_some(),
+        UnsupportedControl::AudioConfig,
+    )?;
+    reject_unsupported_control(
+        request.video_config.is_some(),
+        UnsupportedControl::VideoConfig,
+    )?;
 
     Ok(())
 }
@@ -858,48 +896,29 @@ fn parse_generation_config(
         return Ok((None, None, None, None, None));
     };
 
-    if config.stop.is_some() {
-        return Err(InvalidRequest::field(
-            "stop",
-            "Unsupported field `stop`; stop sequences are not supported",
-        ));
-    }
-
-    if config.stop_sequences.is_some() {
-        return Err(InvalidRequest::field(
-            "stopSequences",
-            "Unsupported field `stopSequences`; stop sequences are not supported",
-        ));
-    }
-
-    if config.seed.is_some() {
-        return Err(InvalidRequest::field("seed", "Unsupported field `seed`"));
-    }
+    reject_unsupported_control(config.stop.is_some(), UnsupportedControl::Stop)?;
+    reject_unsupported_control(
+        config.stop_sequences.is_some(),
+        UnsupportedControl::StopSequences,
+    )?;
+    reject_unsupported_control(config.seed.is_some(), UnsupportedControl::Seed)?;
 
     if config.top_k.is_some() {
         return Err(InvalidRequest::field("topK", "Unsupported field `topK`"));
     }
 
-    if config.speech_config.is_some() {
-        return Err(InvalidRequest::field(
-            "speechConfig",
-            "Unsupported field `speechConfig`",
-        ));
-    }
-
-    if config.audio_config.is_some() {
-        return Err(InvalidRequest::field(
-            "audioConfig",
-            "Unsupported field `audioConfig`",
-        ));
-    }
-
-    if config.video_config.is_some() {
-        return Err(InvalidRequest::field(
-            "videoConfig",
-            "Unsupported field `videoConfig`",
-        ));
-    }
+    reject_unsupported_control(
+        config.speech_config.is_some(),
+        UnsupportedControl::SpeechConfig,
+    )?;
+    reject_unsupported_control(
+        config.audio_config.is_some(),
+        UnsupportedControl::AudioConfig,
+    )?;
+    reject_unsupported_control(
+        config.video_config.is_some(),
+        UnsupportedControl::VideoConfig,
+    )?;
 
     if config.thinking_budget.is_some() {
         return Err(InvalidRequest::field(

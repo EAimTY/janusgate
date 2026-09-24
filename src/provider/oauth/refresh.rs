@@ -92,7 +92,8 @@ pub(crate) async fn ensure_fresh_token(
             })?;
 
         let Some(current) =
-            storage::find_provider_by_id_in_transaction(&mut transaction, provider.id).await?
+            storage::providers::find_provider_by_id_in_transaction(&mut transaction, provider.id)
+                .await?
         else {
             rollback(transaction).await?;
 
@@ -187,7 +188,7 @@ async fn acquire_refresh_lease(
     provider_id: i64,
     now: i64,
 ) -> Result<Option<i64>, DatabaseError> {
-    storage::try_acquire_refresh_lease(
+    storage::providers::try_acquire_refresh_lease(
         transaction,
         provider_id,
         now,
@@ -230,7 +231,7 @@ async fn refresh_and_store(
     let outcome = async {
         let (credentials, expires_at) = refresh_and_build_credentials(http, provider).await?;
 
-        let is_persisted = storage::update_credentials_for_lease(
+        let is_persisted = storage::providers::update_credentials_for_lease(
             database,
             provider.id,
             lease_started_at,
@@ -248,7 +249,8 @@ async fn refresh_and_store(
             provider.name
         );
 
-        let renewed = storage::reload_provider(database, provider.id, "token refresh").await?;
+        let renewed =
+            storage::providers::reload_provider(database, provider.id, "token refresh").await?;
 
         Ok(RefreshOutcome::Renewed(renewed))
     }
@@ -259,7 +261,9 @@ async fn refresh_and_store(
         // database outage that failed the persist — must not replace it. The clear failure itself
         // is tolerated and bounded by the lease staleness window (README §3), so the warning is the
         // only record it ever gets.
-        if let Err(clear_error) = storage::clear_refresh_lease(database, provider.id).await {
+        if let Err(clear_error) =
+            storage::providers::clear_refresh_lease(database, provider.id).await
+        {
             warn!(
                 "failed to clear the refresh lease of provider `{}`: {clear_error}",
                 provider.name

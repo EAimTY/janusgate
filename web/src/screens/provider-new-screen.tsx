@@ -1,7 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Match, onCleanup, Show, Switch } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
-import type { Diagnosis } from "/src/management-api/diagnosis";
 import type {
     OAuthProviderType,
     StartProviderOauthResponse,
@@ -23,7 +22,6 @@ import {
 } from "/src/management-api/provider-defaults";
 import { findOAuthProviderType } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
-import { describeCallFailure } from "/src/screens/failure";
 import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -34,6 +32,8 @@ import {
     type ProviderKind,
     ProviderKindPicker,
 } from "/src/ui/provider-form";
+import { describeCallFailure } from "./failure";
+import { type ScreenNotice, screenFailureNotice } from "./read";
 
 /**
  * One creation page for every provider kind. The three static-key wire
@@ -110,7 +110,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     const pickKind = (next: ProviderKind): void => {
         setKind(next);
-        setDiagnosis(null);
+        setFailure(null);
         setFlow(null);
         setCode("");
 
@@ -126,7 +126,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
     const [code, setCode] = createSignal("");
-    const [diagnosis, setDiagnosis] = createSignal<Diagnosis | null>(null);
+    const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
     const [isCreating, setIsCreating] = createSignal(false);
     const [isStarting, setIsStarting] = createSignal(false);
     const [isCompleting, setIsCompleting] = createSignal(false);
@@ -141,8 +141,8 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             return pasted;
         }
 
-        setDiagnosis({
-            kind: "rejected",
+        setFailure({
+            tone: "bad",
             title: "Paste the callback URL or the code.",
             detail: "That paste holds neither a bare code nor a URL with a code in it.",
             fix: "Copy the whole address the login landed on, or just its code, and paste it here.",
@@ -157,7 +157,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             return;
         }
 
-        setDiagnosis(null);
+        setFailure(null);
         setIsCreating(true);
 
         const outcome = await performManagementCall(() =>
@@ -178,8 +178,8 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
 
         if (outcome.status === "failed") {
-            setDiagnosis(
-                describeCallFailure(outcome.cause, {
+            setFailure(
+                screenFailureNotice(outcome.cause, {
                     action: "create-provider",
                 }),
             );
@@ -194,7 +194,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             return;
         }
 
-        setDiagnosis(null);
+        setFailure(null);
         setIsStarting(true);
 
         const outcome = await performManagementCall(() =>
@@ -210,8 +210,8 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
 
         if (outcome.status === "failed") {
-            setDiagnosis(
-                describeCallFailure(outcome.cause, {
+            setFailure(
+                screenFailureNotice(outcome.cause, {
                     action: "start-oauth",
                 }),
             );
@@ -234,7 +234,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             return;
         }
 
-        setDiagnosis(null);
+        setFailure(null);
         setIsCompleting(true);
 
         const outcome = await performManagementCall(() =>
@@ -253,12 +253,17 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
 
         if (outcome.status === "failed") {
-            const failure = describeCallFailure(outcome.cause, {
-                action: "complete-oauth",
-            });
-            setDiagnosis(failure);
+            setFailure(
+                screenFailureNotice(outcome.cause, {
+                    action: "complete-oauth",
+                }),
+            );
 
-            if (failure.kind === "gone") {
+            if (
+                describeCallFailure(outcome.cause, {
+                    action: "complete-oauth",
+                }).kind === "gone"
+            ) {
                 // The state is unknown, expired, or already consumed: this
                 // flow is dead, so it resets instead of being retried.
                 setFlow(null);
@@ -284,7 +289,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const startOver = (): void => {
         setFlow(null);
         setCode("");
-        setDiagnosis(null);
+        setFailure(null);
     };
 
     const oauthKind = (): OAuthProviderType | null => findOAuthProviderType(kind());
@@ -298,13 +303,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 backLabel="Providers"
             />
 
-            <Show when={diagnosis()}>
-                {(failure) => (
+            <Show when={failure()}>
+                {(current) => (
                     <Notice
                         tone="bad"
-                        title={failure().title}
-                        detail={failure().detail}
-                        fix={failure().fix}
+                        title={current().title}
+                        detail={current().detail}
+                        fix={current().fix}
                     />
                 )}
             </Show>

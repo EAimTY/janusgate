@@ -318,7 +318,7 @@ pub(crate) async fn apply_discovered_models(
     let mut transaction = database.transaction().await?;
 
     let Some(provider) =
-        super::find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
+        super::providers::find_provider_by_id_in_transaction(&mut transaction, provider_id).await?
     else {
         return Err(Error::NotFound {
             message: super::provider_not_found_message(provider_id),
@@ -425,7 +425,8 @@ pub(crate) async fn insert_model_checked(
     let mut transaction = database.transaction().await?;
 
     let Some(provider) =
-        super::find_provider_by_id_in_transaction(&mut transaction, create.provider_id).await?
+        super::providers::find_provider_by_id_in_transaction(&mut transaction, create.provider_id)
+            .await?
     else {
         return Err(Error::NotFound {
             message: super::provider_not_found_message(create.provider_id),
@@ -521,9 +522,9 @@ pub(crate) async fn insert_model_checked(
 /// inside the transaction so the recomposed public ID uses the current prefix even when a
 /// concurrent `providers:update` changed it after the caller's outer read. Only `id_override` and
 /// `is_enabled` are written — `discovery_state` is never touched, so this route cannot restore a
-/// vanished row (README §7.1). The collision check matches [`super::update_provider`]'s quality
-/// tier: an ID already routed by another model row yields a 409 naming the holder, and nothing is
-/// written. An unknown row yields 404.
+/// vanished row (README §7.1). The collision check matches [`super::providers::update_provider`]'s
+/// quality tier: an ID already routed by another model row yields a 409 naming the holder, and
+/// nothing is written. An unknown row yields 404.
 ///
 /// # Errors
 ///

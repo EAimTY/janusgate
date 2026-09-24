@@ -4,6 +4,7 @@ import { credentialExpiryLine, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
+import { indexRowsById } from "/src/management-api/serving";
 import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
@@ -188,15 +189,7 @@ export function ProviderDetailScreen(props: {
         isSameProviderRow,
     );
 
-    const providersById = createMemo(
-        () =>
-            new Map<number, ProviderResponse>(
-                providers().map((row) => [
-                    row.id,
-                    row,
-                ]),
-            ),
-    );
+    const providersById = createMemo(() => indexRowsById(providers()));
 
     return (
         <div class="rise-in flex flex-col gap-5">

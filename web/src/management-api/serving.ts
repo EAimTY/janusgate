@@ -1,6 +1,23 @@
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 
 /**
+ * Maps listing rows by their id, ready for O(1) lookups. Row ids are unique
+ * by contract, so each id answers exactly one row.
+ */
+export function indexRowsById<
+    TRow extends {
+        readonly id: number;
+    },
+>(rows: ReadonlyArray<TRow>): ReadonlyMap<number, TRow> {
+    return new Map(
+        rows.map((row) => [
+            row.id,
+            row,
+        ]),
+    );
+}
+
+/**
  * Counts the listed models per provider row id, once per listings change.
  * The providers page states the count on every row and the overview derives
  * its "has no models" attention lines from it, so both read this one map

@@ -122,7 +122,7 @@ pub(crate) async fn resolve_routing(
     database: &Database,
     public_id: &str,
 ) -> Result<ModelRouting, Error> {
-    match storage::find_routing(database, public_id).await? {
+    match storage::models::find_routing(database, public_id).await? {
         Some(routing) if routing.is_effectively_enabled => Ok(routing),
         _ => Err(Error::ModelNotFound {
             model: public_id.to_string(),
@@ -177,7 +177,7 @@ pub(crate) async fn execute(
 
     // The wire format is resolved once per request and shared by request building and event
     // parsing: the provider type pins it outright.
-    let upstream_format = provider.upstream_format();
+    let upstream_format = provider.provider_type.upstream_format();
 
     debug!(
         "dispatching public model `{}` via {upstream_label} ({}, streaming: {})",

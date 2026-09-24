@@ -581,9 +581,9 @@ fn assistant_block_to_part(block: &InboundAssistantBlock) -> Result<IrPart, Inva
                 ));
             }
 
+            // The input is a proven object, so its rendered arguments are one by construction;
+            // no re-validation of the rendered text.
             let arguments = crate::format::render_json(input);
-
-            crate::format::arguments_as_object(&arguments)?;
 
             Ok(IrPart::ToolCall {
                 call_id: id.clone(),

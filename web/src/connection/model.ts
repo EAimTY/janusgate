@@ -21,17 +21,10 @@ type BaseUrlNormalization =
       };
 
 /**
- * The management API's version segment. It is fixed by the generated bindings
- * (`src/management-api/generated/v0.ts`), not by the user: the route table's
- * keys are paths within this version.
- */
-export const MANAGEMENT_API_PATH = "/management-api/v0";
-
-/**
  * Normalizes the entered base URL into the origin the management API paths are
  * composed with. The input must be an `http`/`https` origin: surrounding
  * whitespace is trimmed and trailing slashes disappear so that
- * `{baseUrl}{MANAGEMENT_API_PATH}{path}` carries exactly one `/` per boundary.
+ * `{baseUrl}/management-api/v0{path}` carries exactly one `/` per boundary.
  */
 export function normalizeBaseUrl(rawInput: string): BaseUrlNormalization {
     const trimmedInput = rawInput.trim().replace(/\/+$/, "");

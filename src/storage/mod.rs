@@ -16,6 +16,7 @@
 //! `models:update`, and model discovery re-read the provider row inside their transactions through
 //! [`providers::find_provider_by_id_in_transaction`].
 
+use self::models::ModelEntry;
 use crate::{
     database::{Error as DatabaseError, Row, Transaction, Value, params, params::IntoValue},
     provider::{Credentials, DiscoveryState, Model, OAuthProviderType, Provider, ProviderType},
@@ -25,26 +26,9 @@ use turso::Error as TursoError;
 
 pub(crate) mod api_keys;
 pub(crate) mod api_logs;
-mod models;
-mod oauth_states;
-mod providers;
-
-pub(crate) use self::{
-    models::{
-        ModelCreate, ModelEntry, ModelUpdate, apply_discovered_models, delete_model_checked,
-        find_routing, insert_model_checked, list_enabled_models_with_owner, list_model_entries,
-        update_model_overrides_checked,
-    },
-    oauth_states::{
-        consume_oauth_state, delete_expired_oauth_states, find_oauth_state_type, insert_oauth_state,
-    },
-    providers::{
-        ProviderUpdate, clear_refresh_lease, delete_provider, find_provider, find_provider_by_id,
-        find_provider_by_id_in_transaction, insert_provider, list_providers, reload_provider,
-        try_acquire_refresh_lease, update_credentials, update_credentials_for_lease,
-        update_provider,
-    },
-};
+pub(crate) mod models;
+pub(crate) mod oauth_states;
+pub(crate) mod providers;
 
 /// Column order of provider selects.
 const PROVIDER_COLUMNS: &str = "id, name, model_prefix, type, base_url, credentials, \
@@ -485,7 +469,19 @@ async fn ensure_id_routable_in_transaction(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        models::{
+            ModelCreate, ModelUpdate, apply_discovered_models, delete_model_checked, find_routing,
+            insert_model_checked, list_enabled_models_with_owner, list_model_entries,
+            update_model_overrides_checked,
+        },
+        oauth_states::{
+            consume_oauth_state, delete_expired_oauth_states, find_oauth_state_type,
+            insert_oauth_state,
+        },
+        providers::{ProviderUpdate, insert_provider, list_providers, update_provider},
+        *,
+    };
     use crate::{
         database::Database,
         provider::{Credentials, NewProvider, OAuthProviderType, ProviderType},

@@ -4,7 +4,10 @@ use super::{EmptyResponse, Error, Nullable, route};
 use crate::{
     context::Context,
     provider::{DiscoveryState, discovery, oauth},
-    storage::{self, ModelCreate, ModelEntry, ModelUpdate},
+    storage::{
+        self,
+        models::{ModelCreate, ModelEntry, ModelUpdate},
+    },
 };
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
@@ -228,7 +231,8 @@ pub(super) async fn list(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<ListModelsRequest>, Error>,
 ) -> Result<Json<ListModelsResponse>, Error> {
-    let entries = storage::list_model_entries(&context.database, request.provider_id).await?;
+    let entries =
+        storage::models::list_model_entries(&context.database, request.provider_id).await?;
 
     Ok(Json(ListModelsResponse {
         models: entries.iter().map(ModelResponse::from_entry).collect(),
@@ -276,7 +280,7 @@ pub(super) async fn delete(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<DeleteModelRequest>, Error>,
 ) -> Result<Json<EmptyResponse>, Error> {
-    storage::delete_model_checked(&context.database, request.model_id).await?;
+    storage::models::delete_model_checked(&context.database, request.model_id).await?;
 
     info!("deleted model {}", request.model_id);
 
@@ -320,7 +324,7 @@ async fn handle_discover(
     control_plane: &Client,
     request: DiscoverModelsRequest,
 ) -> Result<Vec<ModelEntry>, Error> {
-    let provider = storage::find_provider_by_id(database, request.provider_id)
+    let provider = storage::providers::find_provider_by_id(database, request.provider_id)
         .await?
         .ok_or(Error::ProviderNotFound {
             id: request.provider_id,
@@ -347,7 +351,8 @@ async fn handle_discover(
     // from the provider's current prefix and checked for collisions atomically with the write
     // (README §7.1).
     let entries =
-        storage::apply_discovered_models(database, request.provider_id, &unique_ids).await?;
+        storage::models::apply_discovered_models(database, request.provider_id, &unique_ids)
+            .await?;
 
     info!(
         "discovered {} models for provider {}",
@@ -374,7 +379,7 @@ async fn handle_create(
     // The checked insert re-reads the provider row inside its transaction, so the composed
     // public ID uses the provider's current prefix and the collision check applies atomically
     // with the write (README §7.1).
-    let entry = storage::insert_model_checked(
+    let entry = storage::models::insert_model_checked(
         database,
         ModelCreate {
             provider_id: request.provider_id,
@@ -409,7 +414,7 @@ async fn handle_update(
     // The checked update re-reads the row and its provider inside its transaction, so the
     // recomposed public ID uses the provider's current prefix and the collision check applies
     // atomically with the write (README §7.1).
-    let entry = storage::update_model_overrides_checked(
+    let entry = storage::models::update_model_overrides_checked(
         database,
         ModelUpdate {
             model_id: request.model_id,
@@ -451,7 +456,7 @@ mod tests {
     use crate::{
         management_api::v0::Nullable,
         provider::{DiscoveryState, Model},
-        storage::ModelEntry,
+        storage::models::ModelEntry,
     };
 
     /// Pins the `models` wire row at the JSON level: the row identifier under `id`, the routing

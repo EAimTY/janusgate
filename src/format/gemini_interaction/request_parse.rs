@@ -1,5 +1,6 @@
 //! Client-request parsing for the Gemini Interactions codec: the inbound `POST /interactions`
-//! body deserialized into the IR request, speaking the wire vocabulary the parent module fixes.
+//! body deserialized into the IR request, speaking the official wire vocabulary the parent module
+//! pins.
 //!
 //! The endpoint handler lives in [`crate::api::gemini_v1beta::interactions`]; shared prefix
 //! concerns (authentication, 404/405 bodies, body limit, accounting row id) live beside it.
@@ -10,23 +11,40 @@
 //!   the surface addresses models in the body like the OpenAI surfaces do. The router threads
 //!   [`RouteContext`](crate::format::RouteContext) into parsing carrying only the streaming
 //!   override: `?alt=sse` forces streaming, otherwise the body's `stream` member decides.
-//! - The body is parsed strictly: unknown members are 400s, and the known-but-unsupported controls
-//!   each reject naming their field — `previous_interaction_id`, `background`, and `last_event_id`
-//!   (the gateway never chains); `thinkingBudget` and `budget_tokens` (legacy numeric mechanisms);
-//!   `stop` and `stop_sequences`; `seed` and `modalities`.
-//! - Presentation-only controls are accepted and ignored: `store` (in whatever shape it arrives)
-//!   and `thinking_summaries`.
-//! - Reasoning enters the IR through `thought` steps, whose complete step JSON is stored verbatim
-//!   as the block's opaque replay payload; cross-family blocks never originate here. Tool calls
-//!   replay through `function_call` steps carrying their ids and signatures.
+//! - The body is parsed strictly: unknown members are 400s, and the known-but-unsupported official
+//!   controls each reject naming their field — `previous_interaction_id`, `background`,
+//!   `cached_content`, and `webhook_config` (the gateway never chains or stores);
+//!   `response_modalities` and `response_mime_type` (the gateway renders text outputs; the latter
+//!   is the deprecated spelling of `response_format`); `safety_settings`, `agent`, `agent_config`,
+//!   and `environment` (model interactions only); and inside `generation_config`: `seed`,
+//!   `stop_sequences`, and the `speech_config`/`image_config`/
+//!   `video_config`/`transcription_config` modality controls.
+//! - Presentation-only controls are accepted and ignored: `store` (in whatever shape it arrives),
+//!   `service_tier`, `labels`, and `generation_config.thinking_summaries`.
+//! - The official `generation_config` carries the reasoning and tool-choice controls the surface
+//!   reads (`max_output_tokens`, `thinking_level`, `tool_choice`) and no sampling members at all —
+//!   there is no `temperature` or `top_p` on this surface.
+//! - `input` accepts every official union member: a plain string, a single content block, a
+//!   content-block array, or the Step array; the non-step forms normalize to one `user_input` step.
+//!   Reasoning enters the IR through `thought` steps, whose complete step JSON is stored verbatim
+//!   as the block's opaque replay payload; tool calls replay through `function_call` steps carrying
+//!   their ids and JSON-object arguments.
 //! - `function_result` steps accept a plain string, a text-block array (image blocks are a 400 —
 //!   the IR tool output has no media channel), or the tool's own result object, flattened to JSON
-//!   text. There is no `is_error` member here: that flag belongs to the Anthropic pair alone.
-//! - `tool_choice` accepts the `auto`/`any`/`none` modes as a bare string or as an object with a
-//!   single `allowed_tools` entry; `validated` and multiple allowed tools are 400s, as is a choice
-//!   without advertised tools. Built-in/server-side tools are 400s — function tools only.
+//!   text; the official `is_error` member rides into the IR. The optional `name` member is accepted
+//!   and ignored: the IR tool output carries no name, and the upstream render resolves it from the
+//!   matching call instead.
+//! - `response_format` accepts the official `text` member: `text/plain` (or no `mime_type`) is
+//!   free-form text; `application/json` is JSON; a `schema` beside it is a named-schema format
+//!   under the synthesized name `response` (the official shape has no schema-name slot). The
+//!   union's `audio`/`image`/`video` members and a schema without `application/json` are 400s
+//!   naming the field.
+//! - `tool_choice` accepts the `auto`/`any`/`none` modes as a bare string or as the official object
+//!   form `{allowed_tools: {mode?, tools?}}`, whose mode defaults to `any` — the only mode that
+//!   takes a tool list; `validated` and multiple allowed tools are 400s, as is a choice without
+//!   advertised tools. Built-in/server-side tools are 400s — function tools only.
 
-use super::ResponseFormatShape;
+use super::{JSON_MIME_TYPE, ResponseFormatShape};
 use crate::{
     format::{self, ParsedRequest, RouteContext},
     ir::{
@@ -37,19 +55,23 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// The synthesized name of a schema-bearing response format: the official shape has no schema-name
+/// slot, so the IR's named-schema form carries this stand-in.
+const RESPONSE_SCHEMA_NAME: &str = "response";
+
 /// Strictly parsed Interactions request body.
 ///
-/// Unknown members are rejected outright; the known-but-unsupported controls below are modelled
-/// explicitly so their rejections name the offending field instead of rendering serde's generic
-/// unknown-field wording.
+/// Unknown members are rejected outright; the known-but-unsupported official controls below are
+/// modelled explicitly so their rejections name the offending field instead of rendering serde's
+/// generic unknown-field wording.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestBody {
     /// Public model id to route; the Interactions API addresses models in the body.
     model: String,
 
-    /// Conversation input as typed steps.
-    input: Vec<StepIn>,
+    /// Conversation input: any official union member, normalized into steps.
+    input: InputIn,
 
     /// System instructions.
     #[serde(default)]
@@ -59,25 +81,9 @@ struct RequestBody {
     #[serde(default)]
     tools: Option<Vec<ToolIn>>,
 
-    /// Tool selection restriction.
+    /// Reasoning and tool-choice configuration.
     #[serde(default)]
-    tool_choice: Option<ToolChoiceIn>,
-
-    /// Sampling temperature.
-    #[serde(default)]
-    temperature: Option<f64>,
-
-    /// Nucleus sampling threshold.
-    #[serde(default)]
-    top_p: Option<f64>,
-
-    /// Output token budget.
-    #[serde(default)]
-    max_output_tokens: Option<u64>,
-
-    /// Reasoning level in the closed shared vocabulary.
-    #[serde(default)]
-    thinking_level: Option<String>,
+    generation_config: Option<GenerationConfigIn>,
 
     /// Response format restriction.
     #[serde(default)]
@@ -93,10 +99,16 @@ struct RequestBody {
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     store: Option<serde::de::IgnoredAny>,
 
-    /// Summary verbosity hint; the IR has no summary channel, so it is accepted and ignored.
+    /// Service tier hint; a stateless gateway cannot honor it downstream, so it is accepted and
+    /// ignored.
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
-    thinking_summaries: Option<serde::de::IgnoredAny>,
+    service_tier: Option<serde::de::IgnoredAny>,
+
+    /// Free-form labels; pure metadata the gateway never reads, so accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    labels: Option<serde::de::IgnoredAny>,
 
     /// Chained interaction resume; the gateway never chains, so a present member is a 400.
     #[serde(default)]
@@ -106,43 +118,67 @@ struct RequestBody {
     #[serde(default)]
     background: Option<serde::de::IgnoredAny>,
 
-    /// Resume cursor; the gateway never chains, so a present member is a 400.
+    /// Stored-content reference; the gateway is stateless, so a present member is a 400.
     #[serde(default)]
-    last_event_id: Option<serde::de::IgnoredAny>,
+    cached_content: Option<serde::de::IgnoredAny>,
 
-    /// Legacy numeric reasoning budget; a present member is a 400 naming the field. The member
-    /// keeps its camel-case wire spelling through the rename.
-    #[serde(default, rename = "thinkingBudget")]
-    thinking_budget: Option<serde::de::IgnoredAny>,
-
-    /// Legacy numeric reasoning budget under its alternate spelling; a present member is a 400
-    /// naming the field.
+    /// Webhook delivery configuration; pairs with `background`, so a present member is a 400.
     #[serde(default)]
-    budget_tokens: Option<serde::de::IgnoredAny>,
+    webhook_config: Option<serde::de::IgnoredAny>,
 
-    /// Stop sequences; known-unsupported, so a present member is a 400.
+    /// Output modality configuration; the gateway renders text outputs, so a present member is a
+    /// 400.
     #[serde(default)]
-    stop: Option<serde::de::IgnoredAny>,
+    response_modalities: Option<serde::de::IgnoredAny>,
 
-    /// Stop sequences under the plural spelling; a present member is a 400.
+    /// Deprecated output MIME type spelling; `response_format` replaces it, so a present member is
+    /// a 400.
     #[serde(default)]
-    stop_sequences: Option<serde::de::IgnoredAny>,
+    response_mime_type: Option<serde::de::IgnoredAny>,
 
-    /// Sampling seed; out of scope, so a present member is a 400.
+    /// Safety thresholds; known-unsupported, so a present member is a 400.
     #[serde(default)]
-    seed: Option<serde::de::IgnoredAny>,
+    safety_settings: Option<serde::de::IgnoredAny>,
 
-    /// Modality configuration; out of scope, so a present member is a 400.
+    /// Agent-driven interaction; the gateway serves model interactions only, so a present member
+    /// is a 400.
     #[serde(default)]
-    modalities: Option<serde::de::IgnoredAny>,
+    agent: Option<serde::de::IgnoredAny>,
+
+    /// Agent configuration; the gateway serves model interactions only, so a present member is a
+    /// 400.
+    #[serde(default)]
+    agent_config: Option<serde::de::IgnoredAny>,
+
+    /// Remote execution environment; out of scope, so a present member is a 400.
+    #[serde(default)]
+    environment: Option<serde::de::IgnoredAny>,
 }
 
-/// One input step, tagged by `type`.
+/// The official `input` union: a plain string, a single content block, a content-block array, or
+/// the Step array. The non-step forms normalize to one `user_input` step.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum InputIn {
+    /// The plain-string form: one user turn carrying one text block.
+    Text(String),
+
+    /// The single content block: one user turn carrying it.
+    Content(ContentBlockIn),
+
+    /// The Step-array form.
+    Steps(Vec<StepIn>),
+
+    /// The content-block-array form: one user turn carrying the blocks.
+    Contents(Vec<ContentBlockIn>),
+}
+
+/// One input step, tagged by the official `type`.
 ///
 /// The shapes are strict: a member outside the step's own shape is rejected. The gateway's own
-/// rendered responses replay through these same shapes — `output_text` and `thought` steps it
-/// emitted, `function_call` steps carrying the ids and signatures it minted — so replaying them
-/// verbatim parses.
+/// rendered responses replay through these same shapes — `model_output` and `thought` steps it
+/// emitted, `function_call` steps carrying the ids and argument objects it minted — so replaying
+/// them verbatim parses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum StepIn {
@@ -152,30 +188,26 @@ enum StepIn {
         content: Vec<ContentBlockIn>,
     },
 
-    /// A model text turn, replayed from an earlier response.
-    OutputText {
-        /// The text content.
-        text: String,
+    /// A model output turn, replayed from an earlier response.
+    ModelOutput {
+        /// The turn's content blocks in order; non-text blocks ride the IR where it has a slot.
+        content: Vec<ContentBlockIn>,
     },
 
-    /// A model reasoning block: its summary text plus the signature terminating it. The complete
-    /// step JSON becomes the block's opaque replay payload, so the step replays byte-exact to
-    /// the Interactions upstream.
+    /// A model reasoning block: its summary blocks plus the signature terminating it. The
+    /// complete step JSON becomes the block's opaque replay payload, so the step replays
+    /// byte-exact to the Interactions upstream.
     Thought {
-        /// Step identifier, round-tripped verbatim.
+        /// Summary content blocks.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
-
-        /// Reasoning text.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        summary: Option<String>,
+        summary: Option<Vec<ContentBlockIn>>,
 
         /// Upstream signature terminating the block.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
 
-    /// A past tool invocation, carrying its id and signature for cross-turn matching.
+    /// A past tool invocation, carrying its id and argument object for cross-turn matching.
     FunctionCall {
         /// Identifier of the invocation, round-tripped to the matching tool output.
         id: String,
@@ -183,18 +215,17 @@ enum StepIn {
         /// Name of the invoked function.
         name: String,
 
-        /// JSON-encoded arguments, or the arguments object itself.
-        arguments: CallArgumentsIn,
-
-        /// Upstream thought signature to reattach across turns.
-        #[serde(default)]
-        signature: Option<String>,
+        /// The arguments as the official JSON object; the object's own shape is the tool's schema
+        /// to define, so it rides as an opaque JSON object.
+        arguments: Map<String, Value>,
     },
 
     /// A tool result for a prior function call.
     FunctionResult {
-        /// Name of the function being answered.
-        name: String,
+        /// Name of the function being answered; accepted and ignored — the upstream render
+        /// resolves it from the matching call.
+        #[serde(default)]
+        name: Option<String>,
 
         /// Identifier of the invocation being answered.
         call_id: String,
@@ -202,10 +233,14 @@ enum StepIn {
         /// Result content: a plain string, a text-block array, or the tool's own result object
         /// flattened to JSON text.
         result: FunctionResultPayload,
+
+        /// Whether the tool call errored; rides into the IR.
+        #[serde(default)]
+        is_error: Option<bool>,
     },
 }
 
-/// One content block of a `user_input` step or a `function_result` block array, tagged by `type`.
+/// One content block of a step, tagged by the official `type`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ContentBlockIn {
@@ -213,48 +248,86 @@ enum ContentBlockIn {
     Text {
         /// The text content.
         text: String,
+
+        /// Citation annotations. The union's shape is the official annotation vocabulary's to
+        /// define, so it rides as an opaque JSON value — byte-exact through a thought step's
+        /// opaque replay payload, ignored everywhere else (the IR has no annotation channel).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        annotations: Option<Value>,
     },
 
-    /// Image content. The URL is optional in the shape so the conversion — not serde's
-    /// shape check — owns the rejection: images are accepted in user turns and rejected in tool
-    /// results, and both rejections must name their field.
+    /// Image content in the official spelling: a remote `uri`, or inline base64 `data` beside its
+    /// `mime_type`. The members are optional in the shape so the conversion — not serde's shape
+    /// check — owns the rejection: user turns and model outputs accept both spellings, tool
+    /// results reject images outright, and every rejection names its field.
     Image {
-        /// Remote or data URL of the image; required in user turns.
-        #[serde(default)]
-        image_url: Option<String>,
+        /// Remote or data URL of the image.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
+
+        /// Base64-encoded image data.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+
+        /// MIME type of the inline data; required beside `data`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+
+        /// Media resolution hint from the official closed vocabulary; rides a thought step's
+        /// opaque byte-exact and is ignored everywhere else.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolution: Option<String>,
     },
 }
 
-/// The two accepted spellings of function-call arguments: the JSON-encoded text form and the
-/// arguments object itself. Both normalize to the encoded-text form the IR carries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-enum CallArgumentsIn {
-    /// The JSON-encoded text form.
-    Text(String),
+impl ContentBlockIn {
+    /// The block's text, when it is a text block; image and other blocks carry none.
+    fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text { text, .. } => Some(text),
 
-    /// The arguments object form.
-    Object(Map<String, Value>),
+            Self::Image { .. } => None,
+        }
+    }
 }
 
-impl CallArgumentsIn {
-    /// Normalizes either spelling to the JSON-encoded text the IR carries, validating that the
-    /// text encodes an object — in parity with the OpenAI surfaces, which validate tool-call
-    /// arguments at parse time.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidRequest`] naming `arguments` for text that is not a JSON object.
-    fn into_text(self) -> Result<String, InvalidRequest> {
-        match self {
-            Self::Text(text) => {
-                format::arguments_as_object(&text)?;
-
-                Ok(text)
-            }
-
-            Self::Object(map) => Ok(format::arguments_object_to_text(map)),
+/// Converts an image block's members into an IR image, requiring exactly one official spelling.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming `content` for a block carrying neither spelling, inline data
+/// without its MIME type, both spellings at once, or a URL of an unsupported scheme.
+fn image_into_ir(
+    uri: Option<String>,
+    data: Option<String>,
+    mime_type: Option<String>,
+) -> Result<IrImage, InvalidRequest> {
+    if let Some(uri) = uri {
+        if data.is_some() {
+            return Err(InvalidRequest::field(
+                "content",
+                "image blocks carry either `uri` or inline `data`, not both",
+            ));
         }
+
+        return IrImage::from_url(&uri);
+    }
+
+    match (data, mime_type) {
+        (Some(data), Some(mime_type)) => Ok(IrImage::Inline {
+            mime_type,
+            data_base64: data,
+        }),
+
+        (Some(_), None) => Err(InvalidRequest::field(
+            "content",
+            "inline image blocks require a `mime_type` beside `data`",
+        )),
+
+        (None, _) => Err(InvalidRequest::field(
+            "content",
+            "image blocks require a `uri` or inline `data`",
+        )),
     }
 }
 
@@ -291,7 +364,7 @@ impl FunctionResultPayload {
 
                 for block in blocks {
                     match block {
-                        ContentBlockIn::Text { text } => {
+                        ContentBlockIn::Text { text, .. } => {
                             if !combined.is_empty() {
                                 combined.push_str("\n\n");
                             }
@@ -318,6 +391,55 @@ impl FunctionResultPayload {
     }
 }
 
+/// The official `generation_config`: the reasoning and tool-choice controls the surface reads,
+/// the accepted-and-ignored summary hint, and the known-unsupported controls that reject naming
+/// their field. The official configuration pins no sampling members — there is no `temperature`
+/// or `top_p` on this surface.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenerationConfigIn {
+    /// Output token budget.
+    #[serde(default)]
+    max_output_tokens: Option<u64>,
+
+    /// Reasoning level in the closed shared vocabulary.
+    #[serde(default)]
+    thinking_level: Option<String>,
+
+    /// Tool selection restriction.
+    #[serde(default)]
+    tool_choice: Option<ToolChoiceIn>,
+
+    /// Summary verbosity hint; the IR has no summary channel, so it is accepted and ignored.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    thinking_summaries: Option<serde::de::IgnoredAny>,
+
+    /// Sampling seed; out of scope, so a present member is a 400.
+    #[serde(default)]
+    seed: Option<serde::de::IgnoredAny>,
+
+    /// Stop sequences; known-unsupported, so a present member is a 400.
+    #[serde(default)]
+    stop_sequences: Option<serde::de::IgnoredAny>,
+
+    /// Speech output configuration; out of scope, so a present member is a 400.
+    #[serde(default)]
+    speech_config: Option<serde::de::IgnoredAny>,
+
+    /// Image output configuration; out of scope, so a present member is a 400.
+    #[serde(default)]
+    image_config: Option<serde::de::IgnoredAny>,
+
+    /// Video output configuration; out of scope, so a present member is a 400.
+    #[serde(default)]
+    video_config: Option<serde::de::IgnoredAny>,
+
+    /// Transcription configuration; out of scope, so a present member is a 400.
+    #[serde(default)]
+    transcription_config: Option<serde::de::IgnoredAny>,
+}
+
 /// Advertised function tool: function tools only.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -338,22 +460,33 @@ struct ToolIn {
     parameters: Option<Value>,
 }
 
-/// Tool choice: a bare mode name, or an object pairing a mode with a single allowed function.
+/// Tool choice: a bare mode name, or the official object form pairing an allowed-tools
+/// configuration — whose mode defaults to `any`, the only mode that takes a tool list — with its
+/// tools.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum ToolChoiceIn {
-    /// The bare mode form (`auto`, `any`, `none`).
+    /// The bare mode form (`auto`, `any`, `none`, `validated`).
     Mode(String),
 
-    /// The object form: a mode with an optional single allowed function.
+    /// The official object form: an allowed-tools configuration.
     Object {
-        /// Selection mode.
-        mode: String,
-
-        /// The one function the model may call.
-        #[serde(default)]
-        allowed_tools: Option<Vec<String>>,
+        /// The allowed-tools configuration.
+        allowed_tools: AllowedToolsIn,
     },
+}
+
+/// The allowed-tools configuration of the official object form.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AllowedToolsIn {
+    /// Selection mode; defaults to `any`.
+    #[serde(default)]
+    mode: Option<String>,
+
+    /// The allowed functions.
+    #[serde(default)]
+    tools: Option<Vec<String>>,
 }
 
 /// Parses an Interactions request body into IR with the router's route context: the URL carries
@@ -375,50 +508,35 @@ pub(super) fn parse_request(
     let request: RequestBody = format::parse_client_request(body)?;
 
     reject_present_fields(&request)?;
-    format::validate_sampling_ranges(request.temperature, request.top_p)?;
+
+    let steps = normalize_input(request.input);
 
     // Consecutive same-role steps coalesce into one message per run, so a text turn followed by
     // its thought step and tool calls stays one assistant message.
     let mut run = format::RoleRun::default();
 
-    for step in request.input {
+    for step in steps {
         match step {
             StepIn::UserInput { content } => {
-                let mut parts = Vec::with_capacity(content.len());
-
-                for block in content {
-                    match block {
-                        ContentBlockIn::Text { text } => {
-                            parts.push(IrPart::Text { text });
-                        }
-
-                        ContentBlockIn::Image { image_url } => {
-                            let Some(image_url) = image_url else {
-                                return Err(InvalidRequest::field(
-                                    "content",
-                                    "user_input image blocks require an `image_url`",
-                                ));
-                            };
-
-                            parts.push(IrPart::Image {
-                                image: IrImage::from_url(&image_url)?,
-                            });
-                        }
-                    }
-                }
-
-                run.push(IrRole::User, parts);
+                run.push(IrRole::User, content_into_parts(content)?);
             }
 
-            StepIn::OutputText { text } => {
-                run.push(IrRole::Assistant, vec![IrPart::Text { text }]);
+            StepIn::ModelOutput { content } => {
+                run.push(IrRole::Assistant, content_into_parts(content)?);
             }
 
-            StepIn::Thought {
-                id,
-                summary,
-                signature,
-            } => {
+            StepIn::Thought { summary, signature } => {
+                // Summary blocks are a presentation of the model's reasoning: only their text
+                // joins the block, image blocks dropped — the IR reasoning channel is text-only
+                // by design.
+                let text = summary
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(ContentBlockIn::text)
+                    .collect::<Vec<_>>()
+                    .join("");
+
                 // The opaque payload is the step's own complete JSON: strict parsing guarantees
                 // no member escapes the typed shape, so re-serializing it preserves the value
                 // exactly.
@@ -427,8 +545,7 @@ pub(super) fn parse_request(
                     reason = "the parsed step shape is a first-party type and serializes totally"
                 )]
                 let opaque = serde_json::to_value(StepIn::Thought {
-                    id,
-                    summary: summary.clone(),
+                    summary,
                     signature: signature.clone(),
                 })
                 .expect("the parsed thought shape serializes");
@@ -436,7 +553,7 @@ pub(super) fn parse_request(
                 run.push(
                     IrRole::Assistant,
                     vec![IrPart::Reasoning {
-                        text: summary.unwrap_or_default(),
+                        text,
                         signature,
                         opaque,
                     }],
@@ -447,33 +564,30 @@ pub(super) fn parse_request(
                 id,
                 name,
                 arguments,
-                signature,
             } => {
                 run.push(
                     IrRole::Assistant,
                     vec![IrPart::ToolCall {
                         call_id: id,
                         name,
-                        arguments: arguments.into_text()?,
-                        thought_signature: signature,
+                        arguments: format::arguments_object_to_text(arguments),
+                        thought_signature: None,
                     }],
                 );
             }
 
             StepIn::FunctionResult {
-                // The name is accepted for wire compatibility but not preserved: the IR tool
-                // output carries no name, and the upstream render resolves it from the matching
-                // call instead.
                 name: _,
                 call_id,
                 result,
+                is_error,
             } => {
                 run.push(
                     IrRole::Tool,
                     vec![IrPart::ToolOutput {
                         call_id,
                         content: result.into_text()?,
-                        is_error: false,
+                        is_error: is_error.unwrap_or(false),
                     }],
                 );
             }
@@ -496,7 +610,10 @@ pub(super) fn parse_request(
         }
     }
 
-    let tool_choice = match &request.tool_choice {
+    let generation_config = request.generation_config.unwrap_or_default();
+    reject_unsupported_generation_config(&generation_config)?;
+
+    let tool_choice = match generation_config.tool_choice {
         None => None,
 
         Some(choice) => {
@@ -506,17 +623,9 @@ pub(super) fn parse_request(
         }
     };
 
-    let response_format = match request.response_format {
-        None => None,
-        Some(ResponseFormatShape::Text {}) => Some(IrResponseFormat::Text),
-        Some(ResponseFormatShape::Json {}) => Some(IrResponseFormat::Json),
+    let response_format = parse_response_format(request.response_format)?;
 
-        Some(ResponseFormatShape::JsonSchema { name, schema }) => {
-            Some(IrResponseFormat::JsonSchema { name, schema })
-        }
-    };
-
-    let reasoning_effort = request
+    let reasoning_effort = generation_config
         .thinking_level
         .map(|level| IrReasoningLevel::parse(&level, "thinking_level"))
         .transpose()?;
@@ -530,9 +639,11 @@ pub(super) fn parse_request(
             messages,
             tools,
             tool_choice,
-            temperature: request.temperature,
-            top_p: request.top_p,
-            max_output_tokens: request.max_output_tokens,
+            // The official generation_config pins no sampling members: this surface has no
+            // temperature or top_p to parse.
+            temperature: None,
+            top_p: None,
+            max_output_tokens: generation_config.max_output_tokens,
             response_format,
             reasoning_effort,
         },
@@ -545,14 +656,151 @@ pub(super) fn parse_request(
     })
 }
 
+/// Normalizes every official `input` union member into the Step array the walk consumes.
+fn normalize_input(input: InputIn) -> Vec<StepIn> {
+    match input {
+        InputIn::Text(text) => vec![StepIn::UserInput {
+            content: vec![ContentBlockIn::Text {
+                text,
+                annotations: None,
+            }],
+        }],
+
+        InputIn::Content(block) => vec![StepIn::UserInput {
+            content: vec![block],
+        }],
+
+        InputIn::Steps(steps) => steps,
+
+        InputIn::Contents(content) => vec![StepIn::UserInput { content }],
+    }
+}
+
+/// Converts content blocks into IR parts: text blocks into text parts, image blocks into image
+/// parts. A malformed image block rejects naming `content`.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] per [`image_into_ir`].
+fn content_into_parts(content: Vec<ContentBlockIn>) -> Result<Vec<IrPart>, InvalidRequest> {
+    let mut parts = Vec::with_capacity(content.len());
+
+    for block in content {
+        match block {
+            ContentBlockIn::Text { text, .. } => parts.push(IrPart::Text { text }),
+
+            ContentBlockIn::Image {
+                uri,
+                data,
+                mime_type,
+                resolution: _,
+            } => parts.push(IrPart::Image {
+                image: image_into_ir(uri, data, mime_type)?,
+            }),
+        }
+    }
+
+    Ok(parts)
+}
+
+/// Rejects every known-but-unsupported `generation_config` control the request carries, each
+/// naming its own field.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming the first present control.
+fn reject_unsupported_generation_config(config: &GenerationConfigIn) -> Result<(), InvalidRequest> {
+    for (present, field, reason) in [
+        (config.seed.is_some(), "seed", "seed is not supported"),
+        (
+            config.stop_sequences.is_some(),
+            "stop_sequences",
+            "stop_sequences is not supported",
+        ),
+        (
+            config.speech_config.is_some(),
+            "speech_config",
+            "speech_config is not supported; the gateway renders text outputs",
+        ),
+        (
+            config.image_config.is_some(),
+            "image_config",
+            "image_config is not supported; the gateway renders text outputs",
+        ),
+        (
+            config.video_config.is_some(),
+            "video_config",
+            "video_config is not supported; the gateway renders text outputs",
+        ),
+        (
+            config.transcription_config.is_some(),
+            "transcription_config",
+            "transcription_config is not supported",
+        ),
+    ] {
+        if present {
+            return Err(InvalidRequest::field(field, reason));
+        }
+    }
+
+    Ok(())
+}
+
+/// Parses the `response_format` member into IR: the official `text` member only, whose
+/// `mime_type` picks free-form text or JSON and whose optional schema completes the named-schema
+/// form under the synthesized name.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming `response_format` for the union's media members, an
+/// unsupported MIME type, or a schema without `application/json`.
+fn parse_response_format(
+    response_format: Option<ResponseFormatShape>,
+) -> Result<Option<IrResponseFormat>, InvalidRequest> {
+    match response_format {
+        None => Ok(None),
+
+        Some(ResponseFormatShape::Audio {})
+        | Some(ResponseFormatShape::Image {})
+        | Some(ResponseFormatShape::Video {}) => Err(InvalidRequest::field(
+            "response_format",
+            "audio, image, and video response formats are not supported; \
+             the gateway renders text outputs",
+        )),
+
+        Some(ResponseFormatShape::Text { mime_type, schema }) => {
+            match (mime_type.as_deref().unwrap_or("text/plain"), schema) {
+                ("text/plain", None) => Ok(Some(IrResponseFormat::Text)),
+
+                (JSON_MIME_TYPE, None) => Ok(Some(IrResponseFormat::Json)),
+
+                (JSON_MIME_TYPE, Some(schema)) => Ok(Some(IrResponseFormat::JsonSchema {
+                    name: RESPONSE_SCHEMA_NAME.to_string(),
+                    schema,
+                })),
+
+                ("text/plain", Some(_)) => Err(InvalidRequest::field(
+                    "response_format",
+                    "response_format schema requires mime_type `application/json`",
+                )),
+
+                (other, _) => Err(InvalidRequest::field(
+                    "response_format",
+                    format!("response_format mime_type `{other}` is not supported"),
+                )),
+            }
+        }
+    }
+}
+
 /// Rejects every known-but-unsupported control the request carries, each naming its own field.
 ///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming the first present control.
 fn reject_present_fields(request: &RequestBody) -> Result<(), InvalidRequest> {
-    // Each control rejects with the wording its disposition row documents: chaining controls name
-    // the statelessness invariant, numeric budgets name the level vocabulary that replaces them.
+    // Each control rejects with the wording its disposition row documents: the statelessness
+    // controls name the invariant, the media and modality controls name the text-output scope.
     if request.previous_interaction_id.is_some() {
         return Err(InvalidRequest::field(
             "previous_interaction_id",
@@ -567,46 +815,59 @@ fn reject_present_fields(request: &RequestBody) -> Result<(), InvalidRequest> {
         ));
     }
 
-    if request.last_event_id.is_some() {
+    if request.cached_content.is_some() {
         return Err(InvalidRequest::field(
-            "last_event_id",
-            "The gateway is stateless; last_event_id is not supported",
+            "cached_content",
+            "The gateway is stateless; cached_content is not supported",
         ));
     }
 
-    if request.thinking_budget.is_some() {
+    if request.webhook_config.is_some() {
         return Err(InvalidRequest::field(
-            "thinkingBudget",
-            "thinkingBudget is not supported; use thinking_level",
+            "webhook_config",
+            "webhook_config is not supported; the gateway never chains",
         ));
     }
 
-    if request.budget_tokens.is_some() {
+    if request.response_modalities.is_some() {
         return Err(InvalidRequest::field(
-            "budget_tokens",
-            "budget_tokens is not supported; use thinking_level",
+            "response_modalities",
+            "response_modalities is not supported; the gateway renders text outputs",
         ));
     }
 
-    if request.stop.is_some() {
-        return Err(InvalidRequest::field("stop", "stop is not supported"));
-    }
-
-    if request.stop_sequences.is_some() {
+    if request.response_mime_type.is_some() {
         return Err(InvalidRequest::field(
-            "stop_sequences",
-            "stop_sequences is not supported",
+            "response_mime_type",
+            "response_mime_type is deprecated; use response_format",
         ));
     }
 
-    if request.seed.is_some() {
-        return Err(InvalidRequest::field("seed", "seed is not supported"));
+    if request.safety_settings.is_some() {
+        return Err(InvalidRequest::field(
+            "safety_settings",
+            "safety_settings is not supported",
+        ));
     }
 
-    if request.modalities.is_some() {
+    if request.agent.is_some() {
         return Err(InvalidRequest::field(
-            "modalities",
-            "modalities is not supported",
+            "agent",
+            "agent interactions are not supported; the gateway serves model interactions",
+        ));
+    }
+
+    if request.agent_config.is_some() {
+        return Err(InvalidRequest::field(
+            "agent_config",
+            "agent_config is not supported; the gateway serves model interactions",
+        ));
+    }
+
+    if request.environment.is_some() {
+        return Err(InvalidRequest::field(
+            "environment",
+            "environment is not supported",
         ));
     }
 
@@ -614,45 +875,45 @@ fn reject_present_fields(request: &RequestBody) -> Result<(), InvalidRequest> {
 }
 
 /// Parses the `tool_choice` member into IR: the `auto`/`any`/`none` modes, with `any` plus one
-/// allowed tool forcing that function. `validated` and multiple allowed tools are 400s.
+/// allowed tool forcing that function; the official object form's mode defaults to `any`.
+/// `validated` and multiple allowed tools are 400s.
 ///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming `tool_choice` for unknown or unsupported choices.
-fn parse_tool_choice(choice: &ToolChoiceIn) -> Result<IrToolChoice, InvalidRequest> {
-    let (mode, allowed_tools) = match choice {
-        ToolChoiceIn::Mode(mode) => (mode.as_str(), None),
+fn parse_tool_choice(choice: ToolChoiceIn) -> Result<IrToolChoice, InvalidRequest> {
+    let (mode, tools) = match choice {
+        ToolChoiceIn::Mode(mode) => (mode, None),
 
-        ToolChoiceIn::Object {
-            mode,
-            allowed_tools,
-        } => (mode.as_str(), allowed_tools.as_ref()),
+        ToolChoiceIn::Object { allowed_tools } => (
+            allowed_tools.mode.unwrap_or_else(|| "any".to_string()),
+            allowed_tools.tools,
+        ),
     };
 
-    match mode {
+    match mode.as_str() {
         "auto" => {
-            reject_allowed_tools(allowed_tools, "auto")?;
+            reject_allowed_tools(tools.as_deref(), "auto")?;
 
             Ok(IrToolChoice::Auto)
         }
 
-        "any" => match allowed_tools {
-            None => Ok(IrToolChoice::Required),
+        "any" => match tools.as_deref() {
+            None | Some([]) => Ok(IrToolChoice::Required),
 
-            Some(names) => match names.as_slice() {
-                [] => Ok(IrToolChoice::Required),
+            Some([name]) => Ok(IrToolChoice::Function { name: name.clone() }),
 
-                [name] => Ok(IrToolChoice::Function { name: name.clone() }),
-
-                _ => Err(InvalidRequest::field(
-                    "tool_choice",
-                    "tool_choice allows at most one entry in allowed_tools",
-                )),
-            },
+            Some(names) => Err(InvalidRequest::field(
+                "tool_choice",
+                format!(
+                    "tool_choice allows at most one entry in allowed_tools, got {}",
+                    names.len(),
+                ),
+            )),
         },
 
         "none" => {
-            reject_allowed_tools(allowed_tools, "none")?;
+            reject_allowed_tools(tools.as_deref(), "none")?;
 
             Ok(IrToolChoice::None)
         }
@@ -669,13 +930,13 @@ fn parse_tool_choice(choice: &ToolChoiceIn) -> Result<IrToolChoice, InvalidReque
     }
 }
 
-/// Rejects an `allowed_tools` list paired with a mode that takes none.
+/// Rejects an allowed-tools list paired with a mode that takes none.
 ///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] naming `tool_choice` when the list is present and non-empty.
 fn reject_allowed_tools(
-    allowed_tools: Option<&Vec<String>>,
+    allowed_tools: Option<&[String]>,
     mode: &str,
 ) -> Result<(), InvalidRequest> {
     if allowed_tools.is_some_and(|names| !names.is_empty()) {
@@ -699,8 +960,8 @@ mod tests {
 
     /// A full request parses into the documented IR: the model from the body, instructions,
     /// coalesced messages carrying text, a thought step with its verbatim opaque, a tool call
-    /// with its signature, and the matching tool output, plus tools, tool choice, sampling, the
-    /// reasoning level, the response format, and the streaming flag.
+    /// with its JSON-object arguments, and the matching tool output with its `is_error`, plus
+    /// tools, the generation_config controls, the response format, and the streaming flag.
     ///
     /// # Panics
     ///
@@ -716,14 +977,16 @@ mod tests {
             "system_instruction": "be terse",
             "input": [
                 {"type": "user_input", "content": [{"type": "text", "text": "hi"}]},
-                {"type": "output_text", "text": "hello"},
-                {"type": "thought", "id": "th_1", "summary": "considering", "signature": "sig-1"},
+                {"type": "model_output", "content": [{"type": "text", "text": "hello"}]},
+                {"type": "thought", "summary": [
+                    {"type": "text", "text": "considering"},
+                ], "signature": "sig-1"},
                 {"type": "function_call", "id": "call_1", "name": "search", "arguments": {
                     "q": "hi",
-                }, "signature": "sig-call"},
+                }},
                 {"type": "function_result", "name": "search", "call_id": "call_1", "result": [
                     {"type": "text", "text": "found"},
-                ]},
+                ], "is_error": false},
             ],
             "tools": [{
                 "type": "function",
@@ -731,12 +994,12 @@ mod tests {
                 "description": "Searches.",
                 "parameters": {"type": "object"},
             }],
-            "tool_choice": {"mode": "any", "allowed_tools": ["search"]},
-            "temperature": 0.5,
-            "top_p": 0.9,
-            "max_output_tokens": 100,
-            "thinking_level": "high",
-            "response_format": {"type": "json"},
+            "generation_config": {
+                "max_output_tokens": 100,
+                "thinking_level": "high",
+                "tool_choice": {"allowed_tools": {"mode": "any", "tools": ["search"]}},
+            },
+            "response_format": {"type": "text", "mime_type": "application/json"},
             "stream": true,
         }))
         .expect("the fixture body must parse");
@@ -754,7 +1017,10 @@ mod tests {
             }),
         );
         assert_eq!(parsed.ir.tools.len(), 1);
-        assert_eq!(parsed.ir.temperature, Some(0.5));
+        assert_eq!(parsed.ir.max_output_tokens, Some(100));
+        // The official generation_config pins no sampling members.
+        assert_eq!(parsed.ir.temperature, None);
+        assert_eq!(parsed.ir.top_p, None);
 
         assert_eq!(parsed.ir.messages.len(), 3);
 
@@ -762,18 +1028,22 @@ mod tests {
             clippy::indexing_slicing,
             reason = "the preceding length assertion guarantees three messages"
         )]
-        let thought = parsed.ir.messages[1]
-            .parts
-            .iter()
-            .find_map(|part| match part {
-                IrPart::Reasoning {
-                    text,
-                    signature,
-                    opaque,
-                } => Some((text, signature, opaque)),
+        let assistant = &parsed.ir.messages[1];
 
-                _ => None,
-            });
+        assert!(assistant.parts.iter().any(|part| matches!(
+            part,
+            IrPart::Text { text, .. } if text == "hello"
+        )));
+
+        let thought = assistant.parts.iter().find_map(|part| match part {
+            IrPart::Reasoning {
+                text,
+                signature,
+                opaque,
+            } => Some((text, signature, opaque)),
+
+            _ => None,
+        });
 
         #[expect(clippy::expect_used, reason = "the fixture carries the thought step")]
         let thought = thought.expect("the assistant message carries the thought step");
@@ -784,11 +1054,85 @@ mod tests {
             thought.2,
             &serde_json::json!({
                 "type": "thought",
-                "id": "th_1",
-                "summary": "considering",
+                "summary": [{"type": "text", "text": "considering"}],
                 "signature": "sig-1",
             }),
         );
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the preceding length assertion guarantees three messages"
+        )]
+        #[expect(clippy::expect_used, reason = "the fixture message carries one part")]
+        let output = parsed.ir.messages[2]
+            .parts
+            .first()
+            .expect("the tool message carries one part");
+
+        assert!(
+            matches!(
+                output,
+                IrPart::ToolOutput {
+                    is_error: false,
+                    ..
+                }
+            ),
+            "the official is_error member rides into the IR",
+        );
+    }
+
+    /// Every official `input` union member parses: the plain string, the single content block,
+    /// and the content-block array all normalize to one `user_input` step, while the Step array
+    /// keeps its steps.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a union member diverges from the documented normalization.
+    #[test]
+    fn normalizes_every_input_union_member() {
+        for (input, expected_parts) in [
+            (
+                serde_json::json!("hi"),
+                vec![IrPart::Text {
+                    text: "hi".to_string(),
+                }],
+            ),
+            (
+                serde_json::json!({"type": "text", "text": "hi"}),
+                vec![IrPart::Text {
+                    text: "hi".to_string(),
+                }],
+            ),
+            (
+                serde_json::json!([
+                    {"type": "text", "text": "hi"},
+                    {"type": "image", "uri": "https://example.com/i.png"},
+                ]),
+                vec![
+                    IrPart::Text {
+                        text: "hi".to_string(),
+                    },
+                    IrPart::Image {
+                        image: IrImage::Url("https://example.com/i.png".to_string()),
+                    },
+                ],
+            ),
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "each union member is constructed to parse"
+            )]
+            let parsed = parse(serde_json::json!({"model": "m", "input": input}))
+                .expect("the input member must parse");
+
+            assert_eq!(parsed.ir.messages.len(), 1);
+
+            #[expect(clippy::expect_used, reason = "the fixture parses to one message")]
+            let message = parsed.ir.messages.first().expect("one message");
+
+            assert_eq!(message.role, IrRole::User);
+            assert_eq!(message.parts, expected_parts);
+        }
     }
 
     /// Consecutive same-role steps coalesce into one message while role changes split them: two
@@ -827,10 +1171,11 @@ mod tests {
         }
     }
 
-    /// Every disposition-table 400 rejects naming its field: the chaining controls, the numeric
-    /// budgets, stop, seed, modalities, the `validated` tool choice, multiple allowed tools, a
-    /// choice without tools, built-in tool types, images in tool results, and unknown members —
-    /// while `store` and `thinking_summaries` stay accepted and ignored.
+    /// Every disposition-table 400 rejects naming its field: the statelessness controls, the
+    /// media and modality controls, the generation_config rejections, the `validated` tool
+    /// choice, multiple allowed tools, a choice without tools, built-in tool types, images in
+    /// tool results, and unknown members — while `store`, `service_tier`, `labels`, and
+    /// `generation_config.thinking_summaries` stay accepted and ignored.
     ///
     /// # Panics
     ///
@@ -847,13 +1192,14 @@ mod tests {
         for (field, value) in [
             ("previous_interaction_id", serde_json::json!("int_1")),
             ("background", serde_json::json!(true)),
-            ("last_event_id", serde_json::json!("evt_1")),
-            ("thinkingBudget", serde_json::json!(100)),
-            ("budget_tokens", serde_json::json!(100)),
-            ("stop", serde_json::json!(["x"])),
-            ("stop_sequences", serde_json::json!(["x"])),
-            ("seed", serde_json::json!(7)),
-            ("modalities", serde_json::json!(["image"])),
+            ("cached_content", serde_json::json!("c_1")),
+            ("webhook_config", serde_json::json!({"uris": []})),
+            ("response_modalities", serde_json::json!(["TEXT"])),
+            ("response_mime_type", serde_json::json!("application/json")),
+            ("safety_settings", serde_json::json!([])),
+            ("agent", serde_json::json!("deep-research")),
+            ("agent_config", serde_json::json!({"type": "dynamic"})),
+            ("environment", serde_json::json!("env_1")),
         ] {
             let mut body = base();
 
@@ -878,23 +1224,56 @@ mod tests {
             );
         }
 
+        for (field, value) in [
+            ("seed", serde_json::json!(7)),
+            ("stop_sequences", serde_json::json!(["x"])),
+            ("speech_config", serde_json::json!({})),
+            ("image_config", serde_json::json!({})),
+            ("video_config", serde_json::json!({})),
+            ("transcription_config", serde_json::json!({})),
+        ] {
+            let mut body = base();
+
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the fixture object carries every rejected member slot"
+            )]
+            {
+                body["generation_config"] = serde_json::json!({ field: value });
+            }
+
+            #[expect(
+                clippy::expect_used,
+                reason = "each control is constructed to be rejected"
+            )]
+            let error = parse(body).expect_err("a known-unsupported control must be rejected");
+
+            assert_eq!(
+                error.param.as_deref(),
+                Some(field),
+                "the rejection must name `{field}`",
+            );
+        }
+
         for body in [
             serde_json::json!({
                 "model": "m",
                 "input": [],
-                "tool_choice": "validated",
+                "generation_config": {"tool_choice": "validated"},
                 "tools": [{"type": "function", "name": "f"}],
             }),
             serde_json::json!({
                 "model": "m",
                 "input": [],
-                "tool_choice": {"mode": "any", "allowed_tools": ["a", "b"]},
+                "generation_config": {
+                    "tool_choice": {"allowed_tools": {"mode": "any", "tools": ["a", "b"]}},
+                },
                 "tools": [{"type": "function", "name": "a"}, {"type": "function", "name": "b"}],
             }),
             serde_json::json!({
                 "model": "m",
                 "input": [],
-                "tool_choice": "auto",
+                "generation_config": {"tool_choice": "auto"},
             }),
             serde_json::json!({
                 "model": "m",
@@ -905,18 +1284,36 @@ mod tests {
                 "model": "m",
                 "input": [
                     {"type": "function_result", "name": "f", "call_id": "c",
-                     "result": [{"type": "image", "image_url": "https://example.com/i.png"}]},
+                     "result": [{"type": "image", "uri": "https://example.com/i.png"}]},
                 ],
             }),
             serde_json::json!({
                 "model": "m",
                 "input": [],
-                "thinking_level": "ultra",
+                "generation_config": {"thinking_level": "ultra"},
             }),
             serde_json::json!({
                 "model": "m",
                 "input": [],
                 "unknown_member": true,
+            }),
+            // The response_format media members and a schema without application/json reject
+            // naming the field.
+            serde_json::json!({
+                "model": "m",
+                "input": [],
+                "response_format": {"type": "image"},
+            }),
+            serde_json::json!({
+                "model": "m",
+                "input": [],
+                "response_format": {"type": "text", "schema": {"type": "object"}},
+            }),
+            // The old self-pinned dialect spellings are unknown members today.
+            serde_json::json!({
+                "model": "m",
+                "input": [],
+                "temperature": 0.5,
             }),
         ] {
             #[expect(
@@ -931,8 +1328,8 @@ mod tests {
             );
         }
 
-        // The presentation-only controls parse: `store` and `thinking_summaries` never affect
-        // the IR.
+        // The presentation-only controls parse: `store`, `service_tier`, `labels`, and
+        // `generation_config.thinking_summaries` never affect the IR.
         #[expect(
             clippy::expect_used,
             reason = "the ignored-controls body is constructed to parse"
@@ -941,7 +1338,9 @@ mod tests {
             "model": "m",
             "input": [{"type": "user_input", "content": [{"type": "text", "text": "hi"}]}],
             "store": true,
-            "thinking_summaries": "auto",
+            "service_tier": "standard",
+            "labels": {"team": "x"},
+            "generation_config": {"thinking_summaries": "auto"},
         }))
         .expect("accepted-and-ignored controls must parse");
 
@@ -950,7 +1349,8 @@ mod tests {
 
     /// The `function_result` shapes agree: a plain string, a text-block array joining with the
     /// blank-line separator, and the tool's own result object flattened to JSON text all carry
-    /// the same content class, while a non-object arguments string is rejected.
+    /// the same content class, while the old JSON-encoded-string arguments spelling — a kind
+    /// contradiction against the official object member — is rejected.
     ///
     /// # Panics
     ///
@@ -1006,17 +1406,93 @@ mod tests {
 
         #[expect(
             clippy::expect_used,
-            reason = "the malformed arguments are constructed to be rejected"
+            reason = "the old dialect spelling is constructed to be rejected"
         )]
         let error = parse(serde_json::json!({
             "model": "m",
             "input": [
-                {"type": "function_call", "id": "c", "name": "f", "arguments": "[1, 2]"},
+                {"type": "function_call", "id": "c", "name": "f",
+                 "arguments": r#"{"q":"hi"}"#},
             ],
         }))
-        .expect_err("non-object arguments must be rejected");
+        .expect_err("the old JSON-encoded-string arguments must be rejected");
 
-        assert_eq!(error.param.as_deref(), Some("arguments"));
+        assert!(
+            !error.to_string().is_empty(),
+            "the rejection must carry its cause: {error}",
+        );
+    }
+
+    /// A thought step's complete JSON — annotation- and resolution-carrying blocks included —
+    /// re-serializes byte-exact into the block's opaque payload, so the same-family replay is
+    /// verbatim; model_output image blocks ride the IR as image parts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the opaque diverges from the parsed step.
+    #[test]
+    fn carries_the_thought_step_opaque_byte_exact() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture body is constructed to parse"
+        )]
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "thought", "summary": [
+                    {"type": "text", "text": "why",
+                     "annotations": [{"type": "url_citation", "url": "https://x"}]},
+                    {"type": "image", "uri": "https://example.com/t.png",
+                     "resolution": "high"},
+                ], "signature": "sig-9"},
+                {"type": "model_output", "content": [
+                    {"type": "text", "text": "answer"},
+                    {"type": "image", "data": "aGk=", "mime_type": "image/png"},
+                ]},
+            ],
+        }))
+        .expect("the fixture body must parse");
+
+        assert_eq!(parsed.ir.messages.len(), 1);
+
+        #[expect(clippy::expect_used, reason = "the fixture parses to one message")]
+        let message = parsed.ir.messages.first().expect("one message");
+
+        #[expect(clippy::expect_used, reason = "the fixture carries the thought step")]
+        let opaque = message
+            .parts
+            .iter()
+            .find_map(|part| match part {
+                IrPart::Reasoning { opaque, .. } => Some(opaque),
+
+                _ => None,
+            })
+            .expect("the thought step parses to a reasoning part");
+
+        assert_eq!(
+            opaque,
+            &serde_json::json!({
+                "type": "thought",
+                "summary": [
+                    {"type": "text", "text": "why",
+                     "annotations": [{"type": "url_citation", "url": "https://x"}]},
+                    {"type": "image", "uri": "https://example.com/t.png",
+                     "resolution": "high"},
+                ],
+                "signature": "sig-9",
+            }),
+        );
+
+        assert!(
+            message.parts.iter().any(|part| matches!(
+                part,
+                IrPart::Image {
+                    image: IrImage::Inline { .. },
+                    ..
+                }
+            )),
+            "model_output image blocks ride the IR as image parts",
+        );
     }
 
     /// Streaming follows the body-then-query rule: the body's `stream` member decides unless the

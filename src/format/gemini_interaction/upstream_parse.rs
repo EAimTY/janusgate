@@ -1,11 +1,11 @@
 //! Upstream-event parsing for the Gemini Interactions codec: parses upstream SSE streams or a
-//! complete Interaction body into IR events, discriminating streams on the `event:` name, never
-//! on JSON members.
+//! complete Interaction body into IR events. Streams are discriminated by the `event:` line when
+//! the frame carries one, else by the payload's official `event_type` member.
 
 use super::{
-    EVENT_COMPLETE, EVENT_CREATED, EVENT_STEP_DELTA, EVENT_STEP_START, EVENT_STEP_STOP,
-    STATUS_FAILED, STATUS_INCOMPLETE, STATUS_REQUIRES_ACTION, STEP_FUNCTION_CALL, STEP_OUTPUT_TEXT,
-    STEP_THOUGHT,
+    EVENT_COMPLETED, EVENT_CREATED, EVENT_STATUS_UPDATE, EVENT_STEP_DELTA, EVENT_STEP_START,
+    EVENT_STEP_STOP, STATUS_BUDGET_EXCEEDED, STATUS_CANCELLED, STATUS_FAILED, STATUS_INCOMPLETE,
+    STATUS_REQUIRES_ACTION, STEP_FUNCTION_CALL, STEP_MODEL_OUTPUT, STEP_THOUGHT, TypedStep,
 };
 use crate::{
     format::{self, PayloadError, UpstreamError, UpstreamEventParser},
@@ -17,7 +17,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 /// Parses upstream Gemini Interactions responses — SSE frames or a full Interaction body — into IR
-/// events, discriminating streams on the `event:` name, never on JSON members.
+/// events. Streams are discriminated by the `event:` line when the frame carries one, else by the
+/// payload's official `event_type` member.
 #[derive(Debug, Default)]
 pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
@@ -30,23 +31,24 @@ pub(crate) struct UpstreamParser {
     /// Count of tool calls opened in this response; the stable per-call index source.
     call_counter: usize,
 
-    /// Steps opened by `step.start` and not yet closed by `step.stop`, keyed by the upstream step
-    /// index.
+    /// Steps opened by `step.start` (or implicitly by a first delta) and not yet closed by
+    /// `step.stop`, keyed by the upstream step index.
     open_steps: Vec<OpenStep>,
 }
 
-/// One upstream step tracked across stream frames.
+/// One upstream step tracked across stream frames. The official `step.stop` carries only the index,
+/// so a step's closing event is assembled entirely from the state its deltas streamed.
 #[derive(Debug)]
 enum OpenStep {
-    /// An open model text step.
-    Text {
+    /// An open model output step.
+    Output {
         /// Upstream step index.
         index: u64,
     },
 
-    /// An open model reasoning block, accumulating its summary text. The step identifier needs
-    /// no tracking: every stop carries its complete step, which becomes the block's opaque
-    /// payload verbatim.
+    /// An open model reasoning block, accumulating its summary text and signature. The closing
+    /// done's opaque replay payload is the synthesized official step — summary blocks beside the
+    /// signature — so a same-family replay stays byte-exact.
     Thought {
         /// Upstream step index.
         index: u64,
@@ -81,16 +83,23 @@ impl OpenStep {
     /// The upstream step index the tracked step was opened under.
     fn index(&self) -> u64 {
         match self {
-            Self::Text { index } | Self::Thought { index, .. } | Self::Call { index, .. } => *index,
+            Self::Output { index } | Self::Thought { index, .. } | Self::Call { index, .. } => {
+                *index
+            }
         }
     }
 }
 
-/// One upstream Interaction body or envelope member: the non-streaming response shape.
+/// One upstream Interaction body or the partial resource an
+/// `interaction.created`/`interaction.completed` frame carries under its `interaction` member.
 ///
-/// Every member is optional and unmodeled members are ignored: upstreams are third-party. Steps
-/// are raw values — fragments whose per-kind shape the parser models separately — so a thought
-/// step's complete JSON survives as the block's opaque replay payload.
+/// Every member is optional and unmodeled members are ignored: upstreams are third-party. Steps are
+/// raw values — fragments whose per-kind shape the parser models separately — so a thought step's
+/// complete JSON survives as the block's opaque replay payload. The streaming lifecycle payloads
+/// may omit any field of the full resource ("Streaming lifecycle payloads may omit fields that are
+/// only available on full non-streaming Interaction responses"), and the terminal
+/// `interaction.completed` resource deliberately shrinks its steps away, so steps are ingested from
+/// bodies only.
 #[derive(Debug, Default, Deserialize)]
 struct InteractionBody {
     /// Upstream interaction identifier, empty when the upstream omits it.
@@ -105,7 +114,8 @@ struct InteractionBody {
     #[serde(default)]
     status: Option<String>,
 
-    /// The interaction's steps in order.
+    /// The interaction's steps in order; a body member only — the streaming terminal event shrinks
+    /// its steps away, and the live step events are the sole streaming content source.
     #[serde(default)]
     steps: Vec<Value>,
 
@@ -126,6 +136,15 @@ struct ErrorProbe {
     error: Option<UpstreamError>,
 }
 
+/// Minimal probe reading a frame's `event_type` member, used when the frame carries no `event:`
+/// line: the official payloads self-describe their event.
+#[derive(Debug, Deserialize)]
+struct EventNameProbe {
+    /// The official event discriminator, empty when the frame carries none.
+    #[serde(rename = "event_type", default)]
+    event_type: String,
+}
+
 /// Minimal probe reading a step's type tag; the per-kind payloads are modelled separately.
 #[derive(Debug, Deserialize)]
 struct StepProbe {
@@ -134,33 +153,56 @@ struct StepProbe {
     step_type: String,
 }
 
-/// An `output_text` step of an Interaction body or a `step.stop` frame.
-#[derive(Debug, Deserialize)]
-struct OutputTextStep {
-    /// The text content, empty when the upstream omits it.
+/// One content block of a body step, reduced to the members the IR can carry: only text survives.
+#[derive(Debug, Default, Deserialize)]
+struct BodyBlock {
+    /// Block kind tag; non-text blocks carry no IR-representable content.
+    #[serde(rename = "type", default)]
+    block_type: String,
+
+    /// The text content, empty on non-text blocks.
     #[serde(default)]
     text: String,
 }
 
-/// A `thought` step of an Interaction body or a `step.stop` frame: the summary text and the
+impl BodyBlock {
+    /// The block's text, empty for every non-text block.
+    fn into_text(self) -> String {
+        if self.block_type == "text" {
+            self.text
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// A `model_output` step of an Interaction body: the content blocks, text ones only.
+#[derive(Debug, Default, Deserialize)]
+struct ModelOutputStep {
+    /// The content blocks; every non-text block is dropped (the IR output channel is text).
+    #[serde(default)]
+    content: Vec<BodyBlock>,
+}
+
+/// A `thought` step of an Interaction body or a complete step value: the summary blocks and the
 /// terminating signature. The step identifier is deliberately unmodelled — it rides inside the
 /// opaque fragment untouched, so the codec never reads it.
 ///
 /// No unknown-field rejection: upstream payloads are third-party, and every member beyond the
 /// modelled ones rides the opaque fragment untouched.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ThoughtStep {
-    /// Reasoning text, empty when the upstream omits it.
+    /// Summary content blocks; only text blocks carry IR-representable text.
     #[serde(default)]
-    summary: Option<String>,
+    summary: Option<Vec<BodyBlock>>,
 
     /// Upstream signature terminating the block, absent when the upstream sent none.
     #[serde(default)]
     signature: Option<String>,
 }
 
-/// A `function_call` step of an Interaction body or a `step.stop` frame.
-#[derive(Debug, Deserialize)]
+/// A `function_call` step of an Interaction body.
+#[derive(Debug, Default, Deserialize)]
 struct FunctionCallStep {
     /// Identifier of the invocation, empty when the upstream omits it.
     #[serde(default)]
@@ -170,47 +212,22 @@ struct FunctionCallStep {
     #[serde(default)]
     name: String,
 
-    /// Arguments the model supplied, as JSON-encoded text or as the object itself.
+    /// The arguments as the official JSON object; the old JSON-encoded-string spelling is a kind
+    /// contradiction and fails the payload.
     #[serde(default)]
-    arguments: Option<StepArguments>,
-
-    /// Upstream thought signature that must be replayed on the next turn.
-    #[serde(default)]
-    signature: Option<String>,
-}
-
-/// The two wire spellings of function-call arguments: the JSON-encoded text form and the object
-/// form. Both normalize to the encoded-text form the IR carries.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum StepArguments {
-    /// The JSON-encoded text form.
-    Text(String),
-
-    /// The object form.
-    Object(Map<String, Value>),
-}
-
-impl StepArguments {
-    /// Normalizes either spelling to the JSON-encoded text the IR carries.
-    fn into_text(self) -> String {
-        match self {
-            Self::Text(text) => text,
-
-            Self::Object(map) => crate::format::arguments_object_to_text(map),
-        }
-    }
+    arguments: Option<Map<String, Value>>,
 }
 
 /// A partial step carried by `step.start`: the opening shape of a step, with only the members an
-/// opening needs.
+/// opening needs. How partial the official opening object may be is unpinned, so every member
+/// defaults.
 #[derive(Debug, Default, Deserialize)]
 struct PartialStep {
     /// Step type tag, empty when the frame carries none.
     #[serde(rename = "type", default)]
     step_type: String,
 
-    /// Step identifier of thought and function-call steps.
+    /// Step identifier of a function-call step.
     #[serde(default)]
     id: Option<String>,
 
@@ -219,7 +236,7 @@ struct PartialStep {
     name: Option<String>,
 }
 
-/// One incremental delta carried by `step.delta`, tagged by its kind.
+/// One incremental delta carried by `step.delta`, tagged by its official `type`.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum StepDelta {
@@ -230,33 +247,57 @@ enum StepDelta {
         text: String,
     },
 
-    /// Reasoning summary bytes.
+    /// Reasoning summary content; the official delta's `content` member is optional, so an
+    /// absent member degrades to a no-op through the default non-text block.
     #[serde(rename = "thought_summary")]
     ThoughtSummary {
-        /// The summary bytes.
-        summary: String,
+        /// The summary content block, absent when the delta carries none.
+        #[serde(default)]
+        content: DeltaBlock,
     },
 
-    /// The signature terminating a reasoning block.
+    /// The signature terminating a reasoning block; the official delta's `signature` member is
+    /// optional, so an absent member is a no-op that never clears an already-streamed signature.
     #[serde(rename = "thought_signature")]
     ThoughtSignature {
-        /// The signature text.
-        signature: String,
+        /// The signature text, absent when the delta carries none.
+        #[serde(default)]
+        signature: Option<String>,
     },
 
     /// Tool argument bytes.
-    #[serde(rename = "tool_arguments")]
-    ToolArguments {
-        /// The argument bytes.
+    #[serde(rename = "arguments_delta")]
+    ArgumentsDelta {
+        /// The argument bytes, officially optional.
+        #[serde(default)]
         arguments: String,
     },
+
+    /// Every other delta kind — media output deltas (`image`, `audio`, `video`, `document`),
+    /// `text_annotation_delta`, the server-side tool call/result deltas, and future kinds —
+    /// carries no content the IR can represent: parsed and ignored, never aborting a stream of
+    /// official events (the family treats ignorable steps the same way).
+    #[serde(other)]
+    Ignored,
+}
+
+/// One content block of a `thought_summary` delta, reduced to the members the IR can carry.
+#[derive(Debug, Default, Deserialize)]
+struct DeltaBlock {
+    /// Block kind tag; non-text blocks carry no IR-representable content.
+    #[serde(rename = "type", default)]
+    block_type: String,
+
+    /// The text content, empty on non-text blocks.
+    #[serde(default)]
+    text: String,
 }
 
 /// The `step.start` frame payload.
 #[derive(Debug, Deserialize)]
 struct StepStartFrame {
     /// Upstream step index the frame opens.
-    step_index: u64,
+    index: u64,
 
     /// The opening shape of the step.
     #[serde(default)]
@@ -267,53 +308,41 @@ struct StepStartFrame {
 #[derive(Debug, Deserialize)]
 struct StepDeltaFrame {
     /// Upstream step index the delta belongs to.
-    step_index: u64,
+    index: u64,
 
     /// The incremental delta.
     delta: StepDelta,
 }
 
-/// The `step.stop` frame payload: the step index beside the complete step as a raw fragment, so
-/// a thought step's JSON survives verbatim as the block's opaque payload.
+/// The `step.stop` frame payload: officially the index alone. The optional `step_usage` (per-step)
+/// and `usage` members are deliberately unmodelled — folding per-step usage into the IR totals
+/// would double-count the interaction total that rides `interaction.completed` — and steps closed
+/// by a stop are assembled from the state their deltas streamed.
 #[derive(Debug, Deserialize)]
 struct StepStopFrame {
     /// Upstream step index the frame closes.
-    step_index: u64,
-
-    /// The complete step.
-    #[serde(default)]
-    step: Value,
+    index: u64,
 }
 
-/// The `interaction.created` frame payload.
+/// The `interaction.created` frame payload: the partial resource under the official member.
 #[derive(Debug, Deserialize)]
 struct CreatedFrame {
-    /// Upstream interaction identifier, empty when the upstream omits it.
+    /// The partial interaction resource.
     #[serde(default)]
-    id: String,
-
-    /// Upstream model name, empty when the upstream omits it.
-    #[serde(default)]
-    model: String,
+    interaction: InteractionBody,
 }
 
-/// The `interaction.complete` frame payload.
+/// The `interaction.completed` frame payload: the terminal partial resource under the official
+/// member.
 #[derive(Debug, Deserialize)]
-struct CompleteFrame {
-    /// Terminal status string, deciding the finish mapping.
+struct CompletedFrame {
+    /// The terminal partial interaction resource.
     #[serde(default)]
-    status: Option<String>,
-
-    /// Human-readable failure detail of a failed interaction.
-    #[serde(default)]
-    message: Option<String>,
-
-    /// Token accounting.
-    #[serde(default)]
-    usage: Option<UsageReport>,
+    interaction: InteractionBody,
 }
 
-/// Upstream token accounting in the Interactions shape.
+/// Upstream token accounting in the official Interactions shape; the by-modality breakdowns,
+/// `total_tokens`, and `total_tool_use_tokens` are unmodelled and ignored.
 #[derive(Debug, Default, Deserialize)]
 struct UsageReport {
     /// Tokens consumed by the input.
@@ -387,6 +416,22 @@ impl UpstreamParser {
             .find(|open| open.index() == index)
     }
 
+    /// Resolves a frame's event name: the `event:` line when the frame carries one, else the
+    /// payload's official `event_type` member. Neither present yields `None` — heartbeats.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PayloadError`] when an eventless frame's data is not a JSON object.
+    fn frame_event(frame: &SseFrame) -> Result<Option<String>, PayloadError> {
+        if let Some(event) = &frame.event {
+            return Ok(Some(event.clone()));
+        }
+
+        let probe: EventNameProbe = format::parse_frame(frame)?;
+
+        Ok((!probe.event_type.is_empty()).then_some(probe.event_type))
+    }
+
     /// Ingests one complete Interaction body: message start, one event group per step, then the
     /// terminal status and usage.
     ///
@@ -407,7 +452,7 @@ impl UpstreamParser {
             events.extend(self.ingest_complete_step(step)?);
         }
 
-        events.extend(self.ingest_status(body.status, None)?);
+        events.extend(self.ingest_status(body.status)?);
 
         if let Some(usage) = body.usage {
             events.push(IrEvent::Usage(usage.into_usage()));
@@ -416,13 +461,13 @@ impl UpstreamParser {
         Ok(events)
     }
 
-    /// Ingests one complete step value — an Interaction body member or a `step.stop` payload.
+    /// Ingests one complete step value — an Interaction body member.
     ///
-    /// Response steps deliver their content at once: text steps stream as one full delta, thought
+    /// Response steps deliver their content at once: output steps stream as one full delta, thought
     /// steps close as full-text done events with no prior deltas, and function calls open with a
     /// full-arguments delta plus a done — mirroring the Responses JSON path — so streaming
     /// renderers open and complete every item. Steps of other kinds (`user_input`,
-    /// `function_result`, and future kinds) carry no model output and are ignored.
+    /// `function_result`, and the server-side tool kinds) carry no model output and are ignored.
     ///
     /// # Errors
     ///
@@ -431,17 +476,28 @@ impl UpstreamParser {
         let probe: StepProbe = format::parse_body(step.clone())?;
 
         match probe.step_type.as_str() {
-            STEP_OUTPUT_TEXT => {
-                let text: OutputTextStep = format::parse_body(step)?;
+            STEP_MODEL_OUTPUT => {
+                let output: ModelOutputStep = format::parse_body(step)?;
+                let text = output
+                    .content
+                    .into_iter()
+                    .map(BodyBlock::into_text)
+                    .collect::<String>();
 
-                Ok(vec![IrEvent::TextDelta(text.text)])
+                Ok(vec![IrEvent::TextDelta(text)])
             }
 
             STEP_THOUGHT => {
                 let thought: ThoughtStep = format::parse_body(step.clone())?;
+                let text = thought
+                    .summary
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(BodyBlock::into_text)
+                    .collect::<String>();
 
                 Ok(vec![IrEvent::ReasoningDone {
-                    text: thought.summary.unwrap_or_default(),
+                    text,
                     signature: thought.signature,
                     opaque: step,
                 }])
@@ -453,7 +509,7 @@ impl UpstreamParser {
 
                 let arguments = call
                     .arguments
-                    .map(StepArguments::into_text)
+                    .map(format::arguments_object_to_text)
                     .unwrap_or_default();
 
                 Ok(vec![
@@ -468,13 +524,13 @@ impl UpstreamParser {
                         call_id: call.id,
                         name: call.name,
                         arguments,
-                        thought_signature: call.signature,
+                        thought_signature: None,
                     },
                 ])
             }
 
-            // Request-echo (`user_input`, `function_result`) and future step kinds carry no
-            // model output.
+            // Request-echo (`user_input`, `function_result`), the server-side tool kinds, and any
+            // future kind carry no model output.
             _ => Ok(Vec::new()),
         }
     }
@@ -494,27 +550,27 @@ impl UpstreamParser {
     /// # Errors
     ///
     /// Returns [`PayloadError`] for the failed status.
-    fn ingest_status(
-        &mut self,
-        status: Option<String>,
-        message: Option<String>,
-    ) -> Result<Vec<IrEvent>, PayloadError> {
+    fn ingest_status(&mut self, status: Option<String>) -> Result<Vec<IrEvent>, PayloadError> {
         self.is_finished = true;
 
         match status.as_deref() {
             Some(STATUS_REQUIRES_ACTION) => Ok(vec![IrEvent::Finish(IrFinishReason::ToolCall)]),
 
-            Some(STATUS_INCOMPLETE) => Ok(vec![IrEvent::Finish(IrFinishReason::Length)]),
+            Some(STATUS_INCOMPLETE | STATUS_BUDGET_EXCEEDED) => {
+                Ok(vec![IrEvent::Finish(IrFinishReason::Length)])
+            }
 
-            Some(STATUS_FAILED) => Err(PayloadError::new(format!(
-                "upstream interaction failed with status `failed`{}",
-                message
-                    .map(|detail| format!(": {detail}"))
-                    .unwrap_or_default(),
-            ))),
+            // Deliberate: a cancelled interaction ended without failure, and the canonical finish
+            // vocabulary has no cancelled member.
+            Some(STATUS_CANCELLED) => Ok(vec![IrEvent::Finish(IrFinishReason::Stop)]),
 
-            // `completed`, a missing status, and any future status degrade to a clean stop rather
-            // than failing a healthy stream.
+            Some(STATUS_FAILED) => Err(PayloadError::new(
+                "upstream interaction failed with status `failed`",
+            )),
+
+            // `completed`, the non-terminal `in_progress`/`queued` (which never terminate a
+            // conformant stream), and any future status degrade to a clean stop rather than
+            // failing a healthy stream.
             _ => Ok(vec![IrEvent::Finish(IrFinishReason::Stop)]),
         }
     }
@@ -525,17 +581,17 @@ impl UpstreamParser {
     fn ingest_start(&mut self, frame: StepStartFrame) -> Vec<IrEvent> {
         let events = self.ensure_open();
 
-        if self.find_open(frame.step_index).is_some() {
+        if self.find_open(frame.index).is_some() {
             return events;
         }
 
         match frame.step.step_type.as_str() {
-            STEP_OUTPUT_TEXT => self.open_steps.push(OpenStep::Text {
-                index: frame.step_index,
-            }),
+            STEP_MODEL_OUTPUT => self
+                .open_steps
+                .push(OpenStep::Output { index: frame.index }),
 
             STEP_THOUGHT => self.open_steps.push(OpenStep::Thought {
-                index: frame.step_index,
+                index: frame.index,
                 summary: String::new(),
                 signature: None,
             }),
@@ -544,7 +600,7 @@ impl UpstreamParser {
                 let call_index = self.allocate_call_index();
 
                 self.open_steps.push(OpenStep::Call {
-                    index: frame.step_index,
+                    index: frame.index,
                     call_index,
                     id: frame
                         .step
@@ -563,46 +619,61 @@ impl UpstreamParser {
         events
     }
 
-    /// Ingests a `step.delta` frame: the delta kind decides the IR event. A delta for a step with
-    /// no recorded start implicitly opens the matching kind, so a missed start cannot strand
-    /// content; an implicit tool call mints its id and allocates its index the same way a start
-    /// would.
+    /// Ingests a `step.delta` frame: the delta kind decides the IR event. A content delta for a
+    /// step with no recorded start implicitly opens the matching kind, so a missed start cannot
+    /// strand content; an implicit tool call mints its id and allocates its index the same way a
+    /// start would.
     fn ingest_delta(&mut self, frame: StepDeltaFrame) -> Vec<IrEvent> {
-        let mut events = self.ensure_open();
+        let mut events = Vec::new();
 
         match frame.delta {
             StepDelta::Text { text } => {
-                if self.find_open(frame.step_index).is_none() {
-                    self.open_steps.push(OpenStep::Text {
-                        index: frame.step_index,
-                    });
+                events.extend(self.ensure_open());
+
+                if self.find_open(frame.index).is_none() {
+                    self.open_steps
+                        .push(OpenStep::Output { index: frame.index });
                 }
 
                 events.push(IrEvent::TextDelta(text));
             }
 
-            StepDelta::ThoughtSummary { summary } => {
-                if self.find_open(frame.step_index).is_none() {
+            StepDelta::ThoughtSummary { content } => {
+                // A non-text summary block — the default of an absent `content` member included —
+                // carries no IR-representable text and is a no-op that opens nothing.
+                if content.block_type != "text" {
+                    return events;
+                }
+
+                events.extend(self.ensure_open());
+
+                if self.find_open(frame.index).is_none() {
                     self.open_steps.push(OpenStep::Thought {
-                        index: frame.step_index,
+                        index: frame.index,
                         summary: String::new(),
                         signature: None,
                     });
                 }
 
-                if let Some(OpenStep::Thought { summary: open, .. }) =
-                    self.find_open(frame.step_index)
-                {
-                    open.push_str(&summary);
+                if let Some(OpenStep::Thought { summary: open, .. }) = self.find_open(frame.index) {
+                    open.push_str(&content.text);
                 }
 
-                events.push(IrEvent::ReasoningDelta(summary));
+                events.push(IrEvent::ReasoningDelta(content.text));
             }
 
             StepDelta::ThoughtSignature { signature } => {
-                if self.find_open(frame.step_index).is_none() {
+                // An absent signature member carries nothing: a no-op that must never overwrite
+                // or clear a signature already streamed for the step.
+                let Some(signature) = signature else {
+                    return events;
+                };
+
+                events.extend(self.ensure_open());
+
+                if self.find_open(frame.index).is_none() {
                     self.open_steps.push(OpenStep::Thought {
-                        index: frame.step_index,
+                        index: frame.index,
                         summary: String::new(),
                         signature: None,
                     });
@@ -610,18 +681,20 @@ impl UpstreamParser {
 
                 if let Some(OpenStep::Thought {
                     signature: open, ..
-                }) = self.find_open(frame.step_index)
+                }) = self.find_open(frame.index)
                 {
                     *open = Some(signature);
                 }
             }
 
-            StepDelta::ToolArguments { arguments } => {
-                if self.find_open(frame.step_index).is_none() {
+            StepDelta::ArgumentsDelta { arguments } => {
+                events.extend(self.ensure_open());
+
+                if self.find_open(frame.index).is_none() {
                     let call_index = self.allocate_call_index();
 
                     self.open_steps.push(OpenStep::Call {
-                        index: frame.step_index,
+                        index: frame.index,
                         call_index,
                         id: format!("call_{}", ids::new_uuid()),
                         name: String::new(),
@@ -637,7 +710,7 @@ impl UpstreamParser {
                     name,
                     arguments: open,
                     ..
-                }) = self.find_open(frame.step_index)
+                }) = self.find_open(frame.index)
                 {
                     open.push_str(&arguments);
 
@@ -649,120 +722,99 @@ impl UpstreamParser {
                     });
                 }
             }
+
+            // Media, annotation, server-side tool, and unknown delta kinds carry no content.
+            StepDelta::Ignored => {}
         }
 
         events
     }
 
-    /// Ingests a `step.stop` frame carrying the complete step: closes the tracked step and emits
-    /// the closing event. Thought stops close as empty-text done events — the streamed deltas
-    /// delivered the text — unless no deltas preceded them, in which case the stop's own summary
-    /// is the authoritative text; the step value itself becomes the block's opaque payload.
-    /// Function-call stops resolve every member against the tracked state, preferring the stop's
-    /// own values and falling back to the streamed ones.
+    /// Ingests a `step.stop` frame: closes the tracked step and emits its closing event, assembled
+    /// entirely from the state the step's deltas streamed — the official stop carries only the
+    /// index. A thought stop closes as a done whose opaque payload is the synthesized official
+    /// step, so a same-family replay stays byte-exact; a function-call stop closes with the
+    /// assembled call; an output stop closes silently, its text already delivered by the deltas.
     ///
     /// # Errors
     ///
-    /// Returns [`PayloadError`] for a stop step whose kind contradicts the contract.
+    /// Returns [`PayloadError`] for a malformed frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if serializing a thought step's opaque payload fails, which cannot occur for the
+    /// first-party wire type.
     fn ingest_stop(&mut self, frame: StepStopFrame) -> Result<Vec<IrEvent>, PayloadError> {
         let mut events = self.ensure_open();
 
-        let probe: StepProbe = format::parse_body(frame.step.clone())?;
+        match self.take_open(frame.index) {
+            Some(OpenStep::Output { .. }) => {}
 
-        match probe.step_type.as_str() {
-            STEP_OUTPUT_TEXT => {
-                self.take_open(frame.step_index);
-            }
-
-            STEP_THOUGHT => {
-                let thought: ThoughtStep = format::parse_body(frame.step.clone())?;
-                let open = self.take_open(frame.step_index);
-
-                let (summary, signature) = match open {
-                    Some(OpenStep::Thought {
-                        summary, signature, ..
-                    }) => (summary, signature),
-
-                    _ => (String::new(), Option::<String>::None),
-                };
-
-                // Deltas plus an empty-text done, or a full-text done with no deltas — never both
-                // with overlapping text: streamed summary bytes make the done empty, while a stop
-                // that arrives without any deltas carries the authoritative text itself.
-                let text = if summary.is_empty() {
-                    thought.summary.unwrap_or_default()
+            Some(OpenStep::Thought {
+                summary, signature, ..
+            }) => {
+                let summary_blocks = if summary.is_empty() {
+                    Vec::new()
                 } else {
-                    String::new()
+                    vec![super::ContentBlock::Text {
+                        text: summary.clone(),
+                    }]
                 };
 
-                let signature = thought.signature.or(signature);
+                let step = TypedStep::Thought {
+                    summary: summary_blocks,
+                    signature: signature.clone(),
+                };
+
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the first-party wire type serializes totally"
+                )]
+                let opaque = serde_json::to_value(step).expect("the thought step serializes");
 
                 events.push(IrEvent::ReasoningDone {
-                    text,
+                    text: summary,
                     signature,
-                    opaque: frame.step,
+                    opaque,
                 });
             }
 
-            STEP_FUNCTION_CALL => {
-                let call: FunctionCallStep = format::parse_body(frame.step)?;
-                let open = self.take_open(frame.step_index);
-
-                let (call_index, open_id, open_name, open_arguments, open_signature) = match open {
-                    Some(OpenStep::Call {
-                        call_index,
-                        id,
-                        name,
-                        arguments,
-                        ..
-                    }) => (call_index, Some(id), Some(name), Some(arguments), None),
-
-                    _ => (
-                        self.allocate_call_index(),
-                        Option::<String>::None,
-                        Option::<String>::None,
-                        Option::<String>::None,
-                        Option::<String>::None,
-                    ),
-                };
-
-                let arguments = call
-                    .arguments
-                    .map(StepArguments::into_text)
-                    .or(open_arguments)
-                    .unwrap_or_default();
-
+            Some(OpenStep::Call {
+                call_index,
+                id,
+                name,
+                arguments,
+                ..
+            }) => {
                 events.push(IrEvent::ToolCallDone {
                     index: call_index,
-                    call_id: nonempty_or(call.id, open_id),
-                    name: nonempty_or(call.name, open_name),
+                    call_id: id,
+                    name,
                     arguments,
-                    thought_signature: call.signature.or(open_signature),
+                    thought_signature: None,
                 });
             }
 
-            // Unknown and request-echo (`user_input`, `function_result`) stops close any
-            // tracked step of the index and emit nothing.
-            _ => {
-                self.take_open(frame.step_index);
-            }
+            // Untracked indices — request-echo and unknown step kinds, stray stops — close
+            // nothing and emit nothing.
+            None => {}
         }
 
         Ok(events)
     }
 
-    /// Ingests an `interaction.complete` frame: the terminal status, then the usage report when
-    /// the frame carries one.
+    /// Ingests an `interaction.completed` frame: the terminal status, then the usage report when
+    /// the frame's partial resource carries one.
     ///
     /// # Errors
     ///
     /// Returns [`PayloadError`] for the failed status.
-    fn ingest_complete(&mut self, frame: CompleteFrame) -> Result<Vec<IrEvent>, PayloadError> {
+    fn ingest_completed(&mut self, frame: CompletedFrame) -> Result<Vec<IrEvent>, PayloadError> {
         let mut events = self.ensure_open();
 
-        events.extend(self.ingest_status(frame.status, frame.message)?);
+        events.extend(self.ingest_status(frame.interaction.status)?);
 
-        if let Some(usage) = frame.usage {
+        if let Some(usage) = frame.interaction.usage {
             events.push(IrEvent::Usage(usage.into_usage()));
         }
 
@@ -770,20 +822,11 @@ impl UpstreamParser {
     }
 }
 
-/// Prefers the upstream value when it is non-empty, else the tracked fallback: a stop carrying an
-/// empty id or name (the upstream's unset spelling) must not clobber the streamed values.
-fn nonempty_or(primary: String, fallback: Option<String>) -> String {
-    if primary.is_empty() {
-        fallback.unwrap_or_default()
-    } else {
-        primary
-    }
-}
-
 impl UpstreamEventParser for UpstreamParser {
-    /// Ingests one upstream SSE frame, discriminated on its `event:` name. A frame bearing a
-    /// non-null `error` member aborts as an upstream failure whatever its event name; frames with
-    /// an unknown or missing event name are ignored for forward compatibility.
+    /// Ingests one upstream SSE frame, discriminated by its `event:` line or, failing that, the
+    /// payload's `event_type` member. A frame bearing a non-null `error` member aborts as an
+    /// upstream failure whatever its event name; frames with an unknown or missing event name are
+    /// ignored for forward compatibility.
     ///
     /// # Errors
     ///
@@ -798,11 +841,11 @@ impl UpstreamEventParser for UpstreamParser {
             return Err(error.failure());
         }
 
-        match frame.event.as_deref() {
+        match Self::frame_event(frame)?.as_deref() {
             Some(EVENT_CREATED) => {
                 let created: CreatedFrame = format::parse_frame(frame)?;
 
-                Ok(self.open_events(created.id, created.model))
+                Ok(self.open_events(created.interaction.id, created.interaction.model))
             }
 
             Some(EVENT_STEP_START) => {
@@ -823,11 +866,15 @@ impl UpstreamEventParser for UpstreamParser {
                 self.ingest_stop(stop)
             }
 
-            Some(EVENT_COMPLETE) => {
-                let complete: CompleteFrame = format::parse_frame(frame)?;
+            Some(EVENT_COMPLETED) => {
+                let completed: CompletedFrame = format::parse_frame(frame)?;
 
-                self.ingest_complete(complete)
+                self.ingest_completed(completed)
             }
+
+            // The progress-only status update carries no content: the terminal status and usage
+            // arrive only on `interaction.completed`.
+            Some(EVENT_STATUS_UPDATE) => Ok(Vec::new()),
 
             // Heartbeats and future event kinds never surface content.
             _ => Ok(Vec::new()),
@@ -872,11 +919,30 @@ impl UpstreamEventParser for UpstreamParser {
         Vec::new()
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Builds one SSE frame of the upstream stream vocabulary.
+    /// Builds one SSE frame of the official upstream vocabulary, discriminated only by the
+    /// payload's `event_type` member (no `event:` line).
+    fn eventless_frame(event_type: &str, mut data: Value) -> SseFrame {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "every fixture payload is a JSON object"
+        )]
+        {
+            data["event_type"] = Value::String(event_type.to_string());
+        }
+
+        SseFrame {
+            data: data.to_string(),
+            event: None,
+        }
+    }
+
+    /// Builds one SSE frame carrying an explicit `event:` line, the alternate official
+    /// discrimination path.
     fn frame(event: &str, data: Value) -> SseFrame {
         SseFrame {
             data: data.to_string(),
@@ -884,7 +950,7 @@ mod tests {
         }
     }
 
-    /// Ingests one frame of the upstream stream vocabulary on the given parser.
+    /// Ingests one eventless frame on the given parser.
     ///
     /// # Panics
     ///
@@ -893,37 +959,35 @@ mod tests {
         clippy::expect_used,
         reason = "the fixture frames are constructed to parse"
     )]
-    fn ingest(parser: &mut UpstreamParser, event: &str, data: Value) -> Vec<IrEvent> {
+    fn ingest(parser: &mut UpstreamParser, event_type: &str, data: Value) -> Vec<IrEvent> {
         parser
-            .ingest_frame(&frame(event, data))
+            .ingest_frame(&eventless_frame(event_type, data))
             .expect("the fixture frame parses")
     }
 
-    /// Opens a parser with a created frame carrying a fixed identity.
-    fn ingest_created(parser: &mut UpstreamParser) {
-        ingest(
-            parser,
-            EVENT_CREATED,
-            serde_json::json!({"id": "i", "model": "m"}),
-        );
-    }
-
-    /// Verifies the event-name-discriminated streaming parse end to end: created opens the stream,
-    /// text deltas stream, thought summary deltas plus a signature close as an empty-text done
-    /// carrying the signature and the verbatim step, tool argument deltas assemble one call, and
-    /// the terminal status reports finish and usage.
+    /// Verifies the official streaming vocabulary end to end over eventless frames: created opens
+    /// the stream under the `interaction` member, text and thought deltas stream under opened
+    /// steps, a stop closes the thought as a done carrying the streamed state, an arguments delta
+    /// assembles one call whose stop closes it, and the completed frame reports the terminal
+    /// status and usage under the partial `interaction` resource.
     ///
     /// # Panics
     ///
-    /// Panics if the parsed events diverge from the contract.
+    /// Panics if the parsed events diverge from the official contract.
     #[test]
-    fn parses_the_streaming_vocabulary_by_event_name() {
+    fn parses_the_official_streaming_vocabulary() {
         let mut parser = UpstreamParser::new();
 
         let created = ingest(
             &mut parser,
-            EVENT_CREATED,
-            serde_json::json!({"id": "int_1", "model": "upstream-model"}),
+            super::super::EVENT_CREATED,
+            serde_json::json!({
+                "interaction": {
+                    "id": "int_1",
+                    "model": "upstream-model",
+                    "status": "in_progress",
+                }
+            }),
         );
 
         assert_eq!(
@@ -938,119 +1002,92 @@ mod tests {
         assert!(
             ingest(
                 &mut parser,
-                EVENT_CREATED,
-                serde_json::json!({"id": "int_2", "model": "other"}),
+                super::super::EVENT_CREATED,
+                serde_json::json!({"interaction": {"id": "int_2"}}),
             )
             .is_empty()
         );
 
-        // A text start records the step and emits nothing on its own.
+        // An output start records the step and emits nothing on its own.
         assert!(
             ingest(
                 &mut parser,
-                EVENT_STEP_START,
-                serde_json::json!({"step_index": 0, "step": {"type": "output_text"}}),
+                super::super::EVENT_STEP_START,
+                serde_json::json!({"index": 0, "step": {"type": "model_output"}}),
             )
             .is_empty()
         );
 
         let text_delta = ingest(
             &mut parser,
-            EVENT_STEP_DELTA,
-            serde_json::json!({"step_index": 0, "delta": {"type": "text", "text": "hi"}}),
+            super::super::EVENT_STEP_DELTA,
+            serde_json::json!({"index": 0, "delta": {"type": "text", "text": "hi"}}),
         );
 
-        assert!(
-            text_delta.contains(&IrEvent::TextDelta("hi".to_string())),
-            "unexpected text events: {text_delta:?}",
+        assert_eq!(text_delta, vec![IrEvent::TextDelta("hi".to_string())]);
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({"index": 1, "step": {"type": "thought"}}),
         );
 
         ingest(
             &mut parser,
-            EVENT_STEP_START,
-            serde_json::json!({"step_index": 1, "step": {"type": "thought", "id": "th_9"}}),
-        );
-
-        ingest(
-            &mut parser,
-            EVENT_STEP_DELTA,
+            super::super::EVENT_STEP_DELTA,
             serde_json::json!({
-                "step_index": 1,
-                "delta": {"type": "thought_summary", "summary": "reasoning"},
-            }),
-        );
-
-        ingest(
-            &mut parser,
-            EVENT_STEP_DELTA,
-            serde_json::json!({
-                "step_index": 1,
-                "delta": {"type": "thought_signature", "signature": "sig-1"},
-            }),
-        );
-
-        let thought_stop = ingest(
-            &mut parser,
-            EVENT_STEP_STOP,
-            serde_json::json!({
-                "step_index": 1,
-                "step": {
-                    "type": "thought",
-                    "id": "th_9",
-                    "summary": "reasoning",
-                    "signature": "sig-1",
+                "index": 1,
+                "delta": {
+                    "type": "thought_summary",
+                    "content": {"type": "text", "text": "reasoning"},
                 },
             }),
         );
 
-        assert_eq!(thought_stop.len(), 1);
-        #[expect(
-            clippy::expect_used,
-            reason = "the preceding length assertion guarantees one event"
-        )]
-        let stop = thought_stop
-            .first()
-            .expect("the thought stop closes with one event");
-        assert!(
-            matches!(stop, IrEvent::ReasoningDone { .. }),
-            "a thought stop must close with a reasoning done: {thought_stop:?}",
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_DELTA,
+            serde_json::json!({
+                "index": 1,
+                "delta": {"type": "thought_signature", "signature": "sig-1"},
+            }),
         );
 
-        if let IrEvent::ReasoningDone {
-            text,
-            signature,
-            opaque,
-        } = stop
-        {
-            // Deltas delivered the text, so the done is empty-text — never overlapping.
-            assert_eq!(text, "");
-            assert_eq!(signature, &Some("sig-1".to_string()));
-            assert_eq!(
-                opaque,
-                &serde_json::json!({
+        // The official stop carries the index alone; the done assembles from the streamed state.
+        let thought_stop = ingest(
+            &mut parser,
+            super::super::EVENT_STEP_STOP,
+            serde_json::json!({"index": 1}),
+        );
+
+        assert_eq!(
+            thought_stop,
+            vec![IrEvent::ReasoningDone {
+                text: "reasoning".to_string(),
+                signature: Some("sig-1".to_string()),
+                opaque: serde_json::json!({
                     "type": "thought",
-                    "id": "th_9",
-                    "summary": "reasoning",
+                    "summary": [{"type": "text", "text": "reasoning"}],
                     "signature": "sig-1",
                 }),
-            );
-        }
+            }],
+        );
 
         ingest(
             &mut parser,
-            EVENT_STEP_START,
+            super::super::EVENT_STEP_START,
             serde_json::json!({
-                "step_index": 2,
+                "index": 2,
                 "step": {"type": "function_call", "id": "call_7", "name": "search"},
             }),
         );
 
         let call_delta = ingest(
             &mut parser,
-            EVENT_STEP_DELTA,
+            super::super::EVENT_STEP_DELTA,
             serde_json::json!({
-                "step_index": 2,
-                "delta": {"type": "tool_arguments", "arguments": r##"{"q":"##},
+                "index": 2,
+                "delta": {"type": "arguments_delta", "arguments": r##"{"q":"##},
             }),
         );
 
@@ -1066,16 +1103,8 @@ mod tests {
 
         let call_stop = ingest(
             &mut parser,
-            EVENT_STEP_STOP,
-            serde_json::json!({
-                "step_index": 2,
-                "step": {
-                    "type": "function_call",
-                    "id": "call_7",
-                    "name": "search",
-                    "arguments": r#"{"q":"hi"}"#,
-                },
-            }),
+            super::super::EVENT_STEP_STOP,
+            serde_json::json!({"index": 2}),
         );
 
         assert_eq!(
@@ -1084,33 +1113,38 @@ mod tests {
                 index: 0,
                 call_id: "call_7".to_string(),
                 name: "search".to_string(),
-                arguments: r#"{"q":"hi"}"#.to_string(),
+                arguments: r##"{"q":"##.to_string(),
                 thought_signature: None,
             }],
         );
 
-        let complete = ingest(
+        let completed = ingest(
             &mut parser,
-            EVENT_COMPLETE,
+            super::super::EVENT_COMPLETED,
             serde_json::json!({
-                "status": "requires_action",
-                "usage": {
-                    "total_input_tokens": 10,
-                    "total_output_tokens": 20,
-                    "total_thought_tokens": 8,
-                    "total_cached_tokens": 3,
-                    "total_tool_use_tokens": 99,
+                "interaction": {
+                    "id": "int_1",
+                    "status": "requires_action",
+                    "usage": {
+                        "total_input_tokens": 10,
+                        "total_output_tokens": 20,
+                        "total_thought_tokens": 8,
+                        "total_cached_tokens": 3,
+                        "total_tool_use_tokens": 99,
+                        "total_tokens": 38,
+                    },
                 },
+                "event_id": "evt_1",
             }),
         );
 
         assert_eq!(
-            complete,
+            completed,
             vec![
                 IrEvent::Finish(IrFinishReason::ToolCall),
                 IrEvent::Usage(IrUsage {
                     input_tokens: 10,
-                    // Output includes reasoning; the tool-use tokens are dropped.
+                    // Output includes reasoning; the tool-use total is dropped.
                     output_tokens: 28,
                     cached_tokens: Some(3),
                     cache_write_tokens: None,
@@ -1122,50 +1156,269 @@ mod tests {
         assert!(parser.finish().is_empty(), "no spurious Stop may follow");
     }
 
-    /// A thought stop that arrives without any prior summary deltas closes as a full-text done:
-    /// the stop's own summary is authoritative, so its text is never lost.
+    /// A text delta with no recorded start implicitly opens its step: a missed start cannot
+    /// strand content.
     ///
     /// # Panics
     ///
-    /// Panics if the stop-only block loses its text.
+    /// Panics if the implicit open fails to deliver the delta.
     #[test]
-    fn closes_a_delta_less_thought_stop_with_its_own_text() {
+    fn implicitly_opens_a_step_for_a_delta_without_a_start() {
         let mut parser = UpstreamParser::new();
 
-        ingest_created(&mut parser);
+        let events = ingest(
+            &mut parser,
+            super::super::EVENT_STEP_DELTA,
+            serde_json::json!({"index": 4, "delta": {"type": "text", "text": "hi"}}),
+        );
 
+        assert_eq!(
+            events,
+            vec![
+                // The implicit open emits the stream-opening MessageStart first.
+                IrEvent::MessageStart {
+                    id: String::new(),
+                    model: String::new(),
+                },
+                IrEvent::TextDelta("hi".to_string()),
+            ],
+        );
+
+        // The stop closes the implicitly opened step without further content.
         let stop = ingest(
             &mut parser,
-            EVENT_STEP_STOP,
+            super::super::EVENT_STEP_STOP,
+            serde_json::json!({"index": 4}),
+        );
+
+        assert!(stop.is_empty(), "a closed output step emits nothing");
+    }
+
+    /// The officially optional `thought_summary` `content` and `thought_signature` `signature`
+    /// members parse as no-ops when absent: a conformant member-less delta neither aborts the
+    /// stream, nor emits content, nor opens a step.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a member-less delta fails to parse or delivers content.
+    #[test]
+    fn parses_member_less_thought_deltas_as_no_ops() {
+        let mut parser = UpstreamParser::new();
+
+        for delta in [
+            serde_json::json!({"type": "thought_summary"}),
+            serde_json::json!({"type": "thought_signature"}),
+        ] {
+            assert!(
+                ingest(
+                    &mut parser,
+                    super::super::EVENT_STEP_DELTA,
+                    serde_json::json!({"index": 0, "delta": delta}),
+                )
+                .is_empty(),
+                "a member-less delta carries no content: {delta}",
+            );
+        }
+
+        // Carrying nothing, the deltas opened no step: the stop merely opens the stream.
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_STOP,
+                serde_json::json!({"index": 0}),
+            ),
+            vec![IrEvent::MessageStart {
+                id: String::new(),
+                model: String::new(),
+            }],
+        );
+    }
+
+    /// A `thought_signature` delta without the officially optional `signature` member never
+    /// clears a signature already streamed for the open thought step.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the member-less delta fails to parse or the closed block diverges from the
+    /// streamed state.
+    #[test]
+    fn preserves_a_streamed_signature_against_a_member_less_signature_delta() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({"index": 1, "step": {"type": "thought"}}),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_DELTA,
             serde_json::json!({
-                "step_index": 5,
-                "step": {"type": "thought", "id": "th_5", "summary": "whole"},
+                "index": 1,
+                "delta": {"type": "thought_signature", "signature": "sig-1"},
             }),
         );
 
-        assert_eq!(stop.len(), 1);
-        #[expect(
-            clippy::expect_used,
-            reason = "the preceding length assertion guarantees one event"
-        )]
-        let only = stop.first().expect("the stop closes with one event");
-        assert!(
-            matches!(only, IrEvent::ReasoningDone { .. }),
-            "a thought stop must close with a reasoning done: {stop:?}",
+        // A conformant member-less repetition of the same delta kind.
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_DELTA,
+            serde_json::json!({"index": 1, "delta": {"type": "thought_signature"}}),
         );
 
-        if let IrEvent::ReasoningDone { text, opaque, .. } = only {
-            assert_eq!(text, "whole");
-            assert_eq!(
-                opaque,
-                &serde_json::json!({"type": "thought", "id": "th_5", "summary": "whole"}),
-            );
-        }
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_STOP,
+                serde_json::json!({"index": 1}),
+            ),
+            vec![IrEvent::ReasoningDone {
+                text: String::new(),
+                signature: Some("sig-1".to_string()),
+                opaque: serde_json::json!({"type": "thought", "signature": "sig-1"}),
+            }],
+        );
     }
 
-    /// Verifies the non-streaming parse: the Interaction body's steps deliver text deltas,
-    /// full-text thought dones with no prior deltas, and full-arguments call pairs, then the
-    /// status and usage close the stream.
+    /// Media, annotation, server-side tool, and unknown delta kinds — and progress-only status
+    /// updates, unknown events, and heartbeats — carry no content and never abort a stream of
+    /// official events; frames discriminated by an explicit `event:` line parse the same way.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an ignorable frame fails or delivers content.
+    #[test]
+    fn ignores_irrelevant_frames_and_honors_the_event_line() {
+        let mut parser = UpstreamParser::new();
+
+        for delta in [
+            serde_json::json!({"type": "image", "uri": "https://example.com/i.png"}),
+            serde_json::json!({"type": "text_annotation_delta", "annotations": []}),
+            serde_json::json!({"type": "hologram_delta", "data": "x"}),
+            serde_json::json!({"type": "google_search_call", "arguments": {}}),
+        ] {
+            assert!(
+                ingest(
+                    &mut parser,
+                    super::super::EVENT_STEP_DELTA,
+                    serde_json::json!({"index": 0, "delta": delta}),
+                )
+                .is_empty(),
+                "an ignorable delta carries no content: {delta}",
+            );
+        }
+
+        // The progress-only status update parses and ignores; the terminal status arrives only
+        // on the completed frame.
+        assert!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STATUS_UPDATE,
+                serde_json::json!({"interaction_id": "int_1", "status": "requires_action"}),
+            )
+            .is_empty(),
+        );
+
+        // An explicit `event:` line discriminates the same vocabulary.
+        #[expect(
+            clippy::expect_used,
+            reason = "the event-lined frames are constructed to parse"
+        )]
+        {
+            let created = parser
+                .ingest_frame(&frame(
+                    super::super::EVENT_CREATED,
+                    serde_json::json!({"interaction": {"id": "int_9", "model": "m"}}),
+                ))
+                .expect("the event-lined frame parses");
+
+            assert!(
+                matches!(created.first(), Some(IrEvent::MessageStart { .. })),
+                "the created event opens the stream: {created:?}",
+            );
+
+            let delta = parser
+                .ingest_frame(&frame(
+                    super::super::EVENT_STEP_DELTA,
+                    serde_json::json!({"index": 0, "delta": {"type": "text", "text": "hi"}}),
+                ))
+                .expect("the event-lined delta parses");
+
+            assert!(delta.contains(&IrEvent::TextDelta("hi".to_string())));
+        }
+
+        // Heartbeats and future kinds stay silent.
+        #[expect(clippy::expect_used, reason = "the heartbeat is constructed to parse")]
+        let heartbeat = parser
+            .ingest_frame(&frame("interaction.ping", serde_json::json!({"t": 1})))
+            .expect("the heartbeat parses");
+
+        assert!(heartbeat.is_empty());
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the eventless heartbeat is constructed to parse"
+        )]
+        let eventless = parser
+            .ingest_frame(&SseFrame {
+                data: serde_json::json!({"t": 1}).to_string(),
+                event: None,
+            })
+            .expect("an eventless heartbeat parses");
+
+        assert!(
+            eventless.is_empty(),
+            "an eventless heartbeat carries nothing"
+        );
+    }
+
+    /// A thought stop without any streamed summary closes as an empty-text done whose opaque is
+    /// the minimal synthesized step, and a stray stop for an untracked index closes nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the closed block diverges from the streamed state.
+    #[test]
+    fn closes_a_summary_less_thought_stop_with_the_synthesized_step() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({"index": 5, "step": {"type": "thought"}}),
+        );
+
+        let stop = ingest(
+            &mut parser,
+            super::super::EVENT_STEP_STOP,
+            serde_json::json!({"index": 5}),
+        );
+
+        assert_eq!(
+            stop,
+            vec![IrEvent::ReasoningDone {
+                text: String::new(),
+                signature: None,
+                opaque: serde_json::json!({"type": "thought"}),
+            }],
+        );
+
+        // A stray stop for an untracked index closes nothing and emits nothing.
+        let stray = ingest(
+            &mut parser,
+            super::super::EVENT_STEP_STOP,
+            serde_json::json!({"index": 99}),
+        );
+
+        assert!(stray.is_empty());
+    }
+
+    /// Verifies the non-streaming parse of the official Interaction resource: `model_output`
+    /// steps deliver text from their content blocks, thought steps close as full-text dones with
+    /// no prior deltas carrying their complete step JSON as the opaque, function calls pair a
+    /// full-arguments delta with a done, request-echo steps are ignored, and the status and usage
+    /// close the stream.
     ///
     /// # Panics
     ///
@@ -1175,14 +1428,23 @@ mod tests {
         let body = serde_json::json!({
             "id": "int_3",
             "model": "upstream-model",
+            "object": "interaction",
             "status": "completed",
             "steps": [
-                {"type": "output_text", "text": "hello"},
-                {"type": "thought", "id": "th_1", "summary": "considered", "signature": "sig-t"},
+                {"type": "model_output", "content": [
+                    {"type": "text", "text": "hello "},
+                    {"type": "text", "text": "world"},
+                ]},
+                {"type": "thought", "summary": [
+                    {"type": "text", "text": "considered"},
+                ], "signature": "sig-t"},
                 {"type": "function_call", "id": "call_1", "name": "search", "arguments": {
                     "q": "hi",
                 }},
-                {"type": "user_input", "content": []},
+                {"type": "user_input", "content": [{"type": "text", "text": "ignored"}]},
+                {"type": "function_result", "call_id": "call_1", "result": "ignored"},
+                {"type": "google_search_call", "arguments": {"queries": ["x"]}, "id": "g_1",
+                 "signature": "sig-g"},
             ],
             "usage": {
                 "total_input_tokens": 7,
@@ -1207,14 +1469,13 @@ mod tests {
                     id: "int_3".to_string(),
                     model: "upstream-model".to_string(),
                 },
-                IrEvent::TextDelta("hello".to_string()),
+                IrEvent::TextDelta("hello world".to_string()),
                 IrEvent::ReasoningDone {
                     text: "considered".to_string(),
                     signature: Some("sig-t".to_string()),
                     opaque: serde_json::json!({
                         "type": "thought",
-                        "id": "th_1",
-                        "summary": "considered",
+                        "summary": [{"type": "text", "text": "considered"}],
                         "signature": "sig-t",
                     }),
                 },
@@ -1243,27 +1504,42 @@ mod tests {
         );
     }
 
-    /// Verifies the terminal status mapping: `incomplete` finishes with length, `failed` aborts
-    /// as an upstream failure on both the streaming and the buffered paths, and a stream that
-    /// ends cleanly without any status degrades to stop.
+    /// Verifies the terminal status mapping: `requires_action` finishes with tool-call,
+    /// `incomplete` and the deprecated `budget_exceeded` with length, `cancelled` with a clean
+    /// stop, `failed` aborts as an upstream failure on both the streaming and the buffered paths,
+    /// and a stream that ends cleanly without any status degrades to stop.
     ///
     /// # Panics
     ///
     /// Panics if a status maps outside its documented finish.
     #[test]
     fn maps_terminal_statuses() {
-        let mut parser = UpstreamParser::new();
+        for (status, finish) in [
+            ("requires_action", IrFinishReason::ToolCall),
+            ("incomplete", IrFinishReason::Length),
+            ("budget_exceeded", IrFinishReason::Length),
+            ("cancelled", IrFinishReason::Stop),
+            ("completed", IrFinishReason::Stop),
+            // The non-terminal statuses never terminate a conformant stream; arriving anyway,
+            // they degrade to a clean stop.
+            ("in_progress", IrFinishReason::Stop),
+            ("queued", IrFinishReason::Stop),
+            ("a_future_status", IrFinishReason::Stop),
+        ] {
+            let mut parser = UpstreamParser::new();
 
-        let events = ingest(
-            &mut parser,
-            EVENT_COMPLETE,
-            serde_json::json!({"status": "incomplete"}),
-        );
+            let events = ingest(
+                &mut parser,
+                super::super::EVENT_COMPLETED,
+                serde_json::json!({"interaction": {"id": "i", "status": status}}),
+            );
 
-        assert_eq!(
-            events.last(),
-            Some(&IrEvent::Finish(IrFinishReason::Length))
-        );
+            assert_eq!(
+                events.last(),
+                Some(&IrEvent::Finish(finish)),
+                "status `{status}` must finish with its documented reason",
+            );
+        }
 
         let mut parser = UpstreamParser::new();
 
@@ -1272,14 +1548,13 @@ mod tests {
             reason = "the failed status is constructed to be rejected"
         )]
         let error = parser
-            .ingest_frame(&frame(
-                EVENT_COMPLETE,
-                serde_json::json!({"status": "failed", "message": "crashed"}),
+            .ingest_frame(&eventless_frame(
+                super::super::EVENT_COMPLETED,
+                serde_json::json!({"interaction": {"status": "failed"}}),
             ))
             .expect_err("a failed status must abort the stream");
 
         assert!(error.to_string().contains("failed"));
-        assert!(error.to_string().contains("crashed"));
 
         let mut parser = UpstreamParser::new();
 
@@ -1295,7 +1570,11 @@ mod tests {
 
         let mut parser = UpstreamParser::new();
 
-        ingest_created(&mut parser);
+        ingest(
+            &mut parser,
+            super::super::EVENT_CREATED,
+            serde_json::json!({"interaction": {"id": "i"}}),
+        );
 
         assert_eq!(
             parser.finish(),
@@ -1305,14 +1584,14 @@ mod tests {
     }
 
     /// An upstream failure embedded in a success transport aborts the same way on both paths: a
-    /// frame bearing a non-null `error` member and a JSON body carrying one both fail, while
-    /// frames with unknown or missing event names are ignored for forward compatibility.
+    /// frame bearing a non-null `error` member — the official `error` event included — and a JSON
+    /// body carrying one both fail.
     ///
     /// # Panics
     ///
-    /// Panics if an embedded error parses as a success or a benign frame fails.
+    /// Panics if an embedded error parses as a success.
     #[test]
-    fn rejects_embedded_upstream_errors_and_ignores_unknown_events() {
+    fn rejects_embedded_upstream_errors() {
         let mut parser = UpstreamParser::new();
 
         #[expect(
@@ -1320,13 +1599,13 @@ mod tests {
             reason = "the error frame is constructed to be rejected"
         )]
         let error = parser
-            .ingest_frame(&frame(
-                EVENT_STEP_DELTA,
-                serde_json::json!({"error": {"message": "overloaded"}}),
+            .ingest_frame(&eventless_frame(
+                "error",
+                serde_json::json!({"error": {"code": "UNAVAILABLE", "message": "overloaded"}}),
             ))
             .expect_err("an embedded error must abort the stream");
 
-        assert_eq!(error.to_string(), "overloaded");
+        assert!(error.to_string().contains("overloaded"));
 
         let mut parser = UpstreamParser::new();
 
@@ -1339,28 +1618,48 @@ mod tests {
             .expect_err("an embedded error must abort the body");
 
         assert_eq!(error.to_string(), "quota exhausted");
+    }
 
+    /// The old self-pinned dialect contradicts the official one and is rejected where a JSON kind
+    /// is pinned: a function_call step carrying JSON-encoded-string arguments — the old spelling —
+    /// fails as a malformed payload, and the old terminal event name carries no content.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the old spelling parses as a success.
+    #[test]
+    fn rejects_old_dialect_argument_spelling() {
         let mut parser = UpstreamParser::new();
-
-        assert!(
-            ingest(&mut parser, "interaction.ping", serde_json::json!({"t": 1})).is_empty(),
-            "an unknown event carries no content",
-        );
 
         #[expect(
             clippy::expect_used,
-            reason = "the eventless frame is constructed to parse"
+            reason = "the old spelling is constructed to be rejected"
         )]
-        let eventless = parser
-            .ingest_frame(&SseFrame {
-                data: serde_json::json!({"t": 1}).to_string(),
-                event: None,
-            })
-            .expect("an eventless frame parses");
+        let error = parser
+            .parse_json_response(serde_json::json!({
+                "status": "completed",
+                "steps": [{"type": "function_call", "id": "c", "name": "f",
+                           "arguments": r#"{"q":"hi"}"#}],
+            }))
+            .expect_err("the old JSON-encoded-string arguments must fail");
 
         assert!(
-            eventless.is_empty(),
-            "an eventless frame carries no content"
+            error.to_string().contains("malformed"),
+            "the failure must report a malformed payload: {error}",
+        );
+
+        // The old terminal event name is simply unknown today: a future-compatible no-op.
+        let mut parser = UpstreamParser::new();
+
+        assert!(
+            ingest(
+                &mut parser,
+                "interaction.complete",
+                serde_json::json!({
+                    "status": "completed",
+                })
+            )
+            .is_empty(),
         );
     }
 }

@@ -349,7 +349,7 @@ pub struct DeleteProviderRequest {
 pub(super) async fn list(
     State(context): State<Context>,
 ) -> Result<Json<ListProvidersResponse>, Error> {
-    let providers = storage::list_providers(&context.database).await?;
+    let providers = storage::providers::list_providers(&context.database).await?;
 
     Ok(Json(ListProvidersResponse {
         providers: providers
@@ -379,7 +379,7 @@ pub(super) async fn create(
 
     // The pre-insert check renders a clean 409; the database's UNIQUE constraint is the concurrent
     // backstop.
-    if storage::find_provider(&context.database, &request.name)
+    if storage::providers::find_provider(&context.database, &request.name)
         .await?
         .is_some()
     {
@@ -390,7 +390,7 @@ pub(super) async fn create(
 
     let credentials = Credentials::ApiKey(request.api_key);
 
-    let provider = storage::insert_provider(
+    let provider = storage::providers::insert_provider(
         &context.database,
         &NewProvider {
             name: &request.name,
@@ -426,7 +426,7 @@ pub(super) async fn delete(
     State(context): State<Context>,
     WithRejection(Json(request), _): WithRejection<Json<DeleteProviderRequest>, Error>,
 ) -> Result<Json<EmptyResponse>, Error> {
-    if !storage::delete_provider(&context.database, request.provider_id).await? {
+    if !storage::providers::delete_provider(&context.database, request.provider_id).await? {
         return Err(Error::ProviderNotFound {
             id: request.provider_id,
         });
@@ -592,7 +592,8 @@ async fn handle_update(
     // The outer read pins request validation only: the type is immutable, so it cannot drift before
     // the transactional write, and the update's merge and checks read the row again inside the
     // transaction.
-    let Some(existing) = storage::find_provider_by_id(database, provider_id).await? else {
+    let Some(existing) = storage::providers::find_provider_by_id(database, provider_id).await?
+    else {
         return Err(Error::ProviderNotFound { id: provider_id });
     };
 
@@ -621,10 +622,10 @@ async fn handle_update(
     // name renames the provider — the optional credentials replacement, and the recomputed public
     // model names; a taken name or a prefix change that would collide is rejected with 409 before
     // anything is written.
-    storage::update_provider(
+    storage::providers::update_provider(
         database,
         provider_id,
-        storage::ProviderUpdate {
+        storage::providers::ProviderUpdate {
             name,
             model_prefix,
             base_url,

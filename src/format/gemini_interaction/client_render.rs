@@ -1,24 +1,32 @@
 //! Client-response rendering for the Gemini Interactions codec: renders IR events as native
-//! Interactions SSE frames (`event:`-named family events) or the aggregated non-streaming
-//! Interaction resource, speaking the wire vocabulary the parent module fixes.
+//! Interactions SSE frames or the aggregated non-streaming Interaction resource, speaking the
+//! official wire vocabulary the parent module pins.
 //!
 //! # Surface contract
 //!
-//! - Streaming responses reuse the family's own event vocabulary (`interaction.created`,
-//!   `step.start`, `step.delta`, `step.stop`, `interaction.complete`) with `event:` names; the
-//!   aggregated response is the Interaction resource (`id`, `model`, `status`, `steps`, `usage`). A
-//!   `step.stop` always carries the complete step, so receivers replace — never append —
-//!   accumulated delta state. Steps render in a fixed order the aggregation can guarantee: thought
-//!   steps first, then the text step, then function calls.
+//! - Every streamed frame carries its event name twice: the SSE `event:` line and the official
+//!   `event_type` JSON member, so receivers may discriminate either way. The events are
+//!   `interaction.created` (opening, carrying the partial Interaction resource under the
+//!   `interaction` member with `status: "in_progress"`), `step.start` (`index`, `step`),
+//!   `step.delta` (`index`, `delta`), `step.stop` (`index` — the official stop carries no step, so
+//!   the streamed deltas are the sole content), and the terminal `interaction.completed` carrying
+//!   the terminal partial resource: the mapped status and the usage when one was reported.
+//!   `interaction.status_update` is never emitted: the gateway streams no intermediate statuses.
+//! - Tool-call completions reconcile with their streamed deltas the Chat Completions way: a done
+//!   for an open call streams the argument bytes its deltas did not already deliver (none when they
+//!   delivered all of them), and a done for a never-opened call opens the step and streams the
+//!   complete arguments as one delta.
 
-use super::{RenderStep, STATUS_COMPLETED, STATUS_INCOMPLETE, STATUS_REQUIRES_ACTION};
+use super::{
+    RenderStep, STATUS_COMPLETED, STATUS_IN_PROGRESS, STATUS_INCOMPLETE, STATUS_REQUIRES_ACTION,
+};
 use crate::{
     format::{self, ClientSseRenderer},
     ids,
     ir::{IrAggregation, IrFinishReason, IrUsage},
     sse,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 /// The non-streaming success body: the Interaction resource over the aggregated events.
@@ -33,7 +41,7 @@ pub(crate) struct JsonResponse {
     /// Terminal status derived from the aggregated finish.
     status: &'static str,
 
-    /// Response steps: thought steps, then the text step, then function calls.
+    /// Response steps: thought steps, then the output step, then function calls.
     steps: Vec<RenderStep>,
 
     /// Token accounting, absent when the upstream reported no usage.
@@ -41,9 +49,9 @@ pub(crate) struct JsonResponse {
     usage: Option<OutUsage>,
 }
 
-/// Token accounting in the Interactions usage shape: the inverse of the upstream usage mapping —
-/// the IR output total (which includes reasoning) splits back into the output and thought
-/// members, so a same-family round-trip restores the reported numbers.
+/// Token accounting in the official Interactions usage shape: the inverse of the upstream usage
+/// mapping — the IR output total (which includes reasoning) splits back into the output and
+/// thought members, so a same-family round-trip restores the reported numbers.
 #[derive(Debug, Serialize)]
 struct OutUsage {
     /// Tokens consumed by the input.
@@ -75,8 +83,29 @@ impl OutUsage {
     }
 }
 
+/// The partial Interaction resource the created and completed frames carry under the official
+/// `interaction` member. Streaming lifecycle payloads may omit any field of the full resource, so
+/// the created frame rides its `model` and the completed frame its `usage`.
+#[derive(Debug, Serialize)]
+struct InteractionRef<'a> {
+    /// Renderer-minted interaction identifier.
+    id: &'a str,
+
+    /// Public routing id the client addressed; the created frame only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+
+    /// The interaction status: `in_progress` while streaming, the terminal mapping on the
+    /// completed frame.
+    status: &'static str,
+
+    /// Token accounting; the completed frame only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<OutUsage>,
+}
+
 /// Renders an aggregated completion as the non-streaming Interaction resource. Steps render in the
-/// one order the aggregation can guarantee — thought steps in block order, then the text step,
+/// one order the aggregation can guarantee — thought steps in block order, then the output step,
 /// then function calls — because the fold does not preserve the original interleaving.
 ///
 /// # Panics
@@ -94,8 +123,10 @@ pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation)
     }
 
     if !aggregation.text.is_empty() {
-        steps.push(RenderStep::Typed(super::TypedStep::OutputText {
-            text: aggregation.text.clone(),
+        steps.push(RenderStep::Typed(super::TypedStep::ModelOutput {
+            content: vec![super::ContentBlock::Text {
+                text: aggregation.text.clone(),
+            }],
         }));
     }
 
@@ -103,8 +134,9 @@ pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation)
         steps.push(RenderStep::Typed(super::TypedStep::FunctionCall {
             id: call.call_id.clone(),
             name: call.name.clone(),
-            arguments: call.arguments.clone(),
-            signature: call.thought_signature.clone(),
+            // The degraded remainder carries no inventable shape: a non-object arguments text
+            // renders the empty object, never failing a healthy stream.
+            arguments: Value::Object(format::arguments_to_object_or_empty(&call.arguments)),
         }));
     }
 
@@ -128,7 +160,8 @@ fn finish_status(finish: Option<IrFinishReason>) -> &'static str {
     }
 }
 
-/// Streaming renderer emitting the family's own event vocabulary with `event:` names.
+/// Streaming renderer emitting the official event vocabulary with `event:` lines and `event_type`
+/// members.
 #[derive(Debug)]
 pub(super) struct SseRenderer {
     /// Public routing id the client addressed, echoed in the created frame.
@@ -143,8 +176,8 @@ pub(super) struct SseRenderer {
     /// Whether the created frame was emitted.
     is_created: bool,
 
-    /// Open model text step, accumulating its text.
-    open_text: Option<OpenTextStep>,
+    /// Open model output step, accumulating its text.
+    open_output: Option<OpenOutputStep>,
 
     /// Open model reasoning block, accumulating its summary.
     open_thought: Option<OpenThoughtStep>,
@@ -152,20 +185,20 @@ pub(super) struct SseRenderer {
     /// Open model tool invocations by call index.
     open_calls: Vec<OpenCallStep>,
 
-    /// Terminal finish buffered for the complete frame.
+    /// Terminal finish buffered for the completed frame.
     finish: Option<IrFinishReason>,
 
-    /// Terminal usage buffered for the complete frame.
+    /// Terminal usage buffered for the completed frame.
     usage: Option<IrUsage>,
 
-    /// Whether the complete frame was emitted; the gateway sends `Done` exactly once, so this is
+    /// Whether the completed frame was emitted; the gateway sends `Done` exactly once, so this is
     /// a defensive guard, not a second terminal path.
-    is_complete: bool,
+    is_completed: bool,
 }
 
-/// An open model text step of the client stream.
+/// An open model output step of the client stream.
 #[derive(Debug)]
-struct OpenTextStep {
+struct OpenOutputStep {
     /// Minted step index.
     index: u64,
 
@@ -178,9 +211,6 @@ struct OpenTextStep {
 struct OpenThoughtStep {
     /// Minted step index.
     index: u64,
-
-    /// Minted step identifier.
-    id: String,
 
     /// Summary streamed so far.
     summary: String,
@@ -200,42 +230,47 @@ struct OpenCallStep {
 
     /// Name of the invoked function, filled in as deltas reveal it.
     name: String,
+
+    /// Argument bytes streamed so far.
+    arguments: String,
 }
 
 /// The `interaction.created` frame payload.
 #[derive(Debug, Serialize)]
 struct CreatedPayload<'a> {
-    /// Renderer-minted interaction identifier.
-    id: &'a str,
+    /// The official event discriminator, emitted beside the SSE `event:` line.
+    event_type: &'static str,
 
-    /// Public routing id the client addressed.
-    model: &'a str,
+    /// The partial interaction resource.
+    interaction: InteractionRef<'a>,
 }
 
 /// The `step.start` frame payload.
 #[derive(Debug, Serialize)]
 struct StartPayload<'a> {
+    /// The official event discriminator, emitted beside the SSE `event:` line.
+    event_type: &'static str,
+
     /// Step index the frame opens.
-    step_index: u64,
+    index: u64,
 
     /// The opening shape of the step.
     step: StartStep<'a>,
 }
 
-/// The opening shape of a streamed step: its kind, with the id and name when already known.
+/// The opening shape of a streamed step: its kind, with the call's id and name when already
+/// known. How partial the official opening object may be is unpinned, so the thought and output
+/// openings carry their kind alone.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum StartStep<'a> {
-    /// An opening text step.
-    #[serde(rename = "output_text")]
-    OutputText {},
+    /// An opening output step.
+    #[serde(rename = "model_output")]
+    ModelOutput {},
 
     /// An opening reasoning block.
     #[serde(rename = "thought")]
-    Thought {
-        /// Step identifier.
-        id: &'a str,
-    },
+    Thought {},
 
     /// An opening tool invocation.
     #[serde(rename = "function_call")]
@@ -251,14 +286,17 @@ enum StartStep<'a> {
 /// The `step.delta` frame payload.
 #[derive(Debug, Serialize)]
 struct DeltaPayload<'a> {
+    /// The official event discriminator, emitted beside the SSE `event:` line.
+    event_type: &'static str,
+
     /// Step index the delta belongs to.
-    step_index: u64,
+    index: u64,
 
     /// The incremental delta.
     delta: OutDelta<'a>,
 }
 
-/// One incremental delta of the client stream, tagged by its kind.
+/// One incremental delta of the client stream, tagged by its official kind.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum OutDelta<'a> {
@@ -269,11 +307,11 @@ enum OutDelta<'a> {
         text: &'a str,
     },
 
-    /// Reasoning summary bytes.
+    /// Reasoning summary content; the official delta carries one content block.
     #[serde(rename = "thought_summary")]
     ThoughtSummary {
-        /// The summary bytes.
-        summary: &'a str,
+        /// The summary content block.
+        content: SummaryContent<'a>,
     },
 
     /// The signature terminating a reasoning block.
@@ -284,51 +322,44 @@ enum OutDelta<'a> {
     },
 
     /// Tool argument bytes.
-    #[serde(rename = "tool_arguments")]
-    ToolArguments {
+    #[serde(rename = "arguments_delta")]
+    ArgumentsDelta {
         /// The argument bytes.
         arguments: &'a str,
     },
 }
 
-/// The `step.stop` frame payload: the index beside the complete step, so receivers replace —
-/// never append — accumulated delta state.
+/// The official summary content block: the gateway emits text blocks only.
 #[derive(Debug, Serialize)]
-struct StopPayload<'a> {
+#[serde(tag = "type")]
+enum SummaryContent<'a> {
+    /// A text block.
+    #[serde(rename = "text")]
+    Text {
+        /// The summary bytes.
+        text: &'a str,
+    },
+}
+
+/// The `step.stop` frame payload: officially the index alone — the streamed deltas are the sole
+/// content, so receivers append them under the opened step.
+#[derive(Debug, Serialize)]
+struct StopPayload {
+    /// The official event discriminator, emitted beside the SSE `event:` line.
+    event_type: &'static str,
+
     /// Step index the frame closes.
-    step_index: u64,
-
-    /// The complete step.
-    step: &'a RenderStep,
+    index: u64,
 }
 
-/// The `interaction.complete` frame payload.
+/// The `interaction.completed` frame payload.
 #[derive(Debug, Serialize)]
-struct CompletePayload<'a> {
-    /// Terminal status derived from the finish.
-    status: &'static str,
+struct CompletedPayload<'a> {
+    /// The official event discriminator, emitted beside the SSE `event:` line.
+    event_type: &'static str,
 
-    /// Token accounting, absent when the stream reported no usage.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    usage: Option<OutUsageRef<'a>>,
-}
-
-/// Token accounting borrowed for the complete frame.
-#[derive(Debug, Serialize)]
-struct OutUsageRef<'a> {
-    /// Tokens consumed by the input.
-    total_input_tokens: u64,
-
-    /// Tokens produced by the output, excluding reasoning.
-    total_output_tokens: u64,
-
-    /// Tokens spent on model reasoning, omitted when the stream reported none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    total_thought_tokens: Option<u64>,
-
-    /// Input tokens served from the upstream cache, omitted when the stream reported none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    total_cached_tokens: Option<&'a u64>,
+    /// The terminal partial interaction resource.
+    interaction: InteractionRef<'a>,
 }
 
 impl SseRenderer {
@@ -339,12 +370,12 @@ impl SseRenderer {
             interaction_id: format!("int_{}", ids::new_uuid()),
             next_step_index: 0,
             is_created: false,
-            open_text: None,
+            open_output: None,
             open_thought: None,
             open_calls: Vec::new(),
             finish: None,
             usage: None,
-            is_complete: false,
+            is_completed: false,
         }
     }
 
@@ -359,127 +390,112 @@ impl SseRenderer {
         vec![sse::format_frame(
             Some(super::EVENT_CREATED),
             &format::render_json(&CreatedPayload {
-                id: &self.interaction_id,
-                model: &self.public_id,
+                event_type: super::EVENT_CREATED,
+                interaction: InteractionRef {
+                    id: &self.interaction_id,
+                    model: Some(&self.public_id),
+                    status: STATUS_IN_PROGRESS,
+                    usage: None,
+                },
             }),
         )]
     }
 
-    /// Opens the text step when none is open, returning its index.
-    fn open_text_step(&mut self, frames: &mut Vec<String>) -> u64 {
-        if let Some(open) = &self.open_text {
-            return open.index;
-        }
-
+    /// Allocates the next minted step index.
+    fn next_index(&mut self) -> u64 {
         let index = self.next_step_index;
 
         self.next_step_index += 1;
-        self.open_text = Some(OpenTextStep {
-            index,
-            text: String::new(),
-        });
-
-        frames.push(sse::format_frame(
-            Some(super::EVENT_STEP_START),
-            &format::render_json(&StartPayload {
-                step_index: index,
-                step: StartStep::OutputText {},
-            }),
-        ));
 
         index
     }
 
-    /// Opens the reasoning block under the given id when none is open, returning its index.
-    /// Callers pass the stored id for done-only blocks and a minted one for live deltas, so the
-    /// opened step always carries the id its stop will close with.
-    fn open_thought_step(&mut self, frames: &mut Vec<String>, id: String) -> u64 {
+    /// Opens the output step when none is open, returning its index.
+    fn open_output_step(&mut self, frames: &mut Vec<String>) -> u64 {
+        if let Some(open) = &self.open_output {
+            return open.index;
+        }
+
+        let index = self.next_index();
+
+        self.open_output = Some(OpenOutputStep {
+            index,
+            text: String::new(),
+        });
+
+        frames.push(start_frame(index, StartStep::ModelOutput {}));
+
+        index
+    }
+
+    /// Opens the reasoning block when none is open, returning its index.
+    fn open_thought_step(&mut self, frames: &mut Vec<String>) -> u64 {
         if let Some(open) = &self.open_thought {
             return open.index;
         }
 
-        let index = self.next_step_index;
+        let index = self.next_index();
 
-        self.next_step_index += 1;
-
-        frames.push(sse::format_frame(
-            Some(super::EVENT_STEP_START),
-            &format::render_json(&StartPayload {
-                step_index: index,
-                step: StartStep::Thought { id: &id },
-            }),
-        ));
+        frames.push(start_frame(index, StartStep::Thought {}));
 
         self.open_thought = Some(OpenThoughtStep {
             index,
-            id,
             summary: String::new(),
         });
 
         index
     }
 
-    /// Mints a step identifier for a freshly opened reasoning block.
-    fn minted_thought_id() -> String {
-        format!("thought_{}", ids::new_uuid())
-    }
-
-    /// Closes the open text step with its complete step, when one is open.
-    fn close_text_step(&mut self, frames: &mut Vec<String>) {
-        if let Some(open) = self.open_text.take() {
-            let step = RenderStep::Typed(super::TypedStep::OutputText { text: open.text });
-
-            frames.push(stop_frame(open.index, &step));
+    /// Closes the open output step, when one is open.
+    fn close_output_step(&mut self, frames: &mut Vec<String>) {
+        if let Some(open) = self.open_output.take() {
+            frames.push(stop_frame(open.index));
         }
     }
 
-    /// Closes every open step and emits the terminal complete frame exactly once.
+    /// Closes every open step and emits the terminal completed frame exactly once.
     fn complete(&mut self) -> Vec<String> {
-        if self.is_complete {
+        if self.is_completed {
             return Vec::new();
         }
 
-        self.is_complete = true;
+        self.is_completed = true;
 
         let mut frames = self.ensure_created();
 
-        self.close_text_step(&mut frames);
+        self.close_output_step(&mut frames);
 
         if let Some(open) = self.open_thought.take() {
-            let step = RenderStep::Typed(super::TypedStep::Thought {
-                id: open.id,
-                summary: (!open.summary.is_empty()).then_some(open.summary),
-                signature: None,
-            });
+            // Conformant streams pair a thought block's deltas with its done; this defensive
+            // close streams the buffered summary so a closed block never loses its text.
+            if !open.summary.is_empty() {
+                frames.push(delta_frame(
+                    open.index,
+                    OutDelta::ThoughtSummary {
+                        content: SummaryContent::Text {
+                            text: open.summary.as_str(),
+                        },
+                    },
+                ));
+            }
 
-            frames.push(stop_frame(open.index, &step));
+            frames.push(stop_frame(open.index));
         }
 
         for open in std::mem::take(&mut self.open_calls) {
-            let step = RenderStep::Typed(super::TypedStep::FunctionCall {
-                id: open.id,
-                name: open.name,
-                arguments: String::new(),
-                signature: None,
-            });
-
-            frames.push(stop_frame(open.step_index, &step));
+            frames.push(stop_frame(open.step_index));
         }
 
-        let usage = self.usage.as_ref().map(|usage| OutUsageRef {
-            total_input_tokens: usage.input_tokens,
-            total_output_tokens: usage
-                .output_tokens
-                .saturating_sub(usage.reasoning_tokens.unwrap_or(0)),
-            total_thought_tokens: usage.reasoning_tokens,
-            total_cached_tokens: usage.cached_tokens.as_ref(),
-        });
-
         frames.push(sse::format_frame(
-            Some(super::EVENT_COMPLETE),
-            &format::render_json(&CompletePayload {
-                status: finish_status(self.finish),
-                usage,
+            Some(super::EVENT_COMPLETED),
+            &format::render_json(&CompletedPayload {
+                event_type: super::EVENT_COMPLETED,
+                interaction: InteractionRef {
+                    id: &self.interaction_id,
+                    model: None,
+                    status: finish_status(self.finish),
+                    usage: self.usage.as_ref().map(OutUsage::from_usage),
+                },
             }),
         ));
 
@@ -487,37 +503,40 @@ impl SseRenderer {
     }
 }
 
-/// Renders a `step.stop` frame for one complete step: a free function because it borrows no
-/// renderer state — the step serializes immediately into the owned frame string.
-fn stop_frame(step_index: u64, step: &RenderStep) -> String {
+/// Renders a `step.start` frame for one opening step: a free function because it borrows no
+/// renderer state — the payload serializes immediately into the owned frame string.
+fn start_frame(index: u64, step: StartStep) -> String {
     sse::format_frame(
-        Some(super::EVENT_STEP_STOP),
-        &format::render_json(&StopPayload { step_index, step }),
+        Some(super::EVENT_STEP_START),
+        &format::render_json(&StartPayload {
+            event_type: super::EVENT_STEP_START,
+            index,
+            step,
+        }),
     )
 }
 
-/// Minimal probe reading a stored thought step's identifier.
-#[derive(Debug, Deserialize)]
-struct OpaqueIdProbe {
-    /// Step type tag.
-    #[serde(rename = "type")]
-    step_type: String,
-
-    /// Step identifier, when the step carries one.
-    #[serde(default)]
-    id: Option<String>,
+/// Renders a `step.delta` frame for one incremental delta.
+fn delta_frame<'a>(index: u64, delta: OutDelta<'a>) -> String {
+    sse::format_frame(
+        Some(super::EVENT_STEP_DELTA),
+        &format::render_json(&DeltaPayload {
+            event_type: super::EVENT_STEP_DELTA,
+            index,
+            delta,
+        }),
+    )
 }
 
-/// Returns the identifier a same-family opaque step carries, so a done-only block reopens under
-/// the stored id instead of a fresh one; anything else yields no hint.
-fn opaque_step_id(opaque: &Value) -> Option<String> {
-    serde_json::from_value::<OpaqueIdProbe>(opaque.clone())
-        .ok()
-        .and_then(|probe| {
-            (probe.step_type == super::STEP_THOUGHT)
-                .then_some(probe.id)
-                .flatten()
-        })
+/// Renders a `step.stop` frame for one closed step.
+fn stop_frame(index: u64) -> String {
+    sse::format_frame(
+        Some(super::EVENT_STEP_STOP),
+        &format::render_json(&StopPayload {
+            event_type: super::EVENT_STEP_STOP,
+            index,
+        }),
+    )
 }
 
 impl ClientSseRenderer for SseRenderer {
@@ -530,41 +549,30 @@ impl ClientSseRenderer for SseRenderer {
 
             IrEvent::TextDelta(delta) => {
                 let mut frames = self.ensure_created();
-                let index = self.open_text_step(&mut frames);
+                let index = self.open_output_step(&mut frames);
 
-                if let Some(open) = &mut self.open_text {
+                if let Some(open) = &mut self.open_output {
                     open.text.push_str(delta);
                 }
 
-                frames.push(sse::format_frame(
-                    Some(super::EVENT_STEP_DELTA),
-                    &format::render_json(&DeltaPayload {
-                        step_index: index,
-                        delta: OutDelta::Text {
-                            text: delta.as_str(),
-                        },
-                    }),
-                ));
+                frames.push(delta_frame(index, OutDelta::Text { text: delta }));
 
                 frames
             }
 
             IrEvent::ReasoningDelta(delta) => {
                 let mut frames = self.ensure_created();
-                let index = self.open_thought_step(&mut frames, Self::minted_thought_id());
+                let index = self.open_thought_step(&mut frames);
 
                 if let Some(open) = &mut self.open_thought {
                     open.summary.push_str(delta);
                 }
 
-                frames.push(sse::format_frame(
-                    Some(super::EVENT_STEP_DELTA),
-                    &format::render_json(&DeltaPayload {
-                        step_index: index,
-                        delta: OutDelta::ThoughtSummary {
-                            summary: delta.as_str(),
-                        },
-                    }),
+                frames.push(delta_frame(
+                    index,
+                    OutDelta::ThoughtSummary {
+                        content: SummaryContent::Text { text: delta },
+                    },
                 ));
 
                 frames
@@ -572,86 +580,46 @@ impl ClientSseRenderer for SseRenderer {
 
             // A done carrying text opens its block when no deltas preceded it; an empty-text
             // done only closes the block the deltas already delivered. Either way the stop
-            // carries the complete step: the stored value verbatim for same-family blocks,
-            // synthesized from text and signature otherwise.
+            // carries the index alone: the streamed deltas are the content.
             IrEvent::ReasoningDone {
                 text,
                 signature,
-                opaque,
+                opaque: _,
             } => {
                 let mut frames = self.ensure_created();
 
                 match self.open_thought.take() {
                     Some(open) => {
-                        let index = open.index;
-
                         if let Some(signature) = signature {
-                            frames.push(sse::format_frame(
-                                Some(super::EVENT_STEP_DELTA),
-                                &format::render_json(&DeltaPayload {
-                                    step_index: index,
-                                    delta: OutDelta::ThoughtSignature {
-                                        signature: signature.as_str(),
-                                    },
-                                }),
+                            frames.push(delta_frame(
+                                open.index,
+                                OutDelta::ThoughtSignature { signature },
                             ));
                         }
 
-                        let step = if super::is_family_thought_step(opaque) {
-                            RenderStep::Verbatim(opaque.clone())
-                        } else {
-                            RenderStep::Typed(super::TypedStep::Thought {
-                                id: open.id,
-                                summary: (!open.summary.is_empty()).then_some(open.summary),
-                                signature: signature.clone(),
-                            })
-                        };
-
-                        frames.push(stop_frame(index, &step));
+                        frames.push(stop_frame(open.index));
                     }
 
-                    // A done carrying the full text with no prior deltas reopens under the
-                    // stored id when the opaque is a same-family step, else under a minted one,
-                    // so the stop always closes the id its start opened with.
+                    // A done carrying the full text with no prior deltas reopens the block, so
+                    // the text rides the stream before the stop closes it.
                     None if !text.is_empty() => {
-                        let id = opaque_step_id(opaque).unwrap_or_else(Self::minted_thought_id);
-                        let index = self.open_thought_step(&mut frames, id.clone());
+                        let index = self.open_thought_step(&mut frames);
 
-                        frames.push(sse::format_frame(
-                            Some(super::EVENT_STEP_DELTA),
-                            &format::render_json(&DeltaPayload {
-                                step_index: index,
-                                delta: OutDelta::ThoughtSummary {
-                                    summary: text.as_str(),
-                                },
-                            }),
+                        frames.push(delta_frame(
+                            index,
+                            OutDelta::ThoughtSummary {
+                                content: SummaryContent::Text { text },
+                            },
                         ));
 
                         if let Some(signature) = signature {
-                            frames.push(sse::format_frame(
-                                Some(super::EVENT_STEP_DELTA),
-                                &format::render_json(&DeltaPayload {
-                                    step_index: index,
-                                    delta: OutDelta::ThoughtSignature {
-                                        signature: signature.as_str(),
-                                    },
-                                }),
-                            ));
+                            frames
+                                .push(delta_frame(index, OutDelta::ThoughtSignature { signature }));
                         }
 
                         self.open_thought = None;
 
-                        let step = if super::is_family_thought_step(opaque) {
-                            RenderStep::Verbatim(opaque.clone())
-                        } else {
-                            RenderStep::Typed(super::TypedStep::Thought {
-                                id,
-                                summary: Some(text.clone()),
-                                signature: signature.clone(),
-                            })
-                        };
-
-                        frames.push(stop_frame(index, &step));
+                        frames.push(stop_frame(index));
                     }
 
                     // An empty done with no open block closes nothing: no deltas delivered text
@@ -692,19 +660,14 @@ impl ClientSseRenderer for SseRenderer {
                     }
 
                     None => {
-                        let step_index = self.next_step_index;
+                        let step_index = self.next_index();
 
-                        self.next_step_index += 1;
-
-                        frames.push(sse::format_frame(
-                            Some(super::EVENT_STEP_START),
-                            &format::render_json(&StartPayload {
-                                step_index,
-                                step: StartStep::FunctionCall {
-                                    id: call_id.as_deref().unwrap_or(""),
-                                    name: name.as_deref().unwrap_or(""),
-                                },
-                            }),
+                        frames.push(start_frame(
+                            step_index,
+                            StartStep::FunctionCall {
+                                id: call_id.as_deref().unwrap_or(""),
+                                name: name.as_deref().unwrap_or(""),
+                            },
                         ));
 
                         self.open_calls.push(OpenCallStep {
@@ -712,6 +675,7 @@ impl ClientSseRenderer for SseRenderer {
                             step_index,
                             id: call_id.clone().unwrap_or_default(),
                             name: name.clone().unwrap_or_default(),
+                            arguments: String::new(),
                         });
 
                         step_index
@@ -720,67 +684,86 @@ impl ClientSseRenderer for SseRenderer {
 
                 // Empty argument keep-alives carry no bytes and render no frame.
                 if !arguments_delta.is_empty() {
-                    frames.push(sse::format_frame(
-                        Some(super::EVENT_STEP_DELTA),
-                        &format::render_json(&DeltaPayload {
-                            step_index,
-                            delta: OutDelta::ToolArguments {
-                                arguments: arguments_delta.as_str(),
-                            },
-                        }),
+                    if let Some(open) = self
+                        .open_calls
+                        .iter_mut()
+                        .find(|open| open.call_index == *index)
+                    {
+                        open.arguments.push_str(arguments_delta);
+                    }
+
+                    frames.push(delta_frame(
+                        step_index,
+                        OutDelta::ArgumentsDelta {
+                            arguments: arguments_delta,
+                        },
                     ));
                 }
 
                 frames
             }
 
-            // The stop carries the complete call — id, name, full arguments, signature — so the
-            // done-only path opens its step here and the streamed path closes the step its
-            // deltas opened. Receivers replace accumulated state with the stop's step.
+            // The done reconciles with the streamed deltas the Chat Completions way: a done for
+            // an open call streams the residual argument bytes its deltas did not deliver (a
+            // divergent done streams nothing — the streamed bytes stand), and a done-only call
+            // opens its step and streams the complete arguments as one delta. Either way the stop
+            // closes the call.
             IrEvent::ToolCallDone {
                 index,
                 call_id,
                 name,
                 arguments,
-                thought_signature,
+                thought_signature: _,
             } => {
                 let mut frames = self.ensure_created();
 
-                let step_index = match self
+                match self
                     .open_calls
                     .iter()
                     .position(|open| open.call_index == *index)
                 {
-                    Some(position) => self.open_calls.remove(position).step_index,
+                    Some(position) => {
+                        let open = self.open_calls.remove(position);
+
+                        if arguments.len() >= open.arguments.len()
+                            && arguments.starts_with(open.arguments.as_str())
+                        {
+                            let residual = &arguments[open.arguments.len()..];
+
+                            if !residual.is_empty() {
+                                frames.push(delta_frame(
+                                    open.step_index,
+                                    OutDelta::ArgumentsDelta {
+                                        arguments: residual,
+                                    },
+                                ));
+                            }
+                        }
+
+                        frames.push(stop_frame(open.step_index));
+                    }
 
                     None => {
-                        let step_index = self.next_step_index;
+                        let step_index = self.next_index();
 
-                        self.next_step_index += 1;
-
-                        frames.push(sse::format_frame(
-                            Some(super::EVENT_STEP_START),
-                            &format::render_json(&StartPayload {
-                                step_index,
-                                step: StartStep::FunctionCall {
-                                    id: call_id.as_str(),
-                                    name: name.as_str(),
-                                },
-                            }),
+                        frames.push(start_frame(
+                            step_index,
+                            StartStep::FunctionCall {
+                                id: call_id.as_str(),
+                                name: name.as_str(),
+                            },
                         ));
 
-                        step_index
+                        if !arguments.is_empty() {
+                            frames.push(delta_frame(
+                                step_index,
+                                OutDelta::ArgumentsDelta { arguments },
+                            ));
+                        }
+
+                        frames.push(stop_frame(step_index));
                     }
-                };
-
-                let step = RenderStep::Typed(super::TypedStep::FunctionCall {
-                    id: call_id.clone(),
-                    name: name.clone(),
-                    arguments: arguments.clone(),
-                    signature: thought_signature.clone(),
-                });
-
-                frames.push(stop_frame(step_index, &step));
+                }
 
                 frames
             }
@@ -790,16 +773,15 @@ impl ClientSseRenderer for SseRenderer {
 
                 self.finish = Some(*reason);
 
-                // The finish closes the open text step: its stop carries the complete text the
-                // deltas already delivered. An open reasoning block without its done is closed
-                // defensively at completion; conformant streams always pair them.
-                self.close_text_step(&mut frames);
+                // The finish closes the open output step. An open reasoning block without its
+                // done is closed defensively at completion; conformant streams always pair them.
+                self.close_output_step(&mut frames);
 
                 frames
             }
 
             IrEvent::Usage(usage) => {
-                // Usage rides the terminal complete frame; the latest observation wins.
+                // Usage rides the terminal completed frame; the latest observation wins.
                 self.usage = Some(*usage);
 
                 self.ensure_created()
@@ -831,7 +813,7 @@ mod tests {
         parse_request(body.to_string().as_bytes(), &RouteContext::empty())
     }
 
-    /// The aggregated response renders the Interaction resource: thought steps before the text
+    /// The aggregated response renders the Interaction resource: thought steps before the output
     /// step before function calls, same-family opaques replayed verbatim, the finish mapped onto
     /// the status vocabulary, and usage split back into output and thought members.
     ///
@@ -844,8 +826,7 @@ mod tests {
 
         let stored = serde_json::json!({
             "type": "thought",
-            "id": "th_1",
-            "summary": "stored",
+            "summary": [{"type": "text", "text": "stored"}],
             "signature": "sig-1",
         });
 
@@ -895,25 +876,27 @@ mod tests {
 
         assert_eq!(rendered.pointer("/steps/0"), Some(&stored));
         assert_eq!(
-            rendered.pointer("/steps/1/type"),
-            Some(&serde_json::json!("thought"))
-        );
-        assert_eq!(
-            rendered.pointer("/steps/1/summary"),
-            Some(&serde_json::json!("fresh"))
+            rendered.pointer("/steps/1"),
+            Some(&serde_json::json!({
+                "type": "thought",
+                "summary": [{"type": "text", "text": "fresh"}],
+            })),
         );
         assert_eq!(
             rendered.pointer("/steps/2"),
-            Some(&serde_json::json!({"type": "output_text", "text": "hello"})),
+            Some(&serde_json::json!({
+                "type": "model_output",
+                "content": [{"type": "text", "text": "hello"}],
+            })),
         );
+        // The official function_call step carries the arguments object and no signature member.
         assert_eq!(
             rendered.pointer("/steps/3"),
             Some(&serde_json::json!({
                 "type": "function_call",
                 "id": "call_1",
                 "name": "search",
-                "arguments": r#"{"q":"hi"}"#,
-                "signature": "sig-call",
+                "arguments": {"q": "hi"},
             })),
         );
         assert!(
@@ -934,7 +917,7 @@ mod tests {
 
     /// The gateway's own rendered steps parse back verbatim: replaying the aggregated resource's
     /// steps as the next request's input — the multi-turn loop — must parse (the history-replay
-    /// carve-out). The replayed thought keeps its opaque, the call keeps its signature.
+    /// carve-out). The replayed thought keeps its opaque, the call keeps its arguments object.
     ///
     /// # Panics
     ///
@@ -945,8 +928,7 @@ mod tests {
 
         let stored = serde_json::json!({
             "type": "thought",
-            "id": "th_1",
-            "summary": "stored",
+            "summary": [{"type": "text", "text": "stored"}],
             "signature": "sig-1",
         });
 
@@ -962,7 +944,7 @@ mod tests {
                 call_id: "call_1".to_string(),
                 name: "search".to_string(),
                 arguments: r#"{"q":"hi"}"#.to_string(),
-                thought_signature: Some("sig-call".to_string()),
+                thought_signature: None,
             }],
             finish: Some(IrFinishReason::ToolCall),
             usage: None,
@@ -1025,13 +1007,14 @@ mod tests {
                 IrPart::ToolCall {
                     call_id,
                     name,
+                    arguments,
                     thought_signature,
-                    ..
                 } => {
                     saw_call = true;
                     assert_eq!(call_id, "call_1");
                     assert_eq!(name, "search");
-                    assert_eq!(thought_signature, &Some("sig-call".to_string()));
+                    assert_eq!(arguments, r#"{"q":"hi"}"#);
+                    assert_eq!(thought_signature, &None);
                 }
 
                 IrPart::Text { text } => {
@@ -1052,14 +1035,27 @@ mod tests {
         );
         assert!(
             saw_text && saw_thought && saw_call,
-            "the replay keeps text, thought, and call"
+            "the replay keeps text, thought, and call",
         );
     }
 
-    /// The streaming renderer speaks the family's event vocabulary end to end: created opens the
-    /// stream, text and thought deltas stream under opened steps, an empty-text done closes the
-    /// thought with its signature, call deltas assemble and the done closes the call, and the
-    /// terminal complete frame carries the mapped status and usage exactly once.
+    /// Extracts each frame's event name from its `event:` line.
+    fn event_names(frames: &[String]) -> Vec<&str> {
+        frames
+            .iter()
+            .filter_map(|frame| {
+                frame
+                    .strip_prefix("event: ")
+                    .and_then(|rest| rest.split('\n').next())
+            })
+            .collect()
+    }
+
+    /// The streaming renderer speaks the official event vocabulary end to end: created opens the
+    /// stream under the `interaction` member, text and thought deltas stream under opened steps,
+    /// the done closes the thought with its signature delta, call deltas assemble and the done
+    /// closes the call, and the terminal completed frame carries the mapped status and usage —
+    /// every frame self-described by both the `event:` line and the `event_type` member.
     ///
     /// # Panics
     ///
@@ -1082,8 +1078,7 @@ mod tests {
             signature: Some("sig-t".to_string()),
             opaque: serde_json::json!({
                 "type": "thought",
-                "id": "th_0",
-                "summary": "hmm",
+                "summary": [{"type": "text", "text": "hmm"}],
                 "signature": "sig-t",
             }),
         }));
@@ -1110,17 +1105,8 @@ mod tests {
         })));
         frames.extend(renderer.render(&IrEvent::Done));
 
-        let events: Vec<&str> = frames
-            .iter()
-            .filter_map(|frame| {
-                frame
-                    .strip_prefix("event: ")
-                    .and_then(|rest| rest.split('\n').next())
-            })
-            .collect();
-
         assert_eq!(
-            events,
+            event_names(&frames),
             vec![
                 super::super::EVENT_CREATED,
                 super::super::EVENT_STEP_START,
@@ -1131,33 +1117,61 @@ mod tests {
                 super::super::EVENT_STEP_STOP,
                 super::super::EVENT_STEP_START,
                 super::super::EVENT_STEP_DELTA,
+                // The done reconciles the residual bytes its delta did not deliver.
+                super::super::EVENT_STEP_DELTA,
                 super::super::EVENT_STEP_STOP,
+                // The finish closes the open output step.
                 super::super::EVENT_STEP_STOP,
-                super::super::EVENT_COMPLETE,
+                super::super::EVENT_COMPLETED,
             ],
         );
 
+        // Every frame is self-described: the created frame's payload carries the official
+        // `event_type` beside the SSE line, and the completed frame carries the terminal partial
+        // resource with the usage.
+        for frame in &frames {
+            assert!(
+                frame.contains("event_type"),
+                "every frame carries the official discriminator: {frame}",
+            );
+        }
+
         #[expect(
             clippy::expect_used,
-            reason = "the stream ends with the complete frame"
+            reason = "the stream ends with the completed frame"
         )]
-        let complete = frames
-            .last()
-            .expect("the stream ends with the complete frame");
+        let completed = frames.last().expect("the stream ends with the frame");
 
-        assert!(complete.contains(STATUS_COMPLETED));
-        assert!(complete.contains("total_input_tokens"));
+        assert!(completed.contains(STATUS_COMPLETED));
+        assert!(completed.contains("total_input_tokens"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the stream opens with the created frame"
+        )]
+        let created = frames.first().expect("the stream opens with the frame");
+
+        assert!(created.contains(STATUS_IN_PROGRESS));
+        assert!(created.contains("public-model"));
+
+        // The delta payloads carry the official members: the summary rides a content block and
+        // the arguments ride the arguments_delta kind.
+        let joined = frames.join("");
+
+        assert!(joined.contains(r#""delta":{"type":"thought_summary","content":{"type":"text""#));
+        assert!(joined.contains(r#""type":"arguments_delta","arguments""#));
     }
 
     /// A done carrying the full text with no prior deltas still delivers its block: the renderer
     /// opens the step, streams the text, and closes it — the done-only path mirrors the
-    /// delta-then-empty-done path.
+    /// delta-then-empty-done path. A done-only tool call streams its complete arguments as one
+    /// delta, and a divergent done streams no residual bytes.
     ///
     /// # Panics
     ///
-    /// Panics if the done-only block loses its text.
+    /// Panics if the done-only paths lose content or stream spurious bytes.
     #[test]
-    fn renders_a_done_only_reasoning_block() {
+    fn renders_done_only_paths_and_reconciles_residuals() {
         use crate::ir::IrEvent;
 
         let mut renderer = SseRenderer::new("public-model".to_string());
@@ -1167,17 +1181,61 @@ mod tests {
             model: String::new(),
         });
 
-        let frames = renderer.render(&IrEvent::ReasoningDone {
+        let thought = renderer.render(&IrEvent::ReasoningDone {
             text: "whole".to_string(),
             signature: None,
             opaque: Value::Null,
         });
 
-        let joined = frames.join("");
+        let joined = thought.join("");
 
         assert!(joined.contains("thought_summary"));
         assert!(joined.contains("whole"));
         assert!(joined.contains(super::super::EVENT_STEP_STOP));
+
+        let call = renderer.render(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: r#"{"q":"hi"}"#.to_string(),
+            thought_signature: None,
+        });
+
+        let joined = call.join("");
+
+        assert!(joined.contains(super::super::EVENT_STEP_START));
+        assert!(joined.contains("arguments_delta"));
+        assert!(joined.contains("hi"));
+        assert!(joined.contains(super::super::EVENT_STEP_STOP));
+
+        // A streamed call whose done carries the same prefix reconciles to a residual delta plus
+        // the closing stop.
+        renderer.render(&IrEvent::ToolCallDelta {
+            index: 1,
+            call_id: Some("call_2".to_string()),
+            name: Some("calc".to_string()),
+            arguments_delta: r#"{"a":"#.to_string(),
+        });
+
+        let reconciled = renderer.render(&IrEvent::ToolCallDone {
+            index: 1,
+            call_id: "call_2".to_string(),
+            name: "calc".to_string(),
+            arguments: r#"{"a":1}"#.to_string(),
+            thought_signature: None,
+        });
+
+        assert_eq!(
+            event_names(&reconciled),
+            vec![
+                super::super::EVENT_STEP_DELTA,
+                super::super::EVENT_STEP_STOP,
+            ],
+        );
+        assert!(
+            reconciled.join("").contains("1}"),
+            "the residual bytes the deltas did not deliver must stream",
+        );
     }
 
     /// The mid-stream error frame carries the Gemini error envelope in a data-only frame.

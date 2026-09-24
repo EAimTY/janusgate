@@ -51,10 +51,11 @@ export function ModelNewScreen(props: {
             : (providers().find((row) => row.id === props.providerFilter) ?? null),
     );
 
-    const backHref = (): string =>
-        fixedProvider() === null
-            ? hrefs.models(props.providerFilter)
-            : hrefs.providerDetail(fixedProvider()?.id ?? 0);
+    const backHref = (): string => {
+        const fixed = fixedProvider();
+
+        return fixed === null ? hrefs.models(props.providerFilter) : hrefs.providerDetail(fixed.id);
+    };
     const backLabel = (): string => (fixedProvider() === null ? "Models" : "Provider");
 
     return (

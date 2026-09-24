@@ -1,5 +1,3 @@
-import { type Connection, MANAGEMENT_API_PATH } from "/src/connection/model";
-
 import {
     ContractViolationError,
     describeManagementFailure,
@@ -57,6 +55,25 @@ import {
     parseReauthorizeProviderResponse,
     parseStartProviderOauthResponse,
 } from "/src/management-api/validation";
+
+/**
+ * The connection facts one client instance is built from: the origin the
+ * management paths compose onto and the token sent verbatim. The structural
+ * shape is all the client reads — the app's connection pair satisfies it,
+ * and this tier never imports the connection module, so the dependency edge
+ * reads one way (connection → management-api).
+ */
+type ManagementConnection = {
+    readonly baseUrl: string;
+    readonly token: string;
+};
+
+/**
+ * The management API's version segment. It is fixed by the generated bindings
+ * (`./generated/v0.ts`), not by the user: the route table's keys are paths
+ * within this version.
+ */
+const MANAGEMENT_API_PATH = "/management-api/v0";
 
 /**
  * The management API as the application addresses it: one method per route of
@@ -177,7 +194,7 @@ function decodeResponse<TValue>(payload: unknown, validate: (value: unknown) => 
 }
 
 export function createManagementApi(
-    connection: Connection,
+    connection: ManagementConnection,
     options: ManagementApiOptions = {},
 ): ManagementApi {
     /**

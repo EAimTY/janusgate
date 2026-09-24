@@ -57,6 +57,17 @@ describe("parseUsageFilterDraft", () => {
         });
     });
 
+    it("reads a row identifier beyond the safe-integer range as absent", () => {
+        // A digit string past `Number.isSafeInteger` names no row the gateway
+        // could hold, and its `Number` would distort the value put on the wire.
+        expect(
+            parseUsageFilterDraft("?provider=99999999999999999999999&model=9007199254740992"),
+        ).toEqual(EMPTY_USAGE_FILTER_DRAFT);
+
+        // The largest safe integer is still an addressable row identifier.
+        expect(parseUsageFilterDraft("?key=9007199254740991").apiKeyId).toBe("9007199254740991");
+    });
+
     it("keeps one outcome and the failure pair, reading any other set as absent", () => {
         expect(parseUsageFilterDraft("?outcome=upstream_error").outcome).toBe("upstream_error");
         expect(parseUsageFilterDraft("?outcome=internal,upstream_error").outcome).toBe("failures");

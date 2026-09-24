@@ -70,7 +70,8 @@ impl ProviderType {
     }
 
     /// Renders the canonical provider type name.
-    pub(crate) fn as_str(self) -> &'static str {
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::OpenAiResponse => "openai_response",
             Self::OpenAiChatCompletion => "openai_chat_completion",
@@ -266,6 +267,7 @@ impl DiscoveryState {
     }
 
     /// Renders the canonical discovery state name.
+    #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Discovered => "discovered",
@@ -617,11 +619,6 @@ pub(crate) struct MissingBaseUrl {
 }
 
 impl Provider {
-    /// The upstream wire format the provider speaks, pinned by its type.
-    pub(crate) fn upstream_format(&self) -> UpstreamFormat {
-        self.provider_type.upstream_format()
-    }
-
     /// The base URL the provider's upstream requests target: the stored value with any trailing
     /// slashes removed, so the per-endpoint path compositions never double the separator. OAuth
     /// providers carry fixed endpoints and never consult this.

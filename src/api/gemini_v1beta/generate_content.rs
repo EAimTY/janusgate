@@ -60,7 +60,7 @@ struct ModelEntry {
 /// effective-model set every surface lists, ignoring pagination parameters and returning
 /// the full list in one page with no token.
 async fn models(State(context): State<Context>) -> Response {
-    match storage::list_enabled_models_with_owner(&context.database).await {
+    match storage::models::list_enabled_models_with_owner(&context.database).await {
         Ok(listed) => {
             let models = listed
                 .iter()

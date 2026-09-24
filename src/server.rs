@@ -338,8 +338,9 @@ mod tests {
         database::Database,
         provider::{Credentials, NewProvider, ProviderType},
         storage::{
-            self, ModelCreate,
+            self,
             api_keys::{self, NewApiKey},
+            models::ModelCreate,
         },
     };
     use std::{
@@ -839,7 +840,7 @@ mod tests {
 
         let mock_base = format!("http://{mock_address}");
 
-        let provider = storage::insert_provider(
+        let provider = storage::providers::insert_provider(
             &database,
             &NewProvider {
                 name: "mock",
@@ -853,7 +854,7 @@ mod tests {
         )
         .await?;
 
-        let model = storage::insert_model_checked(
+        let model = storage::models::insert_model_checked(
             &database,
             ModelCreate {
                 provider_id: provider.id,
@@ -864,7 +865,7 @@ mod tests {
         )
         .await?;
 
-        let drift_provider = storage::insert_provider(
+        let drift_provider = storage::providers::insert_provider(
             &database,
             &NewProvider {
                 name: "drift",
@@ -878,7 +879,7 @@ mod tests {
         )
         .await?;
 
-        storage::insert_model_checked(
+        storage::models::insert_model_checked(
             &database,
             ModelCreate {
                 provider_id: drift_provider.id,
@@ -889,7 +890,7 @@ mod tests {
         )
         .await?;
 
-        let refresh_provider = storage::insert_provider(
+        let refresh_provider = storage::providers::insert_provider(
             &database,
             &NewProvider {
                 name: "refresh",
@@ -907,7 +908,7 @@ mod tests {
         )
         .await?;
 
-        storage::insert_model_checked(
+        storage::models::insert_model_checked(
             &database,
             ModelCreate {
                 provider_id: refresh_provider.id,

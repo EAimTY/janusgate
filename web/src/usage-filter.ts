@@ -104,11 +104,16 @@ export function windowBoundMicros(window: UsageWindowChoice, nowMicros: number):
     return window === "all" ? null : nowMicros - WINDOW_MICROS[window];
 }
 
-/** Reads one route value as a row identifier, answering absent when it is not one. */
+/**
+ * Reads one route value as a row identifier, answering absent when it is not
+ * one. The safe-integer bound is the same one `parseRowIdentifier` applies to
+ * path ids: a digit string beyond it names no row the gateway could hold, and
+ * its `Number` would only distort the value put on the wire.
+ */
 function routeRowId(parameters: URLSearchParams, name: string): string {
     const raw = parameters.get(name);
 
-    return raw !== null && /^\d+$/.test(raw) ? raw : "";
+    return raw !== null && /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? raw : "";
 }
 
 /** Reads one route value as a window, answering all time when it names no window. */

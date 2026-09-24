@@ -183,9 +183,10 @@ async fn handle_start(
 ) -> Result<oauth::OAuthFlow, Error> {
     let flow = oauth::begin_flow(provider_type);
 
-    storage::delete_expired_oauth_states(database, unix_time::unix_now_micros()).await?;
+    storage::oauth_states::delete_expired_oauth_states(database, unix_time::unix_now_micros())
+        .await?;
 
-    storage::insert_oauth_state(
+    storage::oauth_states::insert_oauth_state(
         database,
         provider_type,
         &flow.state,
@@ -221,7 +222,7 @@ async fn handle_complete(
 
     // The pre-insert check renders a clean 409; the database's UNIQUE constraint is the concurrent
     // backstop.
-    if storage::find_provider(database, &request.name)
+    if storage::providers::find_provider(database, &request.name)
         .await?
         .is_some()
     {
@@ -233,14 +234,14 @@ async fn handle_complete(
     let now = unix_time::unix_now_micros();
 
     // An unknown or expired state is left to the consume, which yields the 404.
-    let state = storage::consume_oauth_state(database, &request.state, now)
+    let state = storage::oauth_states::consume_oauth_state(database, &request.state, now)
         .await?
         .ok_or(Error::UnknownOauthState)?;
 
     let exchanged =
         oauth::exchange_code(control_plane, state.state_type, code, &state.verifier).await?;
 
-    let stored = storage::insert_provider(
+    let stored = storage::providers::insert_provider(
         database,
         &NewProvider {
             name: &request.name,
@@ -278,7 +279,7 @@ async fn handle_reauthorize(
 ) -> Result<i64, Error> {
     // Pre-consume validations, computed from the still-unconsumed state so the pending flow
     // survives every rejection.
-    let provider = storage::find_provider_by_id(database, request.provider_id)
+    let provider = storage::providers::find_provider_by_id(database, request.provider_id)
         .await?
         .ok_or(Error::ProviderNotFound {
             id: request.provider_id,
@@ -291,7 +292,8 @@ async fn handle_reauthorize(
     // State rows are immutable, so a provider-type mismatch is computable before the atomic
     // consume: the rejection must not burn the pending flow or spend the token exchange. An unknown
     // or expired state is left to the consume below, which yields the 404.
-    if let Some(state_type) = storage::find_oauth_state_type(database, &request.state, now).await?
+    if let Some(state_type) =
+        storage::oauth_states::find_oauth_state_type(database, &request.state, now).await?
         && state_type.as_provider_type() != provider.provider_type
     {
         return Err(Error::OauthStateTypeMismatch {
@@ -301,14 +303,14 @@ async fn handle_reauthorize(
         });
     }
 
-    let state = storage::consume_oauth_state(database, &request.state, now)
+    let state = storage::oauth_states::consume_oauth_state(database, &request.state, now)
         .await?
         .ok_or(Error::UnknownOauthState)?;
 
     let exchanged =
         oauth::exchange_code(control_plane, state.state_type, code, &state.verifier).await?;
 
-    let is_updated = storage::update_credentials(
+    let is_updated = storage::providers::update_credentials(
         database,
         request.provider_id,
         &exchanged.credentials,

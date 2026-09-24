@@ -4,7 +4,11 @@ import { credentialExpiryLine, isCredentialExpired, nowMicros } from "/src/forma
 import type { ManagementApi } from "/src/management-api/client";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { OUTWARD_SURFACES } from "/src/management-api/outward-surfaces";
-import { isModelEffectivelyServing, modelCountsByProvider } from "/src/management-api/serving";
+import {
+    indexRowsById,
+    isModelEffectivelyServing,
+    modelCountsByProvider,
+} from "/src/management-api/serving";
 import { isOAuthProviderRow, providerTypeLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
@@ -30,6 +34,15 @@ import { EMPTY_USAGE_FILTER_DRAFT } from "/src/usage-filter";
 /** What the overview's reads answered: the rolling figures plus the daily series. */
 type OverviewTraffic = OverviewRecentTotals & {
     readonly series: OverviewDailySeries;
+};
+
+/** One listed attention line: its provider and the human reason it needs one. */
+type ProviderAttention = {
+    readonly provider: ProviderResponse;
+    readonly attention: {
+        readonly label: string;
+        readonly detail: string;
+    };
 };
 
 /**
@@ -91,15 +104,7 @@ export function HomeScreen(props: {
         },
     });
 
-    const providersById = createMemo(
-        () =>
-            new Map<number, ProviderResponse>(
-                entities().providers.map((row) => [
-                    row.id,
-                    row,
-                ]),
-            ),
-    );
+    const providersById = createMemo(() => indexRowsById(entities().providers));
 
     const servingModels = createMemo(
         () =>
@@ -109,7 +114,18 @@ export function HomeScreen(props: {
     );
 
     const attentionProviders = createMemo(() =>
-        entities().providers.filter((provider) => credentialAttention(provider) !== null),
+        entities().providers.flatMap((provider): ProviderAttention[] => {
+            const attention = credentialAttention(provider);
+
+            return attention === null
+                ? []
+                : [
+                      {
+                          provider,
+                          attention,
+                      },
+                  ];
+        }),
     );
 
     const emptyProviders = createMemo(() => {
@@ -261,7 +277,12 @@ export function HomeScreen(props: {
                                     </li>
                                 </Show>
                                 <For each={attentionProviders()}>
-                                    {(provider) => <AttentionRow provider={provider} />}
+                                    {(item) => (
+                                        <AttentionRow
+                                            provider={item.provider}
+                                            attention={item.attention}
+                                        />
+                                    )}
                                 </For>
                                 <For each={emptyProviders()}>
                                     {(provider) => (
@@ -401,25 +422,16 @@ function credentialAttention(provider: ProviderResponse): {
     };
 }
 
-function AttentionRow(props: { readonly provider: ProviderResponse }): JSX.Element {
-    const attention = (): {
-        readonly label: string;
-        readonly detail: string;
-    } =>
-        credentialAttention(props.provider) ?? {
-            label: "Needs attention",
-            detail: "",
-        };
-
+function AttentionRow(props: ProviderAttention): JSX.Element {
     return (
         <li class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
             <Badge
                 tone="warn"
-                label={attention().label}
+                label={props.attention.label}
             />
             <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
                 <span class="font-medium">{props.provider.name}</span>
-                <span class="text-ink-dim">{` · ${providerTypeLabel(props.provider.type)} · ${attention().detail}`}</span>
+                <span class="text-ink-dim">{` · ${providerTypeLabel(props.provider.type)} · ${props.attention.detail}`}</span>
             </p>
             <ButtonLink href={hrefs.providerDetail(props.provider.id)}>Reconnect</ButtonLink>
         </li>

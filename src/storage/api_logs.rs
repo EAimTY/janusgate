@@ -247,49 +247,49 @@ pub(crate) struct UsageBucketKey {
 
 /// One accounting row about to be inserted: every column but the server-assigned `id`.
 #[derive(Debug, Clone)]
-pub(crate) struct ApiLogWrite {
+struct ApiLogWrite {
     /// Dispatch-start instant in UTC microseconds; stamped the moment `send()` is called.
-    pub(crate) started_at: i64,
+    started_at: i64,
 
     /// Row id of the authenticated gateway API key.
-    pub(crate) api_key_id: i64,
+    api_key_id: i64,
 
     /// Row id of the routed provider.
-    pub(crate) provider_id: i64,
+    provider_id: i64,
 
     /// Row id of the routed model.
-    pub(crate) model_id: i64,
+    model_id: i64,
 
     /// Outward completion endpoint the request arrived on.
-    pub(crate) endpoint_type: ApiLogEndpointType,
+    endpoint_type: ApiLogEndpointType,
 
     /// Whether the client requested a streamed response.
-    pub(crate) is_stream: bool,
+    is_stream: bool,
 
     /// HTTP status delivered to the client; `NULL` exactly when no response was ever produced
     /// (README §3 *ApiLog*).
-    pub(crate) http_status: Option<i64>,
+    http_status: Option<i64>,
 
     /// Recorded outcome of the request.
-    pub(crate) outcome: ApiLogOutcome,
+    outcome: ApiLogOutcome,
 
     /// Milliseconds between the dispatch stamp and the accounting instant.
-    pub(crate) duration: i64,
+    duration: i64,
 
     /// Tokens consumed by the input; `NULL` when the upstream reported no usage.
-    pub(crate) input_tokens: Option<i64>,
+    input_tokens: Option<i64>,
 
     /// Tokens produced by the output, `reasoning_tokens` included; `NULL` without usage.
-    pub(crate) output_tokens: Option<i64>,
+    output_tokens: Option<i64>,
 
     /// Input tokens served from the upstream prompt cache; `NULL` without that breakdown.
-    pub(crate) cached_tokens: Option<i64>,
+    cached_tokens: Option<i64>,
 
     /// Input tokens written to the upstream prompt cache; `NULL` without that breakdown.
-    pub(crate) cache_write_tokens: Option<i64>,
+    cache_write_tokens: Option<i64>,
 
     /// Output tokens spent on reasoning; `NULL` without that breakdown.
-    pub(crate) reasoning_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
 }
 
 /// One dispatched request's accounting draft: every fact known before dispatch, carried through
@@ -854,7 +854,7 @@ pub(crate) struct UsageSelection {
 ///
 /// Returns [`Error`] when the insert fails — including a schema `CHECK` violation, which
 /// classifies as [`Error::Constraint`].
-pub(crate) async fn record_api_log(database: &Database, write: ApiLogWrite) -> Result<(), Error> {
+async fn record_api_log(database: &Database, write: ApiLogWrite) -> Result<(), Error> {
     database
         .execute(
             "INSERT INTO api_logs (started_at, api_key_id, provider_id, model_id, \
@@ -890,8 +890,9 @@ mod tests {
         database::{Database, Value},
         provider::{Credentials, NewProvider, ProviderType},
         storage::{
-            self, ModelCreate,
+            self,
             api_keys::{self, NewApiKey},
+            models::ModelCreate,
         },
     };
     use std::{error::Error as StdError, num::NonZero, path::PathBuf, time::Duration};
@@ -1179,7 +1180,7 @@ mod tests {
         )
         .await?;
 
-        let provider = storage::insert_provider(
+        let provider = storage::providers::insert_provider(
             &database,
             &NewProvider {
                 name: "acme",
@@ -1193,7 +1194,7 @@ mod tests {
         )
         .await?;
 
-        let model = storage::insert_model_checked(
+        let model = storage::models::insert_model_checked(
             &database,
             ModelCreate {
                 provider_id: provider.id,
@@ -1226,8 +1227,8 @@ mod tests {
         .await?;
 
         assert!(api_keys::delete_api_key(&database, api_key.id).await?);
-        storage::delete_model_checked(&database, model.model.id).await?;
-        assert!(storage::delete_provider(&database, provider.id).await?);
+        storage::models::delete_model_checked(&database, model.model.id).await?;
+        assert!(storage::providers::delete_provider(&database, provider.id).await?);
 
         let rows = read_all(&database).await?;
 

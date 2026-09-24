@@ -2,10 +2,12 @@
 //! `gemini_interaction` upstream payload, `POST {base}/v1beta/interactions` carrying the resolved
 //! upstream id as the body `model`.
 
-use super::{ContentBlock, RenderStep, ResponseFormatShape, TypedStep, render_thought};
+use super::{
+    ContentBlock, JSON_MIME_TYPE, RenderStep, ResponseFormatShape, TypedStep, render_thought,
+};
 use crate::{
     format,
-    ir::{InvalidRequest, IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
+    ir::{InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -13,6 +15,7 @@ use serde_json::Value;
 /// Renders the upstream request URL and payload: `POST {base}/v1beta/interactions` carrying the
 /// resolved `upstream_id` as the body `model`, the stateless full-history `input` replay, and
 /// always `store: false`.
+///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] when a tool output answers an unknown call id, or when tool call
@@ -42,8 +45,8 @@ pub(crate) fn render_request(
 
 /// The upstream Interactions request payload.
 ///
-/// The body owns its strings: synthesized thought steps carry gateway-minted ids, so borrowing the
-/// IR alone cannot cover every member.
+/// The body owns its strings: synthesized thought steps and function-call argument objects are
+/// derived from the IR, so borrowing it alone cannot cover every member.
 #[derive(Debug, Serialize)]
 pub(crate) struct RequestBody {
     /// Upstream model name, rendered verbatim from the resolved `upstream_id`.
@@ -60,7 +63,9 @@ pub(crate) struct RequestBody {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<UpstreamTool>,
 
-    /// Sampling, reasoning, and tool-choice configuration, omitted when it would be empty.
+    /// Reasoning and tool-choice configuration, omitted when it would be empty. The official
+    /// `generation_config` pins no sampling members — no `temperature`, no `top_p` — so IR
+    /// sampling values have no wire slot on this family and are dropped, never rewritten.
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GenerationConfig>,
 
@@ -74,7 +79,8 @@ pub(crate) struct RequestBody {
     /// Always `false`: the gateway is stateless.
     store: bool,
 }
-/// One advertised function tool in the typed Interactions shape: function tools only.
+
+/// One advertised function tool in the official shape: function tools only.
 #[derive(Debug, Serialize)]
 struct UpstreamTool {
     /// Tool kind, always `function`.
@@ -93,17 +99,9 @@ struct UpstreamTool {
     parameters: Option<Value>,
 }
 
-/// Sampling, reasoning, and tool-choice configuration of an upstream request.
+/// Reasoning and tool-choice configuration of an upstream request.
 #[derive(Debug, Serialize)]
 struct GenerationConfig {
-    /// Sampling temperature, omitted when the request has none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f64>,
-
-    /// Nucleus sampling threshold, omitted when the request has none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    top_p: Option<f64>,
-
     /// Output token budget, omitted when the request has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u64>,
@@ -123,27 +121,38 @@ impl GenerationConfig {
     /// Whether every field is absent, in which case the whole configuration is omitted from the
     /// request.
     fn is_empty(&self) -> bool {
-        self.temperature.is_none()
-            && self.top_p.is_none()
-            && self.max_output_tokens.is_none()
+        self.max_output_tokens.is_none()
             && self.thinking_level.is_none()
             && self.tool_choice.is_none()
     }
 }
 
-/// Tool selection restriction in the upstream shape: a mode with an optional single allowed
-/// function.
+/// Tool selection restriction in the official shape: a bare mode, or the allowed-tools object
+/// forcing one function.
 #[derive(Debug, Serialize)]
-struct UpstreamToolChoice {
-    /// Selection mode.
-    mode: ToolChoiceMode,
+#[serde(untagged)]
+enum UpstreamToolChoice {
+    /// The bare mode form.
+    Mode(ToolChoiceMode),
 
-    /// The one function the model may call, present only for a forced single function.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    allowed_tools: Option<Vec<String>>,
+    /// The forced-function form: the `any` mode with one allowed tool.
+    Allowed {
+        /// The allowed-tools configuration.
+        allowed_tools: AllowedTools,
+    },
 }
 
-/// The upstream `tool_choice.mode` values.
+/// The allowed-tools configuration of a forced function.
+#[derive(Debug, Serialize)]
+struct AllowedTools {
+    /// Selection mode, always `any` when forcing one function.
+    mode: ToolChoiceMode,
+
+    /// The one function the model may call.
+    tools: Vec<String>,
+}
+
+/// The official `tool_choice` mode values.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ToolChoiceMode {
@@ -156,6 +165,7 @@ enum ToolChoiceMode {
     /// The model may not call tools.
     None,
 }
+
 /// Renders the stateless full-history `input` replay: every message in order, with consecutive
 /// user messages coalesced into one `user_input` step whose blocks concatenate — the several
 /// turns of plain chat then ride as one step per message, exactly the 1:1 shape.
@@ -189,9 +199,7 @@ fn render_input(ir: &IrRequest) -> Result<Vec<RenderStep>, InvalidRequest> {
                             user_run.push(ContentBlock::Text { text: text.clone() })
                         }
 
-                        IrPart::Image { image } => user_run.push(ContentBlock::Image {
-                            image_url: image.to_url(),
-                        }),
+                        IrPart::Image { image } => user_run.push(render_image(image)),
 
                         // A user turn has no slot for calls, outputs, or reasoning: the IR type
                         // system never routes them here, and a misplaced part is dropped rather
@@ -209,8 +217,8 @@ fn render_input(ir: &IrRequest) -> Result<Vec<RenderStep>, InvalidRequest> {
                 for part in &message.parts {
                     match part {
                         IrPart::Text { text } => {
-                            steps.push(RenderStep::Typed(TypedStep::OutputText {
-                                text: text.clone(),
+                            steps.push(RenderStep::Typed(TypedStep::ModelOutput {
+                                content: vec![ContentBlock::Text { text: text.clone() }],
                             }));
                         }
 
@@ -224,15 +232,17 @@ fn render_input(ir: &IrRequest) -> Result<Vec<RenderStep>, InvalidRequest> {
                             call_id,
                             name,
                             arguments,
-                            thought_signature,
+                            // The official function_call step carries no signature member: the
+                            // replayable thought signature rides the `thought` step, so this
+                            // family's tool-call signature has no wire slot here.
+                            thought_signature: _,
                         } => {
-                            format::arguments_as_object(arguments)?;
+                            let arguments = format::arguments_as_object(arguments)?;
 
                             steps.push(RenderStep::Typed(TypedStep::FunctionCall {
                                 id: call_id.clone(),
                                 name: name.clone(),
-                                arguments: arguments.clone(),
-                                signature: thought_signature.clone(),
+                                arguments: Value::Object(arguments),
                             }));
                         }
 
@@ -273,7 +283,28 @@ fn render_input(ir: &IrRequest) -> Result<Vec<RenderStep>, InvalidRequest> {
     Ok(steps)
 }
 
-/// Renders the advertised function tools in the typed Interactions shape.
+/// Renders one image into the official content-block spelling: a remote URL rides `uri`, inline
+/// data rides `data` beside its `mime_type`.
+fn render_image(image: &IrImage) -> ContentBlock {
+    match image {
+        IrImage::Url(url) => ContentBlock::Image {
+            uri: Some(url.clone()),
+            data: None,
+            mime_type: None,
+        },
+
+        IrImage::Inline {
+            mime_type,
+            data_base64,
+        } => ContentBlock::Image {
+            uri: None,
+            data: Some(data_base64.clone()),
+            mime_type: Some(mime_type.clone()),
+        },
+    }
+}
+
+/// Renders the advertised function tools in the official shape.
 fn render_tools(ir: &IrRequest) -> Vec<UpstreamTool> {
     ir.tools
         .iter()
@@ -286,37 +317,28 @@ fn render_tools(ir: &IrRequest) -> Vec<UpstreamTool> {
         .collect()
 }
 
-/// Renders the sampling, reasoning, and tool-choice configuration; `None` when every field is
-/// absent, so the whole member is omitted from the request.
+/// Renders the reasoning and tool-choice configuration; `None` when every field is absent, so the
+/// whole member is omitted from the request.
 fn render_generation_config(ir: &IrRequest) -> Option<GenerationConfig> {
     let tool_choice = ir
         .tool_choice
         .as_ref()
         .map(|tool_choice| match tool_choice {
-            IrToolChoice::Auto => UpstreamToolChoice {
-                mode: ToolChoiceMode::Auto,
-                allowed_tools: None,
-            },
+            IrToolChoice::Auto => UpstreamToolChoice::Mode(ToolChoiceMode::Auto),
 
-            IrToolChoice::None => UpstreamToolChoice {
-                mode: ToolChoiceMode::None,
-                allowed_tools: None,
-            },
+            IrToolChoice::None => UpstreamToolChoice::Mode(ToolChoiceMode::None),
 
-            IrToolChoice::Required => UpstreamToolChoice {
-                mode: ToolChoiceMode::Any,
-                allowed_tools: None,
-            },
+            IrToolChoice::Required => UpstreamToolChoice::Mode(ToolChoiceMode::Any),
 
-            IrToolChoice::Function { name } => UpstreamToolChoice {
-                mode: ToolChoiceMode::Any,
-                allowed_tools: Some(vec![name.clone()]),
+            IrToolChoice::Function { name } => UpstreamToolChoice::Allowed {
+                allowed_tools: AllowedTools {
+                    mode: ToolChoiceMode::Any,
+                    tools: vec![name.clone()],
+                },
             },
         });
 
     let config = GenerationConfig {
-        temperature: ir.temperature,
-        top_p: ir.top_p,
         max_output_tokens: ir.max_output_tokens,
         thinking_level: ir.reasoning_effort.as_ref().map(|level| level.as_str()),
         tool_choice,
@@ -325,21 +347,25 @@ fn render_generation_config(ir: &IrRequest) -> Option<GenerationConfig> {
     (!config.is_empty()).then_some(config)
 }
 
-/// Renders the response format restriction; free-form text renders no member at all.
+/// Renders the response format restriction into the official `text` member: free-form text renders
+/// no member at all, JSON-constrained output rides `mime_type: "application/json"`, and a schema
+/// rides beside it — the schema's OpenAI-style name has no official slot here and is dropped.
 fn render_response_format(ir: &IrRequest) -> Option<ResponseFormatShape> {
     match &ir.response_format {
         None | Some(IrResponseFormat::Text) => None,
 
-        Some(IrResponseFormat::Json) => Some(ResponseFormatShape::Json {}),
+        Some(IrResponseFormat::Json) => Some(ResponseFormatShape::Text {
+            mime_type: Some(JSON_MIME_TYPE.to_string()),
+            schema: None,
+        }),
 
-        Some(IrResponseFormat::JsonSchema { name, schema }) => {
-            Some(ResponseFormatShape::JsonSchema {
-                name: name.clone(),
-                schema: schema.clone(),
-            })
-        }
+        Some(IrResponseFormat::JsonSchema { schema, .. }) => Some(ResponseFormatShape::Text {
+            mime_type: Some(JSON_MIME_TYPE.to_string()),
+            schema: Some(schema.clone()),
+        }),
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,25 +489,24 @@ mod tests {
         assert!(!rendered.to_string().contains("thinkingBudget"));
     }
 
-    /// Verifies the tool-choice mapping into `generation_config`: auto, none, required, and a
-    /// forced single function (the `any` mode with one allowed tool); an absent choice omits the
-    /// member.
+    /// Verifies the tool-choice mapping into `generation_config`: the bare `auto`/`any`/`none`
+    /// modes and a forced single function as the official allowed-tools object; an absent choice
+    /// omits the member.
     ///
     /// # Panics
     ///
     /// Panics if a rendered choice diverges from the mapping.
     #[test]
     fn renders_tool_choice_modes() {
-        for (choice, mode, allowed) in [
-            (IrToolChoice::Auto, "auto", None),
-            (IrToolChoice::None, "none", None),
-            (IrToolChoice::Required, "any", None),
+        for (choice, expected) in [
+            (IrToolChoice::Auto, serde_json::json!("auto")),
+            (IrToolChoice::None, serde_json::json!("none")),
+            (IrToolChoice::Required, serde_json::json!("any")),
             (
                 IrToolChoice::Function {
                     name: "search".to_string(),
                 },
-                "any",
-                Some(vec!["search"]),
+                serde_json::json!({"allowed_tools": {"mode": "any", "tools": ["search"]}}),
             ),
         ] {
             let ir = IrRequest {
@@ -493,26 +518,10 @@ mod tests {
             let (_, body) = render(&ir);
             let rendered = body_json(&body);
 
-            let tool_choice = rendered.pointer("/generation_config/tool_choice");
-
             assert_eq!(
-                tool_choice
-                    .and_then(|choice| choice.get("mode"))
-                    .and_then(Value::as_str),
-                Some(mode),
+                rendered.pointer("/generation_config/tool_choice"),
+                Some(&expected),
             );
-
-            match allowed {
-                Some(names) => assert_eq!(
-                    tool_choice.and_then(|choice| choice.get("allowed_tools")),
-                    Some(&serde_json::json!(names)),
-                ),
-
-                None => assert!(
-                    tool_choice.is_none_or(|choice| choice.get("allowed_tools").is_none()),
-                    "a mode without a forced function renders no allowed tools",
-                ),
-            }
         }
 
         let ir = IrRequest {
@@ -528,8 +537,38 @@ mod tests {
         );
     }
 
-    /// Verifies the response-format mapping: free-form text renders no member, JSON renders the
-    /// `json` shape, and a named schema rides through with its name and schema.
+    /// The official `generation_config` pins no sampling members: IR temperature and top_p render
+    /// nowhere, and a request carrying only sampling renders no configuration at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a sampling value leaks onto the wire.
+    #[test]
+    fn drops_sampling_values_without_an_official_slot() {
+        let ir = IrRequest {
+            model: "m".to_string(),
+            temperature: Some(0.5),
+            top_p: Some(0.9),
+            ..IrRequest::default()
+        };
+
+        let (_, body) = render(&ir);
+        let rendered = body_json(&body);
+
+        assert!(
+            rendered.pointer("/generation_config").is_none(),
+            "sampling-only configuration is omitted entirely",
+        );
+        assert!(
+            !rendered.to_string().contains("temperature")
+                && !rendered.to_string().contains("top_p"),
+            "no sampling member may render",
+        );
+    }
+
+    /// Verifies the response-format mapping into the official `text` member: free-form text
+    /// renders no member, JSON renders `application/json`, and a named schema rides through with
+    /// its schema while its name — no official slot here — is dropped.
     ///
     /// # Panics
     ///
@@ -550,8 +589,8 @@ mod tests {
         assert_eq!(
             body_json(&body).pointer("/response_format"),
             Some(&serde_json::json!({
-                "type": "json_schema",
-                "name": "answer",
+                "type": "text",
+                "mime_type": "application/json",
                 "schema": {"type": "object"},
             })),
         );
@@ -566,11 +605,15 @@ mod tests {
 
         assert_eq!(
             body_json(&body).pointer("/response_format"),
-            Some(&serde_json::json!({"type": "json"})),
+            Some(&serde_json::json!({
+                "type": "text",
+                "mime_type": "application/json",
+            })),
         );
 
         let ir = IrRequest {
             model: "m".to_string(),
+            response_format: Some(IrResponseFormat::Text),
             ..IrRequest::default()
         };
 
@@ -584,9 +627,9 @@ mod tests {
 
     /// Verifies the stateless full-history replay: consecutive user turns coalesce into one
     /// `user_input` step, a same-family thought step replays its stored value exactly, a
-    /// text-only reasoning block synthesizes a fresh thought step carrying its text and
-    /// signature, tool calls keep their ids and signatures, and tool outputs resolve their
-    /// function names into `function_result` steps.
+    /// text-only reasoning block synthesizes a fresh official thought step, tool calls render
+    /// their arguments as the official JSON object without a signature member, and tool outputs
+    /// resolve their function names into `function_result` steps.
     ///
     /// # Panics
     ///
@@ -597,8 +640,7 @@ mod tests {
 
         let stored_thought = serde_json::json!({
             "type": "thought",
-            "id": "th_1",
-            "summary": "stored reasoning",
+            "summary": [{"type": "text", "text": "stored reasoning"}],
             "signature": "sig-stored",
         });
 
@@ -608,9 +650,14 @@ mod tests {
             messages: vec![
                 IrMessage {
                     role: IrRole::User,
-                    parts: vec![IrPart::Text {
-                        text: "first".to_string(),
-                    }],
+                    parts: vec![
+                        IrPart::Text {
+                            text: "first".to_string(),
+                        },
+                        IrPart::Image {
+                            image: IrImage::Url("https://example.com/i.png".to_string()),
+                        },
+                    ],
                 },
                 IrMessage {
                     role: IrRole::User,
@@ -676,44 +723,49 @@ mod tests {
             }])),
         );
 
-        // Consecutive user turns coalesce into one step.
+        // Consecutive user turns coalesce into one step; the URL image rides the official `uri`
+        // spelling.
         assert_eq!(
             rendered.pointer("/input/0"),
             Some(&serde_json::json!({
                 "type": "user_input",
-                "content": [{"type": "text", "text": "first"}, {"type": "text", "text": "second"}],
+                "content": [
+                    {"type": "text", "text": "first"},
+                    {"type": "image", "uri": "https://example.com/i.png"},
+                    {"type": "text", "text": "second"},
+                ],
             })),
         );
 
         // The same-family thought step replays its stored value exactly.
         assert_eq!(rendered.pointer("/input/1"), Some(&stored_thought));
 
-        // A text-only block synthesizes a fresh step carrying its text and signature.
+        // A text-only block synthesizes a fresh official step carrying its blocks and signature.
         assert_eq!(
-            rendered.pointer("/input/2/type"),
-            Some(&serde_json::json!("thought"))
-        );
-        assert_eq!(
-            rendered.pointer("/input/2/summary"),
-            Some(&serde_json::json!("fresh reasoning"))
-        );
-        assert_eq!(
-            rendered.pointer("/input/2/signature"),
-            Some(&serde_json::json!("sig-fresh"))
+            rendered.pointer("/input/2"),
+            Some(&serde_json::json!({
+                "type": "thought",
+                "summary": [{"type": "text", "text": "fresh reasoning"}],
+                "signature": "sig-fresh",
+            })),
         );
 
         assert_eq!(
             rendered.pointer("/input/3"),
-            Some(&serde_json::json!({"type": "output_text", "text": "hello"})),
+            Some(&serde_json::json!({
+                "type": "model_output",
+                "content": [{"type": "text", "text": "hello"}],
+            })),
         );
+
+        // The official function_call step carries the arguments object and no signature member.
         assert_eq!(
             rendered.pointer("/input/4"),
             Some(&serde_json::json!({
                 "type": "function_call",
                 "id": "call_1",
                 "name": "search",
-                "arguments": r#"{"q":"hi"}"#,
-                "signature": "sig-call",
+                "arguments": {"q": "hi"},
             })),
         );
         assert_eq!(
@@ -732,8 +784,7 @@ mod tests {
     }
 
     /// Verifies the family-membership rule: a cross-family opaque payload never reaches the wire —
-    /// the block synthesizes a fresh thought step from its text instead — while the signature
-    /// still rides along.
+    /// the block synthesizes a fresh thought step from its text instead.
     ///
     /// # Panics
     ///
@@ -769,12 +820,11 @@ mod tests {
             Some(&serde_json::json!("thought"))
         );
         assert_eq!(
-            rendered.pointer("/input/0/summary"),
+            rendered.pointer("/input/0/summary/0/text"),
             Some(&serde_json::json!("reasoned"))
         );
-        assert_eq!(
-            rendered.pointer("/input/0/thinking"),
-            None,
+        assert!(
+            rendered.pointer("/input/0/summary/0/thinking").is_none(),
             "a foreign payload must never leak onto the wire",
         );
         assert!(

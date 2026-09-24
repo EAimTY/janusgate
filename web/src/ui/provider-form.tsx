@@ -106,9 +106,11 @@ export function ProviderKindPicker(props: {
 
 /**
  * Name and model prefix: the two fields every provider carries. The prefix
- * defaults to the name with a slash; flipping the switch on exposes the
- * field for a hand-set value — including an empty one — which is then used
- * exactly as typed, with no slash added.
+ * defaults to the provider's name plus one trailing dash, so an unoverridden
+ * model reads as `name-upstream-id`; flipping the switch on exposes the field
+ * for a hand-set value — including an empty one — which is then used exactly
+ * as typed. A prefix never holds a slash or a colon: it is a routing token,
+ * and the Gemini URL path cannot address either.
  */
 export function ProviderIdentityFields(props: {
     readonly name: string;

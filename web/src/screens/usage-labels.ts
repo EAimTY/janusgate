@@ -6,6 +6,7 @@ import type {
     UsageBucketKey,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
+import { indexRowsById } from "/src/management-api/serving";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
 import type { UsageEntities } from "./usage-read";
 
@@ -24,32 +25,15 @@ export type UsageEntityIndex = {
 };
 
 /**
- * Maps the rows by their id. Row ids are unique by contract, so each id
- * answers exactly one row.
- */
-function indexById<
-    TRow extends {
-        readonly id: number;
-    },
->(rows: ReadonlyArray<TRow>): ReadonlyMap<number, TRow> {
-    return new Map(
-        rows.map((row) => [
-            row.id,
-            row,
-        ]),
-    );
-}
-
-/**
  * Indexes the entity lists once per entities change — a memo over the
  * entities signal, never per rendered cell — so the label resolvers below
  * answer every id in constant time.
  */
 export function indexUsageEntities(entities: UsageEntities): UsageEntityIndex {
     return {
-        providersById: indexById(entities.providers),
-        modelsById: indexById(entities.models),
-        apiKeysById: indexById(entities.apiKeys),
+        providersById: indexRowsById(entities.providers),
+        modelsById: indexRowsById(entities.models),
+        apiKeysById: indexRowsById(entities.apiKeys),
     };
 }
 

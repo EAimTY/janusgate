@@ -163,7 +163,7 @@ async fn responses(
 
 /// Handles `GET /models`.
 async fn models(State(context): State<Context>) -> Response {
-    match storage::list_enabled_models_with_owner(&context.database).await {
+    match storage::models::list_enabled_models_with_owner(&context.database).await {
         Ok(listed) => {
             let data = listed
                 .iter()

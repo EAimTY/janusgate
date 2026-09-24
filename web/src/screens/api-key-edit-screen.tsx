@@ -36,6 +36,12 @@ export function ApiKeyEditScreen(props: {
         () => keys().find((candidate) => candidate.id === props.apiKeyId) ?? null,
     );
 
+    // One memo for both consumers — the save notice's last-enabled wording and
+    // the delete card's blast-radius question read the same figure.
+    const enabledCount = createMemo(
+        () => keys().filter((candidate) => candidate.is_enabled).length,
+    );
+
     // The held row with its save-settling latch: an open form with unsaved
     // edits holds its row against refreshes, so an operator's input can never
     // silently vanish, and a succeeded save holds it until its own reload
@@ -113,7 +119,7 @@ export function ApiKeyEditScreen(props: {
                         <SettingsCard
                             api={props.api}
                             apiKey={row}
-                            enabledCount={keys().filter((candidate) => candidate.is_enabled).length}
+                            enabledCount={enabledCount()}
                             read={read}
                             onDirtyChange={edit.reportFormDirty}
                             onSaved={edit.reportSaved}
@@ -122,10 +128,7 @@ export function ApiKeyEditScreen(props: {
                         <DangerCard
                             api={props.api}
                             apiKey={row}
-                            isLastEnabled={
-                                row.is_enabled &&
-                                keys().filter((candidate) => candidate.is_enabled).length <= 1
-                            }
+                            isLastEnabled={row.is_enabled && enabledCount() <= 1}
                             read={read}
                         />
                     </>

@@ -140,7 +140,7 @@ async fn messages(
 /// Handles `GET /models` in the native Anthropic shape over the same effective-model set every
 /// surface lists, ignoring pagination parameters and returning the full list in one page.
 async fn models(State(context): State<Context>) -> Response {
-    match storage::list_enabled_models_with_owner(&context.database).await {
+    match storage::models::list_enabled_models_with_owner(&context.database).await {
         Ok(listed) => {
             let data = listed
                 .iter()
