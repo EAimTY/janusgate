@@ -1,10 +1,31 @@
 import type { JSX } from "@solidjs/web";
 import { onCleanup } from "solid-js";
+import { appConfig } from "/src/config";
 import { formatTimestamp } from "/src/format";
 import type { StartProviderOauthResponse } from "/src/management-api/generated/v0";
 import { Button, buttonClass } from "/src/ui/controls";
 import { Glyph } from "/src/ui/glyph";
 import { CopyButton } from "./clipboard";
+
+/**
+ * The facts both flow steps print about the live flow: the single-use state
+ * that names it and the moment it stops being completable. The app neither
+ * stores the state and the code nor composes any address out of them.
+ */
+function FlowFacts(props: { readonly flow: StartProviderOauthResponse }): JSX.Element {
+    return (
+        <dl class="flex flex-wrap gap-x-8 gap-y-3">
+            <div>
+                <dt class="text-[12.5px] font-medium text-ink-dim">Single-use state</dt>
+                <dd class="tnum mt-1 break-all text-ink-dim">{props.flow.state}</dd>
+            </div>
+            <div>
+                <dt class="text-[12.5px] font-medium text-ink-dim">Flow expires</dt>
+                <dd class="tnum mt-1 text-ink-dim">{formatTimestamp(props.flow.expires_at)}</dd>
+            </div>
+        </dl>
+    );
+}
 
 /**
  * The authorization-code step between `oauth:start` and pasting the code
@@ -49,16 +70,7 @@ export function AuthorizeStep(props: {
                 />
             </div>
 
-            <dl class="flex flex-wrap gap-x-8 gap-y-3">
-                <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Single-use state</dt>
-                    <dd class="tnum mt-1 break-all text-ink-dim">{props.flow.state}</dd>
-                </div>
-                <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Flow expires</dt>
-                    <dd class="tnum mt-1 text-ink-dim">{formatTimestamp(props.flow.expires_at)}</dd>
-                </div>
-            </dl>
+            <FlowFacts flow={props.flow} />
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
                 Both are single-use and expire quickly — finish promptly after approving access.
@@ -84,8 +96,11 @@ export function AuthorizeStep(props: {
  * The device step: the flow polls the token endpoint on its own schedule, so
  * this panel shows the verification facts to approve through and keeps
  * asking for the outcome while the flow is live. A pending answer schedules
- * the next poll on the flow's stored interval; a terminal answer consumes
- * the flow — succeeded lands on the provider, failed states the recovery.
+ * the next poll on the configured interval; any other answer ends the loop,
+ * because the screen's flow fragment reports the terminal states itself —
+ * and answers `"done"` for a disposed screen or a replaced flow, which is
+ * the one disposal guard (README §6.4) keeping a late resolution from
+ * re-arming the timer or navigating after the visitor left.
  */
 export function DeviceStep(props: {
     readonly flow: Extract<
@@ -95,8 +110,6 @@ export function DeviceStep(props: {
         }
     >;
     readonly onComplete: () => Promise<"pending" | "done">;
-    readonly onSucceeded: () => void;
-    readonly onFailed: (failureCode: string, failureMessage: string) => void;
     readonly onStartOver: () => void;
 }): JSX.Element {
     const completeUri = (): string =>
@@ -118,7 +131,7 @@ export function DeviceStep(props: {
                 return;
             }
 
-            timer = setTimeout(poll, 3000);
+            timer = setTimeout(poll, appConfig.oauthDevicePollIntervalMs);
         });
     };
 
@@ -159,16 +172,7 @@ export function DeviceStep(props: {
                 />
             </div>
 
-            <dl class="flex flex-wrap gap-x-8 gap-y-3">
-                <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Single-use state</dt>
-                    <dd class="tnum mt-1 break-all text-ink-dim">{props.flow.state}</dd>
-                </div>
-                <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Flow expires</dt>
-                    <dd class="tnum mt-1 text-ink-dim">{formatTimestamp(props.flow.expires_at)}</dd>
-                </div>
-            </dl>
+            <FlowFacts flow={props.flow} />
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
                 Approve the code at the verification page; this page keeps asking the gateway for

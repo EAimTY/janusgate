@@ -6,4 +6,6 @@
 export const appConfig = {
     connectionStorageKey: "janusgate-web:connection",
     themeStorageKey: "janusgate-web:theme",
+    /** Milliseconds between two device-flow completion polls. */
+    oauthDevicePollIntervalMs: 3000,
 } as const;

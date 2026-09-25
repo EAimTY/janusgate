@@ -80,7 +80,6 @@ use self::client_render::{JsonResponse, SseRenderer};
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
     ir::{InvalidRequest, IrAggregation},
-    storage::api_logs::ApiLogEndpointType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -98,8 +97,6 @@ pub(crate) struct Format;
 
 impl ClientFormat for Format {
     type JsonResponse = JsonResponse;
-
-    const ENDPOINT_TYPE: ApiLogEndpointType = ApiLogEndpointType::GeminiInteractions;
 
     fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, InvalidRequest> {
         request_parse::parse_request(body, route)

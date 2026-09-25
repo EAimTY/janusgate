@@ -1,24 +1,30 @@
 //! OAuth authorization flows: flow begin and completion, the token exchange with terminal-code
-//! classification, the lease-guarded renewal, and the background device poller.
+//! classification, the lease-guarded renewal, the background device poller, and the shared
+//! exchange-to-provider-write completion pipeline.
 //!
 //! The submodule layout mirrors the concerns: [`flow`] is the grant mechanics (authorize-URL
-//! building, device authorization, token exchange, expiry resolution), [`refresh`] is the
-//! lease-guarded renewal loop over the definition's refresh mode, and [`poller`] is the
-//! background scheduler resuming every unexpired pending device flow from its stored schedule.
+//! building, device authorization, token exchange, expiry resolution), [`completion`] is the
+//! pipeline both completion surfaces share (the exchange folded through provisioning into the
+//! stored credentials, and the provider write), [`refresh`] is the lease-guarded renewal loop
+//! over the definition's refresh mode, and [`poller`] is the background scheduler resuming every
+//! unexpired pending device flow from its stored schedule.
 //!
 //! Every provider-specific fact lives in the definition the flow references; the engines carry
 //! the grant mechanics alone and never special-case a provider.
 
 use crate::storage::Error as StorageError;
 
+mod completion;
 mod flow;
 mod poller;
 mod refresh;
 
+pub(crate) use completion::{complete_exchange, completed_outcome, write_completion_provider};
+#[cfg(test)]
+pub(crate) use flow::DeviceAuthorization;
 pub(crate) use flow::{
-    AUTHORIZATION_CODE_TTL, DEFAULT_DEVICE_INTERVAL_SECONDS, ExchangeProduct,
-    apply_id_token_claims, build_authorize_url, execute_device_authorization, execute_exchange,
-    random_url_safe, resolve_expiry,
+    AUTHORIZATION_CODE_TTL, DEFAULT_DEVICE_INTERVAL_SECONDS, build_authorize_url,
+    execute_device_authorization, execute_exchange, random_url_safe, seconds_from_now,
 };
 pub(crate) use poller::spawn_device_poller;
 pub(crate) use refresh::ensure_fresh_token;
@@ -47,6 +53,15 @@ pub(crate) enum Error {
     /// malformed body, or a missing required field.
     #[error("Upstream request failed: {detail}")]
     Unavailable {
+        /// Human-readable failure detail.
+        detail: String,
+    },
+
+    /// The upstream endpoint was cut off by the HTTP client's timeout budget and produced no
+    /// usable response. Rendered exactly like every other transport failure; carried typed so
+    /// the device poller's backoff can match the fact instead of parsing the message.
+    #[error("Upstream request failed: {detail}")]
+    Timeout {
         /// Human-readable failure detail.
         detail: String,
     },
@@ -99,6 +114,10 @@ impl From<crate::provider::control::ControlFailure> for Error {
 
             crate::provider::control::ControlFailure::Unavailable { detail } => {
                 Self::Unavailable { detail }
+            }
+
+            crate::provider::control::ControlFailure::Timeout { detail } => {
+                Self::Timeout { detail }
             }
         }
     }

@@ -1,7 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Match, onCleanup, Show, Switch } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
-import type { StartProviderOauthResponse } from "/src/management-api/generated/v0";
+import type { DefinitionResponse } from "/src/management-api/generated/v0";
 import {
     baseUrlMessage,
     compositionMessage,
@@ -10,13 +10,21 @@ import {
     isModelPrefix,
     routingTokenMessage,
 } from "/src/management-api/identifiers";
-import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
-import { PROVIDER_PRESETS, type ProviderPreset } from "/src/management-api/presets";
+import {
+    matchStoredDefinition,
+    PROVIDER_PRESETS,
+    type ProviderPreset,
+} from "/src/management-api/presets";
 import { defaultModelPrefix, suggestProviderName } from "/src/management-api/provider-defaults";
+import {
+    type DefinitionPayloadResult,
+    validateDefinitionPayload,
+} from "/src/management-api/validation";
 import { hrefs, navigate } from "/src/router";
 import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
+import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { AuthorizeStep, DeviceStep } from "/src/ui/oauth-flow";
 import {
@@ -24,7 +32,7 @@ import {
     ProviderIdentityFields,
     ProviderPresetPicker,
 } from "/src/ui/provider-form";
-import { describeCallFailure } from "./failure";
+import { createOauthFlow } from "./oauth-flow";
 import { type ScreenNotice, screenFailureNotice } from "./read";
 
 /**
@@ -37,13 +45,12 @@ import { type ScreenNotice, screenFailureNotice } from "./read";
  * version; the stored one is never rewritten.
  */
 export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.Element {
-    const [presetId, setPresetId] = createSignal(PROVIDER_PRESETS[0]?.id ?? "");
-    const [definitions, setDefinitions] = createSignal<
-        ReadonlyArray<{
-            readonly name: string;
-            readonly version: number;
-        }>
-    >([]);
+    const [presetId, setPresetId] = createSignal(PROVIDER_PRESETS[0].id);
+    const [definitions, setDefinitions] = createSignal<ReadonlyArray<DefinitionResponse>>([]);
+    /** What the mount read established about the preset's stored versions. */
+    const [isStoredKnown, setIsStoredKnown] = createSignal<"reading" | "read" | "unreadable">(
+        "reading",
+    );
     const [name, setName] = createSignal("");
     const [isNameTouched, setIsNameTouched] = createSignal(false);
     const [takenNames, setTakenNames] = createSignal<ReadonlySet<string>>(new Set());
@@ -51,15 +58,17 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const [customPrefix, setCustomPrefix] = createSignal("");
     const [baseUrl, setBaseUrl] = createSignal("");
     const [apiKey, setApiKey] = createSignal("");
+    const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     const preset = (): ProviderPreset =>
-        PROVIDER_PRESETS.find((candidate) => candidate.id === presetId()) ??
-        (PROVIDER_PRESETS[0] as ProviderPreset);
+        PROVIDER_PRESETS.find((candidate) => candidate.id === presetId()) ?? PROVIDER_PRESETS[0];
 
-    /** The stored definition of this preset, when the gateway holds one. */
-    const stored = createMemo(() =>
-        definitions().find((definition) => definition.name === preset().id),
-    );
+    /**
+     * The latest stored version of this preset's definition, when the gateway
+     * holds one — the listing orders by name then version, so the last of a
+     * name is the newest.
+     */
+    const stored = createMemo(() => matchStoredDefinition(preset(), definitions()));
 
     /** The definition JSON the operator edits; prefilled from the preset. */
     const [definitionJson, setDefinitionJson] = createSignal(
@@ -70,8 +79,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const pickPreset = (next: string): void => {
         setPresetId(next);
         setFailure(null);
-        setFlow(null);
-        setCode("");
+        oauth.reset();
 
         const nextPreset = PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? preset();
 
@@ -84,13 +92,20 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     };
 
     // The taken names arrive after the first read; until then the preset's
-    // base name stands in, and a hand-typed name is never overwritten.
+    // base name stands in, and a hand-typed name is never overwritten. A read
+    // that fails is stated where every failure on this page stands — never
+    // silently swallowed into a suggestion that names a taken name again.
     const suggestionController = new AbortController();
     onCleanup(() => suggestionController.abort());
 
     void performManagementCall(() => props.api.listProviders(suggestionController.signal)).then(
         (outcome) => {
-            if (outcome.status !== "ok") {
+            if (outcome.status === "aborted") {
+                return;
+            }
+
+            if (outcome.status === "failed") {
+                setFailure(screenFailureNotice(outcome.cause));
                 return;
             }
 
@@ -106,16 +121,18 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     void performManagementCall(() =>
         props.api.listProviderDefinitions(suggestionController.signal),
     ).then((outcome) => {
-        if (outcome.status !== "ok") {
+        if (outcome.status === "aborted") {
             return;
         }
 
-        setDefinitions(
-            outcome.result.provider_definitions.map((definition) => ({
-                name: definition.name,
-                version: definition.version,
-            })),
-        );
+        if (outcome.status === "failed") {
+            setIsStoredKnown("unreadable");
+            setFailure(screenFailureNotice(outcome.cause));
+            return;
+        }
+
+        setIsStoredKnown("read");
+        setDefinitions(outcome.result.provider_definitions);
     });
 
     const suggestion = createMemo(() => suggestProviderName(preset().suggestedName, takenNames()));
@@ -149,24 +166,18 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const apiKeyError = (): string | null =>
         apiKey() === "" || isBearerSecret(apiKey()) ? null : compositionMessage("API key");
 
-    /** A static-key creation is submittable with a complete, routable connection. */
+    /** A static-key creation is submittable with a valid definition and a complete, routable connection. */
     const canCreateStatic = (): boolean =>
+        definitionError() === null &&
         prefixError() === null &&
         (!needsBaseUrl() || isBaseUrl(trimmedBaseUrl())) &&
         isBearerSecret(apiKey());
 
-    /** The parsed definition payload, or the parse error naming it. */
-    const parsedDefinition = ():
-        | {
-              payload: unknown;
-          }
-        | {
-              error: string;
-          } => {
+    /** The edited definition payload, validated, or the offending JSON path. */
+    const parsedDefinition = (): DefinitionPayloadResult => {
         try {
-            return {
-                payload: JSON.parse(definitionJson()),
-            };
+            const parsed: unknown = JSON.parse(definitionJson());
+            return validateDefinitionPayload(parsed);
         } catch (error) {
             return {
                 error: error instanceof Error ? error.message : String(error),
@@ -181,8 +192,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     /**
      * Ensures the definition the preset names exists under the edited JSON:
-     * an untouched preset with a stored version reuses it, a new name creates
-     * version 1, an edited stored name registers the next version.
+     * an untouched preset with a stored version reuses its latest version, a
+     * new name creates version 1, an edited stored name registers the next
+     * version. The definition calls pass no signal, so they cannot abort —
+     * the only outcomes are the ensured version and a failure.
      */
     const ensureDefinition = async (): Promise<
         | {
@@ -199,131 +212,124 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             return {
                 error: {
                     tone: "bad",
-                    title: "The definition JSON does not parse.",
+                    title: "The definition JSON is not a definition the gateway could store.",
                     detail: parsed.error,
                     fix: "Fix the JSON and submit again; nothing was written.",
                 },
             };
         }
 
-        const payload = parsed.payload as Record<string, unknown>;
         const current = stored();
 
-        if (current !== undefined && !isDefinitionTouched() && Object.keys(payload).length > 0) {
+        if (current !== null && !isDefinitionTouched()) {
             return {
                 name: current.name,
                 version: current.version,
             };
         }
 
-        if (current === undefined) {
-            const outcome = await performManagementCall(() =>
-                props.api.createProviderDefinition({
+        try {
+            if (current === null) {
+                const result = await props.api.createProviderDefinition({
                     name: preset().id,
-                    ...(payload as {
-                        format: Parameters<typeof props.api.createProviderDefinition>[0]["format"];
-                        inference: never;
-                        credential: never;
-                    }),
-                }),
-            );
+                    ...parsed.payload,
+                });
 
-            if (outcome.status === "aborted") {
                 return {
-                    error: {
-                        tone: "info",
-                        title: "Cancelled.",
-                        detail: "",
-                        fix: null,
-                    },
+                    name: result.provider_definition.name,
+                    version: result.provider_definition.version,
                 };
             }
 
-            if (outcome.status === "failed") {
-                return {
-                    error: screenFailureNotice(outcome.cause, {
-                        action: "create-provider",
-                    }),
-                };
-            }
-
-            return {
-                name: outcome.result.provider_definition.name,
-                version: outcome.result.provider_definition.version,
-            };
-        }
-
-        const outcome = await performManagementCall(() =>
-            props.api.updateProviderDefinition({
+            const result = await props.api.updateProviderDefinition({
                 name: current.name,
                 base_version: current.version,
-                ...(payload as {
-                    format: Parameters<typeof props.api.updateProviderDefinition>[0]["format"];
-                    inference: never;
-                    credential: never;
-                }),
-            }),
-        );
+                ...parsed.payload,
+            });
 
-        if (outcome.status === "aborted") {
             return {
-                error: {
-                    tone: "info",
-                    title: "Cancelled.",
-                    detail: "",
-                    fix: null,
-                },
+                name: result.provider_definition.name,
+                version: result.provider_definition.version,
             };
-        }
-
-        if (outcome.status === "failed") {
+        } catch (error) {
             return {
-                error: screenFailureNotice(outcome.cause, {
-                    action: "update-provider",
+                error: screenFailureNotice(error, {
+                    action: current === null ? "create-provider" : "update-provider",
                 }),
             };
         }
-
-        return {
-            name: outcome.result.provider_definition.name,
-            version: outcome.result.provider_definition.version,
-        };
     };
 
-    /** An OAuth completion is submittable with a valid, routable prefix. */
-    const canComplete = (): boolean => prefixError() === null;
+    /** An OAuth completion is submittable with a valid definition and a routable prefix. */
+    const canComplete = (): boolean => prefixError() === null && definitionError() === null;
 
     const inputName = (value: string): void => {
         setIsNameTouched(true);
         setName(value);
     };
 
-    const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
-    const [code, setCode] = createSignal("");
-    const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
-    const [isCreating, setIsCreating] = createSignal(false);
-    const [isStarting, setIsStarting] = createSignal(false);
-    const [isCompleting, setIsCompleting] = createSignal(false);
-
-    const isBusy = (): boolean => isCreating() || isStarting() || isCompleting();
-
-    /** Reads the pasted callback: a full URL reduces to its code, a bare code passes through. */
-    const readPastedCode = (): string | null => {
-        const pasted = extractAuthorizationCode(code());
-
-        if (pasted !== null) {
-            return pasted;
-        }
-
-        setFailure({
-            tone: "bad",
-            title: "Paste the callback URL or the code.",
-            detail: "That paste holds neither a bare code nor a URL with a code in it.",
-            fix: "Copy the whole address the login landed on, or just its code, and paste it here.",
-        });
-
-        return null;
+    /** Restores the selected preset's payload and re-arms the stored-version reuse. */
+    const resetDefinition = (): void => {
+        setDefinitionJson(JSON.stringify(preset().payload, null, 2));
+        setIsDefinitionTouched(false);
     };
+
+    const [isCreating, setIsCreating] = createSignal(false);
+
+    // The OAuth flow's shared state machine: the failure channel is this
+    // page's standing notice, a flow begins only under an ensured definition,
+    // and a succeeded completion lands on the new provider's page.
+    const oauth = createOauthFlow({
+        api: props.api,
+        startAction: "start-oauth",
+        completeAction: "complete-oauth",
+        channel: setFailure,
+        isSubmittable: canComplete,
+        begin: async () => {
+            const ensured = await ensureDefinition();
+
+            if ("error" in ensured) {
+                return {
+                    status: "blocked" as const,
+                    notice: ensured.error,
+                };
+            }
+
+            return {
+                status: "called" as const,
+                outcome: await performManagementCall(() =>
+                    props.api.startProviderOauth({
+                        provider_definition_name: ensured.name,
+                        provider_definition_version: ensured.version,
+                        name: resolvedName(),
+                        model_prefix: resolvedPrefix(),
+                        ...(needsBaseUrl() && isBaseUrl(trimmedBaseUrl())
+                            ? {
+                                  base_url: trimmedBaseUrl(),
+                              }
+                            : {}),
+                    }),
+                ),
+            };
+        },
+        onSucceeded: (provider) => {
+            navigate(hrefs.providerDetail(provider.id));
+        },
+    });
+
+    /** Whether any creation or OAuth call is in flight: the page's shared disable. */
+    const isBusy = (): boolean => isCreating() || oauth.isBusy();
+
+    /** The live flow narrowed to its grant, so each step renders its own answer. */
+    const startedAuthorizationCode = createMemo(() => {
+        const live = oauth.flow();
+        return live !== null && live.grant === "authorization_code" ? live : null;
+    });
+
+    const startedDevice = createMemo(() => {
+        const live = oauth.flow();
+        return live !== null && live.grant === "device" ? live : null;
+    });
 
     /** Creates a static-key provider under the ensured definition. */
     const create = async (): Promise<void> => {
@@ -372,164 +378,6 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         navigate(hrefs.providerDetail(outcome.result.provider.id));
     };
 
-    const start = async (): Promise<void> => {
-        if (isBusy() || flow() !== null) {
-            return;
-        }
-
-        setFailure(null);
-        setIsStarting(true);
-
-        const ensured = await ensureDefinition();
-
-        if ("error" in ensured) {
-            setIsStarting(false);
-            setFailure(ensured.error);
-            return;
-        }
-
-        const outcome = await performManagementCall(() =>
-            props.api.startProviderOauth({
-                provider_definition_name: ensured.name,
-                provider_definition_version: ensured.version,
-                name: resolvedName(),
-                model_prefix: resolvedPrefix(),
-                ...(needsBaseUrl() && isBaseUrl(trimmedBaseUrl())
-                    ? {
-                          base_url: trimmedBaseUrl(),
-                      }
-                    : {}),
-            }),
-        );
-
-        setIsStarting(false);
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            setFailure(
-                screenFailureNotice(outcome.cause, {
-                    action: "start-oauth",
-                }),
-            );
-            return;
-        }
-
-        setFlow(outcome.result);
-    };
-
-    /** Completes an authorization-code flow with the pasted callback. */
-    const complete = async (): Promise<void> => {
-        const startedFlow = flow();
-
-        if (
-            startedFlow === null ||
-            startedFlow.grant !== "authorization_code" ||
-            isBusy() ||
-            prefixError() !== null
-        ) {
-            return;
-        }
-
-        const pasted = readPastedCode();
-
-        if (pasted === null) {
-            return;
-        }
-
-        setFailure(null);
-        setIsCompleting(true);
-
-        const outcome = await performManagementCall(() =>
-            props.api.completeProviderOauth({
-                grant: "authorization_code",
-                state: startedFlow.state,
-                code: pasted,
-            }),
-        );
-
-        setIsCompleting(false);
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            setFailure(
-                screenFailureNotice(outcome.cause, {
-                    action: "complete-oauth",
-                }),
-            );
-
-            if (
-                describeCallFailure(outcome.cause, {
-                    action: "complete-oauth",
-                }).kind === "gone"
-            ) {
-                // The state is unknown, expired, or already consumed: this
-                // flow is dead, so it resets instead of being retried.
-                setFlow(null);
-                setCode("");
-            }
-
-            return;
-        }
-
-        if (outcome.result.status === "succeeded") {
-            const providerId = outcome.result.provider.id;
-            navigate(hrefs.providerDetail(providerId));
-        }
-    };
-
-    /** One device-poll ask; the step panel schedules the next one. */
-    const completeDevice = async (): Promise<"pending" | "done"> => {
-        const startedFlow = flow();
-
-        if (startedFlow === null || startedFlow.grant !== "device") {
-            return "done";
-        }
-
-        const outcome = await performManagementCall(() =>
-            props.api.completeProviderOauth({
-                grant: "device",
-                state: startedFlow.state,
-            }),
-        );
-
-        if (outcome.status === "aborted") {
-            return "pending";
-        }
-
-        if (outcome.status === "failed") {
-            return "pending";
-        }
-
-        if (outcome.result.status === "pending") {
-            return "pending";
-        }
-
-        if (outcome.result.status === "failed") {
-            setFailure({
-                tone: "bad",
-                title: "The flow failed.",
-                detail: outcome.result.failure_message,
-                fix: "Start a fresh flow and authorize it promptly.",
-            });
-
-            return "done";
-        }
-
-        if (outcome.result.status !== "succeeded") {
-            return "done";
-        }
-
-        navigate(hrefs.providerDetail(outcome.result.provider.id));
-
-        return "done";
-    };
-
     const submitCompatible = (event: SubmitEvent): void => {
         event.preventDefault();
         void create();
@@ -537,12 +385,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     const submitOauth = (event: SubmitEvent): void => {
         event.preventDefault();
-        void complete();
+        void oauth.complete();
     };
 
     const startOver = (): void => {
-        setFlow(null);
-        setCode("");
+        oauth.reset();
         setFailure(null);
     };
 
@@ -573,8 +420,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         presets={PROVIDER_PRESETS}
                         value={presetId()}
                         onChange={pickPreset}
-                        isDisabled={isBusy() || flow() !== null}
+                        isDisabled={isBusy() || oauth.flow() !== null}
                     />
+                    <p class="mt-3 text-[12.5px] leading-snug text-ink-faint">
+                        {preset().provenance}
+                    </p>
                 </div>
             </Card>
 
@@ -588,7 +438,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         when={stored()}
                         fallback={
                             <p class="text-[12.5px] text-ink-faint">
-                                Not stored yet — submitting creates version 1.
+                                {isStoredKnown() === "unreadable"
+                                    ? "The stored versions could not be read."
+                                    : "Not stored yet — submitting creates version 1."}
                             </p>
                         }
                     >
@@ -598,23 +450,43 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             </p>
                         )}
                     </Show>
-                    <textarea
-                        class="tnum mt-2 h-80 w-full rounded-lg border border-rule bg-canvas p-3 font-mono text-[12.5px] leading-relaxed dark:bg-muted"
-                        spellcheck={false}
-                        value={definitionJson()}
-                        onInput={(event) => {
-                            setDefinitionJson(event.currentTarget.value);
-                            setIsDefinitionTouched(true);
-                        }}
-                        disabled={isBusy()}
-                    />
-                    <Show when={definitionError()}>
-                        {(current) => (
-                            <p class="mt-1 text-[12.5px] text-red-600 dark:text-red-400">
-                                {current()}
-                            </p>
-                        )}
-                    </Show>
+                    <details class="group mt-2">
+                        <summary class="flex cursor-pointer list-none items-center gap-1.5 text-[13px] font-medium text-ink-dim transition-colors duration-150 ease-out hover:text-ink [&::-webkit-details-marker]:hidden">
+                            <Glyph
+                                name="chev-right"
+                                class="mt-0.5 shrink-0 transition-transform duration-150 ease-out group-open:rotate-90"
+                            />
+                            Advanced: the connection recipe — prefilled by the preset
+                        </summary>
+                        <div class="mt-3">
+                            <textarea
+                                aria-label="Definition JSON"
+                                class="tnum h-80 w-full rounded-lg border border-rule bg-canvas p-3 font-mono text-[12.5px] leading-relaxed dark:bg-muted"
+                                spellcheck={false}
+                                value={definitionJson()}
+                                onInput={(event) => {
+                                    setDefinitionJson(event.currentTarget.value);
+                                    setIsDefinitionTouched(true);
+                                }}
+                                disabled={isBusy()}
+                            />
+                            <Show when={definitionError()}>
+                                {(current) => (
+                                    <p class="mt-1 text-[12.5px] text-red-600 dark:text-red-400">
+                                        {current()}
+                                    </p>
+                                )}
+                            </Show>
+                            <div class="mt-2 flex justify-end">
+                                <Button
+                                    isDisabled={isBusy()}
+                                    onClick={resetDefinition}
+                                >
+                                    Reset to preset
+                                </Button>
+                            </div>
+                        </div>
+                    </details>
                 </div>
             </Card>
 
@@ -644,74 +516,72 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             description="Approve access where the flow points, then let it complete. This app never stores the credentials."
                         />
                         <Show
-                            when={flow()}
-                            keyed
+                            when={oauth.flow() === null}
                             fallback={
                                 <div class="mt-4">
-                                    <Button
-                                        tone="primary"
-                                        isBusy={isStarting()}
-                                        onClick={() => void start()}
+                                    <Show
+                                        when={startedAuthorizationCode()}
+                                        keyed
+                                        fallback={
+                                            <Show
+                                                when={startedDevice()}
+                                                keyed
+                                            >
+                                                {(deviceFlow) => (
+                                                    <DeviceStep
+                                                        flow={deviceFlow}
+                                                        onComplete={oauth.completeDevice}
+                                                        onStartOver={startOver}
+                                                    />
+                                                )}
+                                            </Show>
+                                        }
                                     >
-                                        {isStarting() ? "Starting…" : "Start the authorization"}
-                                    </Button>
+                                        {(authorizationFlow) => (
+                                            <form
+                                                novalidate={true}
+                                                class="flex max-w-2xl flex-col gap-4"
+                                                onSubmit={submitOauth}
+                                            >
+                                                <AuthorizeStep
+                                                    flow={authorizationFlow}
+                                                    onStartOver={startOver}
+                                                >
+                                                    <TextField
+                                                        label="Callback URL or authorization code"
+                                                        value={oauth.code()}
+                                                        onInput={oauth.setCode}
+                                                        placeholder="Paste the whole callback URL"
+                                                        isDisabled={oauth.isCompleting()}
+                                                    />
+                                                    <div>
+                                                        <Button
+                                                            type="submit"
+                                                            tone="primary"
+                                                            isDisabled={!canComplete()}
+                                                            isBusy={oauth.isCompleting()}
+                                                        >
+                                                            {oauth.isCompleting()
+                                                                ? "Connecting…"
+                                                                : "Connect the account"}
+                                                        </Button>
+                                                    </div>
+                                                </AuthorizeStep>
+                                            </form>
+                                        )}
+                                    </Show>
                                 </div>
                             }
                         >
-                            {(startedFlow) => (
-                                <div class="mt-4">
-                                    <Show
-                                        when={startedFlow.grant === "authorization_code"}
-                                        fallback={
-                                            <DeviceStep
-                                                flow={startedFlow as never}
-                                                onComplete={completeDevice}
-                                                onSucceeded={() => {}}
-                                                onFailed={() => {}}
-                                                onStartOver={startOver}
-                                            />
-                                        }
-                                    >
-                                        <form
-                                            novalidate={true}
-                                            class="flex max-w-2xl flex-col gap-4"
-                                            onSubmit={submitOauth}
-                                        >
-                                            <AuthorizeStep
-                                                flow={
-                                                    startedFlow as Extract<
-                                                        StartProviderOauthResponse,
-                                                        {
-                                                            grant: "authorization_code";
-                                                        }
-                                                    >
-                                                }
-                                                onStartOver={startOver}
-                                            >
-                                                <TextField
-                                                    label="Callback URL or authorization code"
-                                                    value={code()}
-                                                    onInput={setCode}
-                                                    placeholder="Paste the whole callback URL"
-                                                    isDisabled={isCompleting()}
-                                                />
-                                                <div>
-                                                    <Button
-                                                        type="submit"
-                                                        tone="primary"
-                                                        isDisabled={!canComplete()}
-                                                        isBusy={isCompleting()}
-                                                    >
-                                                        {isCompleting()
-                                                            ? "Connecting…"
-                                                            : "Connect the account"}
-                                                    </Button>
-                                                </div>
-                                            </AuthorizeStep>
-                                        </form>
-                                    </Show>
-                                </div>
-                            )}
+                            <div class="mt-4">
+                                <Button
+                                    tone="primary"
+                                    isBusy={oauth.isStarting()}
+                                    onClick={() => void oauth.start()}
+                                >
+                                    {oauth.isStarting() ? "Starting…" : "Start the authorization"}
+                                </Button>
+                            </div>
                         </Show>
                     </Card>
                 </Match>
@@ -726,27 +596,16 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             class="mt-4 flex max-w-2xl flex-col gap-4"
                             onSubmit={submitCompatible}
                         >
-                            <Show when={needsBaseUrl()}>
-                                <CompatibleConnectionFields
-                                    baseUrl={baseUrl()}
-                                    apiKey={apiKey()}
-                                    onBaseUrlInput={setBaseUrl}
-                                    onApiKeyInput={setApiKey}
-                                    baseUrlError={baseUrlError()}
-                                    apiKeyError={apiKeyError()}
-                                    isDisabled={isCreating()}
-                                />
-                            </Show>
-                            <Show when={!needsBaseUrl()}>
-                                <CompatibleConnectionFields
-                                    baseUrl=""
-                                    apiKey={apiKey()}
-                                    onBaseUrlInput={setBaseUrl}
-                                    onApiKeyInput={setApiKey}
-                                    apiKeyError={apiKeyError()}
-                                    isDisabled={isCreating()}
-                                />
-                            </Show>
+                            <CompatibleConnectionFields
+                                hasBaseUrl={needsBaseUrl()}
+                                baseUrl={baseUrl()}
+                                apiKey={apiKey()}
+                                onBaseUrlInput={setBaseUrl}
+                                onApiKeyInput={setApiKey}
+                                baseUrlError={baseUrlError()}
+                                apiKeyError={apiKeyError()}
+                                isDisabled={isCreating()}
+                            />
                             <div>
                                 <Button
                                     type="submit"

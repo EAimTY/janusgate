@@ -18,6 +18,7 @@
 //! [`crate::format::gemini_generate_content`], and the native model-listing shape.
 
 use crate::{
+    accounting::ApiLogEndpointType,
     api::{Error, log_error, serving},
     context::Context,
     format::{RouteContext, gemini_generate_content::Format as InboundFormat},
@@ -135,6 +136,7 @@ async fn dispatch(
             api_key.0,
             RouteContext::with_model(action.model, Some(action.is_streaming)),
             serving::OperationKind::Completion,
+            ApiLogEndpointType::GeminiGenerateContent,
         )
         .await,
     )

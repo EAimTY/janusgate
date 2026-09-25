@@ -135,7 +135,8 @@ pub enum Grant {
         authorization: DeviceAuthorization,
 
         /// The flow lifetime fallback in seconds, required exactly when the authorization
-        /// response omits its expiry; a reported `expires_in_seconds` always wins.
+        /// response maps no required `expires_in_seconds` target; a reported `expires_in`
+        /// always wins.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_in_fallback_seconds: Option<NonZeroU64>,
     },

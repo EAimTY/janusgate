@@ -1,14 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PROVIDER_PRESETS, type ProviderPreset } from "./presets";
 
-const FORMATS = new Set([
-    "openai_response",
-    "openai_chat_completion",
-    "gemini_generate_content",
-    "gemini_interaction",
-    "anthropic_messages",
-]);
-
 /** Finds one catalog preset by id, failing the test when absent. */
 function findPreset(id: string): ProviderPreset {
     const found = PROVIDER_PRESETS.find((candidate) => candidate.id === id);
@@ -127,37 +119,23 @@ describe("preset catalog", () => {
 
     it("keeps every payload structurally conformant with the descriptor contract", () => {
         for (const candidate of PROVIDER_PRESETS) {
-            const payload = candidate.payload as Record<string, unknown>;
+            // The payload's shape is the generated contract's own type, and the
+            // authored-payload validator walks it wholesale (validation.test.ts);
+            // what stays here is the part no type can carry: non-empty
+            // expressions and terminal-code lists, and the catalog's own
+            // credential and base-URL facts.
+            const payload = candidate.payload;
+            expect(payload.inference.url.length, candidate.id).toBeGreaterThan(0);
 
-            expect(FORMATS.has(payload["format"] as string), candidate.id).toBe(true);
+            const credential = payload.credential;
 
-            const inference = payload["inference"] as {
-                url: unknown[];
-                upstream_streaming: string;
-            };
-            expect(inference.url.length, candidate.id).toBeGreaterThan(0);
-            expect([
-                "always",
-                "match_client",
-            ]).toContain(inference.upstream_streaming);
-
-            const credential = payload["credential"] as Record<string, unknown>;
-
-            if (candidate.credentialKind === "oauth") {
-                expect(credential["type"], candidate.id).toBe("oauth");
-                expect(credential["client_id"], candidate.id).toBeTypeOf("string");
-
-                const exchange = credential["exchange"] as {
-                    terminal_codes: string[];
-                };
+            if (credential.type === "oauth") {
                 expect(
-                    exchange.terminal_codes.length,
+                    credential.exchange.terminal_codes.length,
                     `${candidate.id} terminal codes`,
                 ).toBeGreaterThan(0);
+                expect(candidate.grant, candidate.id).toBeDefined();
             } else {
-                expect(credential, candidate.id).toEqual({
-                    type: "api_key",
-                });
                 expect(candidate.grant, candidate.id).toBeNull();
             }
 
@@ -165,7 +143,7 @@ describe("preset catalog", () => {
             // operator's base URL at creation, or mints the base itself from
             // an exchange/provisioning extraction (the Copilot account
             // endpoint). A definition with pinned endpoints needs neither.
-            const urlText = JSON.stringify(inference.url);
+            const urlText = JSON.stringify(payload.inference.url);
             const referencesBase = urlText.includes('"base"');
             const mintsBase = JSON.stringify(payload).includes('"base_url"');
 

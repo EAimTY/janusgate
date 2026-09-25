@@ -3,11 +3,7 @@ import { createEffect, createMemo, createSignal, Show } from "solid-js";
 import { credentialExpiryLine, nowMicros } from "/src/format";
 import { toUpdateProviderRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
-import type {
-    ModelResponse,
-    ProviderResponse,
-    StartProviderOauthResponse,
-} from "/src/management-api/generated/v0";
+import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import {
     baseUrlMessage,
     compositionMessage,
@@ -16,7 +12,6 @@ import {
     isModelPrefix,
     routingTokenMessage,
 } from "/src/management-api/identifiers";
-import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { performManagementCall } from "/src/management-api/outcome";
 import { defaultModelPrefix } from "/src/management-api/provider-defaults";
 import { isOAuthProviderRow } from "/src/management-api/vocabulary";
@@ -40,6 +35,7 @@ import {
     ProviderEnabledSwitch,
     ProviderIdentityFields,
 } from "/src/ui/provider-form";
+import { createOauthFlow } from "./oauth-flow";
 
 /**
  * One provider's edit page: its settings, its credentials, and its deletion.
@@ -448,10 +444,33 @@ function CredentialsCard(props: {
     readonly provider: ProviderResponse;
     readonly read: ScreenRead;
 }): JSX.Element {
-    const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
-    const [code, setCode] = createSignal("");
-    const [isStarting, setIsStarting] = createSignal(false);
-    const [isCompleting, setIsCompleting] = createSignal(false);
+    // The OAuth flow's shared state machine: the failure channel is the
+    // screen's standing notice, a succeeded completion states the replacement
+    // and reloads the listing, and a gone flow state re-reads it beside the
+    // fragment's own reset.
+    const oauth = createOauthFlow({
+        api: props.api,
+        startAction: "start-oauth",
+        completeAction: "reauthorize",
+        channel: (notice) => props.read.showNotice(notice),
+        onGone: props.read.reload,
+        begin: async () => ({
+            status: "called" as const,
+            outcome: await performManagementCall(() =>
+                props.api.reauthorizeProvider({
+                    provider_id: props.provider.id,
+                }),
+            ),
+        }),
+        onSucceeded: () => {
+            props.read.showNotice({
+                tone: "ok",
+                title: "Credentials replaced.",
+                detail: "The provider's listing now carries the new expiry.",
+            });
+            props.read.reload();
+        },
+    });
 
     const expiryLine = (): string => {
         if (!isOAuthProviderRow(props.provider) || props.provider.expires_at === null) {
@@ -461,135 +480,9 @@ function CredentialsCard(props: {
         return credentialExpiryLine(props.provider.expires_at, nowMicros());
     };
 
-    const start = async (): Promise<void> => {
-        if (isStarting()) {
-            return;
-        }
-
-        setIsStarting(true);
-
-        const outcome = await performManagementCall(() =>
-            props.api.reauthorizeProvider({
-                provider_id: props.provider.id,
-            }),
-        );
-
-        setIsStarting(false);
-
-        if (
-            !props.read.reportAction(outcome, {
-                action: "start-oauth",
-            })
-        ) {
-            return;
-        }
-
-        setFlow(outcome.result);
-    };
-
-    const complete = async (): Promise<void> => {
-        const startedFlow = flow();
-
-        if (startedFlow === null || isCompleting()) {
-            return;
-        }
-
-        const pasted = extractAuthorizationCode(code());
-
-        if (pasted === null) {
-            props.read.showNotice({
-                tone: "bad",
-                title: "Paste the callback URL or the code.",
-                detail: "That paste holds neither a bare code nor a URL with a code in it.",
-            });
-            return;
-        }
-
-        setIsCompleting(true);
-
-        const outcome = await performManagementCall(() =>
-            props.api.completeProviderOauth({
-                grant: "authorization_code",
-                state: startedFlow.state,
-                code: pasted,
-            }),
-        );
-
-        setIsCompleting(false);
-
-        if (
-            !props.read.reportAction(
-                outcome,
-                {
-                    action: "reauthorize",
-                },
-                {
-                    onGone: () => {
-                        // The state is consumed; the flow resets and the listing
-                        // re-reads instead of either being retried.
-                        setFlow(null);
-                        setCode("");
-                        props.read.reload();
-                    },
-                },
-            )
-        ) {
-            return;
-        }
-
-        setFlow(null);
-        setCode("");
-        props.read.showNotice({
-            tone: "ok",
-            title: "Credentials replaced.",
-            detail: "The provider's listing now carries the new expiry.",
-        });
-        props.read.reload();
-    };
-
     const submit = (event: SubmitEvent): void => {
         event.preventDefault();
-        void complete();
-    };
-
-    /** One device-poll ask; the step panel schedules the next one. */
-    const completeDevice = async (): Promise<"pending" | "done"> => {
-        const startedFlow = flow();
-
-        if (startedFlow === null || startedFlow.grant !== "device") {
-            return "done";
-        }
-
-        const outcome = await performManagementCall(() =>
-            props.api.completeProviderOauth({
-                grant: "device",
-                state: startedFlow.state,
-            }),
-        );
-
-        if (outcome.status !== "ok") {
-            return "pending";
-        }
-
-        if (outcome.result.status === "pending") {
-            return "pending";
-        }
-
-        setFlow(null);
-        props.read.showNotice({
-            tone: outcome.result.status === "succeeded" ? "ok" : "bad",
-            title:
-                outcome.result.status === "succeeded"
-                    ? "Credentials replaced."
-                    : "The flow failed.",
-            detail:
-                outcome.result.status === "failed"
-                    ? outcome.result.failure_message
-                    : "The provider's listing now carries the new expiry.",
-        });
-        props.read.reload();
-
-        return "done";
+        void oauth.complete();
     };
 
     return (
@@ -602,17 +495,17 @@ function CredentialsCard(props: {
                 <p class="text-[13.5px] text-ink-dim">{expiryLine()}</p>
 
                 <Show
-                    when={flow()}
+                    when={oauth.flow()}
                     keyed
                     fallback={
                         <div>
                             <Button
                                 tone="primary"
                                 glyph="key"
-                                isBusy={isStarting()}
-                                onClick={() => void start()}
+                                isBusy={oauth.isStarting()}
+                                onClick={() => void oauth.start()}
                             >
-                                {isStarting() ? "Starting…" : "Reconnect the account"}
+                                {oauth.isStarting() ? "Starting…" : "Reconnect the account"}
                             </Button>
                         </div>
                     }
@@ -621,13 +514,8 @@ function CredentialsCard(props: {
                         startedFlow.grant === "device" ? (
                             <DeviceStep
                                 flow={startedFlow}
-                                onComplete={completeDevice}
-                                onSucceeded={() => {}}
-                                onFailed={() => {}}
-                                onStartOver={() => {
-                                    setFlow(null);
-                                    setCode("");
-                                }}
+                                onComplete={oauth.completeDevice}
+                                onStartOver={oauth.reset}
                             />
                         ) : (
                             <form
@@ -637,25 +525,22 @@ function CredentialsCard(props: {
                             >
                                 <AuthorizeStep
                                     flow={startedFlow}
-                                    onStartOver={() => {
-                                        setFlow(null);
-                                        setCode("");
-                                    }}
+                                    onStartOver={oauth.reset}
                                 >
                                     <TextField
                                         label="Callback URL or authorization code"
-                                        value={code()}
-                                        onInput={setCode}
+                                        value={oauth.code()}
+                                        onInput={oauth.setCode}
                                         placeholder="Paste the whole callback URL"
-                                        isDisabled={isCompleting()}
+                                        isDisabled={oauth.isCompleting()}
                                     />
                                     <div>
                                         <Button
                                             type="submit"
                                             tone="primary"
-                                            isBusy={isCompleting()}
+                                            isBusy={oauth.isCompleting()}
                                         >
-                                            {isCompleting()
+                                            {oauth.isCompleting()
                                                 ? "Replacing…"
                                                 : "Replace the credentials"}
                                         </Button>

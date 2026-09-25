@@ -15,7 +15,6 @@ use self::client_render::{MessagesResponse, SseRenderer};
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
     ir::{InvalidRequest, IrAggregation},
-    storage::api_logs::ApiLogEndpointType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,8 +32,6 @@ pub(crate) struct Format;
 
 impl ClientFormat for Format {
     type JsonResponse = MessagesResponse;
-
-    const ENDPOINT_TYPE: ApiLogEndpointType = ApiLogEndpointType::AnthropicMessages;
 
     fn parse_request(body: &[u8], _route: &RouteContext) -> Result<ParsedRequest, InvalidRequest> {
         request_parse::parse_inbound_request(body)

@@ -121,11 +121,16 @@ export function ProviderIdentityFields(props: {
 /**
  * Address and key of a static-key provider. The wire format is the
  * provider's own type and never an editable field, so this card carries no
- * format control.
+ * format control. The base URL is part of the connection only where the
+ * definition's URLs reference the base — a definition that pins its
+ * endpoints, or mints the base from its flow, creates with `null` and shows
+ * no field for one (`hasBaseUrl` defaults to shown, the shape every
+ * definition-bound row renders).
  */
 export function CompatibleConnectionFields(props: {
     readonly baseUrl: string;
     readonly apiKey: string;
+    readonly hasBaseUrl?: boolean;
     readonly onBaseUrlInput: (value: string) => void;
     readonly onApiKeyInput: (value: string) => void;
     readonly apiKeyLabel?: string | undefined;
@@ -136,15 +141,17 @@ export function CompatibleConnectionFields(props: {
 }): JSX.Element {
     return (
         <div class="flex flex-col gap-4">
-            <TextField
-                label="Upstream base URL"
-                type="url"
-                value={props.baseUrl}
-                onInput={props.onBaseUrlInput}
-                placeholder="https://upstream.example.com/v1"
-                isDisabled={props.isDisabled ?? false}
-                error={props.baseUrlError}
-            />
+            <Show when={props.hasBaseUrl !== false}>
+                <TextField
+                    label="Upstream base URL"
+                    type="url"
+                    value={props.baseUrl}
+                    onInput={props.onBaseUrlInput}
+                    placeholder="https://upstream.example.com/v1"
+                    isDisabled={props.isDisabled ?? false}
+                    error={props.baseUrlError}
+                />
+            </Show>
             <TextField
                 label={props.apiKeyLabel ?? "API key"}
                 type="password"

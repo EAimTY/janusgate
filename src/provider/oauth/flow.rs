@@ -121,6 +121,24 @@ pub(crate) fn resolve_expiry(
     ))
 }
 
+/// Scales one upstream-reported duration in seconds to the absolute instant that many seconds
+/// from the current database clock, mapping an overflow to the caller's upstream-unavailable
+/// failure: the magnitude originates in an upstream response, so one this large is a malformed
+/// response — the same guard [`resolve_expiry`] applies to the token path's expiry.
+///
+/// # Errors
+///
+/// Returns the `overflow` failure when the scaled instant overflows the database clock.
+pub(crate) fn seconds_from_now(seconds: i64, overflow: impl Fn() -> Error) -> Result<i64, Error> {
+    let micros = seconds
+        .checked_mul(unix_time::MICROS_PER_SEC)
+        .ok_or_else(&overflow)?;
+
+    unix_time::unix_now_micros()
+        .checked_add(micros)
+        .ok_or_else(overflow)
+}
+
 /// Reads the `exp` claim of an access token JWT, or `None` when the token is not a decodable JWT
 /// or carries no `exp` claim.
 fn jwt_exp_claim(jwt: &str) -> Option<i64> {
@@ -136,7 +154,9 @@ pub(crate) fn jwt_claims(jwt: &str) -> Option<serde_json::Map<String, serde_json
     serde_json::from_slice(&general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?).ok()
 }
 
-/// Copies the definition's identity-token claims into the working slots.
+/// Copies the definition's identity-token claims into the working slots: a claim whose path
+/// resolves into a string member of the payload names its slot's value, and any other claim is
+/// skipped.
 pub(crate) fn apply_id_token_claims(
     id_token: &str,
     claims: &[crate::provider::definition::credential::IdTokenClaim],
@@ -146,22 +166,14 @@ pub(crate) fn apply_id_token_claims(
         return;
     };
 
+    let payload = serde_json::Value::Object(payload);
+
     for claim in claims {
-        let mut value = serde_json::Value::Object(payload.clone());
-
-        let mut resolved = true;
-
-        for member in &claim.claim.0 {
-            match value.get(member) {
-                Some(found) => value = found.clone(),
-                None => {
-                    resolved = false;
-                    break;
-                }
-            }
-        }
-
-        if resolved && let Some(text) = value.as_str() {
+        if let Some(text) = claim
+            .claim
+            .resolve(&payload)
+            .and_then(serde_json::Value::as_str)
+        {
             slots.insert(claim.slot.clone(), text.to_string());
         }
     }
@@ -339,7 +351,12 @@ pub(crate) async fn execute_device_authorization(
             .iter()
             .find(|field| &field.target == target)
             .map(|field| {
-                control::extract_field(&body, &field.path, &FIELD_SHAPE, "device authorization")
+                control::extract_field(
+                    &body,
+                    &field.path,
+                    &control::TEXT_FIELD_SHAPE,
+                    "device authorization",
+                )
             })
             .unwrap_or(Ok(None))
     };
@@ -356,17 +373,49 @@ pub(crate) async fn execute_device_authorization(
         });
     }
 
+    // RFC 8628 §3.2 requires a positive integer for both durations: a non-positive `interval`
+    // would make the poller due every tick and a non-positive `expires_in` a dead-on-arrival
+    // flow, so either is a malformed device-authorization response. Absence still falls back
+    // per the documented rules (the five-second default; `expires_in_fallback_seconds`).
     let expires_in_seconds = match optional(find(&Target::ExpiresInSeconds))? {
-        Some(text) => Some(text.parse::<i64>().map_err(|_| Error::Unavailable {
-            detail: "device authorization response carries a non-integer `expires_in`".to_string(),
-        })?),
+        Some(text) => {
+            let seconds = text.parse::<i64>().map_err(|_| Error::Unavailable {
+                detail: "device authorization response carries a non-integer `expires_in`"
+                    .to_string(),
+            })?;
+
+            if seconds <= 0 {
+                return Err(Error::Unavailable {
+                    detail: format!(
+                        "malformed device authorization response: `expires_in` must be positive, \
+                         got {seconds}"
+                    ),
+                });
+            }
+
+            Some(seconds)
+        }
         None => None,
     };
 
     let interval_seconds = match optional(find(&Target::IntervalSeconds))? {
-        Some(text) => Some(text.parse::<i64>().map_err(|_| Error::Unavailable {
-            detail: "device authorization response carries a non-integer `interval`".to_string(),
-        })?),
+        Some(text) => {
+            let seconds = text.parse::<i64>().map_err(|_| Error::Unavailable {
+                detail: "device authorization response carries a non-integer `interval`"
+                    .to_string(),
+            })?;
+
+            if seconds <= 0 {
+                return Err(Error::Unavailable {
+                    detail: format!(
+                        "malformed device authorization response: `interval` must be positive, \
+                         got {seconds}"
+                    ),
+                });
+            }
+
+            Some(seconds)
+        }
         None => None,
     };
 
@@ -379,11 +428,6 @@ pub(crate) async fn execute_device_authorization(
         interval_seconds,
     })
 }
-
-/// The extraction shape of an exchange or device field: every such value is read as text, with
-/// the lifetime targets decoded by their consumers.
-const FIELD_SHAPE: crate::provider::definition::template::ExtractionShape =
-    crate::provider::definition::template::ExtractionShape::String;
 
 /// The product of one token exchange (README §5.3).
 #[derive(Debug, Clone, Default)]
@@ -594,22 +638,12 @@ fn map_exchange_fields(
 ) -> Result<ExchangeProduct, Error> {
     let mut outcome = ExchangeOutcome::default();
 
-    for field in &exchange.response.fields {
-        let extracted =
-            control::extract_field(decoded, &field.path, &FIELD_SHAPE, "token exchange")?;
-
-        let Some(extracted) = extracted else {
-            if field.required {
-                return Err(Error::Unavailable {
-                    detail: "token exchange response lacks a required field".to_string(),
-                });
-            }
-
-            continue;
-        };
-
-        apply_exchange_target(&mut outcome, &field.target, extracted)?;
-    }
+    control::map_response_fields(
+        decoded,
+        &exchange.response.fields,
+        "token exchange",
+        |target, extracted| apply_exchange_target(&mut outcome, target, extracted),
+    )?;
 
     Ok(ExchangeProduct::Completed(outcome))
 }
@@ -699,26 +733,12 @@ pub(crate) async fn execute_refresh_grant(
 
     let mut mapped = ExchangeOutcome::default();
 
-    for field in &response.fields {
-        let extracted =
-            control::extract_field(&decoded, &field.path, &FIELD_SHAPE, "token refresh").map_err(
-                |failure| Error::Unavailable {
-                    detail: failure.to_string(),
-                },
-            )?;
-
-        let Some(extracted) = extracted else {
-            if field.required {
-                return Err(Error::Unavailable {
-                    detail: "token refresh response lacks a required field".to_string(),
-                });
-            }
-
-            continue;
-        };
-
-        apply_exchange_target(&mut mapped, &field.target, extracted)?;
-    }
+    control::map_response_fields(
+        &decoded,
+        &response.fields,
+        "token refresh",
+        |target, extracted| apply_exchange_target(&mut mapped, target, extracted),
+    )?;
 
     Ok(mapped)
 }

@@ -18,6 +18,41 @@ use crate::{
     storage,
 };
 use serde_json::json;
+use std::{num::NonZero, path::PathBuf, time::Duration};
+
+/// File guard cleaning up the temporary SQLite test database on drop.
+pub(crate) struct TempDbGuard(PathBuf);
+
+impl Drop for TempDbGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Creates an initialized temporary SQLite test database.
+///
+/// # Panics
+///
+/// Panics if opening the test database fails — a broken fixture environment is the failure
+/// report.
+pub(crate) async fn create_test_database() -> (Database, TempDbGuard) {
+    let db_path = std::env::temp_dir().join(format!("janusgate-test-{}.db", rand::random::<u64>()));
+
+    #[expect(clippy::unwrap_used, reason = "non-zero literal")]
+    let max_connections = NonZero::new(2).unwrap();
+
+    #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
+    let database = Database::open(
+        &db_path,
+        crate::database::schema::Registry::Main,
+        max_connections,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+
+    (database, TempDbGuard(db_path))
+}
 
 /// Inserts one static-key definition version 1 of the given format and returns the stored
 /// definition.
@@ -198,4 +233,74 @@ pub(crate) async fn insert_provider(
     )
     .await
     .unwrap_or_else(|error| panic!("fixture provider inserts: {error}"))
+}
+
+/// Inserts one OAuth definition version 1 — an authorization-code grant whose exchange maps the
+/// access token and whose credential never renews — for the flow-begin and completion tests.
+///
+/// # Panics
+///
+/// Panics if the insert fails, the payload does not parse, or the fixture fails validation —
+/// none of which can occur for the fixed fixture payloads.
+pub(crate) async fn insert_oauth_definition(database: &Database, name: &str) -> ProviderDefinition {
+    let payload: DefinitionPayload = serde_json::from_value(json!({
+        "format": "openai_chat_completion",
+        "inference": {
+            "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
+            "upstream_streaming": "match_client"
+        },
+        "credential": {
+            "type": "oauth",
+            "client_id": "fixture-client",
+            "grant": {
+                "type": "authorization_code",
+                "authorize_url": [{"type": "literal", "value": "https://accounts.example/auth"}],
+                "redirect_uri": "http://localhost:1/callback",
+                "pkce": "none"
+            },
+            "exchange": {
+                "request": {
+                    "method": "POST",
+                    "url": [{"type": "literal", "value": "http://127.0.0.1:1/token"}],
+                    "body": {"kind": "form", "fields": [
+                        {"name": "grant_type", "value": [
+                            {"type": "literal", "value": "authorization_code"}
+                        ]},
+                        {"name": "code", "value": [{"type": "authorization_code"}]}
+                    ]}
+                },
+                "response": {
+                    "encoding": "json",
+                    "fields": [
+                        {
+                            "path": ["access_token"],
+                            "target": {"type": "access_token"},
+                            "required": true
+                        }
+                    ]
+                },
+                "terminal_codes": ["invalid_grant"]
+            },
+            "refresh": {"type": "none"}
+        }
+    }))
+    .unwrap_or_else(|error| panic!("fixture definition payload parses: {error}"));
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "the fixture definition always validates"
+    )]
+    payload.validate().unwrap();
+
+    storage::provider_definitions::insert_definition(
+        database,
+        storage::provider_definitions::NewDefinition {
+            name,
+            base_version: None,
+            payload: &payload,
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("fixture definition inserts: {error}"))
 }

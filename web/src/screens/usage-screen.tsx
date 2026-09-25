@@ -12,6 +12,7 @@ import { performManagementCall } from "/src/management-api/outcome";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
 import { ReadNotice } from "/src/screens/read-notice";
+import { AppLink } from "/src/ui/app-link";
 import { Button, ButtonLink, SelectField } from "/src/ui/controls";
 import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
@@ -410,8 +411,9 @@ function usageOutcomeBadge(outcome: ApiLogOutcome): {
 
 /**
  * One recorded request: when it started, how it ended, what it was, and
- * its numbers. Labels resolve through the indexed entity lists; an id with
- * no listing reads as its deleted kind.
+ * its numbers. Labels resolve through the indexed entity lists and open the
+ * entity's page while it is listed; an id with no listing reads as its
+ * deleted kind and stays plain.
  */
 function UsageRow(props: {
     readonly row: ApiLogResponse;
@@ -425,8 +427,6 @@ function UsageRow(props: {
     const model = () => usageModelLabel(props.index.modelsById, props.row.model_id);
     const provider = () => usageProviderLabel(props.index.providersById, props.row.provider_id);
     const apiKey = () => usageApiKeyLabel(props.index.apiKeysById, props.row.api_key_id);
-
-    const missingTitle = "This row is no longer listed.";
 
     return (
         <li class="rounded-xl border border-rule bg-surface px-4 py-3">
@@ -444,16 +444,22 @@ function UsageRow(props: {
                 </span>
             </div>
             <p class="tnum mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13.5px]">
-                <span title={model().isListed ? undefined : missingTitle}>{model().text}</span>
+                <UsageEntityLabel
+                    text={model().text}
+                    isListed={model().isListed}
+                    href={hrefs.modelDetail(props.row.model_id)}
+                />
                 <span
                     aria-hidden="true"
                     class="text-ink-faint"
                 >
                     ·
                 </span>
-                <span title={provider().isListed ? undefined : missingTitle}>
-                    {provider().text}
-                </span>
+                <UsageEntityLabel
+                    text={provider().text}
+                    isListed={provider().isListed}
+                    href={hrefs.providerDetail(props.row.provider_id)}
+                />
                 <span
                     aria-hidden="true"
                     class="text-ink-faint"
@@ -465,9 +471,11 @@ function UsageRow(props: {
                         name="key"
                         class="text-ink-faint"
                     />
-                    <span title={apiKey().isListed ? undefined : missingTitle}>
-                        {apiKey().text}
-                    </span>
+                    <UsageEntityLabel
+                        text={apiKey().text}
+                        isListed={apiKey().isListed}
+                        href={hrefs.apiKeyDetail(props.row.api_key_id)}
+                    />
                 </span>
             </p>
             <p class="tnum mt-1 text-[12.5px] text-ink-faint">
@@ -475,5 +483,32 @@ function UsageRow(props: {
                 {` · ${props.row.duration} ms · in ${formatTokenCount(props.row.input_tokens)} · out ${formatTokenCount(props.row.output_tokens)} · cached ${formatTokenCount(props.row.cached_tokens)} · write ${formatTokenCount(props.row.cache_write_tokens)} · reasoning ${formatTokenCount(props.row.reasoning_tokens)}`}
             </p>
         </li>
+    );
+}
+
+const DELETED_ENTITY_TITLE = "This row is no longer listed.";
+
+/**
+ * One entity label on a usage row: a door to the entity's own page while the
+ * row is still listed, an inert caption naming its deleted kind when it is
+ * not — a deleted id has no page to open.
+ */
+function UsageEntityLabel(props: {
+    readonly text: string;
+    readonly isListed: boolean;
+    readonly href: string;
+}): JSX.Element {
+    return (
+        <Show
+            when={props.isListed}
+            fallback={<span title={DELETED_ENTITY_TITLE}>{props.text}</span>}
+        >
+            <AppLink
+                href={props.href}
+                class="font-medium text-accent hover:text-accent-strong"
+            >
+                {props.text}
+            </AppLink>
+        </Show>
     );
 }

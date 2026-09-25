@@ -14,6 +14,7 @@
 //! a provider branch.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 use std::collections::BTreeMap;
 /// One ordered part of a string expression (README §5.1).
 ///
@@ -322,6 +323,23 @@ pub struct ResponsePath(
     pub Vec<String>,
 );
 
+impl ResponsePath {
+    /// Resolves the member chain into the JSON value it addresses: the empty chain is the root,
+    /// and a missing member or a non-object intermediate value yields [`None`] (README §5.1).
+    /// Arrays are not addressed by value paths, so an array met mid-chain is a `None` like any
+    /// other non-object.
+    #[must_use]
+    pub(crate) fn resolve<'a>(&self, json: &'a Json) -> Option<&'a Json> {
+        let mut value = json;
+
+        for member in &self.0 {
+            value = value.get(member)?;
+        }
+
+        Some(value)
+    }
+}
+
 /// The declared shape of one extracted response value (README §5.4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
@@ -474,4 +492,47 @@ pub enum ResponseStage {
 
     /// A provisioning response.
     Provisioning,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One path resolution, panicking on a `None` the fixture guarantees.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the path does not resolve.
+    fn resolved<'a>(path: &'a ResponsePath, json: &'a Json) -> &'a Json {
+        #[expect(clippy::unwrap_used, reason = "the fixture path always resolves")]
+        path.resolve(json).unwrap()
+    }
+
+    /// `resolve` walks the member chain with the empty chain as the root, and any missing
+    /// member or non-object intermediate yields `None` (README §5.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture path does not resolve.
+    #[test]
+    fn resolves_member_chains() {
+        let json = serde_json::json!({ "a": { "b": { "c": "leaf" } } });
+
+        let root = ResponsePath::default();
+
+        assert_eq!(resolved(&root, &json), &json);
+
+        let leaf = ResponsePath(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+
+        assert_eq!(resolved(&leaf, &json), &serde_json::json!("leaf"));
+
+        let missing = ResponsePath(vec!["a".to_string(), "absent".to_string()]);
+
+        assert_eq!(missing.resolve(&json), None);
+
+        // An intermediate value that is not an object — a string here — addresses nothing.
+        let flat = serde_json::json!({ "a": "text" });
+
+        assert_eq!(leaf.resolve(&flat), None);
+    }
 }

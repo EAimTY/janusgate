@@ -128,6 +128,16 @@ struct OutputTokensDetails {
     thinking_tokens: Option<u64>,
 }
 
+impl UpstreamUsage {
+    /// Whether the fragment carries any input-side column — the columns a native
+    /// `message_start` reports for the input the turn already consumed.
+    fn is_input_reported(&self) -> bool {
+        self.input_tokens.is_some()
+            || self.cache_read_input_tokens.is_some()
+            || self.cache_creation_input_tokens.is_some()
+    }
+}
+
 /// Head of a `message_start` event: the response identity beside its input usage.
 #[derive(Debug, Default, Deserialize)]
 struct MessageHead {
@@ -421,9 +431,11 @@ impl UpstreamParser {
         }
     }
 
-    /// Renders the terminal usage report from the stored columns and one output observation,
-    /// marking usage emitted.
-    fn terminal_usage(&mut self, output_tokens: u64) -> IrEvent {
+    /// Renders one usage report from the stored columns and one output observation, marking a
+    /// report as published: the `message_start` partial opens with a zero output observation,
+    /// the terminal `message_delta` or complete body carries the cumulative one, and every
+    /// consumer — renderer and accounting alike — takes the last observation.
+    fn usage_event(&mut self, output_tokens: u64) -> IrEvent {
         self.is_usage_emitted = true;
 
         IrEvent::Usage(IrUsage {
@@ -655,7 +667,7 @@ impl UpstreamParser {
         if let Some(usage) = &event.usage {
             self.record_usage(usage);
 
-            events.push(self.terminal_usage(usage.output_tokens.unwrap_or_default()));
+            events.push(self.usage_event(usage.output_tokens.unwrap_or_default()));
         }
 
         if let Some(stop_reason) = &event.delta.stop_reason {
@@ -686,15 +698,21 @@ impl UpstreamEventParser for UpstreamParser {
             "message_start" => {
                 let event = crate::format::parse_frame::<MessageStartEvent>(frame)?;
 
-                self.record_usage(
-                    event
-                        .message
-                        .usage
-                        .as_ref()
-                        .unwrap_or(&UpstreamUsage::default()),
-                );
+                let usage = event.message.usage.as_ref();
 
-                Ok(self.message_start_events(&event.message))
+                self.record_usage(usage.unwrap_or(&UpstreamUsage::default()));
+
+                let mut events = self.message_start_events(&event.message);
+
+                // Native streams report the true input columns here, so the partial report is
+                // published immediately and consumers observe real input usage from the stream
+                // head; the terminal report still arrives later and overwrites it — last
+                // observation wins.
+                if usage.is_some_and(UpstreamUsage::is_input_reported) {
+                    events.push(self.usage_event(0));
+                }
+
+                Ok(events)
             }
 
             "content_block_start" => {
@@ -834,14 +852,14 @@ impl UpstreamEventParser for UpstreamParser {
         if let Some(usage) = &message.usage {
             self.record_usage(usage);
 
-            events.push(self.terminal_usage(usage.output_tokens.unwrap_or_default()));
+            events.push(self.usage_event(usage.output_tokens.unwrap_or_default()));
         }
 
         Ok(events)
     }
 
     /// Ends a cleanly terminated stream: a missing finish degrades to [`IrFinishReason::Stop`],
-    /// and a usage-bearing stream that never reported output still publishes its input columns
+    /// and a usage-bearing stream that never published a report still publishes its columns
     /// with a zero output observation.
     fn finish(&mut self) -> Vec<IrEvent> {
         let mut events = Vec::new();
@@ -852,7 +870,7 @@ impl UpstreamEventParser for UpstreamParser {
                 || self.cache_write_tokens.is_some()
                 || self.reasoning_tokens.is_some())
         {
-            events.push(self.terminal_usage(0));
+            events.push(self.usage_event(0));
         }
 
         if !self.is_finished {
@@ -887,12 +905,17 @@ fn input_to_arguments(input: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::client_render::finish_reason_to_stop, *};
+    use super::{
+        super::client_render::{SseRenderer, finish_reason_to_stop},
+        *,
+    };
+    use crate::{format::ClientSseRenderer, ir::Aggregator};
     use serde_json::{Value, json};
 
     /// Streams one upstream SSE conversation through the event-name-discriminated parser:
-    /// `message_start` opens with its input usage, text/thinking/signature/tool deltas assemble
-    /// their blocks, `message_delta` finishes with `tool_use` and joins the output usage and its
+    /// `message_start` opens with its input usage and publishes the partial input-side report
+    /// immediately after the start, text/thinking/signature/tool deltas assemble their blocks,
+    /// `message_delta` finishes with `tool_use` and joins the output usage and its
     /// `output_tokens_details.thinking_tokens` breakdown onto the stored columns, and `ping`
     /// plus unknown events never surface.
     ///
@@ -987,6 +1010,13 @@ mod tests {
                     id: "msg_1".to_string(),
                     model: "claude-test".to_string(),
                 },
+                IrEvent::Usage(IrUsage {
+                    input_tokens: 10,
+                    output_tokens: 0,
+                    cached_tokens: Some(2),
+                    cache_write_tokens: Some(3),
+                    reasoning_tokens: None,
+                }),
                 IrEvent::TextDelta("hi".to_string()),
                 IrEvent::ReasoningDelta("draft".to_string()),
                 IrEvent::ReasoningDone {
@@ -1038,8 +1068,8 @@ mod tests {
     }
 
     /// Maps every documented `stop_reason` onto its finish reason, degrading unknown values to
-    /// `Stop`; a mid-stream `error` event aborts, and a usage-bearing stream that ends without
-    /// an output report still publishes its input columns.
+    /// `Stop`; a mid-stream `error` event aborts, and input-only usage publishes as the partial
+    /// report at the start, leaving the end-of-stream fallback nothing to publish.
     ///
     /// # Panics
     ///
@@ -1100,12 +1130,13 @@ mod tests {
 
         assert!(ignored.is_empty());
 
-        // Input usage without a later output report still publishes at end-of-stream.
+        // Input usage publishes immediately as the partial report at the stream head; with no
+        // later output report arriving, the end-of-stream fallback has nothing left to publish.
         #[expect(
             clippy::expect_used,
             reason = "the start frame is constructed to parse"
         )]
-        parser
+        let events = parser
             .ingest_frame(&SseFrame {
                 data: json!({"message": {"id": "m", "model": "c",
                                          "usage": {"input_tokens": 7}}})
@@ -1115,8 +1146,12 @@ mod tests {
             .expect("the start frame parses");
 
         assert_eq!(
-            parser.finish(),
+            events,
             vec![
+                IrEvent::MessageStart {
+                    id: "m".to_string(),
+                    model: "c".to_string(),
+                },
                 IrEvent::Usage(IrUsage {
                     input_tokens: 7,
                     output_tokens: 0,
@@ -1124,8 +1159,270 @@ mod tests {
                     cache_write_tokens: None,
                     reasoning_tokens: None,
                 }),
-                IrEvent::Finish(IrFinishReason::Stop),
             ],
+        );
+
+        assert_eq!(parser.finish(), vec![IrEvent::Finish(IrFinishReason::Stop)]);
+    }
+
+    /// Publishes the partial input-side usage report immediately after [`IrEvent::MessageStart`]
+    /// when the upstream `message_start` event carries input or cache columns, and emits no
+    /// usage report when it does not — neither for an absent usage object nor for one without
+    /// input columns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any published event sequence diverges from the partial-report contract.
+    #[test]
+    fn publishes_partial_input_usage_at_message_start_only_for_input_columns() {
+        let frames = |event: &str, data: Value| SseFrame {
+            data: data.to_string(),
+            event: Some(event.to_string()),
+        };
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the start frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frames(
+                "message_start",
+                json!({"message": {"id": "msg_1", "model": "claude-test",
+                                   "usage": {"input_tokens": 12,
+                                             "cache_read_input_tokens": 4,
+                                             "cache_creation_input_tokens": 2}}}),
+            ))
+            .expect("the start frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::MessageStart {
+                    id: "msg_1".to_string(),
+                    model: "claude-test".to_string(),
+                },
+                IrEvent::Usage(IrUsage {
+                    input_tokens: 12,
+                    output_tokens: 0,
+                    cached_tokens: Some(4),
+                    cache_write_tokens: Some(2),
+                    reasoning_tokens: None,
+                }),
+            ],
+        );
+
+        // A `message_start` without a usage object carries no report: only the start surfaces,
+        // and the clean end-of-stream fallback has no columns to publish either.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the start frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frames(
+                "message_start",
+                json!({"message": {"id": "m", "model": "c"}}),
+            ))
+            .expect("the start frame parses");
+
+        assert_eq!(
+            events,
+            vec![IrEvent::MessageStart {
+                id: "m".to_string(),
+                model: "c".to_string(),
+            }],
+        );
+
+        assert_eq!(parser.finish(), vec![IrEvent::Finish(IrFinishReason::Stop)]);
+
+        // A usage object reporting output totals only carries no input-side column and is not
+        // an input report.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the start frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frames(
+                "message_start",
+                json!({"message": {"id": "m", "model": "c",
+                                   "usage": {"output_tokens": 1}}}),
+            ))
+            .expect("the start frame parses");
+
+        assert_eq!(
+            events,
+            vec![IrEvent::MessageStart {
+                id: "m".to_string(),
+                model: "c".to_string(),
+            }],
+        );
+    }
+
+    /// Folds a complete stream whose `message_start` carried input usage through the aggregation
+    /// and the streamed Anthropic rendering: the terminal report wins everywhere — the partial
+    /// report never surfaces as the final usage, and it renders no terminal delta of its own.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any final usage diverges from the terminal report.
+    #[test]
+    fn the_terminal_usage_report_overrides_the_partial_one() {
+        let mut parser = UpstreamParser::new();
+
+        let frames = |event: &str, data: Value| SseFrame {
+            data: data.to_string(),
+            event: Some(event.to_string()),
+        };
+
+        let mut events = Vec::new();
+
+        for frame in [
+            frames(
+                "message_start",
+                json!({"message": {"id": "msg_1", "model": "claude-test",
+                                   "usage": {"input_tokens": 10,
+                                             "cache_read_input_tokens": 2,
+                                             "cache_creation_input_tokens": 3}}}),
+            ),
+            frames(
+                "content_block_start",
+                json!({"index": 0, "content_block": {"type": "text"}}),
+            ),
+            frames(
+                "content_block_delta",
+                json!({"index": 0, "delta": {"type": "text_delta", "text": "hi"}}),
+            ),
+            frames("content_block_stop", json!({"index": 0})),
+            frames(
+                "message_delta",
+                json!({"delta": {"stop_reason": "end_turn"},
+                       "usage": {"output_tokens": 25}}),
+            ),
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture stream is constructed to parse"
+            )]
+            let ingested = parser
+                .ingest_frame(&frame)
+                .expect("every fixture frame parses");
+
+            events.extend(ingested);
+        }
+
+        let terminal = IrUsage {
+            input_tokens: 10,
+            output_tokens: 25,
+            cached_tokens: Some(2),
+            cache_write_tokens: Some(3),
+            reasoning_tokens: None,
+        };
+
+        // The partial report is published first, the cumulative one last.
+        let usage_events: Vec<IrUsage> = events
+            .iter()
+            .filter_map(|event| match event {
+                IrEvent::Usage(usage) => Some(*usage),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            usage_events,
+            vec![
+                IrUsage {
+                    input_tokens: 10,
+                    output_tokens: 0,
+                    cached_tokens: Some(2),
+                    cache_write_tokens: Some(3),
+                    reasoning_tokens: None,
+                },
+                terminal,
+            ],
+        );
+
+        // The aggregation ends on the terminal report, so the aggregated rendering and the
+        // accounting it feeds never see the partial one.
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        assert_eq!(aggregator.finish().usage, Some(terminal));
+
+        // The streamed rendering opens on the partial report and closes its single terminal
+        // delta on the terminal one.
+        let mut renderer = SseRenderer::new("claude-test".to_string());
+
+        let mut rendered = Vec::new();
+
+        for event in &events {
+            rendered.extend(renderer.render(event));
+        }
+
+        rendered.extend(renderer.render(&IrEvent::Done));
+
+        let payloads = |frames: &[String]| {
+            frames
+                .iter()
+                .map(|frame| {
+                    (
+                        frame
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .trim_start_matches("event: ")
+                            .to_string(),
+                        #[expect(
+                            clippy::expect_used,
+                            reason = "the rendered frames are under test; a malformed frame is \
+                                      the failure"
+                        )]
+                        serde_json::from_str::<Value>(
+                            frame
+                                .split_once("data: ")
+                                .expect("every frame carries a data line")
+                                .1,
+                        )
+                        .expect("frame data is rendered JSON"),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let payloads = payloads(&rendered);
+
+        assert_eq!(
+            payloads
+                .iter()
+                .filter(|(kind, _)| kind == "message_delta")
+                .count(),
+            1,
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the terminal delta is under test; its absence is the failure"
+        )]
+        let delta = payloads
+            .iter()
+            .find(|(kind, _)| kind == "message_delta")
+            .expect("the terminal delta renders");
+
+        assert_eq!(
+            delta.1.pointer("/usage"),
+            Some(&json!({
+                "input_tokens": 10,
+                "output_tokens": 25,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 2,
+            })),
         );
     }
 

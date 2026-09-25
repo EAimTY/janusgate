@@ -382,16 +382,20 @@ impl DefinitionPayload {
                     ));
                 }
 
-                if expires_in_fallback_seconds.is_none()
-                    && !authorization
-                        .response
-                        .fields
-                        .iter()
-                        .any(|field| matches!(field.target, Target::ExpiresInSeconds))
-                {
+                // A device flow's lifetime must have exactly one guaranteed source: a reported
+                // `expires_in` the response is required to carry, or the definition's explicit
+                // fallback. An optional (or absent) expiry mapping without a fallback would let
+                // an upstream omission leave the flow with no lifetime at all, so the state is
+                // unrepresentable for a valid definition (README §5.3, §7.2).
+                let maps_required_expiry = authorization.response.fields.iter().any(|field| {
+                    matches!(field.target, Target::ExpiresInSeconds) && field.required
+                });
+
+                if expires_in_fallback_seconds.is_none() && !maps_required_expiry {
                     return Err(ValidationError::new(concat!(
                         "device grant must configure `expires_in_fallback_seconds` when its ",
-                        "authorization response maps no `expires_in_seconds` target",
+                        "authorization response maps no `expires_in_seconds` target, or maps it \
+                         optional",
                     )));
                 }
             }
@@ -2602,7 +2606,8 @@ mod tests {
 
     /// The device authorization response must map both the `device_code` and `user_code`
     /// targets — marked required — and at least one verification URI, and it must configure the
-    /// explicit expiry fallback exactly when it maps no `expires_in_seconds` target.
+    /// explicit expiry fallback exactly when it maps no required `expires_in_seconds` target:
+    /// an optional expiry mapping leaves an upstream omission with no lifetime source.
     ///
     /// # Panics
     ///
@@ -2685,6 +2690,48 @@ mod tests {
         });
 
         assert!(outcome.unwrap_err().contains("expires_in_fallback_seconds"));
+
+        // The expiry mapping optional with no fallback is the same rejection: an upstream that
+        // omits the member would leave the flow with no lifetime source at all.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            let grant = &mut payload["credential"]["grant"];
+            grant["expires_in_fallback_seconds"] = serde_json::Value::Null;
+
+            #[expect(clippy::expect_used, reason = "the fixture maps response fields")]
+            let fields = grant["authorization"]["response"]["fields"]
+                .as_array_mut()
+                .expect("the fixture maps response fields");
+
+            for field in fields {
+                if field["target"]["type"] == "expires_in_seconds" {
+                    field["required"] = serde_json::json!(false);
+                }
+            }
+        });
+
+        assert!(outcome.unwrap_err().contains("expires_in_fallback_seconds"));
+
+        // The expiry mapping required with no fallback is the accepted shape: the response must
+        // carry the member, so a lifetime always exists.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["grant"]["expires_in_fallback_seconds"] = serde_json::Value::Null;
+
+            #[expect(clippy::expect_used, reason = "the fixture maps response fields")]
+            let fields = payload["credential"]["grant"]["authorization"]["response"]["fields"]
+                .as_array_mut()
+                .expect("the fixture maps response fields");
+
+            for field in fields {
+                if field["target"]["type"] == "expires_in_seconds" {
+                    field["required"] = serde_json::json!(true);
+                }
+            }
+        });
+
+        assert!(
+            outcome.is_ok(),
+            "a required expiry mapping needs no fallback"
+        );
     }
 
     /// Render options outside the definition format's closed set are rejected; the accepted

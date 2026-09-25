@@ -8,9 +8,10 @@
 use crate::provider::{
     definition::{
         eval::{EvalError, ValueEnv},
+        provisioning::ProvisionExtraction,
         template::{
             ControlBody, ControlMethod, ControlRequest, ExtractionShape, ResponseEncoding,
-            ResponsePath, TemplateNode,
+            ResponseField, ResponsePath, ResponseTarget, TemplateNode,
         },
     },
     http_body,
@@ -61,7 +62,9 @@ impl Extracted {
 
 /// A control-stage failure: a rejection carrying the upstream status and the full bounded body —
 /// so the token-grant classification can inspect error codes before truncation — or an
-/// unavailable stage (transport failure, undecodable body, a failed required extraction).
+/// unavailable stage (transport failure, undecodable body, a failed required extraction), with
+/// the transport timeout carried as its own variant so consumers can match the fact typed
+/// instead of parsing the rendered message.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ControlFailure {
     /// The upstream answered a non-2xx status.
@@ -78,6 +81,15 @@ pub(crate) enum ControlFailure {
     /// failed required extraction.
     #[error("{detail}")]
     Unavailable {
+        /// Human-readable failure detail.
+        detail: String,
+    },
+
+    /// The stage failed on a transport timeout: the request was cut off by the HTTP client's
+    /// timeout budget and produced no usable response. The device poller's backoff schedules
+    /// this failure class differently from every other unavailable failure.
+    #[error("{detail}")]
+    Timeout {
         /// Human-readable failure detail.
         detail: String,
     },
@@ -226,6 +238,17 @@ pub(crate) fn build_request(
     Ok(builder)
 }
 
+/// Classifies one transport failure of the HTTP client into its control failure, carrying the
+/// `reqwest::Error::is_timeout` fact as the [`ControlFailure::Timeout`] variant instead of
+/// leaving consumers to parse the rendered detail.
+fn transport_failure(detail: String, error: &reqwest::Error) -> ControlFailure {
+    if error.is_timeout() {
+        ControlFailure::Timeout { detail }
+    } else {
+        ControlFailure::Unavailable { detail }
+    }
+}
+
 /// Executes one control request and decodes its 2xx response through the declared encoding.
 ///
 /// The bounded error-body policy is the shared one: a non-2xx body is read through
@@ -245,12 +268,9 @@ pub(crate) async fn execute(
 ) -> Result<DecodedBody, ControlFailure> {
     let builder = build_request(client, request, env, what)?;
 
-    let response = builder
-        .send()
-        .await
-        .map_err(|error| ControlFailure::Unavailable {
-            detail: format!("{what} upstream unreachable: {error}"),
-        })?;
+    let response = builder.send().await.map_err(|error| {
+        transport_failure(format!("{what} upstream unreachable: {error}"), &error)
+    })?;
 
     let status = response.status();
 
@@ -261,12 +281,9 @@ pub(crate) async fn execute(
         });
     }
 
-    let body = response
-        .text()
-        .await
-        .map_err(|error| ControlFailure::Unavailable {
-            detail: format!("{what} response read failed: {error}"),
-        })?;
+    let body = response.text().await.map_err(|error| {
+        transport_failure(format!("{what} response read failed: {error}"), &error)
+    })?;
 
     decode_body(&body, encoding, what)
 }
@@ -311,20 +328,11 @@ pub(crate) fn extract_field(
 ) -> Result<Option<Extracted>, ControlFailure> {
     match body {
         DecodedBody::Json(json) => {
-            let mut value = json;
-
-            for member in &path.0 {
-                let Some(object) = value.as_object() else {
-                    return Err(ControlFailure::Unavailable {
-                        detail: format!("{what} response path addresses a non-object value"),
-                    });
-                };
-
-                match object.get(member) {
-                    Some(found) => value = found,
-                    None => return Ok(None),
-                }
-            }
+            // An unresolvable path — a missing member or a non-object intermediate — is a
+            // missing path (README §5.1): the caller decides required versus optional.
+            let Some(value) = path.resolve(json) else {
+                return Ok(None);
+            };
 
             match shape {
                 ExtractionShape::String => match value.as_str() {
@@ -385,5 +393,201 @@ pub(crate) fn extract_field(
                 None => Ok(None),
             }
         }
+    }
+}
+
+/// The extraction shape every stage-level [`ResponseField`] mapping reads its value with: the
+/// device-authorization, exchange, and refresh mappings all read text, and their integer-valued
+/// targets parse the text at their consumers. A provisioning extraction declares its own shape.
+pub(crate) const TEXT_FIELD_SHAPE: ExtractionShape = ExtractionShape::String;
+
+/// The descriptor-level facts of one response-field mapping, abstracted over the stage
+/// descriptors whose extraction shapes differ: the stage-level [`ResponseField`] fixes the
+/// shared text shape, while a [`ProvisionExtraction`] declares its own.
+pub(crate) trait ResponseMapping {
+    /// The closed path of the response value.
+    fn path(&self) -> &ResponsePath;
+
+    /// The declared shape of the value.
+    fn shape(&self) -> &ExtractionShape;
+
+    /// Whether a missing path fails the stage.
+    fn is_required(&self) -> bool;
+
+    /// Where the extracted value is stored.
+    fn target(&self) -> &ResponseTarget;
+}
+
+impl ResponseMapping for ResponseField {
+    fn path(&self) -> &ResponsePath {
+        &self.path
+    }
+
+    fn shape(&self) -> &ExtractionShape {
+        &TEXT_FIELD_SHAPE
+    }
+
+    fn is_required(&self) -> bool {
+        self.required
+    }
+
+    fn target(&self) -> &ResponseTarget {
+        &self.target
+    }
+}
+
+impl ResponseMapping for ProvisionExtraction {
+    fn path(&self) -> &ResponsePath {
+        &self.path
+    }
+
+    fn shape(&self) -> &ExtractionShape {
+        &self.shape
+    }
+
+    fn is_required(&self) -> bool {
+        self.required
+    }
+
+    fn target(&self) -> &ResponseTarget {
+        &self.target
+    }
+}
+
+/// Folds one decoded response's declared field mappings into the caller's state through `apply`
+/// (README §5.1): every field is extracted through [`extract_field`], a missing required path
+/// fails the stage with the label, and a missing optional path leaves its target unchanged.
+///
+/// # Errors
+///
+/// Returns the first failure: an extraction failure converted through [`ControlFailure`], the
+/// missing-required failure, or the first `apply` failure returned unchanged.
+pub(crate) fn map_response_fields<T, E>(
+    decoded: &DecodedBody,
+    fields: &[T],
+    what: &str,
+    mut apply: impl FnMut(&ResponseTarget, Extracted) -> Result<(), E>,
+) -> Result<(), E>
+where
+    T: ResponseMapping,
+    E: From<ControlFailure>,
+{
+    for field in fields {
+        let extracted =
+            extract_field(decoded, field.path(), field.shape(), what).map_err(E::from)?;
+
+        let Some(extracted) = extracted else {
+            if field.is_required() {
+                return Err(E::from(ControlFailure::Unavailable {
+                    detail: format!("{what} response lacks a required field"),
+                }));
+            }
+
+            continue;
+        };
+
+        apply(field.target(), extracted)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "the fixtures are constructed so each unwrap lands on its documented side"
+    )]
+    #![expect(
+        clippy::panic,
+        reason = "a fixture landing on the wrong side of its check is the failure report"
+    )]
+
+    use super::*;
+
+    /// Pins the shared field-mapping fold (README §5.1): present values apply in order, a
+    /// missing optional path leaves its target unchanged, a missing required path fails the
+    /// stage with its label, and a present value of the wrong declared shape always fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[test]
+    fn folds_response_fields_per_their_declaration() {
+        let decoded = DecodedBody::Json(serde_json::json!({
+            "present": "value",
+            "nested": { "leaf": "refresh-token" },
+            "count": 1
+        }));
+
+        let fields = [
+            ResponseField {
+                path: ResponsePath(vec!["absent".to_string()]),
+                target: ResponseTarget::Slot {
+                    name: "optional".to_string(),
+                },
+                required: false,
+            },
+            ResponseField {
+                path: ResponsePath(vec!["present".to_string()]),
+                target: ResponseTarget::AccessToken,
+                required: false,
+            },
+            ResponseField {
+                path: ResponsePath(vec!["nested".to_string(), "leaf".to_string()]),
+                target: ResponseTarget::RefreshToken,
+                required: true,
+            },
+        ];
+
+        let mut applied = Vec::new();
+
+        map_response_fields(&decoded, &fields, "stage", |target, extracted| {
+            applied.push((target.clone(), extracted.as_text()));
+
+            Ok::<(), ControlFailure>(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            applied,
+            vec![
+                (ResponseTarget::AccessToken, "value".to_string()),
+                (ResponseTarget::RefreshToken, "refresh-token".to_string()),
+            ]
+        );
+
+        let required = [ResponseField {
+            path: ResponsePath(vec!["absent".to_string()]),
+            target: ResponseTarget::AccessToken,
+            required: true,
+        }];
+
+        let Err(failure) = map_response_fields(&decoded, &required, "stage", |_, _| {
+            Ok::<(), ControlFailure>(())
+        }) else {
+            panic!("a missing required path must fail the stage");
+        };
+
+        let ControlFailure::Unavailable { detail } = failure else {
+            panic!("a missing required path is an unavailable stage");
+        };
+
+        assert_eq!(detail, "stage response lacks a required field");
+
+        // The string shape of a stage-level field mapping rejects the integer the `count`
+        // member carries.
+        let wrong_shape = [ResponseField {
+            path: ResponsePath(vec!["count".to_string()]),
+            target: ResponseTarget::AccessToken,
+            required: true,
+        }];
+
+        let is_failed = map_response_fields(&decoded, &wrong_shape, "stage", |_, _| {
+            Ok::<(), ControlFailure>(())
+        })
+        .is_err();
+
+        assert!(is_failed);
     }
 }

@@ -99,14 +99,21 @@ export function ProviderDetailScreen(props: {
 
                 if (current !== undefined) {
                     autoDiscoveredFor = props.providerId;
-                    void discover(current);
+                    void discover(current, modelsResult.models);
                 }
             }
         },
     });
 
-    /** Reads the provider's models from upstream, stating each step where it was taken. */
-    const discover = async (current: ProviderResponse): Promise<void> => {
+    /**
+     * Reads the provider's models from upstream, stating each step where it
+     * was taken. `before` is the listing the screen held when the discovery
+     * started — the baseline the answer is diffed against.
+     */
+    const discover = async (
+        current: ProviderResponse,
+        before: ReadonlyArray<ModelResponse>,
+    ): Promise<void> => {
         if (isDiscovering() || read.isDisposed()) {
             return;
         }
@@ -146,9 +153,15 @@ export function ProviderDetailScreen(props: {
         }
 
         const rows = outcome.result.models;
-        const discovered = rows.filter((row) => row.discovery_state === "discovered").length;
+
+        // The answer carries the provider's complete fresh rows — the rows it
+        // already held included (README §7.1 models:discover) — so the
+        // headline counts only the `upstream_id`s the pre-discovery listing
+        // did not hold. A refresh of an unchanged upstream announces nothing.
+        const knownUpstreamIds = new Set(before.map((row) => row.upstream_id));
+        const added = rows.filter((row) => !knownUpstreamIds.has(row.upstream_id)).length;
         const vanished = rows.filter((row) => row.discovery_state === "vanished").length;
-        const manual = rows.length - discovered - vanished;
+        const manual = rows.filter((row) => row.discovery_state === "manual").length;
 
         // Discovery never writes `id_override`, so every override in the
         // answer is a pre-existing custom name the refresh kept — a first
@@ -174,8 +187,8 @@ export function ProviderDetailScreen(props: {
         setDiscoveryNotice({
             tone: "ok",
             title:
-                discovered > 0
-                    ? `${discovered} ${discovered === 1 ? "model" : "models"} discovered from ${current.name}.`
+                added > 0
+                    ? `${added} ${added === 1 ? "model" : "models"} discovered from ${current.name}.`
                     : `Nothing new discovered from ${current.name}.`,
             detail: facts.length > 0 ? facts.join(" ") : null,
         });
@@ -259,7 +272,7 @@ export function ProviderDetailScreen(props: {
                             providersById={providersById()}
                             isDiscovering={isDiscovering()}
                             notice={discoveryNotice()}
-                            onDiscover={() => void discover(row)}
+                            onDiscover={() => void discover(row, models())}
                         />
 
                         <EntityUsageCard

@@ -7,9 +7,9 @@
 
 use super::{Error, Nullable, route};
 use crate::{
+    accounting::UsageGroupBy,
     context::Context,
-    ir::InvalidRequest,
-    storage::api_logs::{self, ApiLog, UsageAggregate, UsageGroupBy, list_api_logs, query_usage},
+    storage::api_logs::{self, ApiLog, UsageAggregate, list_api_logs, query_usage},
 };
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
@@ -443,10 +443,10 @@ fn resolve_limit(limit: Option<i64>) -> Result<i64, Error> {
 
         Some(value) if (1..=MAX_LIMIT).contains(&value) => Ok(value),
 
-        Some(_) => Err(Error::Validation(InvalidRequest::field(
-            "limit",
-            format!("`limit` must be between 1 and {MAX_LIMIT}"),
-        ))),
+        Some(_) => Err(Error::Validation {
+            param: "limit",
+            message: format!("`limit` must be between 1 and {MAX_LIMIT}"),
+        }),
     }
 }
 
@@ -464,10 +464,10 @@ fn resolve_group_by(group_by: Vec<UsageGroupBy>) -> Result<Vec<UsageGroupBy>, Er
             .take(index)
             .any(|earlier| earlier == dimension)
         {
-            return Err(Error::Validation(InvalidRequest::field(
-                "group_by",
-                format!("`group_by` repeats `{}`", dimension.as_str()),
-            )));
+            return Err(Error::Validation {
+                param: "group_by",
+                message: format!("`group_by` repeats `{}`", dimension.as_str()),
+            });
         }
     }
 
@@ -509,10 +509,10 @@ fn resolve_filter(filter: Option<UsageFilter>) -> Result<api_logs::UsageFilter, 
 
     for (field, length) in capped {
         if length.is_some_and(|length| length > FILTER_VALUES_CAP) {
-            return Err(Error::Validation(InvalidRequest::field(
-                field,
-                format!("`{field}` carries more than {FILTER_VALUES_CAP} values"),
-            )));
+            return Err(Error::Validation {
+                param: field,
+                message: format!("`{field}` carries more than {FILTER_VALUES_CAP} values"),
+            });
         }
     }
 
@@ -582,8 +582,8 @@ mod tests {
         UsageFilter, resolve_filter, resolve_group_by, resolve_limit,
     };
     use crate::{
+        accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
         management_api::v0::Error,
-        storage::api_logs::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
     };
     use vec1::Vec1;
 
@@ -731,7 +731,10 @@ mod tests {
                 .expect_err("an out-of-range limit must be rejected with 400");
 
             assert!(
-                matches!(rejected, crate::management_api::v0::Error::Validation(_)),
+                matches!(
+                    rejected,
+                    crate::management_api::v0::Error::Validation { .. }
+                ),
                 "an out-of-range limit classifies as an invalid request"
             );
         }
@@ -767,8 +770,8 @@ mod tests {
         assert!(
             matches!(
                 &repeated,
-                Err(Error::Validation(rejection))
-                    if rejection.to_string() == "`group_by` repeats `day`"
+                Err(Error::Validation { message, .. })
+                    if message == "`group_by` repeats `day`"
             ),
             "a repeated dimension must be rejected with 400 naming the field: {repeated:?}"
         );
@@ -797,8 +800,8 @@ mod tests {
         assert!(
             matches!(
                 &rejected,
-                Err(Error::Validation(rejection))
-                    if rejection.to_string().contains("filter.model_id")
+                Err(Error::Validation { message, .. })
+                    if message.contains("filter.model_id")
             ),
             "a filter over the cap must be rejected with 400 naming the field: {rejected:?}"
         );

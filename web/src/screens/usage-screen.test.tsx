@@ -3,9 +3,12 @@ import { createSignal } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
+    ApiKeyResponse,
     ApiLogResponse,
     ListUsageRequest,
     ListUsageResponse,
+    ModelResponse,
+    ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { USAGE_PAGE_SIZE } from "/src/screens/usage-pagination";
@@ -85,11 +88,20 @@ function heldPage(
 
 /**
  * A management API whose usage listing answers only when the test answers it
- * (so a stream page stays in flight) and whose entity listings answer empty.
- * Every other route rejects, so an unexpected call fails the test loudly
- * instead of hanging it.
+ * (so a stream page stays in flight) and whose entity listings answer the
+ * given rows, empty by default. Every other route rejects, so an unexpected
+ * call fails the test loudly instead of hanging it.
  */
-function streamApi(holder: { readonly pages: Array<HeldPage> }): ManagementApi {
+function streamApi(
+    holder: {
+        readonly pages: Array<HeldPage>;
+    },
+    entities: {
+        readonly providers?: ReadonlyArray<ProviderResponse>;
+        readonly models?: ReadonlyArray<ModelResponse>;
+        readonly apiKeys?: ReadonlyArray<ApiKeyResponse>;
+    } = {},
+): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
     return {
@@ -98,15 +110,21 @@ function streamApi(holder: { readonly pages: Array<HeldPage> }): ManagementApi {
         updateProviderDefinition: refused,
         listProviders: () =>
             Promise.resolve({
-                providers: [],
+                providers: [
+                    ...(entities.providers ?? []),
+                ],
             }),
         listModels: () =>
             Promise.resolve({
-                models: [],
+                models: [
+                    ...(entities.models ?? []),
+                ],
             }),
         listApiKeys: () =>
             Promise.resolve({
-                api_keys: [],
+                api_keys: [
+                    ...(entities.apiKeys ?? []),
+                ],
             }),
         listUsage: (request, signal) => heldPage(signal, request, holder.pages),
         queryUsage: refused,
@@ -161,6 +179,16 @@ function buttonWithText(text: string): HTMLButtonElement {
     }
 
     throw new Error(`No button reading ${text}`);
+}
+
+function linkTo(href: string): HTMLAnchorElement {
+    for (const candidate of document.querySelectorAll("a")) {
+        if (candidate.getAttribute("href") === href) {
+            return candidate;
+        }
+    }
+
+    throw new Error(`No link to ${href}`);
 }
 
 function bodyText(): string {
@@ -479,5 +507,103 @@ describe("UsageScreen filtering", () => {
         await settle();
 
         expect(`${window.location.pathname}${window.location.search}`).toBe("/usage");
+    });
+});
+
+describe("UsageScreen row links", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+
+        disposes.length = 0;
+    });
+
+    const providerRow: ProviderResponse = {
+        type: "api_key",
+        provider_definition_name: "generic-openai-chat-completions",
+        provider_definition_version: 1,
+        format: "openai_chat_completion",
+        id: 1,
+        name: "local",
+        model_prefix: "local-",
+        is_enabled: true,
+        base_url: "https://upstream.example.com/v1",
+    };
+
+    const modelRow: ModelResponse = {
+        id: 9,
+        provider_id: 1,
+        provider: "local",
+        upstream_id: "qwen3:32b",
+        public_id: "local-qwen3-32b",
+        id_override: null,
+        is_enabled: true,
+        discovery_state: "discovered",
+    };
+
+    const apiKeyRow: ApiKeyResponse = {
+        id: 7,
+        name: "service-a",
+        key: "sk-live",
+        is_enabled: true,
+        created_at: 1_700_000_000_000_000,
+    };
+
+    function mount(api: ManagementApi): void {
+        disposes.push(
+            render(
+                () => (
+                    <UsageScreen
+                        api={api}
+                        filter={EMPTY_USAGE_FILTER_DRAFT}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("links a row's listed entities to their pages and leaves deleted kinds plain", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        // One row whose provider, model, and key are all still listed, and
+        // one whose provider was deleted after it was recorded.
+        mount(
+            streamApi(holder, {
+                providers: [
+                    providerRow,
+                ],
+                models: [
+                    modelRow,
+                ],
+                apiKeys: [
+                    apiKeyRow,
+                ],
+            }),
+        );
+        await settle();
+        answerLastPage(holder, [
+            ...page(1050, 1),
+            {
+                ...logRow(1049),
+                provider_id: 2,
+            },
+        ]);
+        await settle();
+
+        expect(linkTo("/providers/1").textContent).toContain("local");
+        expect(linkTo("/models/9").textContent).toContain("local-qwen3-32b");
+        expect(linkTo("/api-keys/7").textContent).toContain("service-a");
+
+        // A deleted row is named by its kind, never turned into a door that
+        // leads nowhere.
+        expect(bodyText()).toContain("Deleted provider");
+        expect(() => linkTo("/providers/2")).toThrow("No link to /providers/2");
     });
 });

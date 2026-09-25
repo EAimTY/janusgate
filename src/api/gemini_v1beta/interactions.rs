@@ -6,13 +6,14 @@
 //! forces streaming, otherwise the body's `stream` member decides. Request parsing and rendering
 //! go through [`crate::format::gemini_interaction`]; errors render through the prefix
 //! [`super::error_response`] (the Gemini envelope); accounting records the endpoint as
-//! [`ApiLogEndpointType::GeminiInteractions`](crate::storage::api_logs::ApiLogEndpointType).
+//! [`ApiLogEndpointType::GeminiInteractions`](crate::accounting::ApiLogEndpointType).
 //!
 //! Shared concerns (authentication, 404/405 bodies, body limit, JSON helper, accounting row id,
 //! completion pipeline) live in [`crate::api::serving`] and the prefix module [`super`]; this
 //! module owns only the endpoint handler and its route.
 
 use crate::{
+    accounting::ApiLogEndpointType,
     api::serving,
     context::Context,
     format::{RouteContext, gemini_interaction::Format as InteractionsFormat},
@@ -52,6 +53,7 @@ async fn interactions(
                 is_streaming: is_alt_sse.then_some(true),
             },
             serving::OperationKind::Interaction,
+            ApiLogEndpointType::GeminiInteractions,
         )
         .await,
     )

@@ -528,28 +528,27 @@ fn user_block_to_part(block: &InboundUserBlock) -> Result<IrPart, InvalidRequest
                 StringOrArray::Text(text) => text.clone(),
 
                 StringOrArray::Array(parts) => {
-                    let mut combined = String::new();
+                    let texts = parts
+                        .iter()
+                        .map(|part| match part {
+                            InboundToolResultPart::Text { text } => Ok(text.as_str()),
 
-                    for part in parts {
-                        match part {
-                            InboundToolResultPart::Text { text } => {
-                                if !combined.is_empty() {
-                                    combined.push_str("\n\n");
-                                }
+                            InboundToolResultPart::Image { .. } => Err(InvalidRequest::field(
+                                "content",
+                                "Image content inside tool results is not supported",
+                            )),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
 
-                                combined.push_str(text);
-                            }
-
-                            InboundToolResultPart::Image { .. } => {
-                                return Err(InvalidRequest::field(
-                                    "content",
-                                    "Image content inside tool results is not supported",
-                                ));
-                            }
-                        }
-                    }
-
-                    combined
+                    // The separator only ever separates text the accumulator already holds, so
+                    // a leading run of empty parts carries none: skip it, then join the rest
+                    // with the blank-line separator.
+                    texts
+                        .iter()
+                        .skip_while(|text| text.is_empty())
+                        .copied()
+                        .collect::<Vec<&str>>()
+                        .join("\n\n")
                 }
             };
 
@@ -808,6 +807,83 @@ mod tests {
                 content: "sunny".to_string(),
                 is_error: true,
             }],
+        );
+    }
+
+    /// A `tool_result` content-parts array flattens into the tool output with the blank-line
+    /// separator: parts join in order, an empty part between texts keeps both its separators,
+    /// and a leading run of empty parts carries none (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed tool outputs diverge from the documented flattening.
+    #[test]
+    fn tool_result_text_part_arrays_flatten_into_the_tool_output() {
+        let between_empty = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": ""},
+                        {"type": "text", "text": "b"},
+                    ]},
+                ]},
+            ],
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the between-empty parts form is constructed to parse"
+        )]
+        let parsed = parse_inbound_request(between_empty.to_string().as_bytes())
+            .expect("tool_result content parts must parse");
+
+        #[expect(clippy::expect_used, reason = "the body parses to one message")]
+        let tool = parsed.ir.messages.first().expect("the tool message parses");
+
+        assert_eq!(tool.role, IrRole::Tool);
+
+        assert_eq!(
+            part(&tool.parts, 0),
+            &IrPart::ToolOutput {
+                call_id: "call_1".to_string(),
+                content: "a\n\n\n\nb".to_string(),
+                is_error: false,
+            },
+        );
+
+        let leading_empty = json!({
+            "model": "m",
+            "max_tokens": 16,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": [
+                        {"type": "text", "text": ""},
+                        {"type": "text", "text": "c"},
+                    ]},
+                ]},
+            ],
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the leading-empty parts form is constructed to parse"
+        )]
+        let parsed = parse_inbound_request(leading_empty.to_string().as_bytes())
+            .expect("tool_result content parts must parse");
+
+        #[expect(clippy::expect_used, reason = "the body parses to one message")]
+        let tool = parsed.ir.messages.first().expect("the tool message parses");
+
+        assert_eq!(
+            part(&tool.parts, 0),
+            &IrPart::ToolOutput {
+                call_id: "call_1".to_string(),
+                content: "c".to_string(),
+                is_error: false,
+            },
         );
     }
 

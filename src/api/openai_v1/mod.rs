@@ -6,6 +6,7 @@
 //! two completion endpoints, and the native model-list shape.
 
 use crate::{
+    accounting::ApiLogEndpointType,
     api::{Error, log_error, serving},
     context::Context,
     database::Database,
@@ -138,6 +139,7 @@ async fn chat_completions(
             api_key.0,
             RouteContext::empty(),
             serving::OperationKind::Completion,
+            ApiLogEndpointType::OpenaiChatCompletions,
         )
         .await,
     )
@@ -156,6 +158,7 @@ async fn responses(
             api_key.0,
             RouteContext::empty(),
             serving::OperationKind::Completion,
+            ApiLogEndpointType::OpenaiResponses,
         )
         .await,
     )

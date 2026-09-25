@@ -454,15 +454,15 @@ fn parse_system_instruction(
         return Ok(None);
     };
 
-    let mut combined = String::new();
-
-    for part in &instruction.parts {
-        if !combined.is_empty() {
-            combined.push_str("\n\n");
-        }
-
-        combined.push_str(&part.text);
-    }
+    // The separator only ever separates text the accumulator already holds, so a leading run
+    // of empty parts carries none: skip it, then join the rest with the blank-line separator.
+    let combined = instruction
+        .parts
+        .iter()
+        .map(|part| part.text.as_str())
+        .skip_while(|text| text.is_empty())
+        .collect::<Vec<&str>>()
+        .join("\n\n");
 
     if combined.is_empty() {
         return Ok(None);

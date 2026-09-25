@@ -360,27 +360,28 @@ impl FunctionResultPayload {
             Self::Text(text) => Ok(text),
 
             Self::Blocks(blocks) => {
-                let mut combined = String::new();
+                let texts = blocks
+                    .iter()
+                    .map(|block| match block {
+                        ContentBlockIn::Text { text, .. } => Ok(text.as_str()),
 
-                for block in blocks {
-                    match block {
-                        ContentBlockIn::Text { text, .. } => {
-                            if !combined.is_empty() {
-                                combined.push_str("\n\n");
-                            }
+                        ContentBlockIn::Image { .. } => Err(InvalidRequest::field(
+                            "result",
+                            "function_result content blocks must be text; \
+                             `image` is not supported",
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
 
-                            combined.push_str(&text);
-                        }
-
-                        ContentBlockIn::Image { .. } => {
-                            return Err(InvalidRequest::field(
-                                "result",
-                                "function_result content blocks must be text; \
-                                 `image` is not supported",
-                            ));
-                        }
-                    }
-                }
+                // The separator only ever separates text the accumulator already holds, so a
+                // leading run of empty blocks carries none: skip it, then join the rest with
+                // the blank-line separator.
+                let combined = texts
+                    .iter()
+                    .skip_while(|text| text.is_empty())
+                    .copied()
+                    .collect::<Vec<&str>>()
+                    .join("\n\n");
 
                 Ok(combined)
             }

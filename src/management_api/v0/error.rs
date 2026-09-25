@@ -16,7 +16,6 @@
 //! `AsStatusCode`, so a category and its status can never drift apart.
 
 use crate::{
-    ir::InvalidRequest,
     provider::{
         definition::ValidationError, discovery::Error as DiscoveryError, oauth::Error as OAuthError,
     },
@@ -324,10 +323,17 @@ pub(super) enum Error {
         upstream_id: String,
     },
 
-    /// The shared request validation rejected the request, exactly as the outward API renders it in
-    /// its own contract.
-    #[error(transparent)]
-    Validation(#[from] InvalidRequest),
+    /// The request parsed but failed one of the routes' own validation rules — an out-of-range
+    /// page size, a repeated grouping dimension, a filter over its value cap. The message names
+    /// the offending field.
+    #[error("{message}")]
+    Validation {
+        /// Name of the offending request parameter.
+        param: &'static str,
+
+        /// Human-readable rejection message.
+        message: String,
+    },
 
     /// The database refused the read or write, or reported stored drift.
     #[error(transparent)]
@@ -386,7 +392,7 @@ impl Error {
             | Self::InvalidIdentifier { .. }
             | Self::InvalidBaseUrl
             | Self::MalformedAuthorizationCode
-            | Self::Validation(_)
+            | Self::Validation { .. }
             | Self::InvalidDefinition(_)
             | Self::CredentialKindMismatch { .. }
             | Self::DefinitionNotFound { .. } => ErrorCode::InvalidRequest,
@@ -405,9 +411,9 @@ impl Error {
             Self::OAuth(error) => match error {
                 OAuthError::NotFound { .. } => ErrorCode::NotFound,
 
-                OAuthError::Rejected { .. } | OAuthError::Unavailable { .. } => {
-                    ErrorCode::UpstreamError
-                }
+                OAuthError::Rejected { .. }
+                | OAuthError::Unavailable { .. }
+                | OAuthError::Timeout { .. } => ErrorCode::UpstreamError,
 
                 OAuthError::Internal { .. } => ErrorCode::Internal,
             },
@@ -503,7 +509,6 @@ mod tests {
     use super::{CONSTRAINT_MESSAGE, Error, ErrorCode, ErrorResponse, INTERNAL_MESSAGE};
     use crate::{
         database::Error as DatabaseError,
-        ir::InvalidRequest,
         provider::{discovery::Error as DiscoveryError, oauth::Error as OAuthError},
         storage::Error as StorageError,
     };
@@ -664,8 +669,8 @@ mod tests {
 
     /// Verifies that every cause the handlers can surface is classified onto the management
     /// taxonomy: storage rows split per outcome, an upstream failure always pins 502
-    /// `UpstreamError`, a vanished provider stays a 404, shared request validation and credentials
-    /// parsing land on 400, and a wrong body content type lands on the 415 category.
+    /// `UpstreamError`, a vanished provider stays a 404, route-level request validation and
+    /// credentials parsing land on 400, and a wrong body content type lands on the 415 category.
     ///
     /// # Panics
     ///
@@ -720,6 +725,12 @@ mod tests {
                 ErrorCode::UpstreamError,
             ),
             (
+                Error::from(OAuthError::Timeout {
+                    detail: "cut off".to_string(),
+                }),
+                ErrorCode::UpstreamError,
+            ),
+            (
                 Error::from(OAuthError::NotFound {
                     message: "vanished".to_string(),
                 }),
@@ -751,7 +762,10 @@ mod tests {
                 ErrorCode::Internal,
             ),
             (
-                Error::from(InvalidRequest::field("id", "empty")),
+                Error::Validation {
+                    param: "id",
+                    message: "empty".to_string(),
+                },
                 ErrorCode::InvalidRequest,
             ),
             (

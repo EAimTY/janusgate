@@ -54,6 +54,20 @@ const apiKeyRow: ApiKeyResponse = {
     created_at: 1_700_000_000_000_000,
 };
 
+/** One OAuth provider whose authorization lapsed long ago. */
+const expiredOauthProviderRow: ProviderResponse = {
+    type: "oauth",
+    id: 2,
+    name: "codex",
+    model_prefix: "codex-",
+    is_enabled: true,
+    provider_definition_name: "codex-oauth",
+    provider_definition_version: 1,
+    format: "openai_response",
+    base_url: null,
+    expires_at: 1,
+};
+
 function bucket(key: UsageBucket["key"], requests: number): UsageBucket {
     return {
         key,
@@ -74,10 +88,17 @@ function utcDay(offsetDays: number): string {
 /**
  * A gateway with one provider, one routing model, one vanished model, and one
  * API key, whose accounting answers 45 requests in the rolling window — five
- * of them failures — and two days of daily buckets. Every other route rejects,
- * so an unexpected call fails the test loudly instead of hanging it.
+ * of them failures — and two days of daily buckets. The listings can be
+ * replaced wholesale for screens that need a different gateway. Every other
+ * route rejects, so an unexpected call fails the test loudly instead of
+ * hanging it.
  */
-function overviewApi(requests: Array<QueryUsageRequest>): ManagementApi {
+function overviewApi(
+    requests: Array<QueryUsageRequest>,
+    listing: {
+        readonly providers?: ReadonlyArray<ProviderResponse>;
+    } = {},
+): ManagementApi {
     const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
 
     return {
@@ -87,7 +108,9 @@ function overviewApi(requests: Array<QueryUsageRequest>): ManagementApi {
         listProviders: () =>
             Promise.resolve({
                 providers: [
-                    providerRow,
+                    ...(listing.providers ?? [
+                        providerRow,
+                    ]),
                 ],
             }),
         listModels: () =>
@@ -264,5 +287,35 @@ describe("HomeScreen", () => {
         expect(bodyText()).toContain(`${BASE_URL}/api/openai-v1`);
         expect(bodyText()).toContain(`${BASE_URL}/api/gemini-v1beta`);
         expect(bodyText()).toContain(`${BASE_URL}/api/anthropic-v1`);
+    });
+
+    it("sends a lapsed credential to the edit page, where reauthorization lives", async () => {
+        mount(
+            overviewApi([], {
+                providers: [
+                    expiredOauthProviderRow,
+                ],
+            }),
+        );
+        await settle();
+
+        expect(bodyText()).toContain("Credential expired");
+        expect(linkTo("/providers/2/edit").textContent).toContain("Reconnect");
+    });
+
+    it("lists no pre-satisfied step on a fresh gateway", async () => {
+        mount(
+            overviewApi([], {
+                providers: [],
+            }),
+        );
+        await settle();
+
+        // Every provider is created enabled, so "enable the provider" is
+        // never a step still ahead; the checklist names the one case where
+        // the switch matters instead.
+        expect(bodyText()).toContain("Re-enable the provider if you ever disable it");
+        expect(bodyText()).not.toContain("Enable the provider");
+        expect(bodyText()).toContain("Issue an API key for serving clients");
     });
 });

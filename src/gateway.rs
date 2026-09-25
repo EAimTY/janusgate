@@ -314,21 +314,13 @@ fn build_upstream_request(
 
     let slots = provider.credentials.slots();
 
-    let env = crate::provider::definition::eval::ValueEnv {
-        base_url: provider.base_url.as_deref(),
-        secret: Some(provider.credentials.secret()),
+    let env = crate::provider::definition::eval::ValueEnv::for_inference(
         slots,
-        client_id: None,
-        client_secret: None,
-        authorization_code: None,
-        code_verifier: None,
-        redirect_uri: None,
-        oauth_state: None,
-        device_code: None,
-        refresh_token: None,
-        request_uuid: Some(&request_uuid),
-        model: Some(&routing.model.upstream_id),
-    };
+        provider.base_url.as_deref(),
+        provider.credentials.secret(),
+        &request_uuid,
+        &routing.model.upstream_id,
+    );
 
     let url_expr = match is_upstream_streaming && inference.stream_url.is_some() {
         true => inference.stream_url.as_ref().unwrap_or(&inference.url),
@@ -784,7 +776,7 @@ impl From<PayloadError> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{api::Error as ApiError, storage::api_logs::ApiLogOutcome};
+    use crate::{accounting::ApiLogOutcome, api::Error as ApiError};
     use reqwest::StatusCode;
 
     /// Verifies the dispatch accounting derives from the shared API classification: a mirrored

@@ -14,8 +14,7 @@
 //!   slot); history-replay carve-outs stay minimal — only what the gateway itself emits
 //!   (`thoughtSignature` on `functionCall` parts, gateway-rendered `id` fields, and the `thought`
 //!   flag accepted-and-ignored as plain text);
-//! - [`crate::api::Error`] with [`crate::format::error_gemini`] for both error paths;
-//! - [`crate::storage::api_logs::ApiLogEndpointType::GeminiGenerateContent`] as `ENDPOINT_TYPE`.
+//! - [`crate::api::Error`] with [`crate::format::error_gemini`] for both error paths.
 //!
 //! Rendered payloads are first-party types in their wire shapes, so field presence per request is
 //! declared by `skip_serializing_if` rather than assembled conditionally. Wire shapes follow the
@@ -29,7 +28,6 @@ use self::client_render::{JsonResponse, SseRenderer};
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
     ir::{InvalidRequest, IrAggregation},
-    storage::api_logs::ApiLogEndpointType,
 };
 
 mod client_render;
@@ -47,8 +45,6 @@ pub(crate) struct Format;
 
 impl ClientFormat for Format {
     type JsonResponse = JsonResponse;
-
-    const ENDPOINT_TYPE: ApiLogEndpointType = ApiLogEndpointType::GeminiGenerateContent;
 
     fn parse_request(body: &[u8], route: &RouteContext) -> Result<ParsedRequest, InvalidRequest> {
         request_parse::parse_request(body, route)

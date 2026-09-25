@@ -53,9 +53,9 @@ impl From<oauth::Error> for Error {
     fn from(error: oauth::Error) -> Self {
         match error {
             oauth::Error::Rejected { status, detail } => Self::Rejected { status, detail },
-            oauth::Error::Unavailable { detail } | oauth::Error::NotFound { message: detail } => {
-                Self::Unavailable { detail }
-            }
+            oauth::Error::Unavailable { detail }
+            | oauth::Error::Timeout { detail }
+            | oauth::Error::NotFound { message: detail } => Self::Unavailable { detail },
             oauth::Error::Internal { message } => Self::Internal { message },
         }
     }
@@ -68,21 +68,12 @@ impl From<control::ControlFailure> for Error {
                 status,
                 detail: http_body::truncate_excerpt(&body),
             },
-            control::ControlFailure::Unavailable { detail } => Self::Unavailable { detail },
+            // Discovery has no timeout-dependent schedule, so a transport timeout collapses
+            // into the unavailable class like every other transport failure.
+            control::ControlFailure::Unavailable { detail }
+            | control::ControlFailure::Timeout { detail } => Self::Unavailable { detail },
         }
     }
-}
-
-/// Whether one discovered identifier is routing-safe: non-empty printable ASCII without
-/// whitespace and without `/` or `:` — the Gemini URL path cannot address them. The check runs at
-/// the discovery ingestion boundary, before any row is written, so curated rows are never
-/// replaced by unroutable ones.
-#[must_use]
-fn is_routable_upstream_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.bytes().all(|byte| byte.is_ascii_graphic())
-        && !value.contains('/')
-        && !value.contains(':')
 }
 
 /// Fetches the upstream model identifiers (`upstream_id` values) of a provider through its
@@ -200,8 +191,12 @@ pub(crate) async fn run_discovery(
     }
 
     // Every discovered identifier is validated before any row is written (README §7): one
-    // unroutable identifier fails the whole refresh.
-    if let Some(invalid) = ids.iter().find(|id| !is_routable_upstream_id(id)) {
+    // unroutable identifier fails the whole refresh. The routing-token composition — routing-safe
+    // text without `/` or `:` — is the ingestion boundary of the shared text contract.
+    if let Some(invalid) = ids
+        .iter()
+        .find(|id| !crate::routing_text::is_routing_safe_token(id))
+    {
         return Err(Error::Unavailable {
             detail: format!("model discovery reported the unroutable identifier `{invalid}`"),
         });
@@ -213,21 +208,11 @@ pub(crate) async fn run_discovery(
 /// The environment one discovery request carries: the current secret, the stored slots, and the
 /// stored base URL.
 fn discovery_env(provider: &Provider) -> ValueEnv<'_> {
-    ValueEnv {
-        base_url: provider.base_url.as_deref(),
-        secret: Some(provider.credentials.secret()),
-        slots: provider.credentials.slots(),
-        client_id: None,
-        client_secret: None,
-        authorization_code: None,
-        code_verifier: None,
-        redirect_uri: None,
-        oauth_state: None,
-        device_code: None,
-        refresh_token: None,
-        request_uuid: None,
-        model: None,
-    }
+    ValueEnv::for_discovery(
+        provider.credentials.slots(),
+        provider.base_url.as_deref(),
+        provider.credentials.secret(),
+    )
 }
 
 /// The response encoding a discovery's responses arrive in: the descriptor declares one encoding
@@ -243,7 +228,8 @@ fn encoding_of(discovery: &Discovery) -> ResponseEncoding {
     }
 }
 
-/// Reads the JSON value one member chain addresses, or `None` when any member is missing.
+/// Reads the JSON value one member chain addresses in a decoded body, or `None` when the body is
+/// not JSON or any member is missing.
 fn value_at<'a>(
     body: &'a control::DecodedBody,
     path: &crate::provider::definition::template::ResponsePath,
@@ -252,13 +238,7 @@ fn value_at<'a>(
         return None;
     };
 
-    let mut value = json;
-
-    for member in &path.0 {
-        value = value.get(member)?;
-    }
-
-    Some(value)
+    path.resolve(json)
 }
 
 /// Appends or replaces one query parameter of the paginated request.
@@ -292,7 +272,7 @@ fn extract_ids(
             id_field,
             strip_prefix,
         } => {
-            let Some(array) = walk(json, &array_at.0).and_then(Json::as_array) else {
+            let Some(array) = array_at.resolve(json).and_then(Json::as_array) else {
                 return Err(Error::Unavailable {
                     detail: "model discovery payload lacks the configured array".to_string(),
                 });
@@ -301,7 +281,8 @@ fn extract_ids(
             array
                 .iter()
                 .map(|entry| {
-                    let id = walk(entry, &id_field.0)
+                    let id = id_field
+                        .resolve(entry)
                         .and_then(Json::as_str)
                         .map(str::to_string)
                         .ok_or_else(|| Error::Unavailable {
@@ -317,7 +298,7 @@ fn extract_ids(
         }
 
         DiscoveryExtract::MapKeys { at } => {
-            let Some(object) = walk(json, &at.0).and_then(Json::as_object) else {
+            let Some(object) = at.resolve(json).and_then(Json::as_object) else {
                 return Err(Error::Unavailable {
                     detail: "model discovery payload lacks the configured object".to_string(),
                 });
@@ -326,15 +307,4 @@ fn extract_ids(
             Ok(object.keys().cloned().collect())
         }
     }
-}
-
-/// Walks one member chain into a JSON value.
-fn walk<'a>(json: &'a Json, members: &[String]) -> Option<&'a Json> {
-    let mut value = json;
-
-    for member in members {
-        value = value.get(member)?;
-    }
-
-    Some(value)
 }

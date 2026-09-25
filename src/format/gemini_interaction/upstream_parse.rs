@@ -34,6 +34,10 @@ pub(crate) struct UpstreamParser {
     /// Steps opened by `step.start` (or implicitly by a first delta) and not yet closed by
     /// `step.stop`, keyed by the upstream step index.
     open_steps: Vec<OpenStep>,
+
+    /// Whether a live `step.start`/`step.delta` event opened a step: live step delivery silences
+    /// the terminal frame's steps fallback, so content is never delivered twice.
+    is_step_delivered: bool,
 }
 
 /// One upstream step tracked across stream frames. The official `step.stop` carries only the index,
@@ -97,9 +101,10 @@ impl OpenStep {
 /// raw values — fragments whose per-kind shape the parser models separately — so a thought step's
 /// complete JSON survives as the block's opaque replay payload. The streaming lifecycle payloads
 /// may omit any field of the full resource ("Streaming lifecycle payloads may omit fields that are
-/// only available on full non-streaming Interaction responses"), and the terminal
-/// `interaction.completed` resource deliberately shrinks its steps away, so steps are ingested from
-/// bodies only.
+/// only available on full non-streaming Interaction responses"); the terminal
+/// `interaction.completed` resource carries its steps only when the upstream includes them, so the
+/// stream ingests steps from the live step events and falls back to the terminal resource's steps
+/// when no live step event opened one.
 #[derive(Debug, Default, Deserialize)]
 struct InteractionBody {
     /// Upstream interaction identifier, empty when the upstream omits it.
@@ -114,8 +119,9 @@ struct InteractionBody {
     #[serde(default)]
     status: Option<String>,
 
-    /// The interaction's steps in order; a body member only — the streaming terminal event shrinks
-    /// its steps away, and the live step events are the sole streaming content source.
+    /// The interaction's steps in order; a body member always, and a terminal-frame member only
+    /// when the upstream includes it — recovered exactly once when no live step event delivered
+    /// content.
     #[serde(default)]
     steps: Vec<Value>,
 
@@ -408,6 +414,15 @@ impl UpstreamParser {
             .map(|position| self.open_steps.swap_remove(position))
     }
 
+    /// Records a step opened by a live `step.start`/`step.delta` event: the open itself marks the
+    /// interaction as live-step-delivered, silencing the terminal frame's steps fallback. An
+    /// opening for an unknown step kind opens nothing and stays recoverable.
+    fn push_open(&mut self, step: OpenStep) {
+        self.is_step_delivered = true;
+
+        self.open_steps.push(step);
+    }
+
     /// Returns the step tracked under the upstream index, when one is open.
     fn find_open(&mut self, index: u64) -> Option<&mut OpenStep> {
         self.open_steps
@@ -569,11 +584,9 @@ impl UpstreamParser {
         }
 
         match frame.step.step_type.as_str() {
-            STEP_MODEL_OUTPUT => self
-                .open_steps
-                .push(OpenStep::Output { index: frame.index }),
+            STEP_MODEL_OUTPUT => self.push_open(OpenStep::Output { index: frame.index }),
 
-            STEP_THOUGHT => self.open_steps.push(OpenStep::Thought {
+            STEP_THOUGHT => self.push_open(OpenStep::Thought {
                 index: frame.index,
                 summary: String::new(),
                 signature: None,
@@ -582,7 +595,7 @@ impl UpstreamParser {
             STEP_FUNCTION_CALL => {
                 let call_index = self.allocate_call_index();
 
-                self.open_steps.push(OpenStep::Call {
+                self.push_open(OpenStep::Call {
                     index: frame.index,
                     call_index,
                     id: frame
@@ -614,8 +627,7 @@ impl UpstreamParser {
                 events.extend(self.ensure_open());
 
                 if self.find_open(frame.index).is_none() {
-                    self.open_steps
-                        .push(OpenStep::Output { index: frame.index });
+                    self.push_open(OpenStep::Output { index: frame.index });
                 }
 
                 events.push(IrEvent::TextDelta(text));
@@ -631,7 +643,7 @@ impl UpstreamParser {
                 events.extend(self.ensure_open());
 
                 if self.find_open(frame.index).is_none() {
-                    self.open_steps.push(OpenStep::Thought {
+                    self.push_open(OpenStep::Thought {
                         index: frame.index,
                         summary: String::new(),
                         signature: None,
@@ -655,7 +667,7 @@ impl UpstreamParser {
                 events.extend(self.ensure_open());
 
                 if self.find_open(frame.index).is_none() {
-                    self.open_steps.push(OpenStep::Thought {
+                    self.push_open(OpenStep::Thought {
                         index: frame.index,
                         summary: String::new(),
                         signature: None,
@@ -676,7 +688,7 @@ impl UpstreamParser {
                 if self.find_open(frame.index).is_none() {
                     let call_index = self.allocate_call_index();
 
-                    self.open_steps.push(OpenStep::Call {
+                    self.push_open(OpenStep::Call {
                         index: frame.index,
                         call_index,
                         id: format!("call_{}", ids::new_uuid()),
@@ -787,13 +799,31 @@ impl UpstreamParser {
     }
 
     /// Ingests an `interaction.completed` frame: the terminal status, then the usage report when
-    /// the frame's partial resource carries one.
+    /// the frame's partial resource carries one. The official terminal resource carries its steps
+    /// only when the upstream includes them ("if included in this event"), so when no live
+    /// `step.start`/`step.delta` event opened a step, the resource's final `steps` are the
+    /// exactly-once fallback content source, ingested through the same complete-step path as a
+    /// body's steps; a stream that delivered live step events ignores them, so content is never
+    /// delivered twice.
     ///
     /// # Errors
     ///
-    /// Returns [`PayloadError`] for the failed status.
+    /// Returns [`PayloadError`] for the failed status and for a recovered step whose kind
+    /// contradicts the contract.
     fn ingest_completed(&mut self, frame: CompletedFrame) -> Result<Vec<IrEvent>, PayloadError> {
         let mut events = self.ensure_open();
+
+        // The decision is made once, before the walk, so every recovered step sees the same
+        // pre-walk delivery state.
+        let steps = if self.is_step_delivered {
+            Vec::new()
+        } else {
+            frame.interaction.steps
+        };
+
+        for step in steps {
+            events.extend(self.ingest_complete_step(step)?);
+        }
 
         events.extend(self.ingest_status(frame.interaction.status)?);
 
@@ -1478,6 +1508,187 @@ mod tests {
                 }),
             ],
         );
+    }
+
+    /// An upstream that streams `interaction.created` and then a terminal `interaction.completed`
+    /// whose partial resource carries the final `steps` — no live `step.*` events at all —
+    /// recovers the full content exactly once through the terminal fallback, rendered exactly as
+    /// the non-streaming body path renders the same steps.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recovered events diverge from the body-path rendering of the same steps.
+    #[test]
+    fn recovers_the_terminal_steps_when_no_live_step_event_delivered() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_CREATED,
+            serde_json::json!({"interaction": {"id": "int_5", "model": "upstream-model"}}),
+        );
+
+        let completed = ingest(
+            &mut parser,
+            super::super::EVENT_COMPLETED,
+            serde_json::json!({
+                "interaction": {
+                    "id": "int_5",
+                    "status": "completed",
+                    "steps": [
+                        {"type": "thought", "summary": [
+                            {"type": "text", "text": "considered"},
+                        ], "signature": "sig-t"},
+                        {"type": "model_output", "content": [
+                            {"type": "text", "text": "hello"},
+                        ]},
+                        {"type": "function_call", "id": "call_1", "name": "search",
+                         "arguments": {"q": "hi"}},
+                    ],
+                },
+            }),
+        );
+
+        assert_eq!(
+            completed,
+            vec![
+                IrEvent::ReasoningDone {
+                    text: "considered".to_string(),
+                    signature: Some("sig-t".to_string()),
+                    opaque: serde_json::json!({
+                        "type": "thought",
+                        "summary": [{"type": "text", "text": "considered"}],
+                        "signature": "sig-t",
+                    }),
+                },
+                IrEvent::TextDelta("hello".to_string()),
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: Some("call_1".to_string()),
+                    name: Some("search".to_string()),
+                    arguments_delta: r#"{"q":"hi"}"#.to_string(),
+                },
+                IrEvent::ToolCallDone {
+                    index: 0,
+                    call_id: "call_1".to_string(),
+                    name: "search".to_string(),
+                    arguments: r#"{"q":"hi"}"#.to_string(),
+                    thought_signature: None,
+                },
+                IrEvent::Finish(IrFinishReason::Stop),
+            ],
+        );
+
+        assert!(
+            parser.finish().is_empty(),
+            "the terminal status finished the stream",
+        );
+    }
+
+    /// Live step events win: a stream that delivered its content through `step.start`/`step.delta`
+    /// events ignores the terminal resource's `steps` copies, so no content is ever delivered
+    /// twice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the terminal frame emits anything but the finish.
+    #[test]
+    fn ignores_the_terminal_steps_when_live_step_events_delivered() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_CREATED,
+            serde_json::json!({"interaction": {"id": "int_6"}}),
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({"index": 0, "step": {"type": "model_output"}}),
+        );
+
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_DELTA,
+                serde_json::json!({"index": 0, "delta": {"type": "text", "text": "hi"}}),
+            ),
+            vec![IrEvent::TextDelta("hi".to_string())],
+        );
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_STOP,
+            serde_json::json!({"index": 0}),
+        );
+
+        let completed = ingest(
+            &mut parser,
+            super::super::EVENT_COMPLETED,
+            serde_json::json!({
+                "interaction": {
+                    "id": "int_6",
+                    "status": "completed",
+                    "steps": [{"type": "model_output", "content": [
+                        {"type": "text", "text": "hi"},
+                    ]}],
+                },
+            }),
+        );
+
+        assert_eq!(
+            completed,
+            vec![IrEvent::Finish(IrFinishReason::Stop)],
+            "the live deltas already delivered the content",
+        );
+
+        assert!(parser.finish().is_empty());
+    }
+
+    /// A terminal resource without steps keeps today's shape: no content is invented when the
+    /// fallback finds nothing, and the status and usage close the stream exactly as before.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the step-less terminal diverges from the status-and-usage rendering.
+    #[test]
+    fn delivers_no_content_from_a_step_less_terminal() {
+        let mut parser = UpstreamParser::new();
+
+        ingest(
+            &mut parser,
+            super::super::EVENT_CREATED,
+            serde_json::json!({"interaction": {"id": "int_7"}}),
+        );
+
+        let completed = ingest(
+            &mut parser,
+            super::super::EVENT_COMPLETED,
+            serde_json::json!({
+                "interaction": {
+                    "id": "int_7",
+                    "status": "completed",
+                    "usage": {"total_input_tokens": 4, "total_output_tokens": 6},
+                },
+            }),
+        );
+
+        assert_eq!(
+            completed,
+            vec![
+                IrEvent::Finish(IrFinishReason::Stop),
+                IrEvent::Usage(IrUsage {
+                    input_tokens: 4,
+                    output_tokens: 6,
+                    cached_tokens: None,
+                    cache_write_tokens: None,
+                    reasoning_tokens: None,
+                }),
+            ],
+        );
+
+        assert!(parser.finish().is_empty());
     }
 
     /// Verifies the terminal status mapping: `requires_action` finishes with tool-call,

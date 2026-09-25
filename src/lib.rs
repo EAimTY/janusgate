@@ -12,6 +12,7 @@ use deref_once_lock::OnceLock;
 use lexopt::{Arg as Argument, Parser as ArgumentsParser};
 use std::{ffi::OsString, path::PathBuf};
 
+mod accounting;
 mod api;
 mod config;
 mod context;
@@ -24,6 +25,7 @@ mod ir;
 mod logging;
 pub mod management_api;
 mod provider;
+mod routing_text;
 mod security;
 mod server;
 mod sse;

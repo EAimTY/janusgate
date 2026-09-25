@@ -3,8 +3,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import { ManagementApiError } from "/src/management-api/errors";
 import type {
+    CompleteProviderOauthRequest,
+    CompleteProviderOauthResponse,
     ModelResponse,
     ProviderResponse,
+    StartProviderOauthResponse,
     UpdateProviderRequest,
 } from "/src/management-api/generated/v0";
 import { ErrorCode } from "/src/management-api/generated/v0";
@@ -846,5 +849,146 @@ describe("ProviderEditScreen deletion copy", () => {
 
         expect(document.body.textContent).toContain("Delete alpha?");
         expect(document.body.textContent).not.toContain("404s");
+    });
+});
+
+describe("ProviderEditScreen reauthorization", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    const oauthProvider: ProviderResponse = {
+        type: "oauth",
+        expires_at: 1_700_000_000_000_000,
+        id: 3,
+        name: "chatgpt",
+        model_prefix: "gpt-",
+        is_enabled: true,
+        provider_definition_name: "codex",
+        provider_definition_version: 1,
+        format: "openai_response",
+        base_url: null,
+    };
+
+    const reauthorizationFlow: StartProviderOauthResponse = {
+        grant: "authorization_code",
+        authorize_url: "https://auth.example/authorize?state=state-9",
+        state: "state-9",
+        expires_at: 1_700_000_060_000_000,
+    };
+
+    /** The edit screen over an OAuth provider whose reauthorization completes as the test says. */
+    function reauthorizeScreenApi(options: {
+        readonly complete: (
+            request: CompleteProviderOauthRequest,
+        ) => Promise<CompleteProviderOauthResponse>;
+    }): ManagementApi {
+        const base = screenApi({
+            providers: [
+                oauthProvider,
+            ],
+            models: [],
+        });
+
+        return {
+            ...base,
+            reauthorizeProvider: () => Promise.resolve(reauthorizationFlow),
+            completeProviderOauth: (request) => options.complete(request),
+        };
+    }
+
+    async function mountAndReconnect(api: ManagementApi): Promise<void> {
+        disposes.push(
+            render(
+                () => (
+                    <ProviderEditScreen
+                        api={api}
+                        providerId={3}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        buttonWithText("Reconnect the account").click();
+        await settle();
+        typeInto(labeledInput("Callback URL or authorization code"), "the-code");
+        await settle();
+    }
+
+    it("states the gateway's failure when the exchange is refused instead of claiming success", async () => {
+        await mountAndReconnect(
+            reauthorizeScreenApi({
+                complete: () =>
+                    Promise.resolve({
+                        status: "failed",
+                        failure_code: "invalid_grant",
+                        failure_message: "The upstream refused the exchange.",
+                    }),
+            }),
+        );
+        buttonWithText("Replace the credentials").click();
+        await settle();
+
+        // The refused exchange is the gateway's HTTP-200 verdict: it renders
+        // with its retry hint, and the consumed flow resets so a fresh one can
+        // start — the old credentials stand untouched.
+        expect(document.body.textContent).toContain("The upstream refused the exchange.");
+        expect(document.body.textContent).toContain("Start a fresh flow");
+        expect(document.body.textContent).not.toContain("Credentials replaced.");
+        expect(buttonWithText("Reconnect the account")).toBeInstanceOf(HTMLButtonElement);
+    });
+
+    it("states the replacement and reloads the listing when the completion succeeds", async () => {
+        const base = reauthorizeScreenApi({
+            complete: () =>
+                Promise.resolve({
+                    status: "succeeded",
+                    provider: {
+                        ...oauthProvider,
+                        expires_at: 1_800_000_000_000_000,
+                    },
+                }),
+        });
+        let listCount = 0;
+        const api: ManagementApi = {
+            ...base,
+            listProviders: (signal) => {
+                listCount += 1;
+                return base.listProviders(signal);
+            },
+        };
+        await mountAndReconnect(api);
+        buttonWithText("Replace the credentials").click();
+        await settle();
+
+        expect(document.body.textContent).toContain("Credentials replaced.");
+        // The success reload lands: one initial read plus the action's own reload.
+        expect(listCount).toBe(2);
+        expect(buttonWithText("Reconnect the account")).toBeInstanceOf(HTMLButtonElement);
+    });
+
+    it("states the paste diagnosis with its fix when the paste carries no code", async () => {
+        await mountAndReconnect(
+            reauthorizeScreenApi({
+                complete: () => Promise.reject(new Error("route not expected in test")),
+            }),
+        );
+        typeInto(labeledInput("Callback URL or authorization code"), "not a code at all");
+        await settle();
+        buttonWithText("Replace the credentials").click();
+        await settle();
+
+        expect(document.body.textContent).toContain("Paste the callback URL or the code.");
+        expect(document.body.textContent).toContain(
+            "Copy the whole address the login landed on, or just its code, and paste it here.",
+        );
+        expect(document.body.textContent).not.toContain("Credentials replaced.");
     });
 });

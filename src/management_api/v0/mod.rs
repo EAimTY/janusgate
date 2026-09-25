@@ -83,8 +83,8 @@ pub use self::{
     },
 };
 pub use crate::{
+    accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
     provider::{CredentialKind, DiscoveryState},
-    storage::api_logs::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
 };
 
 /// URL prefix this version is mounted at, relative to the management API router. Its version
@@ -306,14 +306,6 @@ fn validate_identifier(param: &'static str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Whether `value` holds only routing-safe characters: printable ASCII without whitespace
-/// (`U+0021–U+007E`) — no spaces, no control characters, no non-ASCII text such as CJK (README
-/// §7). The database schema pins the same predicate as `CHECK` constraints, so the application
-/// layer and the storage layer reject exactly the same values.
-fn is_valid_composition(value: &str) -> bool {
-    value.bytes().all(|byte| byte.is_ascii_graphic())
-}
-
 /// Validates a machine-consumed identifier or secret (README §7): `upstream_id`, a present
 /// `id_override`, gateway API key secrets, upstream static keys, and hand-replaced OAuth
 /// credential fields. The value must be non-empty printable ASCII without whitespace — an empty
@@ -326,7 +318,7 @@ fn is_valid_composition(value: &str) -> bool {
 fn validate_composition(param: &'static str, value: &str) -> Result<(), Error> {
     validate_identifier(param, value)?;
 
-    if !is_valid_composition(value) {
+    if !crate::routing_text::is_routing_safe_text(value) {
         return Err(Error::InvalidIdentifier { param });
     }
 
@@ -348,7 +340,8 @@ fn validate_model_prefix(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validates a routing token (README §7): `upstream_id` or a present `id_override`. The value
+/// Validates a routing token (README §7): `upstream_id`, a present `id_override`, and
+/// `model_prefix` (empty means no prefix, validated by [`validate_model_prefix`]). The value
 /// must be non-empty printable ASCII without whitespace and without `/` or `:` — the Gemini URL
 /// path (`/models/{model}:generateContent`) cannot address them. An empty value is
 /// [`Error::EmptyIdentifier`], any other composition failure [`Error::InvalidIdentifier`].
@@ -359,9 +352,9 @@ fn validate_model_prefix(value: &str) -> Result<(), Error> {
 ///
 /// Returns [`Error`] when the value is empty or carries a character outside the allowed set.
 fn validate_routing_token(param: &'static str, value: &str) -> Result<(), Error> {
-    validate_composition(param, value)?;
+    validate_identifier(param, value)?;
 
-    if value.contains('/') || value.contains(':') {
+    if !crate::routing_text::is_routing_safe_token(value) {
         return Err(Error::InvalidIdentifier { param });
     }
 
@@ -381,7 +374,9 @@ fn validate_base_url(value: &str) -> Result<(), Error> {
         .or_else(|| value.strip_prefix("https://"));
 
     match after_scheme {
-        Some(rest) if !rest.is_empty() && is_valid_composition(value) => Ok(()),
+        Some(rest) if !rest.is_empty() && crate::routing_text::is_routing_safe_text(value) => {
+            Ok(())
+        }
         _ => Err(Error::InvalidBaseUrl),
     }
 }

@@ -1,5 +1,7 @@
 import type { DefinitionResponse, UpstreamFormat } from "/src/management-api/generated/v0";
 
+import type { DefinitionPayload } from "./validation";
+
 /**
  * The preset catalog (README §6): hardcoded, versioned definition documents
  * — one per researched product — that prefill the provider-definition form.
@@ -40,8 +42,8 @@ export type ProviderPreset = {
     readonly provenance: string;
     /** The verification status: live run or research only. */
     readonly verification: PresetVerification;
-    /** The definition payload the form prefills. */
-    readonly payload: unknown;
+    /** The definition payload the form prefills, exactly as the wire carries it. */
+    readonly payload: DefinitionPayload;
 };
 
 /** Reads one preset's stored definition version, when the gateway holds one. */
@@ -54,7 +56,10 @@ export function matchStoredDefinition(
 }
 
 /** The static-key presets: one per wire format, the generic compatible APIs. */
-const STATIC_KEY_PRESETS: ReadonlyArray<ProviderPreset> = [
+const STATIC_KEY_PRESETS: readonly [
+    ProviderPreset,
+    ...ProviderPreset[],
+] = [
     {
         id: "generic-openai-responses",
         title: "OpenAI-compatible Responses API",
@@ -494,7 +499,10 @@ const STATIC_KEY_PRESETS: ReadonlyArray<ProviderPreset> = [
 ];
 
 /** The OAuth presets: the researched products that log in upstream. */
-const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
+const OAUTH_PRESETS: readonly [
+    ProviderPreset,
+    ...ProviderPreset[],
+] = [
     {
         id: "claude-code",
         title: "Claude Code (Claude account)",
@@ -2702,7 +2710,10 @@ const OAUTH_PRESETS: ReadonlyArray<ProviderPreset> = [
  * unsupported combination fails upstream, and the operator disables the row
  * or adds models manually (README §5.6).
  */
-const ZEN_PRESETS: ReadonlyArray<ProviderPreset> = [
+const ZEN_PRESETS: readonly [
+    ProviderPreset,
+    ...ProviderPreset[],
+] = [
     {
         id: "zen-openai-chat-completions",
         title: "OpenCode Zen — Chat Completions",
@@ -3046,8 +3057,15 @@ const ZEN_PRESETS: ReadonlyArray<ProviderPreset> = [
     },
 ];
 
-/** Every catalog entry, research presets included. */
-export const PROVIDER_PRESETS: ReadonlyArray<ProviderPreset> = [
+/**
+ * Every catalog entry, research presets included. The tuple is never empty —
+ * the picker's default selection and the fallback preset read the first
+ * entry without a check.
+ */
+export const PROVIDER_PRESETS: readonly [
+    ProviderPreset,
+    ...ProviderPreset[],
+] = [
     ...STATIC_KEY_PRESETS,
     ...OAUTH_PRESETS,
     ...ZEN_PRESETS,

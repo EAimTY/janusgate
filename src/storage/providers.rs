@@ -440,7 +440,12 @@ pub(crate) async fn persist_reprovision_for_lease(
     Ok(changes == 1)
 }
 
-/// Clears the token refresh lease after a finished or failed refresh.
+/// Clears the token refresh lease after a finished or failed refresh — but only while the
+/// stored stamp is still the caller's own `lease_started_at`, conditioning the clear on lease
+/// ownership exactly like [`persist_renewed_credentials_for_lease`] conditions its persist. A
+/// caller that lost the lease meanwhile — a concurrent reauthorization replaced the
+/// credentials, or a stale-lease reacquisition re-stamped it — must not erase the winner's
+/// live lease. Returns whether the caller still owned the lease.
 ///
 /// # Errors
 ///
@@ -448,16 +453,18 @@ pub(crate) async fn persist_reprovision_for_lease(
 pub(crate) async fn clear_refresh_lease(
     database: &Database,
     provider_id: i64,
-) -> Result<(), Error> {
-    database
+    lease_started_at: i64,
+) -> Result<bool, Error> {
+    let changes = database
         .execute(
             "UPDATE providers SET credentials = json_set(\
-             credentials, '$.refresh_started_at', json('null')) WHERE id = ?1",
-            params![provider_id],
+             credentials, '$.refresh_started_at', json('null')) WHERE id = ?1 \
+             AND json_extract(credentials, '$.refresh_started_at') = ?2",
+            params![provider_id, lease_started_at],
         )
         .await?;
 
-    Ok(())
+    Ok(changes == 1)
 }
 
 /// Inserts one provider row inside the caller's transaction — the device poller's atomic

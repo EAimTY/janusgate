@@ -18,10 +18,8 @@
 //! [`gateway::Error`]: crate::gateway::Error
 
 use crate::{
-    gateway::Error as GatewayError,
-    ir::InvalidRequest,
-    provider::oauth::Error as OAuthError,
-    storage::{Error as StorageError, api_logs::ApiLogOutcome},
+    accounting::ApiLogOutcome, gateway::Error as GatewayError, ir::InvalidRequest,
+    provider::oauth::Error as OAuthError, storage::Error as StorageError,
 };
 use axum::http::StatusCode;
 use log::{debug, error};
@@ -227,7 +225,9 @@ impl From<OAuthError> for Error {
                 },
             },
 
-            OAuthError::Unavailable { detail } => Self::UpstreamUnavailable { message: detail },
+            OAuthError::Unavailable { detail } | OAuthError::Timeout { detail } => {
+                Self::UpstreamUnavailable { message: detail }
+            }
         }
     }
 }

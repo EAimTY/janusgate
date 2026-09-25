@@ -11,14 +11,12 @@ use super::{Error, ProviderResponse, route};
 use crate::{
     context::Context,
     provider::{
-        CredentialKind, Provider, StoredCredentials,
+        CredentialKind, Provider,
         definition::{
             credential::{CredentialAcquisition, Grant, OAuthRecipe, Pkce},
             eval::ValueEnv,
         },
         oauth,
-        oauth::Error as OAuthError,
-        provisioning::{self, WorkingState},
     },
     storage,
     storage::oauth_flows::{
@@ -66,7 +64,7 @@ route! {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct StartProviderOauthRequest {
-    /// The exact definition version the flow authorizes.
+    /// The definition name the flow authorizes against.
     pub provider_definition_name: String,
 
     /// The exact definition version the flow authorizes.
@@ -94,8 +92,8 @@ pub struct ReauthorizeProviderRequest {
     /// Provider whose credentials the flow replaces.
     pub provider_id: i64,
 
-    /// The exact target definition version; absent reauthorizes against the provider's current
-    /// pair. The target must be an OAuth definition.
+    /// The definition name to reauthorize against; absent keeps the stored name. The target must
+    /// be an OAuth definition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub provider_definition_name: Option<String>,
@@ -292,6 +290,23 @@ async fn oauth_definition(
     Ok(definition)
 }
 
+/// Scales one upstream-reported duration to the absolute instant `seconds` from the current
+/// database clock through the shared engine helper [`oauth::seconds_from_now`], wrapping its
+/// upstream-unavailable failure into this surface's error domain: the value arrives from the
+/// device-authorization response, the same failure class `resolve_expiry` raises on the token
+/// path's expiry.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the scaled instant overflows the database clock.
+fn seconds_from_now(seconds: i64, what: &str) -> Result<i64, Error> {
+    let overflow = || oauth::Error::Unavailable {
+        detail: format!("malformed device authorization response: `{what}` overflow"),
+    };
+
+    oauth::seconds_from_now(seconds, overflow).map_err(Error::from)
+}
+
 /// Initializes the working slots of a new flow: the definition's initial slots run once, over
 /// the target provider's stored slots for a reauthorization, so only the missing names are
 /// initialized.
@@ -351,6 +366,18 @@ async fn handle_start(
     )
     .await?;
 
+    // The pre-insert check renders a clean 409 before any upstream round-trip; the database's
+    // UNIQUE constraint stays the concurrent backstop, whose loss the device poller classifies
+    // as the flow's terminal `name_conflict` outcome (README §7.2).
+    if storage::providers::find_provider(database, &request.name)
+        .await?
+        .is_some()
+    {
+        return Err(Error::ProviderNameTaken {
+            name: request.name.clone(),
+        });
+    }
+
     let slots = initialize_slots(&definition, &BTreeMap::new())?;
 
     begin_flow(
@@ -390,7 +417,28 @@ async fn handle_reauthorize_start(
     ) {
         (Some(name), Some(version)) => oauth_definition(database, name, version).await?,
 
-        (None, None) => provider.definition.clone(),
+        (None, None) => {
+            // The default target is the provider's own definition pair, and the request
+            // validity condition is the explicit target's: the target must carry OAuth
+            // credentials (README §7.1). A static-key provider reauthorized without an explicit
+            // target is the same client fault, so it renders the same rejection instead of
+            // failing deep in slot initialization as a gateway failure.
+            let definition = provider.definition.clone();
+
+            if definition.credential_kind() != CredentialKind::OAuth {
+                return Err(Error::CredentialKindMismatch {
+                    message: format!(
+                        "Provider definition `{}` version {} carries `{}` credentials and \
+                         authorizes no flow",
+                        definition.name,
+                        definition.version.get(),
+                        definition.credential_kind().as_str(),
+                    ),
+                });
+            }
+
+            definition
+        }
 
         _ => {
             return Err(Error::InvalidDefinition(
@@ -420,6 +468,12 @@ async fn handle_reauthorize_start(
 
 /// Begins one flow against its definition: mints the state token and optional PKCE verifier,
 /// builds the authorize URL or executes the device authorization, and persists the flow row.
+///
+/// # Panics
+///
+/// Panics on stored device-flow drift: the authorization response omits `expires_in_seconds`
+/// and the definition carries no `expires_in_fallback_seconds` — unreachable for definitions
+/// that pass write-time validation.
 #[allow(clippy::too_many_arguments)]
 async fn begin_flow(
     database: &crate::database::Database,
@@ -454,21 +508,12 @@ async fn begin_flow(
                 Pkce::None => None,
             };
 
-            let env = ValueEnv {
-                base_url: base_url.as_deref(),
-                secret: None,
-                slots: &slots,
-                client_id: Some(client_id.as_str()),
-                client_secret: client_secret.as_deref(),
-                authorization_code: None,
-                code_verifier: code_verifier.as_deref(),
-                redirect_uri: None,
-                oauth_state: Some(&state_token),
-                device_code: None,
-                refresh_token: None,
-                request_uuid: None,
-                model: None,
-            };
+            let env = ValueEnv::for_authorize_url(
+                &slots,
+                client_id.as_str(),
+                client_secret.as_deref(),
+                &state_token,
+            );
 
             let authorize_url =
                 oauth::build_authorize_url(grant, &env, &state_token, code_verifier.as_deref())?;
@@ -507,41 +552,37 @@ async fn begin_flow(
             authorization: _,
             expires_in_fallback_seconds,
         } => {
-            let env = ValueEnv {
-                base_url: base_url.as_deref(),
-                secret: None,
-                slots: &slots,
-                client_id: Some(client_id.as_str()),
-                client_secret: client_secret.as_deref(),
-                authorization_code: None,
-                code_verifier: None,
-                redirect_uri: None,
-                oauth_state: None,
-                device_code: None,
-                refresh_token: None,
-                request_uuid: None,
-                model: None,
-            };
+            let env = ValueEnv::for_device_authorization(
+                &slots,
+                base_url.as_deref(),
+                client_id.as_str(),
+                client_secret.as_deref(),
+            );
 
             let device = oauth::execute_device_authorization(control_plane, grant, &env).await?;
 
-            let now = unix_time::unix_now_micros();
-
             // The expiry comes from the response's lifetime, else the definition's explicit
-            // fallback — the write-time validation guarantees one of the two exists.
+            // fallback. The write-time validation makes a definition carrying neither
+            // unrepresentable: a stored-drift definition must fail fast instead of silently
+            // inventing a lifetime.
+            #[expect(
+                clippy::expect_used,
+                reason = "write-time validation requires a reported expiry or the configured \
+                          fallback; a definition with neither is stored drift"
+            )]
             let expires_in = device
                 .expires_in_seconds
                 .or_else(|| {
                     expires_in_fallback_seconds
                         .map(|fallback| i64::try_from(fallback.get()).unwrap_or(i64::MAX))
                 })
-                .unwrap_or(600);
+                .expect("device-flow expiry is guaranteed by the write-time validation");
 
             let interval = device
                 .interval_seconds
                 .unwrap_or(oauth::DEFAULT_DEVICE_INTERVAL_SECONDS);
 
-            let expires_at = now + expires_in * unix_time::MICROS_PER_SEC;
+            let expires_at = seconds_from_now(expires_in, "expires_in")?;
 
             let response = StartProviderOauthResponse::Device {
                 state: state_token.clone(),
@@ -568,7 +609,7 @@ async fn begin_flow(
                 device_verification_uri: device.verification_uri,
                 device_verification_uri_complete: device.verification_uri_complete,
                 device_poll_interval_seconds: Some(interval),
-                device_next_poll_at: Some(now + interval * unix_time::MICROS_PER_SEC),
+                device_next_poll_at: Some(seconds_from_now(interval, "interval")?),
                 expires_at,
             };
 
@@ -672,220 +713,98 @@ async fn complete_authorization_code(
         message: "the consumed flow's definition vanished".to_string(),
     })?;
 
-    let outcome = exchange_and_provision(database, control_plane, &definition, &flow, code).await?;
-
-    let provider = commit_authorization_code(database, &definition, &flow, outcome).await?;
+    let provider =
+        complete_consumed_flow(database, control_plane, &definition, &flow, code).await?;
 
     Ok(CompleteProviderOauthResponse::Succeeded {
         provider: ProviderResponse::from_provider(&provider),
     })
 }
 
-/// Runs the token exchange and any provisioning for one consumed authorization-code flow,
-/// producing the credentials and working base URL to commit.
-async fn exchange_and_provision(
-    _database: &crate::database::Database,
+/// Completes one consumed authorization-code flow against its definition: the exchange runs and
+/// its product classifies, the shared completion pipeline folds the outcome through provisioning
+/// into the stored credentials, and the provider write commits — creating the provider, or
+/// atomically replacing the target's credentials, definition reference, and base URL.
+///
+/// # Errors
+///
+/// Returns [`Error`] for exchange failures, provisioning failures, a vanished reauthorization
+/// target, and storage failures.
+async fn complete_consumed_flow(
+    database: &crate::database::Database,
     control_plane: &Client,
     definition: &crate::provider::ProviderDefinition,
     flow: &OngoingFlow,
     code: &str,
-) -> Result<(StoredCredentials, Option<String>), Error> {
+) -> Result<Provider, Error> {
     let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
         return Err(Error::Internal {
             message: "the consumed flow's definition carries no OAuth credential".to_string(),
         });
     };
 
-    let OAuthRecipe {
-        client_id,
-        client_secret,
-        exchange,
-        access_token_lifetime_seconds,
-        id_token_claims,
-        ..
-    } = &**recipe;
-
-    let code_verifier = flow.code_verifier.as_deref();
-
-    let redirect_uri = match &definition.payload.credential {
-        CredentialAcquisition::OAuth(recipe) => match &recipe.grant {
-            Grant::AuthorizationCode { redirect_uri, .. } => Some(redirect_uri.as_str()),
-            Grant::Device { .. } => None,
-        },
-        CredentialAcquisition::ApiKey => None,
+    // The flow row's grant was checked before the consume; a definition whose grant disagrees
+    // with the flow it issued is stored drift.
+    let Grant::AuthorizationCode { redirect_uri, .. } = &recipe.grant else {
+        return Err(Error::Internal {
+            message: "the consumed flow's definition carries no authorization-code grant"
+                .to_string(),
+        });
     };
 
-    let env = ValueEnv {
-        base_url: flow.base_url.as_deref(),
-        secret: None,
-        slots: &flow.slots,
-        client_id: Some(client_id.as_str()),
-        client_secret: client_secret.as_deref(),
-        authorization_code: Some(code),
-        code_verifier,
-        redirect_uri,
-        oauth_state: Some(&flow.state_token),
-        device_code: None,
-        refresh_token: None,
-        request_uuid: None,
-        model: None,
-    };
+    let env = ValueEnv::for_exchange(
+        &flow.slots,
+        flow.base_url.as_deref(),
+        recipe.client_id.as_str(),
+        recipe.client_secret.as_deref(),
+        code,
+        flow.code_verifier.as_deref(),
+        redirect_uri.as_str(),
+    );
 
-    let outcome = match oauth::execute_exchange(control_plane, exchange, &env).await? {
-        oauth::ExchangeProduct::Completed(outcome) => outcome,
-        oauth::ExchangeProduct::Pending | oauth::ExchangeProduct::SlowDown => {
-            return Err(Error::Internal {
-                message: "the exchange classified as a poll outcome under an authorization-code \
-                          flow"
-                    .to_string(),
-            });
-        }
-
-        oauth::ExchangeProduct::Terminal(code) => {
-            return Err(OAuthError::Unavailable {
-                detail: format!(
-                    "the token endpoint rejected the authorization code with `{code}`: the code \
-                     is expired, already used, or invalid — start a fresh flow, authorize its \
-                     URL, and complete it promptly"
-                ),
-            }
-            .into());
-        }
-
-        oauth::ExchangeProduct::Other(code) => {
-            return Err(OAuthError::Unavailable {
-                detail: format!("the token endpoint rejected the authorization code: `{code}`"),
-            }
-            .into());
-        }
-    };
-
-    let access_token = outcome
-        .access_token
-        .ok_or_else(|| OAuthError::Unavailable {
-            detail: "token exchange response lacks an access token".to_string(),
-        })?;
-
-    let expires_at = oauth::resolve_expiry(
-        outcome.expires_in_seconds,
-        Some(&access_token),
-        *access_token_lifetime_seconds,
+    let outcome = oauth::completed_outcome(
+        oauth::execute_exchange(control_plane, &recipe.exchange, &env).await?,
     )?;
 
-    let mut slots = flow.slots.clone();
+    let product = oauth::complete_exchange(control_plane, definition, outcome, flow).await?;
 
-    if let Some(id_token) = &outcome.id_token {
-        oauth::apply_id_token_claims(id_token, id_token_claims, &mut slots);
-    }
+    let mut transaction = database
+        .transaction()
+        .await
+        .map_err(|error| Error::Storage(error.into()))?;
 
-    slots.extend(outcome.slots);
+    let Some(provider_id) =
+        oauth::write_completion_provider(&mut transaction, flow, definition, &product).await?
+    else {
+        // Only a reauthorize flow's target can vanish mid-write; a create flow always inserts.
+        let target = flow.target_provider_id.unwrap_or_default();
 
-    let mut state = WorkingState::new(slots, flow.base_url.clone());
-
-    state.access_token = Some(access_token);
-    state.refresh_token = outcome.refresh_token;
-    state.expires_at = expires_at;
-
-    if let Some(steps) = &definition.payload.provisioning {
-        provisioning::run_steps(control_plane, steps, &env, &mut state).await?;
-    }
-
-    // The access token must exist before the provider write; the definition's validation
-    // guarantees the exchange or a provisioning step supplies it.
-    let access_token = state.access_token.ok_or_else(|| Error::Internal {
-        message: "the completed exchange produced no access token".to_string(),
-    })?;
-
-    let expires_at = state.expires_at;
-
-    let credentials = StoredCredentials::OAuth {
-        access_token,
-        refresh_token: state.refresh_token,
-        slots: state.slots,
-        expires_at,
-        refresh_started_at: None,
+        return Err(Error::ProviderVanishedDuringReauthorization { id: target });
     };
 
-    Ok((credentials, state.base_url))
-}
+    transaction
+        .commit()
+        .await
+        .map_err(|error| Error::Storage(error.into()))?;
 
-/// Commits one completed authorization-code flow: creates the provider, or atomically replaces
-/// the target's credentials and definition reference.
-async fn commit_authorization_code(
-    database: &crate::database::Database,
-    definition: &crate::provider::ProviderDefinition,
-    flow: &OngoingFlow,
-    outcome: (StoredCredentials, Option<String>),
-) -> Result<Provider, Error> {
-    let (credentials, base_url) = outcome;
+    let provider = storage::providers::find_provider_by_id(database, provider_id)
+        .await?
+        .ok_or(Error::ProviderVanishedDuringReauthorization { id: provider_id })?;
 
     match flow.purpose {
         FlowPurposeStorage::Create => {
-            let name = flow.provider_name.clone().unwrap_or_default();
-
-            // The pre-insert check happened at start; the database's UNIQUE constraint is the
-            // concurrent backstop.
-            let provider = storage::providers::insert_provider(
-                database,
-                storage::providers::NewProvider {
-                    name: &name,
-                    model_prefix: flow.model_prefix.as_deref().unwrap_or_default(),
-                    base_url: base_url.as_deref(),
-                    credentials: &credentials,
-                    definition,
-                    is_enabled: true,
-                },
-            )
-            .await?;
-
-            info!("created provider `{name}` from an OAuth completion");
-
-            Ok(provider)
+            info!(
+                "created provider `{}` from an OAuth completion",
+                provider.name
+            );
         }
 
         FlowPurposeStorage::Reauthorize => {
-            let target = flow.target_provider_id.unwrap_or_default();
-
-            let mut transaction = database
-                .transaction()
-                .await
-                .map_err(|error| Error::Storage(error.into()))?;
-
-            let is_updated = storage::providers::rebind_credentials_in_transaction(
-                &mut transaction,
-                target,
-                definition,
-                &credentials,
-            )
-            .await?;
-
-            if !is_updated {
-                return Err(Error::ProviderVanishedDuringReauthorization { id: target });
-            }
-
-            if let Some(base_url) = base_url {
-                storage::providers::set_base_url_in_transaction(
-                    &mut transaction,
-                    target,
-                    &base_url,
-                )
-                .await?;
-            }
-
-            transaction
-                .commit()
-                .await
-                .map_err(|error| Error::Storage(error.into()))?;
-
-            let provider = storage::providers::find_provider_by_id(database, target)
-                .await?
-                .ok_or(Error::ProviderVanishedDuringReauthorization { id: target })?;
-
-            info!("refreshed the credentials of provider {target}");
-
-            Ok(provider)
+            info!("refreshed the credentials of provider {provider_id}");
         }
     }
+
+    Ok(provider)
 }
 
 /// Reads a device flow's relational outcome: pending stays unconsumed, a terminal row is
@@ -934,5 +853,180 @@ async fn complete_device(
                 failure_message,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "the fixtures are constructed so each unwrap lands on its documented side"
+    )]
+
+    use super::{
+        Error, ReauthorizeProviderRequest, StartProviderOauthRequest, StartProviderOauthResponse,
+        handle_reauthorize_start, handle_start,
+    };
+    use crate::{format::UpstreamFormat, provider::StoredCredentials, test_support};
+
+    /// A reauthorization without an explicit target is valid only against an OAuth provider
+    /// (README §7.1): against a static-key provider it is the same client fault the explicit
+    /// target produces, not a gateway failure surfaced from slot initialization.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the rejection diverges.
+    #[tokio::test]
+    async fn reauthorizing_a_static_key_provider_defaults_to_the_kind_mismatch() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let static_definition = test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &static_definition,
+            "static-provider",
+            "s-",
+            None,
+            StoredCredentials::ApiKey {
+                api_key: "sk".to_string(),
+            },
+        )
+        .await;
+
+        let error = handle_reauthorize_start(
+            &database,
+            &crate::http_client::control_plane(),
+            ReauthorizeProviderRequest {
+                provider_id: provider.id,
+                provider_definition_name: None,
+                provider_definition_version: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::CredentialKindMismatch { message } = error else {
+            panic!("a static-key default target must render the credential-kind mismatch");
+        };
+
+        assert!(message.contains("static-def"), "{message}");
+    }
+
+    /// A reauthorization without an explicit target against an OAuth provider begins the flow
+    /// from the provider's own definition pair.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the flow does not begin.
+    #[tokio::test]
+    async fn reauthorizing_an_oauth_provider_against_its_own_definition_begins() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let oauth_definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &oauth_definition,
+            "oauth-provider",
+            "o-",
+            None,
+            StoredCredentials::OAuth {
+                access_token: "old".to_string(),
+                refresh_token: None,
+                slots: std::collections::BTreeMap::new(),
+                expires_at: None,
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        let response = handle_reauthorize_start(
+            &database,
+            &crate::http_client::control_plane(),
+            ReauthorizeProviderRequest {
+                provider_id: provider.id,
+                provider_definition_name: None,
+                provider_definition_version: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent response variant is the failure report"
+        )]
+        let StartProviderOauthResponse::AuthorizationCode { state, .. } = response else {
+            panic!("an authorization-code definition begins an authorization-code flow");
+        };
+
+        assert!(!state.is_empty());
+    }
+
+    /// `oauth:start` rejects a provider name another row already holds with the same 409 the
+    /// creation route renders, before any upstream round-trip: the flow that would lose the
+    /// commit-time race never starts (README §7.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the rejection diverges.
+    #[tokio::test]
+    async fn starting_a_flow_with_a_taken_provider_name_is_a_conflict() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let static_definition = test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        test_support::insert_provider(
+            &database,
+            &static_definition,
+            "taken",
+            "t-",
+            None,
+            StoredCredentials::ApiKey {
+                api_key: "sk".to_string(),
+            },
+        )
+        .await;
+
+        let oauth_definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
+
+        let error = handle_start(
+            &database,
+            &crate::http_client::control_plane(),
+            StartProviderOauthRequest {
+                provider_definition_name: oauth_definition.name.clone(),
+                provider_definition_version: oauth_definition.version.get(),
+                name: "taken".to_string(),
+                model_prefix: String::new(),
+                base_url: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::ProviderNameTaken { name } = error else {
+            panic!("a taken provider name must render the name-taken conflict");
+        };
+
+        assert_eq!(name, "taken");
     }
 }

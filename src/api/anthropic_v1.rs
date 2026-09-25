@@ -6,7 +6,7 @@
 //! rendering go through [`crate::format::anthropic_messages`]; errors render through
 //! [`crate::format::error_anthropic`]; the model stays in the body for this surface, so parsing
 //! uses [`crate::format::RouteContext::empty`]; the accounting endpoint is
-//! [`crate::storage::api_logs::ApiLogEndpointType::AnthropicMessages`].
+//! [`crate::accounting::ApiLogEndpointType::AnthropicMessages`].
 //!
 //! The shared outward serving pipeline (completion handling, responses, authentication
 //! middleware, fallbacks) lives in [`crate::api::serving`]; this module contributes the Anthropic
@@ -15,6 +15,7 @@
 //! model-list shape.
 
 use crate::{
+    accounting::ApiLogEndpointType,
     api::{Error, log_error, serving},
     context::Context,
     database::Database,
@@ -132,6 +133,7 @@ async fn messages(
             api_key.0,
             RouteContext::empty(),
             serving::OperationKind::Completion,
+            ApiLogEndpointType::AnthropicMessages,
         )
         .await,
     )

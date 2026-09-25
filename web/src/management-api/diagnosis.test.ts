@@ -57,7 +57,9 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("conflict");
-        expect(diagnosis.fix).not.toBeNull();
+        expect(diagnosis.fix).toBe(
+            "Choose a provider name no other row holds; a changed model prefix can also collide with an existing model ID.",
+        );
     });
 
     it("names the colliding public ID for a model creation conflict", () => {

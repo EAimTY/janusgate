@@ -6,25 +6,21 @@
 //! competing pollers and restarts never double-exchange an upstream grant. Only the current
 //! claimant persists the result or next schedule: every persist conditions on the claim stamp.
 
-use super::{Error, flow};
+use super::{Error, completion, flow};
 use crate::{
     database::Database,
     http_client,
-    provider::{
-        StoredCredentials,
-        definition::{
-            credential::{CredentialAcquisition, Grant, OAuthRecipe},
-            eval::ValueEnv,
-        },
-        provisioning::{self, WorkingState},
+    provider::definition::{
+        credential::{CredentialAcquisition, Grant, OAuthRecipe},
+        eval::ValueEnv,
     },
     storage,
-    storage::oauth_flows::{DevicePollOutcome, OngoingFlow},
+    storage::oauth_flows::{DevicePollOutcome, FlowPurpose, OngoingFlow},
     unix_time,
 };
 use log::{debug, info, warn};
 use reqwest::Client;
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 /// How long a device-flow claim is trusted before another poller steals it: the control-plane
 /// client bounds every exchange attempt at 30 seconds, so a claim older than that belongs to a
@@ -119,8 +115,6 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         client_secret,
         grant,
         exchange,
-        access_token_lifetime_seconds,
-        id_token_claims,
         ..
     } = &**recipe;
 
@@ -134,21 +128,13 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         .await;
     };
 
-    let env = ValueEnv {
-        base_url: flow.base_url.as_deref(),
-        secret: None,
-        slots: &flow.slots,
-        client_id: Some(client_id.as_str()),
-        client_secret: client_secret.as_deref(),
-        authorization_code: None,
-        code_verifier: None,
-        redirect_uri: None,
-        oauth_state: None,
-        device_code: flow.device_code.as_deref(),
-        refresh_token: None,
-        request_uuid: None,
-        model: None,
-    };
+    let env = ValueEnv::for_device_poll(
+        &flow.slots,
+        flow.base_url.as_deref(),
+        client_id.as_str(),
+        client_secret.as_deref(),
+        flow.device_code.as_deref(),
+    );
 
     debug!(
         "device flow {} poll attempt due at {:?} against definition `{}`",
@@ -168,20 +154,22 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         }
     };
 
-    let interval = flow.device_poll_interval_seconds.unwrap_or(5);
+    let interval = flow
+        .device_poll_interval_seconds
+        .unwrap_or(flow::DEFAULT_DEVICE_INTERVAL_SECONDS);
 
     match product {
-        flow::ExchangeProduct::Pending => schedule_retry_at(database, flow, interval, false).await,
+        flow::ExchangeProduct::Pending => schedule_retry_at(database, flow, interval).await,
 
         flow::ExchangeProduct::SlowDown => {
-            // `slow_down` permanently raises this flow's interval (RFC 8628 §3.5).
-            schedule_retry_at(
-                database,
-                flow,
-                interval + flow::SLOW_DOWN_PENALTY_SECONDS,
-                true,
-            )
-            .await
+            // `slow_down` permanently raises this flow's interval (RFC 8628 §3.5); an interval
+            // huge enough to overflow the adjustment is upstream-reported drift, mapped to the
+            // upstream-unavailable failure like every overflowing duration.
+            let raised = interval
+                .checked_add(flow::SLOW_DOWN_PENALTY_SECONDS)
+                .ok_or_else(|| interval_overflow(interval))?;
+
+            schedule_retry_at(database, flow, raised).await
         }
 
         flow::ExchangeProduct::Other(code) => {
@@ -209,17 +197,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         }
 
         flow::ExchangeProduct::Completed(outcome) => {
-            commit_success(
-                database,
-                http,
-                flow,
-                &definition,
-                &env,
-                outcome,
-                *access_token_lifetime_seconds,
-                id_token_claims,
-            )
-            .await
+            commit_success(database, http, flow, &definition, outcome).await
         }
     }
 }
@@ -231,15 +209,20 @@ async fn schedule_retry(
     flow: &OngoingFlow,
     is_timeout: bool,
 ) -> Result<(), Error> {
-    let stored = flow.device_poll_interval_seconds.unwrap_or(5);
+    let stored = flow
+        .device_poll_interval_seconds
+        .unwrap_or(flow::DEFAULT_DEVICE_INTERVAL_SECONDS);
 
     let interval = if is_timeout {
-        (stored * 2).min(BACKOFF_INTERVAL_CAP_SECONDS)
+        stored
+            .checked_mul(2)
+            .map(|doubled| doubled.min(BACKOFF_INTERVAL_CAP_SECONDS))
+            .ok_or_else(|| interval_overflow(stored))?
     } else {
         stored
     };
 
-    schedule_retry_at(database, flow, interval, interval != stored).await
+    schedule_retry_at(database, flow, interval).await
 }
 
 /// Persists one retry schedule while the caller still owns its claim. A lost claim is ordinary
@@ -248,14 +231,12 @@ async fn schedule_retry_at(
     database: &Database,
     flow: &OngoingFlow,
     interval_seconds: i64,
-    _interval_changed: bool,
 ) -> Result<(), Error> {
     let Some(claim) = flow.device_poll_started_at else {
         return Ok(());
     };
 
-    let next_poll_at =
-        unix_time::unix_now_micros() + interval_seconds * crate::unix_time::MICROS_PER_SEC;
+    let next_poll_at = next_poll_instant(interval_seconds)?;
 
     let is_persisted = storage::oauth_flows::persist_device_poll(
         database,
@@ -273,6 +254,22 @@ async fn schedule_retry_at(
     }
 
     Ok(())
+}
+
+/// The failure an upstream-reported poll interval raises when it overflows the schedule
+/// arithmetic, mirroring how `resolve_expiry` guards the token path: the interval originates in
+/// the device-authorization response, so a magnitude this large is a malformed response.
+fn interval_overflow(interval_seconds: i64) -> Error {
+    Error::Unavailable {
+        detail: format!("malformed device flow: `interval` overflow, got {interval_seconds}"),
+    }
+}
+
+/// The next-poll instant for one interval, in UTC microseconds: the interval scaled to the
+/// database clock through the shared engine helper [`flow::seconds_from_now`], with the overflow
+/// of the upstream-reported magnitude raised as [`interval_overflow`].
+fn next_poll_instant(interval_seconds: i64) -> Result<i64, Error> {
+    flow::seconds_from_now(interval_seconds, || interval_overflow(interval_seconds))
 }
 
 /// Persists one terminal failure while the caller still owns its claim; the flow's result stays
@@ -307,73 +304,42 @@ async fn persist_terminal(
     Ok(())
 }
 
-/// Commits a completed device exchange: provisions, then writes the provider and the succeeded
-/// outcome in one transaction. A provisioning failure fails the flow with a gateway-owned
-/// message; a lost claim abandons the provider write, leaving the newer state untouched.
-#[allow(clippy::too_many_arguments)]
+/// Commits a completed device exchange: the shared completion pipeline folds the outcome
+/// through provisioning into the stored credentials, then the provider write and the succeeded
+/// outcome commit in one transaction. A provisioning failure fails the flow with a
+/// gateway-owned message; a lost claim abandons the provider write, leaving the newer state
+/// untouched.
 async fn commit_success(
     database: &Database,
     http: &Client,
     flow: &OngoingFlow,
     definition: &crate::provider::definition::ProviderDefinition,
-    env: &ValueEnv<'_>,
     outcome: flow::ExchangeOutcome,
-    configured_lifetime: Option<std::num::NonZeroU64>,
-    id_token_claims: &[crate::provider::definition::credential::IdTokenClaim],
 ) -> Result<(), Error> {
-    // The working slots absorb the exchange's slots and the identity-token claims.
-    let mut working_slots = flow.slots.clone();
+    // A create flow whose provider name another row already holds can never succeed. Leaving
+    // the insert's unique-constraint failure to the spawn loop's warning would re-claim and
+    // re-fail the flow until the expiry sweep deletes it, with the management client reading
+    // "pending" the whole time; the conflict is terminal instead, with its gateway-owned
+    // failure pair (README §7.2). The constraint stays as the concurrent backstop behind this
+    // pre-check.
+    if flow.purpose == FlowPurpose::Create {
+        let name = flow.provider_name.as_deref().unwrap_or_default();
 
-    if let Some(id_token) = &outcome.id_token {
-        flow::apply_id_token_claims(id_token, id_token_claims, &mut working_slots);
+        if storage::providers::find_provider(database, name)
+            .await?
+            .is_some()
+        {
+            return persist_terminal(
+                database,
+                flow,
+                "name_conflict",
+                "the provider name the flow creates is already taken",
+            )
+            .await;
+        }
     }
 
-    working_slots.extend(outcome.slots);
-
-    let mut state = WorkingState::new(working_slots, flow.base_url.clone());
-
-    state.access_token = outcome.access_token;
-    state.refresh_token = outcome.refresh_token;
-
-    if let Some(steps) = &definition.payload.provisioning {
-        provisioning::run_steps(http, steps, env, &mut state).await?;
-    }
-
-    // The access token must exist before the provider write; the definition's validation
-    // guarantees the exchange or a provisioning step supplies it.
-    let Some(access_token) = state.access_token.clone() else {
-        return persist_terminal(
-            database,
-            flow,
-            "internal_error",
-            "the completed exchange produced no access token",
-        )
-        .await;
-    };
-
-    let expires_at = match state.expires_at {
-        Some(expires_at) => Some(expires_at),
-
-        None => flow::resolve_expiry(
-            outcome.expires_in_seconds,
-            Some(&access_token),
-            configured_lifetime,
-        )?,
-    };
-
-    let mut credentials_slots: BTreeMap<String, String> = state.slots.clone();
-
-    credentials_slots.retain(|_, value| !value.is_empty());
-
-    let credentials = StoredCredentials::OAuth {
-        access_token,
-        refresh_token: state.refresh_token,
-        slots: credentials_slots,
-        expires_at,
-        refresh_started_at: None,
-    };
-
-    let base_url = state.base_url.clone();
+    let product = completion::complete_exchange(http, definition, outcome, flow).await?;
 
     let claim = flow.device_poll_started_at.ok_or_else(|| Error::Internal {
         message: "the claimed flow carries no claim stamp".to_string(),
@@ -381,56 +347,21 @@ async fn commit_success(
 
     let mut transaction = database.transaction().await?;
 
-    let result_provider_id = match flow.purpose {
-        storage::oauth_flows::FlowPurpose::Create => {
-            let name = flow.provider_name.clone().unwrap_or_default();
-            let model_prefix = flow.model_prefix.clone().unwrap_or_default();
+    let result_provider_id =
+        completion::write_completion_provider(&mut transaction, flow, definition, &product).await?;
 
-            // A concurrent creation of the same name is the unique constraint's call; the flow
-            // fails with the conflict instead of racing.
-            storage::providers::insert_provider_in_transaction(
-                &mut transaction,
-                storage::providers::NewProvider {
-                    name: &name,
-                    model_prefix: &model_prefix,
-                    base_url: base_url.as_deref(),
-                    credentials: &credentials,
-                    definition,
-                    is_enabled: true,
-                },
-            )
-            .await?
-        }
+    let Some(result_provider_id) = result_provider_id else {
+        // A concurrent `providers:delete` won: the flow fails with the vanished-target
+        // classification, mirroring the refresh path.
+        transaction.rollback().await?;
 
-        storage::oauth_flows::FlowPurpose::Reauthorize => {
-            let target = flow.target_provider_id.ok_or_else(|| Error::Internal {
-                message: "the reauthorize flow carries no target provider".to_string(),
-            })?;
-
-            let is_updated = storage::providers::rebind_credentials_in_transaction(
-                &mut transaction,
-                target,
-                definition,
-                &credentials,
-            )
-            .await?;
-
-            if !is_updated {
-                // A concurrent `providers:delete` won: the flow fails with the vanished-target
-                // classification, mirroring the refresh path.
-                transaction.rollback().await?;
-
-                return persist_terminal(
-                    database,
-                    flow,
-                    "target_vanished",
-                    "the provider the flow reauthorizes was deleted",
-                )
-                .await;
-            }
-
-            target
-        }
+        return persist_terminal(
+            database,
+            flow,
+            "target_vanished",
+            "the provider the flow reauthorizes was deleted",
+        )
+        .await;
     };
 
     let is_committed = storage::oauth_flows::commit_device_success_in_transaction(
@@ -460,11 +391,127 @@ async fn commit_success(
     Ok(())
 }
 
-/// Whether this engine failure is a transport timeout: the control executor surfaces a connect
-/// or total timeout as an unavailable failure whose message names the transport timeout.
+/// Whether this engine failure is a transport timeout: the control executor carries the
+/// `reqwest::Error::is_timeout` fact through as the typed [`Error::Timeout`] variant, so the
+/// backoff decision matches the fact instead of parsing the rendered message.
 fn is_timeout(error: &Error) -> bool {
-    match error {
-        Error::Unavailable { detail } => detail.contains("timed out") || detail.contains("timeout"),
-        _ => false,
+    matches!(error, Error::Timeout { .. })
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "the fixtures are constructed so each unwrap lands on its documented side"
+    )]
+
+    use super::{commit_success, flow};
+    use crate::{
+        http_client,
+        provider::StoredCredentials,
+        storage,
+        storage::oauth_flows::{
+            FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
+            find_flow_by_state, insert_flow,
+        },
+        test_support,
+    };
+    use std::collections::BTreeMap;
+
+    /// A create flow whose provider name another row already holds terminates as failed with
+    /// the gateway-owned `name_conflict` pair instead of being re-claimed and re-failing until
+    /// the expiry sweep deletes it (README §7.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the flow outcome diverges.
+    #[tokio::test]
+    async fn a_create_flow_whose_name_is_taken_fails_terminally() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let static_definition = test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            crate::format::UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        test_support::insert_provider(
+            &database,
+            &static_definition,
+            "taken",
+            "t-",
+            None,
+            StoredCredentials::ApiKey {
+                api_key: "sk".to_string(),
+            },
+        )
+        .await;
+
+        let definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("taken".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(now - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        commit_success(
+            &database,
+            &http_client::control_plane(),
+            &claimed,
+            &definition,
+            flow::ExchangeOutcome {
+                access_token: Some("exchange-token".to_string()),
+                ..flow::ExchangeOutcome::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
+        assert_eq!(settled.failure_code.as_deref(), Some("name_conflict"));
+
+        // The conflicting row is untouched: the pre-check fired before any provider write.
+        assert!(
+            storage::providers::find_provider(&database, "taken")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

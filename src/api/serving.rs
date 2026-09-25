@@ -17,6 +17,7 @@
 //! [`run_completion`] itself is [`ClientFormat`]-generic and needs no surface identity.
 
 use crate::{
+    accounting::{ApiLogEndpointType, ApiLogOutcome},
     api::{Error, log_error},
     context::Context,
     database::Database,
@@ -26,7 +27,7 @@ use crate::{
     security,
     storage::{
         api_keys,
-        api_logs::{self, ApiLogDraft, ApiLogOutcome},
+        api_logs::{self, ApiLogDraft},
     },
 };
 use axum::{
@@ -279,7 +280,10 @@ impl OperationKind {
 /// GenerateContent surface, the streaming override on Interactions. `operation` names the request
 /// kind in every log line the pipeline records ([`OperationKind`]), composed through
 /// [`OperationKind::as_str`] into `{operation} request`, `{operation} for model …`, and
-/// `{operation} for model … via provider …`.
+/// `{operation} for model … via provider …`. `endpoint_type` names the outward completion
+/// endpoint the request arrived on, recorded in the request's accounting row (README §3
+/// *ApiLog*) — each call site names its own surface's endpoint, the way `operation` names the
+/// request kind.
 ///
 /// Every failure that reaches this boundary is logged exactly once here, with the request context
 /// available at each stage: a parse rejection names only the endpoint, a routing rejection names
@@ -301,6 +305,7 @@ pub(super) async fn run_completion<TFormat>(
     api_key_id: i64,
     route: RouteContext,
     operation: OperationKind,
+    endpoint_type: ApiLogEndpointType,
 ) -> Result<Response, Error>
 where
     TFormat: ClientFormat,
@@ -346,15 +351,15 @@ where
 
     let should_include_usage = parsed.should_include_usage;
 
-    // The accounting draft: every fact known before dispatch, built from the authenticated key
-    // and the routing row; `gateway::execute` stamps the dispatch instant into it (README §3
-    // *ApiLog*).
+    // The accounting draft: every fact known before dispatch, built from the authenticated key,
+    // the routing row, and the surface's endpoint type; `gateway::execute` stamps the dispatch
+    // instant into it (README §3 *ApiLog*).
     let mut log = ApiLogDraft {
         started_at: None,
         api_key_id,
         provider_id: routing.provider.id,
         model_id: routing.model.id,
-        endpoint_type: TFormat::ENDPOINT_TYPE,
+        endpoint_type,
         is_stream: is_streaming,
     };
 

@@ -7,7 +7,6 @@ use self::client_render::{ResponseObject, SseRenderer};
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
     ir::{InvalidRequest, IrAggregation},
-    storage::api_logs::ApiLogEndpointType,
 };
 
 mod client_render;
@@ -23,8 +22,6 @@ pub(crate) struct Format;
 
 impl ClientFormat for Format {
     type JsonResponse = ResponseObject;
-
-    const ENDPOINT_TYPE: ApiLogEndpointType = ApiLogEndpointType::OpenaiResponses;
 
     fn parse_request(body: &[u8], _route: &RouteContext) -> Result<ParsedRequest, InvalidRequest> {
         request_parse::parse_request(body)

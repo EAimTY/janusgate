@@ -1,0 +1,195 @@
+//! The request-accounting vocabulary: the closed sets the accounting layer records and the
+//! management surface publishes (README §3 *ApiLog*, §7.1).
+//!
+//! One home for [`ApiLogEndpointType`], [`ApiLogOutcome`], and [`UsageGroupBy`]: every layer
+//! that names a recorded fact — the outward surfaces stamping the accounting draft, the shard
+//! store writing the rows, the management reads filtering and grouping them, and the wire
+//! payloads echoing them — speaks these types directly, so no layer imports another's internals
+//! to name a vocabulary word.
+//!
+//! The serde and TypeScript names of the stored sets are the storage names — the `CHECK`
+//! vocabulary of the `api_logs` columns and the `as_str` renderings are one vocabulary (README
+//! §3 *ApiLog*); [`UsageGroupBy`]'s names are the management wire names (README §7.1).
+
+use serde::{Deserialize, Serialize};
+
+/// The outward completion endpoint a request arrived on, as recorded in `api_logs.endpoint_type`.
+///
+/// The serde and TypeScript names are the storage names — the `CHECK` vocabulary of the column
+/// and [`ApiLogEndpointType::as_str`] are one vocabulary (README §3 *ApiLog*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub enum ApiLogEndpointType {
+    /// `POST /api/openai-v1/chat/completions`.
+    #[serde(rename = "openai_chat_completions")]
+    OpenaiChatCompletions,
+
+    /// `POST /api/openai-v1/responses`.
+    #[serde(rename = "openai_responses")]
+    OpenaiResponses,
+
+    /// Gemini GenerateContent inbound surface (`POST /api/gemini-v1beta/models/...`).
+    #[serde(rename = "gemini_generate_content")]
+    GeminiGenerateContent,
+
+    /// Gemini Interactions inbound surface (`POST /api/gemini-v1beta/interactions`).
+    #[serde(rename = "gemini_interactions")]
+    GeminiInteractions,
+
+    /// Anthropic Messages inbound surface (`POST /api/anthropic-v1/messages`).
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages,
+}
+
+impl ApiLogEndpointType {
+    /// Renders the storage spelling of the endpoint type — the exact string the schema `CHECK`
+    /// accepts.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenaiChatCompletions => "openai_chat_completions",
+            Self::OpenaiResponses => "openai_responses",
+            Self::GeminiGenerateContent => "gemini_generate_content",
+            Self::GeminiInteractions => "gemini_interactions",
+            Self::AnthropicMessages => "anthropic_messages",
+        }
+    }
+
+    /// Parses the stored spelling back into the closed set; anything outside it is storage drift,
+    /// because the column is written only through [`ApiLogEndpointType::as_str`] and its schema
+    /// `CHECK` pins the vocabulary.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "openai_chat_completions" => Some(Self::OpenaiChatCompletions),
+            "openai_responses" => Some(Self::OpenaiResponses),
+            "gemini_generate_content" => Some(Self::GeminiGenerateContent),
+            "gemini_interactions" => Some(Self::GeminiInteractions),
+            "anthropic_messages" => Some(Self::AnthropicMessages),
+            _ => None,
+        }
+    }
+}
+
+/// The recorded outcome of one dispatched request, as stored in `api_logs.outcome`.
+///
+/// The serde and TypeScript names are the storage names — the `CHECK` vocabulary of the column
+/// and [`ApiLogOutcome::as_str`] are one vocabulary (README §3 *ApiLog*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub enum ApiLogOutcome {
+    /// The response completed normally: `completed` + `200`.
+    #[serde(rename = "completed")]
+    Completed,
+
+    /// The client disconnected: before the first enqueued frame `http_status` stays `NULL`,
+    /// afterwards the already-declared `200` stands.
+    #[serde(rename = "client_aborted")]
+    ClientAborted,
+
+    /// The upstream failed — a mirrored non-2xx status, a transport failure mapped to 502, or a
+    /// mid-stream failure under an already-declared `200`.
+    #[serde(rename = "upstream_error")]
+    UpstreamError,
+
+    /// A gateway-side failure under an already-declared `200`.
+    #[serde(rename = "internal")]
+    Internal,
+}
+
+impl ApiLogOutcome {
+    /// Renders the storage spelling of the outcome — the exact string the schema `CHECK` accepts.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::ClientAborted => "client_aborted",
+            Self::UpstreamError => "upstream_error",
+            Self::Internal => "internal",
+        }
+    }
+
+    /// Parses the stored spelling back into the closed set; see
+    /// [`ApiLogEndpointType::parse`] for the drift classification.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "completed" => Some(Self::Completed),
+            "client_aborted" => Some(Self::ClientAborted),
+            "upstream_error" => Some(Self::UpstreamError),
+            "internal" => Some(Self::Internal),
+            _ => None,
+        }
+    }
+}
+
+/// The bucketing dimension of the usage aggregation (README §7.1 `usage:query`): a closed,
+/// unordered set — the element type is the validation, so any other value is rejected while the
+/// request payload parses. The serde and TypeScript names are the wire names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub enum UsageGroupBy {
+    /// UTC day of `started_at`, rendered `YYYY-MM-DD`.
+    #[serde(rename = "day")]
+    Day,
+
+    /// Routed model row id.
+    #[serde(rename = "model")]
+    Model,
+
+    /// Owning provider row id.
+    #[serde(rename = "provider")]
+    Provider,
+
+    /// Authenticating API key row id.
+    #[serde(rename = "api_key")]
+    ApiKey,
+
+    /// Outward completion endpoint the request arrived on.
+    #[serde(rename = "endpoint_type")]
+    EndpointType,
+
+    /// Recorded outcome of the request.
+    #[serde(rename = "outcome")]
+    Outcome,
+
+    /// Whether the client requested a streamed response.
+    #[serde(rename = "is_stream")]
+    IsStream,
+
+    /// HTTP status delivered to the client; the `NULL` rows form their own bucket.
+    #[serde(rename = "http_status")]
+    HttpStatus,
+}
+
+impl UsageGroupBy {
+    /// Renders the wire spelling of the dimension — the exact string the request vocabulary
+    /// carries.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Model => "model",
+            Self::Provider => "provider",
+            Self::ApiKey => "api_key",
+            Self::EndpointType => "endpoint_type",
+            Self::Outcome => "outcome",
+            Self::IsStream => "is_stream",
+            Self::HttpStatus => "http_status",
+        }
+    }
+
+    /// The SQL key expression the dimension groups, selects, and orders by (README §7.1): the
+    /// stored column itself, except the day dimension, whose expression derives the UTC day of
+    /// the dispatch stamp.
+    pub(crate) const fn expression(self) -> &'static str {
+        match self {
+            Self::Day => "date(started_at / 1000000, 'unixepoch')",
+            Self::Model => "model_id",
+            Self::Provider => "provider_id",
+            Self::ApiKey => "api_key_id",
+            Self::EndpointType => "endpoint_type",
+            Self::Outcome => "outcome",
+            Self::IsStream => "is_stream",
+            Self::HttpStatus => "http_status",
+        }
+    }
+}

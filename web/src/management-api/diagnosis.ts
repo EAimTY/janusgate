@@ -96,7 +96,7 @@ function conflictFix(action: ActionName | undefined): string {
         case "create-provider":
         case "update-provider":
         case "complete-oauth":
-            return "Choose provider naming no other row holds; a changed model prefix can also collide with an existing model ID.";
+            return "Choose a provider name no other row holds; a changed model prefix can also collide with an existing model ID.";
 
         default:
             return "Choose an identifier no other row holds.";

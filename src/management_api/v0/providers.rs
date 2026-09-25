@@ -69,7 +69,7 @@ pub struct ListProvidersResponse {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 pub struct CreateProviderRequest {
-    /// The exact definition version the provider binds to.
+    /// The definition name the provider binds to.
     pub provider_definition_name: String,
 
     /// The exact definition version the provider binds to.
@@ -118,7 +118,7 @@ pub struct UpdateProviderRequest {
     /// they do not.
     pub base_url: Option<String>,
 
-    /// The definition version to rebind to; absent keeps the stored reference.
+    /// The definition name to rebind to; absent keeps the stored reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub provider_definition_name: Option<String>,

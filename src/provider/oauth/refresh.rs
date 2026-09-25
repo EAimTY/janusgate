@@ -275,9 +275,12 @@ async fn renew_and_store(
             // The renewal failure is decisive; a failed lease clear — typically the same
             // database outage that failed the renew — must not replace it. The clear failure
             // itself is tolerated and bounded by the lease staleness window, so the warning is
-            // the only record it ever gets.
+            // the only record it ever gets. The clear conditions on the caller's own acquired
+            // stamp, so a caller that lost the lease meanwhile never erases the winner's live
+            // stamp; that not-owned case is ordinary contention and ignored here.
             if let Err(clear_error) =
-                storage::providers::clear_refresh_lease(database, provider.id).await
+                storage::providers::clear_refresh_lease(database, provider.id, lease_started_at)
+                    .await
             {
                 warn!(
                     "failed to clear the refresh lease of provider `{}`: {clear_error}",
@@ -421,28 +424,20 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
         ..
     } = &**recipe;
 
-    let env = ValueEnv {
-        base_url: provider.base_url.as_deref(),
-        secret: Some(provider.credentials.secret()),
-        slots,
-        client_id: Some(client_id.as_str()),
-        client_secret: client_secret.as_deref(),
-        authorization_code: None,
-        code_verifier: None,
-        redirect_uri: None,
-        oauth_state: None,
-        device_code: None,
-        refresh_token: refresh_token.as_deref(),
-        request_uuid: None,
-        model: None,
-    };
-
     match refresh {
         TokenRefresh::Grant {
             request,
             response,
             terminal_codes,
         } => {
+            let env = ValueEnv::for_refresh_grant(
+                slots,
+                provider.base_url.as_deref(),
+                client_id.as_str(),
+                client_secret.as_deref(),
+                refresh_token.as_deref(),
+            );
+
             let outcome = flow::execute_refresh_grant(
                 http,
                 request,
@@ -492,9 +487,18 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
                 });
             };
 
+            // The stage constants thread the credential's current secret — the old access
+            // token, until the reprovisioned one commits — and the client credentials down to
+            // the per-request environment rebuilds.
+            let constants = provisioning::ProvisioningEnv {
+                secret: Some(provider.credentials.secret()),
+                client_id: client_id.as_str(),
+                client_secret: client_secret.as_deref(),
+            };
+
             let mut state = WorkingState::new(slots.clone(), provider.base_url.clone());
 
-            provisioning::run_steps(http, steps, &env, &mut state).await?;
+            provisioning::run_steps(http, steps, &constants, &mut state).await?;
 
             let Some(access_token) = state.access_token else {
                 return Err(Error::Internal {

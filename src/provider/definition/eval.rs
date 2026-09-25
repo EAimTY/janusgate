@@ -9,6 +9,7 @@
 
 use super::template::{StringExpr, TemplateNode, ValueExpr};
 use serde_json::Value as Json;
+use std::collections::BTreeMap;
 
 /// One value the interpreter could not supply: the expression referenced a value its stage did
 /// not carry. Write-time validation rejects every such reference, so this is stored drift and
@@ -65,6 +66,200 @@ pub(crate) struct ValueEnv<'a> {
 
     /// The routed model's upstream identifier.
     pub(crate) model: Option<&'a str>,
+}
+
+impl<'a> ValueEnv<'a> {
+    /// Builds the stage environment of one inference dispatch (README §5.2): the stored base
+    /// URL, the credential secret, the stored slots, the dispatch's request UUID, and the routed
+    /// model are exactly the values the stage's expressions may reference.
+    #[must_use]
+    pub(crate) fn for_inference(
+        slots: &'a BTreeMap<String, String>,
+        base_url: Option<&'a str>,
+        secret: &'a str,
+        request_uuid: &'a str,
+        model: &'a str,
+    ) -> Self {
+        Self {
+            slots,
+            base_url,
+            secret: Some(secret),
+            request_uuid: Some(request_uuid),
+            model: Some(model),
+            ..Self::stage_absent()
+        }
+    }
+
+    /// Builds the stage environment of an authorize-URL build (README §5.3): the configured
+    /// client credentials and the flow's state token are exactly the values the stage's
+    /// expressions may reference — the write-time validation bars the base URL and slots there.
+    /// The flow's slots still ride along because the environment always carries a slot map.
+    #[must_use]
+    pub(crate) fn for_authorize_url(
+        slots: &'a BTreeMap<String, String>,
+        client_id: &'a str,
+        client_secret: Option<&'a str>,
+        oauth_state: &'a str,
+    ) -> Self {
+        Self {
+            slots,
+            client_id: Some(client_id),
+            client_secret,
+            oauth_state: Some(oauth_state),
+            ..Self::stage_absent()
+        }
+    }
+
+    /// Builds the stage environment of a device authorization request (README §5.3): the working
+    /// base URL, the flow's slots, and the configured client credentials are exactly the values
+    /// the stage's expressions may reference.
+    #[must_use]
+    pub(crate) fn for_device_authorization(
+        slots: &'a BTreeMap<String, String>,
+        base_url: Option<&'a str>,
+        client_id: &'a str,
+        client_secret: Option<&'a str>,
+    ) -> Self {
+        Self {
+            slots,
+            base_url,
+            client_id: Some(client_id),
+            client_secret,
+            ..Self::stage_absent()
+        }
+    }
+
+    /// Builds the stage environment of a token exchange (README §5.3): the working base URL, the
+    /// flow's slots, the configured client credentials, and the grant's authorization code, PKCE
+    /// verifier, and redirect URI are exactly the values the stage's expressions may reference.
+    #[must_use]
+    pub(crate) fn for_exchange(
+        slots: &'a BTreeMap<String, String>,
+        base_url: Option<&'a str>,
+        client_id: &'a str,
+        client_secret: Option<&'a str>,
+        authorization_code: &'a str,
+        code_verifier: Option<&'a str>,
+        redirect_uri: &'a str,
+    ) -> Self {
+        Self {
+            slots,
+            base_url,
+            client_id: Some(client_id),
+            client_secret,
+            authorization_code: Some(authorization_code),
+            code_verifier,
+            redirect_uri: Some(redirect_uri),
+            ..Self::stage_absent()
+        }
+    }
+
+    /// Builds the stage environment of one device-flow poll attempt (README §5.3): the working
+    /// base URL, the flow's slots, the configured client credentials, and the flow's device code
+    /// are exactly the values the stage's expressions may reference. The same environment serves
+    /// the completion's provisioning sequence, whose expressions may additionally reference the
+    /// stage values a provisioning stage carries.
+    #[must_use]
+    pub(crate) fn for_device_poll(
+        slots: &'a BTreeMap<String, String>,
+        base_url: Option<&'a str>,
+        client_id: &'a str,
+        client_secret: Option<&'a str>,
+        device_code: Option<&'a str>,
+    ) -> Self {
+        Self {
+            slots,
+            base_url,
+            client_id: Some(client_id),
+            client_secret,
+            device_code,
+            ..Self::stage_absent()
+        }
+    }
+
+    /// Builds the stage environment of a refresh grant (README §5.3): the working base URL, the
+    /// stored slots, the configured client credentials, and the stored refresh token are exactly
+    /// the values the stage's expressions may reference.
+    #[must_use]
+    pub(crate) fn for_refresh_grant(
+        slots: &'a BTreeMap<String, String>,
+        base_url: Option<&'a str>,
+        client_id: &'a str,
+        client_secret: Option<&'a str>,
+        refresh_token: Option<&'a str>,
+    ) -> Self {
+        Self {
+            slots,
+            base_url,
+            client_id: Some(client_id),
+            client_secret,
+            refresh_token,
+            ..Self::stage_absent()
+        }
+    }
+
+    /// Builds the stage environment of a provisioning step or poll (README §5.4): the working or
+    /// stored base URL, the working or stored slots, the credential secret when the caller has
+    /// one, and the configured client credentials are exactly the values the stage's expressions
+    /// may reference. The engine rebuilds the environment from the accumulated working state
+    /// before every request, so this constructor receives the stage constants alone.
+    #[must_use]
+    pub(crate) fn for_provisioning(
+        slots: &'a BTreeMap<String, String>,
+        base_url: Option<&'a str>,
+        secret: Option<&'a str>,
+        client_id: &'a str,
+        client_secret: Option<&'a str>,
+    ) -> Self {
+        Self {
+            slots,
+            base_url,
+            secret,
+            client_id: Some(client_id),
+            client_secret,
+            ..Self::stage_absent()
+        }
+    }
+
+    /// Builds the stage environment of one upstream model discovery (README §5.5): the stored
+    /// base URL, the credential secret, and the stored slots are exactly the values the stage's
+    /// expressions may reference.
+    #[must_use]
+    pub(crate) fn for_discovery(
+        slots: &'a BTreeMap<String, String>,
+        base_url: Option<&'a str>,
+        secret: &'a str,
+    ) -> Self {
+        Self {
+            slots,
+            base_url,
+            secret: Some(secret),
+            ..Self::stage_absent()
+        }
+    }
+
+    /// The stage-carried values every constructor leaves absent, shared by the per-stage
+    /// constructors so each lists only the values its stage carries.
+    fn stage_absent() -> Self {
+        static EMPTY_SLOTS: std::sync::OnceLock<BTreeMap<String, String>> =
+            std::sync::OnceLock::new();
+
+        Self {
+            base_url: None,
+            secret: None,
+            slots: EMPTY_SLOTS.get_or_init(BTreeMap::new),
+            client_id: None,
+            client_secret: None,
+            authorization_code: None,
+            code_verifier: None,
+            redirect_uri: None,
+            oauth_state: None,
+            device_code: None,
+            refresh_token: None,
+            request_uuid: None,
+            model: None,
+        }
+    }
 }
 
 impl ValueEnv<'_> {

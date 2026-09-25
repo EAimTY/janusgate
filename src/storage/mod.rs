@@ -1850,6 +1850,102 @@ mod tests {
         Ok(())
     }
 
+    /// A failed refresh's lease clear is conditioned on the caller's own acquired stamp: a
+    /// stale loser clearing under an older stamp never erases a newer holder's live lease,
+    /// while the holder's own clear lands.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn clear_refresh_lease_clears_only_the_acquired_stamp() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = create_test_database().await;
+
+        let definition = oauth_definition();
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: definition.name.as_str(),
+                base_version: None,
+                payload: &definition.payload,
+                created_at: definition.created_at,
+            },
+        )
+        .await?;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "leased",
+            "l-",
+            Some("http://localhost:8080"),
+            StoredCredentials::OAuth {
+                access_token: "old".to_string(),
+                refresh_token: Some("refresh".to_string()),
+                slots: BTreeMap::new(),
+                expires_at: Some(1),
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        // The winner acquires the lease at stamp 1_000.
+        let mut transaction = database.transaction().await?;
+
+        let lease = super::providers::try_acquire_refresh_lease(
+            &mut transaction,
+            provider.id,
+            1_000,
+            910,
+            0,
+        )
+        .await?
+        .expect("the expired token acquires");
+
+        transaction.commit().await?;
+
+        assert_eq!(lease, 1_000);
+
+        // A stale loser's clear under an older stamp is refused: the winner's live stamp and
+        // its lease protection survive.
+        assert!(
+            !super::providers::clear_refresh_lease(&database, provider.id, 999).await?,
+            "a stale loser never clears a newer holder's lease"
+        );
+
+        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
+            .await?
+            .expect("the provider persists");
+
+        let StoredCredentials::OAuth {
+            refresh_started_at, ..
+        } = &reloaded.credentials
+        else {
+            panic!("the provider carries OAuth credentials");
+        };
+
+        assert_eq!(*refresh_started_at, Some(1_000));
+
+        // The holder's own clear lands.
+        assert!(super::providers::clear_refresh_lease(&database, provider.id, lease).await?);
+
+        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
+            .await?
+            .expect("the provider persists");
+
+        let StoredCredentials::OAuth {
+            refresh_started_at, ..
+        } = &reloaded.credentials
+        else {
+            panic!("the provider carries OAuth credentials");
+        };
+
+        assert_eq!(*refresh_started_at, None);
+
+        Ok(())
+    }
+
     /// Verifies the credential kind conversions: the storage form and the wire form are one
     /// vocabulary.
     ///

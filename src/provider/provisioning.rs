@@ -61,10 +61,28 @@ impl WorkingState {
     }
 }
 
+/// The stage-constant values one provisioning sequence's expressions may reference beside the
+/// accumulated working state: the credential secret and the configured client credentials —
+/// exactly the fields [`ValueEnv::for_provisioning`] pins as available. The caller threads the
+/// constants down once; the engine rebuilds the environment itself from them plus the working
+/// state before every request, so each step and poll sees what the preceding stages placed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProvisioningEnv<'a> {
+    /// The credential secret the stage's `Secret` references render; `None` fails them as
+    /// stored drift.
+    pub(crate) secret: Option<&'a str>,
+
+    /// The configured OAuth client ID.
+    pub(crate) client_id: &'a str,
+
+    /// The configured OAuth client secret.
+    pub(crate) client_secret: Option<&'a str>,
+}
+
 /// Runs one provisioning sequence to completion.
 ///
-/// The environment is rebuilt per step, so each request sees the slots and base URL the preceding
-/// steps placed, and the secret the credential currently carries.
+/// The environment is rebuilt per request from the accumulated working state, so each request
+/// sees the slots and base URL the preceding steps and polls placed.
 ///
 /// # Errors
 ///
@@ -73,7 +91,7 @@ impl WorkingState {
 pub(crate) async fn run_steps(
     http: &Client,
     steps: &[ProvisioningStep],
-    env: &ValueEnv<'_>,
+    constants: &ProvisioningEnv<'_>,
     state: &mut WorkingState,
 ) -> Result<(), Error> {
     for (index, step) in steps.iter().enumerate() {
@@ -85,30 +103,44 @@ pub(crate) async fn run_steps(
             continue;
         }
 
-        run_step(http, step, env, state, index).await?;
+        run_step(http, step, constants, state, index).await?;
     }
 
     Ok(())
+}
+
+/// Builds the stage environment of one request: the working state accumulated so far plus the
+/// stage constants.
+fn provisioning_env<'a>(constants: &ProvisioningEnv<'a>, state: &'a WorkingState) -> ValueEnv<'a> {
+    ValueEnv::for_provisioning(
+        &state.slots,
+        state.base_url.as_deref(),
+        constants.secret,
+        constants.client_id,
+        constants.client_secret,
+    )
 }
 
 /// Runs one provisioning step, including its long-running operation poll.
 async fn run_step(
     http: &Client,
     step: &ProvisioningStep,
-    env: &ValueEnv<'_>,
+    constants: &ProvisioningEnv<'_>,
     state: &mut WorkingState,
     index: usize,
 ) -> Result<(), Error> {
     let what = "provisioning";
 
-    // The environment reads the working state: a preceding step's slots and base URL are visible
-    // to this step's request.
-    let body = control::execute(http, &step.request, env, step.response_encoding, what).await?;
+    // The environment reads the accumulated working state: a preceding step's slots and base
+    // URL are visible to this step's request.
+    let env = provisioning_env(constants, state);
+
+    let body = control::execute(http, &step.request, &env, step.response_encoding, what).await?;
 
     apply_extractions(&body, &step.extract, what, state)?;
 
     if let Some(poll) = &step.poll {
-        run_poll(http, poll, env, state, index).await?;
+        run_poll(http, poll, constants, state, index).await?;
     }
 
     Ok(())
@@ -119,7 +151,7 @@ async fn run_step(
 async fn run_poll(
     http: &Client,
     poll: &Poll,
-    env: &ValueEnv<'_>,
+    constants: &ProvisioningEnv<'_>,
     state: &mut WorkingState,
     index: usize,
 ) -> Result<(), Error> {
@@ -139,7 +171,12 @@ async fn run_poll(
             });
         }
 
-        let body = control::execute(http, &poll.request, env, poll.response_encoding, what).await?;
+        // The poll request resolves against the working state too: the step's own extractions
+        // ran before the poll, so it can reference the operation name they placed.
+        let env = provisioning_env(constants, state);
+
+        let body =
+            control::execute(http, &poll.request, &env, poll.response_encoding, what).await?;
 
         // A completed operation carrying a terminal failure payload fails the step with that
         // payload instead of collapsing into a generic missing-done failure.
@@ -161,20 +198,6 @@ async fn run_poll(
     }
 }
 
-/// Reads the JSON value one member chain addresses, or `None` when any member is missing.
-fn value_at<'a>(
-    json: &'a serde_json::Value,
-    path: &crate::provider::definition::template::ResponsePath,
-) -> Option<&'a serde_json::Value> {
-    let mut value = json;
-
-    for member in &path.0 {
-        value = value.get(member)?;
-    }
-
-    Some(value)
-}
-
 /// Whether the long-running operation at one done path has completed: the boolean `true`, the
 /// number `1`, or the string `true` all count — the upstream-owned done spelling is one of these
 /// truthy shapes.
@@ -186,7 +209,7 @@ fn done_at(
         return Ok(false);
     };
 
-    let Some(value) = value_at(json, path) else {
+    let Some(value) = path.resolve(json) else {
         return Err(Error::Unavailable {
             detail: "provisioning poll response lacks its done path".to_string(),
         });
@@ -214,7 +237,7 @@ fn error_at(
         return Ok(None);
     };
 
-    let Some(value) = value_at(json, path) else {
+    let Some(value) = path.resolve(json) else {
         return Ok(None);
     };
 
@@ -239,35 +262,18 @@ fn error_at(
     }))
 }
 
-/// Folds one extraction list into the working state: a missing required path fails, a missing
-/// optional path leaves its target unchanged, and a present value of the wrong shape fails in
-/// the extractor.
+/// Folds one extraction list into the working state through the shared control-layer fold: a
+/// missing required path fails, a missing optional path leaves its target unchanged, and a
+/// present value of the wrong shape fails in the extractor.
 fn apply_extractions(
     body: &DecodedBody,
     extractions: &[ProvisionExtraction],
     what: &str,
     state: &mut WorkingState,
 ) -> Result<(), Error> {
-    for extraction in extractions {
-        let extracted = control::extract_field(body, &extraction.path, &extraction.shape, what)
-            .map_err(|failure| Error::Unavailable {
-                detail: failure.to_string(),
-            })?;
-
-        let Some(extracted) = extracted else {
-            if extraction.required {
-                return Err(Error::Unavailable {
-                    detail: format!("{what} response lacks a required field"),
-                });
-            }
-
-            continue;
-        };
-
-        apply_target(state, &extraction.target, extracted)?;
-    }
-
-    Ok(())
+    control::map_response_fields(body, extractions, what, |target, extracted| {
+        apply_target(state, target, extracted)
+    })
 }
 
 /// Folds one extracted value into the working state per its target, validating the values that
@@ -337,13 +343,11 @@ fn apply_target(
     }
 }
 
-/// Validates one stored slot or base-URL value: non-empty printable ASCII without whitespace
+/// Validates one stored slot or base-URL value against the shared routing-safe text contract
 /// (README §7). An upstream value outside the set fails the step instead of storing an
 /// unusable value.
 fn validate_slot_value(name: &str, value: &str) -> Result<(), Error> {
-    let is_routable = !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_graphic());
-
-    if is_routable {
+    if crate::routing_text::is_routing_safe_text(value) {
         Ok(())
     } else {
         Err(Error::Unavailable {

@@ -617,27 +617,30 @@ fn message_content_text(content: &StringOrArray<PartIn>) -> Result<String, Inval
         StringOrArray::Text(text) => Ok(text.clone()),
 
         StringOrArray::Array(parts) => {
-            let mut combined = String::new();
-
-            for part in parts {
-                match part {
+            let texts = parts
+                .iter()
+                .map(|part| match part {
                     PartIn::InputText { text } | PartIn::OutputText { text, .. } => {
-                        if !combined.is_empty() {
-                            combined.push_str("\n\n");
-                        }
-
-                        combined.push_str(text);
+                        Ok(text.as_str())
                     }
 
-                    PartIn::InputImage { .. } => {
-                        return Err(InvalidRequest::field(
-                            "content",
-                            "System and developer message content parts must be text; \
-                             `input_image` is not supported",
-                        ));
-                    }
-                }
-            }
+                    PartIn::InputImage { .. } => Err(InvalidRequest::field(
+                        "content",
+                        "System and developer message content parts must be text; \
+                         `input_image` is not supported",
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // The separator only ever separates text the accumulator already holds, so a
+            // leading run of empty parts carries none: skip it, then join the rest with the
+            // blank-line separator.
+            let combined = texts
+                .iter()
+                .skip_while(|text| text.is_empty())
+                .copied()
+                .collect::<Vec<&str>>()
+                .join("\n\n");
 
             Ok(combined)
         }
@@ -688,28 +691,34 @@ fn tool_output_text(output: &StringOrArray<OutputPartIn>) -> Result<String, Inva
         StringOrArray::Array(parts) => parts,
     };
 
-    let mut combined = String::new();
+    let texts = parts
+        .iter()
+        .map(|part| match part {
+            OutputPartIn::InputText { text } => Ok(text.as_str()),
 
-    for part in parts {
-        let OutputPartIn::InputText { text } = part else {
-            let message = match part.type_name() {
-                Some(part_type) => format!(
-                    "function_call_output output parts must be text; \
-                     `{part_type}` is not supported"
-                ),
+            other => {
+                let message = match other.type_name() {
+                    Some(part_type) => format!(
+                        "function_call_output output parts must be text; \
+                         `{part_type}` is not supported"
+                    ),
 
-                None => "function_call_output output parts must be text".to_string(),
-            };
+                    None => "function_call_output output parts must be text".to_string(),
+                };
 
-            return Err(InvalidRequest::field("output", message));
-        };
+                Err(InvalidRequest::field("output", message))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-        if !combined.is_empty() {
-            combined.push_str("\n\n");
-        }
-
-        combined.push_str(text);
-    }
+    // The separator only ever separates text the accumulator already holds, so a leading run
+    // of empty parts carries none: skip it, then join the rest with the blank-line separator.
+    let combined = texts
+        .iter()
+        .skip_while(|text| text.is_empty())
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n\n");
 
     Ok(combined)
 }
@@ -881,6 +890,52 @@ mod tests {
                 is_error: false,
             }],
         );
+    }
+
+    /// System and developer message content-parts arrays flatten with the blank-line separator:
+    /// parts join in order, an empty part between texts keeps both its separators, and a leading
+    /// run of empty parts carries none, so the array form flattens to exactly what the equivalent
+    /// plain-string form carries (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed instructions diverge from the documented flattening.
+    #[test]
+    fn system_developer_text_part_arrays_flatten_to_the_string_form() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the system parts form is constructed to parse"
+        )]
+        let system = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "system", "content": [
+                    {"type": "input_text", "text": "a"},
+                    {"type": "input_text", "text": ""},
+                    {"type": "input_text", "text": "b"},
+                ]},
+            ],
+        }))
+        .expect("system content parts must parse");
+
+        assert_eq!(system.ir.instructions.as_deref(), Some("a\n\n\n\nb"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the developer parts form is constructed to parse"
+        )]
+        let developer = parse(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "developer", "content": [
+                    {"type": "output_text", "text": ""},
+                    {"type": "output_text", "text": "c"},
+                ]},
+            ],
+        }))
+        .expect("developer content parts must parse");
+
+        assert_eq!(developer.ir.instructions.as_deref(), Some("c"));
     }
 
     /// The full codex CLI request envelope parses: with `wire_api = "responses"` the CLI always

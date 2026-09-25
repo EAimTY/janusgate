@@ -21,7 +21,6 @@ use crate::{
         IrRole, IrToolChoice,
     },
     sse::SseFrame,
-    storage::api_logs::ApiLogEndpointType,
 };
 use serde::{
     Deserialize, Deserializer, Serialize,
@@ -238,10 +237,6 @@ pub(crate) trait ClientSseRenderer {
 pub(crate) trait ClientFormat {
     /// The non-streaming success body this format renders.
     type JsonResponse;
-
-    /// The outward completion endpoint this format is served on, recorded in the request
-    /// accounting row (README §3 *ApiLog*); each endpoint names itself.
-    const ENDPOINT_TYPE: ApiLogEndpointType;
 
     /// Parses one client request body with the router's route context: the URL-path facts the
     /// body does not carry (README §6.5). Surfaces routing the model from the body ignore the

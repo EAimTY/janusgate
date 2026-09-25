@@ -114,6 +114,20 @@ async function settle(): Promise<void> {
     }
 }
 
+function buttonWithText(text: string): HTMLButtonElement {
+    for (const candidate of document.querySelectorAll("button")) {
+        if (candidate.textContent?.includes(text) === true) {
+            return candidate as HTMLButtonElement;
+        }
+    }
+
+    throw new Error(`No button reading ${text}`);
+}
+
+function bodyText(): string {
+    return document.body.textContent ?? "";
+}
+
 /** A discovery answer held back until the test resolves it by hand. */
 function deferredDiscoveryAnswer(): {
     readonly answer: Promise<DiscoverModelsResponse>;
@@ -239,5 +253,95 @@ describe("ProviderDetailScreen automatic discovery", () => {
         await settle();
 
         expect(listCount).toBe(1);
+    });
+});
+
+describe("ProviderDetailScreen discovery notice", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** One new model the upstream began reporting: a fresh row identity. */
+    const newlyReported: ModelResponse = {
+        ...discoveredModel,
+        id: 12,
+        upstream_id: "qwen3:14b",
+        public_id: "local-qwen3-14b",
+    };
+
+    function mountWithRefresh(api: ManagementApi): void {
+        disposes.push(
+            render(
+                () => (
+                    <ProviderDetailScreen
+                        api={api}
+                        providerId={5}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("counts only the models the upstream newly reports", async () => {
+        const api = screenApi({
+            providers: [
+                provider,
+            ],
+            models: [
+                discoveredModel,
+            ],
+            onDiscover: () => undefined,
+            discoveryAnswer: Promise.resolve({
+                models: [
+                    // The known row again, plus one genuinely new one: the
+                    // headline counts the newcomer, not the whole listing.
+                    {
+                        ...discoveredModel,
+                    },
+                    newlyReported,
+                ],
+            }),
+        });
+
+        mountWithRefresh(api);
+        await settle();
+        buttonWithText("Discover models").click();
+        await settle();
+
+        expect(bodyText()).toContain("1 model discovered from local.");
+        expect(bodyText()).not.toContain("2 models discovered from local.");
+    });
+
+    it("announces nothing new when the upstream reports only known rows", async () => {
+        const api = screenApi({
+            providers: [
+                provider,
+            ],
+            models: [
+                discoveredModel,
+            ],
+            onDiscover: () => undefined,
+            discoveryAnswer: Promise.resolve({
+                models: [
+                    {
+                        ...discoveredModel,
+                    },
+                ],
+            }),
+        });
+
+        mountWithRefresh(api);
+        await settle();
+        buttonWithText("Discover models").click();
+        await settle();
+
+        expect(bodyText()).toContain("Nothing new discovered from local.");
+        expect(bodyText()).not.toContain("model discovered from local.");
     });
 });

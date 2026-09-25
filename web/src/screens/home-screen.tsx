@@ -433,7 +433,8 @@ function AttentionRow(props: ProviderAttention): JSX.Element {
                 <span class="font-medium">{props.provider.name}</span>
                 <span class="text-ink-dim">{` · ${credentialKindLabel(props.provider.type)} · ${props.attention.detail}`}</span>
             </p>
-            <ButtonLink href={hrefs.providerDetail(props.provider.id)}>Reconnect</ButtonLink>
+            {/* Reauthorization lives on the edit page's Credentials card. */}
+            <ButtonLink href={hrefs.providerEdit(props.provider.id)}>Reconnect</ButtonLink>
         </li>
     );
 }
@@ -469,7 +470,7 @@ function GettingStarted(): JSX.Element {
                 />
                 <GettingStartedStep
                     index={4}
-                    title="Enable the provider"
+                    title="Re-enable the provider if you ever disable it"
                 />
                 <GettingStartedStep
                     index={5}

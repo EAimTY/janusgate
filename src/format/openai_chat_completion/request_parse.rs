@@ -554,19 +554,23 @@ fn flatten_text_content(
         StringOrArray::Array(parts) => parts,
     };
 
-    let mut combined = String::new();
+    let texts = parts
+        .iter()
+        .map(|part| match part {
+            TextPartIn::Text { text } => Ok(text.as_str()),
 
-    for part in parts {
-        let TextPartIn::Text { text } = part else {
-            return Err(text_only_content_rejection(role, part.type_name()));
-        };
+            other => Err(text_only_content_rejection(role, other.type_name())),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-        if !combined.is_empty() {
-            combined.push_str("\n\n");
-        }
-
-        combined.push_str(text);
-    }
+    // The separator only ever separates text the accumulator already holds, so a leading run
+    // of empty parts carries none: skip it, then join the rest with the blank-line separator.
+    let combined = texts
+        .iter()
+        .skip_while(|text| text.is_empty())
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n\n");
 
     Ok(combined)
 }
