@@ -158,7 +158,8 @@ CREATE TABLE ongoing_oauth_flows (
             AND (device_verification_uri IS NOT NULL
                  OR device_verification_uri_complete IS NOT NULL)
             AND device_poll_interval_seconds IS NOT NULL
-            AND (outcome IS NOT NULL OR device_next_poll_at IS NOT NULL))
+            AND ((outcome IS NULL AND device_next_poll_at IS NOT NULL)
+                 OR (outcome IS NOT NULL AND device_next_poll_at IS NULL)))
     ),
     CHECK (outcome IS NULL OR device_poll_started_at IS NULL),
     CHECK (outcome IS NULL OR grant_type = 'device'),
@@ -722,6 +723,17 @@ mod tests {
 
         assert_constraint_violation(outcome, "grant_type");
 
+        // A terminal device flow carrying a next-poll instant: the schedule lives exactly while
+        // the flow is pending, so the succeeded row must reject it.
+        let outcome = connection
+            .execute_batch(
+                "UPDATE ongoing_oauth_flows SET device_next_poll_at = 600 \
+                 WHERE state_token = 'st-3';",
+            )
+            .await;
+
+        assert_constraint_violation(outcome, "grant_type");
+
         // A terminal outcome without either its result provider or its failure pair.
         let outcome = connection
             .execute_batch("UPDATE ongoing_oauth_flows SET outcome = 'failed' WHERE id = 3;")
@@ -771,6 +783,16 @@ mod tests {
                  'https://v', 5, 'failed', 'expired_token', 'the device code expired');",
             )
             .await?;
+
+        // The same schedule exclusion under the failed outcome spelling.
+        let outcome = connection
+            .execute_batch(
+                "UPDATE ongoing_oauth_flows SET device_next_poll_at = 600 \
+                 WHERE state_token = 'st-f1';",
+            )
+            .await;
+
+        assert_constraint_violation(outcome, "grant_type");
 
         let outcome = connection
             .execute_batch(

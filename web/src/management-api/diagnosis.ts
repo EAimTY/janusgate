@@ -96,9 +96,11 @@ function conflictFix(action: ActionName | undefined): string {
 
         // The definition write's collision is not the operator's input: its
         // name is the preset's id and its base version is the stored latest,
-        // so the only recovery is picking the moved version back up.
+        // so the only recovery is picking the moved version back up — the
+        // shell's refresh re-runs the boot read that re-binds it, keeping the
+        // in-progress form intact.
         case "ensure-definition":
-            return "The stored version moved — reload this page and submit again.";
+            return "The stored version moved — refresh the page's stored versions, then submit again.";
 
         case "create-provider":
         case "update-provider":

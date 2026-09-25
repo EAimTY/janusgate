@@ -6,18 +6,14 @@ import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { routingTokenError } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
-import {
-    createScreenRead,
-    readAll,
-    type ScreenNotice,
-    screenFailureNotice,
-} from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelIdOverrideFields } from "/src/ui/model-form";
 import { requiredHint } from "/src/ui/required-hint";
+import { createCreateAction } from "./create-form";
+import { createScreenRead, readAll, type ScreenNotice } from "./read";
 
 /**
  * One creation page for a manually added model. When opened from a
@@ -136,7 +132,6 @@ function ModelCreateForm(props: {
     const [isEnabled, setIsEnabled] = createSignal(true);
     const [hasIdOverride, setHasIdOverride] = createSignal(false);
     const [idOverride, setIdOverride] = createSignal("");
-    const [isCreating, setIsCreating] = createSignal(false);
     const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     const selectedProvider = createMemo(
@@ -164,60 +159,45 @@ function ModelCreateForm(props: {
         return normalizedOverride() ?? `${provider.model_prefix}${trimmedUpstream()}`;
     };
 
-    const canCreate = (): boolean =>
+    /** The creation's composition rules: an owned provider with a routable identity. */
+    const canCompose = (): boolean =>
         selectedProvider() !== null &&
         trimmedUpstream() !== "" &&
         upstreamError() === null &&
-        overrideError() === null &&
-        !isCreating();
+        overrideError() === null;
 
-    const create = async (): Promise<void> => {
-        const provider = selectedProvider();
+    const create = createCreateAction({
+        action: "create-model",
+        channel: setFailure,
+        canRun: canCompose,
+        perform: async () => {
+            // The submit gate holds a selected provider before this runs;
+            // the narrow restates the gate for the compiler, and a null here
+            // is a broken gate — fatal, never a state to recover from.
+            const provider = selectedProvider();
 
-        if (
-            provider === null ||
-            trimmedUpstream() === "" ||
-            upstreamError() !== null ||
-            overrideError() !== null ||
-            isCreating()
-        ) {
-            return;
-        }
+            if (provider === null) {
+                throw new Error("The model creation gate passed without a selected provider.");
+            }
 
-        setFailure(null);
-        setIsCreating(true);
+            return {
+                status: "called" as const,
+                outcome: await performManagementCall(() =>
+                    props.api.createModel(
+                        toCreateModelRequest(provider.id, trimmedUpstream(), {
+                            id_override: normalizedOverride(),
+                            is_enabled: isEnabled(),
+                        }),
+                    ),
+                ),
+            };
+        },
+        onCreated: (result) => {
+            navigate(hrefs.modelDetail(result.model.id));
+        },
+    });
 
-        const outcome = await performManagementCall(() =>
-            props.api.createModel(
-                toCreateModelRequest(provider.id, trimmedUpstream(), {
-                    id_override: normalizedOverride(),
-                    is_enabled: isEnabled(),
-                }),
-            ),
-        );
-
-        setIsCreating(false);
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            setFailure(
-                screenFailureNotice(outcome.cause, {
-                    action: "create-model",
-                }),
-            );
-            return;
-        }
-
-        navigate(hrefs.modelDetail(outcome.result.model.id));
-    };
-
-    const submit = (event: SubmitEvent): void => {
-        event.preventDefault();
-        void create();
-    };
+    const canCreate = (): boolean => canCompose() && !create.isCreating();
 
     const providerOptions = createMemo(() => [
         {
@@ -254,7 +234,7 @@ function ModelCreateForm(props: {
             <form
                 novalidate={true}
                 class="flex flex-col gap-5"
-                onSubmit={submit}
+                onSubmit={create.submit}
             >
                 <Card>
                     <CardHeader title="Identity" />
@@ -267,7 +247,7 @@ function ModelCreateForm(props: {
                                     value={providerId()}
                                     options={providerOptions()}
                                     onChange={setProviderId}
-                                    isDisabled={isCreating()}
+                                    isDisabled={create.isCreating()}
                                     hint={requiredHint("A model belongs to one provider.")}
                                 />
                             }
@@ -284,7 +264,7 @@ function ModelCreateForm(props: {
                             value={upstreamId()}
                             onInput={setUpstreamId}
                             placeholder="gpt-4o"
-                            isDisabled={isCreating()}
+                            isDisabled={create.isCreating()}
                             error={upstreamError()}
                             hint={
                                 props.initialUpstreamId === null
@@ -305,7 +285,7 @@ function ModelCreateForm(props: {
                         <Switch
                             label="Enabled"
                             isOn={isEnabled()}
-                            isDisabled={isCreating()}
+                            isDisabled={create.isCreating()}
                             onToggle={setIsEnabled}
                         />
 
@@ -316,7 +296,7 @@ function ModelCreateForm(props: {
                             onIdOverrideInput={setIdOverride}
                             composedId={composedId()}
                             idOverrideError={overrideError()}
-                            isDisabled={isCreating()}
+                            isDisabled={create.isCreating()}
                         />
 
                         <div>
@@ -324,9 +304,9 @@ function ModelCreateForm(props: {
                                 type="submit"
                                 tone="primary"
                                 isDisabled={!canCreate()}
-                                isBusy={isCreating()}
+                                isBusy={create.isCreating()}
                             >
-                                {isCreating() ? "Creating…" : "Create model"}
+                                {create.isCreating() ? "Creating…" : "Create model"}
                             </Button>
                         </div>
                     </div>

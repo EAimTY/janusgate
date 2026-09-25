@@ -105,6 +105,9 @@ pub(crate) async fn insert_static_key_definition(
 /// Inserts one OAuth definition version 1 whose refresh grant fails against an unreachable
 /// endpoint, for the pre-dispatch refresh-failure scenario.
 ///
+/// The exchange references the `redirect_uri` value part because the write boundary requires
+/// that of every authorization-code grant (RFC 6749 §4.1.3).
+///
 /// # Panics
 ///
 /// Panics if the insert fails, the payload does not parse, or the fixture fails validation —
@@ -137,7 +140,8 @@ pub(crate) async fn insert_failing_refresh_definition(
                         {"name": "grant_type", "value": [
                             {"type": "literal", "value": "authorization_code"}
                         ]},
-                        {"name": "code", "value": [{"type": "authorization_code"}]}
+                        {"name": "code", "value": [{"type": "authorization_code"}]},
+                        {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
                     ]}
                 },
                 "response": {
@@ -238,6 +242,9 @@ pub(crate) async fn insert_provider(
 /// Inserts one OAuth definition version 1 — an authorization-code grant whose exchange maps the
 /// access token and whose credential never renews — for the flow-begin and completion tests.
 ///
+/// The exchange references the `redirect_uri` value part because the write boundary requires
+/// that of every authorization-code grant (RFC 6749 §4.1.3).
+///
 /// # Panics
 ///
 /// Panics if the insert fails, the payload does not parse, or the fixture fails validation —
@@ -266,7 +273,8 @@ pub(crate) async fn insert_oauth_definition(database: &Database, name: &str) -> 
                         {"name": "grant_type", "value": [
                             {"type": "literal", "value": "authorization_code"}
                         ]},
-                        {"name": "code", "value": [{"type": "authorization_code"}]}
+                        {"name": "code", "value": [{"type": "authorization_code"}]},
+                        {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
                     ]}
                 },
                 "response": {

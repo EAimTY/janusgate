@@ -22,13 +22,12 @@ use crate::{
     api::{Error, log_error, serving},
     context::Context,
     format::{RouteContext, gemini_generate_content::Format as InboundFormat},
-    storage,
 };
 use axum::{
     Router,
     body::Bytes,
     extract::{OriginalUri, State},
-    http::{Method, StatusCode},
+    http::Method,
     response::Response,
     routing::{get, post},
 };
@@ -61,26 +60,15 @@ struct ModelEntry {
 /// effective-model set every surface lists, ignoring pagination parameters and returning
 /// the full list in one page with no token.
 async fn models(State(context): State<Context>) -> Response {
-    match storage::models::list_enabled_models_with_owner(&context.database).await {
-        Ok(listed) => {
-            let models = listed
-                .iter()
-                .map(|(public_id, _)| ModelEntry {
-                    name: format!("models/{public_id}"),
-                })
-                .collect();
-
-            serving::json_response(StatusCode::OK, &ModelList { models })
-        }
-
-        Err(error) => {
-            let error = Error::from(error);
-
-            log_error("model listing", &error);
-
-            serving::error_response::<super::Surface>(error)
-        }
-    }
+    serving::model_list_response::<super::Surface, _, _>(&context.database, |listed| ModelList {
+        models: listed
+            .into_iter()
+            .map(|(public_id, _)| ModelEntry {
+                name: format!("models/{public_id}"),
+            })
+            .collect(),
+    })
+    .await
 }
 
 /// Handles both completion actions behind the wildcard route: parses the `rest` capture
@@ -207,6 +195,7 @@ fn parse_model_action(rest: &str) -> Result<ModelAction, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
 
     /// Verifies the wildcard capture parsing: the two action shapes route with their
     /// streaming modes, while every other shape — missing or empty model, unknown

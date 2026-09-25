@@ -298,8 +298,11 @@ fn render_messages(ir: &IrRequest) -> Result<Vec<UpstreamMessage>, InvalidReques
 /// content at all. IR tool messages fold into user turns carrying `tool_result` blocks, since
 /// the API has no tool role.
 ///
-/// Assistant turns hoist reasoning blocks before tool calls — the API requires thinking first —
-/// while text keeps its relative order among the remaining blocks.
+/// Assistant turns hoist same-family reasoning blocks before tool calls — the API requires
+/// thinking first — while text keeps its relative order among the remaining blocks. A
+/// foreign-family reasoning part renders nothing: the official `ThinkingBlockParam` requires the
+/// upstream's own `signature`, so no synthetic block can replay, and the API treats thinking
+/// history as optional, making the drop its own degradation shape.
 ///
 /// # Errors
 ///
@@ -336,11 +339,15 @@ fn render_message(
 
             for part in &message.parts {
                 match part {
-                    IrPart::Reasoning {
-                        text,
-                        signature,
-                        opaque,
-                    } => reasoning.push(render_reasoning_block(text, signature, opaque)),
+                    IrPart::Reasoning { opaque, .. } => {
+                        // A same-family thinking/redacted block replays verbatim — the API
+                        // verifies the signature and rejects a modified block with a 400. A
+                        // foreign-family payload carries no signature the API can verify, so
+                        // nothing renders for it (see the function contract above).
+                        if is_anthropic_block(opaque) {
+                            reasoning.push(OutBlock::Verbatim(opaque.clone()));
+                        }
+                    }
 
                     IrPart::Text { text } => {
                         blocks.push(OutBlock::Typed(TypedBlock::Text { text: text.clone() }))
@@ -363,9 +370,9 @@ fn render_message(
                 }
             }
 
-            // Reasoning blocks that carried no replayable content render nothing; the rest hoist
-            // before the turn's text and tool calls.
-            let mut content: Vec<OutBlock> = reasoning.into_iter().flatten().collect();
+            // Replayable reasoning hoists before the turn's text and tool calls; foreign-family
+            // reasoning rendered nothing.
+            let mut content = reasoning;
 
             content.extend(blocks);
 
@@ -412,32 +419,6 @@ fn render_image_block(image: &IrImage) -> OutBlock {
             source: ImageSourceOut::Url { url: url.clone() },
         }),
     }
-}
-
-/// Renders one IR reasoning part for an assistant turn: a same-family opaque payload replays
-/// verbatim, other-family text synthesizes a thinking block, and content-free cross-family state
-/// renders nothing.
-///
-/// # Panics
-///
-/// Panics if the synthesized block fails to serialize, which cannot occur for first-party types.
-fn render_reasoning_block(
-    text: &str,
-    signature: &Option<String>,
-    opaque: &Value,
-) -> Option<OutBlock> {
-    if is_anthropic_block(opaque) {
-        return Some(OutBlock::Verbatim(opaque.clone()));
-    }
-
-    if text.is_empty() {
-        return None;
-    }
-
-    Some(OutBlock::Typed(TypedBlock::Thinking {
-        thinking: text.to_string(),
-        signature: signature.clone(),
-    }))
 }
 
 #[cfg(test)]
@@ -531,9 +512,8 @@ mod tests {
     }
 
     /// Groups IR messages into strictly alternating turns: consecutive same-role messages merge,
-    /// the tool message folds into a user turn carrying its `is_error` result, reasoning
-    /// synthesizes a thinking block ahead of the tool call, and instructions render as the
-    /// system string.
+    /// the tool message folds into a user turn carrying its `is_error` result, a cross-family
+    /// reasoning part renders nothing, and instructions render as the system string.
     ///
     /// # Panics
     ///
@@ -559,12 +539,11 @@ mod tests {
             ]),
         );
 
-        // Reasoning hoists before the tool call; the cross-family text synthesizes a thinking
-        // block carrying its signature.
+        // The cross-family reasoning part (a null opaque payload, with even a foreign signature)
+        // drops; text keeps its order ahead of the tool call.
         assert_eq!(
             at(&body, "/messages/1/content"),
             &json!([
-                {"type": "thinking", "thinking": "draft", "signature": "sig"},
                 {"type": "text", "text": "calling"},
                 {
                     "type": "tool_use",
@@ -828,6 +807,101 @@ mod tests {
         };
 
         assert!(upstream_body(&ir, false).get("output_config").is_none());
+    }
+
+    /// Drops a cross-family reasoning part — minted the way the Interactions inbound parser mints
+    /// its thought steps, the whole step JSON as the opaque payload — instead of synthesizing a
+    /// thinking block the official API would reject: its `ThinkingBlockParam` requires the
+    /// upstream's own `signature`, so a foreign block cannot replay, and the API treats thinking
+    /// history as optional. The rest of the turn renders intact, and an assistant turn whose only
+    /// part is foreign reasoning renders no turn.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered turn diverges from the drop contract.
+    #[test]
+    fn drops_foreign_reasoning_and_renders_the_turn_intact() {
+        let ir = IrRequest {
+            model: "m".to_string(),
+            max_output_tokens: Some(64),
+            messages: vec![
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: "hi".to_string(),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![
+                        IrPart::Reasoning {
+                            text: "interactions thought".to_string(),
+                            // The step's optional signature rides along, but it is a foreign
+                            // family's signature the Messages API cannot verify.
+                            signature: Some("interactions-sig".to_string()),
+                            opaque: json!({
+                                "type": "thought",
+                                "summary": [
+                                    {"type": "text", "text": "interactions thought"},
+                                ],
+                                "signature": "interactions-sig",
+                            }),
+                        },
+                        IrPart::Text {
+                            text: "answer".to_string(),
+                        },
+                        IrPart::ToolCall {
+                            call_id: "call_1".to_string(),
+                            name: "ping".to_string(),
+                            arguments: r#"{"q":"x"}"#.to_string(),
+                            thought_signature: None,
+                        },
+                    ],
+                },
+            ],
+            ..IrRequest::default()
+        };
+
+        let body = upstream_body(&ir, false);
+
+        assert_eq!(
+            at(&body, "/messages/1/content"),
+            &json!([
+                {"type": "text", "text": "answer"},
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "ping",
+                    "input": {"q": "x"},
+                },
+            ]),
+        );
+
+        // A turn whose only part is foreign reasoning renders no content, so no turn.
+        let reasoning_only = IrRequest {
+            messages: vec![
+                IrMessage {
+                    role: IrRole::User,
+                    parts: vec![IrPart::Text {
+                        text: "hi".to_string(),
+                    }],
+                },
+                IrMessage {
+                    role: IrRole::Assistant,
+                    parts: vec![IrPart::Reasoning {
+                        text: "lost".to_string(),
+                        signature: None,
+                        opaque: json!({"type": "thought", "summary": []}),
+                    }],
+                },
+            ],
+            ..ir
+        };
+
+        let body = upstream_body(&reasoning_only, false);
+
+        assert_eq!(at(&body, "/messages").as_array().map(Vec::len), Some(1));
+        assert_eq!(at(&body, "/messages/0/role"), &json!("user"));
     }
 
     /// Renders a tool call whose arguments text is empty as an empty `input` object: the member

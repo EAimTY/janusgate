@@ -562,8 +562,9 @@ pub(crate) async fn restamp_claim(
 /// Persists one poll attempt's outcome while the caller still owns the claim stamped
 /// `claim_started_at`: either the next schedule (an `authorization_pending` or backoff retry, the
 /// interval optionally raised permanently), or the terminal failure with its gateway-owned code
-/// and message. `None` means the claim was lost — a concurrent commit superseded this poller —
-/// and the computed schedule was discarded.
+/// and message. A terminal persist also drops the next-poll instant, which a device flow carries
+/// exactly while it is pending (README §3). `None` means the claim was lost — a concurrent commit
+/// superseded this poller — and the computed schedule was discarded.
 ///
 /// # Errors
 ///
@@ -593,7 +594,8 @@ pub(crate) async fn persist_device_poll(
             database
                 .execute(
                     "UPDATE ongoing_oauth_flows SET outcome = 'failed', failure_code = ?1, \
-                     failure_message = ?2, device_poll_started_at = NULL \
+                     failure_message = ?2, device_next_poll_at = NULL, \
+                     device_poll_started_at = NULL \
                      WHERE id = ?3 AND device_poll_started_at = ?4 AND outcome IS NULL",
                     params![code, message, flow_id, claim_started_at],
                 )
@@ -628,7 +630,8 @@ pub(crate) enum DevicePollOutcome {
 
 /// Commits a successful device flow inside the caller's transaction: the outcome update is part
 /// of the same transaction as the provider write, so the provider and the consumable result
-/// appear together.
+/// appear together. The commit also drops the next-poll instant, which a device flow carries
+/// exactly while it is pending (README §3).
 ///
 /// The update conditions on the claim stamp, so only the poller that won the exchange can commit
 /// the success; `false` means the claim was lost and the caller's provider write must be
@@ -646,8 +649,8 @@ pub(crate) async fn commit_device_success_in_transaction(
     let changes = transaction
         .execute(
             "UPDATE ongoing_oauth_flows SET outcome = 'succeeded', result_provider_id = ?1, \
-             device_poll_started_at = NULL WHERE id = ?2 AND device_poll_started_at = ?3 \
-             AND outcome IS NULL",
+             device_next_poll_at = NULL, device_poll_started_at = NULL \
+             WHERE id = ?2 AND device_poll_started_at = ?3 AND outcome IS NULL",
             params![result_provider_id, flow_id, claim_started_at],
         )
         .await?;
@@ -812,6 +815,11 @@ mod tests {
 
         assert_eq!(terminal.outcome, Some(FlowOutcome::Succeeded));
         assert_eq!(terminal.result_provider_id, Some(target));
+        assert_eq!(
+            terminal.device_next_poll_at, None,
+            "the terminal row carries no next-poll instant"
+        );
+        assert_eq!(terminal.device_poll_started_at, None);
 
         // The result is consumed exactly once.
         let consumed = consume_terminal_flow(&database, "st-device-1", 0).await?;
@@ -868,6 +876,84 @@ mod tests {
 
         assert!(
             find_flow_by_state(&database, "st-device-1", 0)
+                .await?
+                .is_none()
+        );
+
+        Ok(())
+    }
+
+    /// Verifies the terminal failure persist: the flow records its gateway-owned pair and drops
+    /// the next-poll instant — a device flow carries its schedule exactly while it is pending
+    /// (README §3) — while keeping the device columns and interval that identify its grant, and
+    /// the failure is consumable exactly once as the flow's terminal result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn device_flow_terminal_failure_clears_the_next_poll_instant()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = oauth_definition();
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: definition.name.as_str(),
+                base_version: None,
+                payload: &definition.payload,
+                created_at: definition.created_at,
+            },
+        )
+        .await?;
+
+        insert_flow(&database, new_device_flow(&definition)).await?;
+
+        let claim = claim_due_device_flow(&database, 500, 0)
+            .await?
+            .expect("the due flow claims");
+
+        let is_persisted = persist_device_poll(
+            &database,
+            claim.id,
+            500,
+            DevicePollOutcome::Failed {
+                code: "expired_token".to_string(),
+                message: "the device code expired".to_string(),
+            },
+        )
+        .await?;
+
+        assert!(is_persisted);
+
+        let terminal = find_flow_by_state(&database, "st-device-1", 0)
+            .await?
+            .expect("the terminal row stays until consumed");
+
+        assert_eq!(terminal.outcome, Some(FlowOutcome::Failed));
+        assert_eq!(terminal.failure_code.as_deref(), Some("expired_token"));
+        assert_eq!(
+            terminal.failure_message.as_deref(),
+            Some("the device code expired")
+        );
+        assert_eq!(
+            terminal.device_next_poll_at, None,
+            "the terminal row carries no next-poll instant"
+        );
+        assert_eq!(terminal.device_poll_started_at, None);
+        assert_eq!(terminal.device_poll_interval_seconds, Some(5));
+        assert_eq!(terminal.device_code.as_deref(), Some("dc"));
+
+        // The failure is consumed exactly once, like every terminal result.
+        assert!(
+            consume_terminal_flow(&database, "st-device-1", 0)
+                .await?
+                .is_some()
+        );
+        assert!(
+            consume_terminal_flow(&database, "st-device-1", 0)
                 .await?
                 .is_none()
         );

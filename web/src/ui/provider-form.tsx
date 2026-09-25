@@ -4,6 +4,7 @@ import type { ProviderPreset } from "/src/management-api/presets";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Switch, TextField } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
+import { Glyph } from "/src/ui/glyph";
 import { requiredHint } from "./required-hint";
 
 /**
@@ -67,7 +68,10 @@ export function ProviderPresetPicker(props: {
  * model reads as `name-upstream-id`; flipping the switch on exposes the field
  * for a hand-set value — including an empty one — which is then used exactly
  * as typed. A prefix never holds a slash or a colon: it is a routing token,
- * and the Gemini URL path cannot address either.
+ * and the Gemini URL path cannot address either. Its inline error is stated
+ * however the value was reached: with the switch off the default is the
+ * free-form name's shadow and no prefix input stands, so the error renders
+ * beside the switch rather than only inside the hidden field.
  */
 export function ProviderIdentityFields(props: {
     readonly name: string;
@@ -104,7 +108,27 @@ export function ProviderIdentityFields(props: {
                 isDisabled={props.isDisabled ?? false}
                 onToggle={props.onCustomPrefixToggle}
             />
-            <Show when={props.isCustomPrefix}>
+            <Show
+                when={props.isCustomPrefix}
+                // The toggle governs editing only: an invalid derived prefix
+                // has no input to state itself in, so the error renders here.
+                fallback={
+                    <Show when={props.prefixError}>
+                        {(error) => (
+                            <p
+                                class="flex items-start gap-1.5 text-[13px] text-bad"
+                                role="alert"
+                            >
+                                <Glyph
+                                    name="alert"
+                                    class="mt-0.5 shrink-0"
+                                />
+                                {error()}
+                            </p>
+                        )}
+                    </Show>
+                }
+            >
                 <TextField
                     label="Model prefix"
                     value={props.customPrefix}

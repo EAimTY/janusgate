@@ -338,7 +338,7 @@ mod tests {
         database::Database,
         storage::{
             self,
-            api_keys::{self, NewApiKey},
+            api_keys::{self, ApiKeyFields},
             models::ModelCreate,
         },
     };
@@ -887,7 +887,7 @@ mod tests {
         // refresh fails before dispatch.
         let api_key = api_keys::insert_api_key(
             &database,
-            &NewApiKey {
+            &ApiKeyFields {
                 name: "e2e",
                 key: "sk-e2e",
                 is_enabled: true,

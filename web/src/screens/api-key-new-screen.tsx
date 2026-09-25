@@ -4,11 +4,12 @@ import type { ManagementApi } from "/src/management-api/client";
 import { bearerSecretError, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
-import { type ScreenNotice, screenFailureNotice } from "/src/screens/read";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { Button, Switch } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { createCreateAction } from "./create-form";
+import type { ScreenNotice } from "./read";
 
 /**
  * One creation page for a serving key: whether it works from the start, a
@@ -22,7 +23,6 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
     const [hasNameInput, setHasNameInput] = createSignal(false);
     const [secret, setSecret] = createSignal("");
     const [isEnabled, setIsEnabled] = createSignal(true);
-    const [isCreating, setIsCreating] = createSignal(false);
     const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     /** Inline error for the name, shown where it was typed. */
@@ -31,46 +31,29 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
     /** Inline composition error for the secret, shown where it was typed. */
     const secretError = (): string | null => bearerSecretError(secret(), "Key");
 
-    const canCreate = (): boolean => name() !== "" && isBearerSecret(secret()) && !isCreating();
+    /** The creation's composition rules: a named key carrying a complete secret. */
+    const canCompose = (): boolean => name() !== "" && isBearerSecret(secret());
 
-    const create = async (): Promise<void> => {
-        if (isCreating() || name() === "" || !isBearerSecret(secret())) {
-            return;
-        }
-
-        setFailure(null);
-        setIsCreating(true);
-
-        const outcome = await performManagementCall(() =>
-            props.api.createApiKey({
-                name: name(),
-                key: secret(),
-                is_enabled: isEnabled(),
-            }),
-        );
-
-        setIsCreating(false);
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            setFailure(
-                screenFailureNotice(outcome.cause, {
-                    action: "create-api-key",
+    const create = createCreateAction({
+        action: "create-api-key",
+        channel: setFailure,
+        canRun: canCompose,
+        perform: async () => ({
+            status: "called" as const,
+            outcome: await performManagementCall(() =>
+                props.api.createApiKey({
+                    name: name(),
+                    key: secret(),
+                    is_enabled: isEnabled(),
                 }),
-            );
-            return;
-        }
+            ),
+        }),
+        onCreated: (result) => {
+            navigate(hrefs.apiKeyDetail(result.api_key.id));
+        },
+    });
 
-        navigate(hrefs.apiKeyDetail(outcome.result.api_key.id));
-    };
-
-    const submit = (event: SubmitEvent): void => {
-        event.preventDefault();
-        void create();
-    };
+    const canCreate = (): boolean => canCompose() && !create.isCreating();
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -100,12 +83,12 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                 <form
                     novalidate={true}
                     class="mt-4 flex max-w-2xl flex-col gap-4"
-                    onSubmit={submit}
+                    onSubmit={create.submit}
                 >
                     <Switch
                         label="Enabled"
                         isOn={isEnabled()}
-                        isDisabled={isCreating()}
+                        isDisabled={create.isCreating()}
                         onToggle={setIsEnabled}
                     />
                     <ApiKeyNameField
@@ -114,13 +97,13 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                             setHasNameInput(true);
                             setName(value);
                         }}
-                        isDisabled={isCreating()}
+                        isDisabled={create.isCreating()}
                         error={nameError()}
                     />
                     <ApiKeySecretField
                         secret={secret()}
                         onSecretInput={setSecret}
-                        isDisabled={isCreating()}
+                        isDisabled={create.isCreating()}
                         error={secretError()}
                     />
                     <div>
@@ -128,9 +111,9 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                             type="submit"
                             tone="primary"
                             isDisabled={!canCreate()}
-                            isBusy={isCreating()}
+                            isBusy={create.isCreating()}
                         >
-                            {isCreating() ? "Creating…" : "Create API key"}
+                            {create.isCreating() ? "Creating…" : "Create API key"}
                         </Button>
                     </div>
                 </form>

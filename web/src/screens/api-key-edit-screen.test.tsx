@@ -314,6 +314,31 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
         );
     });
 
+    it("names the emptied secret and holds the save until one is typed back", async () => {
+        // api-keys:update is a full-state write, so unlike the provider
+        // form's write-only field the secret is restated here: an emptied Key
+        // cannot save, and the disabled save must name that, not sit mute.
+        mount({
+            keys: [
+                key,
+            ],
+        });
+        await settle();
+
+        typeInto(labeledInput("Key"), "");
+        await settle();
+
+        expect(document.body.textContent).toContain("A key needs a secret.");
+        expect(document.body.textContent).toContain("Unsaved changes");
+        expect(buttonWithText("Save changes").disabled).toBe(true);
+
+        typeInto(labeledInput("Key"), "sk-restored");
+        await settle();
+
+        expect(document.body.textContent).not.toContain("A key needs a secret.");
+        expect(buttonWithText("Save changes").disabled).toBe(false);
+    });
+
     it("reloads the listing when a save answers gone, handing over to the not-found state", async () => {
         const holder = {
             keys: [

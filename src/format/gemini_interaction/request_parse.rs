@@ -44,9 +44,12 @@
 //!   takes a tool list; `validated` and multiple allowed tools are 400s, as is a choice without
 //!   advertised tools. Built-in/server-side tools are 400s — function tools only.
 
-use super::{JSON_MIME_TYPE, ResponseFormatShape};
+use super::ResponseFormatShape;
 use crate::{
-    format::{self, ParsedRequest, RouteContext},
+    format::{
+        self, GeminiResponseFormatRejection, ParsedRequest, RouteContext,
+        parse_gemini_response_format,
+    },
     ir::{
         InvalidRequest, IrImage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat, IrRole,
         IrTool, IrToolChoice,
@@ -54,10 +57,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-
-/// The synthesized name of a schema-bearing response format: the official shape has no schema-name
-/// slot, so the IR's named-schema form carries this stand-in.
-const RESPONSE_SCHEMA_NAME: &str = "response";
 
 /// Strictly parsed Interactions request body.
 ///
@@ -747,9 +746,12 @@ fn reject_unsupported_generation_config(config: &GenerationConfigIn) -> Result<(
     Ok(())
 }
 
-/// Parses the `response_format` member into IR: the official `text` member only, whose
-/// `mime_type` picks free-form text or JSON and whose optional schema completes the named-schema
-/// form under the synthesized name.
+/// Parses the `response_format` member into IR: the official `text` member only, whose `mime_type`
+/// defaults to `text/plain` and otherwise delegates to the shared family table (see
+/// [`parse_gemini_response_format`]), and whose optional schema completes the named-schema form
+/// under the synthesized name. The union's media members reject here, this surface being the only
+/// one that carries them on the wire. Every rejection names this surface's `response_format`
+/// member.
 ///
 /// # Errors
 ///
@@ -758,40 +760,36 @@ fn reject_unsupported_generation_config(config: &GenerationConfigIn) -> Result<(
 fn parse_response_format(
     response_format: Option<ResponseFormatShape>,
 ) -> Result<Option<IrResponseFormat>, InvalidRequest> {
-    match response_format {
-        None => Ok(None),
+    let (mime_type, schema) = match response_format.as_ref() {
+        None => return Ok(None),
 
         Some(ResponseFormatShape::Audio {})
         | Some(ResponseFormatShape::Image {})
-        | Some(ResponseFormatShape::Video {}) => Err(InvalidRequest::field(
-            "response_format",
-            "audio, image, and video response formats are not supported; \
-             the gateway renders text outputs",
-        )),
-
-        Some(ResponseFormatShape::Text { mime_type, schema }) => {
-            match (mime_type.as_deref().unwrap_or("text/plain"), schema) {
-                ("text/plain", None) => Ok(Some(IrResponseFormat::Text)),
-
-                (JSON_MIME_TYPE, None) => Ok(Some(IrResponseFormat::Json)),
-
-                (JSON_MIME_TYPE, Some(schema)) => Ok(Some(IrResponseFormat::JsonSchema {
-                    name: RESPONSE_SCHEMA_NAME.to_string(),
-                    schema,
-                })),
-
-                ("text/plain", Some(_)) => Err(InvalidRequest::field(
-                    "response_format",
-                    "response_format schema requires mime_type `application/json`",
-                )),
-
-                (other, _) => Err(InvalidRequest::field(
-                    "response_format",
-                    format!("response_format mime_type `{other}` is not supported"),
-                )),
-            }
+        | Some(ResponseFormatShape::Video {}) => {
+            return Err(InvalidRequest::field(
+                "response_format",
+                "audio, image, and video response formats are not supported; \
+                 the gateway renders text outputs",
+            ));
         }
-    }
+
+        Some(ResponseFormatShape::Text { mime_type, schema }) => (
+            mime_type.as_deref().unwrap_or("text/plain"),
+            schema.as_ref(),
+        ),
+    };
+
+    parse_gemini_response_format(mime_type, schema).map_err(|rejection| match rejection {
+        GeminiResponseFormatRejection::SchemaWithoutJsonMime => InvalidRequest::field(
+            "response_format",
+            "response_format schema requires mime_type `application/json`",
+        ),
+
+        GeminiResponseFormatRejection::UnsupportedMime(mime_type) => InvalidRequest::field(
+            "response_format",
+            format!("response_format mime_type `{mime_type}` is not supported"),
+        ),
+    })
 }
 
 /// Rejects every known-but-unsupported control the request carries, each naming its own field.
@@ -1080,6 +1078,28 @@ mod tests {
             ),
             "the official is_error member rides into the IR",
         );
+    }
+
+    /// Verifies a `text` response format without a `mime_type` parses as free-form text: the
+    /// absent member defaults to `text/plain` before the shared family table decides.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed format diverges from the contract.
+    #[test]
+    fn defaults_the_text_response_mime_type_to_plain_text() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the text format body is constructed to parse"
+        )]
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "input": [],
+            "response_format": {"type": "text"},
+        }))
+        .expect("a text response format must parse");
+
+        assert_eq!(parsed.ir.response_format, Some(IrResponseFormat::Text));
     }
 
     /// Every official `input` union member parses: the plain string, the single content block,

@@ -18,7 +18,7 @@
 use crate::{
     ir::{
         InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrMessage, IrPart, IrRequest,
-        IrRole, IrToolChoice,
+        IrResponseFormat, IrRole, IrToolChoice,
     },
     sse::SseFrame,
 };
@@ -679,6 +679,55 @@ pub(in crate::format) fn validate_sampling_ranges(
     }
 
     Ok(())
+}
+
+/// The synthesized name of a schema-bearing Gemini-family response format: neither Gemini wire
+/// surface has a schema-name slot, so the IR's named-schema form carries this stand-in.
+pub(in crate::format) const GEMINI_RESPONSE_SCHEMA_NAME: &str = "response";
+
+/// The reason a Gemini-family response format is rejected: one of the two failure cells of the
+/// family decision table, which each surface renders into its own wire vocabulary.
+#[derive(Debug)]
+pub(in crate::format) enum GeminiResponseFormatRejection {
+    /// A schema was given for `text/plain`, whose output cannot carry one.
+    SchemaWithoutJsonMime,
+
+    /// The MIME type is not one the gateway renders.
+    UnsupportedMime(String),
+}
+
+/// Decides the response format shared by both Gemini codecs over a present MIME type:
+/// `text/plain` is free-form text, `application/json` is JSON — named-schema under
+/// [`GEMINI_RESPONSE_SCHEMA_NAME`] when a schema rides beside it — and a schema without
+/// `application/json` or any other MIME type is rejected. The absent-MIME-type cells are each
+/// surface's own: GenerateContent treats an absent `responseMimeType` as no response format at
+/// all, and Interactions defaults the `text` member's `mime_type` to `text/plain` before
+/// delegating here.
+///
+/// # Errors
+///
+/// Returns [`GeminiResponseFormatRejection`] for a schema beside a MIME type that cannot carry
+/// one and for a MIME type the gateway does not render.
+pub(in crate::format) fn parse_gemini_response_format(
+    mime_type: &str,
+    schema: Option<&Value>,
+) -> Result<Option<IrResponseFormat>, GeminiResponseFormatRejection> {
+    match (mime_type, schema) {
+        ("text/plain", None) => Ok(Some(IrResponseFormat::Text)),
+
+        ("application/json", None) => Ok(Some(IrResponseFormat::Json)),
+
+        ("application/json", Some(schema)) => Ok(Some(IrResponseFormat::JsonSchema {
+            name: GEMINI_RESPONSE_SCHEMA_NAME.to_string(),
+            schema: schema.clone(),
+        })),
+
+        ("text/plain", Some(_)) => Err(GeminiResponseFormatRejection::SchemaWithoutJsonMime),
+
+        (other, _) => Err(GeminiResponseFormatRejection::UnsupportedMime(
+            other.to_string(),
+        )),
+    }
 }
 
 /// Serializes a rendered outward payload into its wire form.

@@ -3,7 +3,7 @@
 use super::{EmptyResponse, Error, route};
 use crate::{
     context::Context,
-    storage::api_keys::{self, ApiKey, NewApiKey},
+    storage::api_keys::{self, ApiKey, ApiKeyFields},
 };
 use axum::{Json, extract::State};
 use axum_extra::extract::WithRejection;
@@ -183,7 +183,7 @@ pub(super) async fn create(
 
     let api_key = api_keys::insert_api_key(
         &context.database,
-        &NewApiKey {
+        &ApiKeyFields {
             name: &request.name,
             key: &request.key,
             is_enabled: request.is_enabled,
@@ -217,7 +217,7 @@ pub(super) async fn update(
     api_keys::update_api_key(
         &context.database,
         request.api_key_id,
-        api_keys::ApiKeyUpdate {
+        api_keys::ApiKeyFields {
             name: &request.name,
             key: &request.key,
             is_enabled: request.is_enabled,

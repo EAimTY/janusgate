@@ -1,6 +1,7 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
-import { CompatibleConnectionFields } from "/src/ui/provider-form";
+import { modelPrefixError } from "/src/management-api/identifiers";
+import { CompatibleConnectionFields, ProviderIdentityFields } from "/src/ui/provider-form";
 import { settle } from "../screens/screen-test-support";
 
 const disposes: Array<() => void> = [];
@@ -67,6 +68,57 @@ function checkboxWithLabel(label: string): HTMLInputElement {
 
     return control;
 }
+
+/** Mounts the identity fields holding the given prefix verdict. */
+function mountIdentityFields(props: {
+    readonly name: string;
+    readonly isCustomPrefix: boolean;
+    readonly prefixError: string | null;
+}): void {
+    disposes.push(
+        render(
+            () => (
+                <ProviderIdentityFields
+                    name={props.name}
+                    namePlaceholder=""
+                    onNameInput={() => undefined}
+                    isCustomPrefix={props.isCustomPrefix}
+                    onCustomPrefixToggle={() => undefined}
+                    customPrefix=""
+                    onCustomPrefixInput={() => undefined}
+                    defaultPrefix={`${props.name}-`}
+                    prefixError={props.prefixError}
+                />
+            ),
+            document.body,
+        ),
+    );
+}
+
+describe("ProviderIdentityFields derived-prefix error", () => {
+    it("names an invalid derived prefix while the custom field stays hidden", async () => {
+        // The default prefix is the free-form name's shadow (`${name}-`), so
+        // a name holding a space closes every submit gate while no prefix
+        // input is mounted to state why (README §4.5): the error must render
+        // with the toggle off, and the toggle — not the error — stays the
+        // only thing that exposes the custom field.
+        mountIdentityFields({
+            name: "has space",
+            isCustomPrefix: false,
+            prefixError: modelPrefixError("has space-"),
+        });
+        await settle();
+
+        expect(document.body.textContent).toContain(
+            'Model prefix accepts letters, numbers, and symbols only — no spaces, non-ASCII text, "/", or ":".',
+        );
+        expect(
+            Array.from(document.querySelectorAll("label")).find(
+                (candidate) => candidate.textContent === "Model prefix",
+            ),
+        ).toBeUndefined();
+    });
+});
 
 describe("CompatibleConnectionFields upstream key reveal", () => {
     it("masks the upstream key and pairs it with an unchecked reveal toggle", () => {

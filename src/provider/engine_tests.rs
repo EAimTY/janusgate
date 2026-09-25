@@ -597,6 +597,9 @@ async fn device_authorization_rejects_non_positive_durations() {
 /// extracts the access token from one upstream call. `is_with_provisioning` false strips the
 /// sequence, leaving the exchange alone — which maps no access token here.
 ///
+/// The exchange references the `redirect_uri` value part because the write boundary requires
+/// that of every authorization-code grant (RFC 6749 §4.1.3).
+///
 /// # Panics
 ///
 /// Panics when the fixture cannot be mutated.
@@ -619,7 +622,10 @@ fn completion_payload(is_with_provisioning: bool) -> serde_json::Value {
             "exchange": {
                 "request": {
                     "method": "POST",
-                    "url": [{"type": "literal", "value": "https://example.test/token"}]
+                    "url": [{"type": "literal", "value": "https://example.test/token"}],
+                    "body": {"kind": "form", "fields": [
+                        {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
+                    ]}
                 },
                 "response": {"encoding": "json", "fields": []},
                 "terminal_codes": ["invalid_grant"]

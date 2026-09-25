@@ -1,4 +1,5 @@
 import { type Accessor, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { registerDirtyForm } from "/src/dirty-form-registry";
 import type { ActionName } from "/src/management-api/diagnosis";
 import { isAbortFailure } from "/src/management-api/errors";
 import type {
@@ -374,6 +375,11 @@ export function createHeldRow<TRow>(
  * latch when a save succeeds; the save's own reload clears it once its reads
  * land, so a failed reload leaves the hold standing instead of resting the
  * screen on the pre-save rows.
+ *
+ * `reportFormDirty` also mirrors the form's dirt into the dirty-form registry
+ * (`/src/dirty-form-registry`), the live truth the shell's `beforeunload`
+ * guard reads: a tab close, a reload, or a navigation off the document asks
+ * for confirmation while edits stand (README §6.3).
  */
 export function createEditRow<TRow>(
     latest: Accessor<TRow | null>,
@@ -381,7 +387,7 @@ export function createEditRow<TRow>(
 ): {
     readonly row: Accessor<TRow | null>;
     readonly isRowHeld: Accessor<boolean>;
-    /** Reports the settings form's dirt — the hold's first clause. */
+    /** Reports the settings form's dirt — the hold's first clause and the leave guard's mirror. */
     readonly reportFormDirty: (isDirty: boolean) => void;
     /** Reports a save that succeeded: the hold stands until its reload lands. */
     readonly reportSaved: () => void;
@@ -390,6 +396,16 @@ export function createEditRow<TRow>(
 } {
     const [isFormDirty, setIsFormDirty] = createSignal(false);
     const [isSaveSettling, setIsSaveSettling] = createSignal(false);
+
+    // The same dirt report feeds the row hold above and the dirty-form
+    // registry, whose live truth the shell's `beforeunload` guard reads —
+    // there is never a second dirt source (README §6.3). The seat dies with
+    // this mount's owner, so a screen that goes away — dirty or not — cannot
+    // leave the guard armed behind it; a remounted form registers afresh.
+    const formRegistration = registerDirtyForm();
+    onCleanup(() => {
+        formRegistration.unregister();
+    });
 
     const { row, isRowHeld } = createHeldRow(
         latest,
@@ -400,7 +416,10 @@ export function createEditRow<TRow>(
     return {
         row,
         isRowHeld,
-        reportFormDirty: setIsFormDirty,
+        reportFormDirty: (isDirty: boolean): void => {
+            setIsFormDirty(isDirty);
+            formRegistration.reportDirty(isDirty);
+        },
         reportSaved: () => {
             setIsSaveSettling(true);
         },

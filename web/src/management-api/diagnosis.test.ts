@@ -72,8 +72,9 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("conflict");
-        expect(diagnosis.fix).toContain("reload this page");
-        expect(diagnosis.fix).not.toContain("provider name");
+        expect(diagnosis.fix).toBe(
+            "The stored version moved — refresh the page's stored versions, then submit again.",
+        );
     });
 
     it("names the colliding public ID for a model creation conflict", () => {

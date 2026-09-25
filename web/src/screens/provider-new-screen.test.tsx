@@ -500,7 +500,9 @@ describe("ProviderNewScreen creation", () => {
         // never the provider-name recovery a provider conflict carries.
         expect(document.body.textContent).toContain("definition name already stored");
         expect(document.body.textContent).toContain("The stored version moved");
-        expect(document.body.textContent).toContain("reload this page and submit again");
+        expect(document.body.textContent).toContain(
+            "refresh the page's stored versions, then submit again",
+        );
         expect(document.body.textContent).not.toContain("Choose a provider name");
         expect(sent).toHaveLength(0);
     });
@@ -958,6 +960,64 @@ describe("ProviderNewScreen OAuth flow", () => {
         expect(switchWithLabel("Custom model prefix").disabled).toBe(true);
         expect(labeledInput("Model prefix").disabled).toBe(true);
         expect(definitionEditor().disabled).toBe(true);
+    });
+
+    it("keeps the flow start disabled while the model prefix is invalid, sending nothing", async () => {
+        vi.useFakeTimers();
+        const calls: string[] = [];
+        mountScreen(
+            stubManagementApi({
+                listProviderDefinitions: () =>
+                    Promise.resolve({
+                        provider_definitions: [],
+                    }),
+                createProviderDefinition: () => {
+                    calls.push("definition");
+                    return Promise.resolve({
+                        provider_definition: storedDefinitionRow("claude-code", 1),
+                    });
+                },
+                listProviders: () =>
+                    Promise.resolve({
+                        providers: [],
+                    }),
+                startProviderOauth: () => {
+                    calls.push("start");
+                    return Promise.resolve(authorizationFlow);
+                },
+            }),
+        );
+        await flush();
+        buttonWithText("Claude Code").click();
+        await flush();
+
+        // The contrast half of the gate: a valid prefix over a valid
+        // definition leaves Start open — the state every dead-flow recovery
+        // re-enters with, so a fresh flow can always begin again.
+        expect(buttonWithText("Start the authorization").disabled).toBe(false);
+
+        // An invalid custom prefix names itself inline and closes Start…
+        switchWithLabel("Custom model prefix").click();
+        await flush();
+        typeInto(labeledInput("Model prefix"), "has space");
+        await flush();
+        expect(document.body.textContent).toContain(
+            'Model prefix accepts letters, numbers, and symbols only — no spaces, non-ASCII text, "/", or ":".',
+        );
+        expect(buttonWithText("Start the authorization").disabled).toBe(true);
+
+        // …and the gate keeps the rejection in the browser: the click issues
+        // neither the definition write nor the flow begin, so the gateway
+        // never answers 400 and no immutable definition version registers as
+        // a side effect of a refused start.
+        buttonWithText("Start the authorization").click();
+        await flush();
+        expect(calls).toEqual([]);
+
+        // Repairing the prefix reopens Start — the gate is live, not a latch.
+        typeInto(labeledInput("Model prefix"), "repaired-");
+        await flush();
+        expect(buttonWithText("Start the authorization").disabled).toBe(false);
     });
 
     it("keeps polling a pending device flow on the configured interval", async () => {

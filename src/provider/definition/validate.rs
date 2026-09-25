@@ -415,12 +415,28 @@ impl DefinitionPayload {
         if let Grant::AuthorizationCode {
             pkce: Pkce::S256, ..
         } = grant
-            && !request_references_code_verifier(&exchange.request)
+            && !request_references(&exchange.request, &ValueExpr::CodeVerifier)
         {
             return Err(ValidationError::new(
                 "authorization-code grant with `pkce: s256` requires the token exchange request \
                  to reference the `code_verifier` value part: RFC 7636 §4.6 presents the verifier \
                  at the token endpoint whenever a challenge was sent",
+            ));
+        }
+
+        // RFC 6749 §4.1.3: the token request repeats the `redirect_uri`, identically, whenever
+        // the authorization request included it — and the builder appends the definition's
+        // `redirect_uri` to every authorize URL — so an exchange request that never references
+        // the part dies at the upstream with `invalid_request` on every flow: the same
+        // required-carry shape the verifier rule above enforces.
+        if let Grant::AuthorizationCode { .. } = grant
+            && !request_references(&exchange.request, &ValueExpr::RedirectUri)
+        {
+            return Err(ValidationError::new(
+                "authorization-code grant requires the token exchange request to reference the \
+                 `redirect_uri` value part: RFC 6749 §4.1.3 repeats the redirect URI at the token \
+                 endpoint whenever the authorization request included it, and the builder appends \
+                 it to every authorize URL",
             ));
         }
 
@@ -732,53 +748,50 @@ fn validate_control_request(
     Ok(())
 }
 
-/// Whether one string expression references the PKCE code verifier, directly or inside a
+/// Whether one string expression references the sought value part, directly or inside a
 /// coalesce's arguments.
-fn references_code_verifier(expr: &StringExpr) -> bool {
+fn references(expr: &StringExpr, sought: &ValueExpr) -> bool {
     expr.0.iter().any(|part| match part {
-        ValueExpr::CodeVerifier => true,
+        ValueExpr::Coalesce { parts } => parts.contains(sought),
 
-        ValueExpr::Coalesce { parts } => parts
-            .iter()
-            .any(|part| matches!(part, ValueExpr::CodeVerifier)),
-
-        _ => false,
+        other => other == sought,
     })
 }
 
-/// Whether one template tree references the PKCE code verifier in any of its string leaves.
-fn template_node_references_code_verifier(node: &TemplateNode) -> bool {
+/// Whether one template tree references the sought value part in any of its string leaves.
+fn template_node_references(node: &TemplateNode, sought: &ValueExpr) -> bool {
     match node {
         TemplateNode::Json { .. } | TemplateNode::Body => false,
 
-        TemplateNode::String { expr } => references_code_verifier(expr),
+        TemplateNode::String { expr } => references(expr, sought),
 
-        TemplateNode::Object { fields } => {
-            fields.values().any(template_node_references_code_verifier)
-        }
+        TemplateNode::Object { fields } => fields
+            .values()
+            .any(|field| template_node_references(field, sought)),
 
-        TemplateNode::Array { items } => items.iter().any(template_node_references_code_verifier),
+        TemplateNode::Array { items } => items
+            .iter()
+            .any(|item| template_node_references(item, sought)),
     }
 }
 
-/// Whether one control request references the PKCE code verifier anywhere its stage expressions
+/// Whether one control request references the sought value part anywhere its stage expressions
 /// live: the URL, the headers, the query rows, and the body's form fields or JSON string leaves.
-fn request_references_code_verifier(request: &ControlRequest) -> bool {
-    let rows_reference =
-        |rows: &[ParamRow]| rows.iter().any(|row| references_code_verifier(&row.value));
+fn request_references(request: &ControlRequest, sought: &ValueExpr) -> bool {
+    let rows_reference = |rows: &[ParamRow]| rows.iter().any(|row| references(&row.value, sought));
 
     let body_references = match &request.body {
         None => false,
 
         Some(ControlBody::Form { fields }) => rows_reference(fields),
 
-        Some(ControlBody::Json { node }) => template_node_references_code_verifier(node),
+        Some(ControlBody::Json { node }) => template_node_references(node, sought),
     };
 
     body_references
         || rows_reference(&request.headers)
         || rows_reference(&request.query)
-        || references_code_verifier(&request.url)
+        || references(&request.url, sought)
 }
 
 /// Validates one response descriptor: non-empty paths, and — for a form-encoded response, whose
@@ -2757,6 +2770,83 @@ mod tests {
                     "type": "coalesce",
                     "parts": [
                         { "type": "code_verifier" },
+                        { "type": "literal", "value": "fallback" }
+                    ]
+                }
+            ]);
+        });
+
+        outcome.unwrap();
+    }
+
+    /// RFC 6749 §4.1.3: the token request repeats the redirect URI whenever the authorization
+    /// request included it — and the builder appends the definition's `redirect_uri` to every
+    /// authorize URL — so an authorization-code exchange that never references the
+    /// `redirect_uri` value part is rejected at the write boundary, symmetric to the `s256`
+    /// verifier rule, instead of dying at the upstream with `invalid_request`. A device grant
+    /// carries no redirect URI and stays valid (the Copilot fixture above).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the non-conforming exchange validates.
+    #[test]
+    fn requires_the_authorization_code_exchange_to_reference_the_redirect_uri() {
+        // The Antigravity shape's exchange presents the redirect URI as its final form field;
+        // dropping it leaves the token endpoint with no redirect URI to repeat.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(4);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("redirect_uri"), "{error}");
+        assert!(error.contains("RFC 6749"), "{error}");
+
+        // The untouched fixture references the redirect URI as a form field, so every
+        // authorization-code definition the catalog already carries stays valid.
+        mutate_and_validate(good_antigravity_json(), |_| {}).unwrap();
+    }
+
+    /// The redirect-URI rule reads the whole exchange request, so the value part satisfies it
+    /// wherever the stage's expressions live: the fixture's own form field, a query row, or a
+    /// coalesce argument.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a redirect-URI-carrying exchange is rejected.
+    #[test]
+    fn accepts_an_authorization_code_exchange_referencing_the_redirect_uri() {
+        // As a query row on the exchange request.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(4);
+
+            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
+                { "name": "redirect_uri", "value": [{ "type": "redirect_uri" }] }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // Inside a coalesce's arguments.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(4);
+
+            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][1];
+
+            field["value"] = serde_json::json!([
+                {
+                    "type": "coalesce",
+                    "parts": [
+                        { "type": "redirect_uri" },
                         { "type": "literal", "value": "fallback" }
                     ]
                 }

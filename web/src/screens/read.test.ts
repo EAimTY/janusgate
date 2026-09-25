@@ -1,5 +1,6 @@
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
+import { hasDirtyForms } from "/src/dirty-form-registry";
 import { ManagementApiError } from "/src/management-api/errors";
 import type {
     ApiKeyResponse,
@@ -893,6 +894,8 @@ describe("createEditRow", () => {
             throw new Error("The edit row did not mount");
         }
 
+        mountedDisposes.push(dispose);
+
         return {
             edit: box.edit,
             setLatest,
@@ -944,6 +947,33 @@ describe("createEditRow", () => {
         expect(edit.isRowHeld()).toBe(false);
 
         dispose();
+    });
+
+    it("mirrors the form's dirt into the leave-guard registry and gives the seat up on dispose", async () => {
+        const { edit, dispose } = mountedEditRow();
+
+        // No dirt stands before the form reports any.
+        await settle();
+        expect(hasDirtyForms()).toBe(false);
+
+        // The same report feeds the row hold and the registry, so the shell's
+        // beforeunload gate follows the form with no second dirt source.
+        edit.reportFormDirty(true);
+        await settle();
+        expect(hasDirtyForms()).toBe(true);
+
+        edit.reportFormDirty(false);
+        await settle();
+        expect(hasDirtyForms()).toBe(false);
+
+        // A screen that goes away dirty cannot leave the guard armed behind
+        // it; a remounted form registers afresh.
+        edit.reportFormDirty(true);
+        await settle();
+        expect(hasDirtyForms()).toBe(true);
+        dispose();
+        await settle();
+        expect(hasDirtyForms()).toBe(false);
     });
 });
 

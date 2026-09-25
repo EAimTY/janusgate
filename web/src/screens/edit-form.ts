@@ -1,4 +1,4 @@
-import { type Accessor, createEffect, createSignal } from "solid-js";
+import { type Accessor, createEffect, createSignal, onCleanup } from "solid-js";
 import type { ActionName } from "/src/management-api/diagnosis";
 import { performManagementCall } from "/src/management-api/outcome";
 import type { ScreenNotice, ScreenRead } from "./read";
@@ -52,6 +52,11 @@ export function createEditForm<TResult>(options: {
             options.onDirtyChange(isDirtyValue);
         },
     );
+
+    // A mount that dies dirty — the not-found swap unmounts the card without
+    // a dirty=false report — gives the leave guard one final clean report, so
+    // the screen it leaves behind is never armed.
+    onCleanup(() => options.onDirtyChange(false));
 
     const save = async (): Promise<void> => {
         if (isSaving() || !options.canSave()) {
@@ -114,8 +119,20 @@ export function createDeleteAction(options: {
     /** Where the screen goes once the delete is confirmed and succeeded. */
     readonly onDeleted: () => void;
 }): () => Promise<boolean> {
+    // The one disposal guard, set when the consuming screen goes away: a
+    // call answering afterwards must state nothing, reload nothing, and
+    // navigate nowhere (README §6.4).
+    let isDisposed = false;
+    onCleanup(() => {
+        isDisposed = true;
+    });
+
     return async (): Promise<boolean> => {
         const outcome = await performManagementCall(options.perform);
+
+        if (isDisposed) {
+            return false;
+        }
 
         if (
             !options.read.reportAction(

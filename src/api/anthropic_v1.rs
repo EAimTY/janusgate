@@ -20,7 +20,6 @@ use crate::{
     context::Context,
     database::Database,
     format::{RouteContext, anthropic_messages::Format as MessagesFormat, error_anthropic},
-    storage,
 };
 use axum::{
     Router,
@@ -70,25 +69,65 @@ impl serving::Surface for Surface {
 }
 
 /// The `GET /models` success body in the native Anthropic shape: the full effective-model set in
-/// one page (`has_more: false`), ignoring pagination parameters.
+/// one page (`has_more: false`), ignoring pagination parameters. The page bookends
+/// (`first_id`/`last_id`) and the per-entry members (`display_name`, `created_at`) that the
+/// official shape and its SDKs require are always rendered.
 #[derive(Debug, Serialize)]
-struct ModelList<'a> {
+struct ModelList {
     /// One entry per served model, ordered by public ID.
-    data: Vec<ModelObject<'a>>,
+    data: Vec<ModelObject>,
+
+    /// The first entry's public ID; `null` when the page is empty.
+    first_id: Option<String>,
 
     /// Always `false`: the gateway returns the full list in one page.
     has_more: bool,
+
+    /// The last entry's public ID; `null` when the page is empty.
+    last_id: Option<String>,
 }
 
 /// One served model in the native Anthropic model shape.
 #[derive(Debug, Serialize)]
-struct ModelObject<'a> {
+struct ModelObject {
     /// Always `model`.
     #[serde(rename = "type")]
     kind: &'static str,
 
+    /// The public routing ID, which doubles as the display name: the gateway serves no separate
+    /// display name.
+    display_name: String,
+
     /// Public routing ID (README §3).
-    id: &'a str,
+    id: String,
+
+    /// The official shape requires `created_at`; the gateway serves no model creation timestamps,
+    /// so it renders the epoch — the same convention the OpenAI surface documents for `created`.
+    created_at: u64,
+}
+
+/// Builds the native model-list page from one effective-model listing: every entry renders its
+/// public routing ID as both `id` and `display_name` at the epoch `created_at`, and the page
+/// bookends are the page's own first and last entry ids. Shared by the `GET /models` handler
+/// and the shape test, so the test pins the handler's actual mapping.
+fn native_model_page(listed: Vec<(String, String)>) -> ModelList {
+    let data: Vec<ModelObject> = listed
+        .into_iter()
+        .map(|(public_id, _provider_name)| ModelObject {
+            kind: "model",
+            display_name: public_id.clone(),
+            id: public_id,
+            created_at: 0,
+        })
+        .collect();
+
+    ModelList {
+        // The page bookends are the page's own first and last entry ids.
+        first_id: data.first().map(|entry| entry.id.clone()),
+        last_id: data.last().map(|entry| entry.id.clone()),
+        data,
+        has_more: false,
+    }
 }
 
 /// Constructs the surface router with Anthropic-key authentication and its own 404/405 responses.
@@ -130,31 +169,56 @@ async fn messages(
 /// Handles `GET /models` in the native Anthropic shape over the same effective-model set every
 /// surface lists, ignoring pagination parameters and returning the full list in one page.
 async fn models(State(context): State<Context>) -> Response {
-    match storage::models::list_enabled_models_with_owner(&context.database).await {
-        Ok(listed) => {
-            let data = listed
-                .iter()
-                .map(|(public_id, _provider_name)| ModelObject {
-                    kind: "model",
-                    id: public_id,
-                })
-                .collect();
+    serving::model_list_response::<Surface, _, _>(&context.database, native_model_page).await
+}
 
-            serving::json_response(
-                StatusCode::OK,
-                &ModelList {
-                    data,
-                    has_more: false,
-                },
-            )
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        Err(error) => {
-            let error = Error::from(error);
+    /// Verifies the native model-listing shape: every entry carries the doc-pinned members
+    /// (`type`, `id`, `display_name`, `created_at`), the page carries `first_id`/`last_id`
+    /// bookending its `data` (`null` when the page is empty), and `has_more` is always `false`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered shape diverges from the native contract.
+    #[test]
+    fn renders_native_model_listing_shape() {
+        let render = native_model_page;
 
-            log_error("model listing", &error);
+        let listed = vec![
+            ("b-model".to_string(), "b-provider".to_string()),
+            ("a-model".to_string(), "a-provider".to_string()),
+        ];
 
-            serving::error_response::<Surface>(error)
-        }
+        #[expect(clippy::expect_used, reason = "the listing body always serializes")]
+        let value = serde_json::to_value(render(listed)).expect("the listing serializes");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "data": [
+                    {"type": "model", "display_name": "b-model", "id": "b-model", "created_at": 0},
+                    {"type": "model", "display_name": "a-model", "id": "a-model", "created_at": 0},
+                ],
+                "first_id": "b-model",
+                "has_more": false,
+                "last_id": "a-model",
+            })
+        );
+
+        #[expect(clippy::expect_used, reason = "the listing body always serializes")]
+        let value = serde_json::to_value(render(Vec::new())).expect("the listing serializes");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "data": [],
+                "first_id": null,
+                "has_more": false,
+                "last_id": null,
+            })
+        );
     }
 }

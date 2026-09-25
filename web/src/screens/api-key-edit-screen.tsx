@@ -146,8 +146,12 @@ function SettingsCard(props: {
      * doing. */
     const nameError = (): string | null => apiKeyNameError(name());
 
-    /** Inline composition error for the secret, shown where it was typed. */
-    const secretError = (): string | null => bearerSecretError(secret(), "Key");
+    /** Inline error for the secret, shown where it was typed. Unlike the
+     * provider form's write-only field — whose empty value keeps the stored
+     * secret — this update restates the secret whole, so an emptied Key is
+     * named here: the save gate cannot pass without it. */
+    const secretError = (): string | null =>
+        secret() === "" ? "A key needs a secret." : bearerSecretError(secret(), "Key");
 
     const canSave = (): boolean => isDirty() && nameError() === null && isBearerSecret(secret());
 

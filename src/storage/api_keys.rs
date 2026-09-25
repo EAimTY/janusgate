@@ -39,24 +39,12 @@ pub(crate) struct ApiKey {
     pub(crate) created_at: i64,
 }
 
-/// The fields of an API key about to be inserted: the caller states the secret and its serving
-/// state, while the row identity and creation timestamp are server-assigned.
+/// The complete field state of one API key row, the single shape both `api-keys:create` and
+/// `api-keys:update` write (README §7.0 rule 3): the caller states the label, the secret, and the
+/// serving state, and the write applies every field verbatim — the row identity and creation
+/// timestamp are the only server-assigned parts.
 #[derive(Debug, Clone)]
-pub(crate) struct NewApiKey<'a> {
-    /// Human label; must be non-empty.
-    pub(crate) name: &'a str,
-
-    /// Plaintext shared secret; must be non-empty and not held by another row.
-    pub(crate) key: &'a str,
-
-    /// Whether the key authorizes traffic.
-    pub(crate) is_enabled: bool,
-}
-
-/// The `api-keys:update` field state for an existing key: the caller restates the row's complete
-/// state, so every field is total and the write applies each one verbatim.
-#[derive(Debug, Clone)]
-pub(crate) struct ApiKeyUpdate<'a> {
+pub(crate) struct ApiKeyFields<'a> {
     /// Human label; must be non-empty.
     pub(crate) name: &'a str,
 
@@ -171,7 +159,7 @@ pub(crate) async fn list_enabled_api_key_secrets(
 /// Returns [`Error`] when the insert fails.
 pub(crate) async fn insert_api_key(
     database: &Database,
-    api_key: &NewApiKey<'_>,
+    fields: &ApiKeyFields<'_>,
 ) -> Result<ApiKey, Error> {
     let created_at = unix_time::unix_now_micros();
 
@@ -180,9 +168,9 @@ pub(crate) async fn insert_api_key(
             "INSERT INTO api_keys (name, key, is_enabled, created_at) \
              VALUES (?1, ?2, ?3, ?4) RETURNING id",
             params![
-                api_key.name,
-                api_key.key,
-                i64::from(api_key.is_enabled),
+                fields.name,
+                fields.key,
+                i64::from(fields.is_enabled),
                 created_at,
             ],
         )
@@ -196,9 +184,9 @@ pub(crate) async fn insert_api_key(
 
     Ok(ApiKey {
         id,
-        name: api_key.name.to_string(),
-        key: api_key.key.to_string(),
-        is_enabled: api_key.is_enabled,
+        name: fields.name.to_string(),
+        key: fields.key.to_string(),
+        is_enabled: fields.is_enabled,
         created_at,
     })
 }
@@ -216,7 +204,7 @@ pub(crate) async fn insert_api_key(
 pub(crate) async fn update_api_key(
     database: &Database,
     api_key_id: i64,
-    update: ApiKeyUpdate<'_>,
+    fields: ApiKeyFields<'_>,
 ) -> Result<(), Error> {
     let mut transaction = database.transaction().await?;
 
@@ -239,7 +227,7 @@ pub(crate) async fn update_api_key(
     let key_holders = transaction
         .query(
             "SELECT id FROM api_keys WHERE key = ?1 AND id != ?2",
-            params![update.key, api_key_id],
+            params![fields.key, api_key_id],
         )
         .await?;
 
@@ -253,9 +241,9 @@ pub(crate) async fn update_api_key(
         .execute(
             "UPDATE api_keys SET name = ?1, key = ?2, is_enabled = ?3 WHERE id = ?4",
             params![
-                update.name,
-                update.key,
-                i64::from(update.is_enabled),
+                fields.name,
+                fields.key,
+                i64::from(fields.is_enabled),
                 api_key_id
             ],
         )
@@ -346,7 +334,7 @@ mod tests {
 
         let first = insert_api_key(
             &database,
-            &NewApiKey {
+            &ApiKeyFields {
                 name: "service-a",
                 key: "sk-first",
                 is_enabled: true,
@@ -364,7 +352,7 @@ mod tests {
         // Names are not unique: a second row may carry the same label.
         let second = insert_api_key(
             &database,
-            &NewApiKey {
+            &ApiKeyFields {
                 name: "service-a",
                 key: "sk-second",
                 is_enabled: false,
@@ -404,7 +392,7 @@ mod tests {
 
         let first = insert_api_key(
             &database,
-            &NewApiKey {
+            &ApiKeyFields {
                 name: "service-a",
                 key: "sk-first",
                 is_enabled: true,
@@ -414,7 +402,7 @@ mod tests {
 
         let second = insert_api_key(
             &database,
-            &NewApiKey {
+            &ApiKeyFields {
                 name: "service-b",
                 key: "sk-second",
                 is_enabled: true,
@@ -425,7 +413,7 @@ mod tests {
         update_api_key(
             &database,
             first.id,
-            ApiKeyUpdate {
+            ApiKeyFields {
                 name: "renamed-a",
                 key: "sk-rotated",
                 is_enabled: false,
@@ -445,7 +433,7 @@ mod tests {
         update_api_key(
             &database,
             first.id,
-            ApiKeyUpdate {
+            ApiKeyFields {
                 name: "renamed-a",
                 key: "sk-rotated",
                 is_enabled: false,
@@ -457,7 +445,7 @@ mod tests {
         let outcome = update_api_key(
             &database,
             first.id,
-            ApiKeyUpdate {
+            ApiKeyFields {
                 name: "renamed-a",
                 key: "sk-second",
                 is_enabled: false,
@@ -476,7 +464,7 @@ mod tests {
         let missing = update_api_key(
             &database,
             second.id + 1000,
-            ApiKeyUpdate {
+            ApiKeyFields {
                 name: "ghost",
                 key: "sk-ghost",
                 is_enabled: true,
@@ -507,7 +495,7 @@ mod tests {
 
         insert_api_key(
             &database,
-            &NewApiKey {
+            &ApiKeyFields {
                 name: "service-a",
                 key: "sk-first",
                 is_enabled: true,
@@ -518,7 +506,7 @@ mod tests {
         // A duplicate secret violates the schema's uniqueness even without the pre-check.
         let duplicate = insert_api_key(
             &database,
-            &NewApiKey {
+            &ApiKeyFields {
                 name: "service-b",
                 key: "sk-first",
                 is_enabled: true,

@@ -2,7 +2,9 @@
 //! deserialized into the IR request.
 
 use crate::{
-    format::{ParsedRequest, RouteContext},
+    format::{
+        GeminiResponseFormatRejection, ParsedRequest, RouteContext, parse_gemini_response_format,
+    },
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
         IrRole, IrTool, IrToolChoice,
@@ -971,46 +973,43 @@ fn parse_generation_config(
     ))
 }
 
-/// Parses the response MIME type plus schema into the IR response format.
+/// Parses the response MIME type plus schema into the IR response format: the shared family table
+/// over a present MIME type (see [`parse_gemini_response_format`]) plus this surface's
+/// absent-MIME-type cells — an absent `responseMimeType` beside no schema is no response format at
+/// all, and a schema beside the absent member is a rejection naming the member. Every rejection
+/// names the wire member this surface speaks.
+///
+/// # Errors
+///
+/// Returns [`InvalidRequest`] naming `responseMimeType` or `responseSchema`.
 fn parse_response_format(
     mime_type: Option<&str>,
     schema: Option<&Value>,
 ) -> Result<Option<IrResponseFormat>, InvalidRequest> {
-    match (mime_type, schema) {
-        (None, None) => Ok(None),
+    let (mime_type, schema) = match (mime_type, schema) {
+        (None, None) => return Ok(None),
 
-        (None, Some(_)) => Err(InvalidRequest::field(
-            "responseMimeType",
-            "responseSchema requires responseMimeType `application/json`",
-        )),
-
-        (Some(mime), response_schema) => match mime {
-            "text/plain" => {
-                if response_schema.is_some() {
-                    return Err(InvalidRequest::field(
-                        "responseSchema",
-                        "responseSchema requires responseMimeType `application/json`",
-                    ));
-                }
-
-                Ok(Some(IrResponseFormat::Text))
-            }
-
-            "application/json" => match response_schema {
-                Some(schema) => Ok(Some(IrResponseFormat::JsonSchema {
-                    name: "response".to_string(),
-                    schema: schema.clone(),
-                })),
-
-                None => Ok(Some(IrResponseFormat::Json)),
-            },
-
-            other => Err(InvalidRequest::field(
+        (None, Some(_)) => {
+            return Err(InvalidRequest::field(
                 "responseMimeType",
-                format!("Unsupported responseMimeType `{other}`"),
-            )),
-        },
-    }
+                "responseSchema requires responseMimeType `application/json`",
+            ));
+        }
+
+        (Some(mime_type), schema) => (mime_type, schema),
+    };
+
+    parse_gemini_response_format(mime_type, schema).map_err(|rejection| match rejection {
+        GeminiResponseFormatRejection::SchemaWithoutJsonMime => InvalidRequest::field(
+            "responseSchema",
+            "responseSchema requires responseMimeType `application/json`",
+        ),
+
+        GeminiResponseFormatRejection::UnsupportedMime(mime_type) => InvalidRequest::field(
+            "responseMimeType",
+            format!("Unsupported responseMimeType `{mime_type}`"),
+        ),
+    })
 }
 #[cfg(test)]
 mod tests {

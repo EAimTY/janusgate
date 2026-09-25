@@ -32,6 +32,7 @@ import {
     ProviderIdentityFields,
     ProviderPresetPicker,
 } from "/src/ui/provider-form";
+import { createCreateAction } from "./create-form";
 import { createOauthFlow } from "./oauth-flow";
 import { type ScreenNotice, screenFailureNotice } from "./read";
 
@@ -335,7 +336,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
     };
 
-    /** An OAuth completion is submittable with a valid definition and a routable prefix. */
+    /** An OAuth start or completion is submittable with a valid definition and a routable prefix. */
     const canComplete = (): boolean => prefixError() === null && definitionError() === null;
 
     const inputName = (value: string): void => {
@@ -348,8 +349,6 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         setDefinitionJson(JSON.stringify(preset().payload, null, 2));
         setIsDefinitionTouched(false);
     };
-
-    const [isCreating, setIsCreating] = createSignal(false);
 
     // The OAuth flow's shared state machine: the failure channel is this
     // page's standing notice, a flow begins only under an ensured definition,
@@ -392,8 +391,45 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         },
     });
 
+    // The static-key creation's shared action: the page's prelude ensures the
+    // definition first — a refused ensure states its notice and no provider
+    // call runs — and a succeeded creation lands on the new provider's page.
+    const create = createCreateAction({
+        action: "create-provider",
+        channel: setFailure,
+        canRun: () => canCreateStatic() && !oauth.isBusy(),
+        perform: async () => {
+            const ensured = await ensureDefinition();
+
+            if ("error" in ensured) {
+                return {
+                    status: "blocked" as const,
+                    notice: ensured.error,
+                };
+            }
+
+            return {
+                status: "called" as const,
+                outcome: await performManagementCall(() =>
+                    props.api.createProvider({
+                        provider_definition_name: ensured.name,
+                        provider_definition_version: ensured.version,
+                        name: resolvedName(),
+                        model_prefix: resolvedPrefix(),
+                        is_enabled: true,
+                        base_url: needsBaseUrl() ? trimmedBaseUrl() : null,
+                        api_key: apiKey(),
+                    }),
+                ),
+            };
+        },
+        onCreated: (result) => {
+            navigate(hrefs.providerDetail(result.provider.id));
+        },
+    });
+
     /** Whether any creation or OAuth call is in flight: the page's shared disable. */
-    const isBusy = (): boolean => isCreating() || oauth.isBusy();
+    const isBusy = (): boolean => create.isCreating() || oauth.isBusy();
 
     /**
      * Whether an OAuth flow is live: the picker, the identity fields, and the
@@ -413,58 +449,6 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         const live = oauth.flow();
         return live !== null && live.grant === "device" ? live : null;
     });
-
-    /** Creates a static-key provider under the ensured definition. */
-    const create = async (): Promise<void> => {
-        if (isBusy() || !canCreateStatic()) {
-            return;
-        }
-
-        setFailure(null);
-        setIsCreating(true);
-
-        const ensured = await ensureDefinition();
-
-        if ("error" in ensured) {
-            setIsCreating(false);
-            setFailure(ensured.error);
-            return;
-        }
-
-        const outcome = await performManagementCall(() =>
-            props.api.createProvider({
-                provider_definition_name: ensured.name,
-                provider_definition_version: ensured.version,
-                name: resolvedName(),
-                model_prefix: resolvedPrefix(),
-                is_enabled: true,
-                base_url: needsBaseUrl() ? trimmedBaseUrl() : null,
-                api_key: apiKey(),
-            }),
-        );
-
-        setIsCreating(false);
-
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            setFailure(
-                screenFailureNotice(outcome.cause, {
-                    action: "create-provider",
-                }),
-            );
-            return;
-        }
-
-        navigate(hrefs.providerDetail(outcome.result.provider.id));
-    };
-
-    const submitCompatible = (event: SubmitEvent): void => {
-        event.preventDefault();
-        void create();
-    };
 
     const submitOauth = (event: SubmitEvent): void => {
         event.preventDefault();
@@ -671,6 +655,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             <div class="mt-4">
                                 <Button
                                     tone="primary"
+                                    isDisabled={!canComplete()}
                                     isBusy={oauth.isStarting()}
                                     onClick={() => void oauth.start()}
                                 >
@@ -689,7 +674,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         <form
                             novalidate={true}
                             class="mt-4 flex max-w-2xl flex-col gap-4"
-                            onSubmit={submitCompatible}
+                            onSubmit={create.submit}
                         >
                             <CompatibleConnectionFields
                                 hasBaseUrl={needsBaseUrl()}
@@ -699,16 +684,16 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                 onApiKeyInput={setApiKey}
                                 baseUrlError={baseUrlError()}
                                 apiKeyError={apiKeyError()}
-                                isDisabled={isCreating()}
+                                isDisabled={create.isCreating()}
                             />
                             <div>
                                 <Button
                                     type="submit"
                                     tone="primary"
                                     isDisabled={!canCreateStatic()}
-                                    isBusy={isCreating()}
+                                    isBusy={create.isCreating()}
                                 >
-                                    {isCreating() ? "Creating…" : "Create provider"}
+                                    {create.isCreating() ? "Creating…" : "Create provider"}
                                 </Button>
                             </div>
                         </form>

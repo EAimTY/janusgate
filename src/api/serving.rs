@@ -28,6 +28,7 @@ use crate::{
     storage::{
         api_keys,
         api_logs::{self, ApiLogDraft},
+        models,
     },
 };
 use axum::{
@@ -556,6 +557,33 @@ where
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(rendered))
         .expect("static response parts are always valid")
+}
+
+/// Renders the outward `GET /models` listing shared by every surface (README §6.3/§6.5): it
+/// lists the effectively enabled models with their owning provider names over the shared
+/// pipeline's database and maps them onto the surface's native page shape, or converts the
+/// storage failure and renders it through the surface's error envelope under the shared
+/// `"model listing"` log target. Each surface supplies only its success-shape mapping.
+///
+/// `render_page` receives the listed `(public_id, provider_name)` pairs by value, ordered by
+/// public ID, and returns the surface's typed success body, which [`json_response`] serializes.
+pub(super) async fn model_list_response<S, T, F>(database: &Database, render_page: F) -> Response
+where
+    S: Surface,
+    F: FnOnce(Vec<(String, String)>) -> T,
+    T: Serialize,
+{
+    match models::list_enabled_models_with_owner(database).await {
+        Ok(listed) => json_response(StatusCode::OK, &render_page(listed)),
+
+        Err(error) => {
+            let error = Error::from(error);
+
+            log_error("model listing", &error);
+
+            error_response::<S>(error)
+        }
+    }
 }
 
 /// Wraps an IR event stream into a live `text/event-stream` response, carrying the request's

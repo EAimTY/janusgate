@@ -5,12 +5,14 @@ import {
     createMemo,
     createSignal,
     Match,
+    onCleanup,
     onSettled,
     Show,
     Switch,
 } from "solid-js";
 import { connectionService } from "/src/connection/app-service";
 import type { Connection } from "/src/connection/model";
+import { hasDirtyForms } from "/src/dirty-form-registry";
 import { formatClock } from "/src/format";
 import { createManagementApi } from "/src/management-api/client";
 import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
@@ -63,6 +65,17 @@ export function App(): JSX.Element {
         return state.status === "connected" ? state.connection : null;
     });
 
+    // The leave guard is the app root's own lifecycle: installed once for the
+    // page's lifetime here — not per connection in the shell — and removed
+    // only when the root itself goes away. It reads the dirty-form registry
+    // at event time, so screens arm and disarm it purely by reporting their
+    // dirt; the connection screen, which mounts no tracked form, never trips
+    // it (README §6.3).
+    window.addEventListener("beforeunload", guardUnsavedFormsOnLeave);
+    onCleanup(() => {
+        window.removeEventListener("beforeunload", guardUnsavedFormsOnLeave);
+    });
+
     // Unconnected, the connection screen is the whole document and names it;
     // once a connection exists the shell's own effect takes the title over.
     // The null guard keeps the write on the transition into setup, so it can
@@ -85,6 +98,40 @@ export function App(): JSX.Element {
             {(connected) => <AdminShell connection={connected} />}
         </Show>
     );
+}
+
+/**
+ * The leave-event surface the guard acts on: the two members the standard
+ * cancel pattern writes. `BeforeUnloadEvent` satisfies it structurally, so
+ * the installed listener hands the real event over, and the suite pins the
+ * decision on a plain stand-in instead of dispatching an event jsdom cannot
+ * express.
+ */
+type LeaveEvent = {
+    readonly preventDefault: () => void;
+    returnValue: string;
+};
+
+/**
+ * The one `beforeunload` guard (README §6.3): while a form the app tracks as
+ * dirty stands dirty, a leave of the whole document — a tab close, a reload,
+ * a navigation off the page — is marked for the browser's native leave
+ * confirmation instead of silently discarding the edits. A clean registry
+ * cancels nothing: the guard reads the registry live at event time, so one
+ * permanent listener follows every screen's reports. In-app navigation is
+ * deliberately not guarded — the nav tabs and the router navigate freely;
+ * protecting it is a deferred variant, as are the creation screens whose
+ * forms the app does not yet track.
+ */
+export function guardUnsavedFormsOnLeave(event: LeaveEvent): void {
+    if (!hasDirtyForms()) {
+        return;
+    }
+
+    // The standard cancel pattern: preventDefault per the spec, and the
+    // legacy `returnValue` flag the engines require to actually ask.
+    event.preventDefault();
+    event.returnValue = "";
 }
 
 type NavKey = "overview" | "providers" | "models" | "keys" | "usage";

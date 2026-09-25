@@ -1,4 +1,4 @@
-import { createRoot } from "solid-js";
+import { createRoot, createSignal } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
 import { ManagementApiError } from "/src/management-api/errors";
 import { ErrorCode } from "/src/management-api/generated/v0";
@@ -185,6 +185,46 @@ describe("createEditForm", () => {
         expect(loadCount).toBe(loadsAfterMount);
         expect(read.notice()?.tone).toBe("bad");
     });
+
+    it("gives the leave guard one final clean report when the card dies standing dirty", async () => {
+        const read = mountedRead(async () => {});
+        await settle();
+
+        const reports: boolean[] = [];
+        const [isDirty, setIsDirty] = createSignal(false);
+        const dispose = createRoot((teardown) => {
+            createEditForm({
+                read,
+                action: "update-model",
+                isDirty,
+                canSave: () => true,
+                perform: () => Promise.resolve({}),
+                onSucceeded: () => ({
+                    tone: "ok",
+                    title: "Saved.",
+                }),
+                onDirtyChange: (isFormDirty) => {
+                    reports.push(isFormDirty);
+                },
+                onSaved: () => {},
+            });
+            return teardown;
+        });
+
+        try {
+            // The visitor's edit turns the mounted card dirty.
+            setIsDirty(true);
+            await settle();
+            expect(reports).toContain(true);
+        } finally {
+            // The not-found swap takes the dirty card away with no
+            // dirty=false report of its own: the mount's last act is the
+            // final clean report, so the screen left behind is never armed.
+            dispose();
+        }
+
+        expect(reports[reports.length - 1]).toBe(false);
+    });
 });
 
 describe("createDeleteAction", () => {
@@ -238,5 +278,49 @@ describe("createDeleteAction", () => {
         // not-found state takes over instead of a ghost form.
         expect(loadCount).toBe(loadsAfterMount + 1);
         expect(read.notice()?.tone).toBe("bad");
+    });
+
+    it("states nothing and goes nowhere when the delete answers after the screen went away", async () => {
+        const read = mountedRead(async () => {});
+        await settle();
+
+        let navigations = 0;
+        let releaseDelete: (() => void) | undefined;
+        const box: {
+            confirmDelete?: () => Promise<boolean>;
+        } = {};
+        const dispose = createRoot((teardown) => {
+            box.confirmDelete = createDeleteAction({
+                read,
+                action: "delete-model",
+                perform: () =>
+                    new Promise<void>((resolve) => {
+                        releaseDelete = resolve;
+                    }),
+                onDeleted: () => {
+                    navigations += 1;
+                },
+            });
+            return teardown;
+        });
+
+        const confirmDelete = box.confirmDelete;
+
+        if (confirmDelete === undefined) {
+            throw new Error("The delete action did not mount");
+        }
+
+        const deletion = confirmDelete();
+        await Promise.resolve();
+
+        // The visitor leaves with the delete in flight; its late answer
+        // states nothing, reloads nothing, and navigates nowhere (§6.4).
+        dispose();
+        releaseDelete?.();
+        await settle();
+
+        await expect(deletion).resolves.toBe(false);
+        expect(navigations).toBe(0);
+        expect(read.notice()).toBeNull();
     });
 });

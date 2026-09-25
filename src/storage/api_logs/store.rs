@@ -392,7 +392,7 @@ mod tests {
         database::Value,
         storage::{
             self,
-            api_keys::{self, NewApiKey},
+            api_keys::{self, ApiKeyFields},
             models::ModelCreate,
         },
     };
@@ -773,7 +773,7 @@ mod tests {
 
         let api_key = api_keys::insert_api_key(
             &database,
-            &NewApiKey {
+            &ApiKeyFields {
                 name: "service",
                 key: "sk-live",
                 is_enabled: true,
@@ -926,7 +926,7 @@ mod tests {
         // Reads and writes of the rest of the database are unaffected.
         let api_key = api_keys::insert_api_key(
             &database,
-            &NewApiKey {
+            &ApiKeyFields {
                 name: "still-works",
                 key: "sk-after",
                 is_enabled: true,

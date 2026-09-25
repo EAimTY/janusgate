@@ -581,6 +581,9 @@ mod tests {
     /// supplies only the access token, never an expiry. Parsed without validation, which is
     /// exactly the stored-drift state the write-time rule rejects.
     ///
+    /// The exchange references the `redirect_uri` value part because the write boundary requires
+    /// that of every authorization-code grant (RFC 6749 §4.1.3).
+    ///
     /// # Panics
     ///
     /// Panics when the fixture fails to parse — a broken fixture is the failure report.
@@ -613,7 +616,8 @@ mod tests {
                             {"name": "grant_type", "value": [
                                 {"type": "literal", "value": "authorization_code"}
                             ]},
-                            {"name": "code", "value": [{"type": "authorization_code"}]}
+                            {"name": "code", "value": [{"type": "authorization_code"}]},
+                            {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
                         ]}
                     },
                     "response": {"encoding": "json", "fields": [
@@ -708,6 +712,9 @@ mod tests {
     /// Inserts one refresh-grant definition whose grant posts to `refresh_url`, for the lease
     /// tests.
     ///
+    /// The exchange references the `redirect_uri` value part because the write boundary requires
+    /// that of every authorization-code grant (RFC 6749 §4.1.3).
+    ///
     /// # Panics
     ///
     /// Panics if the payload does not parse, validate, or insert — a broken fixture is the
@@ -743,7 +750,8 @@ mod tests {
                             {"name": "grant_type", "value": [
                                 {"type": "literal", "value": "authorization_code"}
                             ]},
-                            {"name": "code", "value": [{"type": "authorization_code"}]}
+                            {"name": "code", "value": [{"type": "authorization_code"}]},
+                            {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
                         ]}
                     },
                     "response": {"encoding": "json", "fields": [

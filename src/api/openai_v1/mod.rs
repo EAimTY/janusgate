@@ -14,7 +14,6 @@ use crate::{
         RouteContext, error_openai, openai_chat_completion::Format as ChatCompletionFormat,
         openai_response::Format as ResponseFormat,
     },
-    storage,
 };
 use axum::{
     Router,
@@ -54,19 +53,19 @@ impl serving::Surface for Surface {
 
 /// The `GET /models` success body (the official OpenAI list shape).
 #[derive(Debug, Serialize)]
-struct ModelList<'a> {
+struct ModelList {
     /// Always `list`.
     object: &'static str,
 
     /// One entry per served model, ordered by public ID.
-    data: Vec<ModelObject<'a>>,
+    data: Vec<ModelObject>,
 }
 
 /// One served model in the official OpenAI model shape.
 #[derive(Debug, Serialize)]
-struct ModelObject<'a> {
+struct ModelObject {
     /// Public routing ID (README §3).
-    id: &'a str,
+    id: String,
 
     /// Always `model`.
     object: &'static str,
@@ -76,7 +75,7 @@ struct ModelObject<'a> {
     created: u64,
 
     /// Name of the provider serving the model.
-    owned_by: &'a str,
+    owned_by: String,
 }
 
 /// Constructs the format sub-router with OpenAI bearer authentication and its own 404/405
@@ -153,33 +152,17 @@ async fn responses(
 
 /// Handles `GET /models`.
 async fn models(State(context): State<Context>) -> Response {
-    match storage::models::list_enabled_models_with_owner(&context.database).await {
-        Ok(listed) => {
-            let data = listed
-                .iter()
-                .map(|(public_id, provider_name)| ModelObject {
-                    id: public_id,
-                    object: "model",
-                    created: 0,
-                    owned_by: provider_name,
-                })
-                .collect();
-
-            serving::json_response(
-                StatusCode::OK,
-                &ModelList {
-                    object: "list",
-                    data,
-                },
-            )
-        }
-
-        Err(error) => {
-            let error = Error::from(error);
-
-            log_error("model listing", &error);
-
-            serving::error_response::<Surface>(error)
-        }
-    }
+    serving::model_list_response::<Surface, _, _>(&context.database, |listed| ModelList {
+        object: "list",
+        data: listed
+            .into_iter()
+            .map(|(public_id, provider_name)| ModelObject {
+                id: public_id,
+                object: "model",
+                created: 0,
+                owned_by: provider_name,
+            })
+            .collect(),
+    })
+    .await
 }
