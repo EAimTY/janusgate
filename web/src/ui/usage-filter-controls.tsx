@@ -7,6 +7,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import { API_LOG_ENDPOINT_OPTIONS, API_LOG_OUTCOME_OPTIONS } from "/src/management-api/vocabulary";
 import { SelectField, TextField } from "/src/ui/controls";
+import { listedOptions } from "/src/ui/listed-options";
 import type { UsageFilterFields, UsageOutcomeChoice, UsageStreamChoice } from "/src/usage-filter";
 
 /**
@@ -47,38 +48,6 @@ const STREAM_CHOICE_OPTIONS: ReadonlyArray<{
         label: "Non-streamed",
     },
 ];
-
-/**
- * The option list one id-bearing field presents: the listing the screen read,
- * plus the current value when no listed row carries it. A filter id the route
- * or the arrival subject carried can name a row deleted since it was written,
- * and a listing-built list alone would match nothing — the select would
- * visibly reset to its "All" option while the filter still sent the id. The
- * trailing option names the id, so the control keeps stating the filter in
- * force and the filter stays inspectable.
- */
-function listedOptions(
-    options: ReadonlyArray<{
-        readonly value: string;
-        readonly label: string;
-    }>,
-    value: string,
-): ReadonlyArray<{
-    readonly value: string;
-    readonly label: string;
-}> {
-    if (value === "" || options.some((option) => option.value === value)) {
-        return options;
-    }
-
-    return [
-        ...options,
-        {
-            value,
-            label: `${value} (no longer listed)`,
-        },
-    ];
-}
 
 /**
  * The shared usage filter's controls, as a fragment the caller lays out in its

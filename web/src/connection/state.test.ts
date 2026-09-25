@@ -168,7 +168,9 @@ describe("reduceConnectionState", () => {
             },
         });
 
-        // The lazy revalidation path: a 401 answering a management call while connected.
+        // The lazy revalidation path: a 401 answering a management call while
+        // connected — the service builds its failure with the dying
+        // connection's address, which the reducer carries whole.
         expect(
             reduceConnectionState(
                 {
@@ -180,7 +182,7 @@ describe("reduceConnectionState", () => {
                     failure: {
                         message: "invalid management token",
                         cause: null,
-                        baseUrl: null,
+                        baseUrl: "https://gateway.example.com",
                     },
                 },
             ),
@@ -189,7 +191,7 @@ describe("reduceConnectionState", () => {
             failure: {
                 message: "invalid management token",
                 cause: null,
-                baseUrl: null,
+                baseUrl: "https://gateway.example.com",
             },
         });
     });

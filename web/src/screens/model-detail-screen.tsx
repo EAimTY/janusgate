@@ -15,9 +15,10 @@ import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
-import { Badge, type BadgeTone, EmptyState, Notice } from "/src/ui/feedback";
+import { Badge, type BadgeTone, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { modelDiscoveryBadge, modelServingBadge } from "/src/ui/models-table";
+import { RowNotFound } from "./row-not-found";
 
 /**
  * One model's page: what it is, where it stands, and what serving clients
@@ -31,7 +32,6 @@ export function ModelDetailScreen(props: {
     const [models, setModels] = createSignal<ReadonlyArray<ModelResponse>>([]);
 
     const read = createScreenRead({
-        reReadOn: () => props.modelId,
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
@@ -85,24 +85,10 @@ export function ModelDetailScreen(props: {
                 />
             }
             notFound={
-                <>
-                    <PageHeader
-                        title="Model"
-                        backHref={hrefs.models(null)}
-                        backLabel="Models"
-                    />
-                    <EmptyState
-                        title="Model not found"
-                        description="The gateway holds no model here. It was deleted, or the address was typed wrong — a deleted discovered model returns as new on the next discovery."
-                    >
-                        <ButtonLink
-                            href={hrefs.models(null)}
-                            tone="primary"
-                        >
-                            Back to models
-                        </ButtonLink>
-                    </EmptyState>
-                </>
+                <RowNotFound
+                    kind="model"
+                    headerTitle="Model"
+                />
             }
         >
             {(both) => (

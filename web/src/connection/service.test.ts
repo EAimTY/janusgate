@@ -1,6 +1,7 @@
 import { flush } from "solid-js";
 import { describe, expect, it } from "vitest";
 import { appConfig } from "/src/config";
+import { ManagementApiError } from "/src/management-api/errors";
 import type { Connection } from "./model";
 import { readStoredConnection } from "./model";
 import { createConnectionService } from "./service";
@@ -168,7 +169,7 @@ describe("createConnectionService", () => {
         });
     });
 
-    it("clears a rejected connection and explains it on setup", () => {
+    it("clears a rejected connection, keeps its address, and explains it on setup", () => {
         const storage = createStorage(connection);
 
         const service = createConnectionService({
@@ -183,9 +184,13 @@ describe("createConnectionService", () => {
 
         expect(service.connectionState()).toEqual({
             status: "unconnected",
-            failure: expect.objectContaining({
+            failure: {
                 message: "invalid management token",
-            }),
+                cause: expect.any(ManagementApiError),
+                // The dying connection's address travels so the reconnect
+                // screen seeds its field; the token structurally cannot.
+                baseUrl: "https://gateway.example.com",
+            },
         });
     });
 });

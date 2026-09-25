@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, Match, onCleanup, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createSignal, Match, Show, Switch } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { DefinitionResponse } from "/src/management-api/generated/v0";
 import {
@@ -20,6 +20,7 @@ import {
     type DefinitionPayloadResult,
     validateDefinitionPayload,
 } from "/src/management-api/validation";
+import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
@@ -92,21 +93,56 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
     };
 
-    // The taken names arrive after the first read; until then the preset's
+    // The taken names arrive after the boot read; until then the preset's
     // base name stands in, and a hand-typed name is never overwritten. A read
     // that fails is stated where every failure on this page stands — never
     // silently swallowed into a suggestion that names a taken name again.
-    const suggestionController = new AbortController();
-    onCleanup(() => suggestionController.abort());
+    let bootController: AbortController | null = null;
 
-    void performManagementCall(() => props.api.listProviders(suggestionController.signal)).then(
-        (outcome) => {
-            if (outcome.status === "aborted") {
+    /**
+     * The boot read: the taken provider names (the name suggestion's ground
+     * truth) and the preset's stored definition versions. It subscribes to
+     * the refresh pulse directly instead of through the shared read harness:
+     * the page renders fully without these reads — they refine the
+     * suggestion and the stored-version line, and own no skeleton — so the
+     * pulse must re-run them here, where a failed boot read is a refresh's
+     * to recover (README §6.1). It writes only the listing signals and the
+     * notice, never the live OAuth flow's state: a refresh may not unlock or
+     * disturb a flow in flight.
+     */
+    const readBootState = (): void => {
+        bootController?.abort();
+
+        const cycle = new AbortController();
+        bootController = cycle;
+
+        // Both calls must answer for the cycle to count as read: a failed
+        // one states its diagnosis on the notice, and only an answered cycle
+        // clears the notice and stamps the shell.
+        let settledCount = 0;
+        let failedCount = 0;
+
+        const settleBootCall = (isSuccessful: boolean): void => {
+            settledCount += 1;
+
+            if (!isSuccessful) {
+                failedCount += 1;
+            }
+
+            if (settledCount === 2 && failedCount === 0) {
+                setFailure(null);
+                reportRefresh();
+            }
+        };
+
+        void performManagementCall(() => props.api.listProviders(cycle.signal)).then((outcome) => {
+            if (outcome.status === "aborted" || cycle.signal.aborted) {
                 return;
             }
 
             if (outcome.status === "failed") {
                 setFailure(screenFailureNotice(outcome.cause));
+                settleBootCall(false);
                 return;
             }
 
@@ -116,25 +152,43 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             if (!isNameTouched()) {
                 setName(suggestProviderName(preset().suggestedName, taken));
             }
+
+            settleBootCall(true);
+        });
+
+        void performManagementCall(() => props.api.listProviderDefinitions(cycle.signal)).then(
+            (outcome) => {
+                if (outcome.status === "aborted" || cycle.signal.aborted) {
+                    return;
+                }
+
+                if (outcome.status === "failed") {
+                    setIsStoredKnown("unreadable");
+                    setFailure(screenFailureNotice(outcome.cause));
+                    settleBootCall(false);
+                    return;
+                }
+
+                setIsStoredKnown("read");
+                setDefinitions(outcome.result.provider_definitions);
+                settleBootCall(true);
+            },
+        );
+    };
+
+    // One boot read per mount, repeated when *refresh* is pressed, the cycle
+    // in flight aborted when the pulse moves again or the screen goes away —
+    // the read harness's subscription, minus the skeleton.
+    createEffect(
+        () => refreshRequest(),
+        () => {
+            readBootState();
+
+            return () => {
+                bootController?.abort();
+            };
         },
     );
-
-    void performManagementCall(() =>
-        props.api.listProviderDefinitions(suggestionController.signal),
-    ).then((outcome) => {
-        if (outcome.status === "aborted") {
-            return;
-        }
-
-        if (outcome.status === "failed") {
-            setIsStoredKnown("unreadable");
-            setFailure(screenFailureNotice(outcome.cause));
-            return;
-        }
-
-        setIsStoredKnown("read");
-        setDefinitions(outcome.result.provider_definitions);
-    });
 
     const suggestion = createMemo(() => suggestProviderName(preset().suggestedName, takenNames()));
 
@@ -185,8 +239,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         (!needsBaseUrl() || isBaseUrl(trimmedBaseUrl())) &&
         isBearerSecret(apiKey());
 
-    /** The edited definition payload, validated, or the offending JSON path. */
-    const parsedDefinition = (): DefinitionPayloadResult => {
+    /**
+     * The edited definition payload, validated, or the offending JSON path.
+     * Memoized so the parse-and-validate walk runs once per edit of the JSON
+     * rather than once per consumer read — the submit gates, the ensure
+     * step, and the two inline error statements all read the same verdict.
+     */
+    const parsedDefinition = createMemo((): DefinitionPayloadResult => {
         try {
             const parsed: unknown = JSON.parse(definitionJson());
             return validateDefinitionPayload(parsed);
@@ -195,7 +254,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 error: error instanceof Error ? error.message : String(error),
             };
         }
-    };
+    });
 
     const definitionError = (): string | null => {
         const parsed = parsedDefinition();

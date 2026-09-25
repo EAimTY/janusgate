@@ -1,10 +1,9 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createMemo, createSignal } from "solid-js";
+import { createMemo, createSignal } from "solid-js";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { routingTokenError } from "/src/management-api/identifiers";
-import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import {
     createEditRow,
@@ -17,11 +16,12 @@ import {
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { ButtonLink, Switch } from "/src/ui/controls";
+import { Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { EmptyState } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelIdOverrideFields } from "/src/ui/model-form";
+import { createDeleteAction, createEditForm } from "./edit-form";
+import { RowNotFound } from "./row-not-found";
 
 /**
  * One model's edit page: its settings and its deletion. The form opens
@@ -48,7 +48,6 @@ export function ModelEditScreen(props: {
     // The notice is also the save's reported outcome, so only a new failure
     // replaces it — a successful read keeps it (README §6.3).
     const read = createScreenRead({
-        reReadOn: () => props.modelId,
         isNoticeKeptOnSuccess: true,
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
@@ -97,24 +96,10 @@ export function ModelEditScreen(props: {
                 />
             }
             notFound={
-                <>
-                    <PageHeader
-                        title="Edit model"
-                        backHref={hrefs.models(null)}
-                        backLabel="Models"
-                    />
-                    <EmptyState
-                        title="Model not found"
-                        description="The gateway holds no model here. It was deleted, or the address was typed wrong — a deleted discovered model returns as new on the next discovery."
-                    >
-                        <ButtonLink
-                            href={hrefs.models(null)}
-                            tone="primary"
-                        >
-                            Back to models
-                        </ButtonLink>
-                    </EmptyState>
-                </>
+                <RowNotFound
+                    kind="model"
+                    headerTitle="Edit model"
+                />
             }
         >
             {(row) => (
@@ -165,7 +150,6 @@ function ModelSettingsForm(props: {
     const [isEnabled, setIsEnabled] = createSignal(props.initialModel.is_enabled);
     const [hasIdOverride, setHasIdOverride] = createSignal(props.initialModel.id_override !== null);
     const [idOverride, setIdOverride] = createSignal(props.initialModel.id_override ?? "");
-    const [isSaving, setIsSaving] = createSignal(false);
 
     const composedId = (): string => {
         const prefix = props.provider?.model_prefix ?? "";
@@ -185,14 +169,6 @@ function ModelSettingsForm(props: {
     const isDirty = (): boolean =>
         isEnabled() !== current().is_enabled || normalizedOverride() !== current().id_override;
 
-    // The screen holds the form's row while this dirt stands (README §6.3).
-    createEffect(
-        () => isDirty(),
-        (isDirtyValue) => {
-            props.onDirtyChange(isDirtyValue);
-        },
-    );
-
     const canSave = (): boolean => isDirty() && overrideError() === null;
 
     const revert = (): void => {
@@ -203,61 +179,37 @@ function ModelSettingsForm(props: {
         props.read.reload();
     };
 
-    const save = async (): Promise<void> => {
-        if (isSaving() || !canSave()) {
-            return;
-        }
-
-        setIsSaving(true);
-
-        const outcome = await performManagementCall(() =>
+    const form = createEditForm({
+        read: props.read,
+        action: "update-model",
+        isDirty,
+        canSave,
+        perform: () =>
             props.api.updateModel(
                 toUpdateModelRequest(current(), {
                     id_override: normalizedOverride(),
                     is_enabled: isEnabled(),
                 }),
             ),
-        );
+        onSucceeded: (envelope) => {
+            const saved = envelope.model;
+            // Re-baseline every signal from the write's answer explicitly: the
+            // public ID is recomposed inside the write, so the returned model is
+            // the form's new truth.
+            setCurrent(saved);
+            setIsEnabled(saved.is_enabled);
+            setHasIdOverride(saved.id_override !== null);
+            setIdOverride(saved.id_override ?? "");
 
-        setIsSaving(false);
-
-        if (
-            !props.read.reportAction(
-                outcome,
-                {
-                    action: "update-model",
-                },
-                {
-                    onGone: props.read.reload,
-                },
-            )
-        ) {
-            return;
-        }
-
-        const saved = outcome.result.model;
-        // Re-baseline every signal from the write's answer explicitly: the
-        // public ID is recomposed inside the write, so the returned model is
-        // the form's new truth.
-        setCurrent(saved);
-        setIsEnabled(saved.is_enabled);
-        setHasIdOverride(saved.id_override !== null);
-        setIdOverride(saved.id_override ?? "");
-        // The hold stands until this save's reload lands: the listing still
-        // answers what the save overwrote.
-        props.onSaved();
-        props.read.showNotice({
-            tone: "ok",
-            title: "Model saved.",
-            detail: `Clients now call it ${saved.public_id}.`,
-        });
-        props.read.reload();
-    };
-
-    const submit = (event: SubmitEvent): void => {
-        event.preventDefault();
-        void save();
-    };
+            return {
+                tone: "ok",
+                title: "Model saved.",
+                detail: `Clients now call it ${saved.public_id}.`,
+            };
+        },
+        onDirtyChange: props.onDirtyChange,
+        onSaved: props.onSaved,
+    });
 
     return (
         <Card>
@@ -265,12 +217,12 @@ function ModelSettingsForm(props: {
             <form
                 novalidate={true}
                 class="mt-4 flex max-w-2xl flex-col gap-5"
-                onSubmit={submit}
+                onSubmit={form.submit}
             >
                 <Switch
                     label="Enabled"
                     isOn={isEnabled()}
-                    isDisabled={isSaving()}
+                    isDisabled={form.isSaving()}
                     onToggle={setIsEnabled}
                 />
 
@@ -281,12 +233,12 @@ function ModelSettingsForm(props: {
                     onIdOverrideInput={setIdOverride}
                     composedId={composedId()}
                     idOverrideError={overrideError()}
-                    isDisabled={isSaving()}
+                    isDisabled={form.isSaving()}
                 />
 
                 <DirtyFormFooter
                     canSave={canSave()}
-                    isSaving={isSaving()}
+                    isSaving={form.isSaving()}
                     isDirty={isDirty()}
                     onRevert={revert}
                 />
@@ -301,30 +253,15 @@ function DeleteCard(props: {
     readonly model: ModelResponse;
     readonly read: ScreenRead;
 }): JSX.Element {
-    const confirmDelete = async (): Promise<boolean> => {
-        const outcome = await performManagementCall(() =>
+    const confirmDelete = createDeleteAction({
+        read: props.read,
+        action: "delete-model",
+        perform: () =>
             props.api.deleteModel({
                 model_id: props.model.id,
             }),
-        );
-
-        if (
-            !props.read.reportAction(
-                outcome,
-                {
-                    action: "delete-model",
-                },
-                {
-                    onGone: props.read.reload,
-                },
-            )
-        ) {
-            return false;
-        }
-
-        navigate(hrefs.models(props.model.provider_id));
-        return true;
-    };
+        onDeleted: () => navigate(hrefs.models(props.model.provider_id)),
+    });
 
     return (
         <ConfirmDeleteCard

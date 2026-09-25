@@ -1,5 +1,5 @@
 import { render } from "@solidjs/web";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appConfig } from "/src/config";
 import type { ManagementApi } from "/src/management-api/client";
 import { ManagementApiError } from "/src/management-api/errors";
@@ -14,6 +14,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import { ErrorCode } from "/src/management-api/generated/v0";
 import { PROVIDER_PRESETS } from "/src/management-api/presets";
+import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { ProviderNewScreen } from "/src/screens/provider-new-screen";
 import { settle, stubManagementApi } from "./screen-test-support";
@@ -30,7 +31,7 @@ function screenApi(
     sent: CreateProviderRequest[] = [],
     options: {
         readonly providers?: () => Promise<{
-            providers: [];
+            providers: ProviderResponse[];
         }>;
         readonly definitions?: () => Promise<{
             provider_definitions: DefinitionResponse[];
@@ -460,6 +461,217 @@ describe("ProviderNewScreen creation", () => {
         expect(document.body.textContent).toContain("reload this page and submit again");
         expect(document.body.textContent).not.toContain("Choose a provider name");
         expect(sent).toHaveLength(0);
+    });
+});
+
+/** A provider row of the given name, as the listing answers it. */
+function providerRowNamed(name: string): ProviderResponse {
+    return {
+        type: "api_key",
+        id: 1,
+        name,
+        model_prefix: `${name}-`,
+        is_enabled: true,
+        provider_definition_name: "generic-openai-responses",
+        provider_definition_version: 1,
+        format: "openai_response",
+        base_url: null,
+    };
+}
+
+/**
+ * The release of the held listing call that arrived at the given index,
+ * failing the test when no call is held there.
+ */
+function heldListingRelease(
+    releases: ReadonlyArray<(response: { providers: ProviderResponse[] }) => void>,
+    index: number,
+): (response: { providers: ProviderResponse[] }) => void {
+    const release = releases[index];
+
+    if (release === undefined) {
+        throw new Error(`No held listing call at index ${index}`);
+    }
+
+    return release;
+}
+
+describe("ProviderNewScreen refresh", () => {
+    const disposes: Array<() => void> = [];
+
+    beforeEach(() => {
+        resetRefreshStamp();
+    });
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("re-runs the boot reads on the refresh pulse and recovers a failed read", async () => {
+        let isProvidersFailing = true;
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={screenApi([], {
+                            providers: () =>
+                                isProvidersFailing
+                                    ? Promise.reject(new Error("the listing refused"))
+                                    : Promise.resolve({
+                                          providers: [
+                                              providerRowNamed("openai"),
+                                          ],
+                                      }),
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The failed mount read stands on the notice, and nothing stamped
+        // the shell: a cycle with a failed call is not a read that succeeded.
+        expect(document.body.textContent).toContain("the listing refused");
+        expect(refreshStamp()).toBeNull();
+
+        // The pulse re-runs the boot reads: the listing answers this time,
+        // the failed read's notice is recovered away, the untouched name
+        // suggestion moves onto the fresh taken names, and the stamp lands.
+        isProvidersFailing = false;
+        requestRefresh();
+        await settle();
+
+        expect(document.body.textContent).not.toContain("the listing refused");
+        expect(labeledInput("Name").placeholder).toBe("openai-1");
+        expect(refreshStamp()).not.toBeNull();
+    });
+
+    it("re-reads the stored definition versions on the refresh pulse", async () => {
+        let storedVersion = 1;
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={screenApi([], {
+                            definitions: () =>
+                                Promise.resolve({
+                                    provider_definitions: [
+                                        storedDefinitionRow(
+                                            "generic-openai-responses",
+                                            storedVersion,
+                                        ),
+                                    ],
+                                }),
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+        expect(document.body.textContent).toContain("Stored as version 1.");
+
+        // A version registered on the gateway since the mount is bound — and
+        // stated — by the refresh's re-read, like a fresh mount would.
+        storedVersion = 2;
+        requestRefresh();
+        await settle();
+        expect(document.body.textContent).toContain("Stored as version 2.");
+    });
+
+    it("supersedes a boot read cycle still in flight when refresh is pressed again", async () => {
+        const releases: Array<(response: { providers: ProviderResponse[] }) => void> = [];
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={screenApi([], {
+                            providers: () =>
+                                new Promise((resolve) => {
+                                    releases.push(resolve);
+                                }),
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The mount cycle is still held; the pulse supersedes it, and the
+        // second cycle's listing is the one that answers.
+        requestRefresh();
+        await settle();
+        expect(releases).toHaveLength(2);
+        heldListingRelease(
+            releases,
+            1,
+        )({
+            providers: [
+                providerRowNamed("openai"),
+            ],
+        });
+        await settle();
+        expect(labeledInput("Name").placeholder).toBe("openai-1");
+
+        // The superseded cycle's late answer installs nothing: the newer
+        // cycle owns the screen.
+        heldListingRelease(
+            releases,
+            0,
+        )({
+            providers: [],
+        });
+        await settle();
+        expect(labeledInput("Name").placeholder).toBe("openai-1");
+    });
+
+    it("re-runs the boot reads without disturbing a live OAuth flow", async () => {
+        let providerReads = 0;
+        const api: ManagementApi = {
+            ...oauthScreenApi({
+                start: () => authorizationFlow,
+            }),
+            listProviders: () => {
+                providerReads += 1;
+                return Promise.resolve({
+                    providers: [],
+                });
+            },
+        };
+        disposes.push(render(() => <ProviderNewScreen api={api} />, document.body));
+        await settle();
+
+        buttonWithText("Claude Code").click();
+        await settle();
+        buttonWithText("Start the authorization").click();
+        await settle();
+        expect(document.body.textContent).toContain("Authorization URL");
+
+        typeInto(labeledInput("Callback URL or authorization code"), "the-code");
+        const readsBeforeRefresh = providerReads;
+        requestRefresh();
+        await settle();
+
+        // The reads re-ran under the pulse…
+        expect(providerReads).toBe(readsBeforeRefresh + 1);
+
+        // …and the live flow is exactly as the pulse found it: the start's
+        // fields stay locked, the pasted callback survives, and the flow
+        // step stands where the fresh start button would be.
+        expect(labeledInput("Name").disabled).toBe(true);
+        expect(labeledInput("Callback URL or authorization code").value).toBe("the-code");
+        expect(
+            [
+                ...document.querySelectorAll("button"),
+            ].some(
+                (candidate) => candidate.textContent?.includes("Start the authorization") === true,
+            ),
+        ).toBe(false);
     });
 });
 

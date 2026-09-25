@@ -124,10 +124,9 @@ function serializeUsageQuerySubject(subject: UsageQuerySubject): string {
  * The subject one aggregates address carries: exactly one of the stream's
  * entity parameters may name a row. Any other reading — none named, several
  * named, a value that is not a row identifier — is the bare page, exactly as
- * the usage stream reads an unaddressable filter as absent. The aggregates
- * screen reads its arrival address through this too.
+ * the usage stream reads an unaddressable filter as absent.
  */
-export function parseUsageQuerySubject(search: string): UsageQuerySubject | null {
+function parseUsageQuerySubject(search: string): UsageQuerySubject | null {
     const parameters = new URLSearchParams(search);
     const named: UsageQuerySubject[] = [];
 

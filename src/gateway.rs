@@ -13,7 +13,11 @@ use super::{
     ir::{InvalidRequest, IrEvent, IrRequest},
     provider::{
         ModelRouting, Provider,
-        definition::inference::{Inference, RenderOption, UpstreamStreaming},
+        definition::{
+            eval::ValueEnv,
+            inference::{Inference, UpstreamStreaming},
+            template::TemplateNode,
+        },
         http_body, oauth,
         oauth::Error as OAuthError,
     },
@@ -290,8 +294,8 @@ fn is_upstream_streaming(inference: &Inference, is_client_streaming: bool) -> bo
 
 /// Builds the upstream HTTP request for one dispatch, entirely from the provider definition
 /// (README §5.2): the evaluated URL (the streaming URL when this dispatch streams and
-/// the definition carries one), the codec-rendered body wrapped in the definition's envelope,
-/// the engine-owned `Accept` with the definition's header rows overriding it, and one
+/// the definition carries one), the codec-rendered body attached through the definition's
+/// envelope, the engine-owned `Accept` with the definition's header rows overriding it, and one
 /// request-UUID cached across every expression of the dispatch.
 ///
 /// # Errors
@@ -314,7 +318,7 @@ fn build_upstream_request(
 
     let slots = provider.credentials.slots();
 
-    let env = crate::provider::definition::eval::ValueEnv::for_inference(
+    let env = ValueEnv::for_inference(
         slots,
         provider.base_url.as_deref(),
         provider.credentials.secret(),
@@ -332,18 +336,6 @@ fn build_upstream_request(
         .map_err(|error| Error::Internal {
             message: error.to_string(),
         })?;
-
-    let body = render_body(provider, ir, is_upstream_streaming)?;
-
-    let body = match &inference.envelope {
-        None => body,
-
-        Some(envelope) => env
-            .render_json(envelope, body, "inference envelope")
-            .map_err(|error| Error::Internal {
-                message: error.to_string(),
-            })?,
-    };
 
     let mut headers = reqwest::header::HeaderMap::new();
 
@@ -380,55 +372,109 @@ fn build_upstream_request(
         headers.insert(name, value);
     }
 
-    Ok(http.post(url).headers(headers).json(&body))
+    attach_upstream_body(
+        http.post(url).headers(headers),
+        &env,
+        provider,
+        ir,
+        is_upstream_streaming,
+    )
 }
 
-/// Renders the upstream body through the definition format's codec, applying the render options
-/// and the routed upstream model (README §5.2).
+/// Renders the upstream body through the definition format's codec and attaches it to the
+/// dispatch's request builder (README §5.2).
 ///
 /// # Errors
 ///
 /// Returns [`Error::InvalidRequest`] when the client request cannot be rendered into the
-/// definition format's body, and [`Error::Internal`] when a first-party payload fails to
-/// serialize, which cannot occur.
-fn render_body(
+/// definition format's body, and [`Error::Internal`] when the envelope's expressions reference a
+/// value this dispatch does not carry — stored drift.
+fn attach_upstream_body(
+    builder: reqwest::RequestBuilder,
+    env: &ValueEnv<'_>,
     provider: &Provider,
     ir: &IrRequest,
     is_upstream_streaming: bool,
-) -> Result<serde_json::Value, Error> {
-    let render_options: &[RenderOption] = &provider.definition.payload.inference.render_options;
+) -> Result<reqwest::RequestBuilder, Error> {
+    let inference = &provider.definition.payload.inference;
 
-    let value = match provider.definition.payload.format {
-        UpstreamFormat::OpenAiResponse => serialize_body(&openai_response::render_request_body(
-            ir,
-            is_upstream_streaming,
-            render_options,
-        )),
+    let envelope = inference.envelope.as_ref();
 
-        UpstreamFormat::OpenAiChatCompletion => serialize_body(
+    match provider.definition.payload.format {
+        UpstreamFormat::OpenAiResponse => attach_body(
+            builder,
+            env,
+            envelope,
+            &openai_response::render_request_body(
+                ir,
+                is_upstream_streaming,
+                &inference.render_options,
+            ),
+        ),
+
+        UpstreamFormat::OpenAiChatCompletion => attach_body(
+            builder,
+            env,
+            envelope,
             &openai_chat_completion::render_request_body(ir, is_upstream_streaming),
         ),
 
-        UpstreamFormat::GeminiGenerateContent => serialize_body(
+        UpstreamFormat::GeminiGenerateContent => attach_body(
+            builder,
+            env,
+            envelope,
             &gemini_generate_content::render_generate_content_request(ir).map_err(Error::from)?,
         ),
 
-        UpstreamFormat::GeminiInteraction => serialize_body(
+        UpstreamFormat::GeminiInteraction => attach_body(
+            builder,
+            env,
+            envelope,
             &gemini_interaction::render_request_body(ir, &ir.model, is_upstream_streaming)
                 .map_err(Error::from)?,
         ),
 
-        UpstreamFormat::AnthropicMessages => serialize_body(
+        UpstreamFormat::AnthropicMessages => attach_body(
+            builder,
+            env,
+            envelope,
             &anthropic_messages::render_request_body(ir, is_upstream_streaming)
                 .map_err(Error::from)?,
         ),
-    };
-
-    Ok(value)
+    }
 }
 
-/// Serializes one codec-rendered body: a first-party serde type always renders, so the failure
-/// arm is the documented unreachable invariant.
+/// Attaches one codec-rendered body to the request builder: without an envelope the typed body
+/// rides to reqwest and serializes exactly once onto the wire; with one, the body converts into
+/// the JSON value the envelope's template DOM splices — the one fragment whose shape is not the
+/// gateway's to define — and the rendered envelope replaces the body wholesale.
+///
+/// # Errors
+///
+/// Returns [`Error::Internal`] when the envelope's expressions reference a value this dispatch
+/// does not carry — stored drift.
+fn attach_body<T: serde::Serialize>(
+    builder: reqwest::RequestBuilder,
+    env: &ValueEnv<'_>,
+    envelope: Option<&TemplateNode>,
+    body: &T,
+) -> Result<reqwest::RequestBuilder, Error> {
+    let Some(envelope) = envelope else {
+        return Ok(builder.json(body));
+    };
+
+    let body = env
+        .render_json(envelope, serialize_body(body), "inference envelope")
+        .map_err(|error| Error::Internal {
+            message: error.to_string(),
+        })?;
+
+    Ok(builder.json(&body))
+}
+
+/// Serializes one codec-rendered body into the JSON value the envelope's template DOM splices: a
+/// first-party serde type always renders, so the failure arm is the documented unreachable
+/// invariant.
 ///
 /// # Panics
 ///
@@ -476,6 +522,27 @@ async fn abort_stream(
     }
 
     let _ = sender.send(Err(error)).await;
+}
+
+/// Aborts an SSE pump for a framing-layer rejection — an oversized frame — stating the policy
+/// once: a framing-layer rejection aborts identically wherever it surfaces, in the main chunk
+/// loop or at the trailing flush (README §6.3).
+async fn abort_oversized_frame(
+    is_aborted: &mut bool,
+    sender: &tokio::sync::mpsc::Sender<Result<IrEvent, Error>>,
+    upstream_label: &str,
+    is_client_streaming: bool,
+) {
+    abort_stream(
+        is_aborted,
+        sender,
+        upstream_label,
+        is_client_streaming,
+        Error::Unavailable {
+            detail: "oversized SSE frame".to_string(),
+        },
+    )
+    .await;
 }
 
 /// Forwards parsed IR events to the consumer, reporting whether the consumer is still listening. A
@@ -586,14 +653,11 @@ async fn pump_sse(
                 })
                 .collect(),
             Err(_) => {
-                abort_stream(
+                abort_oversized_frame(
                     &mut is_aborted,
                     &sender,
                     &upstream_label,
                     is_client_streaming,
-                    Error::Unavailable {
-                        detail: "oversized SSE frame".to_string(),
-                    },
                 )
                 .await;
 
@@ -633,19 +697,14 @@ async fn pump_sse(
                 .await;
             }
 
-            // A trailing frame the framing layer rejects at flush time aborts the stream exactly
-            // like an oversized frame in the main loop; silently completing the stream here would
-            // drop the trailing frame on the floor. The final `Done` below still terminates the
-            // event stream.
+            // Silently completing the stream here would drop the trailing frame on the floor. The
+            // final `Done` below still terminates the event stream.
             Err(_) => {
-                abort_stream(
+                abort_oversized_frame(
                     &mut is_aborted,
                     &sender,
                     &upstream_label,
                     is_client_streaming,
-                    Error::Unavailable {
-                        detail: "oversized SSE frame".to_string(),
-                    },
                 )
                 .await;
             }
@@ -780,8 +839,21 @@ impl From<PayloadError> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{accounting::ApiLogOutcome, api::Error as ApiError};
+    use crate::{
+        accounting::ApiLogOutcome,
+        api::Error as ApiError,
+        ir::{IrMessage, IrPart, IrRole},
+        provider::{
+            DiscoveryState, Model, StoredCredentials,
+            definition::{
+                DefinitionPayload, ProviderDefinition,
+                credential::CredentialAcquisition,
+                template::{StringExpr, ValueExpr},
+            },
+        },
+    };
     use reqwest::StatusCode;
+    use std::{collections::BTreeMap, num::NonZeroI64};
 
     /// Verifies the dispatch accounting derives from the shared API classification: a mirrored
     /// upstream non-2xx records `upstream_error` with that very status, a transport failure
@@ -813,5 +885,173 @@ mod tests {
         .accounting();
 
         assert_eq!((outcome, http_status), (ApiLogOutcome::Internal, 500));
+    }
+
+    /// Builds a minimal one-turn chat request the dispatch bodies render from.
+    fn fixture_ir() -> IrRequest {
+        IrRequest {
+            model: "upstream-model".to_string(),
+            instructions: None,
+            messages: vec![IrMessage {
+                role: IrRole::User,
+                parts: vec![IrPart::Text {
+                    text: "hello".to_string(),
+                }],
+            }],
+            tools: vec![],
+            tool_choice: None,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            response_format: None,
+            reasoning_effort: None,
+        }
+    }
+
+    /// Builds an API-key provider of the chat-completions format carrying the given envelope.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture version fails to construct, which the positive literal prevents.
+    #[expect(
+        clippy::expect_used,
+        reason = "the fixture version literal is positive"
+    )]
+    fn fixture_provider(envelope: Option<TemplateNode>) -> Provider {
+        Provider {
+            id: 1,
+            name: "test-provider".to_string(),
+            model_prefix: String::new(),
+            base_url: None,
+            credentials: StoredCredentials::ApiKey {
+                api_key: "key".to_string(),
+            },
+            is_enabled: true,
+            definition: ProviderDefinition {
+                name: "test-definition".to_string(),
+                version: NonZeroI64::new(1).expect("one is positive"),
+                payload: DefinitionPayload {
+                    format: UpstreamFormat::OpenAiChatCompletion,
+                    inference: Inference {
+                        url: StringExpr::literal("https://upstream.test/v1/chat/completions"),
+                        stream_url: None,
+                        headers: vec![],
+                        upstream_streaming: UpstreamStreaming::MatchClient,
+                        render_options: vec![],
+                        envelope,
+                        response_unwrap: None,
+                    },
+                    credential: CredentialAcquisition::ApiKey,
+                    provisioning: None,
+                    discovery: None,
+                },
+                created_at: 0,
+            },
+        }
+    }
+
+    /// Builds the dispatch request for the fixture provider and parses the body it would send.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture dispatch fails to build or its body does not parse, which the
+    /// fixture prevents.
+    #[expect(
+        clippy::expect_used,
+        reason = "the fixture dispatch is constructed to build and parse"
+    )]
+    fn fixture_wire_body(http: &Client, provider: &Provider, ir: &IrRequest) -> serde_json::Value {
+        let routing = ModelRouting {
+            provider: provider.clone(),
+            model: Model {
+                id: 1,
+                upstream_id: ir.model.clone(),
+                public_id: "public-model".to_string(),
+                id_override: None,
+                is_enabled: true,
+                discovery_state: DiscoveryState::Manual,
+            },
+            is_effectively_enabled: true,
+        };
+
+        let request = build_upstream_request(http, provider, &routing, ir, false)
+            .expect("the fixture dispatch builds")
+            .build()
+            .expect("the request builder completes");
+
+        let body = request
+            .body()
+            .expect("a JSON dispatch carries a body")
+            .as_bytes()
+            .expect("a JSON dispatch body is buffered")
+            .to_vec();
+
+        serde_json::from_slice(&body).expect("the fixture body parses")
+    }
+
+    /// Serializes the codec-rendered body the dispatch should carry on the wire.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered body fails to serialize, which cannot occur for a first-party serde
+    /// type.
+    #[expect(
+        clippy::expect_used,
+        reason = "a first-party rendered body always serializes"
+    )]
+    fn expected_rendered_body(ir: &IrRequest) -> serde_json::Value {
+        serde_json::to_value(openai_chat_completion::render_request_body(ir, false))
+            .expect("a first-party rendered body serializes")
+    }
+
+    /// Verifies the no-envelope dispatch: the codec-rendered body rides to reqwest in its typed
+    /// form, so the wire body is exactly that rendering with no envelope wrapped around it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture fails to build or the wire body differs from the rendering.
+    #[tokio::test]
+    async fn dispatches_the_rendered_body_alone_without_an_envelope() {
+        let ir = fixture_ir();
+        let provider = fixture_provider(None);
+
+        assert_eq!(
+            fixture_wire_body(&Client::new(), &provider, &ir),
+            expected_rendered_body(&ir)
+        );
+    }
+
+    /// Verifies the envelope dispatch: the codec-rendered body is spliced into the envelope's
+    /// template DOM at its body placeholder, and the envelope's string leaves evaluate against
+    /// the dispatch's values — here the routed upstream model.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture fails to build or the wire body differs from the rendered envelope.
+    #[tokio::test]
+    async fn splices_the_rendered_body_into_the_envelope_dom() {
+        let ir = fixture_ir();
+
+        let envelope = TemplateNode::Object {
+            fields: BTreeMap::from([
+                (
+                    "model".to_string(),
+                    TemplateNode::String {
+                        expr: StringExpr::single(ValueExpr::Model),
+                    },
+                ),
+                ("request".to_string(), TemplateNode::Body),
+            ]),
+        };
+
+        let provider = fixture_provider(Some(envelope));
+
+        assert_eq!(
+            fixture_wire_body(&Client::new(), &provider, &ir),
+            serde_json::json!({
+                "model": ir.model,
+                "request": expected_rendered_body(&ir),
+            })
+        );
     }
 }

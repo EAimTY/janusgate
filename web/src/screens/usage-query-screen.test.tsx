@@ -13,6 +13,7 @@ import type {
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
+import type { UsageQuerySubject } from "/src/router";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
 import { settle, stubManagementApi } from "./screen-test-support";
 
@@ -298,6 +299,7 @@ describe("UsageQueryScreen request assembly", () => {
                                 });
                             },
                         }}
+                        subject={null}
                     />
                 ),
                 document.body,
@@ -385,7 +387,17 @@ describe("UsageQueryScreen refresh racing the initial read", () => {
             queryCount += 1;
         });
 
-        disposes.push(render(() => <UsageQueryScreen api={api} />, document.body));
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
         await settle();
 
         // The initial read is in flight under the skeleton.
@@ -446,7 +458,17 @@ describe("UsageQueryScreen submit during the initial read", () => {
             providerBucket,
         ]);
 
-        disposes.push(render(() => <UsageQueryScreen api={api} />, document.body));
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
         await settle();
 
         // The initial read is in flight under the skeleton.
@@ -518,7 +540,17 @@ describe("UsageQueryScreen refresh racing an in-flight submit", () => {
             providerBucket,
         ]);
 
-        disposes.push(render(() => <UsageQueryScreen api={api} />, document.body));
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
         await settle();
 
         // The initial read is in flight under the skeleton.
@@ -601,9 +633,6 @@ describe("UsageQueryScreen arrival subject", () => {
             dispose();
         }
         disposes.length = 0;
-
-        window.history.pushState(null, "", "/");
-        window.dispatchEvent(new PopStateEvent("popstate"));
     });
 
     async function mountAndAnswer(
@@ -613,6 +642,7 @@ describe("UsageQueryScreen arrival subject", () => {
             readonly models: Array<(answer: ListModelsResponse) => void>;
             readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
         },
+        subject: UsageQuerySubject | null = null,
     ): Promise<void> {
         const api = screenApi(holder, () => {}, []);
 
@@ -630,6 +660,7 @@ describe("UsageQueryScreen arrival subject", () => {
                                 });
                             },
                         }}
+                        subject={subject}
                     />
                 ),
                 document.body,
@@ -649,16 +680,20 @@ describe("UsageQueryScreen arrival subject", () => {
         await settle();
     }
 
-    it("prefills the address's subject as the grouping and the filter", async () => {
-        window.history.pushState(null, "", "/usage/query?provider=1");
-        window.dispatchEvent(new PopStateEvent("popstate"));
-
+    it("prefills the route's subject as the grouping and the filter", async () => {
         const requests: QueryUsageRequest[] = [];
-        await mountAndAnswer(requests, {
-            providers: [],
-            models: [],
-            apiKeys: [],
-        });
+        await mountAndAnswer(
+            requests,
+            {
+                providers: [],
+                models: [],
+                apiKeys: [],
+            },
+            {
+                dimension: "provider",
+                id: 1,
+            },
+        );
 
         // The subject preselects its dimension beside the day default and
         // fills its own filter field: the arrival query already asks about
@@ -678,7 +713,7 @@ describe("UsageQueryScreen arrival subject", () => {
         ]);
     });
 
-    it("asks the bare page's default question when the address carries no subject", async () => {
+    it("asks the bare page's default question when the route carries no subject", async () => {
         const requests: QueryUsageRequest[] = [];
         await mountAndAnswer(requests, {
             providers: [],
@@ -734,6 +769,7 @@ describe("UsageQueryScreen hand-typed bounds", () => {
                                 });
                             },
                         }}
+                        subject={null}
                     />
                 ),
                 document.body,

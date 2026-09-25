@@ -272,15 +272,11 @@ pub(crate) fn definition_from_row_offset(
         message: format!("definition `{name}` carries a zero version"),
     })?;
 
-    let format: crate::format::UpstreamFormat = {
-        let format: String = row.get(offset + 2)?;
+    let format: String = row.get(offset + 2)?;
 
-        serde_json::from_value(serde_json::Value::String(format.clone())).map_err(|_| {
-            Error::Drift {
-                message: format!("definition `{name}` carries an unknown format `{format}`"),
-            }
-        })?
-    };
+    let format = crate::format::UpstreamFormat::parse(&format).ok_or_else(|| Error::Drift {
+        message: format!("definition `{name}` carries an unknown format `{format}`"),
+    })?;
 
     Ok(ProviderDefinition {
         name,

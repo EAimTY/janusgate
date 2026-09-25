@@ -74,6 +74,38 @@ function typeIntoSearch(value: string): void {
     throw new Error("No models search input");
 }
 
+/** The select one label names, through the label's `for` pairing. */
+function selectWithLabel(label: string): HTMLSelectElement {
+    const owner = Array.from(document.querySelectorAll("label")).find(
+        (candidate) => candidate.textContent === label,
+    );
+
+    if (owner === undefined) {
+        throw new Error(`No field labelled ${label}`);
+    }
+
+    const control = document.getElementById(owner.htmlFor);
+
+    if (!(control instanceof HTMLSelectElement)) {
+        throw new Error(`No select labelled ${label}`);
+    }
+
+    return control;
+}
+
+/** One option's value, label, and selected state, as the DOM holds them. */
+function optionRepr(option: HTMLOptionElement): {
+    value: string;
+    label: string;
+    isSelected: boolean;
+} {
+    return {
+        value: option.value,
+        label: option.textContent ?? "",
+        isSelected: option.selected,
+    };
+}
+
 function bodyText(): string {
     return document.body.textContent ?? "";
 }
@@ -181,7 +213,7 @@ describe("ModelsScreen search", () => {
     });
 });
 
-describe("ModelsScreen no-match notice", () => {
+describe("ModelsScreen provider filter", () => {
     const disposes: Array<() => void> = [];
 
     afterEach(() => {
@@ -192,7 +224,7 @@ describe("ModelsScreen no-match notice", () => {
     });
 
     /** Mounts the screen over a gateway with the provider but none of its models. */
-    function mountWithoutModels(providerFilter: number | null): void {
+    function mountFiltered(providerFilter: number | null): void {
         disposes.push(
             render(
                 () => (
@@ -212,7 +244,7 @@ describe("ModelsScreen no-match notice", () => {
     }
 
     it("states the whole gateway's emptiness when nothing is filtered", async () => {
-        mountWithoutModels(null);
+        mountFiltered(null);
         await settle();
 
         // The unfiltered table is about no provider in particular, so the
@@ -222,9 +254,32 @@ describe("ModelsScreen no-match notice", () => {
     });
 
     it("names the filtered provider's emptiness when the filter is set", async () => {
-        mountWithoutModels(3);
+        mountFiltered(3);
         await settle();
 
         expect(bodyText()).toContain("This provider holds no models.");
+    });
+
+    it("keeps a filter naming an unlisted provider stated as its own option", async () => {
+        // Provider 9 was deleted after a filter linked to it: the listing the
+        // screen read no longer carries it, so a listing-built option list
+        // alone would leave the select silently sitting on "All providers"
+        // while the route still filtered.
+        mountFiltered(9);
+        await settle();
+
+        const options = Array.from(selectWithLabel("Provider").options).map(optionRepr);
+
+        expect(options.at(-1)).toEqual({
+            value: "9",
+            label: "9 (no longer listed)",
+            isSelected: true,
+        });
+        // The listed provider's own option is untouched.
+        expect(options).toContainEqual({
+            value: "3",
+            label: "mix-ops",
+            isSelected: false,
+        });
     });
 });

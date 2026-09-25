@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createMemo, createSignal, Show } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 import { credentialExpiryLine, nowMicros } from "/src/format";
 import { toUpdateProviderRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
@@ -24,9 +24,8 @@ import {
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { Button, ButtonLink, TextField } from "/src/ui/controls";
+import { Button, TextField } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { EmptyState } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { AuthorizeStep, DeviceStep } from "/src/ui/oauth-flow";
 import {
@@ -34,7 +33,9 @@ import {
     ProviderEnabledSwitch,
     ProviderIdentityFields,
 } from "/src/ui/provider-form";
+import { createDeleteAction, createEditForm } from "./edit-form";
 import { createOauthFlow } from "./oauth-flow";
+import { RowNotFound } from "./row-not-found";
 
 /**
  * One provider's edit page: its settings, its credentials, and its deletion.
@@ -62,7 +63,6 @@ export function ProviderEditScreen(props: {
     // The notice is also the save's reported outcome, so only a new failure
     // replaces it — a successful read keeps it (README §6.3).
     const read = createScreenRead({
-        reReadOn: () => props.providerId,
         isNoticeKeptOnSuccess: true,
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
@@ -104,24 +104,10 @@ export function ProviderEditScreen(props: {
                 />
             }
             notFound={
-                <>
-                    <PageHeader
-                        title="Edit provider"
-                        backHref={hrefs.providers()}
-                        backLabel="Providers"
-                    />
-                    <EmptyState
-                        title="Provider not found"
-                        description="The gateway holds no provider here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
-                    >
-                        <ButtonLink
-                            href={hrefs.providers()}
-                            tone="primary"
-                        >
-                            Back to providers
-                        </ButtonLink>
-                    </EmptyState>
-                </>
+                <RowNotFound
+                    kind="provider"
+                    headerTitle="Edit provider"
+                />
             }
         >
             {(row) => (
@@ -249,7 +235,6 @@ function DetailsCard(props: {
     const [customPrefix, setCustomPrefix] = createSignal(seed.customPrefix);
     const [baseUrl, setBaseUrl] = createSignal(seed.baseUrl);
     const [apiKey, setApiKey] = createSignal("");
-    const [isSaving, setIsSaving] = createSignal(false);
 
     const isStatic = (): boolean => !isOAuthProviderRow(baseline());
 
@@ -319,14 +304,6 @@ function DetailsCard(props: {
     const canSave = (): boolean =>
         isDirty() && isNamePresent() && prefixError() === null && isConnectionValid();
 
-    // The screen holds the form's row while this dirt stands (README §6.3).
-    createEffect(
-        () => isDirty(),
-        (isDirtyValue) => {
-            props.onDirtyChange(isDirtyValue);
-        },
-    );
-
     const revert = (): void => {
         const seed = seedFrom(baseline());
 
@@ -340,14 +317,12 @@ function DetailsCard(props: {
         props.read.reload();
     };
 
-    const save = async (): Promise<void> => {
-        if (isSaving() || !canSave()) {
-            return;
-        }
-
-        setIsSaving(true);
-
-        const outcome = await performManagementCall(() =>
+    const form = createEditForm({
+        read: props.read,
+        action: "update-provider",
+        isDirty,
+        canSave,
+        perform: () =>
             props.api.updateProvider(
                 toUpdateProviderRequest(props.provider, {
                     name: name(),
@@ -365,64 +340,43 @@ function DetailsCard(props: {
                         : {}),
                 }),
             ),
-        );
+        onSucceeded: () => {
+            // The warning states a recomposition only when the save actually
+            // recomposes one: the gateway rewrites exactly the unoverridden
+            // models whose composed ID differs from the public ID it already
+            // holds, so the submitted prefix is measured against those rows —
+            // never against this form's first-read baseline, which a held row
+            // can leave behind what the gateway holds now.
+            const prefix = effectivePrefix();
+            const recomposesPublicIds = props.models.some(
+                (model) =>
+                    model.id_override === null &&
+                    model.public_id !== `${prefix}${model.upstream_id}`,
+            );
 
-        setIsSaving(false);
+            // The write's complete desired state: the update rewrote exactly
+            // these fields, so the row they describe is this form's new truth.
+            setBaseline(
+                withEdits(baseline(), {
+                    name: name(),
+                    modelPrefix: effectivePrefix(),
+                    isEnabled: isEnabled(),
+                    baseUrl: resolvedBaseUrl(),
+                }),
+            );
+            setApiKey("");
 
-        if (
-            !props.read.reportAction(
-                outcome,
-                {
-                    action: "update-provider",
-                },
-                {
-                    onGone: props.read.reload,
-                },
-            )
-        ) {
-            return;
-        }
-
-        // The warning states a recomposition only when the save actually
-        // recomposes one: the gateway rewrites exactly the unoverridden
-        // models whose composed ID differs from the public ID it already
-        // holds, so the submitted prefix is measured against those rows —
-        // never against this form's first-read baseline, which a held row
-        // can leave behind what the gateway holds now.
-        const prefix = effectivePrefix();
-        const recomposesPublicIds = props.models.some(
-            (model) =>
-                model.id_override === null && model.public_id !== `${prefix}${model.upstream_id}`,
-        );
-
-        // The write's complete desired state: the update rewrote exactly
-        // these fields, so the row they describe is this form's new truth.
-        setBaseline(
-            withEdits(baseline(), {
-                name: name(),
-                modelPrefix: effectivePrefix(),
-                isEnabled: isEnabled(),
-                baseUrl: resolvedBaseUrl(),
-            }),
-        );
-        setApiKey("");
-        // The hold stands until this save's reload lands: the listing still
-        // answers what the save overwrote.
-        props.onSaved();
-        props.read.showNotice({
-            tone: "ok",
-            title: `${name()} saved.`,
-            detail: recomposesPublicIds
-                ? "The new prefix recomposes the public ID of every model without an override."
-                : null,
-        });
-        props.read.reload();
-    };
-
-    const submit = (event: SubmitEvent): void => {
-        event.preventDefault();
-        void save();
-    };
+            return {
+                tone: "ok",
+                title: `${name()} saved.`,
+                detail: recomposesPublicIds
+                    ? "The new prefix recomposes the public ID of every model without an override."
+                    : null,
+            };
+        },
+        onDirtyChange: props.onDirtyChange,
+        onSaved: props.onSaved,
+    });
 
     return (
         <Card>
@@ -430,12 +384,12 @@ function DetailsCard(props: {
             <form
                 novalidate={true}
                 class="mt-4 flex max-w-2xl flex-col gap-4"
-                onSubmit={submit}
+                onSubmit={form.submit}
             >
                 <ProviderEnabledSwitch
                     isEnabled={isEnabled()}
                     onToggle={setIsEnabled}
-                    isDisabled={isSaving()}
+                    isDisabled={form.isSaving()}
                 />
 
                 <ProviderIdentityFields
@@ -449,7 +403,7 @@ function DetailsCard(props: {
                     onCustomPrefixInput={setCustomPrefix}
                     defaultPrefix={defaultModelPrefix(name())}
                     prefixError={prefixError()}
-                    isDisabled={isSaving()}
+                    isDisabled={form.isSaving()}
                 />
 
                 <Show when={isStatic()}>
@@ -462,13 +416,13 @@ function DetailsCard(props: {
                         apiKeyHint="Write-only: the gateway never returns it, so leaving this empty keeps what is stored."
                         baseUrlError={baseUrlError()}
                         apiKeyError={apiKeyError()}
-                        isDisabled={isSaving()}
+                        isDisabled={form.isSaving()}
                     />
                 </Show>
 
                 <DirtyFormFooter
                     canSave={canSave()}
-                    isSaving={isSaving()}
+                    isSaving={form.isSaving()}
                     isDirty={isDirty()}
                     onRevert={revert}
                 />
@@ -601,30 +555,15 @@ function DangerCard(props: {
     readonly modelCount: number;
     readonly read: ScreenRead;
 }): JSX.Element {
-    const confirmDelete = async (): Promise<boolean> => {
-        const outcome = await performManagementCall(() =>
+    const confirmDelete = createDeleteAction({
+        read: props.read,
+        action: "delete-provider",
+        perform: () =>
             props.api.deleteProvider({
                 provider_id: props.provider.id,
             }),
-        );
-
-        if (
-            !props.read.reportAction(
-                outcome,
-                {
-                    action: "delete-provider",
-                },
-                {
-                    onGone: props.read.reload,
-                },
-            )
-        ) {
-            return false;
-        }
-
-        navigate(hrefs.providers());
-        return true;
-    };
+        onDeleted: () => navigate(hrefs.providers()),
+    });
 
     // A provider with no models cascades nothing: the count phrase and the
     // clients' 404s name consequences that do not exist and must not fire.

@@ -9,8 +9,9 @@ import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
 import { ButtonLink } from "/src/ui/controls";
-import { Badge, EmptyState } from "/src/ui/feedback";
+import { Badge } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { RowNotFound } from "./row-not-found";
 
 /**
  * One serving key's page: its secret, its facts, and what serving clients
@@ -24,7 +25,6 @@ export function ApiKeyDetailScreen(props: {
     const [keys, setKeys] = createSignal<ReadonlyArray<ApiKeyResponse>>([]);
 
     const read = createScreenRead({
-        reReadOn: () => props.apiKeyId,
         load: async (signal) => {
             const [keysResult] = await readAll(signal, {
                 run: (cycle) => props.api.listApiKeys(cycle),
@@ -55,25 +55,14 @@ export function ApiKeyDetailScreen(props: {
                 />
             }
             notFound={
-                <>
-                    <PageHeader
-                        title="API key"
-                        backHref={hrefs.apiKeys()}
-                        backLabel="API keys"
-                    />
-                    <EmptyState
-                        title="API key not found"
-                        description="The gateway holds no API key here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
-                    >
-                        <ButtonLink
-                            href={hrefs.apiKeys()}
-                            tone="primary"
-                        >
-                            Back to API keys
-                        </ButtonLink>
-                        <ButtonLink href={hrefs.apiKeyNew()}>Create API key</ButtonLink>
-                    </EmptyState>
-                </>
+                <RowNotFound
+                    kind="api_key"
+                    headerTitle="API key"
+                    createAction={{
+                        href: hrefs.apiKeyNew(),
+                        label: "Create API key",
+                    }}
+                />
             }
         >
             {(row) => (

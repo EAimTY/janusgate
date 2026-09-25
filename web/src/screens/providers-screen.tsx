@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { modelCountsByProvider } from "/src/management-api/serving";
@@ -8,9 +8,10 @@ import { hrefs } from "/src/router";
 import { createScreenRead, readAll } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { ButtonLink, SearchInput } from "/src/ui/controls";
-import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { EmptyState, Notice } from "/src/ui/feedback";
 import { PageHeader } from "/src/ui/layout";
 import { ProviderList } from "/src/ui/providers-table";
+import { SkeletonRows } from "./skeleton-rows";
 
 /**
  * The provider list: one row per upstream account. Rows carry identity,
@@ -75,19 +76,11 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
 
             <ReadNotice read={read} />
 
-            <Show when={read.isFirstRead()}>
-                <div class="flex flex-col gap-2">
-                    <For
-                        each={[
-                            0,
-                            1,
-                            2,
-                        ]}
-                    >
-                        {() => <Skeleton class="h-16 w-full rounded-xl" />}
-                    </For>
-                </div>
-            </Show>
+            <SkeletonRows
+                read={read}
+                rowCount={3}
+                rowHeight="h-16"
+            />
 
             <Show when={read.hasRead()}>
                 <Show

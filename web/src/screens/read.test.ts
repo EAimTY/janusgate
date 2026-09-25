@@ -468,29 +468,6 @@ describe("createScreenRead", () => {
             fix: null,
         });
     });
-
-    it("re-runs on a route-identity change and aborts the prior cycle", async () => {
-        const [source, setSource] = createSignal(1);
-        const state = manualLoad();
-        const { read } = mountedRead({
-            load: state.load,
-            reReadOn: source,
-        });
-        await waitForCycles(state, 1);
-
-        setSource(2);
-        await waitForCycles(state, 2);
-        expect(state.cycles[0]?.signal.aborted).toBe(true);
-
-        state.cycles[1]?.succeed();
-        await settle();
-        expect(read.hasRead()).toBe(true);
-        expect(read.notice()).toBeNull();
-
-        state.cycles[0]?.fail();
-        await settle();
-        expect(read.notice()).toBeNull();
-    });
 });
 
 describe("row-identity predicates", () => {

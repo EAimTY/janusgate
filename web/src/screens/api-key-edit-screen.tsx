@@ -1,10 +1,9 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createMemo, createSignal } from "solid-js";
+import { createMemo, createSignal } from "solid-js";
 import { toUpdateApiKeyRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { bearerSecretError, isBearerSecret } from "/src/management-api/identifiers";
-import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import {
     createEditRow,
@@ -16,10 +15,11 @@ import {
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { ButtonLink, Switch } from "/src/ui/controls";
+import { Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { EmptyState } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { createDeleteAction, createEditForm } from "./edit-form";
+import { RowNotFound } from "./row-not-found";
 
 /**
  * One serving key's edit page: its settings and its deletion. The form opens
@@ -79,24 +79,10 @@ export function ApiKeyEditScreen(props: {
                 />
             }
             notFound={
-                <>
-                    <PageHeader
-                        title="Edit API key"
-                        backHref={hrefs.apiKeys()}
-                        backLabel="API keys"
-                    />
-                    <EmptyState
-                        title="API key not found"
-                        description="The gateway holds no API key here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
-                    >
-                        <ButtonLink
-                            href={hrefs.apiKeys()}
-                            tone="primary"
-                        >
-                            Back to API keys
-                        </ButtonLink>
-                    </EmptyState>
-                </>
+                <RowNotFound
+                    kind="api_key"
+                    headerTitle="Edit API key"
+                />
             }
         >
             {(row) => (
@@ -149,20 +135,11 @@ function SettingsCard(props: {
     const [isEnabled, setIsEnabled] = createSignal(props.apiKey.is_enabled);
     const [name, setName] = createSignal(props.apiKey.name);
     const [secret, setSecret] = createSignal(props.apiKey.key);
-    const [isSaving, setIsSaving] = createSignal(false);
 
     const isDirty = (): boolean =>
         isEnabled() !== baseline().is_enabled ||
         name() !== baseline().name ||
         secret() !== baseline().key;
-
-    // The screen holds the form's row while this dirt stands (README §6.3).
-    createEffect(
-        () => isDirty(),
-        (isDirtyValue) => {
-            props.onDirtyChange(isDirtyValue);
-        },
-    );
 
     /** Inline error for the name, shown where it was typed. The stored name
      * is non-empty by contract, so an empty value here is the operator's
@@ -182,14 +159,12 @@ function SettingsCard(props: {
         props.read.reload();
     };
 
-    const save = async (): Promise<void> => {
-        if (isSaving() || !canSave()) {
-            return;
-        }
-
-        setIsSaving(true);
-
-        const outcome = await performManagementCall(() =>
+    const form = createEditForm({
+        read: props.read,
+        action: "update-api-key",
+        isDirty,
+        canSave,
+        perform: () =>
             props.api.updateApiKey(
                 toUpdateApiKeyRequest(props.apiKey, {
                     name: name(),
@@ -197,50 +172,28 @@ function SettingsCard(props: {
                     is_enabled: isEnabled(),
                 }),
             ),
-        );
+        onSucceeded: () => {
+            // The write's complete desired state: the update rewrote exactly
+            // these fields, so the row they describe is this form's new truth.
+            setBaseline({
+                ...props.apiKey,
+                name: name(),
+                key: secret(),
+                is_enabled: isEnabled(),
+            });
 
-        setIsSaving(false);
-
-        if (
-            !props.read.reportAction(
-                outcome,
-                {
-                    action: "update-api-key",
-                },
-                {
-                    onGone: props.read.reload,
-                },
-            )
-        ) {
-            return;
-        }
-
-        // The write's complete desired state: the update rewrote exactly
-        // these fields, so the row they describe is this form's new truth.
-        setBaseline({
-            ...props.apiKey,
-            name: name(),
-            key: secret(),
-            is_enabled: isEnabled(),
-        });
-        // The hold stands until this save's reload lands: the listing still
-        // answers what the save overwrote.
-        props.onSaved();
-        props.read.showNotice({
-            tone: "ok",
-            title: `${name()} saved.`,
-            detail:
-                !isEnabled() && props.apiKey.is_enabled && props.enabledCount <= 1
-                    ? "This was the last enabled key: the gateway now serves nothing until a key is turned on."
-                    : null,
-        });
-        props.read.reload();
-    };
-
-    const submit = (event: SubmitEvent): void => {
-        event.preventDefault();
-        void save();
-    };
+            return {
+                tone: "ok",
+                title: `${name()} saved.`,
+                detail:
+                    !isEnabled() && props.apiKey.is_enabled && props.enabledCount <= 1
+                        ? "This was the last enabled key: the gateway now serves nothing until a key is turned on."
+                        : null,
+            };
+        },
+        onDirtyChange: props.onDirtyChange,
+        onSaved: props.onSaved,
+    });
 
     return (
         <Card>
@@ -251,30 +204,30 @@ function SettingsCard(props: {
             <form
                 novalidate={true}
                 class="mt-4 flex max-w-2xl flex-col gap-4"
-                onSubmit={submit}
+                onSubmit={form.submit}
             >
                 <Switch
                     label="Enabled"
                     isOn={isEnabled()}
-                    isDisabled={isSaving()}
+                    isDisabled={form.isSaving()}
                     onToggle={setIsEnabled}
                 />
                 <ApiKeyNameField
                     name={name()}
                     onNameInput={setName}
-                    isDisabled={isSaving()}
+                    isDisabled={form.isSaving()}
                     error={nameError()}
                 />
                 <ApiKeySecretField
                     secret={secret()}
                     onSecretInput={setSecret}
-                    isDisabled={isSaving()}
+                    isDisabled={form.isSaving()}
                     hint="Replacing the secret revokes the old value on save."
                     error={secretError()}
                 />
                 <DirtyFormFooter
                     canSave={canSave()}
-                    isSaving={isSaving()}
+                    isSaving={form.isSaving()}
                     isDirty={isDirty()}
                     onRevert={revert}
                 />
@@ -290,30 +243,15 @@ function DangerCard(props: {
     readonly isLastEnabled: boolean;
     readonly read: ScreenRead;
 }): JSX.Element {
-    const confirmDelete = async (): Promise<boolean> => {
-        const outcome = await performManagementCall(() =>
+    const confirmDelete = createDeleteAction({
+        read: props.read,
+        action: "delete-api-key",
+        perform: () =>
             props.api.deleteApiKey({
                 api_key_id: props.apiKey.id,
             }),
-        );
-
-        if (
-            !props.read.reportAction(
-                outcome,
-                {
-                    action: "delete-api-key",
-                },
-                {
-                    onGone: props.read.reload,
-                },
-            )
-        ) {
-            return false;
-        }
-
-        navigate(hrefs.apiKeys());
-        return true;
-    };
+        onDeleted: () => navigate(hrefs.apiKeys()),
+    });
 
     return (
         <ConfirmDeleteCard

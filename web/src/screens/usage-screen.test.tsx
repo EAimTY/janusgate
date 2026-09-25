@@ -1,5 +1,4 @@
 import { render } from "@solidjs/web";
-import { createSignal } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
@@ -299,6 +298,17 @@ describe("UsageScreen stream continuation", () => {
         expect(bodyText()).toContain("Load more");
         expect(bodyText()).not.toContain("That is every recorded row.");
 
+        // The failure is stated beside the control that failed: its container
+        // holds the Load more button and none of the stream's rows — never
+        // the screen-level notice above the page.
+        const failure = [
+            ...document.querySelectorAll('[role="alert"]'),
+        ].find((candidate) => candidate.textContent?.includes("page load refused"));
+        expect(failure).toBeDefined();
+        const container = failure?.parentElement;
+        expect(container?.contains(buttonWithText("Load more"))).toBe(true);
+        expect(container?.textContent).not.toContain("1050 ms");
+
         buttonWithText("Load more").click();
         await settle();
 
@@ -388,40 +398,34 @@ describe("UsageScreen filtering", () => {
         } = {
             pages: [],
         };
-        // The route owns the filter, so the screen sees a changed filter the
-        // way a navigation delivers it: through the prop.
-        const [filter, setFilter] = createSignal<UsageFilterDraft>(EMPTY_USAGE_FILTER_DRAFT);
-        disposes.push(
-            render(
-                () => (
-                    <UsageScreen
-                        api={streamApi(holder)}
-                        filter={filter()}
-                    />
-                ),
-                document.body,
-            ),
-        );
+        // A rolling window is resolved when the stream is read: the refresh's
+        // own cycle resolves later bounds than the first read did, so a
+        // failed refresh leaves two candidate filters to continue under —
+        // exactly the pairing this screen must not get wrong.
+        mount(streamApi(holder), {
+            ...EMPTY_USAGE_FILTER_DRAFT,
+            window: "24h",
+        });
         await settle();
 
-        // The unfiltered stream's first full page is the rows in hand.
+        const first = holder.pages.at(-1)?.request;
+        // The unfiltered-but-bounded stream's first full page is the rows in
+        // hand.
         answerLastPage(holder, page(1050, USAGE_PAGE_SIZE));
         await settle();
 
-        // A new filter navigates: the refresh cycle starts, and its page is
-        // the only open call — under the new filter.
-        setFilter({
-            ...EMPTY_USAGE_FILTER_DRAFT,
-            outcome: "failures",
-        });
-        await settle();
-        expect(holder.pages.at(-1)?.request.filter?.outcome).toEqual([
-            "upstream_error",
-            "internal",
-        ]);
+        // A moment passes so the refresh resolves a strictly later window
+        // bound than the first read did; the assertion below proves it.
+        await new Promise((resolve) => setTimeout(resolve, 2));
 
-        // The refresh cycle fails. The rows in hand are still the unfiltered
-        // stream's, so the continuation must stay on their own filter — not
+        requestRefresh();
+        await settle();
+
+        const refreshed = holder.pages.at(-1)?.request;
+        expect(refreshed?.filter?.from).toBeGreaterThan(first?.filter?.from ?? 0);
+
+        // The refresh cycle fails. The rows in hand are still the first
+        // stream's, so the continuation must stay on their own bounds — not
         // the failed cycle's.
         holder.pages.at(-1)?.refuse(new Error("refresh refused"));
         await settle();
@@ -434,7 +438,14 @@ describe("UsageScreen filtering", () => {
         const continued = holder.pages.at(-1)?.request;
 
         expect(continued?.before).toBe(CURSOR_BASE + 951);
-        expect(continued?.filter).toBeUndefined();
+        expect(continued?.filter?.from).toBe(first?.filter?.from);
+
+        answerLastPage(holder, page(950, 3));
+        await settle();
+
+        // A landed continuation retires only its own failure; the failed
+        // refresh's diagnosis stays stated where reads state theirs.
+        expect(bodyText()).toContain("refresh refused");
     });
 
     it("sends no filter at all for the unfiltered stream", async () => {

@@ -2,6 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { Show } from "solid-js";
 import { Button, TextField } from "/src/ui/controls";
 import { CopyButton } from "./clipboard";
+import { requiredHint } from "./required-hint";
 
 /**
  * Mints one serving-key secret locally: 32 random bytes, base64url without
@@ -31,7 +32,12 @@ export function apiKeyNameError(name: string): string | null {
     return name === "" ? "Name cannot be empty." : null;
 }
 
-/** The human label every serving key carries; names need not be unique. */
+/**
+ * The human label every serving key carries; names need not be unique. Both
+ * serving-key forms' gates demand a non-empty name, so the field states that
+ * statically — a pristine creation form explains its disabled submit before
+ * any interaction.
+ */
 export function ApiKeyNameField(props: {
     readonly name: string;
     readonly onNameInput: (value: string) => void;
@@ -46,7 +52,7 @@ export function ApiKeyNameField(props: {
             isDisabled={props.isDisabled ?? false}
             isData={false}
             error={props.error}
-            hint="Which client holds this key."
+            hint={requiredHint("Which client holds this key.")}
         />
     );
 }
@@ -55,7 +61,9 @@ export function ApiKeyNameField(props: {
  * The plaintext secret with its two conveniences: Generate mints a fresh
  * value locally, Copy relays the shown value to the clipboard. The secret is
  * shown in full — the listing returns it, and the operator needs it to
- * configure clients.
+ * configure clients. The default hint states the creation contract, where
+ * the gate requires a secret — a caller stating its own hint (the edit
+ * form's write-only contract) owns the whole line.
  */
 export function ApiKeySecretField(props: {
     readonly secret: string;
@@ -73,7 +81,10 @@ export function ApiKeySecretField(props: {
                 isDisabled={props.isDisabled ?? false}
                 placeholder="sk-… or Generate one"
                 error={props.error}
-                hint={props.hint ?? "Sent as Authorization: Bearer <key> by serving clients."}
+                hint={
+                    props.hint ??
+                    requiredHint("Sent as Authorization: Bearer <key> by serving clients.")
+                }
             />
             <div class="mt-2 flex flex-wrap gap-2">
                 <Button

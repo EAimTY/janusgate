@@ -3,8 +3,11 @@ import type { Connection } from "/src/connection/model";
 /**
  * A refused connection attempt, kept whole so the setup screen can explain it
  * (README §3.1): the message is what a person reads, `cause` is what the
- * diagnosis needs, and `baseUrl` is the address the rejected candidate
- * carried, so a later edit of the field cannot misattribute the failure.
+ * diagnosis needs, and `baseUrl` is the address the failed attempt carried, so
+ * the reconnect screen seeds its address field with it and a later edit of the
+ * field cannot misattribute the failure. No token travels with it: the token
+ * is a bearer secret the user must re-enter, and its loss is why the reconnect
+ * exists.
  */
 type ConnectionFailure = {
     readonly message: string;

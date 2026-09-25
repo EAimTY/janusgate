@@ -9,9 +9,10 @@ import { ReadNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
 import { CopyButton } from "/src/ui/clipboard";
 import { ButtonLink, SearchInput } from "/src/ui/controls";
-import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Badge, EmptyState, Notice } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
+import { SkeletonRows } from "./skeleton-rows";
 
 /**
  * Every serving key on one page. Rows carry identity, the full secret with a
@@ -65,19 +66,11 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
 
             <ReadNotice read={read} />
 
-            <Show when={read.isFirstRead()}>
-                <div class="flex flex-col gap-2">
-                    <For
-                        each={[
-                            0,
-                            1,
-                            2,
-                        ]}
-                    >
-                        {() => <Skeleton class="h-16 w-full rounded-xl" />}
-                    </For>
-                </div>
-            </Show>
+            <SkeletonRows
+                read={read}
+                rowCount={3}
+                rowHeight="h-16"
+            />
 
             <Show when={read.hasRead()}>
                 <Show

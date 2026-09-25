@@ -83,6 +83,20 @@ impl UpstreamFormat {
             Self::AnthropicMessages => "anthropic_messages",
         }
     }
+
+    /// Parses the stored spelling back into the closed set; anything outside it is storage
+    /// drift, because the column is written only through [`UpstreamFormat::as_str`] and its
+    /// schema `CHECK` pins the vocabulary.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "openai_response" => Some(Self::OpenAiResponse),
+            "openai_chat_completion" => Some(Self::OpenAiChatCompletion),
+            "gemini_generate_content" => Some(Self::GeminiGenerateContent),
+            "gemini_interaction" => Some(Self::GeminiInteraction),
+            "anthropic_messages" => Some(Self::AnthropicMessages),
+            _ => None,
+        }
+    }
 }
 
 /// An upstream payload the codec could not parse: malformed JSON, a missing required field, or an

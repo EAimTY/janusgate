@@ -36,6 +36,14 @@ export function ConnectionScreen(): JSX.Element {
                 return;
             }
 
+            // The failure carries the address its attempt addressed — a
+            // mid-session 401 the dying connection's — so the field reopens
+            // seeded with it. The token is never carried or seeded: it is a
+            // bearer secret only the user can re-enter.
+            if (failure.baseUrl !== null) {
+                setBaseUrl(failure.baseUrl);
+            }
+
             const attempted = failure.baseUrl ?? baseUrl();
             const context = {
                 baseUrl: attempted,

@@ -2,7 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { credentialExpiryLine, isCredentialExpired, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ProviderResponse } from "/src/management-api/generated/v0";
+import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { OUTWARD_SURFACES } from "/src/management-api/outward-surfaces";
 import {
     indexRowsById,
@@ -42,6 +42,19 @@ type ProviderAttention = {
     readonly attention: {
         readonly label: string;
         readonly detail: string;
+    };
+};
+
+/**
+ * One enabled provider with nothing effectively serving, together with the
+ * attention its cause calls for.
+ */
+type ProviderServingAttention = {
+    readonly provider: ProviderResponse;
+    readonly attention: {
+        readonly detail: string;
+        readonly action: string;
+        readonly href: string;
     };
 };
 
@@ -132,14 +145,27 @@ export function HomeScreen(props: {
     // a human: its rows are all vanished, disabled, or absent — the vanished
     // case is the quietest failure there is, and a raw row count would hide
     // it. A deliberately disabled provider is the operator's choice, not a
-    // fault, so it stays off this list.
-    const providersWithoutServingModels = createMemo(() => {
-        const servingCounts = servingModelCountsByProvider(entities().models, providersById());
+    // fault, so it stays off this list. Each line's action follows the cause
+    // its rows name, because discovery — the fix the absent case needs —
+    // cannot repair a row that is merely switched off.
+    const providersWithoutServingModels = createMemo(
+        (): ReadonlyArray<ProviderServingAttention> => {
+            const servingCounts = servingModelCountsByProvider(entities().models, providersById());
 
-        return entities().providers.filter(
-            (provider) => provider.is_enabled && (servingCounts.get(provider.id) ?? 0) === 0,
-        );
-    });
+            return entities().providers.flatMap((provider): ProviderServingAttention[] => {
+                if (!provider.is_enabled || (servingCounts.get(provider.id) ?? 0) !== 0) {
+                    return [];
+                }
+
+                return [
+                    {
+                        provider,
+                        attention: servingGapAttention(entities().models, provider.id),
+                    },
+                ];
+            });
+        },
+    );
 
     // Exactly what the list below counts: every item the section can show —
     // credential problems, providers with nothing serving, the missing first
@@ -293,20 +319,22 @@ export function HomeScreen(props: {
                                     )}
                                 </For>
                                 <For each={providersWithoutServingModels()}>
-                                    {(provider) => (
+                                    {(item) => (
                                         <li class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
                                             <Glyph
                                                 name="stack"
                                                 class="shrink-0 text-ink-faint"
                                             />
                                             <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
-                                                <span class="font-medium">{provider.name}</span>
+                                                <span class="font-medium">
+                                                    {item.provider.name}
+                                                </span>
                                                 <span class="text-ink-dim">
-                                                    {" has no models serving yet."}
+                                                    {item.attention.detail}
                                                 </span>
                                             </p>
-                                            <ButtonLink href={hrefs.providerDetail(provider.id)}>
-                                                Open and discover
+                                            <ButtonLink href={item.attention.href}>
+                                                {item.attention.action}
                                             </ButtonLink>
                                         </li>
                                     )}
@@ -402,6 +430,36 @@ function EndpointsCard(props: { readonly baseUrl: string }): JSX.Element {
             </p>
         </Card>
     );
+}
+
+/**
+ * The attention an enabled provider with nothing effectively serving carries,
+ * chosen by the cause its rows name: a provider holding no model rows at all
+ * is missing its discovery — the provider's page runs it — while a provider
+ * whose rows exist but none serve holds only switched-off or vanished rows,
+ * which discovery cannot repair; its models page states each row's own cause.
+ */
+function servingGapAttention(
+    models: ReadonlyArray<ModelResponse>,
+    providerId: number,
+): {
+    readonly detail: string;
+    readonly action: string;
+    readonly href: string;
+} {
+    const hasNoModels = !models.some((model) => model.provider_id === providerId);
+
+    return hasNoModels
+        ? {
+              detail: " has no models yet.",
+              action: "Open and discover",
+              href: hrefs.providerDetail(providerId),
+          }
+        : {
+              detail: " has no models serving — every model is switched off or suspended.",
+              action: "Review models",
+              href: hrefs.models(providerId),
+          };
 }
 
 /** Why an OAuth provider needs a human: expired, or never fresh. */

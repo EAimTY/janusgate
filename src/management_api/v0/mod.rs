@@ -30,14 +30,7 @@ use axum::{
     response::{IntoResponse as _, Response},
     routing::{self, MethodFilter},
 };
-use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
-    de::{Error as DeError, Visitor},
-};
-use std::{
-    fmt::{Error as FmtError, Formatter},
-    marker::PhantomData,
-};
+use serde::{Deserialize, Serialize};
 
 mod api_keys;
 mod error;
@@ -50,9 +43,6 @@ mod usage;
 // This version's public wire surface: every route marker and every route's request and response
 // payload types. Nested wire shapes — provider and model rows, captured credentials — stay private,
 // and the route contract itself is shared at [`crate::management_api::Route`].
-/// Re-exported for the shared usage filter's `serde` field attributes, which resolve this
-/// deserializer by its crate path.
-pub(crate) use self::absent_keeps::deserialize as absent_keeps_deserialize;
 pub use self::{
     api_keys::{
         ApiKeyEnvelope, ApiKeyResponse, CreateApiKey, CreateApiKeyRequest, DeleteApiKey,
@@ -85,9 +75,15 @@ pub use self::{
         QueryUsageRequest, QueryUsageResponse, UsageBucket, UsageBucketKey,
     },
 };
+/// Re-exported so this version's payloads declare the two-state field adapters of README §7.0
+/// rule 2 through their own version module: `Nullable` marks a required-nullable field and
+/// `absent_keeps` the absent-keeps `deserialize_with` function, both defined once in the
+/// shared crate-root module `crate::serde_helpers`.
+pub use crate::serde_helpers::Nullable;
+pub(crate) use crate::serde_helpers::absent_keeps;
 /// Re-exported for the one shared usage filter, defined with the storage reads it configures:
-/// this version's usage payloads declare it, and its `serde` field attributes name the
-/// [`absent_keeps`] deserializer to keep the absent-keeps wire strictness.
+/// this version's usage payloads declare it, and its `serde` field attributes keep the
+/// absent-keeps wire strictness through the shared `crate::serde_helpers` adapters.
 pub(crate) use crate::storage::api_logs::UsageFilter;
 pub use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
@@ -485,147 +481,6 @@ pub struct SharedProviderFields {
 pub struct ProviderEnvelope {
     /// The created provider row.
     pub provider: ProviderResponse,
-}
-
-/// A required, nullable wire field (README §7.0 rule 2): its value may be `null`, mirroring a
-/// nullable storage column exactly, and the TypeScript bindings render the key as required (`T |
-/// null`). A field of this type carries `#[ts(type = "<T's TypeScript spelling> | null")]`, because
-/// the generic parameter has no TypeScript rendering of its own.
-///
-/// One tolerance is documented rather than fought: serde routes both a missing key and an explicit
-/// `null` through the same none path, so the parser reads an omitted key as `null`. Under
-/// full-state update semantics (rule 3) the two spellings share the one meaning — "no override" —
-/// and the bindings keep well-typed clients honest by requiring the key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Nullable<T>(pub Option<T>);
-
-impl<T> Serialize for Nullable<T>
-where
-    T: Serialize,
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match &self.0 {
-            Some(value) => value.serialize(serializer),
-            None => serializer.serialize_none(),
-        }
-    }
-}
-
-impl<'de, T> Deserialize<'de> for Nullable<T>
-where
-    T: Deserialize<'de>,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        /// Accepts a value or `null`; see the type's documentation for the missing-key tolerance.
-        struct NullableVisitor<T>(PhantomData<T>);
-
-        impl<'de, T> Visitor<'de> for NullableVisitor<T>
-        where
-            T: Deserialize<'de>,
-        {
-            type Value = Nullable<T>;
-
-            fn expecting(&self, formatter: &mut Formatter<'_>) -> Result<(), FmtError> {
-                formatter.write_str("a value or null")
-            }
-
-            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                T::deserialize(deserializer).map(|value| Nullable(Some(value)))
-            }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E>
-            where
-                E: DeError,
-            {
-                Ok(Nullable(None))
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E>
-            where
-                E: DeError,
-            {
-                Ok(Nullable(None))
-            }
-        }
-
-        deserializer.deserialize_option(NullableVisitor(PhantomData))
-    }
-}
-
-/// The field adapter of an absent-keeps field (README §7.0 rule 2): the key may be omitted, but an
-/// explicit `null` is rejected — absence and `null` are not two spellings of one state. Pair with
-/// `#[serde(default)]` so a missing key defaults rather than errors, and `#[ts(optional)]` so the
-/// bindings render `field?: T`.
-pub(super) mod absent_keeps {
-    use serde::{
-        Deserialize, Deserializer,
-        de::{Error, Visitor},
-    };
-    use std::{
-        fmt::{Error as FmtError, Formatter},
-        marker::PhantomData,
-    };
-
-    /// Deserializes a present value into `Some`, rejecting an explicit `null`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the deserializer's error when the value is `null` or malformed.
-    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-    where
-        D: Deserializer<'de>,
-        T: Deserialize<'de>,
-    {
-        /// Accepts a value, never `null`.
-        struct AbsentKeepsVisitor<T>(PhantomData<T>);
-
-        impl<'de, T> Visitor<'de> for AbsentKeepsVisitor<T>
-        where
-            T: Deserialize<'de>,
-        {
-            type Value = Option<T>;
-
-            fn expecting(&self, formatter: &mut Formatter<'_>) -> Result<(), FmtError> {
-                formatter.write_str("a value, not `null` — omit the field to keep the stored one")
-            }
-
-            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                T::deserialize(deserializer).map(Some)
-            }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E>
-            where
-                E: Error,
-            {
-                Err(Error::custom(
-                    "`null` is not accepted here — omit the field to keep the stored value",
-                ))
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E>
-            where
-                E: Error,
-            {
-                Err(Error::custom(
-                    "`null` is not accepted here — omit the field to keep the stored value",
-                ))
-            }
-        }
-
-        deserializer.deserialize_option(AbsentKeepsVisitor(PhantomData))
-    }
 }
 
 #[cfg(test)]

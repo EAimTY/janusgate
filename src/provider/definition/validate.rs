@@ -1,4 +1,4 @@
-//! Write-time validation of a provider definition payload (README §5.7).
+//! Write-time validation of a provider definition payload (README §5).
 //!
 //! The SQL schema enforces only the repository-wide constraint boundary; the management boundary
 //! enforces everything else once, at write time: descriptor structure, stage-available value
@@ -170,7 +170,7 @@ pub fn allowed_render_options(format: UpstreamFormat) -> &'static [RenderOption]
 }
 
 impl DefinitionPayload {
-    /// Validates the payload against every write-time rule (README §5.7), in document order of
+    /// Validates the payload against every write-time rule (README §5), in document order of
     /// the descriptor sections.
     ///
     /// # Errors
@@ -646,7 +646,7 @@ fn validate_path(path: &ResponsePath, what: &str) -> Result<(), ValidationError>
     Ok(())
 }
 
-/// Validates one terminal-code list: the list and every code non-empty (README §5.7).
+/// Validates one terminal-code list: the list and every code non-empty (README §5.1).
 fn validate_terminal_codes(codes: &[String], what: &str) -> Result<(), ValidationError> {
     if codes.is_empty() {
         return Err(ValidationError::new(format!(
@@ -1891,7 +1891,7 @@ mod tests {
         validate_json(payload)
     }
 
-    /// The accepted researched shapes (README §5.7): the Antigravity, Copilot, Codex, and
+    /// The accepted researched shapes (README §5.6): the Antigravity, Copilot, Codex, and
     /// static-key definitions all parse and validate, and each payload round-trips through its
     /// JSON form.
     ///
@@ -2562,7 +2562,7 @@ mod tests {
         assert!(empty_path_member.unwrap_err().contains("empty member"));
     }
 
-    /// The OAuth sections must agree (README §5.7): the access token is mapped by the exchange
+    /// The OAuth sections must agree (README §5.3): the access token is mapped by the exchange
     /// or a provisioning step, a refresh grant requires a produced refresh token, reprovisioning
     /// requires provisioning steps, and terminal-code lists are non-empty.
     ///

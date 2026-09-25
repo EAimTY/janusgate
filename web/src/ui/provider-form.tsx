@@ -4,6 +4,7 @@ import type { ProviderPreset } from "/src/management-api/presets";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Switch, TextField } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
+import { requiredHint } from "./required-hint";
 
 /**
  * The preset picker: one card per catalog entry, the static-key compatible
@@ -125,7 +126,13 @@ export function ProviderIdentityFields(props: {
  * definition's URLs reference the base — a definition that pins its
  * endpoints, or mints the base from its flow, creates with `null` and shows
  * no field for one (`hasBaseUrl` defaults to shown, the shape every
- * definition-bound row renders).
+ * definition-bound row renders). An explicit `true` is the creation shape:
+ * there the submit gate demands the address, and the field states that
+ * statically; the default shape shows the same field prefilled on a row
+ * (the edit form), where no pristine gate waits on it. The API key's default
+ * hint states the creation contract, where the gate requires a key — a
+ * caller stating its own hint (the edit form's write-only contract) owns the
+ * whole line.
  */
 export function CompatibleConnectionFields(props: {
     readonly baseUrl: string;
@@ -150,6 +157,13 @@ export function CompatibleConnectionFields(props: {
                     placeholder="https://upstream.example.com/v1"
                     isDisabled={props.isDisabled ?? false}
                     error={props.baseUrlError}
+                    hint={
+                        props.hasBaseUrl === true
+                            ? requiredHint(
+                                  "The upstream address this definition's requests point at.",
+                              )
+                            : undefined
+                    }
                 />
             </Show>
             <TextField
@@ -162,7 +176,7 @@ export function CompatibleConnectionFields(props: {
                 error={props.apiKeyError}
                 hint={
                     props.apiKeyHint ??
-                    "Sent upstream with every request. Never returned by the gateway."
+                    requiredHint("Sent upstream with every request. Never returned by the gateway.")
                 }
             />
         </div>

@@ -25,9 +25,13 @@ pub(crate) struct UpstreamParser {
     /// Reasoning-text fallback-recovery state; same contract as `text_recovery`.
     reasoning_recovery: FallbackRecovery,
 
-    /// Whether a live event already delivered a tool call, marking the terminal output array as an
-    /// exhausted source for them.
-    is_call_delivered: bool,
+    /// Output indices whose function call live events already delivered the call. Only
+    /// content-bearing call events count as live delivery — streamed argument bytes for the
+    /// index, or a streamed `output_item.done` item completing it — because a bare
+    /// `response.output_item.added` opening carries the item skeleton without argument bytes and
+    /// delivers no call content, so it never exhausts the terminal output array's copy of the
+    /// call (README §6.3).
+    delivered_call_indices: Vec<usize>,
 
     /// Whether a finish reason was already emitted; a clean end-of-stream without one degrades to
     /// [`IrFinishReason::Stop`] in the parser's finish hook, matching the aggregated rendering
@@ -323,8 +327,6 @@ impl UpstreamParser {
                 if let Some(item) = &event.item
                     && item.item_type == "function_call"
                 {
-                    self.is_call_delivered = true;
-
                     events.push(self.open_function_call(item, output_index));
                 }
 
@@ -366,13 +368,20 @@ impl UpstreamParser {
 
                 let output_index = event_output_index(&event);
 
-                self.is_call_delivered = true;
+                let arguments_delta = event.delta.clone().unwrap_or_default();
+
+                // Only streamed argument bytes count as live delivery of the call; an
+                // argument-delta event without a payload delivered nothing and leaves the
+                // terminal output array's copy as the call's recovery source (README §6.3).
+                if !arguments_delta.is_empty() {
+                    self.record_call_delivered(output_index);
+                }
 
                 events.push(IrEvent::ToolCallDelta {
                     index: output_index,
                     call_id: None,
                     name: None,
-                    arguments_delta: event.delta.clone().unwrap_or_default(),
+                    arguments_delta,
                 });
 
                 Ok(events)
@@ -403,49 +412,26 @@ impl UpstreamParser {
 
                 // A third-party static-key upstream may carry items only in the terminal
                 // response object; when no live event delivered a kind, recover it from the output
-                // array exactly as from a JSON response body. Text and reasoning recovery is
-                // decided per item inside `ingest_output_item` against the live-delivery flags and
-                // the per-index recovery records, so several message or reasoning items of the
-                // array each deliver exactly once. The call recovery decision is snapshotted before
-                // the walk: the walk must consult the pre-walk state for every item, so a terminal
-                // output array carrying several function_call items delivers each of them instead
-                // of only the first.
-                let is_call_recoverable = !self.is_call_delivered;
-
-                // Whether the walk actually recovered calls: the delivery flag keeps its pre-walk
-                // value for every item of the walk, so the flip afterwards records the walk's
-                // outcome — the finish mapping consults it, and a text-only output array must not
-                // mark the turn as a tool-call turn.
-                let mut is_call_recovered = false;
-
-                if !self.text_recovery.is_delivered
-                    || !self.reasoning_recovery.is_delivered
-                    || is_call_recoverable
-                {
-                    for (position, item) in response.output.iter().enumerate() {
-                        self.ingest_output_item(
-                            item,
-                            OutputItemOrigin::Terminal(position),
-                            &mut events,
-                        );
-
-                        if is_call_recoverable && item.item_type == "function_call" {
-                            is_call_recovered = true;
-                        }
-                    }
-                }
-
-                if is_call_recovered {
-                    self.is_call_delivered = true;
+                // array exactly as from a JSON response body. The walk is gated per item inside
+                // `ingest_output_item` — text and reasoning against the live-delivery flags and
+                // the per-index recovery records, calls against the delivered record of the item's
+                // own array position — so every kind delivers exactly once however the upstream
+                // shaped its stream.
+                for (position, item) in response.output.iter().enumerate() {
+                    self.ingest_output_item(
+                        item,
+                        OutputItemOrigin::Terminal(position),
+                        &mut events,
+                    );
                 }
 
                 self.is_finished = true;
 
-                // The delivery flag was flipped after the terminal walk above, so calls recovered
-                // from the output array count too.
+                // The walk above recorded every call it recovered into the delivered indices, so
+                // calls recovered from the output array decide the finish mapping too.
                 events.push(IrEvent::Finish(finish_reason_for_response(
                     &response,
-                    self.is_call_delivered,
+                    self.has_delivered_call(),
                 )));
 
                 push_usage_events(&response, &mut events);
@@ -480,7 +466,10 @@ impl UpstreamParser {
     /// of text and reasoning is keyed by the item's output index: a recovery delivery for one index
     /// never silences another item of the same kind, and one index is never delivered twice, so the
     /// terminal array's copy of an item already delivered as a streamed done event is recognized by
-    /// the shared index.
+    /// the shared index. Tool-call recovery is keyed per index on content-bearing live events only:
+    /// streamed argument bytes or a streamed done item count as live delivery of that index's call,
+    /// while a bare `output_item.added` opening — the item skeleton without argument bytes — does
+    /// not (README §6.3).
     fn ingest_output_item(
         &mut self,
         item: &OutputItem,
@@ -554,7 +543,7 @@ impl UpstreamParser {
                 // paths with a full-arguments delta plus a done per call, so streaming renderers
                 // open and complete the item.
                 OutputItemOrigin::Json(index) => {
-                    self.is_call_delivered = true;
+                    self.record_call_delivered(index);
 
                     events.push(IrEvent::ToolCallDelta {
                         index,
@@ -566,21 +555,25 @@ impl UpstreamParser {
                     events.push(self.complete_function_call(item, index));
                 }
 
+                // A streamed done item is content-bearing: it always completes its call and
+                // exhausts the terminal output array's copy of the same index (README §6.3).
                 OutputItemOrigin::StreamDone(index) => {
-                    self.is_call_delivered = true;
+                    self.record_call_delivered(index);
 
                     events.push(self.complete_function_call(item, index));
                 }
 
-                // The terminal fallback completes a call exactly-once: only when no live call event
-                // was delivered before the terminal event may the output array deliver calls,
-                // mirroring the per-kind text recovery; re-emitting delivered calls here would
-                // duplicate them. The delivery flag is owned by the terminal-event arm, which flips
-                // it only after the whole output array is walked, so several recovered calls each
-                // deliver exactly once; the flag keeps its pre-walk value for every item of this
-                // walk.
+                // The terminal fallback completes a call exactly-once: the output array delivers
+                // the call at this index only when no content-bearing live event — streamed
+                // argument bytes or a streamed done item — delivered it; re-emitting a delivered
+                // call would duplicate it, while a call only opened by `output_item.added` still
+                // recovers here because the bare opening carries no argument bytes (README §6.3).
+                // The record is written during the walk, which is safe because every index is
+                // visited once and each delivery decision keys on its own index.
                 OutputItemOrigin::Terminal(index) => {
-                    if !self.is_call_delivered {
+                    if !self.is_call_delivered(index) {
+                        self.record_call_delivered(index);
+
                         events.push(self.complete_function_call(item, index));
                     }
                 }
@@ -591,6 +584,11 @@ impl UpstreamParser {
     }
 
     /// Emits the opening delta for a function call item revealed by `output_item.added`.
+    ///
+    /// The official opening event carries the item skeleton only — call id and name, no argument
+    /// bytes, which arrive through `response.function_call_arguments.delta` — so the opening
+    /// delta reveals the call to streaming renderers without delivering call content and never
+    /// counts as live delivery (README §6.3).
     fn open_function_call(&self, item: &OutputItem, output_index: usize) -> IrEvent {
         IrEvent::ToolCallDelta {
             index: output_index,
@@ -609,6 +607,24 @@ impl UpstreamParser {
             arguments: item.arguments.clone(),
             thought_signature: item.thought_signature.clone(),
         }
+    }
+
+    /// Whether the function call at `index` was already delivered — by a content-bearing live
+    /// event, or by the terminal walk's own recovery of the index.
+    fn is_call_delivered(&self, index: usize) -> bool {
+        self.delivered_call_indices.contains(&index)
+    }
+
+    /// Records the function call at `index` as delivered; repeats for the same index are ignored.
+    fn record_call_delivered(&mut self, index: usize) {
+        if !self.delivered_call_indices.contains(&index) {
+            self.delivered_call_indices.push(index);
+        }
+    }
+
+    /// Whether the turn delivered any function call, deciding the canonical tool-call finish.
+    fn has_delivered_call(&self) -> bool {
+        !self.delivered_call_indices.is_empty()
     }
 
     /// Emits [`IrEvent::MessageStart`] exactly once, first (README §6.2): every ingest arm opens
@@ -680,11 +696,11 @@ impl UpstreamEventParser for UpstreamParser {
 
         self.is_finished = true;
 
-        // The output walk above flipped the delivery flag for every `function_call` item the body
-        // carried.
+        // The output walk above recorded every `function_call` item the body carried into the
+        // delivered indices.
         events.push(IrEvent::Finish(finish_reason_for_response(
             &response,
-            self.is_call_delivered,
+            self.has_delivered_call(),
         )));
 
         push_usage_events(&response, &mut events);
@@ -1018,6 +1034,60 @@ mod tests {
         }
     }
 
+    /// Builds an `output_item.added` frame carrying a `function_call` item skeleton.
+    fn call_added_frame(output_index: usize, call_id: &str, name: &str) -> SseFrame {
+        SseFrame {
+            data: serde_json::json!({
+                "type": "response.output_item.added",
+                "output_index": output_index,
+                "item": {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": "",
+                },
+            })
+            .to_string(),
+            event: None,
+        }
+    }
+
+    /// Builds a `function_call_arguments.delta` frame.
+    fn call_arguments_delta_frame(output_index: usize, delta: &str) -> SseFrame {
+        SseFrame {
+            data: serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "output_index": output_index,
+                "delta": delta,
+            })
+            .to_string(),
+            event: None,
+        }
+    }
+
+    /// Builds an `output_item.done` frame for a complete `function_call` item.
+    fn call_done_frame(
+        output_index: usize,
+        call_id: &str,
+        name: &str,
+        arguments: &str,
+    ) -> SseFrame {
+        SseFrame {
+            data: serde_json::json!({
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                },
+            })
+            .to_string(),
+            event: None,
+        }
+    }
+
     /// The MessageStart a recovery path emits: the recovery frames carry no response identity, so
     /// the event's fields are empty.
     fn bare_message_start() -> IrEvent {
@@ -1262,6 +1332,234 @@ mod tests {
                     name: None,
                     arguments_delta: "{\"a\"".to_string(),
                 },
+            ],
+        );
+    }
+
+    /// A bare `response.output_item.added` function_call opening carries the item skeleton only —
+    /// the official opening event has no argument bytes (they arrive through
+    /// `response.function_call_arguments.delta`, the complete item through
+    /// `response.output_item.done`) — so it opens the call for streaming renderers without
+    /// counting as live delivery, and the terminal output array's copy of the call is still
+    /// recovered (README §6.3: only content-bearing call events gate terminal recovery).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bare opening counts as delivery or the terminal copy diverges.
+    #[test]
+    fn bare_call_opening_leaves_terminal_call_copy_recoverable() {
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the added frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&call_added_frame(0, "call_1", "get_weather"))
+            .expect("an added frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                bare_message_start(),
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: Some("call_1".to_string()),
+                    name: Some("get_weather".to_string()),
+                    arguments_delta: String::new(),
+                },
+            ],
+        );
+
+        let output = serde_json::json!([
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Paris\"}",
+            },
+        ]);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&completed_frame(output))
+            .expect("a completed frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::ToolCallDone {
+                    index: 0,
+                    call_id: "call_1".to_string(),
+                    name: "get_weather".to_string(),
+                    arguments: "{\"city\": \"Paris\"}".to_string(),
+                    thought_signature: None,
+                },
+                IrEvent::Finish(IrFinishReason::ToolCall),
+            ],
+        );
+    }
+
+    /// A conformant full stream — `output_item.added` opening, argument deltas, streamed
+    /// `output_item.done` completion — delivers the call exactly once: the terminal output
+    /// array's same-index copy is not re-delivered after it (README §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the delivered events diverge from the exactly-once contract.
+    #[test]
+    fn conformant_call_stream_delivers_exactly_once() {
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the added frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&call_added_frame(0, "call_1", "get_weather"))
+            .expect("an added frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                bare_message_start(),
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: Some("call_1".to_string()),
+                    name: Some("get_weather".to_string()),
+                    arguments_delta: String::new(),
+                },
+            ],
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the delta frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&call_arguments_delta_frame(0, "{\"city\""))
+            .expect("a delta frame parses");
+
+        assert_eq!(
+            events,
+            vec![IrEvent::ToolCallDelta {
+                index: 0,
+                call_id: None,
+                name: None,
+                arguments_delta: "{\"city\"".to_string(),
+            }],
+        );
+
+        #[expect(clippy::expect_used, reason = "the done frame is constructed to parse")]
+        let events = parser
+            .ingest_frame(&call_done_frame(
+                0,
+                "call_1",
+                "get_weather",
+                "{\"city\": \"Paris\"}",
+            ))
+            .expect("a done frame parses");
+
+        assert_eq!(
+            events,
+            vec![IrEvent::ToolCallDone {
+                index: 0,
+                call_id: "call_1".to_string(),
+                name: "get_weather".to_string(),
+                arguments: "{\"city\": \"Paris\"}".to_string(),
+                thought_signature: None,
+            }],
+        );
+
+        let output = serde_json::json!([
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Paris\"}",
+            },
+        ]);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&completed_frame(output))
+            .expect("a completed frame parses");
+
+        assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::ToolCall)]);
+    }
+
+    /// Live call delivery is per output index: argument bytes streamed for one call exhaust only
+    /// that call's terminal copy — the terminal array still recovers the call at an index no
+    /// content-bearing live event delivered (README §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the undelivered index's call is lost or the delivered index's copy re-renders.
+    #[test]
+    fn terminal_array_recovers_only_undelivered_call_indices() {
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the delta frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&call_arguments_delta_frame(0, "{\"city\": \"Paris\"}"))
+            .expect("a delta frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                bare_message_start(),
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: None,
+                    name: None,
+                    arguments_delta: "{\"city\": \"Paris\"}".to_string(),
+                },
+            ],
+        );
+
+        let output = serde_json::json!([
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Paris\"}",
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "get_time",
+                "arguments": "{}",
+            },
+        ]);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&completed_frame(output))
+            .expect("a completed frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::ToolCallDone {
+                    index: 1,
+                    call_id: "call_2".to_string(),
+                    name: "get_time".to_string(),
+                    arguments: "{}".to_string(),
+                    thought_signature: None,
+                },
+                IrEvent::Finish(IrFinishReason::ToolCall),
             ],
         );
     }

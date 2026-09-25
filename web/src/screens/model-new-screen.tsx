@@ -17,6 +17,7 @@ import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/cont
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelIdOverrideFields } from "/src/ui/model-form";
+import { requiredHint } from "/src/ui/required-hint";
 
 /**
  * One creation page for a manually added model. When opened from a
@@ -267,6 +268,7 @@ function ModelCreateForm(props: {
                                     options={providerOptions()}
                                     onChange={setProviderId}
                                     isDisabled={isCreating()}
+                                    hint={requiredHint("A model belongs to one provider.")}
                                 />
                             }
                         >
@@ -286,8 +288,12 @@ function ModelCreateForm(props: {
                             error={upstreamError()}
                             hint={
                                 props.initialUpstreamId === null
-                                    ? "Sent upstream verbatim — letters, numbers, and symbols only."
-                                    : "Carried here from a model the upstream no longer reports — submitting claims it back under the settings below."
+                                    ? requiredHint(
+                                          "Sent upstream verbatim — letters, numbers, and symbols only.",
+                                      )
+                                    : requiredHint(
+                                          "Carried here from a model the upstream no longer reports — submitting claims it back under the settings below.",
+                                      )
                             }
                         />
                     </div>

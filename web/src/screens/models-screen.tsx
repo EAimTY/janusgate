@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { indexRowsById } from "/src/management-api/serving";
@@ -7,9 +7,11 @@ import { hrefs, navigate } from "/src/router";
 import { createScreenRead, readAll } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { ButtonLink, SearchInput, SelectField } from "/src/ui/controls";
-import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { EmptyState, Notice } from "/src/ui/feedback";
 import { PageHeader } from "/src/ui/layout";
+import { listedOptions } from "/src/ui/listed-options";
 import { ModelList } from "/src/ui/models-table";
+import { SkeletonRows } from "./skeleton-rows";
 
 /**
  * Every model on one page, filterable by provider and searchable by ID or
@@ -26,7 +28,6 @@ export function ModelsScreen(props: {
     const [search, setSearch] = createSignal("");
 
     const read = createScreenRead({
-        reReadOn: () => props.providerFilter,
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
@@ -53,16 +54,25 @@ export function ModelsScreen(props: {
 
     const providersById = createMemo(() => indexRowsById(providers()));
 
-    const filterOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All providers",
-        },
-        ...providers().map((row) => ({
-            value: String(row.id),
-            label: row.name,
-        })),
-    ]);
+    // A filter is the route, so it can name a provider deleted since the link
+    // was written — the listing the screen read no longer carries it. The
+    // fallback option states the filter in force instead of letting the
+    // select silently reset to "All providers" while the route still filters.
+    const filterOptions = createMemo(() =>
+        listedOptions(
+            [
+                {
+                    value: "",
+                    label: "All providers",
+                },
+                ...providers().map((row) => ({
+                    value: String(row.id),
+                    label: row.name,
+                })),
+            ],
+            props.providerFilter === null ? "" : String(props.providerFilter),
+        ),
+    );
 
     const visibleModels = createMemo(() => {
         const needle = search().trim().toLowerCase();
@@ -101,19 +111,11 @@ export function ModelsScreen(props: {
 
             <ReadNotice read={read} />
 
-            <Show when={read.isFirstRead()}>
-                <div class="flex flex-col gap-2">
-                    <For
-                        each={[
-                            0,
-                            1,
-                            2,
-                        ]}
-                    >
-                        {() => <Skeleton class="h-16 w-full rounded-xl" />}
-                    </For>
-                </div>
-            </Show>
+            <SkeletonRows
+                read={read}
+                rowCount={3}
+                rowHeight="h-16"
+            />
 
             <Show when={read.hasRead()}>
                 <Show

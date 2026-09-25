@@ -9,12 +9,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import { USAGE_GROUP_BY_OPTIONS } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
-import {
-    currentLocation,
-    hrefs,
-    parseUsageQuerySubject,
-    type UsageQuerySubject,
-} from "/src/router";
+import { hrefs, type UsageQuerySubject } from "/src/router";
 import { Button, Switch, TextField } from "/src/ui/controls";
 import { Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -96,27 +91,25 @@ function boundError(label: string, value: string): string | null {
  * gateway counts. Bucket keys are composite: one part per requested dimension,
  * resolved through the entity lists and the vocabularies the screen holds.
  * The address may carry a subject — one entity dimension and its row — which
- * the screen reads on arrival, opening with that dimension grouped beside the
- * day and its filter field filled.
+ * arrives through the route's payload: the route Match keys this screen, so
+ * every address is a fresh mount that opens with that dimension grouped
+ * beside the day and its id filled into the filter field.
  */
-export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.Element {
-    // The subject the address arrived with, read once: the screen remounts
-    // per address, so the arrival search is the prefill it holds for its
-    // whole life.
-    const arrivalSubject: UsageQuerySubject | null = parseUsageQuerySubject(
-        currentLocation().search,
-    );
+export function UsageQueryScreen(props: {
+    readonly api: ManagementApi;
+    readonly subject: UsageQuerySubject | null;
+}): JSX.Element {
     const [entities, setEntities] = createSignal<UsageEntities>({
         providers: [],
         models: [],
         apiKeys: [],
     });
     const [groupBy, setGroupBy] = createSignal<ReadonlyArray<UsageGroupBy>>(
-        arrivalGroupBy(arrivalSubject),
+        arrivalGroupBy(props.subject),
     );
     const [fromInput, setFromInput] = createSignal("");
     const [toInput, setToInput] = createSignal("");
-    const [fields, setFields] = createSignal<UsageFilterFields>(arrivalFields(arrivalSubject));
+    const [fields, setFields] = createSignal<UsageFilterFields>(arrivalFields(props.subject));
     const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
     // The dimensions the displayed buckets were grouped by — the request's own
     // set, not the live switches: a key carries exactly its request's

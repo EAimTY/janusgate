@@ -322,8 +322,9 @@ fn seconds_from_now(seconds: i64, what: &str) -> Result<i64, Error> {
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for empty names, unknown definitions, a non-OAuth definition, upstream
-/// device-authorization failures, and storage failures.
+/// Returns [`Error`] for empty names, unknown definitions, a non-OAuth definition, a definition
+/// whose base-URL requirement the request cannot satisfy, upstream device-authorization
+/// failures, and storage failures.
 async fn handle_start(
     database: &crate::database::Database,
     control_plane: &Client,
@@ -342,6 +343,21 @@ async fn handle_start(
         request.provider_definition_version,
     )
     .await?;
+
+    // A definition whose URLs reference the base requires the instance base URL: the flow stores
+    // it for the exchange and provisioning, and the created provider's every dispatch evaluates
+    // those references against it (README §3, §7.1).
+    if definition.payload.references_base() && request.base_url.is_none() {
+        return Err(Error::Validation {
+            param: "base_url",
+            message: format!(
+                "`base_url` is required: provider definition `{}` version {} addresses its \
+                 base URL, so the provider row must carry one",
+                definition.name,
+                definition.version.get(),
+            ),
+        });
+    }
 
     // The pre-insert check renders a clean 409 before any upstream round-trip; the database's
     // UNIQUE constraint stays the concurrent backstop, whose loss the device poller classifies
@@ -375,8 +391,9 @@ async fn handle_start(
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for unknown providers, unknown target definitions, a non-OAuth target, and
-/// upstream or storage failures.
+/// Returns [`Error`] for unknown providers, unknown target definitions, a non-OAuth target, an
+/// effective target whose base-URL requirement the provider row cannot satisfy, and upstream or
+/// storage failures.
 async fn handle_reauthorize_start(
     database: &crate::database::Database,
     control_plane: &Client,
@@ -416,6 +433,21 @@ async fn handle_reauthorize_start(
             ));
         }
     };
+
+    // The flow runs from the provider's stored base URL, so an effective target definition — the
+    // explicit target, or the provider's own pair — whose URLs reference the base is satisfiable
+    // only while the row carries one (README §3, §7.1).
+    if definition.payload.references_base() && provider.base_url.is_none() {
+        return Err(Error::Validation {
+            param: "base_url",
+            message: format!(
+                "`base_url` is required: provider definition `{}` version {} addresses its \
+                 base URL, but the provider row carries none",
+                definition.name,
+                definition.version.get(),
+            ),
+        });
+    }
 
     let slots = oauth::initialize_slots(&definition, provider.credentials.slots())?;
 
@@ -584,10 +616,9 @@ async fn begin_flow(
         }
     };
 
-    debug_assert_eq!(flow_grant.as_str(), new_flow.grant_type.as_str());
-
     // The stored row is the response's source of truth: the device facts read back from the row
-    // the insert returns, never from the caller's local copy.
+    // the insert returns, never from the caller's local copy. An authorization-code response
+    // carries only facts built before the insert, so it returns as built.
     let stored = storage::oauth_flows::insert_flow(database, new_flow).await?;
 
     info!(
@@ -598,15 +629,7 @@ async fn begin_flow(
     );
 
     Ok(match response {
-        StartProviderOauthResponse::AuthorizationCode {
-            authorize_url,
-            state,
-            expires_at,
-        } => StartProviderOauthResponse::AuthorizationCode {
-            authorize_url,
-            state,
-            expires_at,
-        },
+        StartProviderOauthResponse::AuthorizationCode { .. } => response,
 
         StartProviderOauthResponse::Device { state, .. } => StartProviderOauthResponse::Device {
             state,
@@ -915,12 +938,13 @@ mod tests {
 
         let oauth_definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
 
+        // The fixture definition addresses its base URL, so the provider row carries one.
         let provider = test_support::insert_provider(
             &database,
             &oauth_definition,
             "oauth-provider",
             "o-",
-            None,
+            Some("https://upstream.example"),
             StoredCredentials::OAuth {
                 access_token: "old".to_string(),
                 refresh_token: None,
@@ -986,6 +1010,8 @@ mod tests {
 
         let oauth_definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
 
+        // The fixture definition addresses its base URL, so the request carries the base URL the
+        // flow needs to reach the name-taken check.
         let error = handle_start(
             &database,
             &crate::http_client::control_plane(),
@@ -994,7 +1020,7 @@ mod tests {
                 provider_definition_version: oauth_definition.version.get(),
                 name: "taken".to_string(),
                 model_prefix: String::new(),
-                base_url: None,
+                base_url: Some("https://upstream.example".to_string()),
             },
         )
         .await
@@ -1009,6 +1035,100 @@ mod tests {
         };
 
         assert_eq!(name, "taken");
+    }
+
+    /// `oauth:start` rejects a definition whose URLs reference the base when the request carries
+    /// no `base_url` (README §7.1): the flow would mint a provider whose every dispatch evaluates
+    /// those references against a missing base URL.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the rejection diverges.
+    #[tokio::test]
+    async fn starting_a_flow_against_a_base_addressing_definition_requires_the_base_url() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
+
+        let error = handle_start(
+            &database,
+            &crate::http_client::control_plane(),
+            StartProviderOauthRequest {
+                provider_definition_name: definition.name.clone(),
+                provider_definition_version: definition.version.get(),
+                name: "created".to_string(),
+                model_prefix: String::new(),
+                base_url: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::Validation { param, message } = error else {
+            panic!("a missing base URL renders the base_url validation rejection");
+        };
+
+        assert_eq!(param, "base_url");
+        assert!(message.contains("oauth-def"), "{message}");
+    }
+
+    /// `oauth:reauthorize` rejects an effective target definition whose URLs reference the base
+    /// when the provider row carries no base URL (README §7.1): the flow runs from the stored
+    /// base, so such a target — the provider's own pair, or an explicitly named version — is
+    /// unsatisfiable without one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the rejection diverges.
+    #[tokio::test]
+    async fn reauthorizing_without_a_stored_base_url_against_a_base_addressing_target_is_rejected()
+    {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "oauth-provider",
+            "o-",
+            None,
+            StoredCredentials::OAuth {
+                access_token: "old".to_string(),
+                refresh_token: None,
+                slots: std::collections::BTreeMap::new(),
+                expires_at: None,
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        let error = handle_reauthorize_start(
+            &database,
+            &crate::http_client::control_plane(),
+            ReauthorizeProviderRequest {
+                provider_id: provider.id,
+                provider_definition_name: None,
+                provider_definition_version: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::Validation { param, message } = error else {
+            panic!("a missing stored base URL renders the base_url validation rejection");
+        };
+
+        assert_eq!(param, "base_url");
+        assert!(message.contains("oauth-def"), "{message}");
     }
 
     /// A succeeded device flow whose result provider row no longer exists answers the 404

@@ -84,7 +84,7 @@ pub enum ValueExpr {
 }
 
 /// The value-expression kinds a descriptor stage may reference. The management write boundary
-/// rejects an expression referencing a kind its stage does not carry (README §5.7), so runtime
+/// rejects an expression referencing a kind its stage does not carry (README §5.1), so runtime
 /// evaluation of an absent value is stored drift and fails fast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ValueKind {
@@ -309,7 +309,7 @@ pub enum ResponseEncoding {
 }
 
 /// A response path: the closed mini-vocabulary addressing one value of a decoded control response
-/// (README §5.4) — an object member chain, rendered as the ordered member names, with the empty
+/// (README §5.1) — an object member chain, rendered as the ordered member names, with the empty
 /// chain denoting the root.
 ///
 /// Arrays are not addressed by value paths: discovery locates its array and per-entry field
@@ -340,7 +340,7 @@ impl ResponsePath {
     }
 }
 
-/// The declared shape of one extracted response value (README §5.4).
+/// The declared shape of one extracted response value (README §5.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

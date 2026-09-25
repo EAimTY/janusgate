@@ -26,8 +26,10 @@
 //! unconsumed: a terminal device result stays until the management client retrieves it or the
 //! flow expires. The cross-column `CHECK`s pin the lifecycle states — a `create` flow names its
 //! new provider, a `reauthorize` flow names its target provider, a device flow carries its
-//! schedule exactly while it is pending, and a terminal outcome is either a result provider or a
-//! failure pair, never both.
+//! schedule exactly while it is pending, a terminal outcome is either a result provider or a
+//! failure pair, never both, and a terminal outcome exists only on a device flow: an
+//! authorization-code flow is deleted by the atomic consume of its first completion attempt, so
+//! its terminal state is never persisted.
 //!
 //! Every integer identity a foreign reference can point at — `providers.id`, `api_keys.id`, and
 //! `models.id` — is an `INTEGER PRIMARY KEY AUTOINCREMENT` key, so SQLite never reuses a deleted
@@ -159,6 +161,7 @@ CREATE TABLE ongoing_oauth_flows (
             AND (outcome IS NOT NULL OR device_next_poll_at IS NOT NULL))
     ),
     CHECK (outcome IS NULL OR device_poll_started_at IS NULL),
+    CHECK (outcome IS NULL OR grant_type = 'device'),
     CHECK (
         (outcome IS NULL AND result_provider_id IS NULL
          AND failure_code IS NULL AND failure_message IS NULL)
@@ -568,9 +571,11 @@ mod tests {
 
     /// Verifies the cross-column lifecycle `CHECK`s of `ongoing_oauth_flows` (README §3): a
     /// `create` flow names its new provider, a `reauthorize` flow names its target provider, a
-    /// device flow carries its schedule exactly while it is pending, and a terminal outcome is
-    /// either a result provider or a failure pair, never both — while every conforming state
-    /// combination writes cleanly.
+    /// device flow carries its schedule exactly while it is pending, a terminal outcome is
+    /// either a result provider or a failure pair, never both, and a terminal outcome exists
+    /// only on a device flow — an authorization-code flow is deleted by the atomic consume of
+    /// its first completion attempt, so its terminal state is never persisted — while every
+    /// conforming state combination writes cleanly.
     ///
     /// # Errors
     ///
@@ -720,6 +725,19 @@ mod tests {
         // A terminal outcome without either its result provider or its failure pair.
         let outcome = connection
             .execute_batch("UPDATE ongoing_oauth_flows SET outcome = 'failed' WHERE id = 3;")
+            .await;
+
+        assert_constraint_violation(outcome, "outcome");
+
+        // A terminal outcome on an authorization-code flow: the flow is deleted by the atomic
+        // consume of its first completion attempt, so a persisted terminal outcome is a device
+        // flow's alone. The probe satisfies every other terminal-outcome state, isolating the
+        // grant coupling.
+        let outcome = connection
+            .execute_batch(
+                "UPDATE ongoing_oauth_flows SET outcome = 'succeeded', result_provider_id = 7 \
+                 WHERE id = 1;",
+            )
             .await;
 
         assert_constraint_violation(outcome, "outcome");

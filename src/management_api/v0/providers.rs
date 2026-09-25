@@ -224,16 +224,10 @@ async fn handle_create(
         });
     }
 
-    // A definition whose URLs reference the base requires the instance base URL.
-    if payload_addresses_base_url(&definition.payload) && request.base_url.is_none() {
-        return Err(Error::CredentialKindMismatch {
-            message: format!(
-                "Provider definition `{}` version {} addresses its base URL, so the provider \
-                 row must carry one",
-                definition.name,
-                definition.version.get(),
-            ),
-        });
+    // A definition whose URLs reference the base requires the instance base URL: every dispatch
+    // evaluates those references against the stored row (README §3, §7.1).
+    if definition.payload.references_base() && request.base_url.is_none() {
+        return Err(base_url_required(&definition));
     }
 
     // The pre-insert check renders a clean 409; the database's UNIQUE constraint is the
@@ -277,39 +271,18 @@ fn definition_version_invalid() -> Error {
     ))
 }
 
-/// Whether any expression of the payload references the instance base URL.
-fn payload_addresses_base_url(payload: &crate::provider::DefinitionPayload) -> bool {
-    /// Whether one string expression references the base URL.
-    fn references_base(expr: &crate::provider::definition::template::StringExpr) -> bool {
-        expr.0
-            .iter()
-            .any(|part| matches!(part, crate::provider::definition::template::ValueExpr::Base))
+/// Builds the 400 the provider writes render when the effective definition's URLs reference the
+/// base but no base URL is supplied (README §3, §7.1).
+fn base_url_required(definition: &crate::provider::ProviderDefinition) -> Error {
+    Error::Validation {
+        param: "base_url",
+        message: format!(
+            "`base_url` is required: provider definition `{}` version {} addresses its base \
+             URL, so the provider row must carry one",
+            definition.name,
+            definition.version.get(),
+        ),
     }
-
-    let inference = &payload.inference;
-
-    let mut needs = references_base(&inference.url);
-
-    if let Some(stream_url) = &inference.stream_url {
-        needs = needs || references_base(stream_url);
-    }
-
-    if let Some(discovery) = &payload.discovery {
-        needs = needs || references_base(&discovery.request.url);
-    }
-
-    if let Some(steps) = &payload.provisioning {
-        needs = needs
-            || steps.iter().any(|step| {
-                references_base(&step.request.url)
-                    || step
-                        .poll
-                        .as_ref()
-                        .is_some_and(|poll| references_base(&poll.request.url))
-            });
-    }
-
-    needs
 }
 
 /// Handles `POST /providers:update`.
@@ -343,7 +316,8 @@ pub(super) async fn delete(
 /// # Errors
 ///
 /// Returns [`Error`] for empty names, unknown ids, absent-keeps violations, taken names,
-/// public-ID collisions, and a rebind whose target version or credential kinds disagree.
+/// public-ID collisions, a rebind whose target version or credential kinds disagree, and a base
+/// URL the effective definition requires being absent.
 async fn handle_update(
     database: &crate::database::Database,
     request: UpdateProviderRequest,
@@ -408,12 +382,19 @@ async fn handle_update(
         });
     }
 
+    // The rebind target, resolved for the clean rejections; an unknown target defers to the
+    // transactional write's 404.
+    let rebind_target = match rebind {
+        Some((name, version)) => {
+            storage::provider_definitions::find_definition(database, name, version).await?
+        }
+
+        None => None,
+    };
+
     // A rebind whose target kind differs from the stored credentials requires the replacement
     // key in the same request; without a replacement the kinds must already agree.
-    if let Some((name, version)) = rebind
-        && let Some(target) =
-            storage::provider_definitions::find_definition(database, name, version).await?
-    {
+    if let Some(target) = &rebind_target {
         let credentials_kind = credentials
             .as_ref()
             .map(crate::provider::StoredCredentials::kind)
@@ -422,26 +403,35 @@ async fn handle_update(
         if credentials_kind != target.credential_kind() {
             return Err(Error::CredentialKindMismatch {
                 message: format!(
-                    "Provider definition `{name}` version {} carries `{}` credentials; the \
+                    "Provider definition `{}` version {} carries `{}` credentials; the \
                      provider carries `{}` credentials, so replacement credentials are required",
+                    target.name,
                     target.version.get(),
                     target.credential_kind().as_str(),
                     credentials_kind.as_str(),
                 ),
             });
         }
+    }
 
-        // The target definition may address the base where the stored one did not: the restated
-        // base URL must satisfy the target, in the same atomic write.
-        if payload_addresses_base_url(&target.payload) && request.base_url.is_none() {
-            return Err(Error::CredentialKindMismatch {
-                message: format!(
-                    "Provider definition `{name}` version {} addresses its base URL, so the \
-                     provider row must carry one",
-                    target.version.get(),
-                ),
-            });
-        }
+    // The base-URL requirement's pre-check mirrors the write's transactional one with the
+    // cleaner 400: on the no-rebind path it holds against the stored definition, so a full-state
+    // write can never null out the base URL a base-addressing provider's every dispatch
+    // evaluates; on a named rebind it holds against the resolved target (README §3, §7.1). A
+    // named rebind whose target does not exist defers the check entirely — the transactional
+    // write's unknown-definition 404 is the real answer, and judging the stored definition here
+    // would reject a request whose actual fault is the target.
+    let precheck_definition = if rebind.is_some() {
+        rebind_target.as_ref()
+    } else {
+        Some(&existing.definition)
+    };
+
+    if let Some(definition) = precheck_definition
+        && definition.payload.references_base()
+        && request.base_url.is_none()
+    {
+        return Err(base_url_required(definition));
     }
 
     storage::providers::update_provider(
@@ -465,7 +455,8 @@ async fn handle_update(
 
 #[cfg(test)]
 mod tests {
-    use super::UpdateProviderRequest;
+    use super::{Error, UpdateProviderRequest, handle_update};
+    use crate::{format::UpstreamFormat, provider::StoredCredentials, storage, test_support};
 
     /// Verifies the `providers:update` request's strictness: unknown fields are rejected, the
     /// write-only `api_key` rejects an explicit `null` (absence keeps the stored key), and the
@@ -518,5 +509,129 @@ mod tests {
         .unwrap();
 
         assert!(partial.provider_definition_version.is_none());
+    }
+
+    /// `providers:update` enforces the base-URL requirement against the effective definition even
+    /// on the no-rebind path: nulling the base URL of a provider bound to a base-addressing
+    /// definition is rejected instead of writing a row whose every dispatch evaluates the
+    /// definition's base references against a missing URL (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the rejection diverges.
+    #[tokio::test]
+    async fn updating_without_a_rebind_still_enforces_the_base_url_requirement() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "static-provider",
+            "s-",
+            Some("https://upstream.example"),
+            StoredCredentials::ApiKey {
+                api_key: "sk".to_string(),
+            },
+        )
+        .await;
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the rejection is the documented side of this call"
+        )]
+        let error = handle_update(
+            &database,
+            UpdateProviderRequest {
+                provider_id: provider.id,
+                name: provider.name.clone(),
+                model_prefix: provider.model_prefix.clone(),
+                is_enabled: true,
+                base_url: None,
+                provider_definition_name: None,
+                provider_definition_version: None,
+                api_key: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::Validation { param, message } = error else {
+            panic!("nulling a base-addressing provider's base URL renders the base_url rejection");
+        };
+
+        assert_eq!(param, "base_url");
+        assert!(message.contains("static-def"), "{message}");
+    }
+
+    /// A named rebind whose target version does not exist defers the base-URL requirement to the
+    /// transactional write: the write's unknown-definition 404 answers, never a pre-checked
+    /// `base_url` rejection judged against the stored definition (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the rejection diverges.
+    #[tokio::test]
+    async fn updating_to_an_unknown_rebind_target_defers_the_base_url_check_to_the_write() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "static-provider",
+            "s-",
+            Some("https://upstream.example"),
+            StoredCredentials::ApiKey {
+                api_key: "sk".to_string(),
+            },
+        )
+        .await;
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the rejection is the documented side of this call"
+        )]
+        let error = handle_update(
+            &database,
+            UpdateProviderRequest {
+                provider_id: provider.id,
+                name: provider.name.clone(),
+                model_prefix: provider.model_prefix.clone(),
+                is_enabled: true,
+                base_url: None,
+                provider_definition_name: Some("absent-def".to_string()),
+                provider_definition_version: Some(1),
+                api_key: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::Storage(storage::Error::NotFound { message }) = error else {
+            panic!("an unknown rebind target renders the write's unknown-definition 404");
+        };
+
+        assert!(message.contains("absent-def"), "{message}");
     }
 }

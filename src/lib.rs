@@ -27,6 +27,7 @@ pub mod management_api;
 mod provider;
 mod routing_text;
 mod security;
+mod serde_helpers;
 mod server;
 mod sse;
 mod storage;

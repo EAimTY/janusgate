@@ -26,7 +26,10 @@ type ConnectionService = {
     readonly currentConnection: () => Connection | null;
     readonly connect: (candidate: Connection) => Promise<void>;
     readonly forget: () => void;
-    /** A management call answered 401: the pair is cleared, setup explains it. */
+    /**
+     * A management call answered 401: the pair is cleared, setup explains it,
+     * and the reconnect screen reopens seeded with the dying address.
+     */
     readonly reportUnauthorized: (notice: string) => void;
 };
 
@@ -99,6 +102,14 @@ export function createConnectionService(
     };
 
     const reportUnauthorized = (notice: string): void => {
+        // The 401 answers the connection in charge (the caller guards that),
+        // so the address is captured before the rejection drops the pair: the
+        // reconnect screen reopens with the field seeded from it. The token
+        // deliberately does not travel — it is a bearer secret only the user
+        // can re-enter, and its loss is why the reconnect exists.
+        const dyingBaseUrl =
+            currentState.status === "connected" ? currentState.connection.baseUrl : null;
+
         clearStoredConnection(dependencies.storage);
 
         dispatch({
@@ -112,7 +123,7 @@ export function createConnectionService(
                     errno: ErrorCode.Unauthorized,
                     httpStatus: 401,
                 }),
-                baseUrl: null,
+                baseUrl: dyingBaseUrl,
             },
         });
     };

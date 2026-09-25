@@ -69,6 +69,13 @@ const expiredOauthProviderRow: ProviderResponse = {
     expires_at: 1,
 };
 
+/** A second, enabled provider holding no model rows at all. */
+const emptyProviderRow: ProviderResponse = {
+    ...providerRow,
+    id: 2,
+    name: "spare",
+};
+
 function bucket(key: UsageBucket["key"], requests: number): UsageBucket {
     return {
         key,
@@ -305,7 +312,9 @@ describe("HomeScreen", () => {
     it("sends an enabled provider whose every model vanished to the attention list", async () => {
         // The upstream silently dropped its whole catalog: every row is
         // vanished, the provider is enabled, nothing serves — the quietest
-        // failure mode, and exactly what the attention line exists for.
+        // failure mode, and exactly what the attention line exists for. Rows
+        // that fail by themselves get the models page, not the discovery
+        // promise discovery cannot keep for a switched-off row.
         mount(
             overviewApi([], {
                 providers: [
@@ -318,8 +327,34 @@ describe("HomeScreen", () => {
         );
         await settle();
 
-        expect(bodyText()).toContain("has no models serving yet.");
-        expect(linkTo("/providers/1").textContent).toContain("Open and discover");
+        expect(bodyText()).toContain(
+            "has no models serving — every model is switched off or suspended.",
+        );
+        expect(linkTo("/models?provider=1").textContent).toContain("Review models");
+    });
+
+    it("points a provider with no model rows at its discovery", async () => {
+        // One provider routes a model; a second enabled provider holds no
+        // rows at all. Its line must not borrow the other provider's rows:
+        // its cause is a missing discovery, not rows failing by themselves.
+        mount(
+            overviewApi([], {
+                providers: [
+                    providerRow,
+                    emptyProviderRow,
+                ],
+                models: [
+                    modelRow,
+                ],
+            }),
+        );
+        await settle();
+
+        expect(bodyText()).toContain("has no models yet.");
+        expect(bodyText()).not.toContain(
+            "has no models serving — every model is switched off or suspended.",
+        );
+        expect(linkTo("/providers/2").textContent).toContain("Open and discover");
     });
 
     it("gives a disabled provider no attention line even while nothing of it serves", async () => {

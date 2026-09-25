@@ -67,15 +67,18 @@ pub(crate) struct ApiKeyUpdate<'a> {
     pub(crate) is_enabled: bool,
 }
 
-/// The wire wording for an unknown API key id, owned once here so the transactional write and the
-/// management lookups render a missing key identically.
+/// The wire wording for an unknown API key id, owned once here as the single source both surfaces
+/// render from: the transactional write constructs its storage rejection with it, and the
+/// management error domain's `ApiKeyNotFound` variant renders its display through it — a wording
+/// edit lands here and reaches every 404 identically.
 pub(crate) fn api_key_not_found_message(id: i64) -> String {
     format!("API key {id} does not exist")
 }
 
-/// The wire wording for a taken key value, owned once here so the checked rewrite and the
-/// management pre-checks render a duplicate identically. The value itself is never named: it is a
-/// bearer secret and must stay out of rendered bodies and log records.
+/// The wire wording for a taken key value, owned once here as the single source both surfaces
+/// render from: the checked rewrite constructs its storage rejection with it, and the management
+/// error domain's `ApiKeyTaken` variant renders its display through it. The value itself is never
+/// named: it is a bearer secret and must stay out of rendered bodies and log records.
 pub(crate) fn api_key_taken_message() -> String {
     "API key is already taken".to_string()
 }

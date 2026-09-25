@@ -22,10 +22,11 @@ import {
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { Button, ButtonLink } from "/src/ui/controls";
-import { Badge, EmptyState, Notice } from "/src/ui/feedback";
+import { Badge, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
 import { credentialBadge } from "/src/ui/providers-table";
+import { RowNotFound } from "./row-not-found";
 
 /**
  * One provider's page: what it is, the models it reports, and what serving
@@ -61,7 +62,6 @@ export function ProviderDetailScreen(props: {
     // A successful read clears the read-level notice; the discovery's own
     // outcome lives on the Models card and survives reads untouched.
     const read = createScreenRead({
-        reReadOn: () => props.providerId,
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
@@ -220,25 +220,14 @@ export function ProviderDetailScreen(props: {
                 />
             }
             notFound={
-                <>
-                    <PageHeader
-                        title="Provider"
-                        backHref={hrefs.providers()}
-                        backLabel="Providers"
-                    />
-                    <EmptyState
-                        title="Provider not found"
-                        description="The gateway holds no provider here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
-                    >
-                        <ButtonLink
-                            href={hrefs.providers()}
-                            tone="primary"
-                        >
-                            Back to providers
-                        </ButtonLink>
-                        <ButtonLink href={hrefs.providerNew()}>Create provider</ButtonLink>
-                    </EmptyState>
-                </>
+                <RowNotFound
+                    kind="provider"
+                    headerTitle="Provider"
+                    createAction={{
+                        href: hrefs.providerNew(),
+                        label: "Create provider",
+                    }}
+                />
             }
         >
             {(row) => (

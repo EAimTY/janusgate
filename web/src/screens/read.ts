@@ -178,12 +178,13 @@ export type ScreenRead = {
 
 /**
  * The screen read harness (README §6.3): one read per mount, repeated when
- * *refresh* is pressed or the screen's route identity moves, cancelled when
- * the screen goes away, with the first failure diagnosed where failures are
- * stated. The screen owns its data signals and the `load` body — what this
- * screen loads and where each answer goes — while the harness owns the
- * signals every screen redeclared, the abort lifecycle, the refresh
- * subscription, and the diagnosis mapping.
+ * *refresh* is pressed, cancelled when the screen goes away, with the first
+ * failure diagnosed where failures are stated. A route-identity move is a
+ * keyed remount (README §6.3) — the fresh mount runs its own first read — so
+ * this harness follows the refresh pulse alone. The screen owns its data
+ * signals and the `load` body — what this screen loads and where each answer
+ * goes — while the harness owns the signals every screen redeclared, the
+ * abort lifecycle, the refresh subscription, and the diagnosis mapping.
  *
  * A failed cycle replaces the standing notice with its diagnosis. A
  * successful cycle clears it — except where `isNoticeKeptOnSuccess` holds,
@@ -193,8 +194,6 @@ export type ScreenRead = {
 export function createScreenRead(options: {
     /** The screen's reads, run under the cycle's signal; throws `ReadCallFailure` to fail the cycle. */
     readonly load: (signal: AbortSignal) => Promise<void>;
-    /** An additional reactive source the read follows beside the refresh pulse (a route id). */
-    readonly reReadOn?: Accessor<unknown> | undefined;
     /** Whether a successful read keeps the standing notice (an action's reported outcome). */
     readonly isNoticeKeptOnSuccess?: boolean;
 }): ScreenRead {
@@ -249,10 +248,7 @@ export function createScreenRead(options: {
     };
 
     createEffect(
-        () => ({
-            generation: refreshRequest(),
-            source: options.reReadOn?.(),
-        }),
+        () => refreshRequest(),
         () => {
             void run();
 

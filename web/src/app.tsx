@@ -196,6 +196,7 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
     const modelDetailRoute = routeNamed(route, "modelDetail");
     const modelEditRoute = routeNamed(route, "modelEdit");
     const usageRoute = routeNamed(route, "usage");
+    const usageQueryRoute = routeNamed(route, "usageQuery");
 
     return (
         <div class="flex min-h-screen flex-col">
@@ -212,6 +213,7 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                 <ContextBar
                     connection={props.connection}
                     activeNav={navKeyOfRoute(route().name)}
+                    hasScreenReads={isRefreshableRoute(route())}
                 />
 
                 <main id="main">
@@ -334,8 +336,16 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
                                 />
                             )}
                         </Match>
-                        <Match when={route().name === "usageQuery"}>
-                            <UsageQueryScreen api={api} />
+                        <Match
+                            when={usageQueryRoute()}
+                            keyed
+                        >
+                            {(query) => (
+                                <UsageQueryScreen
+                                    api={api}
+                                    subject={query.subject}
+                                />
+                            )}
                         </Match>
                     </Switch>
                 </main>
@@ -388,10 +398,33 @@ function TopBar(): JSX.Element {
     );
 }
 
+/**
+ * The routes whose screen performs no gateway read at all, so the Refresh
+ * control would pulse a refresh nothing answers: there it is disabled, its
+ * hint stating why, instead of pretending. Today's two such screens are the
+ * new API key page, which renders from local state only, and the not-found
+ * page, the fallback for addresses the router cannot match — including a row
+ * address whose identifier does not parse — which renders links alone. Every
+ * other screen's reads ride the refresh pulse, the new provider page's boot
+ * read included. A future screen that reads nothing joins this set with its
+ * route.
+ */
+const REFRESHLESS_ROUTE_NAMES: ReadonlySet<AppRoute["name"]> = new Set([
+    "apiKeyNew",
+    "notFound",
+]);
+
+/** Whether the route's screen exposes a gateway read for the Refresh control to re-run. */
+function isRefreshableRoute(route: AppRoute): boolean {
+    return !REFRESHLESS_ROUTE_NAMES.has(route.name);
+}
+
 /** Navigation tabs plus the live connection facts: address and freshness. */
 function ContextBar(props: {
     readonly connection: Connection;
     readonly activeNav: NavKey | null;
+    /** Whether the mounted screen reads the gateway, so Refresh has a read to re-run. */
+    readonly hasScreenReads: boolean;
 }): JSX.Element {
     return (
         <div class="flex flex-wrap items-center gap-x-4 gap-y-3">
@@ -434,9 +467,14 @@ function ContextBar(props: {
                 </span>
                 <button
                     type="button"
-                    title="Read this screen's state from the gateway again"
+                    title={
+                        props.hasScreenReads
+                            ? "Read this screen's state from the gateway again"
+                            : "This screen reads nothing from the gateway, so there is nothing to refresh"
+                    }
+                    disabled={!props.hasScreenReads}
                     onClick={() => requestRefresh()}
-                    class="inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 font-medium text-ink-dim transition-colors duration-150 ease-out hover:bg-hover hover:text-ink"
+                    class="inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 font-medium text-ink-dim transition-colors duration-150 ease-out hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     <Glyph name="refresh" />
                     Refresh

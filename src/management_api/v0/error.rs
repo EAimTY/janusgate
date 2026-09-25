@@ -19,7 +19,10 @@ use crate::{
     provider::{
         definition::ValidationError, discovery::Error as DiscoveryError, oauth::Error as OAuthError,
     },
-    storage::Error as StorageError,
+    storage::{
+        Error as StorageError,
+        api_keys::{api_key_not_found_message, api_key_taken_message},
+    },
 };
 use as_http_status_code::{AsStatusCode, StatusCode};
 use axum::{
@@ -270,8 +273,10 @@ pub(super) enum Error {
         name: String,
     },
 
-    /// The addressed API key row does not exist.
-    #[error("API key {id} does not exist")]
+    /// The addressed API key row does not exist. The display renders through
+    /// [`api_key_not_found_message`], the single home it shares with the storage rejection the
+    /// transactional rewrite constructs, so both 404s read identically.
+    #[error("{}", api_key_not_found_message(*.id))]
     ApiKeyNotFound {
         /// Identifier of the missing API key row.
         id: i64,
@@ -279,8 +284,9 @@ pub(super) enum Error {
 
     /// A creation or rewrite names an API key secret another key already holds. The secret itself
     /// is never named: it is a bearer credential and must stay out of rendered bodies and log
-    /// records.
-    #[error("API key is already taken")]
+    /// records. The display renders through [`api_key_taken_message`], the single home it shares
+    /// with the storage rejection the checked rewrite constructs, so both 409s read identically.
+    #[error("{}", api_key_taken_message())]
     ApiKeyTaken,
 
     /// The completion's state token is unknown, expired, or already consumed.

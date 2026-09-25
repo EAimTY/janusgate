@@ -94,6 +94,17 @@ function skeleton(): HTMLDivElement | null {
     return document.body.querySelector("div[aria-hidden='true'].wash");
 }
 
+/** The frame's read-again action of the failed first read, by its label. */
+function readAgainButton(): HTMLButtonElement {
+    for (const candidate of document.querySelectorAll("button")) {
+        if (candidate.textContent?.includes("Read again") === true) {
+            return candidate as HTMLButtonElement;
+        }
+    }
+
+    throw new Error("No button reading Read again");
+}
+
 describe("ScreenFrame", () => {
     const disposes: Array<() => void> = [];
 
@@ -142,7 +153,7 @@ describe("ScreenFrame", () => {
         expect(document.body.textContent).toContain("the row content of alpha");
     });
 
-    it("replaces the skeleton with the standing notice a failed first read states", async () => {
+    it("keeps the screen's own header beside the standing notice a failed first read states", async () => {
         const held = heldListing();
         mount(held.listProviders);
         await settle();
@@ -156,14 +167,55 @@ describe("ScreenFrame", () => {
         );
         await settle();
 
-        // The failure's diagnosis stands where every screen states it, and
-        // the skeleton that would cover it is gone.
+        // The failure's diagnosis stands where every screen states it, the
+        // skeleton that would cover it is gone, and the screen's own header
+        // stays up beside it — the page keeps its identity and way back —
+        // with the read-again action offering the reload.
         expect(document.body.textContent).toContain(
             "The upstream provider refused the call or was unreachable.",
         );
         expect(document.body.textContent).toContain("the listing dropped");
         expect(skeleton()).toBeNull();
+        expect(document.body.textContent).toContain("the screen's own header");
+        expect(readAgainButton()).toBeInstanceOf(HTMLButtonElement);
+    });
+
+    it("reads again from the failed first read and recovers onto the row", async () => {
+        const held = heldListing();
+        mount(held.listProviders);
+        await settle();
+
+        held.refuse(
+            new ManagementApiError("gateway", "the listing dropped", {
+                errno: ErrorCode.UpstreamError,
+                httpStatus: 502,
+            }),
+        );
+        await settle();
+
+        readAgainButton().click();
+
+        // The re-read cycle runs under the still-standing failure: the
+        // header stays up, the skeleton stays closed rather than stacking
+        // over the failure, and the read-again action waits for the cycle
+        // it started.
+        await settle();
+        expect(document.body.textContent).toContain("the screen's own header");
+        expect(document.body.textContent).toContain("the listing dropped");
+        expect(skeleton()).toBeNull();
+        expect(readAgainButton().disabled).toBe(true);
+
+        held.answer([
+            provider,
+        ]);
+        await settle();
+
+        // The read landed this time: the row's content takes over, and the
+        // failure, the header slot, and the read-again action stand down.
+        expect(document.body.textContent).toContain("the row content of alpha");
+        expect(document.body.textContent).not.toContain("the listing dropped");
         expect(document.body.textContent).not.toContain("the screen's own header");
+        expect(() => readAgainButton()).toThrow("No button reading Read again");
     });
 
     it("renders the not-found slot when the read lands but no row answers the address", async () => {

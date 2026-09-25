@@ -6,7 +6,11 @@
 //! shard's per-shard rowid tie-break preserved, and buckets merge by key, then order by the key
 //! expressions in request order under SQLite's ordering, re-implemented by
 //! [`compare_bucket_keys`]. Day grouping is shard-aligned, so day buckets never straddle shards
-//! and the merge is exact. The reads are never gated by the recording switch: an absent store
+//! and the merge is exact. The page read walks the shards newest day first and stops once a
+//! finished shard has filled the page — every row of a newer shard outranks every row of an
+//! older one, so the aggregation scan of every remaining shard is never paid for a page that is
+//! already complete; `usage:query` keeps scanning all candidate shards, since an aggregation
+//! needs everything. The reads are never gated by the recording switch: an absent store
 //! answers empty (README §3 *ApiLog*).
 
 use super::store::{ApiLogStore, SHARD_POOL_WAIT, ShardDay};
@@ -80,9 +84,12 @@ impl ApiLogStore {
     /// the previous page's last row. Each retained shard answers its own newest-first page
     /// under the same filter and cursor, and the pages merge on `started_at`.
     ///
-    /// Equal stamps never span shards — a row's own stamp selects its shard — so the stable
-    /// merge preserves each shard's own `id DESC` tie-break and the result is one global
-    /// `ORDER BY started_at DESC, id DESC`.
+    /// The shards are walked newest day first, and the walk stops once a finished shard has
+    /// filled the page: every row of a newer shard outranks every row of an older one — a row's
+    /// own stamp selects its shard — so the newer shards' answers already contain the whole page
+    /// and the remaining, strictly older shards can contribute nothing to it. Within the page,
+    /// equal stamps never span shards, so the stable merge preserves each shard's own `id DESC`
+    /// tie-break and the result is one global `ORDER BY started_at DESC, id DESC`.
     ///
     /// # Errors
     ///
@@ -94,9 +101,12 @@ impl ApiLogStore {
         before: Option<i64>,
         filter: &UsageFilter,
     ) -> Result<Vec<ApiLog>, Error> {
+        // The wire bounds `limit` at 1..=1000; the conversion never truncates in practice.
+        let page_limit = usize::try_from(limit).unwrap_or(usize::MAX);
+
         let mut page = Vec::new();
 
-        for day in self.candidate_days(filter)? {
+        for day in self.candidate_days(filter)?.into_iter().rev() {
             let Some(database) = self.open_shard_for_read(day).await? else {
                 continue;
             };
@@ -124,13 +134,18 @@ impl ApiLogStore {
                     .map(api_log_from_row)
                     .collect::<Result<Vec<_>, _>>()?,
             );
+
+            // A shard's answer is only superseded by newer shards, all of which finished before
+            // it: once the page is full, every still-unread shard holds strictly older rows
+            // alone. The last shard's answer can overflow the page, so the truncation below
+            // still runs.
+            if page.len() >= page_limit {
+                break;
+            }
         }
 
         page.sort_by_key(|log| std::cmp::Reverse(log.started_at));
-        page.truncate(
-            // The wire bounds `limit` at 1000; the conversion never truncates in practice.
-            usize::try_from(limit).unwrap_or(usize::MAX),
-        );
+        page.truncate(page_limit);
 
         Ok(page)
     }
@@ -263,7 +278,7 @@ pub struct UsageFilter {
     /// Inclusive lower bound of `started_at`, in UTC microseconds; absent sets no bound.
     #[serde(
         default,
-        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
@@ -272,7 +287,7 @@ pub struct UsageFilter {
     /// Exclusive upper bound of `started_at`, in UTC microseconds; absent sets no bound.
     #[serde(
         default,
-        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
@@ -282,7 +297,7 @@ pub struct UsageFilter {
     /// guarantee the plain array binding does not restate.
     #[serde(
         default,
-        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(
@@ -294,7 +309,7 @@ pub struct UsageFilter {
     /// Provider row ids a row may carry; absent lists every provider.
     #[serde(
         default,
-        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(
@@ -306,7 +321,7 @@ pub struct UsageFilter {
     /// Model row ids a row may carry; absent lists every model.
     #[serde(
         default,
-        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(
@@ -318,7 +333,7 @@ pub struct UsageFilter {
     /// Outward completion endpoints a row may carry; absent lists every endpoint.
     #[serde(
         default,
-        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(
@@ -330,7 +345,7 @@ pub struct UsageFilter {
     /// Recorded outcomes a row may carry; absent lists every outcome.
     #[serde(
         default,
-        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(
@@ -342,7 +357,7 @@ pub struct UsageFilter {
     /// Stream flag a row must carry; absent lists both.
     #[serde(
         default,
-        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
@@ -353,7 +368,7 @@ pub struct UsageFilter {
     /// select those rows; `outcome` reaches them indirectly (README §7.1).
     #[serde(
         default,
-        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        deserialize_with = "crate::serde_helpers::absent_keeps::deserialize",
         skip_serializing_if = "Option::is_none"
     )]
     #[cfg_attr(

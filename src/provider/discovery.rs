@@ -1,5 +1,5 @@
 //! Upstream model discovery, driven entirely by the provider definition's discovery descriptor
-//! (README §5.5, §5.6).
+//! (README §5.5).
 //!
 //! Discovery configures a request, a response extraction, and a pagination loop; it discovers
 //! upstream model identifiers and never assigns protocol capabilities. A discovered model that

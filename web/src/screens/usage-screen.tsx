@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { formatTimestamp, formatTokenCount, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
@@ -14,7 +14,7 @@ import { hrefs, navigate } from "/src/router";
 import { ReadNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
 import { Button, ButtonLink, SelectField } from "/src/ui/controls";
-import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Badge, type BadgeTone, EmptyState, Notice } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { UsageFilterControls } from "/src/ui/usage-filter-controls";
@@ -25,7 +25,8 @@ import {
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
 } from "/src/usage-filter";
-import { createScreenRead, readAll, screenFailureNotice } from "./read";
+import { createScreenRead, readAll, type ScreenNotice, screenFailureNotice } from "./read";
+import { SkeletonRows } from "./skeleton-rows";
 import {
     indexUsageEntities,
     type UsageEntityIndex,
@@ -42,7 +43,9 @@ import { readUsageEntities, type UsageEntities } from "./usage-read";
  * one gateway's accounting always describe the same question. The filter is
  * the address: applying it navigates, which makes a filtered stream linkable,
  * shareable, and openable by the browser's back button, and leaves the
- * unfiltered stream at exactly `/usage`.
+ * unfiltered stream at exactly `/usage`. The route Match keys this screen, so
+ * the arrival filter seeds the form once — a changed filter is a fresh mount,
+ * never a prop the form must chase.
  */
 export function UsageScreen(props: {
     readonly api: ManagementApi;
@@ -56,20 +59,20 @@ export function UsageScreen(props: {
     const [rows, setRows] = createSignal<ReadonlyArray<ApiLogResponse>>([]);
     const [hasMore, setHasMore] = createSignal(true);
     const [isLoadingMore, setIsLoadingMore] = createSignal(false);
+    // The load-more failure is stated beside its own control — the Load more
+    // button at the stream's end — never in the read-level notice above the
+    // page, which states read failures only (README §6.4). A read cycle that
+    // lands replaces the stream wholesale and takes the failure with it: the
+    // fresh stream's continuation is untested, so the old diagnosis describes
+    // nothing that still exists.
+    const [loadMoreNotice, setLoadMoreNotice] = createSignal<ScreenNotice | null>(null);
+    // Seeded once from the arrival filter: the keyed remount owns every route
+    // change, so the draft never chases a changed route within a mount.
     const [draft, setDraft] = createSignal<UsageFilterDraft>(props.filter);
     // The wire filter the rows in hand were listed under. A rolling window is
     // resolved once per cycle, never per page: a stream whose pages carried
     // different bounds could skip or repeat rows at the seam.
     const [activeFilter, setActiveFilter] = createSignal<UsageFilter>({});
-
-    // The route owns the filter, so a navigation — the browser's back button
-    // included — rewrites the form to the address it landed on.
-    createEffect(
-        () => props.filter,
-        (filter) => {
-            setDraft(filter);
-        },
-    );
 
     // The loader that extends the stream, beside the harness's read cycle. Its
     // async continuation checks that its controller is still the current one
@@ -81,7 +84,6 @@ export function UsageScreen(props: {
     });
 
     const read = createScreenRead({
-        reReadOn: () => props.filter,
         load: async (signal) => {
             // A page the refresh is about to replace must never land; the
             // refresh owns the stream now.
@@ -110,6 +112,10 @@ export function UsageScreen(props: {
             const continuation = nextUsagePage([], pageResult.api_logs);
             setRows(continuation.rows);
             setHasMore(continuation.hasMore);
+            // The fresh stream replaces the old one whole: a failure stated
+            // beside the old stream's control described a continuation this
+            // stream no longer has.
+            setLoadMoreNotice(null);
         },
     });
 
@@ -130,11 +136,19 @@ export function UsageScreen(props: {
         }
 
         if (outcome.status === "failed") {
-            read.showNotice(
+            // A superseded page states nothing: its cycle was aborted because
+            // the refresh is replacing the stream it was extending, and the
+            // failure must not land beside the fresh stream's control.
+            if (signal.aborted) {
+                return null;
+            }
+
+            setLoadMoreNotice(
                 screenFailureNotice(outcome.cause, {
                     action: "list-usage",
                 }),
             );
+
             return null;
         }
 
@@ -170,12 +184,15 @@ export function UsageScreen(props: {
 
         if (page === null) {
             // A failed load is not the end of the stream: the failure notice
-            // above is the signal, and the continuation stays available.
+            // beside this control is the signal, and the continuation stays
+            // available.
             return;
         }
 
         const continuation = nextUsagePage(rows(), page);
-        read.showNotice(null);
+        // A retry that landed retires only the failure stated beside this
+        // control; the read-level notice above stays the read's alone.
+        setLoadMoreNotice(null);
         setRows(continuation.rows);
         setHasMore(continuation.hasMore);
     };
@@ -279,19 +296,11 @@ export function UsageScreen(props: {
                 </form>
             </Card>
 
-            <Show when={read.isFirstRead()}>
-                <div class="flex flex-col gap-2">
-                    <For
-                        each={[
-                            0,
-                            1,
-                            2,
-                        ]}
-                    >
-                        {() => <Skeleton class="h-24 w-full rounded-xl" />}
-                    </For>
-                </div>
-            </Show>
+            <SkeletonRows
+                read={read}
+                rowCount={3}
+                rowHeight="h-24"
+            />
 
             <Show when={read.hasRead()}>
                 <Show
@@ -344,14 +353,26 @@ export function UsageScreen(props: {
                             </p>
                         }
                     >
-                        <div>
-                            <Button
-                                glyph="chev-right"
-                                isBusy={isLoadingMore()}
-                                onClick={() => void loadMore()}
-                            >
-                                {isLoadingMore() ? "Loading…" : "Load more"}
-                            </Button>
+                        <div class="flex flex-col gap-3">
+                            <Show when={loadMoreNotice()}>
+                                {(failure) => (
+                                    <Notice
+                                        tone={failure().tone}
+                                        title={failure().title}
+                                        detail={failure().detail}
+                                        fix={failure().fix}
+                                    />
+                                )}
+                            </Show>
+                            <div>
+                                <Button
+                                    glyph="chev-right"
+                                    isBusy={isLoadingMore()}
+                                    onClick={() => void loadMore()}
+                                >
+                                    {isLoadingMore() ? "Loading…" : "Load more"}
+                                </Button>
+                            </div>
                         </div>
                     </Show>
                 </Show>

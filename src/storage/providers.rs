@@ -223,7 +223,8 @@ pub(crate) async fn replace_credentials_in_transaction(
 /// # Errors
 ///
 /// Returns [`Error`] for an unknown provider or definition, a failed statement, a taken name, a
-/// credential-kind disagreement, or a recomputed public ID collision.
+/// credential-kind disagreement, a base-URL requirement the effective definition imposes, or a
+/// recomputed public ID collision.
 pub(crate) async fn update_provider(
     database: &Database,
     provider_id: i64,
@@ -257,7 +258,7 @@ pub(crate) async fn update_provider(
     // The definition rebind: validate the target version and the credential-kind agreement inside
     // the transaction, so the reference and its compatible credentials commit together or not at
     // all.
-    let (definition_name, definition_version) = match update.definition {
+    let rebind_target = match update.definition {
         Some((name, version)) => {
             let Some(definition) = super::provider_definitions::find_definition_in_transaction(
                 &mut transaction,
@@ -286,8 +287,31 @@ pub(crate) async fn update_provider(
                 });
             }
 
-            (name.to_string(), version)
+            Some(definition)
         }
+
+        None => None,
+    };
+
+    // The base-URL requirement pairs the written base URL with the write's own effective
+    // definition — the rebind target when one is named, else the row's definition re-read inside
+    // this transaction — so no commit can leave a base-addressing provider without its base URL,
+    // however a concurrent write interleaves (README §3).
+    let effective_definition = rebind_target.as_ref().unwrap_or(&provider.definition);
+
+    if effective_definition.payload.references_base() && update.base_url.is_none() {
+        return Err(Error::Conflict {
+            message: format!(
+                "Provider definition `{}` version {} addresses its base URL, so the provider row \
+                 must carry one",
+                effective_definition.name,
+                effective_definition.version.get(),
+            ),
+        });
+    }
+
+    let (definition_name, definition_version) = match rebind_target {
+        Some(definition) => (definition.name, definition.version),
 
         None => (
             provider.definition.name.clone(),

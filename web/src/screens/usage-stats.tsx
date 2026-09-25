@@ -93,11 +93,8 @@ export function EntityUsageCard(props: {
 }): JSX.Element {
     const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
 
-    // No `reReadOn` source: the subject is fixed for the card's whole life —
-    // the owning screen remounts per subject — so the read follows the refresh
-    // pulse alone. (`props.filter` is a fresh object literal per render and
-    // tracks no signal; naming it here would only promise a re-read the
-    // subject's fixity never needs.)
+    // The subject is fixed for the card's whole life — the owning screen
+    // remounts per subject — so the read follows the refresh pulse alone.
     const read = createScreenRead({
         load: async (signal) => {
             const result = await readOne(

@@ -137,7 +137,10 @@ impl Error {
     /// and body-limit failures are the client's own fault and record `completed` with the
     /// rendered status — they never reach dispatch, so no dispatched row exists for them; the
     /// mapping stays total for stream failures rendered under an already-declared status, where
-    /// only the outcome is consumed.
+    /// only the outcome is consumed. The match names every variant, so a new one cannot compile
+    /// without its accounting being decided: a catch-all would silently record `completed` with
+    /// a 5xx status in every row a new gateway-side failure finalizes, and accounting is written
+    /// and swallowed — nothing else would flag it.
     pub(crate) fn accounting(&self) -> (ApiLogOutcome, i64) {
         match self {
             Self::Upstream { status, .. } => {
@@ -154,9 +157,16 @@ impl Error {
                 i64::from(StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
             ),
 
-            error => (
+            // Every client fault records `completed` under the status its variant pins, so the
+            // statuses derive from [`Error::http_status`] instead of a second table.
+            Self::InvalidApiKey
+            | Self::InvalidUrl { .. }
+            | Self::MethodNotAllowed
+            | Self::PayloadTooLarge
+            | Self::MalformedRequest { .. }
+            | Self::ModelNotFound { .. } => (
                 ApiLogOutcome::Completed,
-                i64::from(error.http_status().as_u16()),
+                i64::from(self.http_status().as_u16()),
             ),
         }
     }
@@ -400,7 +410,8 @@ mod tests {
 
     /// Verifies the accounting classification derives from the same variant: mirrored statuses
     /// record `upstream_error` with that status, transport failures record `upstream_error` with
-    /// 502, and gateway-side failures record `internal` with 500.
+    /// 502, gateway-side failures record `internal` with 500, and client faults record
+    /// `completed` with their own pinned status.
     ///
     /// # Panics
     ///
@@ -425,5 +436,18 @@ mod tests {
         let (outcome, status) = Error::Internal.accounting();
 
         assert_eq!((outcome, status), (ApiLogOutcome::Internal, 500));
+
+        // The client faults share one arm, so two representatives pin the `completed` outcome;
+        // their statuses are already pinned exhaustively by `pins_one_status_per_variant`.
+        let (outcome, status) = Error::InvalidApiKey.accounting();
+
+        assert_eq!((outcome, status), (ApiLogOutcome::Completed, 401));
+
+        let (outcome, status) = Error::ModelNotFound {
+            model: "gpt-4o".to_string(),
+        }
+        .accounting();
+
+        assert_eq!((outcome, status), (ApiLogOutcome::Completed, 404));
     }
 }
