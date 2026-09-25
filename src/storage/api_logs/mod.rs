@@ -14,12 +14,11 @@
 //! aggregation merge. This module carries the write contract the pipeline sees: the draft
 //! lifecycle ([`ApiLogDraft`]) and its single finalization entry point ([`finalize_api_log`]).
 //!
-//! Recording is best-effort by settled boundary, not by accident: a non-streaming client's
-//! disconnect *after* the response has been handed to hyper is unobservable — that row records
-//! `completed` with the status it rendered — and a connection that cancels the handler while it
-//! still awaits the upstream response never reaches a finalization point, so it writes no row at
-//! all. Those two classes of missed recording are the documented edge of the accounting semantics
-//! (README §3 *ApiLog*).
+//! Recording survives a departing client by settled boundary, not by accident: both response
+//! finalization tasks own their request's draft, so a client disconnecting mid-generation records
+//! `client_aborted` rather than losing the row. The one accepted edge is the non-streaming
+//! disconnect *after* the rendered body has been handed to hyper — unobservable, and that row
+//! records `completed` with the status it rendered (README §3 *ApiLog*).
 //!
 //! Storage failures classify through the shared storage error domain
 //! ([`Error`](super::Error)): a constraint backstop classifies as a conflict on the management

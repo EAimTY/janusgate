@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hrefs, matchAppRoute, parseRowIdentifier } from "./router";
+import { currentLocation, hrefs, matchAppRoute, routeTitle } from "./router";
 import { EMPTY_USAGE_FILTER_DRAFT } from "./usage-filter";
 
 function match(target: string) {
@@ -417,17 +417,84 @@ describe("matchAppRoute", () => {
     });
 });
 
-describe("parseRowIdentifier", () => {
-    it("accepts plain decimal integers", () => {
-        expect(parseRowIdentifier("12")).toBe(12);
+describe("routeTitle", () => {
+    it("names every payload-less screen over the product", () => {
+        expect(routeTitle(match("/"))).toBe("Overview · JanusGate");
+        expect(routeTitle(match("/providers"))).toBe("Providers · JanusGate");
+        expect(routeTitle(match("/providers/new"))).toBe("Create provider · JanusGate");
+        expect(routeTitle(match("/models"))).toBe("Models · JanusGate");
+        expect(routeTitle(match("/models/new"))).toBe("Create model · JanusGate");
+        expect(routeTitle(match("/api-keys"))).toBe("API keys · JanusGate");
+        expect(routeTitle(match("/api-keys/new"))).toBe("Create API key · JanusGate");
+        expect(routeTitle(match("/usage"))).toBe("Usage · JanusGate");
+        expect(routeTitle(match("/usage/query"))).toBe("Usage aggregates · JanusGate");
+        expect(routeTitle(match("/panel"))).toBe("Page not found · JanusGate");
     });
 
-    it("rejects everything else", () => {
-        expect(parseRowIdentifier(null)).toBeNull();
-        expect(parseRowIdentifier("")).toBeNull();
-        expect(parseRowIdentifier("codex")).toBeNull();
-        expect(parseRowIdentifier("12x")).toBeNull();
-        expect(parseRowIdentifier("-3")).toBeNull();
-        expect(parseRowIdentifier("1.5")).toBeNull();
+    it("names the row a route addresses by its identifier", () => {
+        // The shell knows only the address's row identifier — the row's label
+        // is the screen read's to resolve — so the detail and edit titles
+        // carry the identifier the route itself carries.
+        expect(routeTitle(match("/providers/12"))).toBe("Provider #12 · JanusGate");
+        expect(routeTitle(match("/providers/12/edit"))).toBe("Edit provider #12 · JanusGate");
+        expect(routeTitle(match("/models/9"))).toBe("Model #9 · JanusGate");
+        expect(routeTitle(match("/models/9/edit"))).toBe("Edit model #9 · JanusGate");
+        expect(routeTitle(match("/api-keys/7"))).toBe("API key #7 · JanusGate");
+        expect(routeTitle(match("/api-keys/7/edit"))).toBe("Edit API key #7 · JanusGate");
+    });
+});
+
+describe("currentLocation", () => {
+    // Solid settles a signal write on a microtask, so a dispatched popstate's
+    // write — or the absence of one — becomes observable only after a drain.
+    function drainWrites(): Promise<void> {
+        return new Promise((resolve) => {
+            setTimeout(resolve, 0);
+        });
+    }
+
+    // One traversal step: the address moves first, then the browser fires
+    // popstate — the event the router's history listener answers. pushState
+    // itself fires no popstate, so the dispatch below is the simulated one.
+    async function traverse(target: string): Promise<void> {
+        window.history.pushState(null, "", target);
+        window.dispatchEvent(new Event("popstate"));
+        await drainWrites();
+    }
+
+    it("does not notify when a popstate carries the address already held", async () => {
+        await traverse("/");
+        const before = currentLocation();
+
+        window.dispatchEvent(new Event("popstate"));
+        await drainWrites();
+
+        // The signal's equality is reference equality, so an unchanged
+        // reference is exactly "did not notify": the listener wrote nothing.
+        expect(currentLocation()).toBe(before);
+    });
+
+    it("does not notify when a popstate moves only the hash", async () => {
+        await traverse("/");
+        const before = currentLocation();
+
+        // The "Skip to content" link's traversal: the hash moves, the route
+        // address — pathname and search — does not.
+        await traverse("#main");
+
+        expect(currentLocation()).toBe(before);
+    });
+
+    it("notifies when a popstate carries a different address", async () => {
+        await traverse("/");
+        const before = currentLocation();
+
+        await traverse("/providers/12");
+
+        expect(currentLocation()).toEqual({
+            pathname: "/providers/12",
+            search: "",
+        });
+        expect(currentLocation()).not.toBe(before);
     });
 });

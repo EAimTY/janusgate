@@ -23,6 +23,7 @@ import {
     readAll,
     readOne,
 } from "./read";
+import { settle } from "./screen-test-support";
 
 function gatewayFailure(errno: ErrorCode, message: string): ManagementApiError {
     return new ManagementApiError("gateway", message, {
@@ -194,13 +195,6 @@ function mountedRead(options: Parameters<typeof createScreenRead>[0]) {
         read: box.read,
         dispose,
     };
-}
-
-/** Drains the pending promises and scheduled work of one harness exchange. */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
 }
 
 /** Waits until the load has started the asked number of cycles. */

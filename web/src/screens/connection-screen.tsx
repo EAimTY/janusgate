@@ -3,6 +3,7 @@ import { createEffect, createSignal, Show } from "solid-js";
 import { connectionService } from "/src/connection/app-service";
 import { normalizeBaseUrl } from "/src/connection/model";
 import { type Diagnosis, diagnoseFailure, probeReachability } from "/src/management-api/diagnosis";
+import { CopyButton } from "/src/ui/clipboard";
 import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 import { JanusMark } from "/src/ui/glyph";
@@ -15,6 +16,7 @@ import { JanusMark } from "/src/ui/glyph";
  * the diagnosis is written.
  */
 export function ConnectionScreen(): JSX.Element {
+    const pageOrigin = window.location.origin;
     const [baseUrl, setBaseUrl] = createSignal("");
     const [token, setToken] = createSignal("");
     const [isTokenVisible, setIsTokenVisible] = createSignal(false);
@@ -47,7 +49,7 @@ export function ConnectionScreen(): JSX.Element {
             const attempted = failure.baseUrl ?? baseUrl();
             const context = {
                 baseUrl: attempted,
-                pageOrigin: window.location.origin,
+                pageOrigin,
                 action: "connect" as const,
             };
             const initial = diagnoseFailure(failure.cause ?? failure.message, context);
@@ -131,9 +133,24 @@ export function ConnectionScreen(): JSX.Element {
                         instance's configuration file.
                     </RequirementStep>
                     <RequirementStep index={3}>
-                        <span class="tnum">{window.location.origin}</span> in that instance's{" "}
-                        <span class="tnum">management_api.cors.allowed_origin</span> — unless this
-                        app is served from the gateway itself.
+                        <span class="flex flex-wrap items-center gap-x-4 gap-y-2">
+                            <span
+                                class="tnum min-w-0 truncate text-[13px]"
+                                title={pageOrigin}
+                            >
+                                {pageOrigin}
+                            </span>
+                            <CopyButton
+                                value={pageOrigin}
+                                subject="the origin beside it"
+                                ariaLabel="Copy this app's origin"
+                            />
+                            <span class="basis-full">
+                                in that instance's{" "}
+                                <span class="tnum">management_api.cors.allowed_origin</span> —
+                                unless this app is served from the gateway itself.
+                            </span>
+                        </span>
                     </RequirementStep>
                 </ol>
 

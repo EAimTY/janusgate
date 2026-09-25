@@ -5,8 +5,8 @@
 //! request is declared by `skip_serializing_if` rather than assembled conditionally.
 
 use crate::{
+    format::RenderOption,
     ir::{IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
-    provider::definition::inference::RenderOption,
 };
 use serde::Serialize;
 use serde_json::Value;

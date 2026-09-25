@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, Show } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import { Button } from "/src/ui/controls";
 
 /**
@@ -80,6 +80,9 @@ export function CopyButton(props: {
             setCopyState("refused");
         }
     };
+
+    // A copied label's revert must not fire after the button leaves the tree.
+    onCleanup(() => window.clearTimeout(timer));
 
     return (
         <>

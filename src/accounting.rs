@@ -81,8 +81,9 @@ pub enum ApiLogOutcome {
     #[serde(rename = "completed")]
     Completed,
 
-    /// The client disconnected: before the first enqueued frame `http_status` stays `NULL`,
-    /// afterwards the already-declared `200` stands.
+    /// The client disconnected before the response was delivered: `http_status` is `NULL` when
+    /// nothing had been enqueued or handed off, and the already-declared `200` once streaming
+    /// frames had been enqueued.
     #[serde(rename = "client_aborted")]
     ClientAborted,
 
@@ -170,22 +171,6 @@ impl UsageGroupBy {
             Self::Model => "model",
             Self::Provider => "provider",
             Self::ApiKey => "api_key",
-            Self::EndpointType => "endpoint_type",
-            Self::Outcome => "outcome",
-            Self::IsStream => "is_stream",
-            Self::HttpStatus => "http_status",
-        }
-    }
-
-    /// The SQL key expression the dimension groups, selects, and orders by (README §7.1): the
-    /// stored column itself, except the day dimension, whose expression derives the UTC day of
-    /// the dispatch stamp.
-    pub(crate) const fn expression(self) -> &'static str {
-        match self {
-            Self::Day => "date(started_at / 1000000, 'unixepoch')",
-            Self::Model => "model_id",
-            Self::Provider => "provider_id",
-            Self::ApiKey => "api_key_id",
             Self::EndpointType => "endpoint_type",
             Self::Outcome => "outcome",
             Self::IsStream => "is_stream",

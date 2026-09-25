@@ -99,6 +99,29 @@ impl UpstreamFormat {
     }
 }
 
+/// One render option of a format codec (README §5.2): a closed, per-format switch adjusting the
+/// body rendering. Growing this enum is the documented extension path for a future provider that
+/// does not fit the plain body rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum RenderOption {
+    /// Never render `max_output_tokens`: the upstream rejects the parameter as unsupported, and
+    /// the model's own output bound applies instead of the client-requested cap (`openai_response`
+    /// only).
+    OmitMaxOutputTokens,
+}
+
+impl RenderOption {
+    /// The canonical option name, rendered by rejections and shared with the serde wire name.
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::OmitMaxOutputTokens => "omit_max_output_tokens",
+        }
+    }
+}
+
 /// An upstream payload the codec could not parse: malformed JSON, a missing required field, or an
 /// upstream-reported failure event. The wire failure wording ("Upstream request failed: ...") is
 /// composed by the consuming surface; this type carries only the cause detail.

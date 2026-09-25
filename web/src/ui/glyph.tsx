@@ -21,6 +21,7 @@ export type GlyphName =
     | "info"
     | "sun"
     | "moon"
+    | "display"
     | "plug"
     | "copy"
     | "grid"
@@ -42,6 +43,7 @@ const GLYPH_PATHS: Record<GlyphName, string> = {
     info: "M8 1.8 A6.2 6.2 0 1 0 8.01 1.8 Z M8 7.4 V11 M8 4.9 V5.3",
     sun: "M8 2.2 A5.8 5.8 0 1 0 8.01 2.2 Z M8 5.4 A2.6 2.6 0 1 0 8.01 5.4 Z M8 0.8 V2 M8 14 V15.2 M0.8 8 H2 M14 8 H15.2 M2.9 2.9 L3.8 3.8 M12.2 12.2 L13.1 13.1 M13.1 2.9 L12.2 3.8 M3.8 12.2 L2.9 13.1",
     moon: "M13.5 9.5 A5.5 5.5 0 0 1 6.5 2.5 A5.5 5.5 0 1 0 13.5 9.5 Z",
+    display: "M2.5 3 H13.5 V10.5 H2.5 Z M8 10.5 V13 M5 13 H11",
     plug: "M6 2 V5 M10 2 V5 M4.5 5 H11.5 V9 A3.5 3.5 0 0 1 4.5 9 Z M8 12.5 V14",
     copy: "M5.5 5.5 H12.5 V12.5 H5.5 Z M3.5 10.5 V3.5 H10.5",
     grid: "M2.5 2.5 H7 V7 H2.5 Z M9 2.5 H13.5 V7 H9 Z M2.5 9 H7 V13.5 H2.5 Z M9 9 H13.5 V13.5 H9 Z",

@@ -4,6 +4,8 @@ import type {
     UsageFilter,
 } from "/src/management-api/generated/v0";
 import { findApiLogEndpointType, findApiLogOutcome } from "/src/management-api/vocabulary";
+import { DAY_MICROS } from "./format";
+import { isRowIdText } from "./row-id";
 
 /**
  * The gateway's one usage filter, as the screens' forms hold it: every field
@@ -86,8 +88,6 @@ export const EMPTY_USAGE_FILTER_DRAFT: UsageFilterDraft = {
     window: "all",
 };
 
-const DAY_MICROS = 86_400_000_000;
-
 const WINDOW_MICROS: Record<Exclude<UsageWindowChoice, "all">, number> = {
     "24h": DAY_MICROS,
     "7d": 7 * DAY_MICROS,
@@ -113,7 +113,7 @@ export function windowBoundMicros(window: UsageWindowChoice, nowMicros: number):
 function routeRowId(parameters: URLSearchParams, name: string): string {
     const raw = parameters.get(name);
 
-    return raw !== null && /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? raw : "";
+    return raw !== null && isRowIdText(raw) && Number.isSafeInteger(Number(raw)) ? raw : "";
 }
 
 /** Reads one route value as a window, answering all time when it names no window. */

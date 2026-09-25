@@ -321,8 +321,10 @@ async fn persist_terminal(
 /// Commits a completed device exchange: the shared completion pipeline folds the outcome
 /// through provisioning into the stored credentials, the claim is re-stamped for the commit,
 /// and the provider write and the succeeded outcome commit in one transaction. A provisioning
-/// failure fails the flow with a gateway-owned message; a claim the re-stamp finds stolen
-/// abandons the provider write, leaving the newer state untouched.
+/// failure fails the flow terminally with the gateway-owned `provisioning_failed` pair,
+/// persisted with the claim the flow still holds — the failure never reaches the re-stamp — so
+/// the poll loop stops at the terminal outcome instead of re-running the exchange; a claim the
+/// re-stamp finds stolen abandons the provider write, leaving the newer state untouched.
 async fn commit_success(
     database: &Database,
     http: &Client,
@@ -354,11 +356,30 @@ async fn commit_success(
         }
     }
 
-    let product = completion::complete_exchange(http, definition, outcome, flow).await?;
-
     let held_claim = flow.device_poll_started_at.ok_or_else(|| Error::Internal {
         message: "the claimed flow carries no claim stamp".to_string(),
     })?;
+
+    let product = match completion::complete_exchange(http, definition, outcome, flow).await {
+        Ok(product) => product,
+
+        // A provisioning failure after a successful exchange fails the flow terminally (README
+        // §3, §7.2): the exchange result cannot be resumed — a retry would re-run the exchange
+        // against the upstream — so the gateway-owned pair persists with the claim the flow
+        // still holds (the failure short-circuits before the re-stamp below) and the poll loop
+        // stops at the terminal outcome. A claim stolen while provisioning ran matches no row
+        // and discards the outcome, like every persist.
+        Err(error) => {
+            return persist_terminal(
+                database,
+                flow,
+                Some(held_claim),
+                "provisioning_failed",
+                &provisioning_failure_message(&error),
+            )
+            .await;
+        }
+    };
 
     // Provisioning ran inside the claim, so the stamp may have aged past the staleness window;
     // re-stamp it for the commit. A refused re-stamp is a stolen claim: the winner owns the
@@ -427,6 +448,19 @@ async fn commit_success(
 /// backoff decision matches the fact instead of parsing the rendered message.
 fn is_timeout(error: &Error) -> bool {
     matches!(error, Error::Timeout { .. })
+}
+
+/// The gateway-owned terminal message one completion-pipeline failure stores (README §7.2):
+/// the error's own rendering — transport, mapping, and drift details are gateway-authored —
+/// except [`Error::Rejected`], whose `Display` embeds the truncated upstream body excerpt; it
+/// renders from the status alone, so no upstream body content ever lands in a terminal result.
+fn provisioning_failure_message(error: &Error) -> String {
+    match error {
+        Error::Rejected { status, .. } => {
+            format!("the provisioning request failed with upstream status {status}")
+        }
+        error => error.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -547,7 +581,10 @@ mod tests {
     }
 
     /// Inserts one device-grant OAuth definition whose exchange points at `token_url` and whose
-    /// terminal codes exclude the non-terminal error the fixture's upstream reports.
+    /// terminal codes exclude the non-terminal error the fixture's upstream reports. With
+    /// `has_failing_provisioning`, the definition also carries one provisioning step whose
+    /// required `machine` extraction fails against the mock's second response — a provisioning
+    /// failure the exchange itself survives.
     ///
     /// # Panics
     ///
@@ -557,87 +594,113 @@ mod tests {
         database: &crate::database::Database,
         name: &str,
         token_url: &str,
+        has_failing_provisioning: bool,
     ) -> crate::provider::ProviderDefinition {
         let device_grant_type = "urn:ietf:params:oauth:grant-type:device_code";
 
-        #[expect(clippy::unwrap_used, reason = "the fixture payload always parses")]
-        let payload: crate::provider::definition::DefinitionPayload =
-            serde_json::from_value(serde_json::json!({
-                "format": "openai_chat_completion",
-                "inference": {
-                    "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
-                    "upstream_streaming": "match_client"
-                },
-                "credential": {
-                    "type": "oauth",
-                    "client_id": "fixture-client",
-                    "grant": {
-                        "type": "device",
-                        "authorization": {
-                            "request": {
-                                "method": "POST",
-                                "url": [{"type": "literal",
-                                         "value": "https://example.test/device/code"}]
-                            },
-                            "response": {
-                                "encoding": "json",
-                                "fields": [
-                                    {
-                                        "path": ["device_code"],
-                                        "target": {"type": "device_code"},
-                                        "required": true
-                                    },
-                                    {
-                                        "path": ["user_code"],
-                                        "target": {"type": "user_code"},
-                                        "required": true
-                                    },
-                                    {
-                                        "path": ["verification_uri"],
-                                        "target": {"type": "verification_uri"},
-                                        "required": true
-                                    },
-                                    {
-                                        "path": ["expires_in"],
-                                        "target": {"type": "expires_in_seconds"},
-                                        "required": false
-                                    }
-                                ]
-                            }
-                        },
-                        "expires_in_fallback_seconds": 900
+        // The optional provisioning member splices into the wholesale payload; when the fixture
+        // carries no provisioning, the explicit `null` member deserializes to `None` like an
+        // absent one.
+        let provisioning = has_failing_provisioning.then(|| {
+            serde_json::json!([
+                {
+                    "request": {
+                        "method": "POST",
+                        "url": [{"type": "literal", "value": format!("{token_url}/provision")}]
                     },
-                    "exchange": {
+                    "response_encoding": "json",
+                    "extract": [
+                        {
+                            "path": ["machine"],
+                            "target": {"type": "slot", "name": "machine"},
+                            "shape": {"type": "string"},
+                            "required": true
+                        }
+                    ]
+                }
+            ])
+        });
+
+        let payload_json = serde_json::json!({
+            "format": "openai_chat_completion",
+            "inference": {
+                "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
+                "upstream_streaming": "match_client"
+            },
+            "credential": {
+                "type": "oauth",
+                "client_id": "fixture-client",
+                "grant": {
+                    "type": "device",
+                    "authorization": {
                         "request": {
                             "method": "POST",
-                            "url": [{"type": "literal", "value": token_url}],
-                            "body": {"kind": "form", "fields": [
-                                {
-                                    "name": "grant_type",
-                                    "value": [{"type": "literal", "value": device_grant_type}]
-                                },
-                                {
-                                    "name": "device_code",
-                                    "value": [{"type": "device_code"}]
-                                }
-                            ]}
+                            "url": [{"type": "literal",
+                                     "value": "https://example.test/device/code"}]
                         },
                         "response": {
                             "encoding": "json",
                             "fields": [
                                 {
-                                    "path": ["access_token"],
-                                    "target": {"type": "access_token"},
+                                    "path": ["device_code"],
+                                    "target": {"type": "device_code"},
                                     "required": true
+                                },
+                                {
+                                    "path": ["user_code"],
+                                    "target": {"type": "user_code"},
+                                    "required": true
+                                },
+                                {
+                                    "path": ["verification_uri"],
+                                    "target": {"type": "verification_uri"},
+                                    "required": true
+                                },
+                                {
+                                    "path": ["expires_in"],
+                                    "target": {"type": "expires_in_seconds"},
+                                    "required": false
                                 }
                             ]
-                        },
-                        "terminal_codes": ["access_denied"]
+                        }
                     },
-                    "refresh": {"type": "none"}
-                }
-            }))
-            .unwrap();
+                    "expires_in_fallback_seconds": 900
+                },
+                "exchange": {
+                    "request": {
+                        "method": "POST",
+                        "url": [{"type": "literal", "value": token_url}],
+                        "body": {"kind": "form", "fields": [
+                            {
+                                "name": "grant_type",
+                                "value": [{"type": "literal", "value": device_grant_type}]
+                            },
+                            {
+                                "name": "device_code",
+                                "value": [{"type": "device_code"}]
+                            }
+                        ]}
+                    },
+                    "response": {
+                        "encoding": "json",
+                        "fields": [
+                            {
+                                "path": ["access_token"],
+                                "target": {"type": "access_token"},
+                                "required": true
+                            }
+                        ]
+                    },
+                    "terminal_codes": ["access_denied"]
+                },
+                "refresh": {"type": "none"}
+            },
+            "provisioning": provisioning
+        });
+
+        #[expect(clippy::unwrap_used, reason = "the fixture payload always parses")]
+        let payload: crate::provider::definition::DefinitionPayload =
+            serde_json::from_value(payload_json).unwrap();
 
         #[expect(
             clippy::unwrap_used,
@@ -679,7 +742,8 @@ mod tests {
         ])
         .await;
 
-        let definition = insert_device_poll_definition(&database, "device-def", &mock.base()).await;
+        let definition =
+            insert_device_poll_definition(&database, "device-def", &mock.base(), false).await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -747,9 +811,13 @@ mod tests {
     async fn restamping_a_held_claim_freshens_it_and_a_stolen_one_fails() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition =
-            insert_device_poll_definition(&database, "device-def", "http://127.0.0.1:1/token")
-                .await;
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            "http://127.0.0.1:1/token",
+            false,
+        )
+        .await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -850,9 +918,13 @@ mod tests {
     async fn provisioning_outliving_the_claim_window_still_commits_the_success() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition =
-            insert_device_poll_definition(&database, "device-def", "http://127.0.0.1:1/token")
-                .await;
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            "http://127.0.0.1:1/token",
+            false,
+        )
+        .await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -933,9 +1005,13 @@ mod tests {
     async fn a_claim_stolen_during_provisioning_abandons_the_success() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition =
-            insert_device_poll_definition(&database, "device-def", "http://127.0.0.1:1/token")
-                .await;
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            "http://127.0.0.1:1/token",
+            false,
+        )
+        .await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1029,9 +1105,13 @@ mod tests {
     async fn a_reauthorize_flow_whose_target_vanishes_mid_commit_fails_under_the_fresh_stamp() {
         let (database, _guard) = test_support::create_test_database().await;
 
-        let definition =
-            insert_device_poll_definition(&database, "device-def", "http://127.0.0.1:1/token")
-                .await;
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            "http://127.0.0.1:1/token",
+            false,
+        )
+        .await;
 
         let now = crate::unix_time::unix_now_micros();
 
@@ -1106,5 +1186,113 @@ mod tests {
             settled.device_poll_started_at, None,
             "the persisted terminal outcome clears the claim stamp"
         );
+    }
+
+    /// A provisioning step that fails after a successful exchange fails the flow terminally
+    /// (README §3, §7.2): the flow records the gateway-owned `provisioning_failed` pair with
+    /// the claim it still holds, the claim is released, and the terminal row is unclaimable —
+    /// the poll loop ends instead of re-running the exchange against the upstream every
+    /// claim-staleness window or stranding the flow row in its pending state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the flow outcome diverges.
+    #[tokio::test]
+    async fn a_provisioning_failure_after_a_completed_exchange_fails_the_flow_terminally() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        // The exchange's response maps the access token; the provisioning step's response
+        // carries no `machine` member, so its required extraction fails the step.
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&serde_json::json!({"access_token": "exchange-token"})).unwrap(),
+            serde_json::to_string(&serde_json::json!({})).unwrap(),
+        ])
+        .await;
+
+        let definition =
+            insert_device_poll_definition(&database, "device-def", &mock.base(), true).await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(now - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        process(&database, &http_client::control_plane(), &claimed)
+            .await
+            .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        // The gateway-owned terminal pair, with no upstream body content in the message.
+        assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
+        assert_eq!(settled.failure_code.as_deref(), Some("provisioning_failed"));
+        assert_eq!(
+            settled.failure_message.as_deref(),
+            Some("Upstream request failed: provisioning response lacks a required field")
+        );
+
+        // The terminal persist released the claim stamp.
+        assert_eq!(
+            settled.device_poll_started_at, None,
+            "the persisted terminal outcome clears the claim stamp"
+        );
+
+        // The terminal row is unclaimable, so the poll loop can never re-run the exchange.
+        #[expect(clippy::unwrap_used, reason = "the claim query executes")]
+        let reclaims = claim_due_device_flow(
+            &database,
+            now + 60 * crate::unix_time::MICROS_PER_SEC,
+            now + 30 * crate::unix_time::MICROS_PER_SEC,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            reclaims.is_none(),
+            "a terminal flow is never re-claimed for another exchange"
+        );
+
+        // The failed provisioning never wrote the provider.
+        assert!(
+            storage::providers::find_provider(&database, "created")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        mock.shutdown.send(()).ok();
     }
 }

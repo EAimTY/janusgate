@@ -12,23 +12,16 @@ import type {
  * Read-modify-write edits for `providers:update` (gateway README §7.1): an omitted
  * field keeps the row's value, and the write-only `api_key` keeps the stored
  * secret when absent. Edits never carry the row's own `id`; the request
- * addresses the row through `provider_id`. A definition rebind names both
- * parts of the target reference or neither.
+ * addresses the row through `provider_id`.
  */
 type ProviderEdits = {
     readonly name?: string;
     readonly model_prefix?: string;
     readonly is_enabled?: boolean;
+    /** A present `null` is the wire value to send — legal when the effective definition does not reference the base — never a fall-back to the stored one. */
     readonly base_url?: string | null;
     /** Present replaces the stored static API key; absent keeps it. */
     readonly api_key?: string;
-    /** The exact definition version to rebind to; absent keeps the stored one. */
-    readonly rebind?:
-        | {
-              readonly provider_definition_name: string;
-              readonly provider_definition_version: number;
-          }
-        | undefined;
 };
 
 /**
@@ -48,8 +41,7 @@ export function toUpdateProviderRequest(
         name: edits.name ?? provider.name,
         model_prefix: edits.model_prefix ?? provider.model_prefix,
         is_enabled: edits.is_enabled ?? provider.is_enabled,
-        base_url: edits.base_url ?? provider.base_url,
-        ...(edits.rebind === undefined ? {} : edits.rebind),
+        base_url: edits.base_url === undefined ? provider.base_url : edits.base_url,
         ...(edits.api_key === undefined
             ? {}
             : {

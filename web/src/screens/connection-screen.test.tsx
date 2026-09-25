@@ -9,7 +9,8 @@ import { settle } from "./screen-test-support";
  * service: the suite stubs `fetch` so the probe answers from fixtures, and
  * drives the mid-session 401 by reporting it the way the management client
  * does (README §6.4). Rendering is verified against a live gateway in a
- * browser; these tests pin only what a reconnect must restore.
+ * browser; these tests pin what a reconnect must restore, and the copy
+ * affordance the origin requirement puts before that first connect.
  */
 function jsonResponse(status: number, payload: unknown): Promise<Response> {
     return Promise.resolve(
@@ -62,7 +63,7 @@ function submitConnectionForm(): void {
     );
 }
 
-describe("ConnectionScreen after a mid-session 401", () => {
+describe("ConnectionScreen", () => {
     const gatewayAddress = "https://gateway.example.com";
     let dispose: (() => void) | undefined;
 
@@ -73,6 +74,19 @@ describe("ConnectionScreen after a mid-session 401", () => {
         // The environment may offer no storage at all; the service then lives
         // in memory for the file, which needs no cleanup beyond disposal.
         window.localStorage?.clear();
+    });
+
+    it("offers this app's origin as a copyable value in the requirements", async () => {
+        dispose = render(() => <ConnectionScreen />, document.body);
+        await settle();
+
+        // The origin is the one requirement value the operator must transfer
+        // verbatim into the gateway's configuration file, often elsewhere —
+        // it carries the shared copy affordance, naming this page's origin.
+        expect(
+            document.querySelector('button[aria-label="Copy this app\'s origin"]'),
+        ).not.toBeNull();
+        expect(document.body.textContent).toContain(window.location.origin);
     });
 
     it("reseeds the known address and leaves the token empty for re-entry", async () => {

@@ -166,7 +166,7 @@ impl ApiLogStore {
         let key_expressions: Vec<&str> = selection
             .group_by
             .iter()
-            .map(|dimension| dimension.expression())
+            .map(|dimension| key_expression(*dimension))
             .collect();
         let key_list = key_expressions.join(", ");
 
@@ -720,6 +720,22 @@ pub(crate) struct UsageSelection {
 
     /// The filter both management reads share.
     pub(crate) filter: UsageFilter,
+}
+
+/// The SQL key expression the dimension groups, selects, and orders by (README §7.1): the
+/// stored column itself, except the day dimension, whose expression derives the UTC day of
+/// the dispatch stamp.
+fn key_expression(dimension: UsageGroupBy) -> &'static str {
+    match dimension {
+        UsageGroupBy::Day => "date(started_at / 1000000, 'unixepoch')",
+        UsageGroupBy::Model => "model_id",
+        UsageGroupBy::Provider => "provider_id",
+        UsageGroupBy::ApiKey => "api_key_id",
+        UsageGroupBy::EndpointType => "endpoint_type",
+        UsageGroupBy::Outcome => "outcome",
+        UsageGroupBy::IsStream => "is_stream",
+        UsageGroupBy::HttpStatus => "http_status",
+    }
 }
 
 /// Orders two bucket keys the way SQLite orders the key expressions: per requested dimension in

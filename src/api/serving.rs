@@ -6,9 +6,9 @@
 //! request-accounting finalization rules, the body-extractor rejection, the authentication
 //! middleware, the 404/405 fallbacks, and the two pipeline constants. This duplication is README
 //! §3's accounting invariant itself — exactly three finalization points (dispatch failure in
-//! [`gateway::execute`], the aggregation path, the SSE render task), the declared-status rule,
-//! and the client-abort classification — so it is single-sourced here and every surface renders
-//! through the same code.
+//! [`gateway::execute`], the detached non-streaming aggregation task, the SSE render task), the
+//! declared-status rule, and the client-abort classification — so it is single-sourced here and
+//! every surface renders through the same code.
 //!
 //! What stays per surface is exactly its identity: the router, the authentication convention
 //! (which headers carry the credential), the native model-list shape, and the error wire
@@ -55,13 +55,16 @@ pub(super) const SSE_CHANNEL_BUFFER: usize = 64;
 /// the wire.
 ///
 /// Every surface module implements this trait for a private marker type and points its router's
-/// authentication middleware, 404/405 fallbacks, and handlers at [`authenticate`], [`fallback`],
-/// [`method_not_allowed`], [`BodyError`], and [`outcome_response`] through it.
+/// authentication middleware, 404/405 fallbacks, and handlers at [`authenticate`],
+/// [`error_response`], [`fallback`], [`method_not_allowed`], [`BodyError`], and
+/// [`outcome_response`] through it.
 pub(super) trait Surface {
-    /// Renders one API failure as the surface's JSON error envelope: the surface's error wire
-    /// renderer, through which every rejection and handler failure the pipeline produces lands on
-    /// the wire.
-    fn render_error(error: Error) -> Response;
+    /// Renders one API failure onto the surface's error wire: the surface's error render module's
+    /// `render` function, which classifies the [`Error`] variant into the surface's (HTTP status,
+    /// JSON envelope) pair (README §6.7). The shared [`error_response`] composes it with the
+    /// universal JSON response builder, so every rejection and handler failure the pipeline
+    /// produces lands on the wire through one glue path.
+    fn render_error(error: &Error) -> (StatusCode, impl Serialize);
 
     /// Reads the presented credential key from the request per the surface's authentication
     /// convention — the header that carries it and any companion header the convention requires —
@@ -70,10 +73,6 @@ pub(super) trait Surface {
     /// matching it against the enabled keys and rendering the rejection both stay in the shared
     /// [`authenticate`].
     fn extract_credential(request: &Request) -> Result<String, AuthRejection>;
-
-    /// Records a presented key that matched no enabled gateway API key at the surface's log
-    /// boundary, just before the shared [`authenticate`] renders its rejection.
-    fn log_invalid_key();
 }
 
 /// Why a request's credential failed the surface's authentication convention before any key
@@ -150,7 +149,7 @@ where
                 AuthRejection::Malformed(error) => error,
             };
 
-            return S::render_error(error);
+            return error_response::<S>(error);
         }
     };
 
@@ -172,9 +171,13 @@ where
                 }
 
                 None => {
-                    S::log_invalid_key();
+                    // A presented key that matched no enabled gateway API key: logged once at
+                    // this shared boundary, then rendered as the invalid-key rejection.
+                    let error = Error::InvalidApiKey;
 
-                    S::render_error(Error::InvalidApiKey)
+                    log_error("request", &error);
+
+                    error_response::<S>(error)
                 }
             }
         }
@@ -184,9 +187,22 @@ where
 
             log_error("request", &error);
 
-            S::render_error(error)
+            error_response::<S>(error)
         }
     }
+}
+
+/// Renders one API failure as the surface's JSON error response: the surface's error wire
+/// renderer ([`Surface::render_error`]) through the universal JSON response builder
+/// [`json_response`]. Every rejection and handler failure the pipeline produces lands on the wire
+/// here, and each surface's handlers reuse it directly for their own failures (README §6.7).
+pub(super) fn error_response<S>(error: Error) -> Response
+where
+    S: Surface,
+{
+    let (status, envelope) = S::render_error(&error);
+
+    json_response(status, &envelope)
 }
 
 /// Handles unmapped surface paths with the surface's 404, logging the rendered error once at this
@@ -202,7 +218,7 @@ where
 
     log_error("request", &error);
 
-    S::render_error(error)
+    error_response::<S>(error)
 }
 
 /// Handles a request whose method is not registered on an otherwise-matching path with the
@@ -219,7 +235,7 @@ where
         &error,
     );
 
-    S::render_error(error)
+    error_response::<S>(error)
 }
 
 /// Body extractor rejection mapped into the surface's error shape: an over-limit body renders the
@@ -244,7 +260,7 @@ where
     fn into_response(self) -> Response {
         log_error("request body", &self.0);
 
-        S::render_error(self.0)
+        error_response::<S>(self.0)
     }
 }
 
@@ -292,9 +308,18 @@ impl OperationKind {
 /// `api_key_id` — extracted from the authentication middleware's stamp — anchors the request's
 /// accounting draft, which this function builds from the routing facts and hands to
 /// [`gateway::execute`] for the dispatch mark. Exactly one of the three finalization points then
-/// records the row: [`gateway::execute`] itself for a post-dispatch failure, the aggregation path
-/// below for a non-streaming response, or the SSE render task for a streaming one (README §3
-/// *ApiLog*).
+/// records the row: [`gateway::execute`] itself for a post-dispatch failure, the detached
+/// non-streaming aggregation task for a non-streaming response, or the SSE render task for a
+/// streaming one (README §3 *ApiLog*). The non-streaming task outlives this handler — hyper
+/// drops the handler the moment the client departs — so a departure mid-generation finalizes the
+/// row as `client_aborted` instead of losing it, and a departure after the aggregated body was
+/// handed off stays the accepted unobservable edge (§3 *ApiLog*).
+///
+/// # Panics
+///
+/// Panics if the detached aggregation task does not hand its outcome to the handler. The task
+/// hands the outcome on every path, so only the task's own panic can cause it: the expect
+/// converts that invariant violation into this handler's own panic, per the fail-fast design.
 ///
 /// # Errors
 ///
@@ -308,7 +333,9 @@ pub(super) async fn run_completion<TFormat>(
     endpoint_type: ApiLogEndpointType,
 ) -> Result<Response, Error>
 where
-    TFormat: ClientFormat,
+    // `'static` because the non-streaming aggregation task, which renders through `TFormat`,
+    // is spawned detached.
+    TFormat: ClientFormat + 'static,
     TFormat::JsonResponse: Serialize,
 {
     let parsed = match TFormat::parse_request(body, &route) {
@@ -374,42 +401,37 @@ where
                 log,
             ))
         } else {
-            // Finalization point 2: the non-streaming path records the row synchronously after
-            // aggregation and body rendering, before the Response leaves — `completed` + 200 on
-            // success, the classified outcome and status on a stream failure (README §3 *ApiLog*).
-            match aggregated_response(events, |aggregation| {
-                TFormat::render_json_response(&public_id, aggregation)
-            })
-            .await
-            {
-                Ok((response, usage)) => {
-                    api_logs::finalize_api_log(
-                        context.api_log_store.as_ref(),
-                        &log,
-                        ApiLogOutcome::Completed,
-                        Some(i64::from(StatusCode::OK.as_u16())),
-                        usage,
-                    )
-                    .await;
+            // Finalization point 2: the non-streaming path detaches its aggregation into a task
+            // that owns the event stream and the accounting draft (README §3 *ApiLog*). The task
+            // consumes the stream to completion, renders the aggregated body, and hands the
+            // outcome to this handler through the oneshot; the hand-off attempt is the
+            // client-liveness signal that decides the row's outcome, so the row finalizes even
+            // when hyper has already dropped this handler with the departing connection.
+            let (outcome_sender, outcome_receiver) = tokio::sync::oneshot::channel();
 
-                    Ok(response)
-                }
+            let aggregation = tokio::spawn(aggregated_response_task::<TFormat>(
+                events,
+                public_id,
+                context.api_log_store.clone(),
+                log,
+                log_context.clone(),
+                outcome_sender,
+            ));
 
-                Err(error) => {
-                    let (outcome, http_status) = error.accounting();
+            // Detaching the handle is the point: the task must outlive this handler, which is
+            // dropped the moment the client departs, and it carries the row's finalization.
+            drop(aggregation);
 
-                    api_logs::finalize_api_log(
-                        context.api_log_store.as_ref(),
-                        &log,
-                        outcome,
-                        Some(http_status),
-                        None,
-                    )
-                    .await;
+            #[expect(
+                clippy::expect_used,
+                reason = "the aggregation task always hands its outcome to the handler exactly \
+                          once; a missing hand-off is an invariant violation that fails fast"
+            )]
+            let outcome = outcome_receiver
+                .await
+                .expect("the aggregation task always hands its outcome to the handler");
 
-                    Err(error)
-                }
-            }
+            outcome
         }
     }
     .await;
@@ -421,6 +443,82 @@ where
     outcome
 }
 
+/// The detached non-streaming aggregation task (finalization point 2, README §3 *ApiLog*):
+/// consumes the upstream event stream to completion, renders the aggregated body, and hands
+/// `Ok(response)` or `Err(error)` to the handler through `outcome_sender` — the handler renders
+/// it as the request's HTTP response when it is still there. The task owns the request's
+/// accounting draft, so the row finalizes even when hyper dropped the handler with the departing
+/// connection, and the hand-off attempt is the client-liveness signal:
+///
+/// - a successful stream finalizes `completed` + 200 + usage when the hand-off reaches the handler,
+///   and `client_aborted` + `NULL` status when it does not — no response was ever produced for a
+///   departed client;
+/// - a failed stream finalizes the outcome and status the shared [`Error`] classification yields,
+///   regardless of the client — the upstream failure, not the departure, is what the row records.
+async fn aggregated_response_task<TFormat>(
+    events: IrEventStream,
+    public_id: String,
+    api_log_store: Option<api_logs::ApiLogStore>,
+    log: ApiLogDraft,
+    log_context: String,
+    outcome_sender: tokio::sync::oneshot::Sender<Result<Response, Error>>,
+) where
+    TFormat: ClientFormat,
+    TFormat::JsonResponse: Serialize,
+{
+    let aggregation = aggregated_response(events, |aggregation| {
+        TFormat::render_json_response(&public_id, aggregation)
+    })
+    .await;
+
+    match aggregation {
+        Ok((response, usage)) => {
+            if outcome_sender.send(Ok(response)).is_ok() {
+                // The handler received the response: the client was still there.
+                api_logs::finalize_api_log(
+                    api_log_store.as_ref(),
+                    &log,
+                    ApiLogOutcome::Completed,
+                    Some(i64::from(StatusCode::OK.as_u16())),
+                    usage,
+                )
+                .await;
+            } else {
+                // The handler is gone — the client departed mid-generation — and no response was
+                // ever produced for it.
+                api_logs::finalize_api_log(
+                    api_log_store.as_ref(),
+                    &log,
+                    ApiLogOutcome::ClientAborted,
+                    None,
+                    usage,
+                )
+                .await;
+            }
+        }
+
+        Err(error) => {
+            // An upstream failure records its classification regardless of the client.
+            let (outcome, http_status) = error.accounting();
+
+            api_logs::finalize_api_log(
+                api_log_store.as_ref(),
+                &log,
+                outcome,
+                Some(http_status),
+                None,
+            )
+            .await;
+
+            // A failed hand-off returns the outcome: the handler is gone, so no response
+            // boundary will render this failure and this task is its single logger (README §8).
+            if let Err(Err(error)) = outcome_sender.send(Err(error)) {
+                log_error(&log_context, &error);
+            }
+        }
+    }
+}
+
 /// Renders a handler outcome, mapping failures to the surface's error responses.
 pub(super) fn outcome_response<S>(outcome: Result<Response, Error>) -> Response
 where
@@ -429,7 +527,7 @@ where
     match outcome {
         Ok(response) => response,
 
-        Err(error) => S::render_error(error),
+        Err(error) => error_response::<S>(error),
     }
 }
 
@@ -619,4 +717,355 @@ where
         json_response(StatusCode::OK, &render_json_fn(&aggregation)),
         usage,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        format::openai_chat_completion::Format as ChatCompletionFormat, ir::IrFinishReason,
+        storage::api_logs::list_api_logs,
+    };
+    use std::{num::NonZero, path::PathBuf};
+    use tokio::sync::{mpsc, oneshot};
+
+    /// Capacity of the fixture event channel: wide enough that every fixture send completes
+    /// without awaiting the consumer.
+    const EVENT_CHANNEL_BUFFER: usize = 8;
+
+    /// Directory guard cleaning up the temporary shard tree on drop.
+    struct TempStoreGuard(PathBuf);
+
+    impl Drop for TempStoreGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Creates a shard store over a fresh temporary directory, with its cleanup guard.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the literal retention is zero, which the positive literal prevents.
+    fn test_store() -> (api_logs::ApiLogStore, TempStoreGuard) {
+        let directory =
+            std::env::temp_dir().join(format!("janusgate-serving-test-{}", rand::random::<u64>()));
+
+        #[expect(clippy::unwrap_used, reason = "non-zero test retention")]
+        let retention = NonZero::new(90).unwrap();
+
+        (
+            api_logs::ApiLogStore::new(directory.clone(), retention),
+            TempStoreGuard(directory),
+        )
+    }
+
+    /// The stamped accounting draft fixture: fixed identity ids, a fixed dispatch stamp, and the
+    /// non-streaming flag — the shape the draft carries once [`gateway::execute`] has stamped it
+    /// at dispatch.
+    fn stamped_draft() -> ApiLogDraft {
+        ApiLogDraft {
+            started_at: Some(1_000_000_000),
+            api_key_id: 3,
+            provider_id: 5,
+            model_id: 7,
+            endpoint_type: ApiLogEndpointType::OpenaiChatCompletions,
+            is_stream: false,
+        }
+    }
+
+    /// The response-boundary log context fixture, composed as [`run_completion`] composes it.
+    fn log_context() -> String {
+        "completion for model `public-model` via provider `acme`".to_string()
+    }
+
+    /// Opens the fake upstream event channel the task under test consumes: the sender rides in
+    /// the test, and the receiving stream is boxed exactly as [`gateway::execute`] returns it.
+    fn event_channel() -> (mpsc::Sender<Result<IrEvent, gateway::Error>>, IrEventStream) {
+        let (sender, receiver) = mpsc::channel(EVENT_CHANNEL_BUFFER);
+
+        (sender, Box::pin(ReceiverStream::new(receiver)))
+    }
+
+    /// Sends one clean completion's event sequence — start, text, usage, finish, done — through
+    /// the fixture channel and closes the stream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a fixture send fails, which the wide buffer and the task-owned receiver prevent.
+    async fn send_clean_events(sender: &mpsc::Sender<Result<IrEvent, gateway::Error>>) {
+        let events = [
+            IrEvent::MessageStart {
+                id: "resp-1".to_string(),
+                model: "upstream-model".to_string(),
+            },
+            IrEvent::TextDelta("hello".to_string()),
+            IrEvent::Usage(IrUsage {
+                input_tokens: 11,
+                output_tokens: 7,
+                cached_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            }),
+            IrEvent::Finish(IrFinishReason::Stop),
+            IrEvent::Done,
+        ];
+
+        for event in events {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture channel is wide enough and its receiver lives in the task \
+                          under test"
+            )]
+            sender
+                .send(Ok(event))
+                .await
+                .expect("the fixture channel accepts the event");
+        }
+    }
+
+    /// Sends a mid-stream upstream failure — one start event, the transport failure, the pump's
+    /// terminal `Done` — through the fixture channel and closes the stream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a fixture send fails, which the wide buffer and the task-owned receiver prevent.
+    async fn send_failing_events(sender: &mpsc::Sender<Result<IrEvent, gateway::Error>>) {
+        let events = [
+            Ok(IrEvent::MessageStart {
+                id: "resp-1".to_string(),
+                model: "upstream-model".to_string(),
+            }),
+            Err(gateway::Error::Unavailable {
+                detail: "upstream stream failed: broken".to_string(),
+            }),
+            Ok(IrEvent::Done),
+        ];
+
+        for event in events {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture channel is wide enough and its receiver lives in the task \
+                          under test"
+            )]
+            sender
+                .send(event)
+                .await
+                .expect("the fixture channel accepts the event");
+        }
+    }
+
+    /// Reads every recorded row of `store`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the read fails, which a healthy fixture store prevents.
+    async fn recorded_rows(store: &api_logs::ApiLogStore) -> Vec<api_logs::ApiLog> {
+        #[expect(clippy::expect_used, reason = "a healthy fixture store reads back")]
+        let rows = list_api_logs(Some(store), 100, None, &api_logs::UsageFilter::default())
+            .await
+            .expect("the fixture store reads back");
+
+        rows
+    }
+
+    /// Reads back the single recorded row of `store`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the read fails or the fixture did not record exactly one row.
+    async fn recorded_row(store: &api_logs::ApiLogStore) -> api_logs::ApiLog {
+        let rows = recorded_rows(store).await;
+
+        assert_eq!(rows.len(), 1, "the fixture records exactly one row");
+
+        #[expect(clippy::unwrap_used, reason = "the fixture wrote exactly one row")]
+        rows.first().unwrap().clone()
+    }
+
+    /// Verifies the detached non-streaming finalization's abort arm (README §3 *ApiLog*): the
+    /// handler departs — the oneshot receiver drops — before the upstream stream has ended, the
+    /// stream still runs to completion, and the row finalizes `client_aborted` with `NULL`
+    /// status, because no response was ever produced, carrying the usage the stream delivered
+    /// before the abort.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the finalization contract diverges.
+    #[tokio::test]
+    async fn finalizes_client_aborted_when_the_handler_departs_before_completion() {
+        let (store, _guard) = test_store();
+        let (events_sender, events) = event_channel();
+
+        let (outcome_sender, outcome_receiver) = oneshot::channel();
+
+        let task = aggregated_response_task::<ChatCompletionFormat>(
+            events,
+            "public-model".to_string(),
+            Some(store.clone()),
+            stamped_draft(),
+            log_context(),
+            outcome_sender,
+        );
+
+        // The handler departs mid-generation: hyper drops it together with the oneshot receiver.
+        drop(outcome_receiver);
+
+        // The detached task owns the upstream stream, so the stream runs to completion anyway.
+        send_clean_events(&events_sender).await;
+        drop(events_sender);
+
+        task.await;
+
+        let row = recorded_row(&store).await;
+
+        assert_eq!(row.outcome, ApiLogOutcome::ClientAborted);
+        assert_eq!(row.http_status, None);
+        assert_eq!(row.input_tokens, Some(11));
+        assert_eq!(row.output_tokens, Some(7));
+    }
+
+    /// Verifies the detached non-streaming finalization's success arm (README §3 *ApiLog*): the
+    /// client stays, the rendered aggregated body is handed to the handler, and the row finalizes
+    /// `completed` with the declared 200 and the stream's usage.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the finalization contract diverges or the handed response is not the aggregated
+    /// rendering.
+    #[tokio::test]
+    async fn finalizes_completed_and_hands_the_rendered_response_to_the_handler() {
+        let (store, _guard) = test_store();
+        let (events_sender, events) = event_channel();
+
+        let (outcome_sender, outcome_receiver) = oneshot::channel();
+
+        let task = aggregated_response_task::<ChatCompletionFormat>(
+            events,
+            "public-model".to_string(),
+            Some(store.clone()),
+            stamped_draft(),
+            log_context(),
+            outcome_sender,
+        );
+
+        send_clean_events(&events_sender).await;
+        drop(events_sender);
+
+        // The task future is driven to completion first: it hands the outcome into the oneshot,
+        // whose single slot buffers it for the receive below.
+        task.await;
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the task always hands its outcome, and the fixture aggregation succeeds"
+        )]
+        let response = outcome_receiver
+            .await
+            .expect("the task always hands its outcome to the handler")
+            .expect("the fixture aggregation succeeds");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        #[expect(clippy::expect_used, reason = "the fixture body reads and parses")]
+        let body = serde_json::from_slice::<serde_json::Value>(
+            &axum::body::to_bytes(response.into_body(), MAX_BODY_BYTES)
+                .await
+                .expect("the fixture body reads"),
+        )
+        .expect("the fixture body parses");
+
+        assert_eq!(
+            body.pointer("/model"),
+            Some(&serde_json::json!("public-model"))
+        );
+        assert_eq!(
+            body.pointer("/choices/0/message/content"),
+            Some(&serde_json::json!("hello"))
+        );
+
+        let row = recorded_row(&store).await;
+
+        assert_eq!(row.outcome, ApiLogOutcome::Completed);
+        assert_eq!(row.http_status, Some(200));
+        assert_eq!(row.input_tokens, Some(11));
+        assert_eq!(row.output_tokens, Some(7));
+    }
+
+    /// Verifies the detached non-streaming finalization's upstream-failure arm (README §3
+    /// *ApiLog*): a failed stream classifies the row through the shared error taxonomy
+    /// regardless of the client — `upstream_error` with the transport-failure 502 both when the
+    /// handler receives the failure for rendering and when the handler has already departed, the
+    /// departure never upgrading to `client_aborted`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the finalization contract diverges.
+    #[tokio::test]
+    async fn finalizes_the_classified_upstream_failure_regardless_of_the_client() {
+        // The client stays: the failure is handed to the handler for rendering.
+        let (store, _guard) = test_store();
+        let (events_sender, events) = event_channel();
+
+        let (outcome_sender, outcome_receiver) = oneshot::channel();
+
+        let task = aggregated_response_task::<ChatCompletionFormat>(
+            events,
+            "public-model".to_string(),
+            Some(store.clone()),
+            stamped_draft(),
+            log_context(),
+            outcome_sender,
+        );
+
+        send_failing_events(&events_sender).await;
+        drop(events_sender);
+
+        // The task future is driven to completion first: it hands the outcome into the oneshot,
+        // whose single slot buffers it for the receive below.
+        task.await;
+
+        #[expect(clippy::expect_used, reason = "the task always hands its outcome")]
+        let outcome = outcome_receiver
+            .await
+            .expect("the task always hands its outcome to the handler");
+
+        assert!(
+            matches!(outcome, Err(Error::UpstreamUnavailable { .. })),
+            "the handler receives the stream failure for rendering"
+        );
+
+        let row = recorded_row(&store).await;
+
+        assert_eq!(row.outcome, ApiLogOutcome::UpstreamError);
+        assert_eq!(row.http_status, Some(502));
+
+        // The client departed before the failure: the row still classifies the upstream failure —
+        // never `client_aborted` — because the stream, not the client, is what failed.
+        let (departed_store, _departed_guard) = test_store();
+        let (departed_events_sender, departed_events) = event_channel();
+
+        let (departed_outcome_sender, departed_outcome_receiver) = oneshot::channel();
+
+        let departed_task = aggregated_response_task::<ChatCompletionFormat>(
+            departed_events,
+            "public-model".to_string(),
+            Some(departed_store.clone()),
+            stamped_draft(),
+            log_context(),
+            departed_outcome_sender,
+        );
+
+        drop(departed_outcome_receiver);
+
+        send_failing_events(&departed_events_sender).await;
+        drop(departed_events_sender);
+
+        departed_task.await;
+
+        let departed_row = recorded_row(&departed_store).await;
+
+        assert_eq!(departed_row.outcome, ApiLogOutcome::UpstreamError);
+        assert_eq!(departed_row.http_status, Some(502));
+    }
 }

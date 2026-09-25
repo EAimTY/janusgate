@@ -1,11 +1,27 @@
 import type { JSX } from "@solidjs/web";
-import { type Accessor, createMemo, createSignal, Match, onSettled, Show, Switch } from "solid-js";
+import {
+    type Accessor,
+    createEffect,
+    createMemo,
+    createSignal,
+    Match,
+    onSettled,
+    Show,
+    Switch,
+} from "solid-js";
 import { connectionService } from "/src/connection/app-service";
 import type { Connection } from "/src/connection/model";
 import { formatClock } from "/src/format";
 import { createManagementApi } from "/src/management-api/client";
 import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
-import { type AppRoute, currentLocation, hrefs, matchAppRoute, navigate } from "/src/router";
+import {
+    type AppRoute,
+    currentLocation,
+    hrefs,
+    matchAppRoute,
+    navigate,
+    routeTitle,
+} from "/src/router";
 import { ApiKeyDetailScreen } from "/src/screens/api-key-detail-screen";
 import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
 import { ApiKeyNewScreen } from "/src/screens/api-key-new-screen";
@@ -23,11 +39,17 @@ import { ProviderNewScreen } from "/src/screens/provider-new-screen";
 import { ProvidersScreen } from "/src/screens/providers-screen";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
 import { UsageScreen } from "/src/screens/usage-screen";
-import { resolvedTheme, toggleTheme } from "/src/theme";
+import { cycleTheme, type ThemePreference, themePreference } from "/src/theme";
 import { AppLink } from "/src/ui/app-link";
 import { joinClass } from "/src/ui/attributes";
 import { Button } from "/src/ui/controls";
 import { Glyph, type GlyphName, JanusMark } from "/src/ui/glyph";
+
+/**
+ * The connection screen's document title: the one page outside the routes,
+ * shown whenever no connection exists to route for.
+ */
+const CONNECTION_TITLE = "Connect to JanusGate";
 
 /**
  * The application gate: without a connection only the setup screen exists;
@@ -40,6 +62,19 @@ export function App(): JSX.Element {
         const state = connectionService.connectionState();
         return state.status === "connected" ? state.connection : null;
     });
+
+    // Unconnected, the connection screen is the whole document and names it;
+    // once a connection exists the shell's own effect takes the title over.
+    // The null guard keeps the write on the transition into setup, so it can
+    // never race the shell's route title.
+    createEffect(
+        () => (connection() === null ? CONNECTION_TITLE : null),
+        (title) => {
+            if (title !== null) {
+                document.title = title;
+            }
+        },
+    );
 
     return (
         <Show
@@ -185,6 +220,16 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
 
     const route = createMemo(() =>
         matchAppRoute(currentLocation().pathname, currentLocation().search),
+    );
+
+    // The document title follows the route, so a tab, a history entry, a
+    // bookmark, and a screen-reader page announcement all name the screen —
+    // and the row the route addresses — that they hold.
+    createEffect(
+        () => routeTitle(route()),
+        (title) => {
+            document.title = title;
+        },
     );
 
     const providerDetailRoute = routeNamed(route, "providerDetail");
@@ -360,8 +405,37 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
     );
 }
 
+/**
+ * The theme control's face per state of the preference: the glyph draws the
+ * state in force and the label names what one click does next, since the
+ * cycle light → dark → system is fixed — each state can state its own
+ * successor.
+ */
+const THEME_CONTROL_STATES: Record<
+    ThemePreference,
+    {
+        readonly glyph: GlyphName;
+        readonly label: string;
+    }
+> = {
+    light: {
+        glyph: "sun",
+        label: "Light theme — switch to dark",
+    },
+    dark: {
+        glyph: "moon",
+        label: "Dark theme — switch to system",
+    },
+    system: {
+        glyph: "display",
+        label: "System theme — switch to light",
+    },
+};
+
 /** The product bar: identity on the left, theme and disconnect on the right. */
 function TopBar(): JSX.Element {
+    const themeControl = () => THEME_CONTROL_STATES[themePreference()];
+
     return (
         <header class="sticky top-0 z-10 border-b border-rule bg-canvas/90 backdrop-blur">
             <div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-2 px-4 sm:px-6">
@@ -376,20 +450,12 @@ function TopBar(): JSX.Element {
                 <div class="ml-auto flex items-center gap-1">
                     <button
                         type="button"
-                        title={
-                            resolvedTheme() === "dark"
-                                ? "Switch to light theme"
-                                : "Switch to dark theme"
-                        }
-                        aria-label={
-                            resolvedTheme() === "dark"
-                                ? "Switch to light theme"
-                                : "Switch to dark theme"
-                        }
-                        onClick={() => toggleTheme()}
+                        title={themeControl().label}
+                        aria-label={themeControl().label}
+                        onClick={() => cycleTheme()}
                         class="grid size-9 cursor-pointer place-items-center rounded-lg text-ink-dim transition-colors duration-150 ease-out hover:bg-hover hover:text-ink"
                     >
-                        <Glyph name={resolvedTheme() === "dark" ? "sun" : "moon"} />
+                        <Glyph name={themeControl().glyph} />
                     </button>
                     <DisconnectControl />
                 </div>

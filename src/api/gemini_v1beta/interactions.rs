@@ -4,8 +4,9 @@
 //! whose model rides the URL path), so parsing takes the public model id from the body; only the
 //! streaming mode may arrive from the route — the `?alt=sse` query ([`super::has_alt_sse`])
 //! forces streaming, otherwise the body's `stream` member decides. Request parsing and rendering
-//! go through [`crate::format::gemini_interaction`]; errors render through the prefix
-//! [`super::error_response`] (the Gemini envelope); accounting records the endpoint as
+//! go through [`crate::format::gemini_interaction`]; errors render through the shared
+//! [`crate::api::serving::error_response`] over the prefix's [`super::Surface`] marker (the
+//! Gemini envelope); accounting records the endpoint as
 //! [`ApiLogEndpointType::GeminiInteractions`](crate::accounting::ApiLogEndpointType).
 //!
 //! Shared concerns (authentication, 404/405 bodies, body limit, JSON helper, accounting row id,

@@ -78,7 +78,7 @@ async fn models(State(context): State<Context>) -> Response {
 
             log_error("model listing", &error);
 
-            super::error_response(error)
+            serving::error_response::<super::Surface>(error)
         }
     }
 }
@@ -108,7 +108,7 @@ async fn dispatch(
         Err(error) => {
             log_error("request", &error);
 
-            return super::error_response(error);
+            return serving::error_response::<super::Surface>(error);
         }
     };
 
@@ -125,7 +125,7 @@ async fn dispatch(
 
             log_error("request", &error);
 
-            return super::error_response(error);
+            return serving::error_response::<super::Surface>(error);
         }
     }
 

@@ -33,6 +33,13 @@ pub(crate) struct UpstreamParser {
     /// call (README §6.3).
     delivered_call_indices: Vec<usize>,
 
+    /// Output indices whose function call a [`IrEvent::ToolCallDone`] already completed: a
+    /// streamed done item for an already-completed index is suppressed instead of re-emitting
+    /// the completion (README §6.2). This record is narrower than the delivered-call record —
+    /// streamed argument bytes deliver content without completing the call, and the streamed
+    /// done item must still deliver that completion.
+    completed_call_indices: Vec<usize>,
+
     /// Whether a finish reason was already emitted; a clean end-of-stream without one degrades to
     /// [`IrFinishReason::Stop`] in the parser's finish hook, matching the aggregated rendering
     /// default.
@@ -544,6 +551,7 @@ impl UpstreamParser {
                 // open and complete the item.
                 OutputItemOrigin::Json(index) => {
                     self.record_call_delivered(index);
+                    self.record_call_completed(index);
 
                     events.push(IrEvent::ToolCallDelta {
                         index,
@@ -555,12 +563,19 @@ impl UpstreamParser {
                     events.push(self.complete_function_call(item, index));
                 }
 
-                // A streamed done item is content-bearing: it always completes its call and
-                // exhausts the terminal output array's copy of the same index (README §6.3).
+                // A streamed done item is content-bearing: it completes its call and exhausts the
+                // terminal output array's copy of the same index (README §6.3) — but a done for an
+                // index another done already completed is suppressed, so a duplicating upstream
+                // cannot re-deliver the call (README §6.2). Argument bytes streamed for the index
+                // do not complete it: the done item is still the event that must deliver the
+                // completion.
                 OutputItemOrigin::StreamDone(index) => {
-                    self.record_call_delivered(index);
+                    if !self.is_call_completed(index) {
+                        self.record_call_delivered(index);
+                        self.record_call_completed(index);
 
-                    events.push(self.complete_function_call(item, index));
+                        events.push(self.complete_function_call(item, index));
+                    }
                 }
 
                 // The terminal fallback completes a call exactly-once: the output array delivers
@@ -573,6 +588,7 @@ impl UpstreamParser {
                 OutputItemOrigin::Terminal(index) => {
                     if !self.is_call_delivered(index) {
                         self.record_call_delivered(index);
+                        self.record_call_completed(index);
 
                         events.push(self.complete_function_call(item, index));
                     }
@@ -598,7 +614,7 @@ impl UpstreamParser {
         }
     }
 
-    /// Emits the completion of a function call item delivered by a streaming `output_item.done`.
+    /// Builds the [`IrEvent::ToolCallDone`] completing the function call item at `index`.
     fn complete_function_call(&self, item: &OutputItem, index: usize) -> IrEvent {
         IrEvent::ToolCallDone {
             index,
@@ -619,6 +635,18 @@ impl UpstreamParser {
     fn record_call_delivered(&mut self, index: usize) {
         if !self.delivered_call_indices.contains(&index) {
             self.delivered_call_indices.push(index);
+        }
+    }
+
+    /// Whether a [`IrEvent::ToolCallDone`] already completed the function call at `index`.
+    fn is_call_completed(&self, index: usize) -> bool {
+        self.completed_call_indices.contains(&index)
+    }
+
+    /// Records the function call at `index` as completed; repeats for the same index are ignored.
+    fn record_call_completed(&mut self, index: usize) {
+        if !self.completed_call_indices.contains(&index) {
+            self.completed_call_indices.push(index);
         }
     }
 
@@ -1472,6 +1500,77 @@ mod tests {
                 arguments: "{\"city\": \"Paris\"}".to_string(),
                 thought_signature: None,
             }],
+        );
+
+        let output = serde_json::json!([
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Paris\"}",
+            },
+        ]);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the completed frame is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&completed_frame(output))
+            .expect("a completed frame parses");
+
+        assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::ToolCall)]);
+    }
+
+    /// A duplicating upstream that streams `output_item.done` for a function-call item twice
+    /// delivers the call exactly once: the repeated done for the already-completed index is
+    /// suppressed (README §6.2), and the terminal array's copy stays silent behind the delivery
+    /// record the first done wrote.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the duplicated done re-delivers the call.
+    #[test]
+    fn duplicated_streamed_call_done_delivers_exactly_once() {
+        let mut parser = UpstreamParser::new();
+
+        #[expect(clippy::expect_used, reason = "the done frame is constructed to parse")]
+        let events = parser
+            .ingest_frame(&call_done_frame(
+                0,
+                "call_1",
+                "get_weather",
+                "{\"city\": \"Paris\"}",
+            ))
+            .expect("a done frame parses");
+
+        assert_eq!(
+            events,
+            vec![
+                bare_message_start(),
+                IrEvent::ToolCallDone {
+                    index: 0,
+                    call_id: "call_1".to_string(),
+                    name: "get_weather".to_string(),
+                    arguments: "{\"city\": \"Paris\"}".to_string(),
+                    thought_signature: None,
+                },
+            ],
+        );
+
+        #[expect(clippy::expect_used, reason = "the done frame is constructed to parse")]
+        let events = parser
+            .ingest_frame(&call_done_frame(
+                0,
+                "call_1",
+                "get_weather",
+                "{\"city\": \"Paris\"}",
+            ))
+            .expect("a duplicated done frame parses");
+
+        assert!(
+            events.is_empty(),
+            "a repeated done must not re-deliver a completed call"
         );
 
         let output = serde_json::json!([

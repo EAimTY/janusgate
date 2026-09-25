@@ -7,9 +7,8 @@
 //! that surfaces anyway is stored drift and fails fast.
 
 use super::{
-    credential::{CredentialAcquisition, Grant, OAuthRecipe, TokenRefresh},
+    credential::{CredentialAcquisition, Grant, OAuthRecipe, Pkce, TokenRefresh},
     discovery::{DiscoveryExtract, Pagination},
-    inference::RenderOption,
     provisioning::{ProvisionExtraction, ProvisioningStep},
     template::{
         ControlBody, ControlMethod, ControlRequest, ExtractionShape, ParamRow, ResponseDescriptor,
@@ -17,7 +16,7 @@ use super::{
         ValueExpr, ValueKind,
     },
 };
-use crate::format::UpstreamFormat;
+use crate::format::{RenderOption, UpstreamFormat};
 use std::collections::BTreeSet;
 /// A definition payload rejection: one message naming the offending descriptor element, rendered
 /// verbatim to the management client as an invalid-request rejection.
@@ -407,6 +406,24 @@ impl DefinitionPayload {
         };
 
         validate_control_request(&exchange.request, exchange_stage, slots)?;
+
+        // RFC 7636 §4.6: a grant that sent a code challenge must present the verifier at the
+        // token endpoint. The stage vocabulary already allows the `code_verifier` part here;
+        // when `s256` is configured the exchange request must actually reference it — the same
+        // required-carry shape the device grant's target checks above enforce — or every flow
+        // dies at the upstream with `invalid_grant`.
+        if let Grant::AuthorizationCode {
+            pkce: Pkce::S256, ..
+        } = grant
+            && !request_references_code_verifier(&exchange.request)
+        {
+            return Err(ValidationError::new(
+                "authorization-code grant with `pkce: s256` requires the token exchange request \
+                 to reference the `code_verifier` value part: RFC 7636 §4.6 presents the verifier \
+                 at the token endpoint whenever a challenge was sent",
+            ));
+        }
+
         validate_response_descriptor(&exchange.response, "token exchange")?;
         validate_terminal_codes(&exchange.terminal_codes, "token exchange")?;
 
@@ -713,6 +730,55 @@ fn validate_control_request(
     }
 
     Ok(())
+}
+
+/// Whether one string expression references the PKCE code verifier, directly or inside a
+/// coalesce's arguments.
+fn references_code_verifier(expr: &StringExpr) -> bool {
+    expr.0.iter().any(|part| match part {
+        ValueExpr::CodeVerifier => true,
+
+        ValueExpr::Coalesce { parts } => parts
+            .iter()
+            .any(|part| matches!(part, ValueExpr::CodeVerifier)),
+
+        _ => false,
+    })
+}
+
+/// Whether one template tree references the PKCE code verifier in any of its string leaves.
+fn template_node_references_code_verifier(node: &TemplateNode) -> bool {
+    match node {
+        TemplateNode::Json { .. } | TemplateNode::Body => false,
+
+        TemplateNode::String { expr } => references_code_verifier(expr),
+
+        TemplateNode::Object { fields } => {
+            fields.values().any(template_node_references_code_verifier)
+        }
+
+        TemplateNode::Array { items } => items.iter().any(template_node_references_code_verifier),
+    }
+}
+
+/// Whether one control request references the PKCE code verifier anywhere its stage expressions
+/// live: the URL, the headers, the query rows, and the body's form fields or JSON string leaves.
+fn request_references_code_verifier(request: &ControlRequest) -> bool {
+    let rows_reference =
+        |rows: &[ParamRow]| rows.iter().any(|row| references_code_verifier(&row.value));
+
+    let body_references = match &request.body {
+        None => false,
+
+        Some(ControlBody::Form { fields }) => rows_reference(fields),
+
+        Some(ControlBody::Json { node }) => template_node_references_code_verifier(node),
+    };
+
+    body_references
+        || rows_reference(&request.headers)
+        || rows_reference(&request.query)
+        || references_code_verifier(&request.url)
 }
 
 /// Validates one response descriptor: non-empty paths, and — for a form-encoded response, whose
@@ -2618,6 +2684,86 @@ mod tests {
         });
 
         assert!(outcome.unwrap_err().contains("terminal codes"));
+    }
+
+    /// RFC 7636 §4.6: a grant that sent a code challenge must present the verifier at the token
+    /// endpoint, so an `s256` grant whose exchange request never references the `code_verifier`
+    /// value part is rejected at the write boundary — symmetric to the device grant's
+    /// required-target checks — instead of dying at the upstream with `invalid_grant`. Without
+    /// PKCE the same exchange stays valid.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the non-conforming `s256` exchange validates.
+    #[test]
+    fn requires_the_s256_exchange_to_reference_the_code_verifier() {
+        // The Antigravity shape's exchange carries no verifier anywhere; flipping its grant to
+        // `s256` leaves the challenge with no verifier presented at the token endpoint.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["grant"]["pkce"] = serde_json::json!("s256");
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("code_verifier"), "{error}");
+
+        // Without PKCE the verifier is absent by design.
+        mutate_and_validate(good_antigravity_json(), |_| {}).unwrap();
+    }
+
+    /// The `s256` rule reads the whole exchange request, so the verifier satisfies it wherever
+    /// the stage's expressions live: a form field, a query row, or a coalesce argument. (The
+    /// JSON-body leaves are covered by the Claude Code and Devin catalog fixtures above.)
+    ///
+    /// # Panics
+    ///
+    /// Panics if a verifier-carrying exchange is rejected.
+    #[test]
+    fn accepts_an_s256_exchange_referencing_the_code_verifier() {
+        // As the exchange's form field.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["grant"]["pkce"] = serde_json::json!("s256");
+
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "name": "code_verifier",
+                    "value": [{ "type": "code_verifier" }]
+                }));
+        });
+
+        outcome.unwrap();
+
+        // As a query row on the exchange request.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["grant"]["pkce"] = serde_json::json!("s256");
+
+            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
+                { "name": "code_verifier", "value": [{ "type": "code_verifier" }] }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // Inside a coalesce's arguments.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["grant"]["pkce"] = serde_json::json!("s256");
+
+            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][1];
+
+            field["value"] = serde_json::json!([
+                {
+                    "type": "coalesce",
+                    "parts": [
+                        { "type": "code_verifier" },
+                        { "type": "literal", "value": "fallback" }
+                    ]
+                }
+            ]);
+        });
+
+        outcome.unwrap();
     }
 
     /// A `reprovision` refresh requires its provisioning sequence to extract an absolute

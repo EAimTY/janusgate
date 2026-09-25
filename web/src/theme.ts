@@ -2,7 +2,7 @@ import { createSignal } from "solid-js";
 import { appConfig } from "/src/config";
 
 /** What the operator chose: an explicit theme, or the operating system's. */
-type ThemePreference = "light" | "dark" | "system";
+export type ThemePreference = "light" | "dark" | "system";
 
 /** What the app paints: the preference resolved against the media query. */
 type ResolvedTheme = "light" | "dark";
@@ -30,13 +30,9 @@ function applyTheme(resolved: ResolvedTheme): void {
 }
 
 const [preference, setPreferenceSignal] = createSignal<ThemePreference>(readPreference());
-const [resolved, setResolved] = createSignal<ResolvedTheme>(resolveTheme(preference()));
 
 function refresh(explicit: ThemePreference): void {
-    const next = resolveTheme(explicit);
-
-    setResolved(next);
-    applyTheme(next);
+    applyTheme(resolveTheme(explicit));
 }
 
 /** Paints the stored preference before the first frame, then follows the OS. */
@@ -54,9 +50,26 @@ export function initTheme(): void {
     }
 }
 
-/** The resolved theme signal, for theme-aware chrome. */
-export function resolvedTheme(): ResolvedTheme {
-    return resolved();
+/** The preference signal, for chrome that shows which state is in force. */
+export function themePreference(): ThemePreference {
+    return preference();
+}
+
+/**
+ * The preference one click ahead of the top-bar control's cycle: light →
+ * dark → system → light. The system state sits last so the first click from
+ * a fresh visit — which starts there — moves to an explicit choice, and the
+ * third click returns to following the OS.
+ */
+export function nextThemePreference(current: ThemePreference): ThemePreference {
+    switch (current) {
+        case "light":
+            return "dark";
+        case "dark":
+            return "system";
+        case "system":
+            return "light";
+    }
 }
 
 /** Stores a new preference and repaints immediately. */
@@ -72,7 +85,7 @@ function setThemePreference(next: ThemePreference): void {
     refresh(next);
 }
 
-/** Flips between the two painted themes, keeping an explicit choice. */
-export function toggleTheme(): void {
-    setThemePreference(resolved() === "dark" ? "light" : "dark");
+/** Advances the preference one step through light → dark → system and repaints. */
+export function cycleTheme(): void {
+    setThemePreference(nextThemePreference(preference()));
 }

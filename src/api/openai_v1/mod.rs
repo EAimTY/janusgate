@@ -33,8 +33,8 @@ use serde::Serialize;
 struct Surface;
 
 impl serving::Surface for Surface {
-    fn render_error(error: Error) -> Response {
-        error_response(error)
+    fn render_error(error: &Error) -> (StatusCode, impl Serialize) {
+        error_openai::render(error)
     }
 
     fn extract_credential(request: &Request) -> Result<String, serving::AuthRejection> {
@@ -49,10 +49,6 @@ impl serving::Surface for Surface {
 
                 serving::AuthRejection::MissingCredential
             })
-    }
-
-    fn log_invalid_key() {
-        log_error("request", &Error::InvalidApiKey);
     }
 }
 
@@ -115,14 +111,6 @@ fn bearer_token(authorization: &str) -> Option<&str> {
     } else {
         None
     }
-}
-
-/// Renders one API failure as an OpenAI JSON error response through the format's render module:
-/// the HTTP error path and the stream-frame path share this one classification (README §6.7).
-fn error_response(error: Error) -> Response {
-    let (status, envelope) = error_openai::render(&error);
-
-    serving::json_response(status, &envelope)
 }
 
 /// Handles `POST /chat/completions`.
@@ -191,7 +179,7 @@ async fn models(State(context): State<Context>) -> Response {
 
             log_error("model listing", &error);
 
-            error_response(error)
+            serving::error_response::<Surface>(error)
         }
     }
 }

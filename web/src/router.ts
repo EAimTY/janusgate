@@ -1,6 +1,7 @@
 import { type Accessor, createSignal } from "solid-js";
 import type { UsageGroupBy } from "/src/management-api/generated/v0";
 import { isRoutingToken } from "/src/management-api/identifiers";
+import { parseRowIdentifier } from "./row-id";
 import {
     EMPTY_USAGE_FILTER_DRAFT,
     parseUsageFilterDraft,
@@ -198,20 +199,99 @@ export const hrefs = {
 } as const;
 
 /**
- * Reads a row identifier out of a path segment or query value. Only a plain
- * decimal integer addresses a row; anything else reads as absent.
+ * The screen's own name for the document title, worded as the screens' own
+ * headings are, with the row a route addresses named by its identifier — the
+ * shell holds only what the address carries, and a row's label is the
+ * screen's read to resolve.
  */
-export function parseRowIdentifier(value: string | null): number | null {
-    if (value === null || !/^\d+$/.test(value)) {
-        return null;
+function routeScreenName(route: AppRoute): string {
+    switch (route.name) {
+        case "home":
+            return "Overview";
+        case "providers":
+            return "Providers";
+        case "providerNew":
+            return "Create provider";
+        case "providerDetail":
+            return `Provider #${route.providerId}`;
+        case "providerEdit":
+            return `Edit provider #${route.providerId}`;
+        case "models":
+            return "Models";
+        case "modelNew":
+            return "Create model";
+        case "modelDetail":
+            return `Model #${route.modelId}`;
+        case "modelEdit":
+            return `Edit model #${route.modelId}`;
+        case "apiKeys":
+            return "API keys";
+        case "apiKeyNew":
+            return "Create API key";
+        case "apiKeyDetail":
+            return `API key #${route.apiKeyId}`;
+        case "apiKeyEdit":
+            return `Edit API key #${route.apiKeyId}`;
+        case "usage":
+            return "Usage";
+        case "usageQuery":
+            return "Usage aggregates";
+        case "notFound":
+            return "Page not found";
     }
+}
 
-    const identifier = Number(value);
-    return Number.isSafeInteger(identifier) ? identifier : null;
+/**
+ * The document title one route presents: the screen's name over the product,
+ * so the browser's tab, history entries, bookmarks, and screen-reader page
+ * announcements say which screen of the console they hold.
+ */
+export function routeTitle(route: AppRoute): string {
+    return `${routeScreenName(route)} · JanusGate`;
 }
 
 function readQueryParameter(search: string, name: string): string | null {
     return new URLSearchParams(search).get(name);
+}
+
+/**
+ * One pattern per entity address family: `<prefix>/<row id>` with the
+ * optional `/edit` suffix captured as group 2, so one match serves an
+ * entity's detail and edit pages alike. Group 1 carries the row segment.
+ */
+const PROVIDER_ADDRESS = /^\/providers\/([^/]+)(\/edit)?$/;
+const MODEL_ADDRESS = /^\/models\/([^/]+)(\/edit)?$/;
+const API_KEY_ADDRESS = /^\/api-keys\/([^/]+)(\/edit)?$/;
+
+/**
+ * Matches one entity's two addresses — `<prefix>/<row id>` for detail and
+ * `<prefix>/<row id>/edit` for edit. The caller's builders construct the
+ * route from the parsed row identifier, so the AppRoute construction stays
+ * at the call; an address whose segment is not a row identifier is
+ * not-found, and a path outside the family answers `null` so the next route
+ * gets a turn.
+ */
+function matchEntityRoute(
+    pathname: string,
+    pattern: RegExp,
+    detail: (rowId: number) => AppRoute,
+    edit: (rowId: number) => AppRoute,
+): AppRoute | null {
+    const match = pattern.exec(pathname);
+
+    if (match === null) {
+        return null;
+    }
+
+    const rowId = parseRowIdentifier(match[1] ?? null);
+
+    if (rowId === null) {
+        return {
+            name: "notFound",
+        };
+    }
+
+    return match[2] === undefined ? detail(rowId) : edit(rowId);
 }
 
 export function matchAppRoute(pathname: string, search: string): AppRoute {
@@ -236,34 +316,21 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
         };
     }
 
-    const providerEditMatch = /^\/providers\/([^/]+)\/edit$/.exec(normalizedPath);
+    const providerRoute = matchEntityRoute(
+        normalizedPath,
+        PROVIDER_ADDRESS,
+        (providerId) => ({
+            name: "providerDetail",
+            providerId,
+        }),
+        (providerId) => ({
+            name: "providerEdit",
+            providerId,
+        }),
+    );
 
-    if (providerEditMatch !== null) {
-        const providerId = parseRowIdentifier(providerEditMatch[1] ?? null);
-
-        return providerId === null
-            ? {
-                  name: "notFound",
-              }
-            : {
-                  name: "providerEdit",
-                  providerId,
-              };
-    }
-
-    const providerMatch = /^\/providers\/([^/]+)$/.exec(normalizedPath);
-
-    if (providerMatch !== null) {
-        const providerId = parseRowIdentifier(providerMatch[1] ?? null);
-
-        return providerId === null
-            ? {
-                  name: "notFound",
-              }
-            : {
-                  name: "providerDetail",
-                  providerId,
-              };
+    if (providerRoute !== null) {
+        return providerRoute;
     }
 
     if (normalizedPath === "/models") {
@@ -299,34 +366,21 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
         };
     }
 
-    const apiKeyEditMatch = /^\/api-keys\/([^/]+)\/edit$/.exec(normalizedPath);
+    const apiKeyRoute = matchEntityRoute(
+        normalizedPath,
+        API_KEY_ADDRESS,
+        (apiKeyId) => ({
+            name: "apiKeyDetail",
+            apiKeyId,
+        }),
+        (apiKeyId) => ({
+            name: "apiKeyEdit",
+            apiKeyId,
+        }),
+    );
 
-    if (apiKeyEditMatch !== null) {
-        const apiKeyId = parseRowIdentifier(apiKeyEditMatch[1] ?? null);
-
-        return apiKeyId === null
-            ? {
-                  name: "notFound",
-              }
-            : {
-                  name: "apiKeyEdit",
-                  apiKeyId,
-              };
-    }
-
-    const apiKeyMatch = /^\/api-keys\/([^/]+)$/.exec(normalizedPath);
-
-    if (apiKeyMatch !== null) {
-        const apiKeyId = parseRowIdentifier(apiKeyMatch[1] ?? null);
-
-        return apiKeyId === null
-            ? {
-                  name: "notFound",
-              }
-            : {
-                  name: "apiKeyDetail",
-                  apiKeyId,
-              };
+    if (apiKeyRoute !== null) {
+        return apiKeyRoute;
     }
 
     if (normalizedPath === "/usage") {
@@ -343,34 +397,21 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
         };
     }
 
-    const modelEditMatch = /^\/models\/([^/]+)\/edit$/.exec(normalizedPath);
+    const modelRoute = matchEntityRoute(
+        normalizedPath,
+        MODEL_ADDRESS,
+        (modelId) => ({
+            name: "modelDetail",
+            modelId,
+        }),
+        (modelId) => ({
+            name: "modelEdit",
+            modelId,
+        }),
+    );
 
-    if (modelEditMatch !== null) {
-        const modelId = parseRowIdentifier(modelEditMatch[1] ?? null);
-
-        return modelId === null
-            ? {
-                  name: "notFound",
-              }
-            : {
-                  name: "modelEdit",
-                  modelId,
-              };
-    }
-
-    const modelMatch = /^\/models\/([^/]+)$/.exec(normalizedPath);
-
-    if (modelMatch !== null) {
-        const modelId = parseRowIdentifier(modelMatch[1] ?? null);
-
-        return modelId === null
-            ? {
-                  name: "notFound",
-              }
-            : {
-                  name: "modelDetail",
-                  modelId,
-              };
+    if (modelRoute !== null) {
+        return modelRoute;
     }
 
     return {
@@ -404,5 +445,17 @@ export function navigate(target: string): void {
 }
 
 window.addEventListener("popstate", () => {
-    setLocation(readLocation());
+    const next = readLocation();
+    const previous = location();
+    const isSameAddress = previous.pathname === next.pathname && previous.search === next.search;
+
+    // A traversal that carries the address already held — a hash-only move
+    // among them, which readLocation does not see — is not a navigation:
+    // writing it would notify the signal with a fresh, equal object and
+    // remount every keyed screen.
+    if (isSameAddress) {
+        return;
+    }
+
+    setLocation(next);
 });

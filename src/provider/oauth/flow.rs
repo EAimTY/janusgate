@@ -217,27 +217,6 @@ pub(crate) fn random_url_safe(byte_count: usize) -> String {
     general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Percent-encodes one authorize-URL query component: every byte outside the RFC 3986 unreserved
-/// set renders as `%XX`, so scopes render their spaces as `%20` exactly like the mirrored CLIs.
-#[must_use]
-pub(crate) fn authorize_url_encode(component: &str) -> String {
-    let mut encoded = String::with_capacity(component.len());
-
-    for byte in component.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(char::from(byte));
-            }
-
-            other => {
-                encoded.push_str(&format!("%{other:02X}"));
-            }
-        }
-    }
-
-    encoded
-}
-
 /// Initializes a new flow's working slots from the definition's `initial_slots` (README §5.3):
 /// the generators run once per new flow before its first external request, over the target
 /// provider's stored slots for a reauthorization, so only the missing names are initialized.
@@ -306,7 +285,7 @@ pub(crate) fn build_authorize_url(
         url.push_str(if url.contains('?') { "&" } else { "?" });
         url.push_str(name);
         url.push('=');
-        url.push_str(&authorize_url_encode(value));
+        url.push_str(&control::percent_encode_component(value));
     };
 
     append("response_type", "code");

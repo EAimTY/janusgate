@@ -39,8 +39,8 @@ use serde::Serialize;
 struct Surface;
 
 impl serving::Surface for Surface {
-    fn render_error(error: Error) -> Response {
-        error_response(error)
+    fn render_error(error: &Error) -> (StatusCode, impl Serialize) {
+        error_anthropic::render(error)
     }
 
     fn extract_credential(request: &Request) -> Result<String, serving::AuthRejection> {
@@ -66,10 +66,6 @@ impl serving::Surface for Surface {
         }
 
         Ok(presented.to_owned())
-    }
-
-    fn log_invalid_key() {
-        log_error("request", &Error::InvalidApiKey);
     }
 }
 
@@ -110,14 +106,6 @@ pub(super) fn router(database: Database) -> Router<Context> {
             serving::authenticate::<Surface>,
         ))
         .layer(DefaultBodyLimit::max(serving::MAX_BODY_BYTES))
-}
-
-/// Renders one API failure as an Anthropic JSON error response through the format's render
-/// module.
-fn error_response(error: Error) -> Response {
-    let (status, envelope) = error_anthropic::render(&error);
-
-    serving::json_response(status, &envelope)
 }
 
 /// Handles `POST /messages`.
@@ -166,7 +154,7 @@ async fn models(State(context): State<Context>) -> Response {
 
             log_error("model listing", &error);
 
-            error_response(error)
+            serving::error_response::<Surface>(error)
         }
     }
 }

@@ -394,6 +394,48 @@ describe("ProviderNewScreen creation", () => {
         expect(sent[0]?.provider_definition_version).toBe(2);
     });
 
+    it("withholds the stored-version claims until the boot read answers", async () => {
+        const releases: Array<(response: { provider_definitions: DefinitionResponse[] }) => void> =
+            [];
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={screenApi([], {
+                            definitions: () =>
+                                new Promise((resolve) => {
+                                    releases.push(resolve);
+                                }),
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // While the boot read is in flight the page asserts nothing about the
+        // stored versions — neither the absence claim nor the unreadable one,
+        // the same wait the stored case's line already keeps. The rest of the
+        // card stands, as the page's no-skeleton design has it.
+        expect(document.body.textContent).not.toContain("Not stored yet");
+        expect(document.body.textContent).not.toContain("The stored versions could not be read.");
+        expect(document.body.textContent).toContain("Advanced: the connection recipe");
+
+        // The read answers absent: the absence claim is now established, and
+        // only then stated.
+        heldDefinitionsRelease(
+            releases,
+            0,
+        )({
+            provider_definitions: [],
+        });
+        await settle();
+        expect(document.body.textContent).toContain(
+            "Not stored yet — submitting creates version 1.",
+        );
+    });
+
     it("states a failed providers listing where the screen's failures stand", async () => {
         disposes.push(
             render(
@@ -491,6 +533,23 @@ function heldListingRelease(
 
     if (release === undefined) {
         throw new Error(`No held listing call at index ${index}`);
+    }
+
+    return release;
+}
+
+/**
+ * The release of the held definitions call that arrived at the given index,
+ * failing the test when no call is held there.
+ */
+function heldDefinitionsRelease(
+    releases: ReadonlyArray<(response: { provider_definitions: DefinitionResponse[] }) => void>,
+    index: number,
+): (response: { provider_definitions: DefinitionResponse[] }) => void {
+    const release = releases[index];
+
+    if (release === undefined) {
+        throw new Error(`No held definitions call at index ${index}`);
     }
 
     return release;

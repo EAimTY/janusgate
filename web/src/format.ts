@@ -3,6 +3,9 @@ export function formatTimestamp(unixMicros: number): string {
     return new Date(unixMicros / 1000).toLocaleString();
 }
 
+/** The length of one day in microseconds — the unit every usage window and day boundary counts in. */
+export const DAY_MICROS = 86_400_000_000;
+
 /** The current moment as a unix timestamp in microseconds, matching the gateway's stamps. */
 export function nowMicros(): number {
     return Date.now() * 1000;

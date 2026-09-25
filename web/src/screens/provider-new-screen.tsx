@@ -1,6 +1,10 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createMemo, createSignal, Match, Show, Switch } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
+import {
+    type DefinitionPayloadResult,
+    validateDefinitionPayload,
+} from "/src/management-api/definition-payload";
 import type { DefinitionResponse } from "/src/management-api/generated/v0";
 import {
     baseUrlMessage,
@@ -16,10 +20,6 @@ import {
     type ProviderPreset,
 } from "/src/management-api/presets";
 import { defaultModelPrefix, suggestProviderName } from "/src/management-api/provider-defaults";
-import {
-    type DefinitionPayloadResult,
-    validateDefinitionPayload,
-} from "/src/management-api/validation";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { Button, TextField } from "/src/ui/controls";
@@ -520,11 +520,17 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     <Show
                         when={stored()}
                         fallback={
-                            <p class="text-[12.5px] text-ink-faint">
-                                {isStoredKnown() === "unreadable"
-                                    ? "The stored versions could not be read."
-                                    : "Not stored yet — submitting creates version 1."}
-                            </p>
+                            // The claims wait for the boot read's answer:
+                            // while it is in flight the page states no fact
+                            // about the stored versions — the same wait the
+                            // stored case's line already keeps.
+                            <Show when={isStoredKnown() !== "reading"}>
+                                <p class="text-[12.5px] text-ink-faint">
+                                    {isStoredKnown() === "unreadable"
+                                        ? "The stored versions could not be read."
+                                        : "Not stored yet — submitting creates version 1."}
+                                </p>
+                            </Show>
                         }
                     >
                         {(current) => (

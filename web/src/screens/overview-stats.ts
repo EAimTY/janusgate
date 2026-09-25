@@ -1,8 +1,7 @@
+import { DAY_MICROS } from "/src/format";
 import type { UsageBucket } from "/src/management-api/generated/v0";
 import { bucketKeyField } from "/src/screens/usage-labels";
 import { USAGE_OUTCOME_FAILURES } from "/src/usage-filter";
-
-const DAY_MICROS = 86_400_000_000;
 
 /** The number of UTC days the overview's daily chart covers, today included. */
 export const OVERVIEW_DAILY_DAYS = 14;

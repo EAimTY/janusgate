@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { For, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import type { ProviderPreset } from "/src/management-api/presets";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Switch, TextField } from "/src/ui/controls";
@@ -132,7 +132,9 @@ export function ProviderIdentityFields(props: {
  * (the edit form), where no pristine gate waits on it. The API key's default
  * hint states the creation contract, where the gate requires a key — a
  * caller stating its own hint (the edit form's write-only contract) owns the
- * whole line.
+ * whole line. The key is masked like every pasted secret and carries the
+ * connection screen's reveal, so an operator can confirm a paste here instead
+ * of meeting a mangled key later as a discovery or upstream failure.
  */
 export function CompatibleConnectionFields(props: {
     readonly baseUrl: string;
@@ -146,6 +148,9 @@ export function CompatibleConnectionFields(props: {
     readonly apiKeyError?: string | null | undefined;
     readonly isDisabled?: boolean;
 }): JSX.Element {
+    // The reveal is the field's own transient state: every mount opens masked.
+    const [isKeyVisible, setIsKeyVisible] = createSignal(false);
+
     return (
         <div class="flex flex-col gap-4">
             <Show when={props.hasBaseUrl !== false}>
@@ -168,7 +173,7 @@ export function CompatibleConnectionFields(props: {
             </Show>
             <TextField
                 label={props.apiKeyLabel ?? "API key"}
-                type="password"
+                type={isKeyVisible() ? "text" : "password"}
                 value={props.apiKey}
                 onInput={props.onApiKeyInput}
                 isDisabled={props.isDisabled ?? false}
@@ -179,6 +184,15 @@ export function CompatibleConnectionFields(props: {
                     requiredHint("Sent upstream with every request. Never returned by the gateway.")
                 }
             />
+            <label class="flex w-fit cursor-pointer items-center gap-2 text-[13.5px] text-ink-dim">
+                <input
+                    type="checkbox"
+                    class="size-4 accent-(--color-accent)"
+                    checked={isKeyVisible()}
+                    onChange={(event) => setIsKeyVisible(event.currentTarget.checked)}
+                />
+                Show the API key while typing
+            </label>
         </div>
     );
 }

@@ -1,4 +1,9 @@
 import {
+    parseDefinitionEnvelope,
+    parseListProviderDefinitionsResponse,
+} from "/src/management-api/definition-payload";
+
+import {
     ContractViolationError,
     describeManagementFailure,
     isAbortFailure,
@@ -47,13 +52,11 @@ import {
 import {
     parseApiKeyEnvelope,
     parseCompleteProviderOauthResponse,
-    parseDefinitionEnvelope,
     parseDiscoverModelsResponse,
     parseEmptyResponse,
     parseErrorResponse,
     parseListApiKeysResponse,
     parseListModelsResponse,
-    parseListProviderDefinitionsResponse,
     parseListProvidersResponse,
     parseListUsageResponse,
     parseModelEnvelope,

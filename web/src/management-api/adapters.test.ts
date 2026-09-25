@@ -93,6 +93,19 @@ describe("toUpdateProviderRequest", () => {
         });
     });
 
+    it("sends a present null base_url edit instead of the stored URL", () => {
+        // `base_url` is a two-state edit: absent keeps the stored value, but a
+        // present `null` is the value to send — a legal full-state write
+        // whenever the effective definition does not reference the base
+        // (gateway README §7.1) — so the adapter must not collapse it onto the
+        // stored URL.
+        const request = toUpdateProviderRequest(compatible, {
+            base_url: null,
+        });
+
+        expect(request.base_url).toBe(null);
+    });
+
     it("restates a typed prefix byte-for-byte, trailing dash included", () => {
         // The gateway stores `model_prefix` verbatim and recomposes every
         // unoverridden public ID from exactly what the request states

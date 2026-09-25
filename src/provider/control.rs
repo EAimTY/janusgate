@@ -185,8 +185,37 @@ fn render_json_node(
         .map_err(ControlFailure::from)
 }
 
+/// Percent-encodes one URL query component with the RFC 3986 unreserved set: every byte outside
+/// `A–Z a–z 0–9 - . _ ~` renders as `%XX`, so a space renders `%20` and a literal plus `%2B`.
+/// This strict encoding is the one vocabulary every descriptor-rendered query component uses —
+/// the authorize-URL builder (README §5.3) and the control-request query rows built here alike —
+/// because RFC 3986 §3.4 defines `+` in a query as a literal plus. The
+/// `application/x-www-form-urlencoded` body variant keeps its own `+`-for-space rule, which is
+/// the content type's, not the URL query's.
+#[must_use]
+pub(crate) fn percent_encode_component(component: &str) -> String {
+    let mut encoded = String::with_capacity(component.len());
+
+    for byte in component.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+
+            other => {
+                encoded.push_str(&format!("%{other:02X}"));
+            }
+        }
+    }
+
+    encoded
+}
+
 /// Builds the HTTP request for one control request: the evaluated URL, query, headers, and body.
 /// The executor sets `Content-Type` from the body variant; every other header is an explicit row.
+///
+/// Query rows render through [`percent_encode_component`] and are appended pre-encoded, so the
+/// client serializes nothing again — a space stays `%20` instead of the form-urlencoded `+`.
 ///
 /// # Errors
 ///
@@ -198,18 +227,21 @@ pub(crate) fn build_request(
     env: &ValueEnv<'_>,
     what: &str,
 ) -> Result<RequestBuilder, ControlFailure> {
-    let url = env.evaluate(&request.url, what)?;
+    let mut url = env.evaluate(&request.url, what)?;
 
     let method = match request.method {
         ControlMethod::Get => Method::GET,
         ControlMethod::Post => Method::POST,
     };
 
-    let mut builder = client.request(method, &url);
-
     for row in &request.query {
-        builder = builder.query(&[(row.name.as_str(), env.evaluate(&row.value, what)?.as_str())]);
+        url.push_str(if url.contains('?') { "&" } else { "?" });
+        url.push_str(&percent_encode_component(&row.name));
+        url.push('=');
+        url.push_str(&percent_encode_component(&env.evaluate(&row.value, what)?));
     }
+
+    let mut builder = client.request(method, &url);
 
     for row in &request.headers {
         builder = builder.header(row.name.as_str(), env.evaluate(&row.value, what)?.as_str());
@@ -510,6 +542,59 @@ mod tests {
     )]
 
     use super::*;
+    use crate::provider::definition::template::{ParamRow, StringExpr};
+
+    /// Control-request query rows render through the strict RFC 3986 unreserved-set percent
+    /// encoding the authorize-URL builder shares: a space renders `%20` and a literal plus
+    /// `%2B` — RFC 3986 §3.4 makes `+` in a query a literal plus — and the pre-encoded
+    /// components reach the built request unre-encoded. A row on a URL already carrying a
+    /// query joins with `&`. The form body variant is untouched: its `+`-for-space rule is the
+    /// `application/x-www-form-urlencoded` content type's own.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the built request's query diverges from the strict encoding.
+    #[test]
+    fn encodes_query_rows_with_the_strict_unreserved_set() {
+        let request = ControlRequest {
+            method: ControlMethod::Get,
+            url: StringExpr::literal("https://upstream.example/discovery?fixed=1"),
+            headers: Vec::new(),
+            query: vec![
+                ParamRow {
+                    name: "scope".to_string(),
+                    value: StringExpr::literal("a b+c"),
+                },
+                ParamRow {
+                    name: "label key".to_string(),
+                    value: StringExpr::literal("é"),
+                },
+            ],
+            body: None,
+        };
+
+        let slots = BTreeMap::new();
+
+        let env = ValueEnv::for_exchange(
+            &slots,
+            None,
+            "client-id",
+            None,
+            "code",
+            Some("verifier"),
+            "redirect",
+        );
+
+        let built = build_request(&Client::new(), &request, &env, "test")
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            built.url().query(),
+            Some("fixed=1&scope=a%20b%2Bc&label%20key=%C3%A9")
+        );
+    }
 
     /// Pins the shared field-mapping fold (README §5.1): present values apply in order, a
     /// missing optional path leaves its target unchanged, a missing required path fails the

@@ -16,9 +16,10 @@ use crate::{
 use axum::{
     Router,
     extract::{DefaultBodyLimit, Request},
+    http::StatusCode,
     middleware,
-    response::Response,
 };
+use serde::Serialize;
 
 pub(super) mod generate_content;
 pub(super) mod interactions;
@@ -28,8 +29,8 @@ pub(super) mod interactions;
 struct Surface;
 
 impl serving::Surface for Surface {
-    fn render_error(error: Error) -> Response {
-        error_response(error)
+    fn render_error(error: &Error) -> (StatusCode, impl Serialize) {
+        crate::format::error_gemini::render(error)
     }
 
     fn extract_credential(request: &Request) -> Result<String, serving::AuthRejection> {
@@ -44,10 +45,6 @@ impl serving::Surface for Surface {
         };
 
         Ok(presented.to_owned())
-    }
-
-    fn log_invalid_key() {
-        log_error("request", &Error::InvalidApiKey);
     }
 }
 
@@ -66,13 +63,6 @@ pub(super) fn router(database: Database) -> Router<Context> {
             serving::authenticate::<Surface>,
         ))
         .layer(DefaultBodyLimit::max(serving::MAX_BODY_BYTES))
-}
-
-/// Renders one API failure as a Gemini JSON error response through the format's render module.
-fn error_response(error: Error) -> Response {
-    let (status, envelope) = crate::format::error_gemini::render(&error);
-
-    serving::json_response(status, &envelope)
 }
 
 /// Reports whether a query string carries `alt=sse`: the only supported streaming query form of
