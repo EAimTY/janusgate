@@ -1,6 +1,6 @@
 //! The lease-guarded token renewal: one request drives the database refresh lease, the
 //! definition's refresh mode — a refresh grant or a reprovisioning — and the lease-conditioned
-//! persist, so concurrent requests never overwrite newer credentials (README §5.6).
+//! persist, so concurrent requests never overwrite newer credentials (README §3).
 //!
 //! The lease lives inside the credentials JSON document and every transition conditions on
 //! `json_extract(credentials, …)`; the engine never read–modify–writes a stale document in Rust.
@@ -410,7 +410,7 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
 
     let CredentialAcquisition::OAuth(recipe) = &provider.definition.payload.credential else {
         return Err(Error::Internal {
-            message: "API key credentials never renew".to_string(),
+            message: "the provider's definition carries no OAuth credential".to_string(),
         });
     };
 

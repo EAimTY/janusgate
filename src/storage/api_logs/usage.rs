@@ -15,6 +15,7 @@ use crate::{
     database::{Database, Row, Value, schema::Registry},
     storage::Error,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, hash_map::Entry};
 use vec1::Vec1;
 
@@ -250,40 +251,115 @@ pub(crate) async fn query_usage(
 }
 
 /// The shared filter of both management reads (README §7.1): every present field narrows the
-/// rows both `usage:list` and `usage:query` consider. Values are never validated against stored
-/// rows — an unknown id or a never-recorded status matches an empty set, because a filter
-/// locates rather than addresses. Within one multi-value field the values OR (SQL `IN`);
-/// fields compose with AND. `from` is an inclusive lower bound of `started_at` and `to` an
-/// exclusive upper bound, in UTC microseconds. The multi-value fields are non-empty by
-/// construction: the wire parser rejects an empty array before the filter exists.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct UsageFilter {
-    /// Inclusive lower bound of `started_at`, in UTC microseconds.
+/// rows the read considers — values within one field OR (SQL `IN`), fields compose with AND.
+/// Every field is absent-keeps (rule 2), and the multi-value fields are non-empty arrays: the
+/// `Vec1` parsing rejects an empty array with 400 before the filter exists. Values are never
+/// validated against stored rows — an unknown id or a never-recorded status matches an empty
+/// set, because a filter locates rather than addresses (rule 7).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
+pub struct UsageFilter {
+    /// Inclusive lower bound of `started_at`, in UTC microseconds; absent sets no bound.
+    #[serde(
+        default,
+        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub(crate) from: Option<i64>,
 
-    /// Exclusive upper bound of `started_at`, in UTC microseconds.
+    /// Exclusive upper bound of `started_at`, in UTC microseconds; absent sets no bound.
+    #[serde(
+        default,
+        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub(crate) to: Option<i64>,
 
-    /// API key row ids a row may carry.
+    /// API key row ids a row may carry; absent lists every key. Non-emptiness is a server-side
+    /// guarantee the plain array binding does not restate.
+    #[serde(
+        default,
+        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<number>", optional)
+    )]
     pub(crate) api_key_id: Option<Vec1<i64>>,
 
-    /// Provider row ids a row may carry.
+    /// Provider row ids a row may carry; absent lists every provider.
+    #[serde(
+        default,
+        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<number>", optional)
+    )]
     pub(crate) provider_id: Option<Vec1<i64>>,
 
-    /// Model row ids a row may carry.
+    /// Model row ids a row may carry; absent lists every model.
+    #[serde(
+        default,
+        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<number>", optional)
+    )]
     pub(crate) model_id: Option<Vec1<i64>>,
 
-    /// Outward completion endpoints a row may carry.
+    /// Outward completion endpoints a row may carry; absent lists every endpoint.
+    #[serde(
+        default,
+        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<ApiLogEndpointType>", optional)
+    )]
     pub(crate) endpoint_type: Option<Vec1<ApiLogEndpointType>>,
 
-    /// Recorded outcomes a row may carry.
+    /// Recorded outcomes a row may carry; absent lists every outcome.
+    #[serde(
+        default,
+        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<ApiLogOutcome>", optional)
+    )]
     pub(crate) outcome: Option<Vec1<ApiLogOutcome>>,
 
-    /// Stream flag a row must carry.
+    /// Stream flag a row must carry; absent lists both.
+    #[serde(
+        default,
+        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
     pub(crate) is_stream: Option<bool>,
 
-    /// HTTP statuses a row may carry; a `NULL` status matches nothing, since SQL `NULL` never
-    /// satisfies an `IN` list.
+    /// HTTP statuses a row may carry; absent lists every status. A `NULL` status — a client
+    /// disconnected before the first frame — matches no list, and there is no direct way to
+    /// select those rows; `outcome` reaches them indirectly (README §7.1).
+    #[serde(
+        default,
+        deserialize_with = "crate::management_api::v0::absent_keeps_deserialize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(
+        feature = "management-api-typescript-bindings",
+        ts(type = "Array<number>", optional)
+    )]
     pub(crate) http_status: Option<Vec1<i64>>,
 }
 

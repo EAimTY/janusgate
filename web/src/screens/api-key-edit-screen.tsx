@@ -3,7 +3,7 @@ import { createEffect, createMemo, createSignal, Show } from "solid-js";
 import { toUpdateApiKeyRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
-import { compositionMessage, isBearerSecret } from "/src/management-api/identifiers";
+import { bearerSecretError, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import {
@@ -175,8 +175,7 @@ function SettingsCard(props: {
     const nameError = (): string | null => apiKeyNameError(name());
 
     /** Inline composition error for the secret, shown where it was typed. */
-    const secretError = (): string | null =>
-        secret() === "" || isBearerSecret(secret()) ? null : compositionMessage("Key");
+    const secretError = (): string | null => bearerSecretError(secret(), "Key");
 
     const canSave = (): boolean => isDirty() && nameError() === null && isBearerSecret(secret());
 

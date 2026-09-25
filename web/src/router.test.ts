@@ -194,9 +194,11 @@ describe("matchAppRoute", () => {
         });
         expect(match("/usage/query")).toEqual({
             name: "usageQuery",
+            subject: null,
         });
         expect(match("/usage/query/")).toEqual({
             name: "usageQuery",
+            subject: null,
         });
         expect(match("/usage/other")).toEqual({
             name: "notFound",
@@ -218,6 +220,60 @@ describe("matchAppRoute", () => {
         expect(match(hrefs.usage(filter))).toEqual({
             name: "usage",
             filter,
+        });
+    });
+
+    it("carries the aggregates link's subject through its route", () => {
+        expect(match("/usage/query?provider=7")).toEqual({
+            name: "usageQuery",
+            subject: {
+                dimension: "provider",
+                id: 7,
+            },
+        });
+        expect(match("/usage/query?model=9")).toEqual({
+            name: "usageQuery",
+            subject: {
+                dimension: "model",
+                id: 9,
+            },
+        });
+        expect(match("/usage/query?key=3")).toEqual({
+            name: "usageQuery",
+            subject: {
+                dimension: "api_key",
+                id: 3,
+            },
+        });
+    });
+
+    it("reads anything but exactly one entity parameter as no subject", () => {
+        // The bare page.
+        expect(match("/usage/query")).toEqual({
+            name: "usageQuery",
+            subject: null,
+        });
+
+        // A value that is not a row identifier names no row, and neither does
+        // a digit string beyond the safe-integer range.
+        expect(match("/usage/query?provider=codex")).toEqual({
+            name: "usageQuery",
+            subject: null,
+        });
+        expect(match("/usage/query?provider=")).toEqual({
+            name: "usageQuery",
+            subject: null,
+        });
+        expect(match("/usage/query?provider=99999999999999999999")).toEqual({
+            name: "usageQuery",
+            subject: null,
+        });
+
+        // The aggregates link carries one subject, so an address naming
+        // several entities reads as naming none.
+        expect(match("/usage/query?provider=7&model=9")).toEqual({
+            name: "usageQuery",
+            subject: null,
         });
     });
 
@@ -314,6 +370,49 @@ describe("matchAppRoute", () => {
         });
         expect(match(hrefs.usageQuery())).toEqual({
             name: "usageQuery",
+            subject: null,
+        });
+        expect(
+            match(
+                hrefs.usageQuery({
+                    dimension: "provider",
+                    id: 7,
+                }),
+            ),
+        ).toEqual({
+            name: "usageQuery",
+            subject: {
+                dimension: "provider",
+                id: 7,
+            },
+        });
+        expect(
+            match(
+                hrefs.usageQuery({
+                    dimension: "model",
+                    id: 9,
+                }),
+            ),
+        ).toEqual({
+            name: "usageQuery",
+            subject: {
+                dimension: "model",
+                id: 9,
+            },
+        });
+        expect(
+            match(
+                hrefs.usageQuery({
+                    dimension: "api_key",
+                    id: 3,
+                }),
+            ),
+        ).toEqual({
+            name: "usageQuery",
+            subject: {
+                dimension: "api_key",
+                id: 3,
+            },
         });
     });
 });

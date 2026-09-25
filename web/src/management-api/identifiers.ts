@@ -78,3 +78,30 @@ export function routingTokenMessage(field: string): string {
 export function baseUrlMessage(): string {
     return "Base URL must be an http:// or https:// address with no spaces.";
 }
+
+/**
+ * The inline error for a bearer secret — a serving-key secret, an upstream
+ * static key, or a hand-replaced OAuth credential field — shown where it was
+ * typed. An empty value is allowed: the write-only field's absence keeps the
+ * stored secret, so only a typed value is judged.
+ */
+export function bearerSecretError(value: string, label: string): string | null {
+    return value === "" || isBearerSecret(value) ? null : compositionMessage(label);
+}
+
+/**
+ * The inline error for a routing token — an upstream ID or a present public
+ * ID override — shown where it was typed. `null` and the empty string are
+ * allowed: an override's absence keeps the composed ID, and an empty upstream
+ * ID is the form's not-yet-typed state, named by the submit gate instead.
+ */
+export function routingTokenError(value: string | null, label: string): string | null {
+    return value === null || value === "" || isRoutingToken(value)
+        ? null
+        : routingTokenMessage(label);
+}
+
+/** The inline error for a model prefix, shown where it was typed. Empty means no prefix. */
+export function modelPrefixError(value: string): string | null {
+    return isModelPrefix(value) ? null : routingTokenMessage("Model prefix");
+}

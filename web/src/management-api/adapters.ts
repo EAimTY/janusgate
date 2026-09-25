@@ -9,7 +9,7 @@ import type {
 } from "/src/management-api/generated/v0";
 
 /**
- * Read-modify-write edits for `providers:update` (README §6.1): an omitted
+ * Read-modify-write edits for `providers:update` (gateway README §7.1): an omitted
  * field keeps the row's value, and the write-only `api_key` keeps the stored
  * secret when absent. Edits never carry the row's own `id`; the request
  * addresses the row through `provider_id`. A definition rebind names both

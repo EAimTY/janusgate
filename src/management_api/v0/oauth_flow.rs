@@ -1,5 +1,5 @@
 //! Management routes beginning and completing provider OAuth flows, across both grants
-//! (README §5.6, §6).
+//! (README §7.1, §7.2).
 //!
 //! `oauth:start` begins a creation flow; `oauth:reauthorize` begins a reauthorization flow; the
 //! two targets are disjoint because device flows complete without a second user step.
@@ -307,40 +307,6 @@ fn seconds_from_now(seconds: i64, what: &str) -> Result<i64, Error> {
     oauth::seconds_from_now(seconds, overflow).map_err(Error::from)
 }
 
-/// Initializes the working slots of a new flow: the definition's initial slots run once, over
-/// the target provider's stored slots for a reauthorization, so only the missing names are
-/// initialized.
-fn initialize_slots(
-    definition: &crate::provider::ProviderDefinition,
-    stored: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, Error> {
-    let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
-        return Err(Error::Internal {
-            message: "the flow's definition carries no OAuth credential".to_string(),
-        });
-    };
-
-    let mut slots = stored.clone();
-
-    for initializer in &recipe.initial_slots {
-        if slots.contains_key(&initializer.name) {
-            continue;
-        }
-
-        let value = match initializer.generator {
-            crate::provider::definition::credential::SlotGenerator::Uuid => crate::ids::new_uuid(),
-
-            crate::provider::definition::credential::SlotGenerator::UuidHex => {
-                crate::ids::new_uuid().replace('-', "")
-            }
-        };
-
-        slots.insert(initializer.name.clone(), value);
-    }
-
-    Ok(slots)
-}
-
 /// Begins a creation flow and persists its row.
 ///
 /// # Errors
@@ -378,7 +344,7 @@ async fn handle_start(
         });
     }
 
-    let slots = initialize_slots(&definition, &BTreeMap::new())?;
+    let slots = oauth::initialize_slots(&definition, &BTreeMap::new())?;
 
     begin_flow(
         database,
@@ -450,7 +416,7 @@ async fn handle_reauthorize_start(
         }
     };
 
-    let slots = initialize_slots(&definition, provider.credentials.slots())?;
+    let slots = oauth::initialize_slots(&definition, provider.credentials.slots())?;
 
     begin_flow(
         database,
@@ -825,15 +791,20 @@ async fn complete_device(
         Some(FlowOutcome::Succeeded) => {
             let result_provider_id = flow.result_provider_id.unwrap_or_default();
 
-            storage::oauth_flows::consume_terminal_flow(database, &flow.state_token, now)
-                .await?
-                .ok_or(Error::UnknownOauthState)?;
-
+            // The result provider resolves before the consume, so a provider row deleted
+            // between the poller's commit and this retrieval never spends the one permitted
+            // retrieval on a 404 — the succeeded fact stays retrievable until the expiry sweep
+            // removes the row. Two racing successful reads may both resolve; the consume below
+            // still answers exactly one of them.
             let provider = storage::providers::find_provider_by_id(database, result_provider_id)
                 .await?
                 .ok_or(Error::ProviderNotFound {
                     id: result_provider_id,
                 })?;
+
+            storage::oauth_flows::consume_terminal_flow(database, &flow.state_token, now)
+                .await?
+                .ok_or(Error::UnknownOauthState)?;
 
             Ok(CompleteProviderOauthResponse::Succeeded {
                 provider: ProviderResponse::from_provider(&provider),
@@ -865,9 +836,18 @@ mod tests {
 
     use super::{
         Error, ReauthorizeProviderRequest, StartProviderOauthRequest, StartProviderOauthResponse,
-        handle_reauthorize_start, handle_start,
+        complete_device, handle_reauthorize_start, handle_start,
     };
-    use crate::{format::UpstreamFormat, provider::StoredCredentials, test_support};
+    use crate::{
+        format::UpstreamFormat,
+        provider::StoredCredentials,
+        storage::oauth_flows::{
+            FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
+            commit_device_success_in_transaction, find_flow_by_state, insert_flow,
+        },
+        test_support,
+    };
+    use std::collections::BTreeMap;
 
     /// A reauthorization without an explicit target is valid only against an OAuth provider
     /// (README §7.1): against a static-key provider it is the same client fault the explicit
@@ -1028,5 +1008,93 @@ mod tests {
         };
 
         assert_eq!(name, "taken");
+    }
+
+    /// A succeeded device flow whose result provider row no longer exists answers the 404
+    /// without consuming the terminal row (README §7.2): the single-consume retrieval is spent
+    /// only by a read that succeeds, so the flow's "succeeded" fact survives the failed
+    /// retrieval until the expiry sweep removes it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the outcome diverges.
+    #[tokio::test]
+    async fn completing_a_succeeded_device_flow_whose_provider_vanished_keeps_the_row() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        // The flow row references one exact definition version through a foreign key, so the
+        // fixture inserts the definition it names.
+        let definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(now - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        // The claim spends just enough to record the terminal success against a provider id no
+        // row carries — `result_provider_id` is a bare integer without a foreign key (README
+        // §3), which is exactly the deleted-provider state a real flow can reach.
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        let claim = claimed.device_poll_started_at.unwrap();
+
+        let mut transaction = database.transaction().await.unwrap();
+
+        let is_committed =
+            commit_device_success_in_transaction(&mut transaction, claimed.id, claim, 987_654)
+                .await
+                .unwrap();
+
+        assert!(is_committed, "the claim is held");
+
+        transaction.commit().await.unwrap();
+
+        let error = complete_device(&database, "state-token").await.unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::ProviderNotFound { id } = error else {
+            panic!("a vanished result provider renders the provider 404");
+        };
+
+        assert_eq!(id, 987_654);
+
+        // The terminal row was not consumed: the succeeded outcome stays retrievable.
+        #[expect(clippy::expect_used, reason = "the terminal row survives")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the terminal row survives the failed retrieval");
+
+        assert_eq!(settled.outcome, Some(FlowOutcome::Succeeded));
     }
 }

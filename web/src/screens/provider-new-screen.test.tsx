@@ -245,6 +245,24 @@ describe("ProviderNewScreen creation", () => {
         expect(sent[0]?.model_prefix).toBe("beta-");
     });
 
+    it("states the base-URL error only after the field was typed in", async () => {
+        disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
+        await settle();
+
+        // A pristine form is not an error: the preset needs a base URL, but
+        // the required-ness is not stated as alert-red before any input —
+        // the same gate every other screen's fields open behind.
+        expect(document.body.textContent).not.toContain(
+            "Base URL must be an http:// or https:// address",
+        );
+
+        typeInto(labeledInput("Upstream base URL"), "not an address");
+        await settle();
+        expect(document.body.textContent).toContain(
+            "Base URL must be an http:// or https:// address",
+        );
+    });
+
     it("keeps the definition JSON behind a closed disclosure and resets it to the preset", async () => {
         const presetJson = JSON.stringify(PROVIDER_PRESETS[0].payload, null, 2);
         disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
@@ -402,6 +420,37 @@ describe("ProviderNewScreen creation", () => {
         expect(document.body.textContent).toContain("the definitions refused");
         expect(document.body.textContent).toContain("The stored versions could not be read.");
         expect(document.body.textContent).not.toContain("Not stored yet");
+    });
+
+    it("diagnoses a definition-write conflict as the definition's own recovery", async () => {
+        const sent: CreateProviderRequest[] = [];
+        const api: ManagementApi = {
+            ...screenApi(sent),
+            createProviderDefinition: () =>
+                Promise.reject(
+                    new ManagementApiError("gateway", "definition name already stored", {
+                        errno: ErrorCode.Conflict,
+                        httpStatus: 409,
+                    }),
+                ),
+        };
+        disposes.push(render(() => <ProviderNewScreen api={api} />, document.body));
+        await settle();
+
+        typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
+        typeInto(labeledInput("API key"), "sk-test");
+        await settle();
+        buttonWithText("Create provider").click();
+        await settle();
+
+        // The conflict is the definition write's — its name is the preset id,
+        // nothing this page edits — so the fix names the moved stored version,
+        // never the provider-name recovery a provider conflict carries.
+        expect(document.body.textContent).toContain("definition name already stored");
+        expect(document.body.textContent).toContain("The stored version moved");
+        expect(document.body.textContent).toContain("reload this page and submit again");
+        expect(document.body.textContent).not.toContain("Choose a provider name");
+        expect(sent).toHaveLength(0);
     });
 });
 
@@ -630,6 +679,42 @@ describe("ProviderNewScreen OAuth flow", () => {
         expect(completeCalls).toBe(3);
     });
 
+    it("renders the device step without a verification link when the flow carries no URI", async () => {
+        vi.useFakeTimers();
+        mountScreen(
+            oauthScreenApi({
+                // Both verification URIs are optional on the wire (gateway
+                // README §7.1): a flow without either leaves only the code.
+                start: () => ({
+                    grant: "device",
+                    state: "state-d2",
+                    expires_at: (Date.now() + 600_000) * 1000,
+                    user_code: "WDJB-MJHT",
+                }),
+                complete: () =>
+                    Promise.resolve({
+                        status: "pending",
+                    }),
+            }),
+        );
+        await flush();
+        buttonWithText("Kimi Code").click();
+        await flush();
+        buttonWithText("Start the authorization").click();
+        await flush();
+
+        // The user code alone remains: no anchor whose empty href would
+        // navigate this app to itself, and no copy button for a URL that
+        // does not exist.
+        expect(document.body.textContent).toContain("WDJB-MJHT");
+        expect(document.body.textContent).toContain("Verification code");
+        expect(document.body.textContent).not.toContain("Open the verification page");
+        expect(document.body.textContent).not.toContain("Copy the URL");
+        for (const anchor of document.querySelectorAll("a")) {
+            expect(anchor.getAttribute("href")).not.toBe("");
+        }
+    });
+
     it("stops the loop and states the diagnosis when a poll fails gone", async () => {
         vi.useFakeTimers();
         let completeCalls = 0;
@@ -659,7 +744,59 @@ describe("ProviderNewScreen OAuth flow", () => {
         expect(completeCalls).toBe(callsAfterFailure);
     });
 
-    it("states the diagnosis with the fresh-flow hint when a poll fails transiently", async () => {
+    it("keeps polling through a transient poll failure and clears its notice when a poll recovers", async () => {
+        vi.useFakeTimers();
+        let completeCalls = 0;
+        let isFailing = true;
+        mountScreen(
+            oauthScreenApi({
+                start: () => deviceFlow((Date.now() + 600_000) * 1000),
+                complete: () => {
+                    completeCalls += 1;
+                    if (isFailing) {
+                        return Promise.reject(
+                            new ManagementApiError("gateway", "upstream wobbled", {
+                                errno: ErrorCode.UpstreamError,
+                                httpStatus: 502,
+                            }),
+                        );
+                    }
+
+                    return Promise.resolve({
+                        status: "pending",
+                    });
+                },
+            }),
+        );
+        await flush();
+        buttonWithText("Kimi Code").click();
+        await flush();
+        buttonWithText("Start the authorization").click();
+        await flush();
+
+        // A failed poll that did not prove the flow gone states the gateway's
+        // message without claiming the flow is dead — no fresh-flow recovery —
+        // and the loop re-arms: the gateway still holds the flow pending.
+        expect(document.body.textContent).toContain("upstream wobbled");
+        expect(document.body.textContent).not.toContain("Start a fresh flow");
+        expect(document.body.textContent).toContain("Verification code");
+
+        await vi.advanceTimersByTimeAsync(appConfig.oauthDevicePollIntervalMs);
+        expect(completeCalls).toBe(2);
+        expect(document.body.textContent).toContain("upstream wobbled");
+
+        // A poll that answers again makes the stated failure stale: the
+        // notice clears and the loop keeps its interval.
+        isFailing = false;
+        await vi.advanceTimersByTimeAsync(appConfig.oauthDevicePollIntervalMs);
+        expect(completeCalls).toBe(3);
+        expect(document.body.textContent).not.toContain("upstream wobbled");
+
+        await vi.advanceTimersByTimeAsync(appConfig.oauthDevicePollIntervalMs);
+        expect(completeCalls).toBe(4);
+    });
+
+    it("stops the loop with the fresh-flow hint only after repeated consecutive failed polls", async () => {
         vi.useFakeTimers();
         let completeCalls = 0;
         mountScreen(
@@ -682,16 +819,21 @@ describe("ProviderNewScreen OAuth flow", () => {
         buttonWithText("Start the authorization").click();
         await flush();
 
-        // The failed poll is the loop's end, but the flow is not gone: the
-        // diagnosis stands and the notice carries the same fresh-flow recovery
-        // a refused exchange states, so "Start over" is not the only exit.
+        // The first failures ride out: the loop re-arms after each.
+        await vi.advanceTimersByTimeAsync(appConfig.oauthDevicePollIntervalMs);
+        expect(completeCalls).toBe(2);
+        await vi.advanceTimersByTimeAsync(appConfig.oauthDevicePollIntervalMs);
+        expect(completeCalls).toBe(3);
+
+        // The run of failures exhausts the loop: the last failure is stated
+        // with the fresh-flow recovery, the flow step stays for "Start over",
+        // and no further ask is scheduled.
         expect(document.body.textContent).toContain("upstream wobbled");
         expect(document.body.textContent).toContain("Start a fresh flow");
         expect(document.body.textContent).toContain("Verification code");
 
-        const callsAfterFailure = completeCalls;
         await vi.advanceTimersByTimeAsync(appConfig.oauthDevicePollIntervalMs * 3);
-        expect(completeCalls).toBe(callsAfterFailure);
+        expect(completeCalls).toBe(3);
     });
 
     it("stops polling at the flow's expiry and offers a fresh flow", async () => {

@@ -1,7 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
-import { compositionMessage, isBearerSecret } from "/src/management-api/identifiers";
+import { bearerSecretError, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import { type ScreenNotice, screenFailureNotice } from "/src/screens/read";
@@ -29,8 +29,7 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
     const nameError = (): string | null => (hasNameInput() ? apiKeyNameError(name()) : null);
 
     /** Inline composition error for the secret, shown where it was typed. */
-    const secretError = (): string | null =>
-        secret() === "" || isBearerSecret(secret()) ? null : compositionMessage("Key");
+    const secretError = (): string | null => bearerSecretError(secret(), "Key");
 
     const canCreate = (): boolean => name() !== "" && isBearerSecret(secret()) && !isCreating();
 

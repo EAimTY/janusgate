@@ -345,3 +345,42 @@ describe("ProviderDetailScreen discovery notice", () => {
         expect(bodyText()).not.toContain("model discovered from local.");
     });
 });
+
+describe("ProviderDetailScreen facts", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("states the stored definition version the provider is bound to", async () => {
+        const api = screenApi({
+            providers: [
+                provider,
+            ],
+            models: [
+                discoveredModel,
+            ],
+            onDiscover: () => undefined,
+        });
+
+        disposes.push(
+            render(
+                () => (
+                    <ProviderDetailScreen
+                        api={api}
+                        providerId={5}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        expect(bodyText()).toContain("Recipe");
+        expect(bodyText()).toContain("generic-openai-chat-completions v1");
+    });
+});

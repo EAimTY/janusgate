@@ -3,7 +3,7 @@ import { createMemo, createSignal, Show } from "solid-js";
 import { toCreateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
-import { isRoutingToken, routingTokenMessage } from "/src/management-api/identifiers";
+import { routingTokenError } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import {
@@ -148,17 +148,10 @@ function ModelCreateForm(props: {
         !hasIdOverride() || idOverride().trim() === "" ? null : idOverride().trim();
 
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
-    const upstreamError = (): string | null =>
-        trimmedUpstream() === "" || isRoutingToken(trimmedUpstream())
-            ? null
-            : routingTokenMessage("Upstream ID");
+    const upstreamError = (): string | null => routingTokenError(trimmedUpstream(), "Upstream ID");
 
-    const overrideError = (): string | null => {
-        const override = normalizedOverride();
-        return override === null || isRoutingToken(override)
-            ? null
-            : routingTokenMessage("Public ID override");
-    };
+    const overrideError = (): string | null =>
+        routingTokenError(normalizedOverride(), "Public ID override");
 
     const composedId = (): string => {
         const provider = selectedProvider();

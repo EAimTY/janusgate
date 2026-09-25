@@ -11,7 +11,7 @@ use crate::{
     provider::{
         control::{self, ControlFailure, DecodedBody, Extracted},
         definition::{
-            credential::{Exchange, Grant, Pkce},
+            credential::{CredentialAcquisition, Exchange, Grant, Pkce, SlotGenerator},
             eval::ValueEnv,
             template::ResponseTarget as Target,
         },
@@ -55,21 +55,9 @@ pub(crate) fn resolve_expiry(
     }
 
     if let Some(lifetime) = expires_in_seconds {
-        let micros = lifetime
-            .checked_mul(unix_time::MICROS_PER_SEC)
-            .ok_or_else(|| Error::Unavailable {
-                detail: format!("malformed token response: `expires_in` overflow, got {lifetime}"),
-            })?;
-
-        return Ok(Some(
-            unix_time::unix_now_micros()
-                .checked_add(micros)
-                .ok_or_else(|| Error::Unavailable {
-                    detail: format!(
-                        "malformed token response: `expires_in` overflow, got {lifetime}"
-                    ),
-                })?,
-        ));
+        return Ok(Some(seconds_from_now(lifetime, || Error::Unavailable {
+            detail: format!("malformed token response: `expires_in` overflow, got {lifetime}"),
+        })?));
     }
 
     if let Some(access_token) = access_token
@@ -102,23 +90,11 @@ pub(crate) fn resolve_expiry(
         return Ok(None);
     };
 
-    let micros = lifetime
-        .checked_mul(unix_time::MICROS_PER_SEC)
-        .ok_or_else(|| Error::Unavailable {
-            detail: format!(
-                "malformed definition: `access_token_lifetime_seconds` overflow, got {lifetime}"
-            ),
-        })?;
-
-    Ok(Some(
-        unix_time::unix_now_micros()
-            .checked_add(micros)
-            .ok_or_else(|| Error::Unavailable {
-                detail: format!(
-                    "malformed definition: `access_token_lifetime_seconds` overflow, got {lifetime}"
-                ),
-            })?,
-    ))
+    Ok(Some(seconds_from_now(lifetime, || Error::Unavailable {
+        detail: format!(
+            "malformed definition: `access_token_lifetime_seconds` overflow, got {lifetime}"
+        ),
+    })?))
 }
 
 /// Scales one upstream-reported duration in seconds to the absolute instant that many seconds
@@ -140,9 +116,31 @@ pub(crate) fn seconds_from_now(seconds: i64, overflow: impl Fn() -> Error) -> Re
 }
 
 /// Reads the `exp` claim of an access token JWT, or `None` when the token is not a decodable JWT
-/// or carries no `exp` claim.
+/// or carries no `exp` claim. RFC 7519 §2 lets a NumericDate carry a fractional part, so any
+/// JSON number is accepted and ceiled to the first whole second it still covers; a claim of any
+/// other JSON kind reads as absent.
 fn jwt_exp_claim(jwt: &str) -> Option<i64> {
-    jwt_claims(jwt)?.get("exp")?.as_i64()
+    let claims = jwt_claims(jwt)?;
+
+    let number = match claims.get("exp")? {
+        serde_json::Value::Number(number) => number,
+        _ => return None,
+    };
+
+    if let Some(seconds) = number.as_i64() {
+        return Some(seconds);
+    }
+
+    // A non-integer NumericDate ceils to whole seconds. The `as` cast saturates, so a
+    // magnitude beyond the clock stays "in the future", where the downstream `resolve_expiry`
+    // overflow guard — not a silent acceptance — is what meets it.
+    let seconds = number.as_f64()?;
+
+    if !seconds.is_finite() {
+        return None;
+    }
+
+    Some(seconds.ceil() as i64)
 }
 
 /// Decodes the JSON object a JWT payload carries, or `None` when the token is not a decodable
@@ -215,6 +213,43 @@ pub(crate) fn authorize_url_encode(component: &str) -> String {
     }
 
     encoded
+}
+
+/// Initializes a new flow's working slots from the definition's `initial_slots` (README §5.3):
+/// the generators run once per new flow before its first external request, over the target
+/// provider's stored slots for a reauthorization, so only the missing names are initialized.
+///
+/// # Errors
+///
+/// Returns [`Error::Internal`] when the definition carries no OAuth credential — stored drift,
+/// unreachable for a definition the management boundary already checked.
+pub(crate) fn initialize_slots(
+    definition: &crate::provider::ProviderDefinition,
+    stored: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, Error> {
+    let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
+        return Err(Error::Internal {
+            message: "the flow's definition carries no OAuth credential".to_string(),
+        });
+    };
+
+    let mut slots = stored.clone();
+
+    for initializer in &recipe.initial_slots {
+        if slots.contains_key(&initializer.name) {
+            continue;
+        }
+
+        let value = match initializer.generator {
+            SlotGenerator::Uuid => crate::ids::new_uuid(),
+
+            SlotGenerator::UuidHex => crate::ids::new_uuid().replace('-', ""),
+        };
+
+        slots.insert(initializer.name.clone(), value);
+    }
+
+    Ok(slots)
 }
 
 /// Builds the authorize URL of an authorization-code grant: the evaluated base URL, the standard
@@ -741,4 +776,60 @@ pub(crate) async fn execute_refresh_grant(
     )?;
 
     Ok(mapped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::jwt_exp_claim;
+    use base64::{Engine as _, engine::general_purpose};
+
+    /// Builds one JWT whose payload carries only the `exp` claim.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to serialize — a broken fixture is the failure report.
+    fn jwt_with_exp(exp: serde_json::Value) -> String {
+        #[expect(clippy::unwrap_used, reason = "a JSON object always serializes")]
+        let payload = serde_json::to_vec(&serde_json::json!({ "exp": exp })).unwrap();
+
+        format!(
+            "header.{}.signature",
+            general_purpose::URL_SAFE_NO_PAD.encode(payload)
+        )
+    }
+
+    /// RFC 7519 §2 lets a NumericDate carry a fractional part: the claim ceils to the first
+    /// whole second it still covers, so the non-integer spelling decodes exactly like the
+    /// integer one, while a claim of another JSON kind reads as absent.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[test]
+    fn jwt_exp_claims_read_every_numeric_date_spelling() {
+        assert_eq!(
+            jwt_exp_claim(&jwt_with_exp(serde_json::json!(1_750_000_000))),
+            Some(1_750_000_000)
+        );
+
+        assert_eq!(
+            jwt_exp_claim(&jwt_with_exp(serde_json::json!(1_750_000_000.5))),
+            Some(1_750_000_001)
+        );
+
+        assert_eq!(
+            jwt_exp_claim(&jwt_with_exp(serde_json::json!(1_750_000_000.25))),
+            Some(1_750_000_001)
+        );
+
+        assert_eq!(
+            jwt_exp_claim(&jwt_with_exp(serde_json::json!(-0.5))),
+            Some(0)
+        );
+
+        assert_eq!(
+            jwt_exp_claim(&jwt_with_exp(serde_json::json!("soon"))),
+            None
+        );
+    }
 }

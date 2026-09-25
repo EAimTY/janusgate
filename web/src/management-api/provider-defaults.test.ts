@@ -1,19 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-    defaultModelPrefix,
-    defaultProviderBaseName,
-    suggestProviderName,
-} from "./provider-defaults";
-
-describe("defaultProviderBaseName", () => {
-    it("names each format after the product family it connects", () => {
-        expect(defaultProviderBaseName("openai_response")).toBe("openai");
-        expect(defaultProviderBaseName("openai_chat_completion")).toBe("openai");
-        expect(defaultProviderBaseName("gemini_generate_content")).toBe("gemini");
-        expect(defaultProviderBaseName("gemini_interaction")).toBe("gemini");
-        expect(defaultProviderBaseName("anthropic_messages")).toBe("anthropic");
-    });
-});
+import { defaultModelPrefix, suggestProviderName } from "./provider-defaults";
 
 describe("suggestProviderName", () => {
     it("uses the base name while it is free", () => {

@@ -20,12 +20,13 @@ mod poller;
 mod refresh;
 
 pub(crate) use completion::{complete_exchange, completed_outcome, write_completion_provider};
-#[cfg(test)]
-pub(crate) use flow::DeviceAuthorization;
 pub(crate) use flow::{
     AUTHORIZATION_CODE_TTL, DEFAULT_DEVICE_INTERVAL_SECONDS, build_authorize_url,
-    execute_device_authorization, execute_exchange, random_url_safe, seconds_from_now,
+    execute_device_authorization, execute_exchange, initialize_slots, random_url_safe,
+    seconds_from_now,
 };
+#[cfg(test)]
+pub(crate) use flow::{DeviceAuthorization, ExchangeOutcome};
 pub(crate) use poller::spawn_device_poller;
 pub(crate) use refresh::ensure_fresh_token;
 

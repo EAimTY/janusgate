@@ -33,7 +33,7 @@ const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
 };
 
 /** The credential kinds as options; the record type is exhaustive as above. */
-export const CREDENTIAL_KIND_OPTIONS: ReadonlyArray<VocabularyOption<CredentialKind>> = [
+const CREDENTIAL_KIND_OPTIONS: ReadonlyArray<VocabularyOption<CredentialKind>> = [
     {
         value: "api_key",
         label: CREDENTIAL_KIND_LABELS.api_key,
@@ -63,11 +63,12 @@ const UPSTREAM_FORMAT_LABELS: Record<UpstreamFormat, string> = {
 };
 
 /** The upstream wire formats as options; the record type is exhaustive as above. */
-export const UPSTREAM_FORMAT_OPTIONS: ReadonlyArray<VocabularyOption<UpstreamFormat>> =
-    Object.entries(UPSTREAM_FORMAT_LABELS).map(([value, label]) => ({
-        value: value as UpstreamFormat,
-        label,
-    }));
+const UPSTREAM_FORMAT_OPTIONS: ReadonlyArray<VocabularyOption<UpstreamFormat>> = Object.entries(
+    UPSTREAM_FORMAT_LABELS,
+).map(([value, label]) => ({
+    value: value as UpstreamFormat,
+    label,
+}));
 
 /** The label one wire format is presented under. */
 export function upstreamFormatLabel(format: UpstreamFormat): string {

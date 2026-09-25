@@ -1,5 +1,5 @@
 //! The background device poller: one task resumes every unexpired pending device flow from its
-//! stored schedule at startup and keeps polling newly started flows (README §5.6).
+//! stored schedule at startup and keeps polling newly started flows (README §3, §7.2).
 //!
 //! Claiming a due flow is one conditional `UPDATE … RETURNING` — the conditional database lease —
 //! and a claim older than the control-request timeout is recovered by the next claimant, so
@@ -173,14 +173,17 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         }
 
         flow::ExchangeProduct::Other(code) => {
-            // A failure code outside the configuration fails the flow: retrying it is futile.
-            persist_terminal(
-                database,
-                flow,
-                "upstream_rejected",
-                &format!("the token endpoint rejected the device code with `{code}`"),
-            )
-            .await
+            // A failure code outside the configured terminal codes is not a terminal outcome
+            // (README §5.3): only the configured codes — plus the engine-owned polling codes —
+            // end a flow. The retry rides the stored interval until the flow's own expiry
+            // bounds it, so a transient upstream rejection never kills the flow mid-window.
+            debug!(
+                "device flow {} received the non-terminal error `{code}`; retrying at the stored \
+                 interval",
+                flow.id
+            );
+
+            schedule_retry_at(database, flow, interval).await
         }
 
         flow::ExchangeProduct::Terminal(code) => {
@@ -405,10 +408,10 @@ mod tests {
         reason = "the fixtures are constructed so each unwrap lands on its documented side"
     )]
 
-    use super::{commit_success, flow};
+    use super::{commit_success, flow, process};
     use crate::{
         http_client,
-        provider::StoredCredentials,
+        provider::{StoredCredentials, engine_tests::MockUpstream},
         storage,
         storage::oauth_flows::{
             FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
@@ -513,5 +516,194 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// Inserts one device-grant OAuth definition whose exchange points at `token_url` and whose
+    /// terminal codes exclude the non-terminal error the fixture's upstream reports.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture payload fails to parse, validate, or insert — a broken fixture is
+    /// the failure report.
+    async fn insert_device_poll_definition(
+        database: &crate::database::Database,
+        name: &str,
+        token_url: &str,
+    ) -> crate::provider::ProviderDefinition {
+        let device_grant_type = "urn:ietf:params:oauth:grant-type:device_code";
+
+        #[expect(clippy::unwrap_used, reason = "the fixture payload always parses")]
+        let payload: crate::provider::definition::DefinitionPayload =
+            serde_json::from_value(serde_json::json!({
+                "format": "openai_chat_completion",
+                "inference": {
+                    "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
+                    "upstream_streaming": "match_client"
+                },
+                "credential": {
+                    "type": "oauth",
+                    "client_id": "fixture-client",
+                    "grant": {
+                        "type": "device",
+                        "authorization": {
+                            "request": {
+                                "method": "POST",
+                                "url": [{"type": "literal",
+                                         "value": "https://example.test/device/code"}]
+                            },
+                            "response": {
+                                "encoding": "json",
+                                "fields": [
+                                    {
+                                        "path": ["device_code"],
+                                        "target": {"type": "device_code"},
+                                        "required": true
+                                    },
+                                    {
+                                        "path": ["user_code"],
+                                        "target": {"type": "user_code"},
+                                        "required": true
+                                    },
+                                    {
+                                        "path": ["verification_uri"],
+                                        "target": {"type": "verification_uri"},
+                                        "required": true
+                                    },
+                                    {
+                                        "path": ["expires_in"],
+                                        "target": {"type": "expires_in_seconds"},
+                                        "required": false
+                                    }
+                                ]
+                            }
+                        },
+                        "expires_in_fallback_seconds": 900
+                    },
+                    "exchange": {
+                        "request": {
+                            "method": "POST",
+                            "url": [{"type": "literal", "value": token_url}],
+                            "body": {"kind": "form", "fields": [
+                                {
+                                    "name": "grant_type",
+                                    "value": [{"type": "literal", "value": device_grant_type}]
+                                },
+                                {
+                                    "name": "device_code",
+                                    "value": [{"type": "device_code"}]
+                                }
+                            ]}
+                        },
+                        "response": {
+                            "encoding": "json",
+                            "fields": [
+                                {
+                                    "path": ["access_token"],
+                                    "target": {"type": "access_token"},
+                                    "required": true
+                                }
+                            ]
+                        },
+                        "terminal_codes": ["access_denied"]
+                    },
+                    "refresh": {"type": "none"}
+                }
+            }))
+            .unwrap();
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the fixture definition always validates"
+        )]
+        payload.validate().unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "the fixture definition always inserts")]
+        storage::provider_definitions::insert_definition(
+            database,
+            storage::provider_definitions::NewDefinition {
+                name,
+                base_version: None,
+                payload: &payload,
+                created_at: 1,
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A failure code outside the configured terminal codes is not a terminal outcome (README
+    /// §5.3): the attempt schedules a retry at the stored interval and the flow survives until
+    /// its own expiry — a transient upstream rejection, such as a 2xx
+    /// `temporarily_unavailable` body, never kills the flow mid-window.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the flow's schedule diverges.
+    #[tokio::test]
+    async fn a_non_terminal_error_code_schedules_a_retry_and_keeps_the_flow() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&serde_json::json!({
+                "error": "temporarily_unavailable"
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let definition = insert_device_poll_definition(&database, "device-def", &mock.base()).await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(now - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        process(&database, &http_client::control_plane(), &claimed)
+            .await
+            .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the flow row survives")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row survives the non-terminal error");
+
+        // The flow is still pending: no terminal outcome, the retry rides the stored interval,
+        // and the claim released.
+        assert_eq!(settled.outcome, None);
+        assert_eq!(settled.device_poll_interval_seconds, Some(5));
+        assert!(settled.device_next_poll_at.unwrap() >= now);
+        assert_eq!(settled.device_poll_started_at, None);
+
+        mock.shutdown.send(()).ok();
     }
 }

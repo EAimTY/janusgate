@@ -119,6 +119,13 @@ struct MessageFields {
     /// Tool call entries: argument fragments in a delta, complete calls in a message.
     #[serde(default)]
     tool_calls: Vec<ToolCallEntry>,
+
+    /// Legacy function invocation — deprecated by the protocol in favor of `tool_calls` but still
+    /// specified and still emitted by older OpenAI-compatible upstreams. A delta carries name and
+    /// argument fragments, a message the complete call; the modern `tool_calls` member takes
+    /// precedence when a payload carries both (README §6.2).
+    #[serde(default)]
+    function_call: Option<FunctionFields>,
 }
 
 /// One tool call entry, as a delta fragment or as a complete call.
@@ -142,7 +149,7 @@ struct ToolCallEntry {
 }
 
 /// The function fields of a tool call entry.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 struct FunctionFields {
     /// Invoked function name.
     #[serde(default)]
@@ -220,6 +227,14 @@ impl UpstreamParser {
 
                 for tool_call in &delta.tool_calls {
                     self.ingest_tool_call_delta(tool_call, &mut events);
+                }
+
+                // The legacy member rides the same assembly when the delta carries no modern
+                // entry: `tool_calls` takes precedence when both are present (README §6.2).
+                if delta.tool_calls.is_empty()
+                    && let Some(function_call) = &delta.function_call
+                {
+                    self.ingest_legacy_function_call_delta(function_call, &mut events);
                 }
             }
 
@@ -319,6 +334,38 @@ impl UpstreamParser {
             name: name.map(str::to_string),
             arguments_delta: arguments_delta.to_string(),
         });
+    }
+
+    /// Ingests one legacy `delta.function_call` fragment into the tool-call assembly. The legacy
+    /// protocol carries a single call per response and no call id: the call occupies the
+    /// assembly's default index, the opening fragment synthesizes the stable identifier naming
+    /// that slot, and the name and argument fragments ride the ordinary tool-call deltas.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the newly started call cannot be buffered, violating the push-then-read
+    /// invariant.
+    fn ingest_legacy_function_call_delta(
+        &mut self,
+        function_call: &FunctionFields,
+        events: &mut Vec<IrEvent>,
+    ) {
+        let is_opening = !self
+            .pending_tool_calls
+            .iter()
+            .any(|pending| pending.index == LEGACY_FUNCTION_CALL_INDEX);
+
+        self.ingest_tool_call_delta(
+            &ToolCallEntry {
+                // The legacy fragment carries no index: the call rides the assembly's default
+                // index.
+                index: None,
+                id: is_opening.then(|| synthesized_call_id(LEGACY_FUNCTION_CALL_INDEX)),
+                function: Some(function_call.clone()),
+                thought_signature: None,
+            },
+            events,
+        );
     }
 
     /// Emits [`IrEvent::ToolCallDone`] for every pending call, marking them
@@ -486,46 +533,77 @@ fn push_text_events(fields: &MessageFields, events: &mut Vec<IrEvent>) {
     }
 }
 
+/// Index of the legacy `function_call` protocol's single call inside the tool-call assembly: a
+/// legacy fragment carries no index of its own, so the call rides the assembly's default index.
+const LEGACY_FUNCTION_CALL_INDEX: usize = 0;
+
+/// Synthesizes the stable call identifier for a call whose protocol slot is its identity: the
+/// legacy `function_call` protocol carries no call id, so the identifier names the call's
+/// assembly index.
+fn synthesized_call_id(index: usize) -> String {
+    format!("call_{index}")
+}
+
 /// Extracts message text (including refusal text), reasoning, and complete tool calls from a full
 /// upstream message object into IR events. A complete call carries no index of its own, so its
-/// position in the array is its index.
+/// position in the array is its index; a legacy `message.function_call` — consulted only when the
+/// message carries no modern entry — maps to a complete call at the same next position.
 fn message_events_from_full(message: &MessageFields) -> Vec<IrEvent> {
     let mut events = Vec::new();
 
     push_text_events(message, &mut events);
 
     for (index, tool_call) in message.tool_calls.iter().enumerate() {
-        let call_id = tool_call.id.clone().unwrap_or_default();
+        events.extend(complete_call_events(index, tool_call));
+    }
 
-        let name = tool_call
-            .function
-            .as_ref()
-            .and_then(|function| function.name.clone())
-            .unwrap_or_default();
+    if message.tool_calls.is_empty()
+        && let Some(function_call) = &message.function_call
+    {
+        events.extend(complete_call_events(
+            message.tool_calls.len(),
+            &ToolCallEntry {
+                id: Some(synthesized_call_id(message.tool_calls.len())),
+                function: Some(function_call.clone()),
+                ..ToolCallEntry::default()
+            },
+        ));
+    }
 
-        let arguments = tool_call
-            .function
-            .as_ref()
-            .and_then(|function| function.arguments.clone())
-            .unwrap_or_default();
+    events
+}
 
-        events.push(IrEvent::ToolCallDelta {
+/// Emits the delta/done event pair of one complete tool-call entry.
+fn complete_call_events(index: usize, tool_call: &ToolCallEntry) -> Vec<IrEvent> {
+    let call_id = tool_call.id.clone().unwrap_or_default();
+
+    let name = tool_call
+        .function
+        .as_ref()
+        .and_then(|function| function.name.clone())
+        .unwrap_or_default();
+
+    let arguments = tool_call
+        .function
+        .as_ref()
+        .and_then(|function| function.arguments.clone())
+        .unwrap_or_default();
+
+    vec![
+        IrEvent::ToolCallDelta {
             index,
             call_id: Some(call_id.clone()),
             name: Some(name.clone()),
             arguments_delta: arguments.clone(),
-        });
-
-        events.push(IrEvent::ToolCallDone {
+        },
+        IrEvent::ToolCallDone {
             index,
             call_id,
             name,
             arguments,
             thought_signature: tool_call.thought_signature.clone(),
-        });
-    }
-
-    events
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -607,6 +685,144 @@ mod tests {
                 cache_write_tokens: Some(7),
                 reasoning_tokens: Some(20),
             })],
+        );
+    }
+
+    /// Parses the legacy `function_call` protocol — deprecated by the Chat Completions API but
+    /// still emitted by older OpenAI-compatible upstreams — into the ordinary tool-call assembly:
+    /// a streamed legacy turn yields exactly the IR events the equivalent `tool_calls` turn would
+    /// under the synthesized stable call id, a delta carrying both protocols honors `tool_calls`
+    /// alone, and a complete `message.function_call` maps to a complete call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed events diverge from the tool-call equivalence.
+    #[test]
+    fn parses_the_legacy_function_call_protocol_as_a_tool_call() {
+        // The streamed legacy fragments assemble like tool-call entries.
+        let mut parser = UpstreamParser::new();
+
+        let mut events = Vec::new();
+
+        for data in [
+            r#"{"id":"c1","model":"m","choices":[{"index":0,"delta":{
+               "function_call":{"name":"get_weather","arguments":"{\"city\":"}}}]}"#,
+            r#"{"id":"c1","model":"m","choices":[{"index":0,"delta":{
+               "function_call":{"arguments":"\"Paris\"}"}},"finish_reason":"function_call"}]}"#,
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture chunks are constructed to parse"
+            )]
+            let ingested = parser.ingest_frame(&frame(data)).expect("the chunk parses");
+
+            events.extend(ingested);
+        }
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::MessageStart {
+                    id: "c1".to_string(),
+                    model: "m".to_string(),
+                },
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: Some("call_0".to_string()),
+                    name: Some("get_weather".to_string()),
+                    arguments_delta: r#"{"city":"#.to_string(),
+                },
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: None,
+                    name: None,
+                    arguments_delta: "\"Paris\"}".to_string(),
+                },
+                IrEvent::ToolCallDone {
+                    index: 0,
+                    call_id: "call_0".to_string(),
+                    name: "get_weather".to_string(),
+                    arguments: r#"{"city":"Paris"}"#.to_string(),
+                    thought_signature: None,
+                },
+                IrEvent::Finish(IrFinishReason::ToolCall),
+            ],
+        );
+
+        // A delta carrying both protocols honors the modern `tool_calls` member alone.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the mixed chunk is constructed to parse"
+        )]
+        let events = parser
+            .ingest_frame(&frame(
+                r#"{"id":"c1","model":"m","choices":[{"index":0,"delta":{
+                   "tool_calls":[{"index":0,"id":"call_x","function":{"name":"f",
+                   "arguments":"{}"}}],"function_call":{"name":"legacy",
+                   "arguments":"{}"}}}]}"#,
+            ))
+            .expect("the mixed chunk parses");
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::MessageStart {
+                    id: "c1".to_string(),
+                    model: "m".to_string(),
+                },
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: Some("call_x".to_string()),
+                    name: Some("f".to_string()),
+                    arguments_delta: "{}".to_string(),
+                },
+            ],
+        );
+
+        // A complete `message.function_call` maps to a complete call.
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture body is constructed to parse"
+        )]
+        let events = parser
+            .parse_json_response(serde_json::json!({
+                "id": "c2",
+                "model": "m",
+                "choices": [{
+                    "index": 0,
+                    "message": {"function_call": {"name": "get_weather",
+                                 "arguments": "{\"city\":\"Paris\"}"}},
+                    "finish_reason": "function_call",
+                }],
+            }))
+            .expect("the legacy body parses");
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::MessageStart {
+                    id: "c2".to_string(),
+                    model: "m".to_string(),
+                },
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: Some("call_0".to_string()),
+                    name: Some("get_weather".to_string()),
+                    arguments_delta: r#"{"city":"Paris"}"#.to_string(),
+                },
+                IrEvent::ToolCallDone {
+                    index: 0,
+                    call_id: "call_0".to_string(),
+                    name: "get_weather".to_string(),
+                    arguments: r#"{"city":"Paris"}"#.to_string(),
+                    thought_signature: None,
+                },
+                IrEvent::Finish(IrFinishReason::ToolCall),
+            ],
         );
     }
 }

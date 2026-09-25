@@ -351,6 +351,49 @@ describe("ProviderEditScreen refresh against an open form", () => {
         ]);
     });
 
+    it("saves a static provider whose definition never references a base URL", async () => {
+        // A preset like OpenCode Zen stores `base_url: null`: its definition's
+        // URLs never reference the base, so the empty field is the row's legal
+        // state — the form must open clean, and saving must keep `null` on the
+        // wire instead of demanding a URL the contract forbids.
+        const zen: ProviderResponse = {
+            ...provider,
+            base_url: null,
+        };
+        const holder = {
+            providers: [
+                zen,
+            ],
+            models: [],
+        };
+        const sent: UpdateProviderRequest[] = [];
+        mount(holder, sent);
+        await settle();
+
+        expect(labeledInput("Upstream base URL").value).toBe("");
+        expect(document.body.textContent).not.toContain("Unsaved changes");
+        expect(buttonWithText("Save changes").disabled).toBe(true);
+
+        typeInto(labeledInput("Name"), "zen-renamed");
+        await settle();
+        expect(buttonWithText("Save changes").disabled).toBe(false);
+
+        buttonWithText("Save changes").click();
+        await settle();
+
+        expect(sent).toHaveLength(1);
+        expect(sent[0]?.base_url).toBe(null);
+        expect(holder.providers).toEqual([
+            {
+                ...zen,
+                name: "zen-renamed",
+                model_prefix: "zen-renamed-",
+            },
+        ]);
+        expect(document.body.textContent).toContain("zen-renamed saved.");
+        expect(document.body.textContent).not.toContain("Unsaved changes");
+    });
+
     it("opens clean when the stored prefix is a custom value ending in a dash", async () => {
         const holder = {
             providers: [

@@ -17,6 +17,7 @@ use crate::provider::definition::{
 };
 use reqwest::Client;
 use serde_json::Value as Json;
+use std::num::NonZeroU64;
 
 /// Upstream model discovery failures. These paths never forward foreign statuses, so an upstream
 /// rejection pins 502 with the status embedded in the message.
@@ -133,6 +134,10 @@ pub(crate) async fn run_discovery(
             response_path,
             max_pages,
         }) => {
+            // `Some` while the fetched page still reports a next page: a budget that ends on
+            // `Some` fails the refresh below instead of delivering a truncated list.
+            let mut next_page = None;
+
             for _ in 0..max_pages.get() {
                 let body =
                     control::execute(http, &request, env, encoding_of(discovery), "upstream")
@@ -140,15 +145,20 @@ pub(crate) async fn run_discovery(
 
                 ids.extend(extract_ids(&body, &discovery.extract)?);
 
-                let next = value_at(&body, response_path)
+                next_page = value_at(&body, response_path)
                     .and_then(Json::as_str)
+                    .filter(|token| !token.is_empty())
                     .map(str::to_string);
 
-                let Some(next) = next.filter(|token| !token.is_empty()) else {
+                let Some(token) = &next_page else {
                     break;
                 };
 
-                set_query_param(&mut request, request_param, &next);
+                set_query_param(&mut request, request_param, token);
+            }
+
+            if next_page.is_some() {
+                return Err(page_budget_exhausted(*max_pages));
             }
         }
 
@@ -158,6 +168,10 @@ pub(crate) async fn run_discovery(
             request_param,
             max_pages,
         }) => {
+            // `true` while the fetched page still reports more pages: a budget that ends on
+            // `true` fails the refresh below instead of delivering a truncated list.
+            let mut has_more = false;
+
             for _ in 0..max_pages.get() {
                 let body =
                     control::execute(http, &request, env, encoding_of(discovery), "upstream")
@@ -165,7 +179,7 @@ pub(crate) async fn run_discovery(
 
                 ids.extend(extract_ids(&body, &discovery.extract)?);
 
-                let has_more = value_at(&body, has_more_path).is_some_and(|value| match value {
+                has_more = value_at(&body, has_more_path).is_some_and(|value| match value {
                     Json::Bool(done) => *done,
                     Json::Number(number) => number.as_i64() == Some(1),
                     Json::String(text) => text == "true",
@@ -186,6 +200,10 @@ pub(crate) async fn run_discovery(
                 };
 
                 set_query_param(&mut request, request_param, &last_id);
+            }
+
+            if has_more {
+                return Err(page_budget_exhausted(*max_pages));
             }
         }
     }
@@ -225,6 +243,19 @@ fn encoding_of(discovery: &Discovery) -> ResponseEncoding {
             // encoding is only meaningful for token endpoints.
             ResponseEncoding::Json
         }
+    }
+}
+
+/// The failure for a page budget that ended while the upstream still reported more data: a
+/// truncated identifier list would reach the apply step, whose blanket mark suspends every row
+/// the truncated list fails to re-state, so the refresh fails here — before any storage write —
+/// like every other upstream anomaly (README §7.1).
+fn page_budget_exhausted(max_pages: NonZeroU64) -> Error {
+    Error::Unavailable {
+        detail: format!(
+            "upstream reported more pages than the {max_pages}-page discovery budget fetches; \
+             refusing to truncate the provider's model rows"
+        ),
     }
 }
 
@@ -306,5 +337,320 @@ fn extract_ids(
 
             Ok(object.keys().cloned().collect())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "the fixtures are constructed so each unwrap lands on its documented side"
+    )]
+    #![expect(
+        clippy::panic,
+        reason = "a fixture landing on the wrong side of its check is the failure report"
+    )]
+
+    use super::{Error, run_discovery};
+    use crate::provider::definition::{discovery::Discovery, eval::ValueEnv};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    /// A tiny HTTP/1.1 mock serving one prepared JSON response per request, in order, and
+    /// shutting down on drop.
+    struct MockUpstream {
+        /// The `http://` base URL the mock answers at.
+        base_url: String,
+
+        /// Shutdown signal, sent when the test is done with the mock.
+        shutdown: tokio::sync::oneshot::Sender<()>,
+    }
+
+    impl MockUpstream {
+        /// Starts the mock serving `responses` in order; the final entry repeats for any request
+        /// beyond the fixture's length, so a diverging walk fails on assertions, not the mock.
+        ///
+        /// # Panics
+        ///
+        /// Panics when the mock cannot bind — a broken mock is the failure report.
+        async fn start(responses: Vec<String>) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+
+            let (shutdown, mut is_shutdown) = tokio::sync::oneshot::channel::<()>();
+
+            let responses = std::sync::Arc::new(std::sync::Mutex::new(responses));
+
+            tokio::spawn(async move {
+                loop {
+                    let accepted = tokio::select! {
+                        _ = &mut is_shutdown => break,
+                        accepted = listener.accept() => accepted,
+                    };
+
+                    let Ok((mut socket, _)) = accepted else {
+                        break;
+                    };
+
+                    let responses = responses.clone();
+
+                    tokio::spawn(async move {
+                        // Drain the request head through its blank line before answering.
+                        let mut buffer = Vec::new();
+                        let mut chunk = [0_u8; 1024];
+
+                        loop {
+                            let read = socket.read(&mut chunk).await.unwrap_or(0);
+                            if read == 0 {
+                                return;
+                            }
+
+                            buffer.extend_from_slice(chunk.get(..read).unwrap_or(&chunk));
+
+                            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+
+                        let body = {
+                            let mut responses = responses.lock().unwrap();
+
+                            if responses.len() > 1 {
+                                responses.remove(0)
+                            } else {
+                                responses.first().cloned().unwrap_or_default()
+                            }
+                        };
+
+                        let _ = socket
+                            .write_all(
+                                format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    body.len(),
+                                    body
+                                )
+                                .as_bytes(),
+                            )
+                            .await;
+
+                        let _ = socket.shutdown().await;
+                    });
+                }
+            });
+
+            Self {
+                base_url: format!("http://{address}"),
+                shutdown,
+            }
+        }
+    }
+
+    /// The environment one discovery test carries: no slots, the mock base URL, and a static
+    /// secret, leaked into `'static` references the descriptor can borrow.
+    fn discovery_env(base_url: &str) -> ValueEnv<'static> {
+        let base_url: &'static str = Box::leak(base_url.to_string().into_boxed_str());
+        let slots: &'static BTreeMap<String, String> = Box::leak(Box::new(BTreeMap::new()));
+
+        ValueEnv::for_discovery(slots, Some(base_url), "secret")
+    }
+
+    /// The token-paginated discovery fixture: two pages of one identifier each, the next-page
+    /// token under `nextPageToken`, paged back through `pageToken`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to parse.
+    fn token_discovery(max_pages: u64) -> Discovery {
+        serde_json::from_value(json!({
+            "request": {
+                "method": "GET",
+                "url": [{"type": "base"}, {"type": "literal", "value": "/models"}]
+            },
+            "extract": {
+                "mode": "array",
+                "array_at": ["data"],
+                "id_field": ["id"]
+            },
+            "pagination": {
+                "type": "token",
+                "request_param": "pageToken",
+                "response_path": ["nextPageToken"],
+                "max_pages": max_pages
+            }
+        }))
+        .unwrap()
+    }
+
+    /// The cursor-paginated discovery fixture: pages of one identifier each, the continuation
+    /// facts under `has_more`/`last_id`, paged back through `after_id`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to parse.
+    fn cursor_discovery(max_pages: u64) -> Discovery {
+        serde_json::from_value(json!({
+            "request": {
+                "method": "GET",
+                "url": [{"type": "base"}, {"type": "literal", "value": "/models"}]
+            },
+            "extract": {
+                "mode": "array",
+                "array_at": ["data"],
+                "id_field": ["id"]
+            },
+            "pagination": {
+                "type": "cursor",
+                "has_more_path": ["has_more"],
+                "last_id_path": ["last_id"],
+                "request_param": "after_id",
+                "max_pages": max_pages
+            }
+        }))
+        .unwrap()
+    }
+
+    /// A page budget that ends while the upstream still reports a next page fails the refresh
+    /// with the upstream-error category instead of letting a truncated identifier list reach the
+    /// apply step, whose blanket mark would mass-vanish every unlisted row (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to parse or the walk fails to diverge from the expectation.
+    #[tokio::test]
+    async fn token_budget_exhaustion_fails_the_refresh() {
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "data": [{"id": "model-a"}],
+                "nextPageToken": "page-2"
+            }))
+            .unwrap(),
+            serde_json::to_string(&json!({
+                "data": [{"id": "model-b"}],
+                "nextPageToken": "page-3"
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let outcome = run_discovery(
+            &crate::http_client::control_plane(),
+            &token_discovery(2),
+            &discovery_env(&mock.base_url),
+        )
+        .await;
+
+        let Err(error) = outcome else {
+            panic!("a budget ending on an indicated next page must fail the refresh");
+        };
+
+        assert!(matches!(error, Error::Unavailable { .. }));
+
+        assert_eq!(
+            error.to_string(),
+            "Upstream request failed: upstream reported more pages than the 2-page discovery \
+             budget fetches; refusing to truncate the provider's model rows"
+        );
+
+        mock.shutdown.send(()).ok();
+    }
+
+    /// A cursor upstream whose final budgeted page still reports `has_more` fails the refresh
+    /// with the upstream-error category, like the token mode's exhaustion (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to parse or the walk fails to diverge from the expectation.
+    #[tokio::test]
+    async fn cursor_budget_exhaustion_fails_the_refresh() {
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "data": [{"id": "model-a"}],
+                "has_more": true,
+                "last_id": "model-a"
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let outcome = run_discovery(
+            &crate::http_client::control_plane(),
+            &cursor_discovery(1),
+            &discovery_env(&mock.base_url),
+        )
+        .await;
+
+        let Err(error) = outcome else {
+            panic!("a budget ending on an indicated continuation must fail the refresh");
+        };
+
+        assert!(matches!(error, Error::Unavailable { .. }));
+
+        assert_eq!(
+            error.to_string(),
+            "Upstream request failed: upstream reported more pages than the 1-page discovery \
+             budget fetches; refusing to truncate the provider's model rows"
+        );
+
+        mock.shutdown.send(()).ok();
+    }
+
+    /// A budget that exactly covers the pages still succeeds in both pagination modes: the
+    /// exhaustion failure fires only when the final budgeted page itself indicates more data.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to parse or the walk diverges from the expectation.
+    #[tokio::test]
+    async fn budget_covering_exactly_the_pages_succeeds() {
+        let client = crate::http_client::control_plane();
+
+        // Token mode: the final budgeted page carries no next-page token.
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "data": [{"id": "model-a"}],
+                "nextPageToken": "page-2"
+            }))
+            .unwrap(),
+            serde_json::to_string(&json!({
+                "data": [{"id": "model-b"}]
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let ids = run_discovery(&client, &token_discovery(2), &discovery_env(&mock.base_url)).await;
+
+        assert_eq!(ids.unwrap(), vec!["model-a", "model-b"]);
+
+        mock.shutdown.send(()).ok();
+
+        // Cursor mode: the final budgeted page reports `has_more` false.
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "data": [{"id": "model-a"}],
+                "has_more": true,
+                "last_id": "model-a"
+            }))
+            .unwrap(),
+            serde_json::to_string(&json!({
+                "data": [{"id": "model-b"}],
+                "has_more": false
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let ids = run_discovery(
+            &client,
+            &cursor_discovery(2),
+            &discovery_env(&mock.base_url),
+        )
+        .await;
+
+        assert_eq!(ids.unwrap(), vec!["model-a", "model-b"]);
+
+        mock.shutdown.send(()).ok();
     }
 }

@@ -311,11 +311,11 @@ describe("HomeScreen", () => {
         );
         await settle();
 
-        // Every provider is created enabled, so "enable the provider" is
-        // never a step still ahead; the checklist names the one case where
-        // the switch matters instead.
-        expect(bodyText()).toContain("Re-enable the provider if you ever disable it");
-        expect(bodyText()).not.toContain("Enable the provider");
+        // Every provider is created enabled, so no step worries about the
+        // switch; the fourth step points at the endpoint card the same page
+        // ends with, where a client is pointed once its key exists.
+        expect(bodyText()).toContain("Point a client at an endpoint below");
+        expect(bodyText()).not.toContain("Re-enable the provider");
         expect(bodyText()).toContain("Issue an API key for serving clients");
     });
 });

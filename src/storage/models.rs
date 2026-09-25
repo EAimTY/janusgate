@@ -610,3 +610,272 @@ pub(crate) async fn delete_model_checked(database: &Database, model_id: i64) -> 
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DiscoveryState, Error, ModelCreate, ModelUpdate, apply_discovered_models,
+        delete_model_checked, find_routing, insert_model_checked, list_enabled_models_with_owner,
+        list_model_entries, update_model_overrides_checked,
+    };
+    use crate::{
+        storage::fixtures::{entry, insert_test_provider},
+        test_support,
+    };
+    use std::error::Error as StdError;
+
+    /// Verifies the manual-row creation rules: an absent identifier becomes a `manual` row with a
+    /// prefix-composed ID, a natural-key duplicate and a routed-ID collision each conflict without
+    /// writing, an unknown provider is not found — and discovery never touches an unlisted manual
+    /// row while listing it flips the row to `discovered` with its curation and identity intact.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn creates_manual_rows_discovery_never_prunes() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
+
+        let created = insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id,
+                upstream_id: "manual-1",
+                id_override: None,
+                is_enabled: false,
+            },
+        )
+        .await?;
+
+        assert_eq!(created.model.public_id, "p1-manual-1");
+        assert_eq!(created.model.discovery_state, DiscoveryState::Manual);
+        assert!(!created.model.is_enabled);
+
+        let duplicate = insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id,
+                upstream_id: "manual-1",
+                id_override: Some("other-id"),
+                is_enabled: true,
+            },
+        )
+        .await;
+
+        assert!(matches!(duplicate, Err(Error::Conflict { .. })));
+
+        assert_eq!(
+            list_model_entries(&database, Some(provider_id))
+                .await?
+                .len(),
+            1
+        );
+
+        let other_provider_id = insert_test_provider(&database, "provider-2", "p2-").await?;
+
+        let colliding = insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id: other_provider_id,
+                upstream_id: "manual-1",
+                id_override: Some("p1-manual-1"),
+                is_enabled: true,
+            },
+        )
+        .await;
+
+        assert!(matches!(colliding, Err(Error::Conflict { .. })));
+        assert!(
+            list_model_entries(&database, Some(other_provider_id))
+                .await?
+                .is_empty()
+        );
+
+        let missing = insert_model_checked(
+            &database,
+            ModelCreate {
+                provider_id: other_provider_id + 1000,
+                upstream_id: "ghost",
+                id_override: None,
+                is_enabled: true,
+            },
+        )
+        .await;
+
+        assert!(matches!(missing, Err(Error::NotFound { .. })));
+
+        let rows =
+            apply_discovered_models(&database, provider_id, &["fresh-1".to_string()]).await?;
+
+        assert_eq!(rows.len(), 2);
+
+        let entries = list_model_entries(&database, Some(provider_id)).await?;
+        let manual = entry(&entries, "manual-1");
+
+        assert_eq!(manual.model.discovery_state, DiscoveryState::Manual);
+        assert!(!manual.model.is_enabled);
+        assert_eq!(manual.model.public_id, "p1-manual-1");
+
+        let fresh = entry(&entries, "fresh-1");
+
+        assert_eq!(fresh.model.discovery_state, DiscoveryState::Discovered);
+        assert!(fresh.model.is_enabled);
+
+        let manual_id = manual.model.id;
+
+        apply_discovered_models(
+            &database,
+            provider_id,
+            &["fresh-1".to_string(), "manual-1".to_string()],
+        )
+        .await?;
+
+        let entries = list_model_entries(&database, Some(provider_id)).await?;
+        let manual = entry(&entries, "manual-1");
+
+        assert_eq!(manual.model.id, manual_id);
+        assert_eq!(manual.model.discovery_state, DiscoveryState::Discovered);
+        assert!(!manual.model.is_enabled);
+        assert_eq!(manual.model.public_id, "p1-manual-1");
+
+        Ok(())
+    }
+
+    /// Verifies the vanished semantics and the write-permission invariant, through the
+    /// `discovered`/`vanished` state flip and its restore.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn marks_vanished_rows_and_restores_them_by_state_flip_only()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
+
+        apply_discovered_models(
+            &database,
+            provider_id,
+            &["a".to_string(), "b".to_string(), "c".to_string()],
+        )
+        .await?;
+
+        let entries = list_model_entries(&database, None).await?;
+        let a_id = entry(&entries, "a").model.id;
+
+        update_model_overrides_checked(
+            &database,
+            ModelUpdate {
+                model_id: a_id,
+                id_override: Some("custom-a"),
+                is_enabled: true,
+            },
+        )
+        .await?;
+
+        apply_discovered_models(&database, provider_id, &["a".to_string()]).await?;
+
+        let entries = list_model_entries(&database, None).await?;
+        let a = entry(&entries, "a");
+        let c = entry(&entries, "c");
+
+        assert_eq!(a.model.id, a_id);
+        assert_eq!(a.model.discovery_state, DiscoveryState::Discovered);
+        assert_eq!(a.model.public_id, "custom-a");
+
+        assert_eq!(c.model.discovery_state, DiscoveryState::Vanished);
+        assert!(c.model.is_enabled);
+        assert_eq!(c.model.public_id, "p1-c");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the lookup follows it"
+        )]
+        let routing = find_routing(&database, "p1-c")
+            .await?
+            .expect("a vanished row is still resolved by its public ID");
+
+        assert!(!routing.is_effectively_enabled);
+
+        let enabled_models = list_enabled_models_with_owner(&database).await?;
+
+        assert_eq!(enabled_models.len(), 1);
+
+        apply_discovered_models(
+            &database,
+            provider_id,
+            &["a".to_string(), "b".to_string(), "c".to_string()],
+        )
+        .await?;
+
+        let entries = list_model_entries(&database, None).await?;
+        let c = entry(&entries, "c");
+
+        assert_eq!(c.model.discovery_state, DiscoveryState::Discovered);
+        assert!(c.model.is_enabled);
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just written and the lookup follows it"
+        )]
+        let routing = find_routing(&database, "p1-c")
+            .await?
+            .expect("the restored row routes");
+
+        assert!(routing.is_effectively_enabled);
+
+        Ok(())
+    }
+
+    /// Verifies the row-addressed update and delete rules, and the identity rebuild of a deleted
+    /// discovered row.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn updates_and_deletes_models_by_row_id() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
+
+        apply_discovered_models(&database, provider_id, &["a".to_string(), "b".to_string()])
+            .await?;
+
+        let entries = list_model_entries(&database, None).await?;
+        let a_id = entry(&entries, "a").model.id;
+
+        let missing_delete = delete_model_checked(&database, a_id + 1000).await;
+
+        assert!(matches!(missing_delete, Err(Error::NotFound { .. })));
+
+        apply_discovered_models(&database, provider_id, &["b".to_string()]).await?;
+
+        delete_model_checked(&database, a_id).await?;
+
+        let entries = list_model_entries(&database, None).await?;
+
+        assert_eq!(entries.len(), 1);
+
+        let missing_delete = delete_model_checked(&database, a_id).await;
+
+        assert!(matches!(missing_delete, Err(Error::NotFound { .. })));
+
+        let rebuilt =
+            apply_discovered_models(&database, provider_id, &["a".to_string(), "b".to_string()])
+                .await?;
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the row was just rebuilt by the refresh above"
+        )]
+        let fresh_a = rebuilt
+            .iter()
+            .find(|entry| entry.model.upstream_id == "a")
+            .expect("the rebuilt row is listed");
+
+        assert_ne!(fresh_a.model.id, a_id);
+
+        Ok(())
+    }
+}

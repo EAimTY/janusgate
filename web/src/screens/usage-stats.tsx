@@ -3,7 +3,7 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { UsageBucket, UsageFilter } from "/src/management-api/generated/v0";
-import { hrefs } from "/src/router";
+import { hrefs, type UsageQuerySubject } from "/src/router";
 import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
@@ -46,6 +46,32 @@ function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
         api_key_id: [
             filter.api_key_id,
         ],
+    };
+}
+
+/**
+ * The same subject as the aggregates page's route carries it, so the card's
+ * "Open aggregates" link lands with the grouping and the filter field
+ * prefilled to the subject the operator was just reading.
+ */
+function usageQuerySubject(filter: UsageSubjectFilter): UsageQuerySubject {
+    if ("provider_id" in filter) {
+        return {
+            dimension: "provider",
+            id: filter.provider_id,
+        };
+    }
+
+    if ("model_id" in filter) {
+        return {
+            dimension: "model",
+            id: filter.model_id,
+        };
+    }
+
+    return {
+        dimension: "api_key",
+        id: filter.api_key_id,
     };
 }
 
@@ -114,7 +140,9 @@ export function EntityUsageCard(props: {
                 title="Usage"
                 description="Requests and tokens per day — numbers only, never content."
             >
-                <ButtonLink href={hrefs.usageQuery()}>Open aggregates</ButtonLink>
+                <ButtonLink href={hrefs.usageQuery(usageQuerySubject(props.filter))}>
+                    Open aggregates
+                </ButtonLink>
             </CardHeader>
 
             <div class="mt-4">

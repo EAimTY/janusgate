@@ -618,3 +618,224 @@ pub(crate) async fn commit_device_success_in_transaction(
 
     Ok(changes == 1)
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "the fixtures are constructed so each expect lands on its documented side"
+    )]
+
+    use super::{
+        DevicePollOutcome, FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
+        commit_device_success_in_transaction, consume_flow, consume_terminal_flow,
+        find_flow_by_state, insert_flow, persist_device_poll, sweep_expired_flows,
+    };
+    use crate::{
+        storage::{
+            self as storage_cr,
+            fixtures::{insert_test_provider, oauth_definition},
+        },
+        test_support,
+    };
+    use std::{collections::BTreeMap, error::Error as StdError};
+
+    /// A device flow row ready to insert against the fixture OAuth definition.
+    fn new_device_flow(definition: &crate::provider::definition::ProviderDefinition) -> NewFlow {
+        NewFlow {
+            definition_name: definition.name.clone(),
+            definition_version: definition.version,
+            state_token: "st-device-1".to_string(),
+            purpose: FlowPurpose::Reauthorize,
+            provider_name: None,
+            model_prefix: None,
+            base_url: None,
+            target_provider_id: Some(1),
+            grant_type: FlowGrant::Device,
+            slots: BTreeMap::new(),
+            code_verifier: None,
+            device_code: Some("dc".to_string()),
+            device_user_code: Some("uc".to_string()),
+            device_verification_uri: Some("https://verify.example".to_string()),
+            device_verification_uri_complete: None,
+            device_poll_interval_seconds: Some(5),
+            device_next_poll_at: Some(500),
+            expires_at: 1_000_000,
+        }
+    }
+
+    /// Verifies the OAuth flow lifecycle against the real database: a device flow's stored
+    /// schedule drives the conditional claim, the claim owner alone persists its outcome, a
+    /// terminal success commits atomically with the provider write, the result is consumed once,
+    /// and the expiry sweep clears unconsumed rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn device_flow_lifecycle_claims_and_consumes_once() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = oauth_definition();
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: definition.name.as_str(),
+                base_version: None,
+                payload: &definition.payload,
+                created_at: definition.created_at,
+            },
+        )
+        .await?;
+
+        let flow = insert_flow(&database, new_device_flow(&definition)).await?;
+
+        // Nothing is due before its next-poll instant.
+        let now = 400;
+
+        assert!(claim_due_device_flow(&database, now, 0).await?.is_none());
+
+        // The due flow is claimed by exactly one conditional update.
+        let claimed = claim_due_device_flow(&database, 500, 0)
+            .await?
+            .expect("the due flow claims");
+
+        assert_eq!(claimed.id, flow.id);
+        assert_eq!(claimed.device_poll_started_at, Some(500));
+
+        // A second claimant cannot steal a live claim.
+        assert!(claim_due_device_flow(&database, 500, 0).await?.is_none());
+
+        // A lost claim is the owner's alone to persist; the schedule retry lands.
+        let is_persisted = persist_device_poll(
+            &database,
+            flow.id,
+            999,
+            DevicePollOutcome::Retry {
+                next_poll_at: 10_000,
+                interval_seconds: 5,
+            },
+        )
+        .await?;
+
+        assert!(!is_persisted);
+
+        let is_persisted = persist_device_poll(
+            &database,
+            flow.id,
+            500,
+            DevicePollOutcome::Retry {
+                next_poll_at: 10_000,
+                interval_seconds: 5,
+            },
+        )
+        .await?;
+
+        assert!(is_persisted);
+
+        let rescheduled = find_flow_by_state(&database, "st-device-1", 0)
+            .await?
+            .expect("the flow persists");
+
+        assert_eq!(rescheduled.device_next_poll_at, Some(10_000));
+        assert_eq!(rescheduled.device_poll_started_at, None);
+
+        // The success commits the provider write and the terminal outcome in one transaction.
+        let target = insert_test_provider(&database, "oauth-target", "ot-").await?;
+
+        let mut transaction = database.transaction().await?;
+
+        let is_committed =
+            commit_device_success_in_transaction(&mut transaction, flow.id, 10_000 - 5, target)
+                .await?;
+
+        assert!(!is_committed, "a stale claim cannot commit");
+
+        // The discarded attempt releases its write lock before the next claim.
+        transaction.rollback().await?;
+
+        let mut transaction = database.transaction().await?;
+
+        let claim = claim_due_device_flow(&database, 10_000, 0)
+            .await?
+            .expect("the rescheduled flow claims again");
+
+        assert_eq!(claim.device_poll_started_at, Some(10_000));
+
+        let is_committed =
+            commit_device_success_in_transaction(&mut transaction, flow.id, 10_000, target).await?;
+
+        assert!(is_committed);
+
+        transaction.commit().await?;
+
+        let terminal = find_flow_by_state(&database, "st-device-1", 0)
+            .await?
+            .expect("the terminal row stays until consumed");
+
+        assert_eq!(terminal.outcome, Some(FlowOutcome::Succeeded));
+        assert_eq!(terminal.result_provider_id, Some(target));
+
+        // The result is consumed exactly once.
+        let consumed = consume_terminal_flow(&database, "st-device-1", 0).await?;
+
+        assert!(consumed.is_some());
+        assert!(
+            consume_terminal_flow(&database, "st-device-1", 0)
+                .await?
+                .is_none()
+        );
+
+        // A pending authorization-code flow is never consumed by the terminal-only consume.
+        let auth_flow = insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "st-auth-1".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("new-provider".to_string()),
+                model_prefix: Some("np-".to_string()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::AuthorizationCode,
+                slots: BTreeMap::new(),
+                code_verifier: Some("verifier".to_string()),
+                device_code: None,
+                device_user_code: None,
+                device_verification_uri: None,
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: None,
+                device_next_poll_at: None,
+                expires_at: 1_000_000,
+            },
+        )
+        .await?;
+
+        assert!(
+            consume_terminal_flow(&database, "st-auth-1", 0)
+                .await?
+                .is_none()
+        );
+
+        // The atomic consume spends the row exactly once, whatever its state.
+        let consumed = consume_flow(&database, "st-auth-1", 0).await?;
+
+        assert_eq!(consumed.map(|flow| flow.id), Some(auth_flow.id));
+        assert!(consume_flow(&database, "st-auth-1", 0).await?.is_none());
+
+        // The expiry sweep clears unconsumed rows.
+        insert_flow(&database, new_device_flow(&definition)).await?;
+
+        sweep_expired_flows(&database, 2_000_000).await?;
+
+        assert!(
+            find_flow_by_state(&database, "st-device-1", 0)
+                .await?
+                .is_none()
+        );
+
+        Ok(())
+    }
+}

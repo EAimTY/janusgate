@@ -3,7 +3,7 @@ import { createEffect, createMemo, createSignal, Show } from "solid-js";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { isRoutingToken, routingTokenMessage } from "/src/management-api/identifiers";
+import { routingTokenError } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import {
@@ -184,12 +184,8 @@ function ModelSettingsForm(props: {
         !hasIdOverride() || idOverride().trim() === "" ? null : idOverride().trim();
 
     /** Inline composition error for the override, shown where it was typed. */
-    const overrideError = (): string | null => {
-        const override = normalizedOverride();
-        return override === null || isRoutingToken(override)
-            ? null
-            : routingTokenMessage("Public ID override");
-    };
+    const overrideError = (): string | null =>
+        routingTokenError(normalizedOverride(), "Public ID override");
 
     const isDirty = (): boolean =>
         isEnabled() !== current().is_enabled || normalizedOverride() !== current().id_override;

@@ -470,7 +470,7 @@ function GettingStarted(): JSX.Element {
                 />
                 <GettingStartedStep
                     index={4}
-                    title="Re-enable the provider if you ever disable it"
+                    title="Point a client at an endpoint below"
                 />
                 <GettingStartedStep
                     index={5}

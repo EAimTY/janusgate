@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { onCleanup } from "solid-js";
+import { onCleanup, Show } from "solid-js";
 import { appConfig } from "/src/config";
 import { formatTimestamp } from "/src/format";
 import type { StartProviderOauthResponse } from "/src/management-api/generated/v0";
@@ -76,6 +76,12 @@ export function AuthorizeStep(props: {
                 Both are single-use and expire quickly — finish promptly after approving access.
             </p>
 
+            <p class="max-w-[70ch] text-[13px] text-ink-faint">
+                Most logins end on a page that shows nothing — that is expected. Paste the whole
+                address the browser shows. If a page opens and displays a code, paste that code
+                instead.
+            </p>
+
             <div class="h-px w-full bg-rule" />
 
             {props.children}
@@ -95,12 +101,17 @@ export function AuthorizeStep(props: {
 /**
  * The device step: the flow polls the token endpoint on its own schedule, so
  * this panel shows the verification facts to approve through and keeps
- * asking for the outcome while the flow is live. A pending answer schedules
- * the next poll on the configured interval; any other answer ends the loop,
- * because the screen's flow fragment reports the terminal states itself —
- * and answers `"done"` for a disposed screen or a replaced flow, which is
- * the one disposal guard (README §6.4) keeping a late resolution from
- * re-arming the timer or navigating after the visitor left.
+ * asking for the outcome while the flow is live. The step's asks answer
+ * `"pending"` while the flow's fragment wants the loop kept armed — a plain
+ * pending answer, and now a failed-but-not-gone poll under the fragment's
+ * retry bound — and `"done"` once it reports a terminal state itself, for a
+ * gone flow, an exhausted run of failed polls, or a disposed screen or
+ * replaced flow, which is the one disposal guard (README §6.4) keeping a
+ * late resolution from re-arming the timer or navigating after the visitor
+ * left. Both verification URIs are optional on the wire (gateway README
+ * §7.1): without either, the verification row renders not at all and the
+ * user code alone stands — never an anchor whose empty href would navigate
+ * this app to itself.
  */
 export function DeviceStep(props: {
     readonly flow: Extract<
@@ -155,22 +166,24 @@ export function DeviceStep(props: {
                 </p>
             </div>
 
-            <div class="flex flex-wrap items-center gap-2">
-                <a
-                    href={completeUri()}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    class={buttonClass("primary")}
-                >
-                    <Glyph name="out" />
-                    Open the verification page
-                </a>
-                <CopyButton
-                    value={completeUri()}
-                    subject="the verification URL"
-                    label="Copy the URL"
-                />
-            </div>
+            <Show when={completeUri() !== ""}>
+                <div class="flex flex-wrap items-center gap-2">
+                    <a
+                        href={completeUri()}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        class={buttonClass("primary")}
+                    >
+                        <Glyph name="out" />
+                        Open the verification page
+                    </a>
+                    <CopyButton
+                        value={completeUri()}
+                        subject="the verification URL"
+                        label="Copy the URL"
+                    />
+                </div>
+            </Show>
 
             <FlowFacts flow={props.flow} />
 

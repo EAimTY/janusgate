@@ -387,7 +387,7 @@ describe("opencode zen presets", () => {
     it("offers one static-key definition per supported format", () => {
         const zen = PROVIDER_PRESETS.filter((candidate) => candidate.id.startsWith("zen-"));
 
-        expect(zen.map((candidate) => candidate.format).sort()).toEqual([
+        expect(zen.map((candidate) => payloadOf(candidate)["format"]).sort()).toEqual([
             "anthropic_messages",
             "gemini_generate_content",
             "openai_chat_completion",
@@ -395,7 +395,6 @@ describe("opencode zen presets", () => {
         ]);
 
         for (const candidate of zen) {
-            expect(candidate.credentialKind).toBe("api_key");
             expect(payloadOf(candidate)["credential"]).toEqual({
                 type: "api_key",
             });

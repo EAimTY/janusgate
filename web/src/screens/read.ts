@@ -143,8 +143,6 @@ export type ScreenRead = {
     readonly notice: Accessor<ScreenNotice | null>;
     /** States an action's outcome where the read failures are stated. */
     readonly showNotice: (notice: ScreenNotice | null) => void;
-    /** Diagnoses a failed action call into the standing notice. */
-    readonly reportFailure: (cause: unknown, call?: FailureCall) => void;
     /**
      * States a finished action call's outcome where the read failures are
      * stated, and answers whether the call succeeded, so the caller keeps
@@ -269,9 +267,6 @@ export function createScreenRead(options: {
         notice,
         showNotice: (standing) => {
             setNotice(standing);
-        },
-        reportFailure: (cause, call) => {
-            setNotice(screenFailureNotice(cause, call));
         },
         reportAction: <TResult>(
             outcome: ManagementCallOutcome<TResult>,

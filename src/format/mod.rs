@@ -42,10 +42,9 @@ pub(crate) mod gemini_interaction;
 pub(crate) mod openai_chat_completion;
 pub(crate) mod openai_response;
 
-/// Wire formats an upstream provider may speak: the codec vocabulary behind
-/// [`ProviderType`](crate::provider::ProviderType). Static-key provider types reuse
-/// these same names as their own type names, so a static provider's type is its
-/// wire format outright.
+/// Wire formats an upstream provider may speak: the closed vocabulary from which a
+/// provider definition pins the one format every inference of the definition speaks
+/// (README §1, §5), whatever its [`credential kind`](crate::provider::CredentialKind).
 ///
 /// The serde and TypeScript names are the management wire names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

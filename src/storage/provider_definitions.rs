@@ -6,7 +6,7 @@
 //! The insert of a successor version is conditional on the caller naming the current latest
 //! version, so a stale base version can never fork the history.
 
-use super::{Error, definition_from_row_offset};
+use super::{Error, SqlExecutor, definition_from_row_offset};
 use crate::{
     database::{Database, Transaction, params},
     provider::definition::{DefinitionPayload, ProviderDefinition},
@@ -193,6 +193,29 @@ pub(crate) async fn insert_next_in_transaction(
     Ok(())
 }
 
+/// The `(name, version)` definition read generic over the pooled or transactional executor, so
+/// the statement is written once for both executors.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the query fails or a row is malformed.
+async fn find_definition_on<E: SqlExecutor>(
+    mut executor: E,
+    name: &str,
+    version: NonZeroI64,
+) -> Result<Option<ProviderDefinition>, Error> {
+    let sql = format!(
+        "SELECT {DEFINITION_COLUMNS} FROM provider_definitions WHERE name = ?1 AND version = ?2"
+    );
+
+    executor
+        .query(sql, params![name, version.get()])
+        .await?
+        .first()
+        .map(|row| definition_from_row_offset(row, 0))
+        .transpose()
+}
+
 /// Fetches one definition version.
 ///
 /// # Errors
@@ -203,20 +226,11 @@ pub(crate) async fn find_definition(
     name: &str,
     version: NonZeroI64,
 ) -> Result<Option<ProviderDefinition>, Error> {
-    let sql = format!(
-        "SELECT {DEFINITION_COLUMNS} FROM provider_definitions WHERE name = ?1 AND version = ?2"
-    );
-
-    database
-        .query(sql, params![name, version.get()])
-        .await?
-        .first()
-        .map(|row| definition_from_row_offset(row, 0))
-        .transpose()
+    find_definition_on(database, name, version).await
 }
 
-/// Fetches one definition version inside a transaction, mirroring [`find_definition`] against the
-/// transactional executor.
+/// Fetches one definition version inside a transaction, the transactional form of
+/// [`find_definition`] the transactional writes validate their references through.
 ///
 /// # Errors
 ///
@@ -226,16 +240,7 @@ pub(crate) async fn find_definition_in_transaction(
     name: &str,
     version: NonZeroI64,
 ) -> Result<Option<ProviderDefinition>, Error> {
-    let sql = format!(
-        "SELECT {DEFINITION_COLUMNS} FROM provider_definitions WHERE name = ?1 AND version = ?2"
-    );
-
-    transaction
-        .query(sql, params![name, version.get()])
-        .await?
-        .first()
-        .map(|row| definition_from_row_offset(row, 0))
-        .transpose()
+    find_definition_on(transaction, name, version).await
 }
 
 /// Lists every definition version, ordered by name then version.
@@ -275,4 +280,383 @@ pub(crate) async fn latest_version_in_transaction(
         .await?;
 
     Ok(rows.first().map(|row| row.get(0)).transpose()?)
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "the fixtures are constructed so each expect lands on its documented side"
+    )]
+
+    use crate::{
+        format::UpstreamFormat,
+        provider::{
+            CredentialKind, StoredCredentials, definition::credential::CredentialAcquisition,
+        },
+        storage as storage_cr, test_support,
+    };
+    use std::error::Error as StdError;
+
+    /// Verifies that a definition-version update leaves existing providers on the old pair: the
+    /// new version never substitutes for an explicit reference, and the credential-kind
+    /// agreement is checkable from the rows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn definition_updates_leave_existing_references_on_the_old_pair()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = test_support::insert_static_key_definition(
+            &database,
+            "versioned",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "bound",
+            "b-",
+            Some("http://localhost:8080"),
+            StoredCredentials::ApiKey {
+                api_key: "k".to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(provider.definition.version.get(), 1);
+
+        // A changed credential type is allowed in a new version: v2 of the same name speaks
+        // OAuth.
+        #[expect(clippy::unwrap_used, reason = "the successor payload parses")]
+        let successor: crate::provider::DefinitionPayload =
+            serde_json::from_value(serde_json::json!({
+              "format": "openai_chat_completion",
+              "inference": {
+                "url": [
+                  {
+                    "type": "base"
+                  },
+                  {
+                    "type": "literal",
+                    "value": "/chat/completions"
+                  }
+                ],
+                "upstream_streaming": "match_client"
+              },
+              "credential": {
+                "type": "oauth",
+                "client_id": "fixture",
+                "grant": {
+                  "type": "device",
+                  "authorization": {
+                    "request": {
+                      "method": "POST",
+                      "url": [
+                        {
+                          "type": "literal",
+                          "value": "http://127.0.0.1:1/device"
+                        }
+                      ],
+                      "body": {
+                        "kind": "form",
+                        "fields": [
+                          {
+                            "name": "client_id",
+                            "value": [
+                              {
+                                "type": "client_id"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "response": {
+                      "encoding": "form",
+                      "fields": [
+                        {
+                          "path": [
+                            "device_code"
+                          ],
+                          "target": {
+                            "type": "device_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "user_code"
+                          ],
+                          "target": {
+                            "type": "user_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "verification_uri"
+                          ],
+                          "target": {
+                            "type": "verification_uri"
+                          },
+                          "required": false
+                        }
+                      ]
+                    }
+                  },
+                  "expires_in_fallback_seconds": 900
+                },
+                "exchange": {
+                  "request": {
+                    "method": "POST",
+                    "url": [
+                      {
+                        "type": "literal",
+                        "value": "http://127.0.0.1:1/token"
+                      }
+                    ],
+                    "body": {
+                      "kind": "form",
+                      "fields": [
+                        {
+                          "name": "device_code",
+                          "value": [
+                            {
+                              "type": "device_code"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "response": {
+                    "encoding": "json",
+                    "fields": [
+                      {
+                        "path": [
+                          "access_token"
+                        ],
+                        "target": {
+                          "type": "access_token"
+                        },
+                        "required": true
+                      }
+                    ]
+                  },
+                  "terminal_codes": [
+                    "expired_token"
+                  ]
+                },
+                "refresh": {
+                  "type": "none"
+                }
+              }
+            }))
+            .unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "the successor payload validates")]
+        successor.validate().unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "a positive literal version")]
+        let base_version = std::num::NonZeroI64::new(1).unwrap();
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: "versioned",
+                base_version: Some(base_version),
+                payload: &successor,
+                created_at: 2,
+            },
+        )
+        .await?;
+
+        // The provider stays on v1 and its credentials stay api_key-shaped.
+        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
+            .await?
+            .expect("the provider persists");
+
+        assert_eq!(reloaded.definition.version.get(), 1);
+        assert_eq!(reloaded.credential_kind(), CredentialKind::ApiKey);
+
+        // The v2 row carries the OAuth discriminator.
+        let mut transaction = database.transaction().await?;
+
+        let v2 = storage_cr::provider_definitions::latest_version_in_transaction(
+            &mut transaction,
+            "versioned",
+        )
+        .await?
+        .expect("a latest version exists");
+
+        transaction.commit().await?;
+
+        #[expect(clippy::unwrap_used, reason = "a positive stored version")]
+        let v2 = std::num::NonZeroI64::new(v2).unwrap();
+
+        let row = storage_cr::provider_definitions::find_definition(&database, "versioned", v2)
+            .await?
+            .expect("v2 exists");
+
+        assert!(matches!(
+            row.payload.credential,
+            CredentialAcquisition::OAuth { .. }
+        ));
+
+        Ok(())
+    }
+
+    /// Pins the refresh-mode vocabulary: a fixture carrying a refresh grant parses and a
+    /// `reprovision` mode without steps is rejected by the write-time validation, so the
+    /// definition rows can never disagree with the engine's dispatch.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a fixture validates or rejects outside its contract.
+    #[test]
+    fn rejects_reprovision_without_steps() {
+        #[expect(clippy::unwrap_used, reason = "the fixture parses")]
+        let mut payload: crate::provider::DefinitionPayload =
+            serde_json::from_value(serde_json::json!({
+              "format": "openai_chat_completion",
+              "inference": {
+                "url": [
+                  {
+                    "type": "base"
+                  }
+                ],
+                "upstream_streaming": "match_client"
+              },
+              "credential": {
+                "type": "oauth",
+                "client_id": "fixture",
+                "grant": {
+                  "type": "device",
+                  "authorization": {
+                    "request": {
+                      "method": "POST",
+                      "url": [
+                        {
+                          "type": "literal",
+                          "value": "http://127.0.0.1:1/device"
+                        }
+                      ],
+                      "body": {
+                        "kind": "form",
+                        "fields": [
+                          {
+                            "name": "client_id",
+                            "value": [
+                              {
+                                "type": "client_id"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "response": {
+                      "encoding": "form",
+                      "fields": [
+                        {
+                          "path": [
+                            "device_code"
+                          ],
+                          "target": {
+                            "type": "device_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "user_code"
+                          ],
+                          "target": {
+                            "type": "user_code"
+                          },
+                          "required": true
+                        },
+                        {
+                          "path": [
+                            "verification_uri"
+                          ],
+                          "target": {
+                            "type": "verification_uri"
+                          },
+                          "required": false
+                        }
+                      ]
+                    }
+                  },
+                  "expires_in_fallback_seconds": 900
+                },
+                "exchange": {
+                  "request": {
+                    "method": "POST",
+                    "url": [
+                      {
+                        "type": "literal",
+                        "value": "http://127.0.0.1:1/token"
+                      }
+                    ],
+                    "body": {
+                      "kind": "form",
+                      "fields": [
+                        {
+                          "name": "device_code",
+                          "value": [
+                            {
+                              "type": "device_code"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "response": {
+                    "encoding": "json",
+                    "fields": [
+                      {
+                        "path": [
+                          "access_token"
+                        ],
+                        "target": {
+                          "type": "access_token"
+                        },
+                        "required": true
+                      }
+                    ]
+                  },
+                  "terminal_codes": [
+                    "expired_token"
+                  ]
+                },
+                "refresh": {
+                  "type": "reprovision"
+                }
+              }
+            }))
+            .unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "the reprovision rule rejects")]
+        let error = payload.validate().unwrap_err();
+
+        assert!(error.message.contains("reprovision"), "{error}");
+
+        payload.provisioning = Some(Vec::new());
+
+        #[expect(clippy::unwrap_used, reason = "the empty-steps rule rejects")]
+        let error = payload.validate().unwrap_err();
+
+        assert!(
+            error.message.contains("at least one step") || error.message.contains("reprovision"),
+            "{error}"
+        );
+    }
 }

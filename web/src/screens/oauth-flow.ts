@@ -60,7 +60,12 @@ export type OauthFlow = {
     readonly complete: () => Promise<void>;
     /**
      * One device-poll ask; the step panel schedules the next one on
-     * `"pending"` and stops on `"done"`.
+     * `"pending"` and stops on `"done"`. A poll that fails without proving
+     * the flow gone answers `"pending"` too — the flow stays live on the
+     * gateway, its failure is stated on the channel, and the loop re-arms
+     * until `MAX_CONSECUTIVE_FAILED_POLLS` fail in a row. `"done"` ends the
+     * loop only for a gone diagnosis, the flow's expiry, a stated terminal
+     * outcome, an aborted ask, or disposal.
      */
     readonly completeDevice: () => Promise<"pending" | "done">;
     /** Discards the live flow, so a fresh one can start. */
@@ -77,6 +82,22 @@ const UNREADABLE_PASTE_NOTICE: ScreenNotice = {
 
 /** The one recovery a spent or stalled flow leaves: begin a new one. */
 const FRESH_FLOW_FIX = "Start a fresh flow and authorize it promptly.";
+
+/** The recovery a failed-but-not-gone poll states: the gateway still holds
+ * the flow pending, so the honest line is that this page keeps asking —
+ * never the fresh-flow recovery, which would claim a live flow dead. */
+const POLL_RETRY_FIX = "The flow stays live; this page keeps asking for the outcome.";
+
+/**
+ * How many consecutive failed outcome polls the device loop rides out before
+ * it stops: one failure is a network blip, a sleeping laptop, or a restarting
+ * gateway — the flow stays pending on the gateway and the loop re-arms. A run
+ * this long means this page cannot reach the gateway, so it stops with the
+ * fresh-flow recovery instead of asking forever. Kept beside the loop it
+ * bounds: it is the polling loop's own retry budget, not a connection or
+ * theme tunable.
+ */
+const MAX_CONSECUTIVE_FAILED_POLLS = 3;
 
 /** The gateway's own verdict on a refused exchange, with the one recovery. */
 function flowFailedNotice(failureMessage: string): ScreenNotice {
@@ -124,6 +145,11 @@ export function createOauthFlow(options: {
     const [isStarting, setIsStarting] = createSignal(false);
     const [isCompleting, setIsCompleting] = createSignal(false);
 
+    // The consecutive failed outcome polls of the live device flow: any
+    // answered poll resets it, and it bounds how long the loop rides out
+    // transient failures before it stops (see MAX_CONSECUTIVE_FAILED_POLLS).
+    let failedPolls = 0;
+
     // The one disposal guard, set when the consuming screen goes away: a call
     // answering afterwards must state nothing and re-arm nothing. The device
     // step's loop honors it through the "done" the polled asks return.
@@ -144,24 +170,19 @@ export function createOauthFlow(options: {
     const discardFlow = (): void => {
         setFlow(null);
         setCode("");
+        failedPolls = 0;
     };
 
     /**
-     * The diagnosis of a failed completion, stated on the screen's channel;
-     * `fix` replaces the diagnosis's own recovery line where the flow's state
-     * dictates the recovery instead.
+     * The diagnosis of a failed completion, stated on the screen's channel.
+     * The device loop's non-gone failures are stated separately, where the
+     * flow's liveness dictates the recovery line instead.
      */
-    const reportCompletionFailure = (cause: unknown, fix?: string): void => {
-        const notice = screenFailureNotice(cause, {
-            action: options.completeAction,
-        });
+    const reportCompletionFailure = (cause: unknown): void => {
         options.channel(
-            fix === undefined
-                ? notice
-                : {
-                      ...notice,
-                      fix,
-                  },
+            screenFailureNotice(cause, {
+                action: options.completeAction,
+            }),
         );
     };
 
@@ -330,15 +351,45 @@ export function createOauthFlow(options: {
                 return "done";
             }
 
-            // A transient failure leaves the flow live but has ended the loop,
-            // so the panel's notice carries the same fresh-flow recovery a
-            // refused exchange states — "Start over" is not the only exit.
-            reportCompletionFailure(outcome.cause, FRESH_FLOW_FIX);
+            // The flow is still pending on the gateway: state the failure
+            // without the fresh-flow recovery — which would claim a live flow
+            // dead — and re-arm the loop, until too many polls fail in a row.
+            // Then this page stops asking, stating the last failure with the
+            // fresh-flow recovery as its one exit beside "Start over".
+            const failure = screenFailureNotice(outcome.cause, {
+                action: options.completeAction,
+            });
+            failedPolls += 1;
 
-            return "done";
+            if (failedPolls >= MAX_CONSECUTIVE_FAILED_POLLS) {
+                options.channel({
+                    tone: "bad",
+                    title: "The outcome poll kept failing, so this page stopped asking.",
+                    detail: failure.detail,
+                    fix: FRESH_FLOW_FIX,
+                });
+
+                return "done";
+            }
+
+            options.channel({
+                tone: "bad",
+                title: "The last outcome poll failed.",
+                detail: failure.detail,
+                fix: POLL_RETRY_FIX,
+            });
+
+            return "pending";
         }
 
         if (outcome.result.status === "pending") {
+            if (failedPolls > 0) {
+                // A poll answered again: the stated failure is stale, and the
+                // recovered loop owns the channel again.
+                options.channel(null);
+            }
+
+            failedPolls = 0;
             return "pending";
         }
 

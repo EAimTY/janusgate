@@ -5,7 +5,7 @@
 //! (rule 7) — and are never gated by the `api_logs` write switch: existing shards stay readable
 //! (README §3 *ApiLog*).
 
-use super::{Error, Nullable, route};
+use super::{Error, Nullable, UsageFilter, route};
 use crate::{
     accounting::UsageGroupBy,
     context::Context,
@@ -122,119 +122,6 @@ impl ApiLogResponse {
             reasoning_tokens: log.reasoning_tokens,
         }
     }
-}
-
-/// The shared filter of both management reads (README §7.1): every present field narrows the
-/// rows the read considers — values within one field OR (SQL `IN`), fields compose with AND.
-/// Every field is absent-keeps (rule 2), and the multi-value fields are non-empty arrays: the
-/// `Vec1` parsing rejects an empty array with 400 before the filter exists. Values are never
-/// validated against stored rows — an unknown id or a never-recorded status matches an empty
-/// set, because a filter locates rather than addresses (rule 7).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct UsageFilter {
-    /// Inclusive lower bound of `started_at`, in UTC microseconds; absent sets no bound.
-    #[serde(
-        default,
-        deserialize_with = "super::absent_keeps::deserialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub from: Option<i64>,
-
-    /// Exclusive upper bound of `started_at`, in UTC microseconds; absent sets no bound.
-    #[serde(
-        default,
-        deserialize_with = "super::absent_keeps::deserialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub to: Option<i64>,
-
-    /// API key row ids a row may carry; absent lists every key. Non-emptiness is a server-side
-    /// guarantee the plain array binding does not restate.
-    #[serde(
-        default,
-        deserialize_with = "super::absent_keeps::deserialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(
-        feature = "management-api-typescript-bindings",
-        ts(type = "Array<number>", optional)
-    )]
-    pub api_key_id: Option<Vec1<i64>>,
-
-    /// Provider row ids a row may carry; absent lists every provider.
-    #[serde(
-        default,
-        deserialize_with = "super::absent_keeps::deserialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(
-        feature = "management-api-typescript-bindings",
-        ts(type = "Array<number>", optional)
-    )]
-    pub provider_id: Option<Vec1<i64>>,
-
-    /// Model row ids a row may carry; absent lists every model.
-    #[serde(
-        default,
-        deserialize_with = "super::absent_keeps::deserialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(
-        feature = "management-api-typescript-bindings",
-        ts(type = "Array<number>", optional)
-    )]
-    pub model_id: Option<Vec1<i64>>,
-
-    /// Outward completion endpoints a row may carry; absent lists every endpoint.
-    #[serde(
-        default,
-        deserialize_with = "super::absent_keeps::deserialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(
-        feature = "management-api-typescript-bindings",
-        ts(type = "Array<ApiLogEndpointType>", optional)
-    )]
-    pub endpoint_type: Option<Vec1<super::ApiLogEndpointType>>,
-
-    /// Recorded outcomes a row may carry; absent lists every outcome.
-    #[serde(
-        default,
-        deserialize_with = "super::absent_keeps::deserialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(
-        feature = "management-api-typescript-bindings",
-        ts(type = "Array<ApiLogOutcome>", optional)
-    )]
-    pub outcome: Option<Vec1<super::ApiLogOutcome>>,
-
-    /// Stream flag a row must carry; absent lists both.
-    #[serde(
-        default,
-        deserialize_with = "super::absent_keeps::deserialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
-    pub is_stream: Option<bool>,
-
-    /// HTTP statuses a row may carry; absent lists every status. A `NULL` status — a client
-    /// disconnected before the first frame — matches no list, and there is no direct way to
-    /// select those rows; `outcome` reaches them indirectly (README §7.1).
-    #[serde(
-        default,
-        deserialize_with = "super::absent_keeps::deserialize",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[cfg_attr(
-        feature = "management-api-typescript-bindings",
-        ts(type = "Array<number>", optional)
-    )]
-    pub http_status: Option<Vec1<i64>>,
 }
 
 /// Strictly parsed `usage:list` request (README §7.1): every field is absent-keeps (rule 2).
@@ -474,16 +361,16 @@ fn resolve_group_by(group_by: Vec<UsageGroupBy>) -> Result<Vec<UsageGroupBy>, Er
     Ok(group_by)
 }
 
-/// Validates the shared filter and converts it into the read layer's own type: the parsing
-/// already rejected `null`, unknown fields, and empty arrays, so the one wire-level rule left
-/// is the per-field value cap (README §7.1).
+/// Validates the shared filter, which is now the one storage-tier vocabulary type re-exported
+/// by this version: the parsing already rejected `null`, unknown fields, and empty arrays, so
+/// the one wire-level rule left is the per-field value cap (README §7.1).
 ///
 /// # Errors
 ///
 /// Returns [`Error`] categorized as invalid request (400) naming the first over-cap field.
-fn resolve_filter(filter: Option<UsageFilter>) -> Result<api_logs::UsageFilter, Error> {
+fn resolve_filter(filter: Option<UsageFilter>) -> Result<UsageFilter, Error> {
     let Some(filter) = filter else {
-        return Ok(api_logs::UsageFilter::default());
+        return Ok(UsageFilter::default());
     };
 
     let capped = [
@@ -516,17 +403,7 @@ fn resolve_filter(filter: Option<UsageFilter>) -> Result<api_logs::UsageFilter, 
         }
     }
 
-    Ok(api_logs::UsageFilter {
-        from: filter.from,
-        to: filter.to,
-        api_key_id: filter.api_key_id,
-        provider_id: filter.provider_id,
-        model_id: filter.model_id,
-        endpoint_type: filter.endpoint_type,
-        outcome: filter.outcome,
-        is_stream: filter.is_stream,
-        http_status: filter.http_status,
-    })
+    Ok(filter)
 }
 
 /// Handles `POST /usage:list`.

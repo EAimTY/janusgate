@@ -50,6 +50,9 @@ mod usage;
 // This version's public wire surface: every route marker and every route's request and response
 // payload types. Nested wire shapes — provider and model rows, captured credentials — stay private,
 // and the route contract itself is shared at [`crate::management_api::Route`].
+/// Re-exported for the shared usage filter's `serde` field attributes, which resolve this
+/// deserializer by its crate path.
+pub(crate) use self::absent_keeps::deserialize as absent_keeps_deserialize;
 pub use self::{
     api_keys::{
         ApiKeyEnvelope, ApiKeyResponse, CreateApiKey, CreateApiKeyRequest, DeleteApiKey,
@@ -79,9 +82,13 @@ pub use self::{
     },
     usage::{
         ApiLogResponse, ListUsage, ListUsageRequest, ListUsageResponse, QueryUsage,
-        QueryUsageRequest, QueryUsageResponse, UsageBucket, UsageBucketKey, UsageFilter,
+        QueryUsageRequest, QueryUsageResponse, UsageBucket, UsageBucketKey,
     },
 };
+/// Re-exported for the one shared usage filter, defined with the storage reads it configures:
+/// this version's usage payloads declare it, and its `serde` field attributes name the
+/// [`absent_keeps`] deserializer to keep the absent-keeps wire strictness.
+pub(crate) use crate::storage::api_logs::UsageFilter;
 pub use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
     provider::{CredentialKind, DiscoveryState},
@@ -458,7 +465,7 @@ pub struct SharedProviderFields {
     /// Whether the provider serves traffic.
     is_enabled: bool,
 
-    /// The exact definition version the row's requests are interpreted against.
+    /// The definition name the provider binds to.
     provider_definition_name: String,
 
     /// The exact definition version the row's requests are interpreted against.

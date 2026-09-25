@@ -6,11 +6,10 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import {
     baseUrlMessage,
-    compositionMessage,
+    bearerSecretError,
     isBaseUrl,
     isBearerSecret,
-    isModelPrefix,
-    routingTokenMessage,
+    modelPrefixError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { defaultModelPrefix } from "/src/management-api/provider-defaults";
@@ -225,25 +224,35 @@ function DetailsCard(props: {
 
     const trimmedBaseUrl = (): string => (baseUrl() ?? "").trim();
 
-    /** Inline composition errors, shown where the value was typed (gateway README §7). */
-    const prefixError = (): string | null =>
-        isModelPrefix(effectivePrefix()) ? null : routingTokenMessage("Model prefix");
-
-    const baseUrlError = (): string | null => {
+    /** The base URL the wire carries: the trimmed field, or `null` when it is
+     * empty — reachable only over the legal-empty rule below, since a save
+     * never runs while the field shows an error. */
+    const resolvedBaseUrl = (): string | null => {
         const trimmed = trimmedBaseUrl();
-        const baselineRow = baseline();
-        const unchanged = trimmed === "" && (baselineRow === null || baselineRow.base_url === null);
-        return isBaseUrl(trimmed) || unchanged ? null : baseUrlMessage();
+        return trimmed === "" ? null : trimmed;
     };
 
-    const apiKeyError = (): string | null =>
-        apiKey() === "" || isBearerSecret(apiKey()) ? null : compositionMessage("API key");
+    /** Whether the trimmed field is a legal wire value: a routable URL, or
+     * empty exactly when the stored row's `null` proves the definition never
+     * references the base (gateway README §7) — in which case no URL may be
+     * demanded here nor invented for the row. */
+    const isBaseUrlLegal = (): boolean => {
+        const trimmed = trimmedBaseUrl();
+        return isBaseUrl(trimmed) || (trimmed === "" && baseline().base_url === null);
+    };
+
+    /** Inline composition errors, shown where the value was typed (gateway README §7). */
+    const prefixError = (): string | null => modelPrefixError(effectivePrefix());
+
+    const baseUrlError = (): string | null => (isBaseUrlLegal() ? null : baseUrlMessage());
+
+    const apiKeyError = (): string | null => bearerSecretError(apiKey(), "API key");
 
     /** The connection fields are submittable when every typed value is routable. The key stays
-     * empty to keep the stored secret; the URL is required. */
+     * empty to keep the stored secret; the URL follows the same legal rule the
+     * field states inline, so a null-base row saves without growing a URL. */
     const isConnectionValid = (): boolean =>
-        !isStatic() ||
-        (isBaseUrl(trimmedBaseUrl()) && (apiKey() === "" || isBearerSecret(apiKey())));
+        !isStatic() || (isBaseUrlLegal() && (apiKey() === "" || isBearerSecret(apiKey())));
 
     const isDirty = createMemo(() => {
         const baselineRow = baseline();
@@ -254,7 +263,7 @@ function DetailsCard(props: {
             effectivePrefix() !== baselineRow.model_prefix ||
             (isStatic() &&
                 (trimmedBaseUrl() !==
-                    (isOAuthProviderRow(baselineRow) ? "" : baselineRow.base_url) ||
+                    (isOAuthProviderRow(baselineRow) ? "" : (baselineRow.base_url ?? "")) ||
                     apiKey() !== ""))
         );
     });
@@ -308,7 +317,7 @@ function DetailsCard(props: {
                     is_enabled: isEnabled(),
                     ...(isStatic()
                         ? {
-                              base_url: trimmedBaseUrl(),
+                              base_url: resolvedBaseUrl(),
                               ...(apiKey() === ""
                                   ? {}
                                   : {
@@ -363,7 +372,7 @@ function DetailsCard(props: {
                       name: name(),
                       model_prefix: effectivePrefix(),
                       is_enabled: isEnabled(),
-                      base_url: trimmedBaseUrl(),
+                      base_url: resolvedBaseUrl(),
                   },
         );
         setApiKey("");

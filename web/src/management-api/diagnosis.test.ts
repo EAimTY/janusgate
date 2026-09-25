@@ -62,6 +62,20 @@ describe("diagnoseFailure", () => {
         );
     });
 
+    it("points a definition-write conflict at the moved stored version, not the provider name", () => {
+        const diagnosis = diagnoseFailure(
+            gatewayFailure(ErrorCode.Conflict, "provider definition version moved"),
+            {
+                ...context,
+                action: "ensure-definition",
+            },
+        );
+
+        expect(diagnosis.kind).toBe("conflict");
+        expect(diagnosis.fix).toContain("reload this page");
+        expect(diagnosis.fix).not.toContain("provider name");
+    });
+
     it("names the colliding public ID for a model creation conflict", () => {
         const diagnosis = diagnoseFailure(gatewayFailure(ErrorCode.Conflict, "public id taken"), {
             ...context,

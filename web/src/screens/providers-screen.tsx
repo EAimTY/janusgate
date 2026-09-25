@@ -3,7 +3,7 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { modelCountsByProvider } from "/src/management-api/serving";
-import { credentialKindLabel } from "/src/management-api/vocabulary";
+import { credentialKindLabel, upstreamFormatLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import { createScreenRead, readAll } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
@@ -52,7 +52,9 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
         return providers().filter(
             (provider) =>
                 provider.name.toLowerCase().includes(needle) ||
-                credentialKindLabel(provider.type).toLowerCase().includes(needle),
+                credentialKindLabel(provider.type).toLowerCase().includes(needle) ||
+                // The wire format is the row's most identifying label.
+                upstreamFormatLabel(provider.format).toLowerCase().includes(needle),
         );
     });
 
@@ -108,7 +110,7 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                 >
                     <SearchInput
                         label="Search providers"
-                        placeholder="Search by name or type"
+                        placeholder="Search by name, type, or format"
                         value={search()}
                         onInput={setSearch}
                         class="sm:max-w-xs"

@@ -7,24 +7,24 @@
 //! the persist on the acquired stamp — so a concurrent reauthorization or stale-lease
 //! reacquisition is never overwritten by a refresh derived from superseded credentials.
 
-use super::{Error, models, provider_from_row};
+use super::{Error, SqlExecutor, models, provider_from_row};
 use crate::{
     database::{Database, Error as DatabaseError, Transaction, params},
     provider::{Model, Provider, StoredCredentials, definition::ProviderDefinition},
 };
 
-/// Inserts one provider row and returns the stored row constructed from the supplied fields,
-/// mirroring [`update_provider`]'s contract: the returned row is exactly what the statement
-/// wrote, so callers never re-read after creation.
+/// Inserts one provider row through the pooled or transactional executor, returning the new
+/// row's id: the statement is written once for both the pooled creation path and the device
+/// poller's atomic provider-write-plus-outcome commit.
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when the insert fails.
-pub(crate) async fn insert_provider(
-    database: &Database,
+async fn insert_provider_row<E: SqlExecutor>(
+    mut executor: E,
     provider: NewProvider<'_>,
-) -> Result<Provider, Error> {
-    let rows = database
+) -> Result<i64, Error> {
+    let rows = executor
         .query(
             "INSERT INTO providers (name, provider_definition_name, provider_definition_version, \
              is_enabled, model_prefix, base_url, credentials) \
@@ -46,6 +46,22 @@ pub(crate) async fn insert_provider(
         reason = "a single-row INSERT RETURNING yields exactly the inserted row, or errors"
     )]
     let id: i64 = rows[0].get(0)?;
+
+    Ok(id)
+}
+
+/// Inserts one provider row and returns the stored row constructed from the supplied fields,
+/// mirroring [`update_provider`]'s contract: the returned row is exactly what the statement
+/// wrote, so callers never re-read after creation.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the insert fails.
+pub(crate) async fn insert_provider(
+    database: &Database,
+    provider: NewProvider<'_>,
+) -> Result<Provider, Error> {
+    let id = insert_provider_row(database, provider).await?;
 
     Ok(Provider {
         id,
@@ -89,6 +105,23 @@ pub(crate) async fn find_provider(
     rows.first().map(provider_from_row).transpose()
 }
 
+/// The `WHERE id = ?1` provider read generic over the pooled or transactional executor, so the
+/// statement is written once for both executors.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the query fails or a row is malformed.
+async fn find_provider_by_id_on<E: SqlExecutor>(
+    mut executor: E,
+    provider_id: i64,
+) -> Result<Option<Provider>, Error> {
+    let rows = executor
+        .query(find_provider_by_id_sql(), params![provider_id])
+        .await?;
+
+    rows.first().map(provider_from_row).transpose()
+}
+
 /// Fetches one provider by id.
 ///
 /// # Errors
@@ -98,15 +131,11 @@ pub(crate) async fn find_provider_by_id(
     database: &Database,
     provider_id: i64,
 ) -> Result<Option<Provider>, Error> {
-    let rows = database
-        .query(find_provider_by_id_sql(), params![provider_id])
-        .await?;
-
-    rows.first().map(provider_from_row).transpose()
+    find_provider_by_id_on(database, provider_id).await
 }
 
-/// Fetches one provider by id inside a transaction, mirroring [`find_provider_by_id`] against the
-/// transactional executor.
+/// Fetches one provider by id inside a transaction, the transactional form of
+/// [`find_provider_by_id`] the transactional writes re-read the row through.
 ///
 /// # Errors
 ///
@@ -115,11 +144,7 @@ pub(crate) async fn find_provider_by_id_in_transaction(
     transaction: &mut Transaction,
     provider_id: i64,
 ) -> Result<Option<Provider>, Error> {
-    let rows = transaction
-        .query(find_provider_by_id_sql(), params![provider_id])
-        .await?;
-
-    rows.first().map(provider_from_row).transpose()
+    find_provider_by_id_on(transaction, provider_id).await
 }
 
 /// Fetches one provider by id after a write, failing with an internal error when the row is gone: a
@@ -154,8 +179,8 @@ pub(crate) async fn delete_provider(database: &Database, provider_id: i64) -> Re
     Ok(changes == 1)
 }
 
-/// Replaces the whole credentials document inside the caller's transaction; see
-/// [`replace_credentials`].
+/// Replaces the whole credentials document inside the caller's transaction, so a credentials
+/// change commits atomically with the caller's other statements.
 ///
 /// # Errors
 ///
@@ -468,7 +493,8 @@ pub(crate) async fn clear_refresh_lease(
 }
 
 /// Inserts one provider row inside the caller's transaction — the device poller's atomic
-/// provider-write-plus-outcome commit — returning the new row's id.
+/// provider-write-plus-outcome commit — returning the new row's id: the transactional form of
+/// [`insert_provider_row`].
 ///
 /// # Errors
 ///
@@ -477,30 +503,7 @@ pub(crate) async fn insert_provider_in_transaction(
     transaction: &mut Transaction,
     provider: NewProvider<'_>,
 ) -> Result<i64, Error> {
-    let rows = transaction
-        .query(
-            "INSERT INTO providers (name, provider_definition_name, provider_definition_version, \
-             is_enabled, model_prefix, base_url, credentials) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
-            params![
-                provider.name,
-                provider.definition.name.as_str(),
-                provider.definition.version.get(),
-                i64::from(provider.is_enabled),
-                provider.model_prefix,
-                provider.base_url,
-                provider.credentials.to_json(),
-            ],
-        )
-        .await?;
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "a single-row INSERT RETURNING yields exactly the inserted row, or errors"
-    )]
-    let id: i64 = rows[0].get(0)?;
-
-    Ok(id)
+    insert_provider_row(transaction, provider).await
 }
 
 /// Replaces one provider's credentials and definition reference inside the caller's transaction —
@@ -564,8 +567,8 @@ fn find_provider_sql() -> String {
     )
 }
 
-/// The `WHERE id = ?1` provider lookup shared by the pooled and transactional executors, which
-/// share no query trait.
+/// The `WHERE id = ?1` provider lookup shared by the pooled and transactional executors through
+/// [`find_provider_by_id`].
 fn find_provider_by_id_sql() -> String {
     format!(
         "SELECT {} {} WHERE p.id = ?1",
@@ -575,6 +578,7 @@ fn find_provider_by_id_sql() -> String {
 }
 
 /// The fields of a provider about to be inserted.
+#[derive(Clone, Copy)]
 pub(crate) struct NewProvider<'a> {
     /// Unique, non-empty, renameable label; a later `providers:update` request may rename it.
     pub(crate) name: &'a str,
@@ -618,4 +622,291 @@ pub(crate) struct ProviderUpdate<'a> {
 
     /// Replacement credentials; `None` keeps the stored ones.
     pub(crate) credentials: Option<&'a StoredCredentials>,
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "the fixtures are constructed so each expect lands on its documented side"
+    )]
+    #![expect(
+        clippy::panic,
+        reason = "a fixture violating its own invariant fails the test loudly"
+    )]
+
+    use super::{
+        clear_refresh_lease, persist_renewed_credentials_for_lease, persist_reprovision_for_lease,
+        try_acquire_refresh_lease,
+    };
+    use crate::{
+        provider::StoredCredentials,
+        storage::{self as storage_cr, fixtures::oauth_definition},
+        test_support,
+    };
+    use std::{collections::BTreeMap, error::Error as StdError};
+
+    /// Verifies the JSON lease mechanics against the real engine: the acquire stamps the
+    /// credentials' `refresh_started_at` only for an elapsed known expiry, a stale lease is
+    /// stealable, the lease-conditioned persist lands only under the acquired stamp, and the
+    /// reprovision persist merges its fields over the stored document.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn json_refresh_lease_acquires_persists_and_recovers() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = oauth_definition();
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: definition.name.as_str(),
+                base_version: None,
+                payload: &definition.payload,
+                created_at: definition.created_at,
+            },
+        )
+        .await?;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "leased",
+            "l-",
+            Some("http://localhost:8080"),
+            StoredCredentials::OAuth {
+                access_token: "old".to_string(),
+                refresh_token: Some("refresh".to_string()),
+                slots: BTreeMap::new(),
+                expires_at: Some(1),
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        let now = 1_000;
+        let stale_before = now - 90;
+
+        let mut transaction = database.transaction().await?;
+
+        // The expired token acquires the lease.
+        let lease = try_acquire_refresh_lease(&mut transaction, provider.id, now, stale_before, 0)
+            .await?
+            .expect("the expired token acquires");
+
+        transaction.commit().await?;
+
+        // A concurrent acquirer sees the live lease.
+        let mut transaction = database.transaction().await?;
+
+        let is_acquired =
+            try_acquire_refresh_lease(&mut transaction, provider.id, now, stale_before, 0)
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn StdError>)?;
+
+        assert!(is_acquired.is_none());
+
+        transaction.rollback().await?;
+
+        // The lease-conditioned persist lands only under the acquired stamp, clearing it.
+        let renewed = StoredCredentials::OAuth {
+            access_token: "new".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            slots: BTreeMap::new(),
+            expires_at: Some(2_000),
+            refresh_started_at: None,
+        };
+
+        assert!(
+            !persist_renewed_credentials_for_lease(&database, provider.id, lease + 1, &renewed)
+                .await?,
+            "a wrong stamp never persists"
+        );
+
+        assert!(
+            persist_renewed_credentials_for_lease(&database, provider.id, lease, &renewed).await?
+        );
+
+        // A null expiry never acquires: the not-scheduled state never refreshes.
+        let unscheduled = StoredCredentials::OAuth {
+            access_token: "old".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            slots: BTreeMap::new(),
+            expires_at: None,
+            refresh_started_at: None,
+        };
+
+        let mut transaction = database.transaction().await?;
+
+        storage_cr::providers::replace_credentials_in_transaction(
+            &mut transaction,
+            provider.id,
+            &unscheduled,
+        )
+        .await?;
+
+        transaction.commit().await?;
+
+        let mut transaction = database.transaction().await?;
+
+        let is_acquired =
+            try_acquire_refresh_lease(&mut transaction, provider.id, now, stale_before, 0)
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn StdError>)?;
+
+        assert!(is_acquired.is_none());
+
+        transaction.rollback().await?;
+
+        // The reprovision persist merges its fields over the stored document under the lease.
+        let mut transaction = database.transaction().await?;
+
+        storage_cr::providers::replace_credentials_in_transaction(
+            &mut transaction,
+            provider.id,
+            &renewed,
+        )
+        .await?;
+
+        transaction.commit().await?;
+
+        let mut transaction = database.transaction().await?;
+
+        let lease =
+            try_acquire_refresh_lease(&mut transaction, provider.id, 3_000, stale_before, 0)
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn StdError>)?
+                .expect("the expired token acquires again");
+
+        transaction.commit().await?;
+
+        assert!(
+            persist_reprovision_for_lease(
+                &database,
+                provider.id,
+                lease,
+                "provisioned",
+                Some(9_000_000),
+                Some("http://new-base.example"),
+            )
+            .await?
+        );
+
+        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
+            .await?
+            .expect("the provider persists");
+
+        assert_eq!(reloaded.credentials.secret(), "provisioned");
+        assert_eq!(
+            reloaded.base_url.as_deref(),
+            Some("http://new-base.example")
+        );
+
+        let StoredCredentials::OAuth {
+            refresh_token,
+            refresh_started_at,
+            ..
+        } = &reloaded.credentials
+        else {
+            panic!("the provider carries OAuth credentials");
+        };
+
+        assert_eq!(refresh_token.as_deref(), Some("refresh"));
+        assert_eq!(*refresh_started_at, None);
+
+        Ok(())
+    }
+
+    /// A failed refresh's lease clear is conditioned on the caller's own acquired stamp: a
+    /// stale loser clearing under an older stamp never erases a newer holder's live lease,
+    /// while the holder's own clear lands.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn clear_refresh_lease_clears_only_the_acquired_stamp() -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = oauth_definition();
+
+        storage_cr::provider_definitions::insert_definition(
+            &database,
+            storage_cr::provider_definitions::NewDefinition {
+                name: definition.name.as_str(),
+                base_version: None,
+                payload: &definition.payload,
+                created_at: definition.created_at,
+            },
+        )
+        .await?;
+
+        let provider = test_support::insert_provider(
+            &database,
+            &definition,
+            "leased",
+            "l-",
+            Some("http://localhost:8080"),
+            StoredCredentials::OAuth {
+                access_token: "old".to_string(),
+                refresh_token: Some("refresh".to_string()),
+                slots: BTreeMap::new(),
+                expires_at: Some(1),
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        // The winner acquires the lease at stamp 1_000.
+        let mut transaction = database.transaction().await?;
+
+        let lease = try_acquire_refresh_lease(&mut transaction, provider.id, 1_000, 910, 0)
+            .await?
+            .expect("the expired token acquires");
+
+        transaction.commit().await?;
+
+        assert_eq!(lease, 1_000);
+
+        // A stale loser's clear under an older stamp is refused: the winner's live stamp and
+        // its lease protection survive.
+        assert!(
+            !clear_refresh_lease(&database, provider.id, 999).await?,
+            "a stale loser never clears a newer holder's lease"
+        );
+
+        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
+            .await?
+            .expect("the provider persists");
+
+        let StoredCredentials::OAuth {
+            refresh_started_at, ..
+        } = &reloaded.credentials
+        else {
+            panic!("the provider carries OAuth credentials");
+        };
+
+        assert_eq!(*refresh_started_at, Some(1_000));
+
+        // The holder's own clear lands.
+        assert!(clear_refresh_lease(&database, provider.id, lease).await?);
+
+        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
+            .await?
+            .expect("the provider persists");
+
+        let StoredCredentials::OAuth {
+            refresh_started_at, ..
+        } = &reloaded.credentials
+        else {
+            panic!("the provider carries OAuth credentials");
+        };
+
+        assert_eq!(*refresh_started_at, None);
+
+        Ok(())
+    }
 }

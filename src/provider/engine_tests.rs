@@ -23,9 +23,12 @@ use std::collections::BTreeMap;
 use tokio::io::AsyncReadExt as _;
 
 /// A tiny HTTP/1.1 mock: answers every request from `handler` and shuts down on drop.
-struct MockUpstream {
+pub(crate) struct MockUpstream {
+    /// The socket address the mock answers at.
     address: std::net::SocketAddr,
-    shutdown: tokio::sync::oneshot::Sender<()>,
+
+    /// The shutdown signal stopping the mock's accept loop.
+    pub(crate) shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 impl MockUpstream {
@@ -35,7 +38,7 @@ impl MockUpstream {
     ///
     /// Panics when the mock cannot bind, accept, or serve its fixture — a
     /// broken mock is the failure report.
-    async fn start(responses: Vec<String>) -> Self {
+    pub(crate) async fn start(responses: Vec<String>) -> Self {
         let (mock, _) = Self::start_recording(responses).await;
 
         mock
@@ -44,7 +47,7 @@ impl MockUpstream {
 
 impl MockUpstream {
     /// The `http://` base URL the mock answers at.
-    fn base(&self) -> String {
+    pub(crate) fn base(&self) -> String {
         format!("http://{}", self.address)
     }
 
@@ -474,8 +477,9 @@ async fn device_authorization_response(
 
 /// Pins the RFC 8628 §3.2 shape of the device-authorization response (README §5.3): a
 /// non-positive `interval`, or a present non-positive `expires_in`, is a malformed response
-/// that fails the flow start — while positive values and absent members decode per the
-/// documented fallback rules.
+/// that fails the flow start — while positive values decode per the documented fallback rules
+/// in both the string and the JSON-number spelling (RFC 6749 §5.1 renders numerical values as
+/// JSON numbers), and a wrong-shaped duration fails the stage.
 ///
 /// # Panics
 ///
@@ -489,6 +493,9 @@ async fn device_authorization_rejects_non_positive_durations() {
         (json!({"interval": "5"}), true),
         (json!({"expires_in": "600"}), true),
         (json!({}), true),
+        (json!({"expires_in": 1800, "interval": 5}), true),
+        (json!({"expires_in": 1800}), true),
+        (json!({"interval": 5}), true),
         (json!({"expires_in": "600", "interval": "0"}), false),
         (json!({"expires_in": "600", "interval": "-5"}), false),
         (json!({"expires_in": "0"}), false),
@@ -541,6 +548,21 @@ async fn device_authorization_rejects_non_positive_durations() {
     assert_eq!(decoded.expires_in_seconds, Some(600));
     assert_eq!(decoded.interval_seconds, Some(5));
 
+    // The JSON-number spelling decodes exactly like the string one (RFC 8628 §3.2's own
+    // example reports `"expires_in": 1800, "interval": 5`).
+    let decoded = device_authorization_response(json!({
+        "device_code": "dc",
+        "user_code": "uc",
+        "verification_uri": verify,
+        "expires_in": 1800,
+        "interval": 5
+    }))
+    .await
+    .unwrap();
+
+    assert_eq!(decoded.expires_in_seconds, Some(1800));
+    assert_eq!(decoded.interval_seconds, Some(5));
+
     let decoded = device_authorization_response(json!({
         "device_code": "dc",
         "user_code": "uc",
@@ -551,6 +573,24 @@ async fn device_authorization_rejects_non_positive_durations() {
 
     assert_eq!(decoded.expires_in_seconds, None);
     assert_eq!(decoded.interval_seconds, None);
+
+    // A number is a duration; any other non-string kind stays the wrong shape.
+    let outcome = device_authorization_response(json!({
+        "device_code": "dc",
+        "user_code": "uc",
+        "verification_uri": verify,
+        "expires_in": true
+    }))
+    .await;
+
+    let Err(error) = outcome else {
+        panic!("a boolean duration is the wrong shape and must fail the stage");
+    };
+
+    assert!(
+        error.to_string().contains("must be a string"),
+        "the rejection names the shape rule: {error}"
+    );
 }
 
 /// The definition payload of a completion test: an OAuth recipe whose provisioning sequence
@@ -779,18 +819,17 @@ fn base_url_completion_payload(token_url: &str, is_with_provisioning: bool) -> s
     payload
 }
 
-/// Runs one completion test row end to end: the definition's exchange executes against the mock,
-/// its outcome classifies, and the shared pipeline folds it to the working base URL.
+/// Runs one completion test row's exchange end to end: the definition's exchange executes
+/// against the mock and its outcome classifies.
 ///
 /// # Panics
 ///
-/// Panics when the fixture's grant diverges or the exchange or pipeline fails — the failure is
-/// the report.
-async fn completed_base_url(
+/// Panics when the fixture's grant diverges or the exchange fails — the failure is the report.
+async fn executed_outcome(
     client: &reqwest::Client,
     definition: &crate::provider::ProviderDefinition,
     flow: &crate::storage::oauth_flows::OngoingFlow,
-) -> Option<String> {
+) -> oauth::ExchangeOutcome {
     let crate::provider::definition::credential::CredentialAcquisition::OAuth(recipe) =
         &definition.payload.credential
     else {
@@ -813,17 +852,158 @@ async fn completed_base_url(
         redirect_uri.as_str(),
     );
 
-    let outcome = oauth::completed_outcome(
+    oauth::completed_outcome(
         oauth::execute_exchange(client, &recipe.exchange, &env)
             .await
             .unwrap(),
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// Runs one completion test row end to end: the definition's exchange executes against the mock,
+/// its outcome classifies, and the shared pipeline folds it to the working base URL.
+///
+/// # Panics
+///
+/// Panics when the fixture's grant diverges or the exchange or pipeline fails — the failure is
+/// the report.
+async fn completed_base_url(
+    client: &reqwest::Client,
+    definition: &crate::provider::ProviderDefinition,
+    flow: &crate::storage::oauth_flows::OngoingFlow,
+) -> Option<String> {
+    let outcome = executed_outcome(client, definition, flow).await;
 
     oauth::complete_exchange(client, definition, outcome, flow)
         .await
         .unwrap()
         .base_url
+}
+
+/// Pins the flow's slot initialization (README §5.3): the definition's generators run over the
+/// stored slots and initialize only the missing names — a name the reauthorization target
+/// already carries keeps its stored value, and each generator renders its own spelling.
+///
+/// # Panics
+///
+/// Panics when the fixture fails to parse or initialization diverges from the contract.
+#[test]
+fn initialize_slots_fill_only_the_missing_names() {
+    let mut payload = completion_payload(false);
+
+    payload
+        .get_mut("credential")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "initial_slots".to_string(),
+            json!([
+                {"name": "stable", "generator": "uuid_hex"},
+                {"name": "hex", "generator": "uuid_hex"},
+                {"name": "hyphenated", "generator": "uuid"}
+            ]),
+        );
+
+    let definition = completion_definition(payload);
+
+    let mut stored = BTreeMap::new();
+
+    stored.insert("stable".to_string(), "kept".to_string());
+
+    let slots = oauth::initialize_slots(&definition, &stored).unwrap();
+
+    // A name the stored slots carry is never re-initialized.
+    assert_eq!(slots.get("stable").map(String::as_str), Some("kept"));
+
+    let hex = slots.get("hex").map(String::as_str).unwrap();
+
+    assert_eq!(hex.len(), 32);
+    assert!(hex.chars().all(|character| character.is_ascii_hexdigit()));
+
+    let hyphenated = slots.get("hyphenated").map(String::as_str).unwrap();
+
+    assert_eq!(hyphenated.len(), 36);
+    assert_eq!(hyphenated.matches('-').count(), 4);
+    assert!(
+        hyphenated
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
+    );
+}
+
+/// Pins the exchange mapping's number-tolerant text extraction (RFC 6749 §5.1 renders numerical
+/// values as JSON numbers): a token endpoint reporting `expires_in` as a JSON number decodes
+/// into the outcome's lifetime exactly like the string spelling (README §5.1).
+///
+/// # Panics
+///
+/// Panics when the fixture fails to parse or the exchange diverges from the expectation.
+#[tokio::test]
+async fn token_exchange_reads_numeric_expires_in() {
+    let mock = MockUpstream::start(vec![
+        serde_json::to_string(&json!({
+            "access_token": "exchange-token",
+            "expires_in": 3600
+        }))
+        .unwrap(),
+    ])
+    .await;
+
+    let mut payload = completion_payload(false);
+
+    // The exchange points at the mock and maps the access token plus the numeric `expires_in`.
+    payload
+        .get_mut("credential")
+        .unwrap()
+        .get_mut("exchange")
+        .unwrap()
+        .get_mut("request")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "url".to_string(),
+            json!([{"type": "literal", "value": format!("{}/token", mock.base())}]),
+        );
+
+    payload
+        .get_mut("credential")
+        .unwrap()
+        .get_mut("exchange")
+        .unwrap()
+        .get_mut("response")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "fields".to_string(),
+            json!([
+                {
+                    "path": ["access_token"],
+                    "target": {"type": "access_token"},
+                    "required": true
+                },
+                {
+                    "path": ["expires_in"],
+                    "target": {"type": "expires_in_seconds"},
+                    "required": false
+                }
+            ]),
+        );
+
+    let definition = completion_definition(payload);
+
+    let flow = completion_flow(mock.base());
+
+    let client = crate::http_client::control_plane();
+
+    let outcome = executed_outcome(&client, &definition, &flow).await;
+
+    assert_eq!(outcome.access_token.as_deref(), Some("exchange-token"));
+    assert_eq!(outcome.expires_in_seconds, Some(3600));
+
+    mock.shutdown.send(()).ok();
 }
 
 /// Pins the completion pipeline's base-URL precedence (README §5.3, §5.4): an exchange

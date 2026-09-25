@@ -9,7 +9,12 @@ import type {
 } from "/src/management-api/generated/v0";
 import { USAGE_GROUP_BY_OPTIONS } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
-import { hrefs } from "/src/router";
+import {
+    currentLocation,
+    hrefs,
+    parseUsageQuerySubject,
+    type UsageQuerySubject,
+} from "/src/router";
 import { Button, Switch, TextField } from "/src/ui/controls";
 import { Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -24,24 +29,94 @@ import { indexUsageEntities, type UsageEntityIndex, usageDimensionLabel } from "
 import { readUsageBuckets, readUsageEntities, type UsageEntities } from "./usage-read";
 
 /**
+ * The grouping the address arrives with: the default day dimension, plus the
+ * carried subject's own, so its buckets split the subject out beside every
+ * day.
+ */
+function arrivalGroupBy(subject: UsageQuerySubject | null): ReadonlyArray<UsageGroupBy> {
+    return subject === null
+        ? [
+              "day",
+          ]
+        : [
+              "day",
+              subject.dimension,
+          ];
+}
+
+/**
+ * The filter fields the address arrives with: the subject's id prefilled
+ * into its own field, so the first query already narrows to the subject the
+ * aggregates link carried.
+ */
+function arrivalFields(subject: UsageQuerySubject | null): UsageFilterFields {
+    if (subject === null) {
+        return EMPTY_USAGE_FILTER_FIELDS;
+    }
+
+    const subjectId = String(subject.id);
+
+    if (subject.dimension === "provider") {
+        return {
+            ...EMPTY_USAGE_FILTER_FIELDS,
+            providerId: subjectId,
+        };
+    }
+
+    if (subject.dimension === "model") {
+        return {
+            ...EMPTY_USAGE_FILTER_FIELDS,
+            modelId: subjectId,
+        };
+    }
+
+    return {
+        ...EMPTY_USAGE_FILTER_FIELDS,
+        apiKeyId: subjectId,
+    };
+}
+
+/**
+ * The inline error for one hand-typed bound: any non-blank value must be a
+ * complete date and time, so a malformed bound names its mistake instead of
+ * silently running the query without it.
+ */
+function boundError(label: string, value: string): string | null {
+    if (value.trim() === "" || parseDateTimeInputToMicros(value) !== null) {
+        return null;
+    }
+
+    return `${label} must be a complete date and time, like 2026-09-23T10:00 — or blank for no bound.`;
+}
+
+/**
  * Request accounting as aggregates: one bucket per distinct combination of
  * the requested dimensions inside the filter. The dimensions are a set of
  * switches — none selected totals every row — and the filter narrows what the
  * gateway counts. Bucket keys are composite: one part per requested dimension,
  * resolved through the entity lists and the vocabularies the screen holds.
+ * The address may carry a subject — one entity dimension and its row — which
+ * the screen reads on arrival, opening with that dimension grouped beside the
+ * day and its filter field filled.
  */
 export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.Element {
+    // The subject the address arrived with, read once: the screen remounts
+    // per address, so the arrival search is the prefill it holds for its
+    // whole life.
+    const arrivalSubject: UsageQuerySubject | null = parseUsageQuerySubject(
+        currentLocation().search,
+    );
     const [entities, setEntities] = createSignal<UsageEntities>({
         providers: [],
         models: [],
         apiKeys: [],
     });
-    const [groupBy, setGroupBy] = createSignal<ReadonlyArray<UsageGroupBy>>([
-        "day",
-    ]);
+    const [groupBy, setGroupBy] = createSignal<ReadonlyArray<UsageGroupBy>>(
+        arrivalGroupBy(arrivalSubject),
+    );
     const [fromInput, setFromInput] = createSignal("");
     const [toInput, setToInput] = createSignal("");
-    const [fields, setFields] = createSignal<UsageFilterFields>(EMPTY_USAGE_FILTER_FIELDS);
+    const [fields, setFields] = createSignal<UsageFilterFields>(arrivalFields(arrivalSubject));
     const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
     // The dimensions the displayed buckets were grouped by — the request's own
     // set, not the live switches: a key carries exactly its request's
@@ -84,8 +159,20 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
         }),
     });
 
+    const fromError = (): string | null => boundError("From", fromInput());
+    const toError = (): string | null => boundError("To", toInput());
+
+    /** Whether both typed bounds parse — the query never runs while one does not. */
+    const isWindowValid = (): boolean => fromError() === null && toError() === null;
+
     /** Runs the aggregation query, answering whether it produced buckets. */
     const runQuery = async (signal: AbortSignal): Promise<boolean> => {
+        // A malformed bound is named at its field: running without it would
+        // silently widen the question, so the query waits until it is fixed.
+        if (!isWindowValid()) {
+            return false;
+        }
+
         try {
             const request = queryRequest();
 
@@ -154,7 +241,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
     const submit = async (event: SubmitEvent): Promise<void> => {
         event.preventDefault();
 
-        if (isQuerying()) {
+        if (isQuerying() || !isWindowValid()) {
             return;
         }
 
@@ -218,19 +305,19 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <TextField
                             label="From"
-                            type="datetime-local"
                             value={fromInput()}
                             onInput={setFromInput}
                             isDisabled={isQuerying()}
-                            hint="Inclusive, in this browser's zone. Blank sets no bound."
+                            error={fromError()}
+                            hint="Inclusive, in this browser's zone — like 2026-09-23T10:00. Blank sets no bound."
                         />
                         <TextField
                             label="To"
-                            type="datetime-local"
                             value={toInput()}
                             onInput={setToInput}
                             isDisabled={isQuerying()}
-                            hint="Exclusive, in this browser's zone. Blank sets no bound."
+                            error={toError()}
+                            hint="Exclusive, in this browser's zone — like 2026-09-23T10:00. Blank sets no bound."
                         />
                         <UsageFilterControls
                             fields={fields()}
@@ -251,6 +338,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                             type="submit"
                             tone="primary"
                             isBusy={isQuerying()}
+                            isDisabled={!isWindowValid()}
                         >
                             {isQuerying() ? "Querying…" : "Run query"}
                         </Button>

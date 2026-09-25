@@ -20,7 +20,7 @@ pub(crate) mod provisioning;
 
 pub(crate) use definition::{DefinitionPayload, ProviderDefinition};
 
-/// The plaintext credentials a provider row stores (README §5.6): a tagged JSON enum whose
+/// The plaintext credentials a provider row stores (README §3): a tagged JSON enum whose
 /// `type` discriminator is the only stored credential-kind representation, and which must match
 /// the credential kind of the provider's definition version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

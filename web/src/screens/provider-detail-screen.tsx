@@ -312,6 +312,12 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                     <dd class="mt-1">{upstreamFormatLabel(props.provider.format)}</dd>
                 </div>
                 <div>
+                    <dt class="text-[12.5px] font-medium text-ink-dim">Recipe</dt>
+                    <dd class="tnum mt-1 break-all">
+                        {`${props.provider.provider_definition_name} v${props.provider.provider_definition_version}`}
+                    </dd>
+                </div>
+                <div>
                     <dt class="text-[12.5px] font-medium text-ink-dim">Model prefix</dt>
                     <dd class="tnum mt-1 break-all">
                         {props.provider.model_prefix === ""

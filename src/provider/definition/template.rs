@@ -345,7 +345,7 @@ impl ResponsePath {
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExtractionShape {
-    /// The value must be a JSON string.
+    /// The value is a JSON string, or a JSON number rendered as its decimal text.
     String,
 
     /// The value must be a JSON integer.

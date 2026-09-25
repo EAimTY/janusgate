@@ -617,3 +617,203 @@ describe("UsageQueryScreen refresh racing an in-flight submit", () => {
         expect(document.body.textContent).not.toContain("stale-submit");
     });
 });
+
+describe("UsageQueryScreen arrival subject", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+
+        window.history.pushState(null, "", "/");
+        window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+
+    async function mountAndAnswer(
+        requests: Array<QueryUsageRequest>,
+        holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        },
+    ): Promise<void> {
+        const api = screenApi(holder, () => {}, []);
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={{
+                            ...api,
+                            queryUsage: (request) => {
+                                requests.push(request);
+
+                                return Promise.resolve({
+                                    buckets: [],
+                                });
+                            },
+                        }}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+    }
+
+    it("prefills the address's subject as the grouping and the filter", async () => {
+        window.history.pushState(null, "", "/usage/query?provider=1");
+        window.dispatchEvent(new PopStateEvent("popstate"));
+
+        const requests: QueryUsageRequest[] = [];
+        await mountAndAnswer(requests, {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        });
+
+        // The subject preselects its dimension beside the day default and
+        // fills its own filter field: the arrival query already asks about
+        // exactly the subject the aggregates link carried.
+        expect(requests).toEqual([
+            {
+                group_by: [
+                    "day",
+                    "provider",
+                ],
+                filter: {
+                    provider_id: [
+                        1,
+                    ],
+                },
+            },
+        ]);
+    });
+
+    it("asks the bare page's default question when the address carries no subject", async () => {
+        const requests: QueryUsageRequest[] = [];
+        await mountAndAnswer(requests, {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        });
+
+        expect(requests).toEqual([
+            {
+                group_by: [
+                    "day",
+                ],
+                filter: {},
+            },
+        ]);
+    });
+});
+
+describe("UsageQueryScreen hand-typed bounds", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("names a malformed bound inline and holds the query until it is fixed", async () => {
+        const requests: QueryUsageRequest[] = [];
+        const holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        } = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {});
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={{
+                            ...api,
+                            queryUsage: (request) => {
+                                requests.push(request);
+
+                                return Promise.resolve({
+                                    buckets: [],
+                                });
+                            },
+                        }}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The blank-bounds mount query ran as always.
+        expect(requests).toHaveLength(1);
+
+        // A space instead of the T separator is malformed: the mistake is
+        // named inline and the submit is held, so the query can never run
+        // with the bound silently dropped.
+        labeledInput("From", "2026-09-23 10:00");
+        await settle();
+
+        expect(document.body.textContent).toContain("From must be a complete date and time");
+        expect(buttonWithText("Run query").disabled).toBe(true);
+
+        buttonWithText("Run query").click();
+        await settle();
+        expect(requests).toHaveLength(1);
+
+        // Completing the value releases the query, and the bound rides it.
+        labeledInput("From", "2026-09-23T10:00");
+        await settle();
+
+        expect(buttonWithText("Run query").disabled).toBe(false);
+        buttonWithText("Run query").click();
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        expect(requests).toHaveLength(2);
+        expect(requests[1]?.filter?.from).toBeTypeOf("number");
+        expect(requests[1]?.filter?.to).toBeUndefined();
+    });
+});

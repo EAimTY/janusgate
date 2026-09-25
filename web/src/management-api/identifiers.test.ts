@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
     baseUrlMessage,
+    bearerSecretError,
     compositionMessage,
     isBaseUrl,
     isBearerSecret,
     isModelPrefix,
     isRoutingToken,
+    modelPrefixError,
+    routingTokenError,
     routingTokenMessage,
 } from "./identifiers";
 
@@ -86,5 +89,41 @@ describe("messages", () => {
         expect(compositionMessage("Upstream ID")).toContain("Upstream ID");
         expect(routingTokenMessage("Upstream ID")).toContain("Upstream ID");
         expect(baseUrlMessage()).toContain("http");
+    });
+});
+
+describe("bearerSecretError", () => {
+    it("reads an empty secret as the kept stored one", () => {
+        expect(bearerSecretError("", "Key")).toBeNull();
+    });
+
+    it("accepts a composed secret and rejects the rest, naming the field", () => {
+        expect(bearerSecretError("sk-live-123_~-abcXYZ019", "Key")).toBeNull();
+        expect(bearerSecretError("has space", "Key")).toBe(compositionMessage("Key"));
+    });
+});
+
+describe("routingTokenError", () => {
+    it("reads an absent or empty value as nothing to reject", () => {
+        expect(routingTokenError(null, "Upstream ID")).toBeNull();
+        expect(routingTokenError("", "Upstream ID")).toBeNull();
+    });
+
+    it("accepts a routing token and rejects the rest, naming the field", () => {
+        expect(routingTokenError("gpt-4o", "Upstream ID")).toBeNull();
+        expect(routingTokenError("meta-llama/Llama-3.1-8B", "Upstream ID")).toBe(
+            routingTokenMessage("Upstream ID"),
+        );
+    });
+});
+
+describe("modelPrefixError", () => {
+    it("reads an empty prefix as no prefix", () => {
+        expect(modelPrefixError("")).toBeNull();
+    });
+
+    it("accepts a prefix and rejects the rest", () => {
+        expect(modelPrefixError("codex-")).toBeNull();
+        expect(modelPrefixError("qwen:32b")).toBe(routingTokenMessage("Model prefix"));
     });
 });

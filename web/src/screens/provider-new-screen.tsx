@@ -4,11 +4,10 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { DefinitionResponse } from "/src/management-api/generated/v0";
 import {
     baseUrlMessage,
-    compositionMessage,
+    bearerSecretError,
     isBaseUrl,
     isBearerSecret,
-    isModelPrefix,
-    routingTokenMessage,
+    modelPrefixError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import {
@@ -57,6 +56,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const [isCustomPrefix, setIsCustomPrefix] = createSignal(false);
     const [customPrefix, setCustomPrefix] = createSignal("");
     const [baseUrl, setBaseUrl] = createSignal("");
+    // The base URL's error is stated only once the operator has typed into
+    // the field — a pristine form is not an error, a required-but-empty field
+    // is not yet a mistake (the api-key forms' untouched-name gate).
+    const [hasBaseUrlInput, setHasBaseUrlInput] = createSignal(false);
     const [apiKey, setApiKey] = createSignal("");
     const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
@@ -149,22 +152,33 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     );
 
     /** Inline composition errors, shown where the value was typed. */
-    const prefixError = (): string | null =>
-        isModelPrefix(resolvedPrefix()) ? null : routingTokenMessage("Model prefix");
+    const prefixError = (): string | null => modelPrefixError(resolvedPrefix());
 
     const trimmedBaseUrl = (): string => baseUrl().trim();
 
     const needsBaseUrl = (): boolean => preset().needsBaseUrl;
 
+    /** Inline error for the base URL, shown where it was typed and only once
+     * it was typed: a pristine form states the requirement through the submit
+     * gate, never as alert-red from first paint. */
     const baseUrlError = (): string | null => {
+        if (!hasBaseUrlInput()) {
+            return null;
+        }
+
         const trimmed = trimmedBaseUrl();
         return (!needsBaseUrl() || isBaseUrl(trimmed)) && (needsBaseUrl() || trimmed === "")
             ? null
             : baseUrlMessage();
     };
 
-    const apiKeyError = (): string | null =>
-        apiKey() === "" || isBearerSecret(apiKey()) ? null : compositionMessage("API key");
+    /** Types into the base URL field, opening its inline error. */
+    const inputBaseUrl = (value: string): void => {
+        setHasBaseUrlInput(true);
+        setBaseUrl(value);
+    };
+
+    const apiKeyError = (): string | null => bearerSecretError(apiKey(), "API key");
 
     /** A static-key creation is submittable with a valid definition and a complete, routable connection. */
     const canCreateStatic = (): boolean =>
@@ -252,9 +266,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 version: result.provider_definition.version,
             };
         } catch (error) {
+            // The definition write is its own subject: its name is the preset
+            // id and its base version the stored latest, neither of which this
+            // page edits — a conflict's recovery is the moved stored version,
+            // never the provider-name fix a provider write's conflict carries.
             return {
                 error: screenFailureNotice(error, {
-                    action: current === null ? "create-provider" : "update-provider",
+                    action: "ensure-definition",
                 }),
             };
         }
@@ -600,7 +618,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                 hasBaseUrl={needsBaseUrl()}
                                 baseUrl={baseUrl()}
                                 apiKey={apiKey()}
-                                onBaseUrlInput={setBaseUrl}
+                                onBaseUrlInput={inputBaseUrl}
                                 onApiKeyInput={setApiKey}
                                 baseUrlError={baseUrlError()}
                                 apiKeyError={apiKeyError()}

@@ -611,8 +611,9 @@ impl UpstreamParser {
     }
 
     /// Closes the block named by a `content_block_stop` event: thinking blocks terminate with an
-    /// empty-text done carrying the streamed signature, tool blocks complete their call, and
-    /// text blocks need no closing event.
+    /// empty-text done carrying the streamed signature, whose opaque replay payload includes the
+    /// signature exactly like the complete-body path, tool blocks complete their call, and text
+    /// blocks need no closing event.
     fn ingest_block_stop(&mut self, event: ContentBlockStopEvent) -> Vec<IrEvent> {
         let content_index = event.index as usize;
 
@@ -630,14 +631,21 @@ impl UpstreamParser {
         match open.kind {
             OpenBlockKind::Text => Vec::new(),
 
-            OpenBlockKind::Thinking => vec![IrEvent::ReasoningDone {
-                text: String::new(),
-                signature: open.signature,
-                opaque: block_opaque(&TypedBlock::Thinking {
-                    thinking: open.thinking_text,
-                    signature: None,
-                }),
-            }],
+            OpenBlockKind::Thinking => {
+                // The signature rides the opaque payload, not the separate done field alone:
+                // consumers render the opaque verbatim, and a thinking block replayed to
+                // Anthropic without its signature is rejected with a 400 (README §6.1).
+                let signature = open.signature;
+
+                vec![IrEvent::ReasoningDone {
+                    text: String::new(),
+                    signature: signature.clone(),
+                    opaque: block_opaque(&TypedBlock::Thinking {
+                        thinking: open.thinking_text,
+                        signature,
+                    }),
+                }]
+            }
 
             // Redacted blocks stream no deltas, so the stop event carries the block's whole
             // content as its opaque replay payload.
@@ -906,7 +914,7 @@ fn input_to_arguments(input: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::client_render::{SseRenderer, finish_reason_to_stop},
+        super::client_render::{SseRenderer, finish_reason_to_stop, render_json_response},
         *,
     };
     use crate::{format::ClientSseRenderer, ir::Aggregator};
@@ -1025,6 +1033,7 @@ mod tests {
                     opaque: json!({
                         "type": "thinking",
                         "thinking": "draft",
+                        "signature": "sig",
                     }),
                 },
                 IrEvent::ToolCallDelta {
@@ -1065,6 +1074,134 @@ mod tests {
 
         // A clean end after the terminal events emits nothing further.
         assert!(parser.finish().is_empty());
+    }
+
+    /// Streams a thinking turn and verifies both outward renderings agree on the block: the
+    /// aggregated replay renders the streamed block's opaque payload verbatim — the streamed
+    /// signature included, exactly as the complete-body path builds it — and the streamed render
+    /// delivers the same text and signature through its deltas, so either rendering hands back a
+    /// block Anthropic accepts unchanged (README §6.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if either rendering diverges from the replayed block.
+    #[test]
+    fn the_streamed_thinking_block_replays_with_its_signature() {
+        let mut parser = UpstreamParser::new();
+
+        let frames = |event: &str, data: Value| SseFrame {
+            data: data.to_string(),
+            event: Some(event.to_string()),
+        };
+
+        let mut events = Vec::new();
+
+        for frame in [
+            frames(
+                "message_start",
+                json!({"message": {"id": "msg_1", "model": "claude-test"}}),
+            ),
+            frames(
+                "content_block_start",
+                json!({"index": 0, "content_block": {"type": "thinking"}}),
+            ),
+            frames(
+                "content_block_delta",
+                json!({"index": 0, "delta": {"type": "thinking_delta",
+                                              "thinking": "draft"}}),
+            ),
+            frames(
+                "content_block_delta",
+                json!({"index": 0, "delta": {"type": "signature_delta",
+                                              "signature": "sig"}}),
+            ),
+            frames("content_block_stop", json!({"index": 0})),
+            frames(
+                "message_delta",
+                json!({"delta": {"stop_reason": "end_turn"},
+                       "usage": {"output_tokens": 3}}),
+            ),
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture stream is constructed to parse"
+            )]
+            let ingested = parser
+                .ingest_frame(&frame)
+                .expect("every fixture frame parses");
+
+            events.extend(ingested);
+        }
+
+        // The aggregated replay renders the block verbatim, signature included.
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        let block = json!({
+            "type": "thinking",
+            "thinking": "draft",
+            "signature": "sig",
+        });
+
+        assert_eq!(
+            aggregation
+                .reasoning_blocks
+                .first()
+                .map(|block| &block.opaque),
+            Some(&block),
+        );
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the aggregated body is under test; a failing render is the failure"
+        )]
+        let body = serde_json::to_value(render_json_response("claude-test", &aggregation))
+            .expect("the aggregated body serializes");
+
+        assert_eq!(body.pointer("/content/0"), Some(&block));
+
+        // The streamed render delivers the same block through its deltas: the reasoning text
+        // followed by the closing signature.
+        let mut renderer = SseRenderer::new("claude-test".to_string());
+
+        let mut rendered = Vec::new();
+
+        for event in &events {
+            rendered.extend(renderer.render(event));
+        }
+
+        let deltas = rendered
+            .iter()
+            .filter(|frame| frame.starts_with("event: content_block_delta"))
+            .map(|frame| {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the rendered frames are under test; a malformed frame is the failure"
+                )]
+                serde_json::from_str::<Value>(
+                    frame
+                        .split_once("data: ")
+                        .expect("every frame carries a data line")
+                        .1,
+                )
+                .expect("frame data is rendered JSON")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            deltas,
+            vec![
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "thinking_delta", "thinking": "draft"}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "signature_delta", "signature": "sig"}}),
+            ],
+        );
     }
 
     /// Maps every documented `stop_reason` onto its finish reason, degrading unknown values to

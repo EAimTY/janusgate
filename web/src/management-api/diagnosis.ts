@@ -15,6 +15,7 @@ export type Reachability = "reached" | "unreached" | "unknown";
 /** The management action whose failure is being explained. */
 export type ActionName =
     | "connect"
+    | "ensure-definition"
     | "create-provider"
     | "update-provider"
     | "delete-provider"
@@ -92,6 +93,12 @@ function conflictFix(action: ActionName | undefined): string {
         case "create-api-key":
         case "update-api-key":
             return "Another key already holds that secret; generate a fresh one.";
+
+        // The definition write's collision is not the operator's input: its
+        // name is the preset's id and its base version is the stored latest,
+        // so the only recovery is picking the moved version back up.
+        case "ensure-definition":
+            return "The stored version moved — reload this page and submit again.";
 
         case "create-provider":
         case "update-provider":

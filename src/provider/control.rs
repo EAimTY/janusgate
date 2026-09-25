@@ -288,8 +288,7 @@ pub(crate) async fn execute(
     decode_body(&body, encoding, what)
 }
 
-/// Decodes the response body through an explicit declared encoding; the argument-carrying form
-/// [`execute_with_encoding`] uses.
+/// Decodes the response body through an explicit declared encoding.
 ///
 /// # Errors
 ///
@@ -313,8 +312,9 @@ pub(crate) fn decode_body(
 }
 
 /// Extracts one declared response field from a decoded body: a missing required path fails the
-/// stage, a missing optional path yields `None`, and a present value of the wrong declared shape
-/// always fails (README §5.1).
+/// stage, a missing optional path yields `None`, and a present value of the wrong declared
+/// shape always fails (README §5.1). The text shape reads a JSON string or number — a number
+/// renders as its decimal text (RFC 6749 §5.1) — and rejects every other JSON kind.
 ///
 /// # Errors
 ///
@@ -335,9 +335,14 @@ pub(crate) fn extract_field(
             };
 
             match shape {
-                ExtractionShape::String => match value.as_str() {
-                    Some(text) => Ok(Some(Extracted::Text(text.to_string()))),
-                    None => Err(ControlFailure::Unavailable {
+                // A JSON number renders as its decimal text (RFC 6749 §5.1: "Numerical values
+                // are included as JSON numbers" — the RFC 8628 §3.2 example reports
+                // `"expires_in": 1800, "interval": 5`), so the text shape reads strings and
+                // numbers alike; every other JSON kind is the wrong shape.
+                ExtractionShape::String => match value {
+                    Json::String(text) => Ok(Some(Extracted::Text(text.clone()))),
+                    Json::Number(number) => Ok(Some(Extracted::Text(number.to_string()))),
+                    _ => Err(ControlFailure::Unavailable {
                         detail: format!("{what} response value must be a string"),
                     }),
                 },
@@ -397,8 +402,9 @@ pub(crate) fn extract_field(
 }
 
 /// The extraction shape every stage-level [`ResponseField`] mapping reads its value with: the
-/// device-authorization, exchange, and refresh mappings all read text, and their integer-valued
-/// targets parse the text at their consumers. A provisioning extraction declares its own shape.
+/// device-authorization, exchange, and refresh mappings all read text — a JSON number renders
+/// as its decimal text (RFC 6749 §5.1) — and their integer-valued targets parse the text at
+/// their consumers. A provisioning extraction declares its own shape.
 pub(crate) const TEXT_FIELD_SHAPE: ExtractionShape = ExtractionShape::String;
 
 /// The descriptor-level facts of one response-field mapping, abstracted over the stage
@@ -507,7 +513,9 @@ mod tests {
 
     /// Pins the shared field-mapping fold (README §5.1): present values apply in order, a
     /// missing optional path leaves its target unchanged, a missing required path fails the
-    /// stage with its label, and a present value of the wrong declared shape always fails.
+    /// stage with its label, and a present value of the wrong declared shape always fails. The
+    /// text shape reads strings and JSON numbers — the number renders as its decimal text
+    /// (RFC 6749 §5.1) — and rejects every other JSON kind.
     ///
     /// # Panics
     ///
@@ -517,7 +525,8 @@ mod tests {
         let decoded = DecodedBody::Json(serde_json::json!({
             "present": "value",
             "nested": { "leaf": "refresh-token" },
-            "count": 1
+            "count": 1,
+            "flag": true
         }));
 
         let fields = [
@@ -575,10 +584,31 @@ mod tests {
 
         assert_eq!(detail, "stage response lacks a required field");
 
-        // The string shape of a stage-level field mapping rejects the integer the `count`
-        // member carries.
-        let wrong_shape = [ResponseField {
+        // The text shape reads the integer the `count` member carries, rendered as its decimal
+        // text (RFC 6749 §5.1 includes numerical values as JSON numbers).
+        let numeric = [ResponseField {
             path: ResponsePath(vec!["count".to_string()]),
+            target: ResponseTarget::AccessToken,
+            required: true,
+        }];
+
+        let mut applied = Vec::new();
+
+        map_response_fields(&decoded, &numeric, "stage", |target, extracted| {
+            applied.push((target.clone(), extracted.as_text()));
+
+            Ok::<(), ControlFailure>(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            applied,
+            vec![(ResponseTarget::AccessToken, "1".to_string())]
+        );
+
+        // Any other non-string, non-number kind stays the wrong shape.
+        let wrong_shape = [ResponseField {
+            path: ResponsePath(vec!["flag".to_string()]),
             target: ResponseTarget::AccessToken,
             required: true,
         }];

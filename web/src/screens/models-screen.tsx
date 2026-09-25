@@ -12,10 +12,10 @@ import { PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
 
 /**
- * Every model on one page, filterable by provider and searchable by ID.
- * Rows state the two facts a model has — serving and discovery state — and
- * each row opens the model's detail page, behind which its edit page owns
- * every change.
+ * Every model on one page, filterable by provider and searchable by ID or
+ * provider name. Rows state the two facts a model has — serving and
+ * discovery state — and each row opens the model's detail page, behind which
+ * its edit page owns every change.
  */
 export function ModelsScreen(props: {
     readonly api: ManagementApi;
@@ -71,11 +71,17 @@ export function ModelsScreen(props: {
             return models();
         }
 
-        return models().filter(
-            (model) =>
+        return models().filter((model) => {
+            // The rows name their provider, so the provider's name is
+            // searchable exactly like the two ids the row also displays.
+            const providerName = providersById().get(model.provider_id)?.name ?? "";
+
+            return (
                 model.public_id.toLowerCase().includes(needle) ||
-                model.upstream_id.toLowerCase().includes(needle),
-        );
+                model.upstream_id.toLowerCase().includes(needle) ||
+                providerName.toLowerCase().includes(needle)
+            );
+        });
     });
 
     return (
@@ -116,13 +122,16 @@ export function ModelsScreen(props: {
                         <EmptyState
                             glyph="stack"
                             title="No models yet"
-                            description="Add a provider first, then sync its models — or add one by hand."
+                            description="Add a provider first, then discover its models — or add one by hand."
                         >
                             <ButtonLink
-                                href={hrefs.modelNew(props.providerFilter)}
+                                href={hrefs.providerNew()}
                                 tone="primary"
                                 glyph="plus"
                             >
+                                Create provider
+                            </ButtonLink>
+                            <ButtonLink href={hrefs.modelNew(props.providerFilter)}>
                                 Create model
                             </ButtonLink>
                         </EmptyState>
@@ -133,7 +142,7 @@ export function ModelsScreen(props: {
                             label="Search"
                             isLabelVisible={true}
                             id="models-search"
-                            placeholder="Public or upstream ID"
+                            placeholder="Public or upstream ID, or provider name"
                             value={search()}
                             onInput={setSearch}
                             class="min-w-0 flex-1 basis-56 sm:max-w-xs"

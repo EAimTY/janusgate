@@ -1,4 +1,5 @@
 import { type Accessor, createSignal } from "solid-js";
+import type { UsageGroupBy } from "/src/management-api/generated/v0";
 import { isRoutingToken } from "/src/management-api/identifiers";
 import {
     EMPTY_USAGE_FILTER_DRAFT,
@@ -73,6 +74,11 @@ export type AppRoute =
       }
     | {
           readonly name: "usageQuery";
+          /**
+           * The subject the address carried — one entity dimension and the
+           * row the aggregates page preselects — or `null` for the bare page.
+           */
+          readonly subject: UsageQuerySubject | null;
       }
     | {
           readonly name: "notFound";
@@ -82,6 +88,63 @@ type AppLocation = {
     readonly pathname: string;
     readonly search: string;
 };
+
+/** The entity dimensions an aggregates link can carry its subject as: the ones with a filter field of their own. */
+export type UsageQuerySubjectDimension = Extract<UsageGroupBy, "provider" | "model" | "api_key">;
+
+/** The subject an aggregates link carries: one entity dimension and the row to preselect there. */
+export type UsageQuerySubject = {
+    readonly dimension: UsageQuerySubjectDimension;
+    readonly id: number;
+};
+
+/** The query parameter one subject dimension rides under — the usage stream's own names, so both usage routes address an entity alike. */
+const USAGE_QUERY_SUBJECT_PARAMETERS: Record<UsageQuerySubjectDimension, string> = {
+    provider: "provider",
+    model: "model",
+    api_key: "key",
+};
+
+const USAGE_QUERY_SUBJECT_DIMENSIONS: ReadonlyArray<UsageQuerySubjectDimension> = [
+    "provider",
+    "model",
+    "api_key",
+];
+
+/**
+ * The query string one aggregates link carries for its subject: a single
+ * `parameter=row-id` pair, readable by the same strictness the usage
+ * stream's route applies to its own entity fields.
+ */
+function serializeUsageQuerySubject(subject: UsageQuerySubject): string {
+    return `${USAGE_QUERY_SUBJECT_PARAMETERS[subject.dimension]}=${subject.id}`;
+}
+
+/**
+ * The subject one aggregates address carries: exactly one of the stream's
+ * entity parameters may name a row. Any other reading — none named, several
+ * named, a value that is not a row identifier — is the bare page, exactly as
+ * the usage stream reads an unaddressable filter as absent. The aggregates
+ * screen reads its arrival address through this too.
+ */
+export function parseUsageQuerySubject(search: string): UsageQuerySubject | null {
+    const parameters = new URLSearchParams(search);
+    const named: UsageQuerySubject[] = [];
+
+    for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
+        const id = parseRowIdentifier(parameters.get(USAGE_QUERY_SUBJECT_PARAMETERS[dimension]));
+
+        if (id !== null) {
+            named.push({
+                dimension,
+                id,
+            });
+        }
+    }
+
+    const [subject] = named;
+    return named.length === 1 ? (subject ?? null) : null;
+}
 
 /** Builders for every link the app renders, so no href is written twice. */
 export const hrefs = {
@@ -116,13 +179,23 @@ export const hrefs = {
     apiKeyNew: (): string => "/api-keys/new",
     apiKeyDetail: (apiKeyId: number): string => `/api-keys/${apiKeyId}`,
     apiKeyEdit: (apiKeyId: number): string => `/api-keys/${apiKeyId}/edit`,
-    /** The listing's filter as its route carries it: absent means unfiltered. */
+    /**
+     * The listing's filter as its route carries it: absent means unfiltered.
+     */
     usage: (filter: UsageFilterDraft = EMPTY_USAGE_FILTER_DRAFT): string => {
         const query = serializeUsageFilterDraft(filter);
 
         return query === "" ? "/usage" : `/usage?${query}`;
     },
-    usageQuery: (): string => "/usage/query",
+    /**
+     * The aggregates page; the optional subject — one entity dimension and
+     * the row to preselect there — rides under the usage stream's own
+     * parameter names, so both usage routes address an entity alike.
+     */
+    usageQuery: (subject?: UsageQuerySubject): string =>
+        subject === undefined
+            ? "/usage/query"
+            : `/usage/query?${serializeUsageQuerySubject(subject)}`,
 } as const;
 
 /**
@@ -267,6 +340,7 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
     if (normalizedPath === "/usage/query") {
         return {
             name: "usageQuery",
+            subject: parseUsageQuerySubject(search),
         };
     }
 

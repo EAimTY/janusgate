@@ -41,8 +41,8 @@ pub(crate) struct MessagesResponse {
     usage: ResponseUsage,
 }
 
-/// Token accounting in the native Messages shape: totals always, cache columns when reported,
-/// and no reasoning breakdown.
+/// Token accounting in the native Messages shape: totals always, cache columns when reported, and
+/// the output reasoning breakdown when the upstream reported it.
 #[derive(Debug, Serialize)]
 struct ResponseUsage {
     /// Tokens consumed by the input.
@@ -58,16 +58,32 @@ struct ResponseUsage {
     /// Input tokens served from the upstream prompt cache, when reported.
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_read_input_tokens: Option<u64>,
+
+    /// Output token breakdown, when the upstream reported one — the native spelling of the IR
+    /// reasoning column, omitted when absent (README §5.8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_tokens_details: Option<OutputTokensDetails>,
+}
+
+/// The native output token breakdown.
+#[derive(Debug, Serialize)]
+struct OutputTokensDetails {
+    /// Output tokens spent on extended thinking.
+    thinking_tokens: u64,
 }
 
 impl ResponseUsage {
-    /// Renders one observation, carrying reported cache columns and omitting the rest.
+    /// Renders one observation, carrying reported cache columns and the reasoning breakdown and
+    /// omitting the rest.
     fn render(usage: IrUsage) -> Self {
         Self {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             cache_creation_input_tokens: usage.cache_write_tokens,
             cache_read_input_tokens: usage.cached_tokens,
+            output_tokens_details: usage
+                .reasoning_tokens
+                .map(|thinking_tokens| OutputTokensDetails { thinking_tokens }),
         }
     }
 
@@ -78,6 +94,7 @@ impl ResponseUsage {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            output_tokens_details: None,
         }
     }
 }
@@ -915,14 +932,15 @@ mod tests {
             ]),
         );
 
-        // Cache columns ride through when reported; the reasoning breakdown stays null because
-        // the Messages usage shape has no such column.
+        // Cache columns ride through when reported, and the upstream-reported reasoning
+        // breakdown renders under the native `output_tokens_details.thinking_tokens` spelling.
         assert_eq!(
             at(&body, "/usage"),
             &json!({
                 "input_tokens": 4,
                 "output_tokens": 8,
                 "cache_read_input_tokens": 1,
+                "output_tokens_details": {"thinking_tokens": 3},
             }),
         );
     }
@@ -1075,7 +1093,7 @@ mod tests {
             output_tokens: 6,
             cached_tokens: None,
             cache_write_tokens: None,
-            reasoning_tokens: None,
+            reasoning_tokens: Some(2),
         }));
 
         let terminal = renderer.render(&IrEvent::Done);
@@ -1088,9 +1106,15 @@ mod tests {
             at(payload_at(&terminal_payloads, 0), "/delta"),
             &json!({"stop_reason": "end_turn", "stop_sequence": Value::Null}),
         );
+        // The terminal delta carries the final report: the reasoning breakdown rides the native
+        // `output_tokens_details` spelling.
         assert_eq!(
             at(payload_at(&terminal_payloads, 0), "/usage"),
-            &json!({"input_tokens": 3, "output_tokens": 6}),
+            &json!({
+                "input_tokens": 3,
+                "output_tokens": 6,
+                "output_tokens_details": {"thinking_tokens": 2},
+            }),
         );
     }
 

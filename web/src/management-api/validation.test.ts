@@ -599,7 +599,7 @@ describe("validateDefinitionPayload", () => {
                 throw new Error(`${preset.id} was rejected: ${result.error}`);
             }
 
-            expect(result.payload.format, preset.id).toBe(preset.format);
+            expect(result.payload.format, preset.id).toBe(preset.payload.format);
         }
     });
 

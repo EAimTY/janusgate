@@ -18,7 +18,10 @@
 
 use self::models::ModelEntry;
 use crate::{
-    database::{Error as DatabaseError, Row, Transaction, Value, params, params::IntoValue},
+    database::{
+        Database, Error as DatabaseError, IntoParams, Row, Transaction, Value, params,
+        params::IntoValue,
+    },
     provider::{CredentialKind, DiscoveryState, Model, Provider, definition::ProviderDefinition},
 };
 use std::{collections::HashMap, num::NonZeroI64};
@@ -143,6 +146,45 @@ impl From<DatabaseError> for Error {
 
             error => Self::Database(error),
         }
+    }
+}
+
+/// The pooled or transactional SQL executor behind the storage tier's shared statements: a
+/// borrowed [`Database`] runs a statement against a pooled connection, an exclusively borrowed
+/// [`Transaction`] against its checked-out connection. Statements used by both executors are
+/// written once as functions generic over this abstraction instead of being hand-mirrored with
+/// duplicated SQL and parameter lists, matching the database module's own delegation of both
+/// surfaces onto shared free functions.
+trait SqlExecutor {
+    /// Executes one row-returning statement, returning all rows eagerly materialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatabaseError`] if preparing or executing the statement fails.
+    async fn query(
+        &mut self,
+        sql: impl AsRef<str>,
+        params: impl IntoParams,
+    ) -> Result<Vec<Row>, DatabaseError>;
+}
+
+impl SqlExecutor for &Database {
+    async fn query(
+        &mut self,
+        sql: impl AsRef<str>,
+        params: impl IntoParams,
+    ) -> Result<Vec<Row>, DatabaseError> {
+        (**self).query(sql, params).await
+    }
+}
+
+impl SqlExecutor for &mut Transaction {
+    async fn query(
+        &mut self,
+        sql: impl AsRef<str>,
+        params: impl IntoParams,
+    ) -> Result<Vec<Row>, DatabaseError> {
+        (**self).query(sql, params).await
     }
 }
 
@@ -498,84 +540,23 @@ async fn ensure_id_routable_in_transaction(
     Ok(())
 }
 
+/// Test fixtures shared by the storage entity modules' test modules: each entity's tests live in
+/// its own module beside its statements, and the fixtures more than one of those modules seed
+/// from live here once.
 #[cfg(test)]
-mod tests {
-    #![expect(
-        clippy::expect_used,
-        reason = "the fixtures are constructed so each expect lands on its documented side"
-    )]
-    #![expect(
-        clippy::panic,
-        reason = "a fixture violating its own invariant fails the test loudly"
-    )]
-
-    use super::{
-        models::{
-            ModelCreate, ModelUpdate, apply_discovered_models, delete_model_checked, find_routing,
-            insert_model_checked, list_enabled_models_with_owner, list_model_entries,
-            update_model_overrides_checked,
-        },
-        oauth_flows::{
-            DevicePollOutcome, FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
-            commit_device_success_in_transaction, consume_flow, consume_terminal_flow,
-            find_flow_by_state, insert_flow, persist_device_poll, sweep_expired_flows,
-        },
-        providers::{ProviderUpdate, list_providers, update_provider},
-        *,
-    };
+pub(crate) mod fixtures {
+    use super::models::ModelEntry;
     use crate::{
-        database::Database,
-        format::UpstreamFormat,
-        provider::{
-            CredentialKind, StoredCredentials,
-            definition::credential::{CredentialAcquisition, TokenRefresh},
-        },
-        storage as storage_cr, test_support,
+        database::Database, format::UpstreamFormat, provider::StoredCredentials, test_support,
     };
-    use std::{
-        collections::BTreeMap, error::Error as StdError, num::NonZero, path::PathBuf,
-        time::Duration,
-    };
-
-    /// File guard cleaning up the temporary SQLite test database on drop.
-    struct TempDbGuard(PathBuf);
-
-    impl Drop for TempDbGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    /// Creates an initialized temporary SQLite test database.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn create_test_database() -> (Database, TempDbGuard) {
-        let db_path =
-            std::env::temp_dir().join(format!("janusgate-test-{}.db", rand::random::<u64>()));
-
-        #[expect(clippy::unwrap_used, reason = "non-zero literal")]
-        let max_connections = NonZero::new(2).unwrap();
-        #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
-        let database = Database::open(
-            &db_path,
-            crate::database::schema::Registry::Main,
-            max_connections,
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-
-        (database, TempDbGuard(db_path))
-    }
+    use std::error::Error as StdError;
 
     /// Inserts one enabled static-key test provider, returning its stored row.
     ///
     /// # Panics
     ///
     /// Panics if the insert fails.
-    async fn insert_test_provider(
+    pub(crate) async fn insert_test_provider(
         database: &Database,
         name: &str,
         model_prefix: &str,
@@ -607,7 +588,7 @@ mod tests {
     /// # Panics
     ///
     /// Panics if the entry is absent; every caller looks up a row the test just verified exists.
-    fn entry<'a>(entries: &'a [ModelEntry], upstream_id: &str) -> &'a ModelEntry {
+    pub(crate) fn entry<'a>(entries: &'a [ModelEntry], upstream_id: &str) -> &'a ModelEntry {
         entries
             .iter()
             .find(|entry| entry.model.upstream_id == upstream_id)
@@ -627,7 +608,7 @@ mod tests {
     /// # Panics
     ///
     /// Panics if the insert or validation fails.
-    fn oauth_definition() -> crate::provider::definition::ProviderDefinition {
+    pub(crate) fn oauth_definition() -> crate::provider::definition::ProviderDefinition {
         #[expect(clippy::unwrap_used, reason = "the fixture payload parses")]
         let payload: crate::provider::DefinitionPayload =
             serde_json::from_value(serde_json::json!({
@@ -787,30 +768,32 @@ mod tests {
             created_at: 1,
         }
     }
+}
 
-    /// A device flow row ready to insert against the fixture OAuth definition.
-    fn new_device_flow(definition: &crate::provider::definition::ProviderDefinition) -> NewFlow {
-        NewFlow {
-            definition_name: definition.name.clone(),
-            definition_version: definition.version,
-            state_token: "st-device-1".to_string(),
-            purpose: FlowPurpose::Reauthorize,
-            provider_name: None,
-            model_prefix: None,
-            base_url: None,
-            target_provider_id: Some(1),
-            grant_type: FlowGrant::Device,
-            slots: BTreeMap::new(),
-            code_verifier: None,
-            device_code: Some("dc".to_string()),
-            device_user_code: Some("uc".to_string()),
-            device_verification_uri: Some("https://verify.example".to_string()),
-            device_verification_uri_complete: None,
-            device_poll_interval_seconds: Some(5),
-            device_next_poll_at: Some(500),
-            expires_at: 1_000_000,
-        }
-    }
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::panic,
+        reason = "a fixture violating its own invariant fails the test loudly"
+    )]
+
+    use super::{
+        fixtures::{entry, insert_test_provider, oauth_definition},
+        models::{
+            ModelUpdate, apply_discovered_models, find_routing, list_enabled_models_with_owner,
+            list_model_entries, update_model_overrides_checked,
+        },
+        providers::{ProviderUpdate, list_providers, update_provider},
+        *,
+    };
+    use crate::{
+        provider::{
+            CredentialKind,
+            definition::credential::{CredentialAcquisition, TokenRefresh},
+        },
+        test_support,
+    };
+    use std::error::Error as StdError;
 
     /// Verifies the public-ID lifecycle end to end: discovery composes IDs from the provider's
     /// prefix, `models:update` (addressed by row id) applies an override, routing follows the
@@ -824,7 +807,7 @@ mod tests {
     /// Panics if database operations or assertions fail.
     #[tokio::test]
     async fn overrides_ids_and_recomputes_them_on_prefix_update() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
+        let (database, _guard) = test_support::create_test_database().await;
         let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
 
         let discovered = apply_discovered_models(
@@ -1000,952 +983,6 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies the manual-row creation rules: an absent identifier becomes a `manual` row with a
-    /// prefix-composed ID, a natural-key duplicate and a routed-ID collision each conflict without
-    /// writing, an unknown provider is not found — and discovery never touches an unlisted manual
-    /// row while listing it flips the row to `discovered` with its curation and identity intact.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn creates_manual_rows_discovery_never_prunes() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
-
-        let created = insert_model_checked(
-            &database,
-            ModelCreate {
-                provider_id,
-                upstream_id: "manual-1",
-                id_override: None,
-                is_enabled: false,
-            },
-        )
-        .await?;
-
-        assert_eq!(created.model.public_id, "p1-manual-1");
-        assert_eq!(created.model.discovery_state, DiscoveryState::Manual);
-        assert!(!created.model.is_enabled);
-
-        let duplicate = insert_model_checked(
-            &database,
-            ModelCreate {
-                provider_id,
-                upstream_id: "manual-1",
-                id_override: Some("other-id"),
-                is_enabled: true,
-            },
-        )
-        .await;
-
-        assert!(matches!(duplicate, Err(Error::Conflict { .. })));
-
-        assert_eq!(
-            list_model_entries(&database, Some(provider_id))
-                .await?
-                .len(),
-            1
-        );
-
-        let other_provider_id = insert_test_provider(&database, "provider-2", "p2-").await?;
-
-        let colliding = insert_model_checked(
-            &database,
-            ModelCreate {
-                provider_id: other_provider_id,
-                upstream_id: "manual-1",
-                id_override: Some("p1-manual-1"),
-                is_enabled: true,
-            },
-        )
-        .await;
-
-        assert!(matches!(colliding, Err(Error::Conflict { .. })));
-        assert!(
-            list_model_entries(&database, Some(other_provider_id))
-                .await?
-                .is_empty()
-        );
-
-        let missing = insert_model_checked(
-            &database,
-            ModelCreate {
-                provider_id: other_provider_id + 1000,
-                upstream_id: "ghost",
-                id_override: None,
-                is_enabled: true,
-            },
-        )
-        .await;
-
-        assert!(matches!(missing, Err(Error::NotFound { .. })));
-
-        let rows =
-            apply_discovered_models(&database, provider_id, &["fresh-1".to_string()]).await?;
-
-        assert_eq!(rows.len(), 2);
-
-        let entries = list_model_entries(&database, Some(provider_id)).await?;
-        let manual = entry(&entries, "manual-1");
-
-        assert_eq!(manual.model.discovery_state, DiscoveryState::Manual);
-        assert!(!manual.model.is_enabled);
-        assert_eq!(manual.model.public_id, "p1-manual-1");
-
-        let fresh = entry(&entries, "fresh-1");
-
-        assert_eq!(fresh.model.discovery_state, DiscoveryState::Discovered);
-        assert!(fresh.model.is_enabled);
-
-        let manual_id = manual.model.id;
-
-        apply_discovered_models(
-            &database,
-            provider_id,
-            &["fresh-1".to_string(), "manual-1".to_string()],
-        )
-        .await?;
-
-        let entries = list_model_entries(&database, Some(provider_id)).await?;
-        let manual = entry(&entries, "manual-1");
-
-        assert_eq!(manual.model.id, manual_id);
-        assert_eq!(manual.model.discovery_state, DiscoveryState::Discovered);
-        assert!(!manual.model.is_enabled);
-        assert_eq!(manual.model.public_id, "p1-manual-1");
-
-        Ok(())
-    }
-
-    /// Verifies the vanished semantics and the write-permission invariant, through the
-    /// `discovered`/`vanished` state flip and its restore.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn marks_vanished_rows_and_restores_them_by_state_flip_only()
-    -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
-
-        apply_discovered_models(
-            &database,
-            provider_id,
-            &["a".to_string(), "b".to_string(), "c".to_string()],
-        )
-        .await?;
-
-        let entries = list_model_entries(&database, None).await?;
-        let a_id = entry(&entries, "a").model.id;
-
-        update_model_overrides_checked(
-            &database,
-            ModelUpdate {
-                model_id: a_id,
-                id_override: Some("custom-a"),
-                is_enabled: true,
-            },
-        )
-        .await?;
-
-        apply_discovered_models(&database, provider_id, &["a".to_string()]).await?;
-
-        let entries = list_model_entries(&database, None).await?;
-        let a = entry(&entries, "a");
-        let c = entry(&entries, "c");
-
-        assert_eq!(a.model.id, a_id);
-        assert_eq!(a.model.discovery_state, DiscoveryState::Discovered);
-        assert_eq!(a.model.public_id, "custom-a");
-
-        assert_eq!(c.model.discovery_state, DiscoveryState::Vanished);
-        assert!(c.model.is_enabled);
-        assert_eq!(c.model.public_id, "p1-c");
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the row was just written and the lookup follows it"
-        )]
-        let routing = find_routing(&database, "p1-c")
-            .await?
-            .expect("a vanished row is still resolved by its public ID");
-
-        assert!(!routing.is_effectively_enabled);
-
-        let enabled_models = list_enabled_models_with_owner(&database).await?;
-
-        assert_eq!(enabled_models.len(), 1);
-
-        apply_discovered_models(
-            &database,
-            provider_id,
-            &["a".to_string(), "b".to_string(), "c".to_string()],
-        )
-        .await?;
-
-        let entries = list_model_entries(&database, None).await?;
-        let c = entry(&entries, "c");
-
-        assert_eq!(c.model.discovery_state, DiscoveryState::Discovered);
-        assert!(c.model.is_enabled);
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the row was just written and the lookup follows it"
-        )]
-        let routing = find_routing(&database, "p1-c")
-            .await?
-            .expect("the restored row routes");
-
-        assert!(routing.is_effectively_enabled);
-
-        Ok(())
-    }
-
-    /// Verifies the row-addressed update and delete rules, and the identity rebuild of a deleted
-    /// discovered row.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn updates_and_deletes_models_by_row_id() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
-        let provider_id = insert_test_provider(&database, "provider-1", "p1-").await?;
-
-        apply_discovered_models(&database, provider_id, &["a".to_string(), "b".to_string()])
-            .await?;
-
-        let entries = list_model_entries(&database, None).await?;
-        let a_id = entry(&entries, "a").model.id;
-
-        let missing_delete = delete_model_checked(&database, a_id + 1000).await;
-
-        assert!(matches!(missing_delete, Err(Error::NotFound { .. })));
-
-        apply_discovered_models(&database, provider_id, &["b".to_string()]).await?;
-
-        delete_model_checked(&database, a_id).await?;
-
-        let entries = list_model_entries(&database, None).await?;
-
-        assert_eq!(entries.len(), 1);
-
-        let missing_delete = delete_model_checked(&database, a_id).await;
-
-        assert!(matches!(missing_delete, Err(Error::NotFound { .. })));
-
-        let rebuilt =
-            apply_discovered_models(&database, provider_id, &["a".to_string(), "b".to_string()])
-                .await?;
-
-        #[expect(
-            clippy::expect_used,
-            reason = "the row was just rebuilt by the refresh above"
-        )]
-        let fresh_a = rebuilt
-            .iter()
-            .find(|entry| entry.model.upstream_id == "a")
-            .expect("the rebuilt row is listed");
-
-        assert_ne!(fresh_a.model.id, a_id);
-
-        Ok(())
-    }
-
-    /// Verifies the OAuth flow lifecycle against the real database: a device flow's stored
-    /// schedule drives the conditional claim, the claim owner alone persists its outcome, a
-    /// terminal success commits atomically with the provider write, the result is consumed once,
-    /// and the expiry sweep clears unconsumed rows.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn device_flow_lifecycle_claims_and_consumes_once() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
-
-        let definition = oauth_definition();
-
-        storage_cr::provider_definitions::insert_definition(
-            &database,
-            storage_cr::provider_definitions::NewDefinition {
-                name: definition.name.as_str(),
-                base_version: None,
-                payload: &definition.payload,
-                created_at: definition.created_at,
-            },
-        )
-        .await?;
-
-        let flow = insert_flow(&database, new_device_flow(&definition)).await?;
-
-        // Nothing is due before its next-poll instant.
-        let now = 400;
-
-        assert!(claim_due_device_flow(&database, now, 0).await?.is_none());
-
-        // The due flow is claimed by exactly one conditional update.
-        let claimed = claim_due_device_flow(&database, 500, 0)
-            .await?
-            .expect("the due flow claims");
-
-        assert_eq!(claimed.id, flow.id);
-        assert_eq!(claimed.device_poll_started_at, Some(500));
-
-        // A second claimant cannot steal a live claim.
-        assert!(claim_due_device_flow(&database, 500, 0).await?.is_none());
-
-        // A lost claim is the owner's alone to persist; the schedule retry lands.
-        let is_persisted = persist_device_poll(
-            &database,
-            flow.id,
-            999,
-            DevicePollOutcome::Retry {
-                next_poll_at: 10_000,
-                interval_seconds: 5,
-            },
-        )
-        .await?;
-
-        assert!(!is_persisted);
-
-        let is_persisted = persist_device_poll(
-            &database,
-            flow.id,
-            500,
-            DevicePollOutcome::Retry {
-                next_poll_at: 10_000,
-                interval_seconds: 5,
-            },
-        )
-        .await?;
-
-        assert!(is_persisted);
-
-        let rescheduled = find_flow_by_state(&database, "st-device-1", 0)
-            .await?
-            .expect("the flow persists");
-
-        assert_eq!(rescheduled.device_next_poll_at, Some(10_000));
-        assert_eq!(rescheduled.device_poll_started_at, None);
-
-        // The success commits the provider write and the terminal outcome in one transaction.
-        let target = insert_test_provider(&database, "oauth-target", "ot-").await?;
-
-        let mut transaction = database.transaction().await?;
-
-        let is_committed =
-            commit_device_success_in_transaction(&mut transaction, flow.id, 10_000 - 5, target)
-                .await?;
-
-        assert!(!is_committed, "a stale claim cannot commit");
-
-        // The discarded attempt releases its write lock before the next claim.
-        transaction.rollback().await?;
-
-        let mut transaction = database.transaction().await?;
-
-        let claim = claim_due_device_flow(&database, 10_000, 0)
-            .await?
-            .expect("the rescheduled flow claims again");
-
-        assert_eq!(claim.device_poll_started_at, Some(10_000));
-
-        let is_committed =
-            commit_device_success_in_transaction(&mut transaction, flow.id, 10_000, target).await?;
-
-        assert!(is_committed);
-
-        transaction.commit().await?;
-
-        let terminal = find_flow_by_state(&database, "st-device-1", 0)
-            .await?
-            .expect("the terminal row stays until consumed");
-
-        assert_eq!(terminal.outcome, Some(FlowOutcome::Succeeded));
-        assert_eq!(terminal.result_provider_id, Some(target));
-
-        // The result is consumed exactly once.
-        let consumed = consume_terminal_flow(&database, "st-device-1", 0).await?;
-
-        assert!(consumed.is_some());
-        assert!(
-            consume_terminal_flow(&database, "st-device-1", 0)
-                .await?
-                .is_none()
-        );
-
-        // A pending authorization-code flow is never consumed by the terminal-only consume.
-        let auth_flow = insert_flow(
-            &database,
-            NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token: "st-auth-1".to_string(),
-                purpose: FlowPurpose::Create,
-                provider_name: Some("new-provider".to_string()),
-                model_prefix: Some("np-".to_string()),
-                base_url: None,
-                target_provider_id: None,
-                grant_type: FlowGrant::AuthorizationCode,
-                slots: BTreeMap::new(),
-                code_verifier: Some("verifier".to_string()),
-                device_code: None,
-                device_user_code: None,
-                device_verification_uri: None,
-                device_verification_uri_complete: None,
-                device_poll_interval_seconds: None,
-                device_next_poll_at: None,
-                expires_at: 1_000_000,
-            },
-        )
-        .await?;
-
-        assert!(
-            consume_terminal_flow(&database, "st-auth-1", 0)
-                .await?
-                .is_none()
-        );
-
-        // The atomic consume spends the row exactly once, whatever its state.
-        let consumed = consume_flow(&database, "st-auth-1", 0).await?;
-
-        assert_eq!(consumed.map(|flow| flow.id), Some(auth_flow.id));
-        assert!(consume_flow(&database, "st-auth-1", 0).await?.is_none());
-
-        // The expiry sweep clears unconsumed rows.
-        insert_flow(&database, new_device_flow(&definition)).await?;
-
-        sweep_expired_flows(&database, 2_000_000).await?;
-
-        assert!(
-            find_flow_by_state(&database, "st-device-1", 0)
-                .await?
-                .is_none()
-        );
-
-        Ok(())
-    }
-
-    /// Verifies that a definition-version update leaves existing providers on the old pair: the
-    /// new version never substitutes for an explicit reference, and the credential-kind
-    /// agreement is checkable from the rows.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn definition_updates_leave_existing_references_on_the_old_pair()
-    -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
-
-        let definition = test_support::insert_static_key_definition(
-            &database,
-            "versioned",
-            UpstreamFormat::OpenAiChatCompletion,
-        )
-        .await;
-
-        let provider = test_support::insert_provider(
-            &database,
-            &definition,
-            "bound",
-            "b-",
-            Some("http://localhost:8080"),
-            StoredCredentials::ApiKey {
-                api_key: "k".to_string(),
-            },
-        )
-        .await;
-
-        assert_eq!(provider.definition.version.get(), 1);
-
-        // A changed credential type is allowed in a new version: v2 of the same name speaks
-        // OAuth.
-        #[expect(clippy::unwrap_used, reason = "the successor payload parses")]
-        let successor: crate::provider::DefinitionPayload =
-            serde_json::from_value(serde_json::json!({
-              "format": "openai_chat_completion",
-              "inference": {
-                "url": [
-                  {
-                    "type": "base"
-                  },
-                  {
-                    "type": "literal",
-                    "value": "/chat/completions"
-                  }
-                ],
-                "upstream_streaming": "match_client"
-              },
-              "credential": {
-                "type": "oauth",
-                "client_id": "fixture",
-                "grant": {
-                  "type": "device",
-                  "authorization": {
-                    "request": {
-                      "method": "POST",
-                      "url": [
-                        {
-                          "type": "literal",
-                          "value": "http://127.0.0.1:1/device"
-                        }
-                      ],
-                      "body": {
-                        "kind": "form",
-                        "fields": [
-                          {
-                            "name": "client_id",
-                            "value": [
-                              {
-                                "type": "client_id"
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    },
-                    "response": {
-                      "encoding": "form",
-                      "fields": [
-                        {
-                          "path": [
-                            "device_code"
-                          ],
-                          "target": {
-                            "type": "device_code"
-                          },
-                          "required": true
-                        },
-                        {
-                          "path": [
-                            "user_code"
-                          ],
-                          "target": {
-                            "type": "user_code"
-                          },
-                          "required": true
-                        },
-                        {
-                          "path": [
-                            "verification_uri"
-                          ],
-                          "target": {
-                            "type": "verification_uri"
-                          },
-                          "required": false
-                        }
-                      ]
-                    }
-                  },
-                  "expires_in_fallback_seconds": 900
-                },
-                "exchange": {
-                  "request": {
-                    "method": "POST",
-                    "url": [
-                      {
-                        "type": "literal",
-                        "value": "http://127.0.0.1:1/token"
-                      }
-                    ],
-                    "body": {
-                      "kind": "form",
-                      "fields": [
-                        {
-                          "name": "device_code",
-                          "value": [
-                            {
-                              "type": "device_code"
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  },
-                  "response": {
-                    "encoding": "json",
-                    "fields": [
-                      {
-                        "path": [
-                          "access_token"
-                        ],
-                        "target": {
-                          "type": "access_token"
-                        },
-                        "required": true
-                      }
-                    ]
-                  },
-                  "terminal_codes": [
-                    "expired_token"
-                  ]
-                },
-                "refresh": {
-                  "type": "none"
-                }
-              }
-            }))
-            .unwrap();
-
-        #[expect(clippy::unwrap_used, reason = "the successor payload validates")]
-        successor.validate().unwrap();
-
-        #[expect(clippy::unwrap_used, reason = "a positive literal version")]
-        let base_version = std::num::NonZeroI64::new(1).unwrap();
-
-        storage_cr::provider_definitions::insert_definition(
-            &database,
-            storage_cr::provider_definitions::NewDefinition {
-                name: "versioned",
-                base_version: Some(base_version),
-                payload: &successor,
-                created_at: 2,
-            },
-        )
-        .await?;
-
-        // The provider stays on v1 and its credentials stay api_key-shaped.
-        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
-            .await?
-            .expect("the provider persists");
-
-        assert_eq!(reloaded.definition.version.get(), 1);
-        assert_eq!(reloaded.credential_kind(), CredentialKind::ApiKey);
-
-        // The v2 row carries the OAuth discriminator.
-        let mut transaction = database.transaction().await?;
-
-        let v2 = storage_cr::provider_definitions::latest_version_in_transaction(
-            &mut transaction,
-            "versioned",
-        )
-        .await?
-        .expect("a latest version exists");
-
-        transaction.commit().await?;
-
-        #[expect(clippy::unwrap_used, reason = "a positive stored version")]
-        let v2 = std::num::NonZeroI64::new(v2).unwrap();
-
-        let row = storage_cr::provider_definitions::find_definition(&database, "versioned", v2)
-            .await?
-            .expect("v2 exists");
-
-        assert!(matches!(
-            row.payload.credential,
-            CredentialAcquisition::OAuth { .. }
-        ));
-
-        Ok(())
-    }
-
-    /// Verifies the JSON lease mechanics against the real engine: the acquire stamps the
-    /// credentials' `refresh_started_at` only for an elapsed known expiry, a stale lease is
-    /// stealable, the lease-conditioned persist lands only under the acquired stamp, and the
-    /// reprovision persist merges its fields over the stored document.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn json_refresh_lease_acquires_persists_and_recovers() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
-
-        let definition = oauth_definition();
-
-        storage_cr::provider_definitions::insert_definition(
-            &database,
-            storage_cr::provider_definitions::NewDefinition {
-                name: definition.name.as_str(),
-                base_version: None,
-                payload: &definition.payload,
-                created_at: definition.created_at,
-            },
-        )
-        .await?;
-
-        let provider = test_support::insert_provider(
-            &database,
-            &definition,
-            "leased",
-            "l-",
-            Some("http://localhost:8080"),
-            StoredCredentials::OAuth {
-                access_token: "old".to_string(),
-                refresh_token: Some("refresh".to_string()),
-                slots: BTreeMap::new(),
-                expires_at: Some(1),
-                refresh_started_at: None,
-            },
-        )
-        .await;
-
-        let now = 1_000;
-        let stale_before = now - 90;
-
-        let mut transaction = database.transaction().await?;
-
-        // The expired token acquires the lease.
-        let lease = super::providers::try_acquire_refresh_lease(
-            &mut transaction,
-            provider.id,
-            now,
-            stale_before,
-            0,
-        )
-        .await?
-        .expect("the expired token acquires");
-
-        transaction.commit().await?;
-
-        // A concurrent acquirer sees the live lease.
-        let mut transaction = database.transaction().await?;
-
-        let is_acquired = super::providers::try_acquire_refresh_lease(
-            &mut transaction,
-            provider.id,
-            now,
-            stale_before,
-            0,
-        )
-        .await
-        .map_err(|error| Box::new(error) as Box<dyn StdError>)?;
-
-        assert!(is_acquired.is_none());
-
-        transaction.rollback().await?;
-
-        // The lease-conditioned persist lands only under the acquired stamp, clearing it.
-        let renewed = StoredCredentials::OAuth {
-            access_token: "new".to_string(),
-            refresh_token: Some("refresh".to_string()),
-            slots: BTreeMap::new(),
-            expires_at: Some(2_000),
-            refresh_started_at: None,
-        };
-
-        assert!(
-            !super::providers::persist_renewed_credentials_for_lease(
-                &database,
-                provider.id,
-                lease + 1,
-                &renewed,
-            )
-            .await?,
-            "a wrong stamp never persists"
-        );
-
-        assert!(
-            super::providers::persist_renewed_credentials_for_lease(
-                &database,
-                provider.id,
-                lease,
-                &renewed,
-            )
-            .await?
-        );
-
-        // A null expiry never acquires: the not-scheduled state never refreshes.
-        let unscheduled = StoredCredentials::OAuth {
-            access_token: "old".to_string(),
-            refresh_token: Some("refresh".to_string()),
-            slots: BTreeMap::new(),
-            expires_at: None,
-            refresh_started_at: None,
-        };
-
-        let mut transaction = database.transaction().await?;
-
-        storage_cr::providers::replace_credentials_in_transaction(
-            &mut transaction,
-            provider.id,
-            &unscheduled,
-        )
-        .await?;
-
-        transaction.commit().await?;
-
-        let mut transaction = database.transaction().await?;
-
-        let is_acquired = super::providers::try_acquire_refresh_lease(
-            &mut transaction,
-            provider.id,
-            now,
-            stale_before,
-            0,
-        )
-        .await
-        .map_err(|error| Box::new(error) as Box<dyn StdError>)?;
-
-        assert!(is_acquired.is_none());
-
-        transaction.rollback().await?;
-
-        // The reprovision persist merges its fields over the stored document under the lease.
-        let mut transaction = database.transaction().await?;
-
-        storage_cr::providers::replace_credentials_in_transaction(
-            &mut transaction,
-            provider.id,
-            &renewed,
-        )
-        .await?;
-
-        transaction.commit().await?;
-
-        let mut transaction = database.transaction().await?;
-
-        let lease = super::providers::try_acquire_refresh_lease(
-            &mut transaction,
-            provider.id,
-            3_000,
-            stale_before,
-            0,
-        )
-        .await
-        .map_err(|error| Box::new(error) as Box<dyn StdError>)?
-        .expect("the expired token acquires again");
-
-        transaction.commit().await?;
-
-        assert!(
-            super::providers::persist_reprovision_for_lease(
-                &database,
-                provider.id,
-                lease,
-                "provisioned",
-                Some(9_000_000),
-                Some("http://new-base.example"),
-            )
-            .await?
-        );
-
-        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
-            .await?
-            .expect("the provider persists");
-
-        assert_eq!(reloaded.credentials.secret(), "provisioned");
-        assert_eq!(
-            reloaded.base_url.as_deref(),
-            Some("http://new-base.example")
-        );
-
-        let StoredCredentials::OAuth {
-            refresh_token,
-            refresh_started_at,
-            ..
-        } = &reloaded.credentials
-        else {
-            panic!("the provider carries OAuth credentials");
-        };
-
-        assert_eq!(refresh_token.as_deref(), Some("refresh"));
-        assert_eq!(*refresh_started_at, None);
-
-        Ok(())
-    }
-
-    /// A failed refresh's lease clear is conditioned on the caller's own acquired stamp: a
-    /// stale loser clearing under an older stamp never erases a newer holder's live lease,
-    /// while the holder's own clear lands.
-    ///
-    /// # Panics
-    ///
-    /// Panics if database operations or assertions fail.
-    #[tokio::test]
-    async fn clear_refresh_lease_clears_only_the_acquired_stamp() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
-
-        let definition = oauth_definition();
-
-        storage_cr::provider_definitions::insert_definition(
-            &database,
-            storage_cr::provider_definitions::NewDefinition {
-                name: definition.name.as_str(),
-                base_version: None,
-                payload: &definition.payload,
-                created_at: definition.created_at,
-            },
-        )
-        .await?;
-
-        let provider = test_support::insert_provider(
-            &database,
-            &definition,
-            "leased",
-            "l-",
-            Some("http://localhost:8080"),
-            StoredCredentials::OAuth {
-                access_token: "old".to_string(),
-                refresh_token: Some("refresh".to_string()),
-                slots: BTreeMap::new(),
-                expires_at: Some(1),
-                refresh_started_at: None,
-            },
-        )
-        .await;
-
-        // The winner acquires the lease at stamp 1_000.
-        let mut transaction = database.transaction().await?;
-
-        let lease = super::providers::try_acquire_refresh_lease(
-            &mut transaction,
-            provider.id,
-            1_000,
-            910,
-            0,
-        )
-        .await?
-        .expect("the expired token acquires");
-
-        transaction.commit().await?;
-
-        assert_eq!(lease, 1_000);
-
-        // A stale loser's clear under an older stamp is refused: the winner's live stamp and
-        // its lease protection survive.
-        assert!(
-            !super::providers::clear_refresh_lease(&database, provider.id, 999).await?,
-            "a stale loser never clears a newer holder's lease"
-        );
-
-        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
-            .await?
-            .expect("the provider persists");
-
-        let StoredCredentials::OAuth {
-            refresh_started_at, ..
-        } = &reloaded.credentials
-        else {
-            panic!("the provider carries OAuth credentials");
-        };
-
-        assert_eq!(*refresh_started_at, Some(1_000));
-
-        // The holder's own clear lands.
-        assert!(super::providers::clear_refresh_lease(&database, provider.id, lease).await?);
-
-        let reloaded = storage_cr::providers::find_provider_by_id(&database, provider.id)
-            .await?
-            .expect("the provider persists");
-
-        let StoredCredentials::OAuth {
-            refresh_started_at, ..
-        } = &reloaded.credentials
-        else {
-            panic!("the provider carries OAuth credentials");
-        };
-
-        assert_eq!(*refresh_started_at, None);
-
-        Ok(())
-    }
-
     /// Verifies the credential kind conversions: the storage form and the wire form are one
     /// vocabulary.
     ///
@@ -1969,7 +1006,7 @@ mod tests {
     /// Panics if the drifted insert unexpectedly succeeds.
     #[tokio::test]
     async fn rejects_unknown_definition_format_at_write_time() -> Result<(), Box<dyn StdError>> {
-        let (database, _guard) = create_test_database().await;
+        let (database, _guard) = test_support::create_test_database().await;
 
         let outcome = database
             .execute(
@@ -1988,154 +1025,6 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    /// Pins the refresh-mode vocabulary: a fixture carrying a refresh grant parses and a
-    /// `reprovision` mode without steps is rejected by the write-time validation, so the
-    /// definition rows can never disagree with the engine's dispatch.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a fixture validates or rejects outside its contract.
-    #[test]
-    fn rejects_reprovision_without_steps() {
-        #[expect(clippy::unwrap_used, reason = "the fixture parses")]
-        let mut payload: crate::provider::DefinitionPayload =
-            serde_json::from_value(serde_json::json!({
-              "format": "openai_chat_completion",
-              "inference": {
-                "url": [
-                  {
-                    "type": "base"
-                  }
-                ],
-                "upstream_streaming": "match_client"
-              },
-              "credential": {
-                "type": "oauth",
-                "client_id": "fixture",
-                "grant": {
-                  "type": "device",
-                  "authorization": {
-                    "request": {
-                      "method": "POST",
-                      "url": [
-                        {
-                          "type": "literal",
-                          "value": "http://127.0.0.1:1/device"
-                        }
-                      ],
-                      "body": {
-                        "kind": "form",
-                        "fields": [
-                          {
-                            "name": "client_id",
-                            "value": [
-                              {
-                                "type": "client_id"
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    },
-                    "response": {
-                      "encoding": "form",
-                      "fields": [
-                        {
-                          "path": [
-                            "device_code"
-                          ],
-                          "target": {
-                            "type": "device_code"
-                          },
-                          "required": true
-                        },
-                        {
-                          "path": [
-                            "user_code"
-                          ],
-                          "target": {
-                            "type": "user_code"
-                          },
-                          "required": true
-                        },
-                        {
-                          "path": [
-                            "verification_uri"
-                          ],
-                          "target": {
-                            "type": "verification_uri"
-                          },
-                          "required": false
-                        }
-                      ]
-                    }
-                  },
-                  "expires_in_fallback_seconds": 900
-                },
-                "exchange": {
-                  "request": {
-                    "method": "POST",
-                    "url": [
-                      {
-                        "type": "literal",
-                        "value": "http://127.0.0.1:1/token"
-                      }
-                    ],
-                    "body": {
-                      "kind": "form",
-                      "fields": [
-                        {
-                          "name": "device_code",
-                          "value": [
-                            {
-                              "type": "device_code"
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  },
-                  "response": {
-                    "encoding": "json",
-                    "fields": [
-                      {
-                        "path": [
-                          "access_token"
-                        ],
-                        "target": {
-                          "type": "access_token"
-                        },
-                        "required": true
-                      }
-                    ]
-                  },
-                  "terminal_codes": [
-                    "expired_token"
-                  ]
-                },
-                "refresh": {
-                  "type": "reprovision"
-                }
-              }
-            }))
-            .unwrap();
-
-        #[expect(clippy::unwrap_used, reason = "the reprovision rule rejects")]
-        let error = payload.validate().unwrap_err();
-
-        assert!(error.message.contains("reprovision"), "{error}");
-
-        payload.provisioning = Some(Vec::new());
-
-        #[expect(clippy::unwrap_used, reason = "the empty-steps rule rejects")]
-        let error = payload.validate().unwrap_err();
-
-        assert!(
-            error.message.contains("at least one step") || error.message.contains("reprovision"),
-            "{error}"
-        );
     }
 
     /// The refresh-mode of the fixture OAuth definition is `none`: the engine never enters the
