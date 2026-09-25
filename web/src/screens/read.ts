@@ -123,19 +123,31 @@ export async function readOne<TResult>(
     return result;
 }
 
+/**
+ * Whether the skeleton window is open: a read is in flight, no read has ever
+ * succeeded, and nothing stands in the notice. The notice clause is
+ * load-bearing — it keeps a standing failure visible while its re-read runs
+ * (on an `isNoticeKeptOnSuccess` screen that notice is also an action's
+ * reported outcome), so the skeleton never replaces it. The harness's
+ * `isFirstRead` accessor is this one predicate over its own signals; a screen
+ * outside the harness — the usage query screen, whose read cycle is also a
+ * form submission — calls it with its own.
+ */
+export function isSkeletonWindowOpen(
+    isReading: boolean,
+    hasRead: boolean,
+    notice: ScreenNotice | null,
+): boolean {
+    return isReading && !hasRead && notice === null;
+}
+
 /** One mounted screen's read cycle: what every screen shares around its reads. */
 export type ScreenRead = {
     /** Whether any read has ever succeeded on this screen. */
     readonly hasRead: Accessor<boolean>;
     /** Whether a read cycle is in flight — including the first one. */
     readonly isReading: Accessor<boolean>;
-    /**
-     * Whether the skeleton window is open: a read is in flight, no read has
-     * ever succeeded, and nothing stands in the notice. The notice clause is
-     * load-bearing — it keeps a standing failure visible while its re-read
-     * runs (on an `isNoticeKeptOnSuccess` screen that notice is also an
-     * action's reported outcome), so the skeleton never replaces it.
-     */
+    /** Whether the skeleton window is open — `isSkeletonWindowOpen` over this harness's signals. */
     readonly isFirstRead: Accessor<boolean>;
     /** Whether the screen has gone away: actions answering later must stop. */
     readonly isDisposed: Accessor<boolean>;
@@ -256,8 +268,8 @@ export function createScreenRead(options: {
     });
 
     // Computed once, so every screen states the skeleton's window through the
-    // same one accessor instead of re-spelling the three-clause gate.
-    const isFirstRead = createMemo(() => isReading() && !hasRead() && notice() === null);
+    // same one definition instead of re-spelling the three-clause gate.
+    const isFirstRead = createMemo(() => isSkeletonWindowOpen(isReading(), hasRead(), notice()));
 
     return {
         hasRead,

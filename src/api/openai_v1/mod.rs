@@ -26,7 +26,6 @@ use axum::{
     routing::{get, post},
 };
 use axum_extra::extract::WithRejection;
-use log::debug;
 use serde::Serialize;
 
 /// The OpenAI surface's identity for the shared pipeline: bearer credentials and the OpenAI
@@ -46,14 +45,14 @@ impl serving::Surface for Surface {
             .and_then(bearer_token)
             .map(str::to_owned)
             .ok_or_else(|| {
-                debug!("rejected an unauthorized API request");
+                log_error("request", &Error::InvalidApiKey);
 
                 serving::AuthRejection::MissingCredential
             })
     }
 
     fn log_invalid_key() {
-        debug!("rejected an unauthorized API request");
+        log_error("request", &Error::InvalidApiKey);
     }
 }
 

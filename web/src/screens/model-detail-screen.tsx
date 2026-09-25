@@ -11,11 +11,11 @@ import {
     isSameProviderRow,
     readAll,
 } from "/src/screens/read";
-import { ReadNotice } from "/src/screens/read-notice";
+import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
-import { Badge, type BadgeTone, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Badge, type BadgeTone, EmptyState, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { modelDiscoveryBadge, modelServingBadge } from "/src/ui/models-table";
 
@@ -66,58 +66,53 @@ export function ModelDetailScreen(props: {
     }, isSameProviderRow);
 
     return (
-        <div class="rise-in flex flex-col gap-5">
-            <ReadNotice read={read} />
-
-            <Show when={read.isFirstRead()}>
+        <ScreenFrame
+            read={read}
+            row={() => {
+                const current = model();
+                return current === null
+                    ? null
+                    : {
+                          model: current,
+                          provider: provider(),
+                      };
+            }}
+            firstReadHeader={
                 <PageHeader
                     title="Model"
                     backHref={hrefs.models(null)}
                     backLabel="Models"
                 />
-                <Skeleton class="h-64 w-full rounded-2xl" />
-            </Show>
-
-            <Show when={read.hasRead() && model() === null}>
-                <PageHeader
-                    title="Model"
-                    backHref={hrefs.models(null)}
-                    backLabel="Models"
-                />
-                <EmptyState
-                    title="Model not found"
-                    description="The gateway holds no model here. It was deleted, or the address was typed wrong — a deleted discovered model returns as new on the next discovery."
-                >
-                    <ButtonLink
-                        href={hrefs.models(null)}
-                        tone="primary"
-                    >
-                        Back to models
-                    </ButtonLink>
-                </EmptyState>
-            </Show>
-
-            <Show
-                when={(() => {
-                    const current = model();
-                    return current === null
-                        ? null
-                        : {
-                              model: current,
-                              provider: provider(),
-                          };
-                })()}
-                keyed
-            >
-                {(both) => (
-                    <ModelFacts
-                        api={props.api}
-                        provider={both.provider}
-                        model={both.model}
+            }
+            notFound={
+                <>
+                    <PageHeader
+                        title="Model"
+                        backHref={hrefs.models(null)}
+                        backLabel="Models"
                     />
-                )}
-            </Show>
-        </div>
+                    <EmptyState
+                        title="Model not found"
+                        description="The gateway holds no model here. It was deleted, or the address was typed wrong — a deleted discovered model returns as new on the next discovery."
+                    >
+                        <ButtonLink
+                            href={hrefs.models(null)}
+                            tone="primary"
+                        >
+                            Back to models
+                        </ButtonLink>
+                    </EmptyState>
+                </>
+            }
+        >
+            {(both) => (
+                <ModelFacts
+                    api={props.api}
+                    provider={both.provider}
+                    model={both.model}
+                />
+            )}
+        </ScreenFrame>
     );
 }
 

@@ -6,7 +6,8 @@
 //! grouped into strictly alternating user/assistant turns, assistant reasoning blocks before their
 //! tool calls, `tool_result` blocks carrying `is_error`, typed function tools, the four-mode
 //! `tool_choice`, verbatim sampling parameters, `max_tokens` from the client's budget else the
-//! synthesis constant, and `output_config.effort` verbatim — or `thinking: disabled` for `none`
+//! synthesis constant, and `output_config` — the effort verbatim plus, for a JSON-schema response
+//! format, the official `JSONOutputFormatParam` beside it — or `thinking: disabled` for `none`
 //! (README §6.4).
 
 use super::{ImageSourceOut, OutBlock, TypedBlock, is_anthropic_block};
@@ -59,8 +60,8 @@ pub(crate) struct RequestBody<'a> {
     /// Whether the upstream streams its response.
     stream: bool,
 
-    /// Reasoning level rendered verbatim; omitted when the client sent no effort and when the
-    /// effort is `none` (which renders `thinking: disabled` instead).
+    /// The effort and output-format container, present when the request carries either member;
+    /// omitted when it carries neither (the `none` effort renders `thinking: disabled` instead).
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<OutputConfig<'a>>,
 
@@ -125,11 +126,30 @@ enum UpstreamToolChoice<'a> {
     None,
 }
 
-/// Reasoning level container, carrying the shared vocabulary value verbatim.
+/// The upstream `output_config` container — the official `OutputConfigParam`: the reasoning
+/// effort and the JSON-schema output format beside it, each present when the request carries one.
 #[derive(Debug, Serialize)]
 struct OutputConfig<'a> {
-    /// Reasoning effort in the closed shared vocabulary, written verbatim.
-    effort: &'a str,
+    /// Reasoning effort in the closed shared vocabulary, written verbatim; omitted when the
+    /// client sent no effort.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<&'a str>,
+
+    /// The JSON-schema output format, present only for a schema-constrained response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<JsonOutputFormat<'a>>,
+}
+
+/// The upstream `output_config.format` member — the official `JSONOutputFormatParam`, whose
+/// `type` and `schema` members are both required.
+#[derive(Debug, Serialize)]
+struct JsonOutputFormat<'a> {
+    /// Always `json_schema`.
+    #[serde(rename = "type")]
+    kind: &'static str,
+
+    /// The client's JSON Schema of the response.
+    schema: &'a Value,
 }
 
 /// Native off spelling of the thinking control.
@@ -169,26 +189,32 @@ fn default_input_schema() -> Value {
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] when the IR carries a control the upstream has no slot for — tool
-/// arguments that do not encode a JSON object, or a response format stricter than plain text.
+/// arguments that do not encode a JSON object, or a free-form JSON response format, which the
+/// upstream cannot express.
 pub(crate) fn render_request_body<'a>(
     ir: &'a IrRequest,
     is_streaming: bool,
 ) -> Result<RequestBody<'a>, InvalidRequest> {
-    if let Some(response_format) = &ir.response_format {
-        match response_format {
-            // Plain text is the absence of a constraint, so it renders as nothing.
-            IrResponseFormat::Text => {}
+    // The upstream expresses exactly one output-format constraint — a JSON schema under
+    // `output_config.format`, beside the effort (the official `JSONOutputFormatParam` requires
+    // both members) — and has no slot for free-form JSON: dropping the constraint would silently
+    // return prose, so the mismatch fails explicitly instead. The OpenAI-style schema name has no
+    // official member and is dropped (the Interactions codec's posture, README §5.7).
+    let output_format = match &ir.response_format {
+        None | Some(IrResponseFormat::Text) => None,
 
-            // The Messages API has no response-format slot; dropping a caller-requested JSON
-            // constraint would silently return prose, so the mismatch fails explicitly instead.
-            IrResponseFormat::Json | IrResponseFormat::JsonSchema { .. } => {
-                return Err(InvalidRequest::field(
-                    "response_format",
-                    "The Anthropic Messages upstream has no response format control",
-                ));
-            }
+        Some(IrResponseFormat::Json) => {
+            return Err(InvalidRequest::field(
+                "response_format",
+                "The Anthropic Messages upstream expresses only a JSON schema response format",
+            ));
         }
-    }
+
+        Some(IrResponseFormat::JsonSchema { schema, .. }) => Some(JsonOutputFormat {
+            kind: "json_schema",
+            schema,
+        }),
+    };
 
     let tools = ir
         .tools
@@ -210,18 +236,20 @@ pub(crate) fn render_request_body<'a>(
             IrToolChoice::Function { name } => UpstreamToolChoice::Tool { name },
         });
 
-    let (output_config, thinking) = match &ir.reasoning_effort {
+    let (effort, thinking) = match &ir.reasoning_effort {
         None => (None, None),
 
         Some(IrReasoningLevel::None) => (None, Some(ThinkingDisabled { kind: "disabled" })),
 
-        Some(level) => (
-            Some(OutputConfig {
-                effort: level.as_str(),
-            }),
-            None,
-        ),
+        Some(level) => (Some(level.as_str()), None),
     };
+
+    // The container rides when the request carries either member; a single-member object
+    // serializes with the other omitted.
+    let output_config = (effort.is_some() || output_format.is_some()).then_some(OutputConfig {
+        effort,
+        format: output_format,
+    });
 
     Ok(RequestBody {
         model: &ir.model,
@@ -679,14 +707,13 @@ mod tests {
         assert!(body.get("thinking").is_none());
     }
 
-    /// Replays a same-family opaque thinking block verbatim and maps the four tool-choice modes;
-    /// a stricter-than-text response format fails explicitly naming the field.
+    /// Replays a same-family opaque thinking block verbatim and maps the four tool-choice modes.
     ///
     /// # Panics
     ///
-    /// Panics if the replay, the mappings, or the rejection diverge from the contract.
+    /// Panics if the replay or the mappings diverge from the contract.
     #[test]
-    fn replays_opaque_blocks_maps_tool_choice_and_rejects_response_format() {
+    fn replays_opaque_blocks_and_maps_tool_choice() {
         let opaque: Value = json!({
             "type": "thinking",
             "thinking": "upstream text",
@@ -742,12 +769,40 @@ mod tests {
 
             assert_eq!(at(&value, "/tool_choice"), &rendered);
         }
+    }
+
+    /// Renders a JSON-schema response format into `output_config.format` — the official
+    /// `JSONOutputFormatParam`, whose `type` and `schema` members are both required and which
+    /// carries no slot for the OpenAI-style schema name — while free-form JSON, which the
+    /// upstream cannot express, fails explicitly naming the field, and plain text renders no
+    /// format member at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered format or the rejection diverges from the contract.
+    #[test]
+    fn renders_the_json_schema_format_and_rejects_free_form_json() {
+        let schema = json!({"type": "object", "properties": {"city": {"type": "string"}}});
 
         let ir = IrRequest {
+            model: "m".to_string(),
             response_format: Some(IrResponseFormat::JsonSchema {
                 name: "shape".to_string(),
-                schema: json!({}),
+                schema: schema.clone(),
             }),
+            ..IrRequest::default()
+        };
+
+        let body = upstream_body(&ir, false);
+
+        assert_eq!(
+            at(&body, "/output_config/format"),
+            &json!({"type": "json_schema", "schema": schema}),
+        );
+
+        let ir = IrRequest {
+            model: "m".to_string(),
+            response_format: Some(IrResponseFormat::Json),
             ..IrRequest::default()
         };
 
@@ -756,9 +811,23 @@ mod tests {
             reason = "the response format is constructed to be rejected"
         )]
         let error = render_request_body(&ir, false)
-            .expect_err("a JSON response format has no Anthropic slot");
+            .expect_err("a free-form JSON response format has no Anthropic slot");
 
         assert_eq!(error.param.as_deref(), Some("response_format"));
+
+        assert_eq!(
+            error.to_string(),
+            "The Anthropic Messages upstream expresses only a JSON schema response format"
+        );
+
+        // Plain text is the absence of a constraint: no output format renders.
+        let ir = IrRequest {
+            model: "m".to_string(),
+            response_format: Some(IrResponseFormat::Text),
+            ..IrRequest::default()
+        };
+
+        assert!(upstream_body(&ir, false).get("output_config").is_none());
     }
 
     /// Renders a tool call whose arguments text is empty as an empty `input` object: the member

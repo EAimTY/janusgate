@@ -14,6 +14,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
+import { settle, stubManagementApi } from "./screen-test-support";
 
 const providerRow: ProviderResponse = {
     type: "api_key",
@@ -118,12 +119,7 @@ function screenApi(
         dayBucket,
     ],
 ): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
-    return {
-        listProviderDefinitions: refused,
-        createProviderDefinition: refused,
-        updateProviderDefinition: refused,
+    return stubManagementApi({
         listProviders: (signal) => heldCall(signal, holder.providers),
         listModels: (_request, signal) => heldCall(signal, holder.models),
         listApiKeys: (signal) => heldCall(signal, holder.apiKeys),
@@ -136,28 +132,7 @@ function screenApi(
                 ],
             });
         },
-        createProvider: refused,
-        updateProvider: refused,
-        deleteProvider: refused,
-        startProviderOauth: refused,
-        completeProviderOauth: refused,
-        reauthorizeProvider: refused,
-        discoverModels: refused,
-        updateModel: refused,
-        createModel: refused,
-        deleteModel: refused,
-        listUsage: refused,
-        createApiKey: refused,
-        updateApiKey: refused,
-        deleteApiKey: refused,
-    };
-}
-
-/** Drains the pending promises and scheduled work of one screen exchange. */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
+    });
 }
 
 /** Answers the most recent held call of one route — the newest cycle's call. */

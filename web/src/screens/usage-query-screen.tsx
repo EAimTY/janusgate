@@ -24,7 +24,7 @@ import {
     EMPTY_USAGE_FILTER_FIELDS,
     type UsageFilterFields,
 } from "/src/usage-filter";
-import { ReadCallFailure, readOne, type ScreenNotice } from "./read";
+import { isSkeletonWindowOpen, ReadCallFailure, readOne, type ScreenNotice } from "./read";
 import { indexUsageEntities, type UsageEntityIndex, usageDimensionLabel } from "./usage-labels";
 import { readUsageBuckets, readUsageEntities, type UsageEntities } from "./usage-read";
 
@@ -346,7 +346,7 @@ export function UsageQueryScreen(props: { readonly api: ManagementApi }): JSX.El
                 </form>
             </Card>
 
-            <Show when={isReading() && !hasRead() && failure() === null}>
+            <Show when={isSkeletonWindowOpen(isReading(), hasRead(), failure())}>
                 <Skeleton class="h-64 w-full rounded-2xl" />
             </Show>
 

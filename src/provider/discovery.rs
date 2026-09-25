@@ -145,7 +145,20 @@ pub(crate) async fn run_discovery(
 
                 ids.extend(extract_ids(&body, &discovery.extract)?);
 
-                next_page = value_at(&body, response_path)
+                let token_value = value_at(&body, response_path);
+
+                // A present, non-null token that is not a usable string is a malformed page, not
+                // the end of the walk: reading it as absent would pass the budget check below and
+                // deliver a truncated list. The failure mirrors the cursor mode's
+                // missing-last-identifier guard.
+                if token_value.is_some_and(|value| !matches!(value, Json::String(_) | Json::Null)) {
+                    return Err(Error::Unavailable {
+                        detail: "model discovery page carries a malformed next-page token"
+                            .to_string(),
+                    });
+                }
+
+                next_page = token_value
                     .and_then(Json::as_str)
                     .filter(|token| !token.is_empty())
                     .map(str::to_string);
@@ -552,6 +565,62 @@ mod tests {
             "Upstream request failed: upstream reported more pages than the 2-page discovery \
              budget fetches; refusing to truncate the provider's model rows"
         );
+
+        mock.shutdown.send(()).ok();
+    }
+
+    /// A present next-page token that is not a usable string is a malformed page, not the end of
+    /// the walk: reading it as absent would let the budget guard pass and deliver a truncated
+    /// list, so the refresh fails like the cursor mode's missing last identifier. An explicit
+    /// null token reads as the absent member and still ends the walk normally.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to parse or the walk fails to diverge from the expectation.
+    #[tokio::test]
+    async fn non_string_next_token_fails_the_refresh() {
+        let client = crate::http_client::control_plane();
+
+        // A numeric token on the first page fails the whole refresh.
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "data": [{"id": "model-a"}],
+                "nextPageToken": 5
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let outcome =
+            run_discovery(&client, &token_discovery(3), &discovery_env(&mock.base_url)).await;
+
+        let Err(error) = outcome else {
+            panic!("a present non-string next token must fail the refresh");
+        };
+
+        assert!(matches!(error, Error::Unavailable { .. }));
+
+        assert_eq!(
+            error.to_string(),
+            "Upstream request failed: model discovery page carries a malformed next-page token"
+        );
+
+        mock.shutdown.send(()).ok();
+
+        // An explicit null token reads as the absent member: the walk ends and the page's
+        // identifiers deliver normally.
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "data": [{"id": "model-a"}],
+                "nextPageToken": null
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let ids = run_discovery(&client, &token_discovery(3), &discovery_env(&mock.base_url)).await;
+
+        assert_eq!(ids.unwrap(), vec!["model-a"]);
 
         mock.shutdown.send(()).ok();
     }

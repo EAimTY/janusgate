@@ -94,6 +94,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         return persist_terminal(
             database,
             flow,
+            flow.device_poll_started_at,
             "internal_error",
             "the flow's provider definition vanished",
         )
@@ -104,6 +105,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         return persist_terminal(
             database,
             flow,
+            flow.device_poll_started_at,
             "internal_error",
             "the flow's definition carries no OAuth credential",
         )
@@ -122,6 +124,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         return persist_terminal(
             database,
             flow,
+            flow.device_poll_started_at,
             "internal_error",
             "the flow's definition carries no device grant",
         )
@@ -190,6 +193,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
             persist_terminal(
                 database,
                 flow,
+                flow.device_poll_started_at,
                 "upstream_rejected",
                 &format!(
                     "the token endpoint rejected the device code with `{code}`: start a fresh flow \
@@ -275,15 +279,19 @@ fn next_poll_instant(interval_seconds: i64) -> Result<i64, Error> {
     flow::seconds_from_now(interval_seconds, || interval_overflow(interval_seconds))
 }
 
-/// Persists one terminal failure while the caller still owns its claim; the flow's result stays
-/// until the management client retrieves it or the flow expires.
+/// Persists one terminal failure while the caller still owns the claim stamped
+/// `claim_started_at`; the flow's result stays until the management client retrieves it or the
+/// flow expires. The caller passes the stamp its persist must compare-set against: the held
+/// claim, or — on a path that already ran [`storage::oauth_flows::restamp_claim`] — the fresh
+/// stamp the re-stamp produced, since the superseded pre-restamp stamp matches no row.
 async fn persist_terminal(
     database: &Database,
     flow: &OngoingFlow,
+    claim_started_at: Option<i64>,
     code: &str,
     message: &str,
 ) -> Result<(), Error> {
-    let Some(claim) = flow.device_poll_started_at else {
+    let Some(claim) = claim_started_at else {
         return Ok(());
     };
 
@@ -301,17 +309,20 @@ async fn persist_terminal(
     if is_persisted {
         info!("device flow {} failed terminally: {code}", flow.id);
     } else {
-        debug!("device flow {} lost its claim; failure discarded", flow.id);
+        debug!(
+            "device flow {} could not record the terminal outcome; failure discarded",
+            flow.id
+        );
     }
 
     Ok(())
 }
 
 /// Commits a completed device exchange: the shared completion pipeline folds the outcome
-/// through provisioning into the stored credentials, then the provider write and the succeeded
-/// outcome commit in one transaction. A provisioning failure fails the flow with a
-/// gateway-owned message; a lost claim abandons the provider write, leaving the newer state
-/// untouched.
+/// through provisioning into the stored credentials, the claim is re-stamped for the commit,
+/// and the provider write and the succeeded outcome commit in one transaction. A provisioning
+/// failure fails the flow with a gateway-owned message; a claim the re-stamp finds stolen
+/// abandons the provider write, leaving the newer state untouched.
 async fn commit_success(
     database: &Database,
     http: &Client,
@@ -335,6 +346,7 @@ async fn commit_success(
             return persist_terminal(
                 database,
                 flow,
+                flow.device_poll_started_at,
                 "name_conflict",
                 "the provider name the flow creates is already taken",
             )
@@ -344,9 +356,23 @@ async fn commit_success(
 
     let product = completion::complete_exchange(http, definition, outcome, flow).await?;
 
-    let claim = flow.device_poll_started_at.ok_or_else(|| Error::Internal {
+    let held_claim = flow.device_poll_started_at.ok_or_else(|| Error::Internal {
         message: "the claimed flow carries no claim stamp".to_string(),
     })?;
+
+    // Provisioning ran inside the claim, so the stamp may have aged past the staleness window;
+    // re-stamp it for the commit. A refused re-stamp is a stolen claim: the winner owns the
+    // row, so the success derived from the superseded exchange is abandoned before any
+    // provider write.
+    let Some(claim) = storage::oauth_flows::restamp_claim(database, flow.id, held_claim).await?
+    else {
+        warn!(
+            "device flow {} lost its claim during provisioning; success discarded",
+            flow.id
+        );
+
+        return Ok(());
+    };
 
     let mut transaction = database.transaction().await?;
 
@@ -355,12 +381,14 @@ async fn commit_success(
 
     let Some(result_provider_id) = result_provider_id else {
         // A concurrent `providers:delete` won: the flow fails with the vanished-target
-        // classification, mirroring the refresh path.
+        // classification, mirroring the refresh path. The failure persists against the fresh
+        // post-restamp stamp — the pre-restamp stamp the flow row still carries matches no row.
         transaction.rollback().await?;
 
         return persist_terminal(
             database,
             flow,
+            Some(claim),
             "target_vanished",
             "the provider the flow reauthorizes was deleted",
         )
@@ -415,7 +443,7 @@ mod tests {
         storage,
         storage::oauth_flows::{
             FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
-            find_flow_by_state, insert_flow,
+            find_flow_by_state, insert_flow, restamp_claim,
         },
         test_support,
     };
@@ -705,5 +733,378 @@ mod tests {
         assert_eq!(settled.device_poll_started_at, None);
 
         mock.shutdown.send(()).ok();
+    }
+
+    /// The claim re-stamp is a compare-and-set on the held stamp (README §3, §5.4): the
+    /// owner's re-stamp freshens the stored stamp for the commit, while a re-stamp whose claim
+    /// a competing tick has stolen matches no row and reports the loss, leaving the winner's
+    /// stamp untouched.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the re-stamp diverges from the contract.
+    #[tokio::test]
+    async fn restamping_a_held_claim_freshens_it_and_a_stolen_one_fails() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition =
+            insert_device_poll_definition(&database, "device-def", "http://127.0.0.1:1/token")
+                .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        // The claim is stamped 40 seconds in the past — past the staleness window, the state
+        // provisioning longer than the window leaves the row in.
+        let claim_at = now - 40 * crate::unix_time::MICROS_PER_SEC;
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(claim_at - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, claim_at, claim_at - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        #[expect(clippy::expect_used, reason = "the held claim re-stamps")]
+        let fresh = restamp_claim(&database, claimed.id, claim_at)
+            .await
+            .unwrap()
+            .expect("the held claim re-stamps");
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let restamped = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        assert_eq!(restamped.device_poll_started_at, Some(fresh));
+
+        // A competing tick past the staleness window recovers the (fabricated) stale claim.
+        let later = now + 40 * crate::unix_time::MICROS_PER_SEC;
+
+        #[expect(clippy::expect_used, reason = "the stale claim is stolen")]
+        let stolen = claim_due_device_flow(
+            &database,
+            later,
+            now + 10 * crate::unix_time::MICROS_PER_SEC,
+        )
+        .await
+        .unwrap()
+        .expect("the stale claim is stolen");
+
+        assert_eq!(stolen.device_poll_started_at, Some(later));
+
+        assert!(
+            restamp_claim(&database, claimed.id, fresh)
+                .await
+                .unwrap()
+                .is_none(),
+            "a re-stamp over a stolen claim matches no row"
+        );
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        assert_eq!(
+            settled.device_poll_started_at,
+            Some(later),
+            "a failed re-stamp leaves the winner's stamp"
+        );
+    }
+
+    /// A provisioning sequence that outlives the claim-staleness window still commits (README
+    /// §3, §5.4): the claim is re-stamped after provisioning returns and before the commit, so
+    /// the success the poller derived is never refused by its own aged claim.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the completion diverges from the contract.
+    #[tokio::test]
+    async fn provisioning_outliving_the_claim_window_still_commits_the_success() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition =
+            insert_device_poll_definition(&database, "device-def", "http://127.0.0.1:1/token")
+                .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        // The claim is stamped 40 seconds in the past — the state provisioning longer than the
+        // 30-second staleness window leaves the row in when the poller returns.
+        let claim_at = now - 40 * crate::unix_time::MICROS_PER_SEC;
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(claim_at - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, claim_at, claim_at - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        commit_success(
+            &database,
+            &http_client::control_plane(),
+            &claimed,
+            &definition,
+            flow::ExchangeOutcome {
+                access_token: Some("exchange-token".to_string()),
+                ..flow::ExchangeOutcome::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        assert_eq!(settled.outcome, Some(FlowOutcome::Succeeded));
+        assert_eq!(settled.device_poll_started_at, None);
+
+        #[expect(clippy::expect_used, reason = "the provider write committed")]
+        storage::providers::find_provider(&database, "created")
+            .await
+            .unwrap()
+            .expect("the provider write committed");
+    }
+
+    /// A claim a competing poller tick stole while provisioning ran abandons the success
+    /// instead of committing: the winner owns the row, so the success derived from the
+    /// superseded exchange is discarded with the provider write never attempted (README §3,
+    /// §5.4).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the abandonment diverges from the contract.
+    #[tokio::test]
+    async fn a_claim_stolen_during_provisioning_abandons_the_success() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition =
+            insert_device_poll_definition(&database, "device-def", "http://127.0.0.1:1/token")
+                .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        let claim_at = now - 40 * crate::unix_time::MICROS_PER_SEC;
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(claim_at - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, claim_at, claim_at - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        // A competing poller tick recovers the stale claim while the first poller is
+        // provisioning.
+        #[expect(clippy::expect_used, reason = "the stale claim is stolen")]
+        let stolen =
+            claim_due_device_flow(&database, now, now - 30 * crate::unix_time::MICROS_PER_SEC)
+                .await
+                .unwrap()
+                .expect("the stale claim is stolen");
+
+        assert_eq!(stolen.id, claimed.id);
+
+        commit_success(
+            &database,
+            &http_client::control_plane(),
+            &claimed,
+            &definition,
+            flow::ExchangeOutcome {
+                access_token: Some("exchange-token".to_string()),
+                ..flow::ExchangeOutcome::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        assert_eq!(settled.outcome, None, "the winner owns the flow's schedule");
+
+        assert_eq!(settled.device_poll_started_at, Some(now));
+
+        assert!(
+            storage::providers::find_provider(&database, "created")
+                .await
+                .unwrap()
+                .is_none(),
+            "the abandoned success never wrote the provider"
+        );
+    }
+
+    /// A reauthorize flow whose target provider vanishes while the commit runs fails
+    /// terminally under the fresh re-stamped claim (README §3, §7.2): the commit re-stamps the
+    /// claim before the provider write, so the vanished-target failure must persist against the
+    /// fresh stamp — persisting against the superseded stamp would leave the flow pending and
+    /// unstealable until its expiry sweep.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the flow outcome diverges.
+    #[tokio::test]
+    async fn a_reauthorize_flow_whose_target_vanishes_mid_commit_fails_under_the_fresh_stamp() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition =
+            insert_device_poll_definition(&database, "device-def", "http://127.0.0.1:1/token")
+                .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        // The claim is stamped 40 seconds in the past — provisioning outlives the 30-second
+        // staleness window, so the commit re-stamps the claim before the provider write.
+        let claim_at = now - 40 * crate::unix_time::MICROS_PER_SEC;
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Reauthorize,
+                provider_name: None,
+                model_prefix: None,
+                base_url: None,
+                // A target id no provider row holds: the concurrent `providers:delete` has
+                // already won by the time the rebind runs.
+                target_provider_id: Some(424242),
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(claim_at - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, claim_at, claim_at - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        assert_eq!(claimed.device_poll_started_at, Some(claim_at));
+
+        commit_success(
+            &database,
+            &http_client::control_plane(),
+            &claimed,
+            &definition,
+            flow::ExchangeOutcome {
+                access_token: Some("exchange-token".to_string()),
+                ..flow::ExchangeOutcome::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        // The vanished-target failure is recorded under the fresh re-stamped claim: the
+        // terminal outcome, its gateway-owned pair, and the cleared claim stamp.
+        assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
+        assert_eq!(settled.failure_code.as_deref(), Some("target_vanished"));
+        assert_eq!(
+            settled.failure_message.as_deref(),
+            Some("the provider the flow reauthorizes was deleted")
+        );
+        assert_eq!(
+            settled.device_poll_started_at, None,
+            "the persisted terminal outcome clears the claim stamp"
+        );
     }
 }

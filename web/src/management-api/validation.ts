@@ -773,6 +773,17 @@ function expectExpressionPart(part: unknown, context: string): ValueExpr {
                 value: expectString(Reflect.get(record, "value"), `${context}.value`),
             };
         case "secret":
+        case "client_id":
+        case "client_secret":
+        case "authorization_code":
+        case "code_verifier":
+        case "redirect_uri":
+        case "oauth_state":
+        case "device_code":
+        case "refresh_token":
+        case "request_uuid":
+        case "model":
+        case "base":
             expectDeclaredKeys(
                 record,
                 [
@@ -781,7 +792,7 @@ function expectExpressionPart(part: unknown, context: string): ValueExpr {
                 context,
             );
             return {
-                type: "secret",
+                type: kind,
             };
         case "slot":
             expectDeclaredKeys(
@@ -796,127 +807,6 @@ function expectExpressionPart(part: unknown, context: string): ValueExpr {
                 type: "slot",
                 name: expectString(Reflect.get(record, "name"), `${context}.name`),
             };
-        case "client_id":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "client_id",
-            };
-        case "client_secret":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "client_secret",
-            };
-        case "authorization_code":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "authorization_code",
-            };
-        case "code_verifier":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "code_verifier",
-            };
-        case "redirect_uri":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "redirect_uri",
-            };
-        case "oauth_state":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "oauth_state",
-            };
-        case "device_code":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "device_code",
-            };
-        case "refresh_token":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "refresh_token",
-            };
-        case "request_uuid":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "request_uuid",
-            };
-        case "model":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "model",
-            };
-        case "base":
-            expectDeclaredKeys(
-                record,
-                [
-                    "type",
-                ],
-                context,
-            );
-            return {
-                type: "base",
-            };
         case "coalesce":
             expectDeclaredKeys(
                 record,
@@ -928,7 +818,7 @@ function expectExpressionPart(part: unknown, context: string): ValueExpr {
             );
             return {
                 type: "coalesce",
-                parts: expectExpressionParts(Reflect.get(record, "parts"), `${context}.parts`),
+                parts: expectStringExpr(Reflect.get(record, "parts"), `${context}.parts`),
             };
         default:
             throw new ContractViolationError(`${context}.type is not an expression kind: ${kind}`);
@@ -940,11 +830,6 @@ function expectStringExpr(value: unknown, context: string): StringExpr {
     return expectArray(value, context).map((part, index) =>
         expectExpressionPart(part, `${context}[${index}]`),
     );
-}
-
-/** The parts of one string expression, as the expression walkers consume them. */
-function expectExpressionParts(value: unknown, context: string): Array<ValueExpr> {
-    return expectStringExpr(value, context);
 }
 
 /** One param row: a name and its expression, rebuilt (README §5.1). */

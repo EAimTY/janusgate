@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ProvidersScreen } from "/src/screens/providers-screen";
+import { settle, stubManagementApi } from "./screen-test-support";
 
 /**
  * A provider whose name and credential kind share nothing with its wire
@@ -26,12 +27,7 @@ function screenApi(options: {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
 }): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
-    return {
-        listProviderDefinitions: refused,
-        createProviderDefinition: refused,
-        updateProviderDefinition: refused,
+    return stubManagementApi({
         listProviders: () =>
             Promise.resolve({
                 providers: [
@@ -44,30 +40,7 @@ function screenApi(options: {
                     ...options.models,
                 ],
             }),
-        listApiKeys: refused,
-        queryUsage: refused,
-        createProvider: refused,
-        updateProvider: refused,
-        deleteProvider: refused,
-        startProviderOauth: refused,
-        completeProviderOauth: refused,
-        reauthorizeProvider: refused,
-        discoverModels: refused,
-        updateModel: refused,
-        createModel: refused,
-        deleteModel: refused,
-        listUsage: refused,
-        createApiKey: refused,
-        updateApiKey: refused,
-        deleteApiKey: refused,
-    };
-}
-
-/** Drains the pending promises and scheduled work of one screen exchange. */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
+    });
 }
 
 /** Types into the provider search field the way a browser delivers keystrokes. */

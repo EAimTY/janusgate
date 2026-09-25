@@ -9,7 +9,10 @@
 //! upstream grant.
 
 use super::Error;
-use crate::database::{Database, Transaction, params};
+use crate::{
+    database::{Database, Transaction, params},
+    unix_time,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, num::NonZeroI64};
 
@@ -521,6 +524,39 @@ pub(crate) async fn claim_due_device_flow(
         .first()
         .map(flow_from_row)
         .transpose()
+}
+
+/// Re-stamps the caller's device-poll claim with a fresh instant — one conditional
+/// compare-and-set over the held stamp. Provisioning runs inside the claim, so a sequence
+/// longer than the claim-staleness window would hand the claim to another poller tick before
+/// the commit; the re-stamp after provisioning returns refreshes ownership for the commit, so
+/// a provisioning sequence longer than the staleness window cannot be stolen mid-commit
+/// (README §3, §5.4). `None` — no row matched — means the claim was stolen: the winner owns
+/// the row and the caller must abandon instead of committing.
+///
+/// The statement stamps the claim exactly like [`claim_due_device_flow`] and conditions on it
+/// exactly like [`commit_device_success_in_transaction`], whose commit the freshened stamp
+/// feeds.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the update fails.
+pub(crate) async fn restamp_claim(
+    database: &Database,
+    flow_id: i64,
+    held_claim: i64,
+) -> Result<Option<i64>, Error> {
+    let new_claim = unix_time::unix_now_micros();
+
+    let changes = database
+        .execute(
+            "UPDATE ongoing_oauth_flows SET device_poll_started_at = ?1 \
+             WHERE id = ?2 AND device_poll_started_at = ?3 AND outcome IS NULL",
+            params![new_claim, flow_id, held_claim],
+        )
+        .await?;
+
+    Ok((changes == 1).then_some(new_claim))
 }
 
 /// Persists one poll attempt's outcome while the caller still owns the claim stamped

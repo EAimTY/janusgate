@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createMemo, createSignal, Show } from "solid-js";
+import { createEffect, createMemo, createSignal } from "solid-js";
 import { toUpdateApiKeyRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
@@ -13,12 +13,12 @@ import {
     readAll,
     type ScreenRead,
 } from "/src/screens/read";
-import { ReadNotice } from "/src/screens/read-notice";
+import { ScreenFrame } from "/src/screens/screen-frame";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { ButtonLink, Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { EmptyState, Skeleton } from "/src/ui/feedback";
+import { EmptyState } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 
 /**
@@ -68,73 +68,68 @@ export function ApiKeyEditScreen(props: {
     const { row: apiKey, isRowHeld } = edit;
 
     return (
-        <div class="rise-in flex flex-col gap-5">
-            <ReadNotice read={read} />
-
-            <Show when={read.isFirstRead()}>
+        <ScreenFrame
+            read={read}
+            row={apiKey}
+            firstReadHeader={
                 <PageHeader
                     title="Edit API key"
                     backHref={hrefs.apiKeyDetail(props.apiKeyId)}
                     backLabel="API key"
                 />
-                <Skeleton class="h-64 w-full rounded-2xl" />
-            </Show>
-
-            <Show when={read.hasRead() && apiKey() === null}>
-                <PageHeader
-                    title="Edit API key"
-                    backHref={hrefs.apiKeys()}
-                    backLabel="API keys"
-                />
-                <EmptyState
-                    title="API key not found"
-                    description="The gateway holds no API key here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
-                >
-                    <ButtonLink
-                        href={hrefs.apiKeys()}
-                        tone="primary"
+            }
+            notFound={
+                <>
+                    <PageHeader
+                        title="Edit API key"
+                        backHref={hrefs.apiKeys()}
+                        backLabel="API keys"
+                    />
+                    <EmptyState
+                        title="API key not found"
+                        description="The gateway holds no API key here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
                     >
-                        Back to API keys
-                    </ButtonLink>
-                </EmptyState>
-            </Show>
+                        <ButtonLink
+                            href={hrefs.apiKeys()}
+                            tone="primary"
+                        >
+                            Back to API keys
+                        </ButtonLink>
+                    </EmptyState>
+                </>
+            }
+        >
+            {(row) => (
+                <>
+                    <PageHeader
+                        title={`Edit ${row.name}`}
+                        backHref={hrefs.apiKeyDetail(row.id)}
+                        backLabel="API key"
+                    />
 
-            <Show
-                when={apiKey()}
-                keyed
-            >
-                {(row) => (
-                    <>
-                        <PageHeader
-                            title={`Edit ${row.name}`}
-                            backHref={hrefs.apiKeyDetail(row.id)}
-                            backLabel="API key"
-                        />
+                    <HoldNotice
+                        isHeld={isRowHeld()}
+                        subject="key"
+                    />
 
-                        <HoldNotice
-                            isHeld={isRowHeld()}
-                            subject="key"
-                        />
+                    <SettingsCard
+                        api={props.api}
+                        apiKey={row}
+                        enabledCount={enabledCount()}
+                        read={read}
+                        onDirtyChange={edit.reportFormDirty}
+                        onSaved={edit.reportSaved}
+                    />
 
-                        <SettingsCard
-                            api={props.api}
-                            apiKey={row}
-                            enabledCount={enabledCount()}
-                            read={read}
-                            onDirtyChange={edit.reportFormDirty}
-                            onSaved={edit.reportSaved}
-                        />
-
-                        <DangerCard
-                            api={props.api}
-                            apiKey={row}
-                            isLastEnabled={row.is_enabled && enabledCount() <= 1}
-                            read={read}
-                        />
-                    </>
-                )}
-            </Show>
-        </div>
+                    <DangerCard
+                        api={props.api}
+                        apiKey={row}
+                        isLastEnabled={row.is_enabled && enabledCount() <= 1}
+                        read={read}
+                    />
+                </>
+            )}
+        </ScreenFrame>
     );
 }
 

@@ -84,13 +84,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         setFailure(null);
         oauth.reset();
 
-        const nextPreset = PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? preset();
-
         setIsDefinitionTouched(false);
-        setDefinitionJson(JSON.stringify(nextPreset.payload, null, 2));
+        setDefinitionJson(JSON.stringify(preset().payload, null, 2));
 
         if (!isNameTouched()) {
-            setName(suggestProviderName(nextPreset.suggestedName, takenNames()));
+            setName(suggestProviderName(preset().suggestedName, takenNames()));
         }
     };
 
@@ -338,6 +336,14 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     /** Whether any creation or OAuth call is in flight: the page's shared disable. */
     const isBusy = (): boolean => isCreating() || oauth.isBusy();
 
+    /**
+     * Whether an OAuth flow is live: the picker, the identity fields, and the
+     * definition editing surface lock, because the provider is created from
+     * what the flow's start already sent — an edit now would look accepted
+     * and do nothing.
+     */
+    const isFlowLive = (): boolean => oauth.flow() !== null;
+
     /** The live flow narrowed to its grant, so each step renders its own answer. */
     const startedAuthorizationCode = createMemo(() => {
         const live = oauth.flow();
@@ -438,7 +444,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         presets={PROVIDER_PRESETS}
                         value={presetId()}
                         onChange={pickPreset}
-                        isDisabled={isBusy() || oauth.flow() !== null}
+                        isDisabled={isBusy() || isFlowLive()}
                     />
                     <p class="mt-3 text-[12.5px] leading-snug text-ink-faint">
                         {preset().provenance}
@@ -479,14 +485,14 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         <div class="mt-3">
                             <textarea
                                 aria-label="Definition JSON"
-                                class="tnum h-80 w-full rounded-lg border border-rule bg-canvas p-3 font-mono text-[12.5px] leading-relaxed dark:bg-muted"
+                                class="tnum h-80 w-full rounded-lg border border-rule bg-canvas p-3 font-mono text-[12.5px] leading-relaxed transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-60 dark:bg-muted"
                                 spellcheck={false}
                                 value={definitionJson()}
                                 onInput={(event) => {
                                     setDefinitionJson(event.currentTarget.value);
                                     setIsDefinitionTouched(true);
                                 }}
-                                disabled={isBusy()}
+                                disabled={isBusy() || isFlowLive()}
                             />
                             <Show when={definitionError()}>
                                 {(current) => (
@@ -497,7 +503,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             </Show>
                             <div class="mt-2 flex justify-end">
                                 <Button
-                                    isDisabled={isBusy()}
+                                    isDisabled={isBusy() || isFlowLive()}
                                     onClick={resetDefinition}
                                 >
                                     Reset to preset
@@ -505,6 +511,12 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             </div>
                         </div>
                     </details>
+                    <Show when={definitionError() !== null}>
+                        <p class="mt-2 text-[12.5px] text-red-600 dark:text-red-400">
+                            The connection recipe is invalid — open the Advanced disclosure above
+                            for the offending path.
+                        </p>
+                    </Show>
                 </div>
             </Card>
 
@@ -521,7 +533,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         onCustomPrefixInput={setCustomPrefix}
                         defaultPrefix={defaultModelPrefix(resolvedName())}
                         prefixError={prefixError()}
-                        isDisabled={isBusy()}
+                        isDisabled={isBusy() || isFlowLive()}
                     />
                 </div>
             </Card>

@@ -19,9 +19,8 @@ export function indexRowsById<
 
 /**
  * Counts the listed models per provider row id, once per listings change.
- * The providers page states the count on every row and the overview derives
- * its "has no models" attention lines from it, so both read this one map
- * instead of each rebuilding the same counts.
+ * The providers page states the raw row count on every row through this one
+ * map instead of rebuilding the same counts.
  */
 export function modelCountsByProvider(
     models: ReadonlyArray<ModelResponse>,
@@ -30,6 +29,28 @@ export function modelCountsByProvider(
 
     for (const model of models) {
         counts.set(model.provider_id, (counts.get(model.provider_id) ?? 0) + 1);
+    }
+
+    return counts;
+}
+
+/**
+ * Counts the listed models that are effectively serving (README §3) per
+ * provider row id, once per listings change. The overview's attention lines
+ * read this map: an enabled provider whose count is zero serves nothing —
+ * its every row disabled, vanished, or absent — which is the quietest way a
+ * provider fails and the one the overview must still name.
+ */
+export function servingModelCountsByProvider(
+    models: ReadonlyArray<ModelResponse>,
+    providersById: ReadonlyMap<number, ProviderResponse>,
+): ReadonlyMap<number, number> {
+    const counts = new Map<number, number>();
+
+    for (const model of models) {
+        if (isModelEffectivelyServing(model, providersById.get(model.provider_id))) {
+            counts.set(model.provider_id, (counts.get(model.provider_id) ?? 0) + 1);
+        }
     }
 
     return counts;

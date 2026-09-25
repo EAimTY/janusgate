@@ -11,9 +11,11 @@ use crate::{
     provider::{
         control::{self, ControlFailure, DecodedBody, Extracted},
         definition::{
-            credential::{CredentialAcquisition, Exchange, Grant, Pkce, SlotGenerator},
+            credential::{
+                CredentialAcquisition, Exchange, Grant, IdTokenClaim, Pkce, SlotGenerator,
+            },
             eval::ValueEnv,
-            template::ResponseTarget as Target,
+            template::{ResponseField, ResponseTarget as Target},
         },
     },
     unix_time,
@@ -157,7 +159,7 @@ pub(crate) fn jwt_claims(jwt: &str) -> Option<serde_json::Map<String, serde_json
 /// skipped.
 pub(crate) fn apply_id_token_claims(
     id_token: &str,
-    claims: &[crate::provider::definition::credential::IdTokenClaim],
+    claims: &[IdTokenClaim],
     slots: &mut BTreeMap<String, String>,
 ) {
     let Some(payload) = jwt_claims(id_token) else {
@@ -175,6 +177,27 @@ pub(crate) fn apply_id_token_claims(
             slots.insert(claim.slot.clone(), text.to_string());
         }
     }
+}
+
+/// Folds one executed token stage's identity artifacts into the stored working slots: the
+/// stored slots stay in place, the identity token's claims copy over, and the stage's own slot
+/// targets extend the result (README §5.3). The completion pipeline and the refresh grant share
+/// this fold.
+#[must_use]
+pub(crate) fn absorb_exchange_slots(
+    stored: &BTreeMap<String, String>,
+    outcome: &ExchangeOutcome,
+    claims: &[IdTokenClaim],
+) -> BTreeMap<String, String> {
+    let mut slots = stored.clone();
+
+    if let Some(id_token) = &outcome.id_token {
+        apply_id_token_claims(id_token, claims, &mut slots);
+    }
+
+    slots.extend(outcome.slots.clone());
+
+    slots
 }
 
 /// Derives the PKCE S256 challenge of a verifier: Base64URL (unpadded) of SHA-256 over the
@@ -413,44 +436,14 @@ pub(crate) async fn execute_device_authorization(
     // flow, so either is a malformed device-authorization response. Absence still falls back
     // per the documented rules (the five-second default; `expires_in_fallback_seconds`).
     let expires_in_seconds = match optional(find(&Target::ExpiresInSeconds))? {
-        Some(text) => {
-            let seconds = text.parse::<i64>().map_err(|_| Error::Unavailable {
-                detail: "device authorization response carries a non-integer `expires_in`"
-                    .to_string(),
-            })?;
+        Some(text) => Some(positive_duration(text, "expires_in")?),
 
-            if seconds <= 0 {
-                return Err(Error::Unavailable {
-                    detail: format!(
-                        "malformed device authorization response: `expires_in` must be positive, \
-                         got {seconds}"
-                    ),
-                });
-            }
-
-            Some(seconds)
-        }
         None => None,
     };
 
     let interval_seconds = match optional(find(&Target::IntervalSeconds))? {
-        Some(text) => {
-            let seconds = text.parse::<i64>().map_err(|_| Error::Unavailable {
-                detail: "device authorization response carries a non-integer `interval`"
-                    .to_string(),
-            })?;
+        Some(text) => Some(positive_duration(text, "interval")?),
 
-            if seconds <= 0 {
-                return Err(Error::Unavailable {
-                    detail: format!(
-                        "malformed device authorization response: `interval` must be positive, \
-                         got {seconds}"
-                    ),
-                });
-            }
-
-            Some(seconds)
-        }
         None => None,
     };
 
@@ -462,6 +455,27 @@ pub(crate) async fn execute_device_authorization(
         expires_in_seconds,
         interval_seconds,
     })
+}
+
+/// Parses one upstream-reported device-authorization duration: a non-integer spelling and a
+/// non-positive value are both malformed device-authorization responses (RFC 8628 §3.2) — a
+/// non-positive `interval` would make the poller due every tick and a non-positive `expires_in`
+/// a dead-on-arrival flow. Absence falls back per the documented rules at the call site.
+fn positive_duration(text: String, field: &str) -> Result<i64, Error> {
+    let seconds = text.parse::<i64>().map_err(|_| Error::Unavailable {
+        detail: format!("device authorization response carries a non-integer `{field}`"),
+    })?;
+
+    if seconds <= 0 {
+        return Err(Error::Unavailable {
+            detail: format!(
+                "malformed device authorization response: `{field}` must be positive, \
+                 got {seconds}"
+            ),
+        });
+    }
+
+    Ok(seconds)
 }
 
 /// The product of one token exchange (README §5.3).
@@ -597,7 +611,8 @@ pub(crate) async fn execute_exchange(
         return Ok(classify_error_code(&code, &exchange.terminal_codes));
     }
 
-    map_exchange_fields(&decoded, exchange)
+    map_exchange_fields(&decoded, &exchange.response.fields, "token exchange")
+        .map(ExchangeProduct::Completed)
 }
 
 /// Classifies a non-2xx token-endpoint rejection: a configured terminal code fails the flow, the
@@ -666,21 +681,21 @@ fn classify_error_code(code: &str, terminal_codes: &[String]) -> ExchangeProduct
     }
 }
 
-/// Maps the exchange response's fields into the outcome per the definition's targets.
+/// Maps one executed token stage's response fields into the outcome per the definition's
+/// targets: the exchange and the refresh grant share the same fold, differing only in the
+/// mapping slice and the stage label the failures carry.
 fn map_exchange_fields(
     decoded: &DecodedBody,
-    exchange: &Exchange,
-) -> Result<ExchangeProduct, Error> {
+    fields: &[ResponseField],
+    what: &str,
+) -> Result<ExchangeOutcome, Error> {
     let mut outcome = ExchangeOutcome::default();
 
-    control::map_response_fields(
-        decoded,
-        &exchange.response.fields,
-        "token exchange",
-        |target, extracted| apply_exchange_target(&mut outcome, target, extracted),
-    )?;
+    control::map_response_fields(decoded, fields, what, |target, extracted| {
+        apply_exchange_target(&mut outcome, target, extracted)
+    })?;
 
-    Ok(ExchangeProduct::Completed(outcome))
+    Ok(outcome)
 }
 
 /// Folds one extracted exchange value into the outcome per its target.
@@ -694,11 +709,22 @@ fn apply_exchange_target(
 
         Target::RefreshToken => outcome.refresh_token = Some(extracted.as_text()),
 
-        Target::ExpiresInSeconds => {
-            outcome.expires_in_seconds = extracted
-                .as_integer()
-                .or_else(|| extracted.as_text().parse::<i64>().ok());
-        }
+        // A present lifetime is consumed here or not at all: a non-integer value is a malformed
+        // token response (README §7.2), never a silent fall through to the weaker expiry
+        // sources the consumer consults when the lifetime is absent.
+        Target::ExpiresInSeconds => match extracted {
+            Extracted::Integer(seconds) => outcome.expires_in_seconds = Some(seconds),
+
+            Extracted::Text(text) => match text.parse::<i64>() {
+                Ok(seconds) => outcome.expires_in_seconds = Some(seconds),
+
+                Err(_) => {
+                    return Err(Error::Unavailable {
+                        detail: "token response carries a non-integer `expires_in`".to_string(),
+                    });
+                }
+            },
+        },
 
         Target::IdToken => outcome.id_token = Some(extracted.as_text()),
 
@@ -766,16 +792,7 @@ pub(crate) async fn execute_refresh_grant(
         Err(failure) => return Err(failure.into()),
     };
 
-    let mut mapped = ExchangeOutcome::default();
-
-    control::map_response_fields(
-        &decoded,
-        &response.fields,
-        "token refresh",
-        |target, extracted| apply_exchange_target(&mut mapped, target, extracted),
-    )?;
-
-    Ok(mapped)
+    map_exchange_fields(&decoded, &response.fields, "token refresh")
 }
 
 #[cfg(test)]

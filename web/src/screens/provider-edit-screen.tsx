@@ -22,11 +22,11 @@ import {
     readAll,
     type ScreenRead,
 } from "/src/screens/read";
-import { ReadNotice } from "/src/screens/read-notice";
+import { ScreenFrame } from "/src/screens/screen-frame";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Button, ButtonLink, TextField } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { EmptyState, Skeleton } from "/src/ui/feedback";
+import { EmptyState } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { AuthorizeStep, DeviceStep } from "/src/ui/oauth-flow";
 import {
@@ -93,87 +93,139 @@ export function ProviderEditScreen(props: {
     const { row: provider, isRowHeld } = edit;
 
     return (
-        <div class="rise-in flex flex-col gap-5">
-            <ReadNotice read={read} />
-
-            <Show when={read.isFirstRead()}>
+        <ScreenFrame
+            read={read}
+            row={provider}
+            firstReadHeader={
                 <PageHeader
                     title="Edit provider"
                     backHref={hrefs.providerDetail(props.providerId)}
                     backLabel="Provider"
                 />
-                <Skeleton class="h-64 w-full rounded-2xl" />
-            </Show>
-
-            <Show when={read.hasRead() && provider() === null}>
-                <PageHeader
-                    title="Edit provider"
-                    backHref={hrefs.providers()}
-                    backLabel="Providers"
-                />
-                <EmptyState
-                    title="Provider not found"
-                    description="The gateway holds no provider here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
-                >
-                    <ButtonLink
-                        href={hrefs.providers()}
-                        tone="primary"
+            }
+            notFound={
+                <>
+                    <PageHeader
+                        title="Edit provider"
+                        backHref={hrefs.providers()}
+                        backLabel="Providers"
+                    />
+                    <EmptyState
+                        title="Provider not found"
+                        description="The gateway holds no provider here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
                     >
-                        Back to providers
-                    </ButtonLink>
-                </EmptyState>
-            </Show>
-
-            <Show
-                when={provider()}
-                keyed
-            >
-                {(row) => (
-                    <>
-                        <PageHeader
-                            title={`Edit ${row.name}`}
-                            backHref={hrefs.providerDetail(row.id)}
-                            backLabel="Provider"
-                        />
-
-                        <HoldNotice
-                            isHeld={isRowHeld()}
-                            subject="provider"
-                        />
-
-                        <DetailsCard
-                            api={props.api}
-                            provider={row}
-                            models={models()}
-                            read={read}
-                            onDirtyChange={edit.reportFormDirty}
-                            onSaved={edit.reportSaved}
-                        />
-
-                        <Show
-                            when={isOAuthProviderRow(row) ? row : false}
-                            keyed
+                        <ButtonLink
+                            href={hrefs.providers()}
+                            tone="primary"
                         >
-                            {(oauthRow) => (
-                                <CredentialsCard
-                                    api={props.api}
-                                    provider={oauthRow}
-                                    read={read}
-                                />
-                            )}
-                        </Show>
+                            Back to providers
+                        </ButtonLink>
+                    </EmptyState>
+                </>
+            }
+        >
+            {(row) => (
+                <>
+                    <PageHeader
+                        title={`Edit ${row.name}`}
+                        backHref={hrefs.providerDetail(row.id)}
+                        backLabel="Provider"
+                    />
 
-                        <DangerCard
-                            api={props.api}
-                            provider={row}
-                            modelCount={models().length}
-                            read={read}
-                        />
-                    </>
-                )}
-            </Show>
-        </div>
+                    <HoldNotice
+                        isHeld={isRowHeld()}
+                        subject="provider"
+                    />
+
+                    <DetailsCard
+                        api={props.api}
+                        provider={row}
+                        models={models()}
+                        read={read}
+                        onDirtyChange={edit.reportFormDirty}
+                        onSaved={edit.reportSaved}
+                    />
+
+                    <Show
+                        when={isOAuthProviderRow(row) ? row : false}
+                        keyed
+                    >
+                        {(oauthRow) => (
+                            <CredentialsCard
+                                api={props.api}
+                                provider={oauthRow}
+                                read={read}
+                            />
+                        )}
+                    </Show>
+
+                    <DangerCard
+                        api={props.api}
+                        provider={row}
+                        modelCount={models().length}
+                        read={read}
+                    />
+                </>
+            )}
+        </ScreenFrame>
     );
+}
+
+/**
+ * The settings one row seeds the settings form with: the field values the row
+ * as the gateway last returned opens the form on. The form's init and its
+ * Revert read this one derivation — reverting is re-seeding from the baseline.
+ */
+function seedFrom(row: ProviderResponse): {
+    readonly isEnabled: boolean;
+    readonly name: string;
+    readonly isCustomPrefix: boolean;
+    readonly customPrefix: string;
+    readonly baseUrl: string | null;
+} {
+    // A stored prefix equal to the default is the default, so the switch
+    // opens off; anything else is a hand-set value worth keeping.
+    const isCustomPrefix = row.model_prefix !== defaultModelPrefix(row.name);
+
+    return {
+        isEnabled: row.is_enabled,
+        name: row.name,
+        isCustomPrefix,
+        customPrefix: isCustomPrefix ? row.model_prefix : "",
+        // A static key's row carries the stored base URL; an OAuth login's has none.
+        baseUrl: isOAuthProviderRow(row) ? "" : row.base_url,
+    };
+}
+
+/**
+ * The row the form's current values describe, restated over the row the
+ * gateway last returned: `providers:update` is a full-state write, so the
+ * update rewrote exactly these fields, and this restatement is the form's new
+ * truth once the save answers. The secret is never part of it — it is
+ * write-only, and an OAuth row has no base URL to restate.
+ */
+function withEdits(
+    row: ProviderResponse,
+    edits: {
+        readonly name: string;
+        readonly modelPrefix: string;
+        readonly isEnabled: boolean;
+        readonly baseUrl: string | null;
+    },
+): ProviderResponse {
+    const restated = {
+        ...row,
+        name: edits.name,
+        model_prefix: edits.modelPrefix,
+        is_enabled: edits.isEnabled,
+    };
+
+    return isOAuthProviderRow(row)
+        ? restated
+        : {
+              ...restated,
+              base_url: edits.baseUrl,
+          };
 }
 
 /** The provider's editable settings. Saving writes the complete readable state. */
@@ -190,22 +242,12 @@ function DetailsCard(props: {
     // resulting row is otherwise known only to this form. The API key is
     // never part of it: the secret is write-only.
     const [baseline, setBaseline] = createSignal(props.provider);
-    const [isEnabled, setIsEnabled] = createSignal(props.provider.is_enabled);
-    const [name, setName] = createSignal(props.provider.name);
-    // A stored prefix equal to the default is the default, so the
-    // switch opens off; anything else is a hand-set value worth keeping.
-    const [isCustomPrefix, setIsCustomPrefix] = createSignal(
-        props.provider.model_prefix !== defaultModelPrefix(props.provider.name),
-    );
-    const [customPrefix, setCustomPrefix] = createSignal(
-        props.provider.model_prefix !== defaultModelPrefix(props.provider.name)
-            ? props.provider.model_prefix
-            : "",
-    );
-    // A static key's row carries the stored base URL; an OAuth login's has none.
-    const [baseUrl, setBaseUrl] = createSignal(
-        isOAuthProviderRow(props.provider) ? "" : props.provider.base_url,
-    );
+    const seed = seedFrom(props.provider);
+    const [isEnabled, setIsEnabled] = createSignal(seed.isEnabled);
+    const [name, setName] = createSignal(seed.name);
+    const [isCustomPrefix, setIsCustomPrefix] = createSignal(seed.isCustomPrefix);
+    const [customPrefix, setCustomPrefix] = createSignal(seed.customPrefix);
+    const [baseUrl, setBaseUrl] = createSignal(seed.baseUrl);
     const [apiKey, setApiKey] = createSignal("");
     const [isSaving, setIsSaving] = createSignal(false);
 
@@ -286,17 +328,13 @@ function DetailsCard(props: {
     );
 
     const revert = (): void => {
-        const baselineRow = baseline();
+        const seed = seedFrom(baseline());
 
-        setIsEnabled(baselineRow.is_enabled);
-        setName(baselineRow.name);
-        setIsCustomPrefix(baselineRow.model_prefix !== defaultModelPrefix(baselineRow.name));
-        setCustomPrefix(
-            baselineRow.model_prefix !== defaultModelPrefix(baselineRow.name)
-                ? baselineRow.model_prefix
-                : "",
-        );
-        setBaseUrl(isOAuthProviderRow(baselineRow) ? "" : baselineRow.base_url);
+        setIsEnabled(seed.isEnabled);
+        setName(seed.name);
+        setIsCustomPrefix(seed.isCustomPrefix);
+        setCustomPrefix(seed.customPrefix);
+        setBaseUrl(seed.baseUrl);
         setApiKey("");
         // Reverting resolves a held row onto the gateway's current version.
         props.read.reload();
@@ -360,20 +398,12 @@ function DetailsCard(props: {
         // The write's complete desired state: the update rewrote exactly
         // these fields, so the row they describe is this form's new truth.
         setBaseline(
-            isOAuthProviderRow(baseline())
-                ? {
-                      ...baseline(),
-                      name: name(),
-                      model_prefix: effectivePrefix(),
-                      is_enabled: isEnabled(),
-                  }
-                : {
-                      ...baseline(),
-                      name: name(),
-                      model_prefix: effectivePrefix(),
-                      is_enabled: isEnabled(),
-                      base_url: resolvedBaseUrl(),
-                  },
+            withEdits(baseline(), {
+                name: name(),
+                modelPrefix: effectivePrefix(),
+                isEnabled: isEnabled(),
+                baseUrl: resolvedBaseUrl(),
+            }),
         );
         setApiKey("");
         // The hold stands until this save's reload lands: the listing still

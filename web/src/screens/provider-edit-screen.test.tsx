@@ -13,6 +13,7 @@ import type {
 import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ProviderEditScreen } from "/src/screens/provider-edit-screen";
+import { settle, stubManagementApi } from "./screen-test-support";
 
 const provider: ProviderResponse = {
     type: "api_key",
@@ -51,12 +52,7 @@ function screenApi(
     },
     sent: UpdateProviderRequest[] = [],
 ): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
-    return {
-        listProviderDefinitions: refused,
-        createProviderDefinition: refused,
-        updateProviderDefinition: refused,
+    return stubManagementApi({
         listProviders: (signal) => {
             signal?.throwIfAborted();
             return Promise.resolve({
@@ -96,29 +92,7 @@ function screenApi(
 
             return Promise.resolve();
         },
-        deleteProvider: refused,
-        createProvider: refused,
-        startProviderOauth: refused,
-        completeProviderOauth: refused,
-        reauthorizeProvider: refused,
-        createModel: refused,
-        updateModel: refused,
-        deleteModel: refused,
-        discoverModels: refused,
-        createApiKey: refused,
-        updateApiKey: refused,
-        deleteApiKey: refused,
-        listApiKeys: refused,
-        listUsage: refused,
-        queryUsage: refused,
-    };
-}
-
-/** Drains the pending promises and scheduled work of one screen exchange. */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
+    });
 }
 
 function labeledInput(label: string): HTMLInputElement {

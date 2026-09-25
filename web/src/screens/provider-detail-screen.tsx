@@ -19,10 +19,10 @@ import {
     type ScreenNotice,
     screenFailureNotice,
 } from "/src/screens/read";
-import { ReadNotice } from "/src/screens/read-notice";
+import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { Button, ButtonLink } from "/src/ui/controls";
-import { Badge, EmptyState, Notice, Skeleton } from "/src/ui/feedback";
+import { Badge, EmptyState, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
 import { credentialBadge } from "/src/ui/providers-table";
@@ -209,83 +209,78 @@ export function ProviderDetailScreen(props: {
     const providersById = createMemo(() => indexRowsById(providers()));
 
     return (
-        <div class="rise-in flex flex-col gap-5">
-            <ReadNotice read={read} />
-
-            <Show when={read.isFirstRead()}>
+        <ScreenFrame
+            read={read}
+            row={provider}
+            firstReadHeader={
                 <PageHeader
                     title="Provider"
                     backHref={hrefs.providers()}
                     backLabel="Providers"
                 />
-                <Skeleton class="h-64 w-full rounded-2xl" />
-            </Show>
-
-            <Show when={read.hasRead() && provider() === null}>
-                <PageHeader
-                    title="Provider"
-                    backHref={hrefs.providers()}
-                    backLabel="Providers"
-                />
-                <EmptyState
-                    title="Provider not found"
-                    description="The gateway holds no provider here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
-                >
-                    <ButtonLink
-                        href={hrefs.providers()}
-                        tone="primary"
+            }
+            notFound={
+                <>
+                    <PageHeader
+                        title="Provider"
+                        backHref={hrefs.providers()}
+                        backLabel="Providers"
+                    />
+                    <EmptyState
+                        title="Provider not found"
+                        description="The gateway holds no provider here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back."
                     >
-                        Back to providers
-                    </ButtonLink>
-                    <ButtonLink href={hrefs.providerNew()}>Create provider</ButtonLink>
-                </EmptyState>
-            </Show>
-
-            <Show
-                when={provider()}
-                keyed
-            >
-                {(row) => (
-                    <>
-                        <PageHeader
-                            title={row.name}
-                            description={`${upstreamFormatLabel(row.format)} · ${credentialKindLabel(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
-                            backHref={hrefs.providers()}
-                            backLabel="Providers"
+                        <ButtonLink
+                            href={hrefs.providers()}
+                            tone="primary"
                         >
-                            <Badge
-                                tone={row.is_enabled ? "ok" : "muted"}
-                                label={row.is_enabled ? "Enabled" : "Disabled"}
-                            />
-                            <Badge
-                                tone={credentialBadge(row).tone}
-                                label={credentialBadge(row).label}
-                            />
-                            <ButtonLink href={hrefs.providerEdit(row.id)}>Edit provider</ButtonLink>
-                        </PageHeader>
-
-                        <FactsCard provider={row} />
-
-                        <ModelsCard
-                            provider={row}
-                            models={models()}
-                            providersById={providersById()}
-                            isDiscovering={isDiscovering()}
-                            notice={discoveryNotice()}
-                            onDiscover={() => void discover(row, models())}
+                            Back to providers
+                        </ButtonLink>
+                        <ButtonLink href={hrefs.providerNew()}>Create provider</ButtonLink>
+                    </EmptyState>
+                </>
+            }
+        >
+            {(row) => (
+                <>
+                    <PageHeader
+                        title={row.name}
+                        description={`${upstreamFormatLabel(row.format)} · ${credentialKindLabel(row.type)} · prefix ${row.model_prefix === "" ? "(empty)" : row.model_prefix}`}
+                        backHref={hrefs.providers()}
+                        backLabel="Providers"
+                    >
+                        <Badge
+                            tone={row.is_enabled ? "ok" : "muted"}
+                            label={row.is_enabled ? "Enabled" : "Disabled"}
                         />
-
-                        <EntityUsageCard
-                            api={props.api}
-                            filter={{
-                                provider_id: row.id,
-                            }}
-                            subjectKind="provider"
+                        <Badge
+                            tone={credentialBadge(row).tone}
+                            label={credentialBadge(row).label}
                         />
-                    </>
-                )}
-            </Show>
-        </div>
+                        <ButtonLink href={hrefs.providerEdit(row.id)}>Edit provider</ButtonLink>
+                    </PageHeader>
+
+                    <FactsCard provider={row} />
+
+                    <ModelsCard
+                        provider={row}
+                        models={models()}
+                        providersById={providersById()}
+                        isDiscovering={isDiscovering()}
+                        notice={discoveryNotice()}
+                        onDiscover={() => void discover(row, models())}
+                    />
+
+                    <EntityUsageCard
+                        api={props.api}
+                        filter={{
+                            provider_id: row.id,
+                        }}
+                        subjectKind="provider"
+                    />
+                </>
+            )}
+        </ScreenFrame>
     );
 }
 

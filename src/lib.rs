@@ -88,16 +88,20 @@ pub async fn run(args: impl IntoIterator<Item = impl Into<OsString>>) -> ! {
         .as_ref()
         .map(|api_logs| ApiLogStore::new(api_logs.path.clone(), api_logs.retention_days));
 
+    // One control-plane client is built per startup, and every short upstream round-trip — the
+    // context handlers' and the device poller's alike — shares its connection pool (README §4).
+    let control_plane = http_client::control_plane();
+
     let context = Context {
         database: database.clone(),
         api_log_store,
         data_plane: http_client::data_plane(),
-        control_plane: http_client::control_plane(),
+        control_plane: control_plane.clone(),
     };
 
     // The background device poller resumes every unexpired pending device flow from its stored
     // schedule and keeps polling newly started flows.
-    provider::oauth::spawn_device_poller(database, http_client::control_plane());
+    provider::oauth::spawn_device_poller(database, control_plane);
 
     Server::new(context).run().await
 }

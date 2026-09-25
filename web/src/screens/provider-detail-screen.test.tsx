@@ -9,6 +9,7 @@ import type {
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
+import { settle, stubManagementApi } from "./screen-test-support";
 
 const provider: ProviderResponse = {
     type: "api_key",
@@ -45,12 +46,7 @@ function screenApi(options: {
     readonly onListProviders?: () => void;
     readonly discoveryAnswer?: Promise<DiscoverModelsResponse>;
 }): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
-    return {
-        listProviderDefinitions: refused,
-        createProviderDefinition: refused,
-        updateProviderDefinition: refused,
+    return stubManagementApi({
         listProviders: (signal) => {
             options.onListProviders?.();
             signal?.throwIfAborted();
@@ -90,28 +86,7 @@ function screenApi(options: {
             Promise.resolve({
                 buckets: [],
             }),
-        createProvider: refused,
-        updateProvider: refused,
-        deleteProvider: refused,
-        startProviderOauth: refused,
-        completeProviderOauth: refused,
-        reauthorizeProvider: refused,
-        updateModel: refused,
-        createModel: refused,
-        deleteModel: refused,
-        listUsage: refused,
-        listApiKeys: refused,
-        createApiKey: refused,
-        updateApiKey: refused,
-        deleteApiKey: refused,
-    };
-}
-
-/** Drains the pending promises and scheduled work of one screen exchange. */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
+    });
 }
 
 function buttonWithText(text: string): HTMLButtonElement {

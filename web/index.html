@@ -13,7 +13,10 @@
         />
         <script>
             // First-party theme bootstrap: paints the stored theme before the
-            // first frame so the app never flashes the wrong one.
+            // first frame so the app never flashes the wrong one. The key
+            // literal below must stay in sync with `themeStorageKey` in
+            // src/config.ts — this bootstrap runs before any module and
+            // cannot import it.
             var theme = "system";
             try {
                 theme = localStorage.getItem("janusgate-web:theme") || "system";

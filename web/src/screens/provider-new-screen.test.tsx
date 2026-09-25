@@ -16,6 +16,7 @@ import { ErrorCode } from "/src/management-api/generated/v0";
 import { PROVIDER_PRESETS } from "/src/management-api/presets";
 import { hrefs } from "/src/router";
 import { ProviderNewScreen } from "/src/screens/provider-new-screen";
+import { settle, stubManagementApi } from "./screen-test-support";
 
 /**
  * A management API standing in for the gateway: `providers:create` records
@@ -36,9 +37,7 @@ function screenApi(
         }>;
     } = {},
 ): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
-    return {
+    return stubManagementApi({
         listProviderDefinitions: () =>
             options.definitions?.() ??
             Promise.resolve({
@@ -68,7 +67,6 @@ function screenApi(
                     created_at: 1_700_000_000_000_000,
                 },
             }),
-        updateProviderDefinition: refused,
         listProviders: () =>
             options.providers?.() ??
             Promise.resolve({
@@ -90,30 +88,7 @@ function screenApi(
                 },
             });
         },
-        updateProvider: refused,
-        deleteProvider: refused,
-        startProviderOauth: refused,
-        completeProviderOauth: refused,
-        reauthorizeProvider: refused,
-        listModels: refused,
-        discoverModels: refused,
-        updateModel: refused,
-        createModel: refused,
-        deleteModel: refused,
-        listUsage: refused,
-        queryUsage: refused,
-        listApiKeys: refused,
-        createApiKey: refused,
-        updateApiKey: refused,
-        deleteApiKey: refused,
-    };
-}
-
-/** Drains the pending promises and scheduled work of one screen exchange. */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
+    });
 }
 
 function labeledInput(label: string): HTMLInputElement {
@@ -310,6 +285,40 @@ describe("ProviderNewScreen creation", () => {
         expect(buttonWithText("Create provider").disabled).toBe(true);
 
         expect(sent).toHaveLength(0);
+    });
+
+    it("names the invalid recipe outside the closed disclosure and keeps the full error inside", async () => {
+        disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
+        await settle();
+
+        // A valid definition states no marker.
+        expect(document.body.textContent).not.toContain("The connection recipe is invalid");
+
+        typeInto(definitionEditor(), '{"format": 7}');
+        await settle();
+        expect(document.body.textContent).toContain(
+            "definition.format is not an upstream format: 7",
+        );
+
+        // The disclosure closed over the full error: the marker outside it
+        // names the dead primary buttons' cause and points at the disclosure,
+        // instead of leaving the submit disabled with no visible why.
+        document
+            .querySelector("details")
+            ?.querySelector("summary")
+            ?.dispatchEvent(
+                new MouseEvent("click", {
+                    bubbles: true,
+                }),
+            );
+        expect(document.querySelector("details")?.open).toBe(false);
+        expect(document.body.textContent).toContain("The connection recipe is invalid");
+        expect(document.body.textContent).toContain(
+            "open the Advanced disclosure above for the offending path",
+        );
+        expect(document.body.textContent).toContain(
+            "definition.format is not an upstream format: 7",
+        );
     });
 
     it("renders the selected preset's provenance", async () => {
@@ -510,9 +519,10 @@ function oauthScreenApi(options: {
         request: CompleteProviderOauthRequest,
     ) => Promise<CompleteProviderOauthResponse>;
 }): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
+    const flowBegin = options.start;
+    const flowCompletion = options.complete;
 
-    return {
+    return stubManagementApi({
         listProviderDefinitions: () =>
             Promise.resolve({
                 provider_definitions: [],
@@ -537,31 +547,26 @@ function oauthScreenApi(options: {
                     created_at: 1_700_000_000_000_000,
                 },
             }),
-        updateProviderDefinition: refused,
         listProviders: () =>
             Promise.resolve({
                 providers: [],
             }),
-        createProvider: refused,
-        updateProvider: refused,
-        deleteProvider: refused,
-        startProviderOauth: (request) =>
-            options.start === undefined ? refused() : Promise.resolve(options.start(request)),
-        completeProviderOauth: (request) =>
-            options.complete === undefined ? refused() : options.complete(request),
-        reauthorizeProvider: refused,
-        listModels: refused,
-        discoverModels: refused,
-        updateModel: refused,
-        createModel: refused,
-        deleteModel: refused,
-        listUsage: refused,
-        queryUsage: refused,
-        listApiKeys: refused,
-        createApiKey: refused,
-        updateApiKey: refused,
-        deleteApiKey: refused,
-    };
+        // A flow step the test did not provide stays unoverridden, so the
+        // route refuses — the same loud failure the bare stub gives every
+        // route the flow never touches.
+        ...(flowBegin === undefined
+            ? {}
+            : {
+                  startProviderOauth: (request: StartProviderOauthRequest) =>
+                      Promise.resolve(flowBegin(request)),
+              }),
+        ...(flowCompletion === undefined
+            ? {}
+            : {
+                  completeProviderOauth: (request: CompleteProviderOauthRequest) =>
+                      flowCompletion(request),
+              }),
+    });
 }
 
 describe("ProviderNewScreen OAuth flow", () => {
@@ -649,6 +654,39 @@ describe("ProviderNewScreen OAuth flow", () => {
         await flush();
 
         expect(window.location.pathname).toBe(hrefs.providerDetail(createdProvider.id));
+    });
+
+    it("locks the identity fields and the definition editor while a flow is live", async () => {
+        vi.useFakeTimers();
+        mountScreen(
+            oauthScreenApi({
+                start: () => authorizationFlow,
+            }),
+        );
+        await flush();
+
+        // Without a live flow everything is open.
+        switchWithLabel("Custom model prefix").click();
+        await flush();
+        expect(labeledInput("Name").disabled).toBe(false);
+        expect(labeledInput("Model prefix").disabled).toBe(false);
+        expect(definitionEditor().disabled).toBe(false);
+
+        buttonWithText("Claude Code").click();
+        await flush();
+        buttonWithText("Start the authorization").click();
+        await flush();
+        expect(document.body.textContent).toContain("Authorization URL");
+
+        // The completion carries only the state and the code — the provider
+        // is created from what the flow's start already sent — so an edit to
+        // the identity or the recipe while the flow is pending would look
+        // accepted and do nothing. Everything the start sent locks, like the
+        // preset picker.
+        expect(labeledInput("Name").disabled).toBe(true);
+        expect(switchWithLabel("Custom model prefix").disabled).toBe(true);
+        expect(labeledInput("Model prefix").disabled).toBe(true);
+        expect(definitionEditor().disabled).toBe(true);
     });
 
     it("keeps polling a pending device flow on the configured interval", async () => {

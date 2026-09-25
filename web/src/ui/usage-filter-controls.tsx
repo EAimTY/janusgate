@@ -49,13 +49,47 @@ const STREAM_CHOICE_OPTIONS: ReadonlyArray<{
 ];
 
 /**
+ * The option list one id-bearing field presents: the listing the screen read,
+ * plus the current value when no listed row carries it. A filter id the route
+ * or the arrival subject carried can name a row deleted since it was written,
+ * and a listing-built list alone would match nothing — the select would
+ * visibly reset to its "All" option while the filter still sent the id. The
+ * trailing option names the id, so the control keeps stating the filter in
+ * force and the filter stays inspectable.
+ */
+function listedOptions(
+    options: ReadonlyArray<{
+        readonly value: string;
+        readonly label: string;
+    }>,
+    value: string,
+): ReadonlyArray<{
+    readonly value: string;
+    readonly label: string;
+}> {
+    if (value === "" || options.some((option) => option.value === value)) {
+        return options;
+    }
+
+    return [
+        ...options,
+        {
+            value,
+            label: `${value} (no longer listed)`,
+        },
+    ];
+}
+
+/**
  * The shared usage filter's controls, as a fragment the caller lays out in its
  * own grid: both usage screens narrow the same filter type, so both present
  * these fields — the same labels, the same options, the same vocabulary —
  * while each screen owns the bounds it resolves (a rolling window on the
  * listing, explicit instants on the aggregates page). Every option list is
  * built from the entity listings the screen read, so a filter can only name a
- * row the app can also label.
+ * row the app can also label — except an id the listings no longer carry,
+ * which `listedOptions` renders as its own trailing option instead of letting
+ * the select silently reset while the filter still sends the id.
  *
  * The control reports the one field the operator changed and the screen merges
  * it into the filter it holds, so two edits delivered in one task — a change
@@ -70,38 +104,53 @@ export function UsageFilterControls(props: {
     readonly isDisabled: boolean;
     readonly onEdit: (edits: Partial<UsageFilterFields>) => void;
 }): JSX.Element {
-    const providerOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All providers",
-        },
-        ...props.providers.map((row) => ({
-            value: String(row.id),
-            label: row.name,
-        })),
-    ]);
+    const providerOptions = createMemo(() =>
+        listedOptions(
+            [
+                {
+                    value: "",
+                    label: "All providers",
+                },
+                ...props.providers.map((row) => ({
+                    value: String(row.id),
+                    label: row.name,
+                })),
+            ],
+            props.fields.providerId,
+        ),
+    );
 
-    const modelOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All models",
-        },
-        ...props.models.map((row) => ({
-            value: String(row.id),
-            label: row.public_id,
-        })),
-    ]);
+    const modelOptions = createMemo(() =>
+        listedOptions(
+            [
+                {
+                    value: "",
+                    label: "All models",
+                },
+                ...props.models.map((row) => ({
+                    value: String(row.id),
+                    label: row.public_id,
+                })),
+            ],
+            props.fields.modelId,
+        ),
+    );
 
-    const apiKeyOptions = createMemo(() => [
-        {
-            value: "",
-            label: "All API keys",
-        },
-        ...props.apiKeys.map((row) => ({
-            value: String(row.id),
-            label: row.name,
-        })),
-    ]);
+    const apiKeyOptions = createMemo(() =>
+        listedOptions(
+            [
+                {
+                    value: "",
+                    label: "All API keys",
+                },
+                ...props.apiKeys.map((row) => ({
+                    value: String(row.id),
+                    label: row.name,
+                })),
+            ],
+            props.fields.apiKeyId,
+        ),
+    );
 
     return (
         <>

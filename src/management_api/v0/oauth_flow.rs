@@ -252,6 +252,26 @@ fn pasted_authorization_code(code: &str) -> Result<String, Error> {
     Ok(code.to_string())
 }
 
+/// The definition-reference rejection this surface renders for a malformed reference, wrapping
+/// the message in the version's invalid-request error.
+fn invalid_definition(message: impl Into<String>) -> Error {
+    Error::InvalidDefinition(crate::provider::definition::ValidationError::new(message))
+}
+
+/// The credential-kind rejection both flow-begin paths render: a definition a flow would run
+/// against must carry OAuth credentials (README §7.1).
+fn credential_kind_mismatch(definition: &crate::provider::ProviderDefinition) -> Error {
+    Error::CredentialKindMismatch {
+        message: format!(
+            "Provider definition `{}` version {} carries `{}` credentials and \
+             authorizes no flow",
+            definition.name,
+            definition.version.get(),
+            definition.credential_kind().as_str(),
+        ),
+    }
+}
+
 /// Resolves the OAuth recipe a flow names: the exact definition version, which must carry an
 /// OAuth credential.
 async fn oauth_definition(
@@ -260,10 +280,8 @@ async fn oauth_definition(
     version: i64,
 ) -> Result<crate::provider::ProviderDefinition, Error> {
     let Some(version) = NonZeroI64::new(version) else {
-        return Err(Error::InvalidDefinition(
-            crate::provider::definition::ValidationError::new(
-                "`provider_definition_version` must be a positive version number",
-            ),
+        return Err(invalid_definition(
+            "`provider_definition_version` must be a positive version number",
         ));
     };
 
@@ -277,14 +295,7 @@ async fn oauth_definition(
     };
 
     if definition.credential_kind() != CredentialKind::OAuth {
-        return Err(Error::CredentialKindMismatch {
-            message: format!(
-                "Provider definition `{name}` version {} carries `{}` credentials and \
-                 authorizes no flow",
-                definition.version.get(),
-                definition.credential_kind().as_str(),
-            ),
-        });
+        return Err(credential_kind_mismatch(&definition));
     }
 
     Ok(definition)
@@ -392,26 +403,16 @@ async fn handle_reauthorize_start(
             let definition = provider.definition.clone();
 
             if definition.credential_kind() != CredentialKind::OAuth {
-                return Err(Error::CredentialKindMismatch {
-                    message: format!(
-                        "Provider definition `{}` version {} carries `{}` credentials and \
-                         authorizes no flow",
-                        definition.name,
-                        definition.version.get(),
-                        definition.credential_kind().as_str(),
-                    ),
-                });
+                return Err(credential_kind_mismatch(&definition));
             }
 
             definition
         }
 
         _ => {
-            return Err(Error::InvalidDefinition(
-                crate::provider::definition::ValidationError::new(
-                    "a definition rebind names both `provider_definition_name` and \
-                     `provider_definition_version`",
-                ),
+            return Err(invalid_definition(
+                "a definition rebind names both `provider_definition_name` and \
+                 `provider_definition_version`",
             ));
         }
     };

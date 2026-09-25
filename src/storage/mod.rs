@@ -5,10 +5,15 @@
 //! [`provider_definitions`], [`providers`], [`models`], [`oauth_flows`], [`api_keys`], and
 //! [`api_logs`]. This module owns the shared error domain ([`Error`]) every surface maps onto its
 //! own taxonomy, the Turso value conversions of the provider domain types, and the provider and
-//! model row codecs. Both the provider domain (OAuth flows, model discovery) and the api-side code
-//! (outward authentication, the gateway pipeline, the management surfaces) depend on this tier —
-//! the error taxonomy in particular is provider-agnostic, so it lives here rather than under
-//! `provider`.
+//! model row codecs. The api-side code (outward authentication, the gateway pipeline, the
+//! management surfaces) depends on this tier one-way — the error taxonomy in particular is
+//! provider-agnostic, so it lives here rather than under `provider`.
+//!
+//! The provider domain interlocks with this tier in both directions, acknowledged rather than
+//! hidden: storage owns every statement and projects its rows onto the domain types it imports
+//! from [`crate::provider`] ([`Provider`], [`Model`], [`ProviderDefinition`], [`CredentialKind`],
+//! [`DiscoveryState`]), while the OAuth and discovery engines — the domain's executors — call
+//! storage to read and write those same rows.
 //!
 //! The entity split interlocks deliberately, mirroring the management API's transaction
 //! contracts: `providers:update` recomputes its models' public IDs from the fresh prefix, so

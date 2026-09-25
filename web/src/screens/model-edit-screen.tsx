@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createEffect, createMemo, createSignal, Show } from "solid-js";
+import { createEffect, createMemo, createSignal } from "solid-js";
 import { toUpdateModelRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
@@ -15,11 +15,11 @@ import {
     readAll,
     type ScreenRead,
 } from "/src/screens/read";
-import { ReadNotice } from "/src/screens/read-notice";
+import { ScreenFrame } from "/src/screens/screen-frame";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { ButtonLink, Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
-import { EmptyState, Skeleton } from "/src/ui/feedback";
+import { EmptyState } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelIdOverrideFields } from "/src/ui/model-form";
 
@@ -86,71 +86,66 @@ export function ModelEditScreen(props: {
     const provider = createPinnedRow(latestOwningProvider, isSameProviderRow);
 
     return (
-        <div class="rise-in flex flex-col gap-5">
-            <ReadNotice read={read} />
-
-            <Show when={read.isFirstRead()}>
+        <ScreenFrame
+            read={read}
+            row={model}
+            firstReadHeader={
                 <PageHeader
                     title="Edit model"
                     backHref={hrefs.modelDetail(props.modelId)}
                     backLabel="Model"
                 />
-                <Skeleton class="h-64 w-full rounded-2xl" />
-            </Show>
-
-            <Show when={read.hasRead() && model() === null}>
-                <PageHeader
-                    title="Edit model"
-                    backHref={hrefs.models(null)}
-                    backLabel="Models"
-                />
-                <EmptyState
-                    title="Model not found"
-                    description="The gateway holds no model here. It was deleted, or the address was typed wrong — a deleted discovered model returns as new on the next discovery."
-                >
-                    <ButtonLink
-                        href={hrefs.models(null)}
-                        tone="primary"
+            }
+            notFound={
+                <>
+                    <PageHeader
+                        title="Edit model"
+                        backHref={hrefs.models(null)}
+                        backLabel="Models"
+                    />
+                    <EmptyState
+                        title="Model not found"
+                        description="The gateway holds no model here. It was deleted, or the address was typed wrong — a deleted discovered model returns as new on the next discovery."
                     >
-                        Back to models
-                    </ButtonLink>
-                </EmptyState>
-            </Show>
+                        <ButtonLink
+                            href={hrefs.models(null)}
+                            tone="primary"
+                        >
+                            Back to models
+                        </ButtonLink>
+                    </EmptyState>
+                </>
+            }
+        >
+            {(row) => (
+                <>
+                    <PageHeader
+                        title={`Edit ${row.public_id}`}
+                        backHref={hrefs.modelDetail(row.id)}
+                        backLabel="Model"
+                    />
 
-            <Show
-                when={model()}
-                keyed
-            >
-                {(row) => (
-                    <>
-                        <PageHeader
-                            title={`Edit ${row.public_id}`}
-                            backHref={hrefs.modelDetail(row.id)}
-                            backLabel="Model"
-                        />
+                    <HoldNotice
+                        isHeld={isRowHeld()}
+                        subject="model"
+                    />
 
-                        <HoldNotice
-                            isHeld={isRowHeld()}
-                            subject="model"
-                        />
-
-                        <ModelSettingsForm
-                            api={props.api}
-                            provider={provider()}
-                            initialModel={row}
-                            read={read}
-                            onDirtyChange={edit.reportFormDirty}
-                            onSaved={edit.reportSaved}
-                        />
-                        <DeleteCard
-                            api={props.api}
-                            model={row}
-                            read={read}
-                        />
-                    </>
-                )}
-            </Show>
-        </div>
+                    <ModelSettingsForm
+                        api={props.api}
+                        provider={provider()}
+                        initialModel={row}
+                        read={read}
+                        onDirtyChange={edit.reportFormDirty}
+                        onSaved={edit.reportSaved}
+                    />
+                    <DeleteCard
+                        api={props.api}
+                        model={row}
+                        read={read}
+                    />
+                </>
+            )}
+        </ScreenFrame>
     );
 }
 

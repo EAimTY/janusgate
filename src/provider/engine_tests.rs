@@ -819,17 +819,17 @@ fn base_url_completion_payload(token_url: &str, is_with_provisioning: bool) -> s
     payload
 }
 
-/// Runs one completion test row's exchange end to end: the definition's exchange executes
-/// against the mock and its outcome classifies.
+/// Runs one completion test row's exchange end to end without classifying, returning the raw
+/// result so a test can pin a failure side.
 ///
 /// # Panics
 ///
-/// Panics when the fixture's grant diverges or the exchange fails — the failure is the report.
-async fn executed_outcome(
+/// Panics when the fixture's grant diverges — the failure is the report.
+async fn raw_exchange_outcome(
     client: &reqwest::Client,
     definition: &crate::provider::ProviderDefinition,
     flow: &crate::storage::oauth_flows::OngoingFlow,
-) -> oauth::ExchangeOutcome {
+) -> Result<oauth::ExchangeOutcome, oauth::Error> {
     let crate::provider::definition::credential::CredentialAcquisition::OAuth(recipe) =
         &definition.payload.credential
     else {
@@ -852,12 +852,23 @@ async fn executed_outcome(
         redirect_uri.as_str(),
     );
 
-    oauth::completed_outcome(
-        oauth::execute_exchange(client, &recipe.exchange, &env)
-            .await
-            .unwrap(),
-    )
-    .unwrap()
+    oauth::completed_outcome(oauth::execute_exchange(client, &recipe.exchange, &env).await?)
+}
+
+/// Runs one completion test row's exchange end to end: the definition's exchange executes
+/// against the mock and its outcome classifies.
+///
+/// # Panics
+///
+/// Panics when the fixture's grant diverges or the exchange fails — the failure is the report.
+async fn executed_outcome(
+    client: &reqwest::Client,
+    definition: &crate::provider::ProviderDefinition,
+    flow: &crate::storage::oauth_flows::OngoingFlow,
+) -> oauth::ExchangeOutcome {
+    raw_exchange_outcome(client, definition, flow)
+        .await
+        .unwrap()
 }
 
 /// Runs one completion test row end to end: the definition's exchange executes against the mock,
@@ -1004,6 +1015,100 @@ async fn token_exchange_reads_numeric_expires_in() {
     assert_eq!(outcome.expires_in_seconds, Some(3600));
 
     mock.shutdown.send(()).ok();
+}
+
+/// Pins the consulted-expiry contract (README §5.3, §7.2): a present `expires_in` carrying
+/// non-numeric text is a malformed token response that fails the stage — never a silent fall
+/// through to the weaker expiry sources — while the integer spellings decode verbatim.
+///
+/// # Panics
+///
+/// Panics when the fixture fails to parse or the exchange diverges from the contract.
+#[tokio::test]
+async fn a_non_integer_expires_in_fails_the_token_response_malformed() {
+    for (expires_in, is_accepted) in [
+        (json!("3600"), true),
+        (json!(3600), true),
+        (json!("soon"), false),
+    ] {
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "access_token": "exchange-token",
+                "expires_in": expires_in
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let mut payload = completion_payload(false);
+
+        payload
+            .get_mut("credential")
+            .unwrap()
+            .get_mut("exchange")
+            .unwrap()
+            .get_mut("request")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "url".to_string(),
+                json!([{"type": "literal", "value": format!("{}/token", mock.base())}]),
+            );
+
+        payload
+            .get_mut("credential")
+            .unwrap()
+            .get_mut("exchange")
+            .unwrap()
+            .get_mut("response")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "fields".to_string(),
+                json!([
+                    {
+                        "path": ["access_token"],
+                        "target": {"type": "access_token"},
+                        "required": true
+                    },
+                    {
+                        "path": ["expires_in"],
+                        "target": {"type": "expires_in_seconds"},
+                        "required": false
+                    }
+                ]),
+            );
+
+        let definition = completion_definition(payload);
+
+        let flow = completion_flow(mock.base());
+
+        let client = crate::http_client::control_plane();
+
+        let outcome = raw_exchange_outcome(&client, &definition, &flow).await;
+
+        assert_eq!(
+            outcome.is_ok(),
+            is_accepted,
+            "an `expires_in` of {expires_in} must be {}",
+            if is_accepted {
+                "accepted"
+            } else {
+                "rejected as malformed"
+            }
+        );
+
+        if let Err(error) = outcome {
+            assert!(
+                error.to_string().contains("non-integer `expires_in`"),
+                "the rejection names the unparseable lifetime: {error}"
+            );
+        }
+
+        mock.shutdown.send(()).ok();
+    }
 }
 
 /// Pins the completion pipeline's base-URL precedence (README §5.3, §5.4): an exchange

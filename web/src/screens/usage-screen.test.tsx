@@ -14,6 +14,7 @@ import { requestRefresh } from "/src/refresh-state";
 import { USAGE_PAGE_SIZE } from "/src/screens/usage-pagination";
 import { UsageScreen } from "/src/screens/usage-screen";
 import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filter";
+import { settle, stubManagementApi } from "./screen-test-support";
 
 /**
  * One accounting row whose only distinguishing rendering is `<duration> ms`:
@@ -102,12 +103,7 @@ function streamApi(
         readonly apiKeys?: ReadonlyArray<ApiKeyResponse>;
     } = {},
 ): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
-    return {
-        listProviderDefinitions: refused,
-        createProviderDefinition: refused,
-        updateProviderDefinition: refused,
+    return stubManagementApi({
         listProviders: () =>
             Promise.resolve({
                 providers: [
@@ -127,28 +123,7 @@ function streamApi(
                 ],
             }),
         listUsage: (request, signal) => heldPage(signal, request, holder.pages),
-        queryUsage: refused,
-        createProvider: refused,
-        updateProvider: refused,
-        deleteProvider: refused,
-        startProviderOauth: refused,
-        completeProviderOauth: refused,
-        reauthorizeProvider: refused,
-        discoverModels: refused,
-        updateModel: refused,
-        createModel: refused,
-        deleteModel: refused,
-        createApiKey: refused,
-        updateApiKey: refused,
-        deleteApiKey: refused,
-    };
-}
-
-/** Drains the pending promises and scheduled work of one screen exchange. */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
+    });
 }
 
 /** Answers the most recent held page — the newest cycle's call. */

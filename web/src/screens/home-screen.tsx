@@ -7,7 +7,7 @@ import { OUTWARD_SURFACES } from "/src/management-api/outward-surfaces";
 import {
     indexRowsById,
     isModelEffectivelyServing,
-    modelCountsByProvider,
+    servingModelCountsByProvider,
 } from "/src/management-api/serving";
 import { credentialKindLabel, isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
@@ -128,19 +128,27 @@ export function HomeScreen(props: {
         }),
     );
 
-    const emptyProviders = createMemo(() => {
-        const modelCounts = modelCountsByProvider(entities().models);
+    // An enabled provider with nothing effectively serving (README §3) needs
+    // a human: its rows are all vanished, disabled, or absent — the vanished
+    // case is the quietest failure there is, and a raw row count would hide
+    // it. A deliberately disabled provider is the operator's choice, not a
+    // fault, so it stays off this list.
+    const providersWithoutServingModels = createMemo(() => {
+        const servingCounts = servingModelCountsByProvider(entities().models, providersById());
 
-        return entities().providers.filter((provider) => (modelCounts.get(provider.id) ?? 0) === 0);
+        return entities().providers.filter(
+            (provider) => provider.is_enabled && (servingCounts.get(provider.id) ?? 0) === 0,
+        );
     });
 
     // Exactly what the list below counts: every item the section can show —
-    // credential problems, providers without models, the missing first key —
-    // so the all-clear notice and the list can never contradict each other.
+    // credential problems, providers with nothing serving, the missing first
+    // key — so the all-clear notice and the list can never contradict each
+    // other.
     const attentionCount = createMemo(
         () =>
             attentionProviders().length +
-            emptyProviders().length +
+            providersWithoutServingModels().length +
             (entities().apiKeys.length === 0 ? 1 : 0),
     );
 
@@ -284,7 +292,7 @@ export function HomeScreen(props: {
                                         />
                                     )}
                                 </For>
-                                <For each={emptyProviders()}>
+                                <For each={providersWithoutServingModels()}>
                                     {(provider) => (
                                         <li class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
                                             <Glyph
@@ -294,7 +302,7 @@ export function HomeScreen(props: {
                                             <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
                                                 <span class="font-medium">{provider.name}</span>
                                                 <span class="text-ink-dim">
-                                                    {" has no models yet."}
+                                                    {" has no models serving yet."}
                                                 </span>
                                             </p>
                                             <ButtonLink href={hrefs.providerDetail(provider.id)}>
@@ -470,11 +478,11 @@ function GettingStarted(): JSX.Element {
                 />
                 <GettingStartedStep
                     index={4}
-                    title="Point a client at an endpoint below"
+                    title="Issue an API key for serving clients"
                 />
                 <GettingStartedStep
                     index={5}
-                    title="Issue an API key for serving clients"
+                    title="Point a client at an endpoint below"
                 />
             </ol>
         </EmptyState>

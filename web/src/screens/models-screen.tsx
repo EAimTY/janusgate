@@ -166,9 +166,11 @@ export function ModelsScreen(props: {
                             <Notice
                                 tone="info"
                                 title={
-                                    search().trim() === ""
-                                        ? "This provider holds no models."
-                                        : `No models match "${search().trim()}".`
+                                    search().trim() !== ""
+                                        ? `No models match "${search().trim()}".`
+                                        : props.providerFilter === null
+                                          ? "No models on any provider yet — discover or add one."
+                                          : "This provider holds no models."
                                 }
                             />
                         }

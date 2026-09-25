@@ -5,6 +5,7 @@
  */
 export const appConfig = {
     connectionStorageKey: "janusgate-web:connection",
+    /** Read as a literal by the inline theme bootstrap in `index.html` — keep the two in sync. */
     themeStorageKey: "janusgate-web:theme",
     /** Milliseconds between two device-flow completion polls. */
     oauthDevicePollIntervalMs: 3000,

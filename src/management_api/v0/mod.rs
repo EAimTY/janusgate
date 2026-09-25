@@ -636,9 +636,8 @@ mod tests {
     )]
 
     use super::{
-        Error as ManagementError, Nullable, ProviderEnvelope, ProviderResponse,
-        SharedProviderFields, absent_keeps, validate_base_url, validate_composition,
-        validate_model_prefix, validate_routing_token,
+        Error as ManagementError, Nullable, ProviderEnvelope, ProviderResponse, absent_keeps,
+        validate_base_url, validate_composition, validate_model_prefix, validate_routing_token,
     };
     use crate::{
         format::UpstreamFormat,
@@ -973,27 +972,5 @@ line",
                 "unroutable base URL accepted: {invalid:?}"
             );
         }
-    }
-
-    /// Keeps the shared-fields type referenced; the compiler dead-code warning would otherwise
-    /// fire on the private flatten helper.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the fixture id differs, which cannot occur.
-    #[test]
-    fn shared_fields_are_constructible() {
-        let fields = SharedProviderFields {
-            id: 1,
-            name: "n".to_string(),
-            model_prefix: String::new(),
-            is_enabled: true,
-            provider_definition_name: "d".to_string(),
-            provider_definition_version: 1,
-            format: UpstreamFormat::OpenAiChatCompletion,
-            base_url: None,
-        };
-
-        assert_eq!(fields.id, 1);
     }
 }

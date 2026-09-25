@@ -194,11 +194,7 @@ async fn handle_create(
     }
 
     let Some(version) = NonZeroI64::new(request.provider_definition_version) else {
-        return Err(Error::InvalidDefinition(
-            crate::provider::definition::ValidationError::new(
-                "`provider_definition_version` must be a positive version number",
-            ),
-        ));
+        return Err(definition_version_invalid());
     };
 
     let Some(definition) = storage::provider_definitions::find_definition(
@@ -229,7 +225,7 @@ async fn handle_create(
     }
 
     // A definition whose URLs reference the base requires the instance base URL.
-    if definition_needs_base_url(&definition.payload) && request.base_url.is_none() {
+    if payload_addresses_base_url(&definition.payload) && request.base_url.is_none() {
         return Err(Error::CredentialKindMismatch {
             message: format!(
                 "Provider definition `{}` version {} addresses its base URL, so the provider \
@@ -273,8 +269,16 @@ async fn handle_create(
     Ok(provider)
 }
 
-/// Whether any expression of the definition references the instance base URL.
-fn definition_needs_base_url(payload: &crate::provider::DefinitionPayload) -> bool {
+/// Builds the rejection for a non-positive `provider_definition_version` — the one spelling both
+/// provider write paths share.
+fn definition_version_invalid() -> Error {
+    Error::InvalidDefinition(crate::provider::definition::ValidationError::new(
+        "`provider_definition_version` must be a positive version number",
+    ))
+}
+
+/// Whether any expression of the payload references the instance base URL.
+fn payload_addresses_base_url(payload: &crate::provider::DefinitionPayload) -> bool {
     /// Whether one string expression references the base URL.
     fn references_base(expr: &crate::provider::definition::template::StringExpr) -> bool {
         expr.0
@@ -374,11 +378,7 @@ async fn handle_update(
         (None, None) => None,
 
         _ => {
-            return Err(Error::InvalidDefinition(
-                crate::provider::definition::ValidationError::new(
-                    "`provider_definition_version` must be a positive version number",
-                ),
-            ));
+            return Err(definition_version_invalid());
         }
     };
 
@@ -433,7 +433,7 @@ async fn handle_update(
 
         // The target definition may address the base where the stored one did not: the restated
         // base URL must satisfy the target, in the same atomic write.
-        if definition_needs_base_url(&target.payload) && request.base_url.is_none() {
+        if payload_addresses_base_url(&target.payload) && request.base_url.is_none() {
             return Err(Error::CredentialKindMismatch {
                 message: format!(
                     "Provider definition `{name}` version {} addresses its base URL, so the \

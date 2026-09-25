@@ -477,6 +477,22 @@ impl DefinitionPayload {
                         "refresh mode `reprovision` requires a non-empty provisioning list",
                     ));
                 }
+
+                // The renewal rewrites the stored credentials' expiry, so the sequence must
+                // produce a fresh absolute one: without an extraction the renewal would
+                // persist `null` — the no-scheduled-refresh state — over a known expiry, and
+                // the credential would silently never refresh again (README §5.4).
+                if !self
+                    .provisioning
+                    .as_ref()
+                    .is_some_and(|steps| extractions_target(steps, &Target::ExpiresAtUnixSeconds))
+                {
+                    return Err(ValidationError::new(
+                        "refresh mode `reprovision` requires the provisioning sequence to \
+                         extract an `expires_at_unix_seconds` target: a renewal without a \
+                         renewed expiry would unschedule every future refresh",
+                    ));
+                }
             }
 
             TokenRefresh::None => {}
@@ -2602,6 +2618,46 @@ mod tests {
         });
 
         assert!(outcome.unwrap_err().contains("terminal codes"));
+    }
+
+    /// A `reprovision` refresh requires its provisioning sequence to extract an absolute
+    /// `expires_at_unix_seconds` (README §5.4): a renewal without a renewed expiry would
+    /// rewrite the stored one to `null` — the no-scheduled-refresh state — and the credential
+    /// would silently never refresh again, so the state is unrepresentable for a valid
+    /// definition.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a reprovision sequence without an expiry extraction validates.
+    #[test]
+    fn rejects_a_reprovision_without_an_expiry_extraction() {
+        // Retarget the Copilot sequence's `expires_at_unix_seconds` extraction at a slot.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["provisioning"][0]["extract"][1]["target"] = json!({
+              "type": "slot",
+              "name": "expiry"
+            });
+        });
+
+        assert!(
+            outcome.unwrap_err().contains("expires_at_unix_seconds"),
+            "the rejection names the missing expiry extraction"
+        );
+
+        // Drop the extraction outright, keeping the sequence non-empty and access-token
+        // supplying.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["provisioning"][0]["extract"] = json!([
+              {
+                "path": ["token"],
+                "target": {"type": "access_token"},
+                "shape": {"type": "string"},
+                "required": true
+              }
+            ]);
+        });
+
+        assert!(outcome.unwrap_err().contains("expires_at_unix_seconds"));
     }
 
     /// The device authorization response must map both the `device_code` and `user_code`

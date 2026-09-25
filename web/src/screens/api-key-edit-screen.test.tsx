@@ -6,6 +6,7 @@ import type { ApiKeyResponse, UpdateApiKeyRequest } from "/src/management-api/ge
 import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
+import { settle, stubManagementApi } from "./screen-test-support";
 
 const key: ApiKeyResponse = {
     id: 7,
@@ -28,12 +29,7 @@ function screenApi(
     },
     sent: UpdateApiKeyRequest[] = [],
 ): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
-    return {
-        listProviderDefinitions: refused,
-        createProviderDefinition: refused,
-        updateProviderDefinition: refused,
+    return stubManagementApi({
         listApiKeys: (signal) => {
             signal?.throwIfAborted();
             return Promise.resolve({
@@ -58,30 +54,7 @@ function screenApi(
 
             return Promise.resolve();
         },
-        listProviders: refused,
-        listModels: refused,
-        discoverModels: refused,
-        createProvider: refused,
-        updateProvider: refused,
-        deleteProvider: refused,
-        startProviderOauth: refused,
-        completeProviderOauth: refused,
-        reauthorizeProvider: refused,
-        createModel: refused,
-        updateModel: refused,
-        deleteModel: refused,
-        listUsage: refused,
-        queryUsage: refused,
-        createApiKey: refused,
-        deleteApiKey: refused,
-    };
-}
-
-/** Drains the pending promises and scheduled work of one screen exchange. */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
+    });
 }
 
 function labeledInput(label: string): HTMLInputElement {

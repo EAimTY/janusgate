@@ -10,6 +10,7 @@ import type {
     UsageBucket,
 } from "/src/management-api/generated/v0";
 import { HomeScreen } from "/src/screens/home-screen";
+import { settle, stubManagementApi } from "./screen-test-support";
 
 const BASE_URL = "https://gateway.example.com";
 
@@ -97,14 +98,10 @@ function overviewApi(
     requests: Array<QueryUsageRequest>,
     listing: {
         readonly providers?: ReadonlyArray<ProviderResponse>;
+        readonly models?: ReadonlyArray<ModelResponse>;
     } = {},
 ): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
-    return {
-        listProviderDefinitions: refused,
-        createProviderDefinition: refused,
-        updateProviderDefinition: refused,
+    return stubManagementApi({
         listProviders: () =>
             Promise.resolve({
                 providers: [
@@ -116,8 +113,10 @@ function overviewApi(
         listModels: () =>
             Promise.resolve({
                 models: [
-                    modelRow,
-                    vanishedModelRow,
+                    ...(listing.models ?? [
+                        modelRow,
+                        vanishedModelRow,
+                    ]),
                 ],
             }),
         listApiKeys: () =>
@@ -161,27 +160,7 @@ function overviewApi(
                       ],
             });
         },
-        createProvider: refused,
-        updateProvider: refused,
-        deleteProvider: refused,
-        startProviderOauth: refused,
-        completeProviderOauth: refused,
-        reauthorizeProvider: refused,
-        discoverModels: refused,
-        updateModel: refused,
-        createModel: refused,
-        deleteModel: refused,
-        createApiKey: refused,
-        updateApiKey: refused,
-        deleteApiKey: refused,
-        listUsage: refused,
-    };
-}
-
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
+    });
 }
 
 function linkTo(href: string): HTMLAnchorElement {
@@ -303,7 +282,7 @@ describe("HomeScreen", () => {
         expect(linkTo("/providers/2/edit").textContent).toContain("Reconnect");
     });
 
-    it("lists no pre-satisfied step on a fresh gateway", async () => {
+    it("lists no pre-satisfied step on a fresh gateway, the key issued before any client is pointed", async () => {
         mount(
             overviewApi([], {
                 providers: [],
@@ -312,10 +291,64 @@ describe("HomeScreen", () => {
         await settle();
 
         // Every provider is created enabled, so no step worries about the
-        // switch; the fourth step points at the endpoint card the same page
-        // ends with, where a client is pointed once its key exists.
-        expect(bodyText()).toContain("Point a client at an endpoint below");
-        expect(bodyText()).not.toContain("Re-enable the provider");
-        expect(bodyText()).toContain("Issue an API key for serving clients");
+        // switch. The order is the Endpoints card's own: a client pointed
+        // without a key gets 401s, so issuing the key comes first.
+        const body = bodyText();
+        const keyStep = body.indexOf("Issue an API key for serving clients");
+        const clientStep = body.indexOf("Point a client at an endpoint below");
+
+        expect(keyStep).toBeGreaterThanOrEqual(0);
+        expect(clientStep).toBeGreaterThan(keyStep);
+        expect(body).not.toContain("Re-enable the provider");
+    });
+
+    it("sends an enabled provider whose every model vanished to the attention list", async () => {
+        // The upstream silently dropped its whole catalog: every row is
+        // vanished, the provider is enabled, nothing serves — the quietest
+        // failure mode, and exactly what the attention line exists for.
+        mount(
+            overviewApi([], {
+                providers: [
+                    providerRow,
+                ],
+                models: [
+                    vanishedModelRow,
+                ],
+            }),
+        );
+        await settle();
+
+        expect(bodyText()).toContain("has no models serving yet.");
+        expect(linkTo("/providers/1").textContent).toContain("Open and discover");
+    });
+
+    it("gives a disabled provider no attention line even while nothing of it serves", async () => {
+        // The operator turned this provider off: its emptiness is a choice,
+        // not a fault the overview must report.
+        mount(
+            overviewApi([], {
+                providers: [
+                    {
+                        ...providerRow,
+                        is_enabled: false,
+                    },
+                ],
+                models: [
+                    vanishedModelRow,
+                ],
+            }),
+        );
+        await settle();
+
+        expect(bodyText()).toContain("Everything looks healthy.");
+        expect(bodyText()).not.toContain("has no models serving yet.");
+    });
+
+    it("gives a provider whose models serve no attention line", async () => {
+        mount(overviewApi([]));
+        await settle();
+
+        expect(bodyText()).toContain("Everything looks healthy.");
+        expect(bodyText()).not.toContain("has no models serving yet.");
     });
 });

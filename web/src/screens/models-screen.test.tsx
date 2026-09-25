@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ModelsScreen } from "/src/screens/models-screen";
+import { settle, stubManagementApi } from "./screen-test-support";
 
 /**
  * A provider whose name shares nothing with its model's ids, so a search
@@ -40,12 +41,7 @@ function screenApi(options: {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
 }): ManagementApi {
-    const refused = (): Promise<never> => Promise.reject(new Error("route not expected in test"));
-
-    return {
-        listProviderDefinitions: refused,
-        createProviderDefinition: refused,
-        updateProviderDefinition: refused,
+    return stubManagementApi({
         listProviders: () =>
             Promise.resolve({
                 providers: [
@@ -58,30 +54,7 @@ function screenApi(options: {
                     ...options.models,
                 ],
             }),
-        listApiKeys: refused,
-        queryUsage: refused,
-        createProvider: refused,
-        updateProvider: refused,
-        deleteProvider: refused,
-        startProviderOauth: refused,
-        completeProviderOauth: refused,
-        reauthorizeProvider: refused,
-        discoverModels: refused,
-        updateModel: refused,
-        createModel: refused,
-        deleteModel: refused,
-        listUsage: refused,
-        createApiKey: refused,
-        updateApiKey: refused,
-        deleteApiKey: refused,
-    };
-}
-
-/** Drains the pending promises and scheduled work of one screen exchange. */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
+    });
 }
 
 /** Types into the models search field the way a browser delivers keystrokes. */
@@ -205,5 +178,53 @@ describe("ModelsScreen search", () => {
         await settle();
 
         expect(bodyText()).toContain('No models match "zzz"');
+    });
+});
+
+describe("ModelsScreen no-match notice", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** Mounts the screen over a gateway with the provider but none of its models. */
+    function mountWithoutModels(providerFilter: number | null): void {
+        disposes.push(
+            render(
+                () => (
+                    <ModelsScreen
+                        api={screenApi({
+                            providers: [
+                                providerRow,
+                            ],
+                            models: [],
+                        })}
+                        providerFilter={providerFilter}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("states the whole gateway's emptiness when nothing is filtered", async () => {
+        mountWithoutModels(null);
+        await settle();
+
+        // The unfiltered table is about no provider in particular, so the
+        // notice must not assert "this provider" about one it never named.
+        expect(bodyText()).toContain("No models on any provider yet — discover or add one.");
+        expect(bodyText()).not.toContain("This provider holds no models.");
+    });
+
+    it("names the filtered provider's emptiness when the filter is set", async () => {
+        mountWithoutModels(3);
+        await settle();
+
+        expect(bodyText()).toContain("This provider holds no models.");
     });
 });

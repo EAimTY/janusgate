@@ -618,7 +618,8 @@ impl UpstreamParser {
     /// Ingests a `step.delta` frame: the delta kind decides the IR event. A content delta for a
     /// step with no recorded start implicitly opens the matching kind, so a missed start cannot
     /// strand content; an implicit tool call mints its id and allocates its index the same way a
-    /// start would.
+    /// start would. A delta whose kind contradicts the step already open at its index is dropped
+    /// rather than misattributed to foreign content.
     fn ingest_delta(&mut self, frame: StepDeltaFrame) -> Vec<IrEvent> {
         let mut events = Vec::new();
 
@@ -630,7 +631,11 @@ impl UpstreamParser {
                     self.push_open(OpenStep::Output { index: frame.index });
                 }
 
-                events.push(IrEvent::TextDelta(text));
+                // A delta for a step of another kind contradicts the opened kind, so it is
+                // dropped rather than misattributed to foreign content.
+                if matches!(self.find_open(frame.index), Some(OpenStep::Output { .. })) {
+                    events.push(IrEvent::TextDelta(text));
+                }
             }
 
             StepDelta::ThoughtSummary { content } => {
@@ -650,11 +655,13 @@ impl UpstreamParser {
                     });
                 }
 
+                // A delta for a step of another kind contradicts the opened kind, so it is
+                // dropped rather than misattributed to foreign content.
                 if let Some(OpenStep::Thought { summary: open, .. }) = self.find_open(frame.index) {
                     open.push_str(&content.text);
-                }
 
-                events.push(IrEvent::ReasoningDelta(content.text));
+                    events.push(IrEvent::ReasoningDelta(content.text));
+                }
             }
 
             StepDelta::ThoughtSignature { signature } => {
@@ -1198,6 +1205,103 @@ mod tests {
         );
 
         assert!(stop.is_empty(), "a closed output step emits nothing");
+    }
+
+    /// A delta whose kind contradicts the step already open at its index is dropped rather than
+    /// misattributed to foreign content — the arguments arm's documented posture, mirrored by the
+    /// text and thought-summary arms — while the matching kind still delivers on the same step,
+    /// and the dropped bytes never reach the step's closing state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a contradicting delta delivers content or corrupts the open step.
+    #[test]
+    fn drops_deltas_whose_kind_contradicts_the_open_step() {
+        let mut parser = UpstreamParser::new();
+
+        // A thought step is open at index 1; a contradicting text delta is dropped without
+        // opening a second step.
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({"index": 1, "step": {"type": "thought"}}),
+        );
+
+        assert!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_DELTA,
+                serde_json::json!({"index": 1, "delta": {"type": "text", "text": "hi"}}),
+            )
+            .is_empty(),
+            "a text delta on an open thought step is dropped",
+        );
+
+        // The matching kind still delivers on the same step.
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_DELTA,
+                serde_json::json!({
+                    "index": 1,
+                    "delta": {
+                        "type": "thought_summary",
+                        "content": {"type": "text", "text": "reasoning"},
+                    },
+                }),
+            ),
+            vec![IrEvent::ReasoningDelta("reasoning".to_string())],
+        );
+
+        // The dropped text never reached the step: the stop closes the thought alone.
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_STOP,
+                serde_json::json!({"index": 1}),
+            ),
+            vec![IrEvent::ReasoningDone {
+                text: "reasoning".to_string(),
+                signature: None,
+                opaque: serde_json::json!({
+                    "type": "thought",
+                    "summary": [{"type": "text", "text": "reasoning"}],
+                }),
+            }],
+        );
+
+        // An output step is open at index 2; a contradicting thought summary is dropped too.
+        ingest(
+            &mut parser,
+            super::super::EVENT_STEP_START,
+            serde_json::json!({"index": 2, "step": {"type": "model_output"}}),
+        );
+
+        assert!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_DELTA,
+                serde_json::json!({
+                    "index": 2,
+                    "delta": {
+                        "type": "thought_summary",
+                        "content": {"type": "text", "text": "sneaky"},
+                    },
+                }),
+            )
+            .is_empty(),
+            "a thought-summary delta on an open output step is dropped",
+        );
+
+        // The matching kind still delivers on the same step.
+        assert_eq!(
+            ingest(
+                &mut parser,
+                super::super::EVENT_STEP_DELTA,
+                serde_json::json!({"index": 2, "delta": {"type": "text", "text": "out"}}),
+            ),
+            vec![IrEvent::TextDelta("out".to_string())],
+        );
     }
 
     /// The officially optional `thought_summary` `content` and `thought_signature` `signature`

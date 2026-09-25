@@ -714,8 +714,12 @@ fn unwrap_response(value: &mut serde_json::Value, response_unwrap: &Option<Strin
         return;
     };
 
-    if let Some(wrapped) = value.get(member) {
-        *value = wrapped.clone();
+    // The member is moved out of the parent object instead of cloned, so an unwrapped body is
+    // never copied a second time on this path.
+    if let serde_json::Value::Object(members) = value
+        && let Some(ingest) = members.remove(member)
+    {
+        *value = ingest;
     }
 }
 
