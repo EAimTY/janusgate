@@ -343,6 +343,22 @@ pub(crate) fn decode_body(
     }
 }
 
+/// Whether an upstream boolean flag reads as true. The truthy spellings such a flag — a
+/// provisioning poll's `done_path` (README §5.4) or a cursor pagination's `has_more` path
+/// (README §5.5) — may arrive in on a JSON body are the boolean `true`, the number `1`, or the
+/// string `"true"`; every other shape reads as false. The flat form encoding surfaces the same
+/// two non-boolean scalars in their string spellings, which each consumer reads at its own call
+/// site.
+#[must_use]
+pub(super) fn is_truthy_scalar(value: &Json) -> bool {
+    match value {
+        Json::Bool(flag) => *flag,
+        Json::Number(number) => number.as_i64() == Some(1),
+        Json::String(text) => text == "true",
+        _ => false,
+    }
+}
+
 /// Extracts one declared response field from a decoded body: a missing required path fails the
 /// stage, a missing optional path yields `None`, and a present value of the wrong declared
 /// shape always fails (README §5.1). The text shape reads a JSON string or number — a number

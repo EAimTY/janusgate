@@ -245,10 +245,17 @@ describe("UsageScreen stream continuation", () => {
         buttonWithText("Load more").click();
         await settle();
 
-        // The click is refused outright: no page call exists beyond the
-        // refresh's own, and the continuation never turned busy.
+        // The refusal is the disabled control's: the suppressed click never
+        // reaches the app, so no page call can follow it and the continuation
+        // never turns busy — the assertions pin the disabled face.
         expect(holder.pages).toHaveLength(2);
         expect(bodyText()).not.toContain("Loading…");
+
+        // The refusal is visible at the control itself: the button is
+        // disabled while the read cycle owns the stream, its title stating
+        // why — the Refresh control's disabled-with-a-reason treatment.
+        expect(buttonWithText("Load more").disabled).toBe(true);
+        expect(buttonWithText("Load more").title).toContain("replacing the stream");
 
         answerLastPage(holder, page(5000, 1));
         await settle();

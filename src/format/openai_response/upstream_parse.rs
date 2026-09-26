@@ -545,21 +545,20 @@ impl UpstreamParser {
             }
 
             "function_call" => match origin {
-                // A JSON body delivers the whole call at once; mirror the chat and gemini JSON
-                // paths with a full-arguments delta plus a done per call, so streaming renderers
-                // open and complete the item.
+                // A JSON body delivers the whole call at once: the shared complete-call
+                // announcement (`format::complete_call_events`) — a full-arguments delta plus a
+                // done — opens and completes the item for the streaming renderers.
                 OutputItemOrigin::Json(index) => {
                     self.record_call_delivered(index);
                     self.record_call_completed(index);
 
-                    events.push(IrEvent::ToolCallDelta {
+                    events.extend(format::complete_call_events(
                         index,
-                        call_id: Some(item.call_id.clone()),
-                        name: Some(item.name.clone()),
-                        arguments_delta: item.arguments.clone(),
-                    });
-
-                    events.push(self.complete_function_call(item, index));
+                        item.call_id.clone(),
+                        item.name.clone(),
+                        item.arguments.clone(),
+                        item.thought_signature.clone(),
+                    ));
                 }
 
                 // A streamed done item is content-bearing: it completes its call and exhausts the

@@ -820,25 +820,15 @@ impl UpstreamEventParser for UpstreamParser {
                 ResponseBlock::ToolUse { id, name, input } => {
                     let call_id = id.clone().unwrap_or_default();
                     let name = name.clone().unwrap_or_default();
-                    let arguments = input
-                        .clone()
-                        .map(|input| input_to_arguments(&input))
-                        .unwrap_or_default();
+                    let arguments = input.as_ref().map(input_to_arguments).unwrap_or_default();
 
-                    events.push(IrEvent::ToolCallDelta {
-                        index: tool_ordinal,
-                        call_id: Some(call_id.clone()),
-                        name: Some(name.clone()),
-                        arguments_delta: arguments.clone(),
-                    });
-
-                    events.push(IrEvent::ToolCallDone {
-                        index: tool_ordinal,
+                    events.extend(crate::format::complete_call_events(
+                        tool_ordinal,
                         call_id,
                         name,
                         arguments,
-                        thought_signature: None,
-                    });
+                        None,
+                    ));
 
                     tool_ordinal += 1;
                 }

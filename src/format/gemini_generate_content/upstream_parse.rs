@@ -305,20 +305,13 @@ impl UpstreamParser {
             _ => format!("call_{}", ids::new_uuid()),
         };
 
-        events.push(IrEvent::ToolCallDelta {
-            index: self.call_counter,
-            call_id: Some(call_id.clone()),
-            name: Some(name.clone()),
-            arguments_delta: arguments.clone(),
-        });
-
-        events.push(IrEvent::ToolCallDone {
-            index: self.call_counter,
+        events.extend(format::complete_call_events(
+            self.call_counter,
             call_id,
             name,
             arguments,
-            thought_signature: part.thought_signature.clone(),
-        });
+            part.thought_signature.clone(),
+        ));
 
         self.call_counter += 1;
     }

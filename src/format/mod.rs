@@ -4,9 +4,10 @@
 //! parses client requests and boxes a [`ClientSseRenderer`] for live streaming (aggregated
 //! rendering is a free function behind the same trait). Every upstream format implements
 //! [`UpstreamEventParser`]. Upstream payload rendering has no shared contract — the payloads are
-//! provider-coupled — so each codec exposes free `render_request` functions that the gateway
-//! invokes directly; each returns the upstream URL beside the payload, so every protocol's path
-//! shape lives in the codec that owns it while the provider layer threads the endpoint base in.
+//! provider-coupled — so each codec exposes free body-render functions that the gateway invokes
+//! directly; each renders the upstream body alone, and the dispatch's URL, header rows, and
+//! streaming decision come from the provider definition's inference descriptor (README §5.2),
+//! evaluated by the gateway dispatcher around the rendered body.
 //!
 //! All five families are bidirectional (README §6.3): each implements [`UpstreamEventParser`] for
 //! its same-named upstream protocol plus the free request renderers beside it, and each implements
@@ -273,6 +274,36 @@ pub(in crate::format) fn degrade_finish_once(is_finished: &mut bool) -> Vec<IrEv
     *is_finished = true;
 
     vec![IrEvent::Finish(IrFinishReason::Stop)]
+}
+
+/// Emits the canonical two-event announcement of one complete upstream tool call: a
+/// [`IrEvent::ToolCallDelta`] revealing the call with its full arguments as the delta, followed
+/// by a [`IrEvent::ToolCallDone`] carrying identical payloads. The JSON-body parse paths of the
+/// codecs deliver a whole call at once and share this pair so the streaming renderers open and
+/// complete the call exactly as a streamed one; each parser keeps its own delivery and
+/// completion bookkeeping beside it.
+pub(in crate::format) fn complete_call_events(
+    index: usize,
+    call_id: String,
+    name: String,
+    arguments: String,
+    thought_signature: Option<String>,
+) -> [IrEvent; 2] {
+    [
+        IrEvent::ToolCallDelta {
+            index,
+            call_id: Some(call_id.clone()),
+            name: Some(name.clone()),
+            arguments_delta: arguments.clone(),
+        },
+        IrEvent::ToolCallDone {
+            index,
+            call_id,
+            name,
+            arguments,
+            thought_signature,
+        },
+    ]
 }
 
 /// Client-side SSE rendering contract implemented by every outward codec.

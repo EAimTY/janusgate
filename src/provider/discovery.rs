@@ -192,12 +192,7 @@ pub(crate) async fn run_discovery(
 
                 ids.extend(extract_ids(&body, &discovery.extract)?);
 
-                has_more = value_at(&body, has_more_path).is_some_and(|value| match value {
-                    Json::Bool(done) => *done,
-                    Json::Number(number) => number.as_i64() == Some(1),
-                    Json::String(text) => text == "true",
-                    _ => false,
-                });
+                has_more = value_at(&body, has_more_path).is_some_and(control::is_truthy_scalar);
 
                 if !has_more {
                     break;
@@ -365,100 +360,12 @@ mod tests {
     )]
 
     use super::{Error, run_discovery};
-    use crate::provider::definition::{discovery::Discovery, eval::ValueEnv};
+    use crate::provider::{
+        definition::{discovery::Discovery, eval::ValueEnv},
+        engine_tests::MockUpstream,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-    /// A tiny HTTP/1.1 mock serving one prepared JSON response per request, in order, and
-    /// shutting down on drop.
-    struct MockUpstream {
-        /// The `http://` base URL the mock answers at.
-        base_url: String,
-
-        /// Shutdown signal, sent when the test is done with the mock.
-        shutdown: tokio::sync::oneshot::Sender<()>,
-    }
-
-    impl MockUpstream {
-        /// Starts the mock serving `responses` in order; the final entry repeats for any request
-        /// beyond the fixture's length, so a diverging walk fails on assertions, not the mock.
-        ///
-        /// # Panics
-        ///
-        /// Panics when the mock cannot bind — a broken mock is the failure report.
-        async fn start(responses: Vec<String>) -> Self {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap();
-
-            let (shutdown, mut is_shutdown) = tokio::sync::oneshot::channel::<()>();
-
-            let responses = std::sync::Arc::new(std::sync::Mutex::new(responses));
-
-            tokio::spawn(async move {
-                loop {
-                    let accepted = tokio::select! {
-                        _ = &mut is_shutdown => break,
-                        accepted = listener.accept() => accepted,
-                    };
-
-                    let Ok((mut socket, _)) = accepted else {
-                        break;
-                    };
-
-                    let responses = responses.clone();
-
-                    tokio::spawn(async move {
-                        // Drain the request head through its blank line before answering.
-                        let mut buffer = Vec::new();
-                        let mut chunk = [0_u8; 1024];
-
-                        loop {
-                            let read = socket.read(&mut chunk).await.unwrap_or(0);
-                            if read == 0 {
-                                return;
-                            }
-
-                            buffer.extend_from_slice(chunk.get(..read).unwrap_or(&chunk));
-
-                            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-                                break;
-                            }
-                        }
-
-                        let body = {
-                            let mut responses = responses.lock().unwrap();
-
-                            if responses.len() > 1 {
-                                responses.remove(0)
-                            } else {
-                                responses.first().cloned().unwrap_or_default()
-                            }
-                        };
-
-                        let _ = socket
-                            .write_all(
-                                format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                    body.len(),
-                                    body
-                                )
-                                .as_bytes(),
-                            )
-                            .await;
-
-                        let _ = socket.shutdown().await;
-                    });
-                }
-            });
-
-            Self {
-                base_url: format!("http://{address}"),
-                shutdown,
-            }
-        }
-    }
 
     /// The environment one discovery test carries: no slots, the mock base URL, and a static
     /// secret, leaked into `'static` references the descriptor can borrow.
@@ -550,7 +457,7 @@ mod tests {
         let outcome = run_discovery(
             &crate::http_client::control_plane(),
             &token_discovery(2),
-            &discovery_env(&mock.base_url),
+            &discovery_env(&mock.base()),
         )
         .await;
 
@@ -592,7 +499,7 @@ mod tests {
         .await;
 
         let outcome =
-            run_discovery(&client, &token_discovery(3), &discovery_env(&mock.base_url)).await;
+            run_discovery(&client, &token_discovery(3), &discovery_env(&mock.base())).await;
 
         let Err(error) = outcome else {
             panic!("a present non-string next token must fail the refresh");
@@ -618,7 +525,7 @@ mod tests {
         ])
         .await;
 
-        let ids = run_discovery(&client, &token_discovery(3), &discovery_env(&mock.base_url)).await;
+        let ids = run_discovery(&client, &token_discovery(3), &discovery_env(&mock.base())).await;
 
         assert_eq!(ids.unwrap(), vec!["model-a"]);
 
@@ -646,7 +553,7 @@ mod tests {
         let outcome = run_discovery(
             &crate::http_client::control_plane(),
             &cursor_discovery(1),
-            &discovery_env(&mock.base_url),
+            &discovery_env(&mock.base()),
         )
         .await;
 
@@ -689,7 +596,7 @@ mod tests {
         ])
         .await;
 
-        let ids = run_discovery(&client, &token_discovery(2), &discovery_env(&mock.base_url)).await;
+        let ids = run_discovery(&client, &token_discovery(2), &discovery_env(&mock.base())).await;
 
         assert_eq!(ids.unwrap(), vec!["model-a", "model-b"]);
 
@@ -711,12 +618,7 @@ mod tests {
         ])
         .await;
 
-        let ids = run_discovery(
-            &client,
-            &cursor_discovery(2),
-            &discovery_env(&mock.base_url),
-        )
-        .await;
+        let ids = run_discovery(&client, &cursor_discovery(2), &discovery_env(&mock.base())).await;
 
         assert_eq!(ids.unwrap(), vec!["model-a", "model-b"]);
 

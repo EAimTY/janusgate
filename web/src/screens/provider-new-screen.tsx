@@ -73,6 +73,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     // is not yet a mistake (the api-key forms' untouched-name gate).
     const [hasBaseUrlInput, setHasBaseUrlInput] = createSignal(false);
     const [apiKey, setApiKey] = createSignal("");
+    // The page's standing notice: the boot read's failures and the static
+    // creation path's outcomes. The OAuth flow's failures never reach it —
+    // the flow fragment states its own inside the Connect card — so the two
+    // channels cannot render one outcome twice.
     const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
 
     const preset = (): ProviderPreset =>
@@ -91,16 +95,27 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     );
     const [isDefinitionTouched, setIsDefinitionTouched] = createSignal(false);
 
-    const pickPreset = (next: string): void => {
-        // The preset comes from the picker's argument, not from re-reading
-        // `presetId()` — the setter's value is not immediately readable back
-        // in every Solid dev runtime, and the editor's prefill must be the
-        // selected preset's payload, never the previous selection's.
-        const nextPreset =
-            PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? PROVIDER_PRESETS[0];
+    /**
+     * The preset a pick armed while an edited connection recipe stands: the
+     * switch is pending, not applied — the Preset card's confirm is the only
+     * way it happens, so a stray click in the grid cannot destroy the edited
+     * JSON. One signal keeps the mechanism minimal, and every path that
+     * removes what the arming guards dissolves it: the confirm, the cancel,
+     * a reset to the preset, and a flow going live.
+     */
+    const [armedPresetId, setArmedPresetId] = createSignal<string | null>(null);
 
+    /** The armed pick resolved to its catalog entry, `null` when disarmed. */
+    const armedPreset = createMemo(() => {
+        const armedId = armedPresetId();
+        return armedId === null
+            ? null
+            : (PROVIDER_PRESETS.find((candidate) => candidate.id === armedId) ?? null);
+    });
+
+    /** Installs the preset: its payload in the editor, the flow discarded. */
+    const applyPreset = (nextPreset: ProviderPreset): void => {
         setPresetId(nextPreset.id);
-        setFailure(null);
         oauth.reset();
 
         setIsDefinitionTouched(false);
@@ -109,6 +124,45 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         if (!isNameTouched()) {
             setName(suggestProviderName(nextPreset.suggestedName, takenNames()));
         }
+    };
+
+    const pickPreset = (next: string): void => {
+        // The preset comes from the picker's argument, not from re-reading
+        // `presetId()` — the setter's value is not immediately readable back
+        // in every Solid dev runtime, and the editor's prefill must be the
+        // selected preset's payload, never the previous selection's.
+        const nextPreset =
+            PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? PROVIDER_PRESETS[0];
+
+        // An edited connection recipe is the operator's own work: the pick
+        // arms instead of applying, and only the Preset card's confirm
+        // performs the switch. An untouched definition switches instantly —
+        // the common path gains no friction.
+        if (isDefinitionTouched()) {
+            setArmedPresetId(nextPreset.id);
+            return;
+        }
+
+        applyPreset(nextPreset);
+    };
+
+    /** The confirm's action: the armed switch replaces the edited recipe. */
+    const confirmPresetSwitch = (): void => {
+        const armedId = armedPresetId();
+        setArmedPresetId(null);
+
+        if (armedId === null) {
+            return;
+        }
+
+        applyPreset(
+            PROVIDER_PRESETS.find((candidate) => candidate.id === armedId) ?? PROVIDER_PRESETS[0],
+        );
+    };
+
+    /** The confirm's way back: the arming dissolves, the edit stands. */
+    const cancelPresetSwitch = (): void => {
+        setArmedPresetId(null);
     };
 
     // The taken names arrive after the boot read; until then the preset's
@@ -383,18 +437,21 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     /** Restores the selected preset's payload and re-arms the stored-version reuse. */
     const resetDefinition = (): void => {
+        // With the edit gone there is nothing the preset-switch arming
+        // guards, so it goes with the edit.
+        setArmedPresetId(null);
         setDefinitionJson(JSON.stringify(preset().payload, null, 2));
         setIsDefinitionTouched(false);
     };
 
-    // The OAuth flow's shared state machine: the failure channel is this
-    // page's standing notice, a flow begins only under an ensured definition,
-    // and a succeeded completion lands on the new provider's page.
+    // The OAuth flow's shared state machine: its failures state themselves
+    // inside the Connect card (`oauth.failure`, rendered there), a flow
+    // begins only under an ensured definition, and a succeeded completion
+    // lands on the new provider's page.
     const oauth = createOauthFlow({
         api: props.api,
         startAction: "start-oauth",
         completeAction: "complete-oauth",
-        channel: setFailure,
         isSubmittable: canComplete,
         begin: async () => {
             const ensured = await ensureDefinition();
@@ -478,6 +535,18 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
      */
     const isFlowLive = (): boolean => oauth.flow() !== null;
 
+    // A flow going live locks the picker, so an arming could await nothing:
+    // it dissolves with the lock instead of resurfacing stale when the flow
+    // ends.
+    createEffect(
+        () => isFlowLive(),
+        (isLive) => {
+            if (isLive) {
+                setArmedPresetId(null);
+            }
+        },
+    );
+
     /** The live flow narrowed to its grant, so each step renders its own answer. */
     const startedAuthorizationCode = createMemo(() => {
         const live = oauth.flow();
@@ -492,11 +561,6 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const submitOauth = (event: SubmitEvent): void => {
         event.preventDefault();
         void oauth.complete();
-    };
-
-    const startOver = (): void => {
-        oauth.reset();
-        setFailure(null);
     };
 
     return (
@@ -528,6 +592,39 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         onChange={pickPreset}
                         isDisabled={isBusy() || isFlowLive()}
                     />
+                    {/* The armed switch's confirm, standing where the pick
+                        landed — the same grammar the delete confirmation
+                        uses: a question, the action, and the way back. It is
+                        the only path to `applyPreset` over an edited recipe,
+                        and both buttons stand behind the page's busy guard:
+                        a begin or create in flight is already ensuring the
+                        edited recipe, and a switch under it would contradict
+                        what the call sends. */}
+                    <Show
+                        when={armedPreset()}
+                        keyed
+                    >
+                        {(armed) => (
+                            <div class="mt-3 flex flex-wrap items-center gap-2">
+                                <p class="w-full text-[13.5px] text-ink-dim">
+                                    {`Switch to ${armed.title}? Your edited connection recipe will be replaced.`}
+                                </p>
+                                <Button
+                                    tone="danger"
+                                    isDisabled={isBusy()}
+                                    onClick={confirmPresetSwitch}
+                                >
+                                    Switch preset
+                                </Button>
+                                <Button
+                                    isDisabled={isBusy()}
+                                    onClick={cancelPresetSwitch}
+                                >
+                                    Keep my edit
+                                </Button>
+                            </div>
+                        )}
+                    </Show>
                     <p class="mt-3 text-[12.5px] leading-snug text-ink-faint">
                         {preset().provenance}
                     </p>
@@ -642,6 +739,22 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             title="Connect the account"
                             description="Approve access where the flow points, then let it complete. This app never stores the credentials."
                         />
+                        {/* The flow's failures state themselves where its step
+                            and buttons stand — a refused begin or exchange, a
+                            failed outcome poll, a flow's expiry — never on
+                            the page's read-level notice above the cards. */}
+                        <Show when={oauth.failure()}>
+                            {(current) => (
+                                <div class="mt-4">
+                                    <Notice
+                                        tone="bad"
+                                        title={current().title}
+                                        detail={current().detail}
+                                        fix={current().fix}
+                                    />
+                                </div>
+                            )}
+                        </Show>
                         <Show
                             when={oauth.flow() === null}
                             fallback={
@@ -658,7 +771,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                                     <DeviceStep
                                                         flow={deviceFlow}
                                                         onComplete={oauth.completeDevice}
-                                                        onStartOver={startOver}
+                                                        onStartOver={oauth.reset}
                                                     />
                                                 )}
                                             </Show>
@@ -672,7 +785,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                             >
                                                 <AuthorizeStep
                                                     flow={authorizationFlow}
-                                                    onStartOver={startOver}
+                                                    onStartOver={oauth.reset}
                                                 >
                                                     <TextField
                                                         label="Callback URL or authorization code"
@@ -680,6 +793,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                                         onInput={oauth.setCode}
                                                         placeholder="Paste the whole callback URL"
                                                         isDisabled={oauth.isCompleting()}
+                                                        error={oauth.pasteError()}
                                                     />
                                                     <div>
                                                         <Button

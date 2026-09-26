@@ -392,9 +392,21 @@ export function UsageScreen(props: {
                                 )}
                             </Show>
                             <div>
+                                {/* The read cycle's wholesale replacement is
+                                    the one refusal `loadMore` makes, and the
+                                    control states it the way the shell's
+                                    Refresh control states its own: disabled
+                                    with the reason in its title, never a
+                                    silent dead click. */}
                                 <Button
                                     glyph="chev-right"
                                     isBusy={isLoadingMore()}
+                                    isDisabled={read.isReading()}
+                                    title={
+                                        read.isReading()
+                                            ? "A read cycle is replacing the stream — extend it once the cycle lands."
+                                            : undefined
+                                    }
                                     onClick={() => void loadMore()}
                                 >
                                     {isLoadingMore() ? "Loading…" : "Load more"}

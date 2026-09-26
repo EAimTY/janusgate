@@ -779,8 +779,8 @@ async fn complete_consumed_flow(
     Ok(provider)
 }
 
-/// Reads a device flow's relational outcome: pending stays unconsumed, a terminal row is
-/// consumed exactly once and its facts returned.
+/// Reads a device flow's relational outcome after the pre-consume grant check: pending stays
+/// unconsumed, a terminal row is consumed exactly once and its facts returned.
 async fn complete_device(
     database: &crate::database::Database,
     state: &str,
@@ -790,6 +790,16 @@ async fn complete_device(
     let Some(flow) = storage::oauth_flows::find_flow_by_state(database, state, now).await? else {
         return Err(Error::UnknownOauthState);
     };
+
+    // The pre-consume grant check mirrors the authorization-code form's: a device-form completion
+    // of an authorization-code state is a client fault, not a permanently pending flow — the
+    // schema makes a terminal outcome unrepresentable on an authorization-code row, so the
+    // mismatched form would answer `pending` until the flow's expiry without this rejection.
+    if flow.grant_type != FlowGrant::Device {
+        return Err(Error::OauthGrantMismatch {
+            state_grant: flow.grant_type.as_str().to_string(),
+        });
+    }
 
     match flow.outcome {
         None => Ok(CompleteProviderOauthResponse::Pending {}),
@@ -842,7 +852,7 @@ mod tests {
 
     use super::{
         Error, ReauthorizeProviderRequest, StartProviderOauthRequest, StartProviderOauthResponse,
-        complete_device, handle_reauthorize_start, handle_start,
+        complete_authorization_code, complete_device, handle_reauthorize_start, handle_start,
     };
     use crate::{
         format::UpstreamFormat,
@@ -1199,5 +1209,98 @@ mod tests {
             .expect("the terminal row survives the failed retrieval");
 
         assert_eq!(settled.outcome, Some(FlowOutcome::Succeeded));
+    }
+
+    /// A device-form completion naming an authorization-code flow's state is a grant mismatch
+    /// rejected before any consumption (README §7.1, §7.2): the flow stays pending with no
+    /// outcome — the schema makes a terminal outcome unrepresentable on an authorization-code
+    /// row — so the flow's own completion form still observes it afterwards.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the rejection diverges.
+    #[tokio::test]
+    async fn completing_an_authorization_code_flow_through_the_device_form_is_a_grant_mismatch() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        // The flow row references one exact definition version through a foreign key, so the
+        // fixture inserts the definition it names.
+        let definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::AuthorizationCode,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: None,
+                device_user_code: None,
+                device_verification_uri: None,
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: None,
+                device_next_poll_at: None,
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        let error = complete_device(&database, "state-token").await.unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::OauthGrantMismatch { state_grant } = error else {
+            panic!(
+                "a device-form completion of an authorization-code state renders the grant \
+                 mismatch"
+            );
+        };
+
+        assert_eq!(state_grant, FlowGrant::AuthorizationCode.as_str());
+
+        // The mismatch is rejected before consumption: the row survives unconsumed.
+        #[expect(clippy::expect_used, reason = "the unconsumed row survives")]
+        let surviving = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the mismatched flow is not consumed");
+
+        assert_eq!(surviving.grant_type, FlowGrant::AuthorizationCode);
+        assert_eq!(surviving.outcome, None);
+
+        // The flow's own completion form still observes the row: its pre-consume checks pass and
+        // the exchange runs — failing against the fixture's unreachable token endpoint as a
+        // gateway-side upstream failure, never as an unknown-state or grant rejection.
+        let retry = complete_authorization_code(
+            &database,
+            &crate::http_client::control_plane(),
+            "state-token",
+            "code",
+        )
+        .await
+        .unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::OAuth(crate::provider::oauth::Error::Unavailable { .. }) = retry else {
+            panic!(
+                "the retrying authorization-code completion reaches its exchange, not a state or \
+                 grant rejection"
+            );
+        };
     }
 }

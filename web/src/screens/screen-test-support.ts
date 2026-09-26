@@ -131,6 +131,28 @@ export function bodyText(): string {
     return document.body.textContent ?? "";
 }
 
+/** The card section whose header reads the given title. */
+export function cardWithTitle(title: string): HTMLElement {
+    for (const candidate of document.querySelectorAll("section")) {
+        if (candidate.querySelector("h2")?.textContent === title) {
+            return candidate;
+        }
+    }
+
+    throw new Error(`No card titled ${title}`);
+}
+
+/** The paragraph whose text contains the given text, failing when none renders. */
+export function paragraphWithText(text: string): HTMLParagraphElement {
+    for (const candidate of document.querySelectorAll("p")) {
+        if (candidate.textContent?.includes(text) === true) {
+            return candidate;
+        }
+    }
+
+    throw new Error(`No paragraph reading ${text}`);
+}
+
 /** The anchor addressing the given href. */
 export function linkTo(href: string): HTMLAnchorElement {
     for (const candidate of document.querySelectorAll("a")) {

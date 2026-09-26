@@ -26,6 +26,7 @@ import { ScreenFrame } from "/src/screens/screen-frame";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Button, TextField } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
+import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { AuthorizeStep, DeviceStep } from "/src/ui/oauth-flow";
 import {
@@ -97,17 +98,18 @@ export function ProviderEditScreen(props: {
     // gateway rewrote (the token-refresh lease moves `expires_at`, which
     // alone flips the row's identity), and a flow held inside that content
     // would be discarded silently — the pasted code gone, the gateway's
-    // pending flow row orphaned. The failure channel is the screen's standing
-    // notice, a succeeded completion states the replacement and reloads the
-    // listing, and a gone flow state re-reads it beside the fragment's own
-    // reset. The machine is created for every provider but reached only from
-    // the OAuth credentials card, and the begin addresses the screen's own
-    // provider — the held row is found by this very id.
+    // pending flow row orphaned. The flow's failures state themselves inside
+    // the Credentials card (`oauth.failure`, rendered there), never on the
+    // screen's read-level notice; a succeeded completion states the
+    // replacement and reloads the listing, and a gone flow state re-reads it
+    // beside the fragment's own reset. The machine is created for every
+    // provider but reached only from the OAuth credentials card, and the
+    // begin addresses the screen's own provider — the held row is found by
+    // this very id.
     const oauth = createOauthFlow({
         api: props.api,
         startAction: "start-oauth",
         completeAction: "reauthorize",
-        channel: read.showNotice,
         onGone: read.reload,
         begin: async () => ({
             status: "called" as const,
@@ -494,8 +496,10 @@ function DetailsCard(props: {
  * An OAuth provider's credential health and its reauthorization flow. The
  * flow's state machine is the screen's (`oauth`), so a keyed remount of this
  * card on a rewritten row re-renders the live flow's step from the state
- * above instead of discarding it; the expiry line alone tracks the row this
- * card receives, keeping the fresh expiry current beside the flow.
+ * above instead of discarding it, and the flow's failures state themselves
+ * here, beside the step and buttons that took the action; the expiry line
+ * alone tracks the row this card receives, keeping the fresh expiry current
+ * beside the flow.
  */
 function CredentialsCard(props: {
     readonly provider: ProviderResponse;
@@ -522,6 +526,21 @@ function CredentialsCard(props: {
             />
             <div class="mt-4 flex max-w-2xl flex-col gap-4">
                 <p class="text-[13.5px] text-ink-dim">{expiryLine()}</p>
+
+                {/* The flow's failures state themselves where its step and
+                    buttons stand — a refused begin or exchange, a failed
+                    outcome poll, a flow's expiry — never on the screen's
+                    read-level notice above the page. */}
+                <Show when={props.oauth.failure()}>
+                    {(current) => (
+                        <Notice
+                            tone="bad"
+                            title={current().title}
+                            detail={current().detail}
+                            fix={current().fix}
+                        />
+                    )}
+                </Show>
 
                 <Show
                     when={props.oauth.flow()}
@@ -562,6 +581,7 @@ function CredentialsCard(props: {
                                         onInput={props.oauth.setCode}
                                         placeholder="Paste the whole callback URL"
                                         isDisabled={props.oauth.isCompleting()}
+                                        error={props.oauth.pasteError()}
                                     />
                                     <div>
                                         <Button

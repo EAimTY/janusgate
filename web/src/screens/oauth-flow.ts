@@ -2,10 +2,14 @@
  * The OAuth flow state machine every provider screen shares (README §6.3):
  * the live flow and its pasted callback, the begin of a flow, the completion
  * of both grants, and the dead-flow resets. The screens parameterize it by
- * the action names the diagnoses specialize on, the channel failures and
- * outcomes are stated on, what a succeeded completion does with the provider
- * row, and the begin step's own prelude (the creation page ensures its
- * definition first).
+ * the action names the diagnoses specialize on, what a succeeded completion
+ * does with the provider row, and the begin step's own prelude (the
+ * creation page ensures its definition first).
+ *
+ * The flow's failures are the fragment's own: it states them on the signal
+ * the flow card renders, beside the step and buttons that took the action —
+ * never on the screen's read-level notice above the page (README §6.4). The
+ * two channels share no write path, so one outcome cannot render twice.
  *
  * Disposal and flow identity are guarded here, in one home: a call answering
  * after the screen went away — or for a flow that is no longer the live one —
@@ -54,6 +58,20 @@ export type OauthFlow = {
     readonly isCompleting: Accessor<boolean>;
     /** Whether either OAuth call is in flight. */
     readonly isBusy: Accessor<boolean>;
+    /**
+     * The flow's stated failure: a refused begin, a refused or failed
+     * completion, a failed outcome poll, or a flow's expiry — stated by the
+     * flow card beside the step and buttons that took the action, never on
+     * the screen's read-level notice. Ending a flow clears it, as does a
+     * poll answering again.
+     */
+    readonly failure: Accessor<ScreenNotice | null>;
+    /**
+     * The paste diagnosis beside the callback field: stated once a
+     * completion was refused over a paste holding no readable code,
+     * retracted once the paste holds one again, and gone with the flow.
+     */
+    readonly pasteError: Accessor<string | null>;
     /** Begins a flow on the gateway and installs what it answers. */
     readonly start: () => Promise<void>;
     /** Completes an authorization-code flow with the pasted callback. */
@@ -62,7 +80,7 @@ export type OauthFlow = {
      * One device-poll ask; the step panel schedules the next one on
      * `"pending"` and stops on `"done"`. A poll that fails without proving
      * the flow gone answers `"pending"` too — the flow stays live on the
-     * gateway, its failure is stated on the channel, and the loop re-arms
+     * gateway, its failure is stated in the flow card, and the loop re-arms
      * until `MAX_CONSECUTIVE_FAILED_POLLS` fail in a row. `"done"` ends the
      * loop only for a gone diagnosis, the flow's expiry, a stated terminal
      * outcome, an aborted ask, or disposal.
@@ -72,13 +90,14 @@ export type OauthFlow = {
     readonly reset: () => void;
 };
 
-/** The paste the completion cannot read, so the flow survives the mistake. */
-const UNREADABLE_PASTE_NOTICE: ScreenNotice = {
-    tone: "bad",
-    title: "Paste the callback URL or the code.",
-    detail: "That paste holds neither a bare code nor a URL with a code in it.",
-    fix: "Copy the whole address the login landed on, or just its code, and paste it here.",
-};
+/**
+ * The inline diagnosis beside the paste field once a completion was refused
+ * over a paste holding no readable code: one line naming the fault and its
+ * fix, stated where the value was typed — the lazy treatment every field's
+ * inline error gets, never a notice above the page.
+ */
+const UNREADABLE_PASTE_ERROR =
+    "That paste holds neither a bare code nor a URL with a code — copy the whole address the login landed on, or just its code, and paste it here.";
 
 /** The one recovery a spent or stalled flow leaves: begin a new one. */
 const FRESH_FLOW_FIX = "Start a fresh flow and authorize it promptly.";
@@ -125,8 +144,6 @@ export function createOauthFlow(options: {
      * `"blocked"` with its notice — followed by the gateway's flow-begin call.
      */
     readonly begin: () => Promise<OauthFlowBegin>;
-    /** The channel the flow's failures and outcomes are stated on. */
-    readonly channel: (notice: ScreenNotice | null) => void;
     /** What a succeeded completion does with the provider row it answered. */
     readonly onSucceeded: (provider: ProviderResponse) => void;
     /**
@@ -144,6 +161,15 @@ export function createOauthFlow(options: {
     const [code, setCode] = createSignal("");
     const [isStarting, setIsStarting] = createSignal(false);
     const [isCompleting, setIsCompleting] = createSignal(false);
+    // The flow's stated failure, rendered inside the flow card. The
+    // fragment owns the signal outright — no screen channel is passed in —
+    // so a flow failure structurally cannot reach the screen's read-level
+    // notice, and the two can never render one outcome twice.
+    const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
+    // Opened when a completion is refused over an unreadable paste; the
+    // paste diagnosis then follows the field's current value until the flow
+    // ends — the lazy gate every field's inline error opens behind.
+    const [hasPasteRefusal, setHasPasteRefusal] = createSignal(false);
 
     // The consecutive failed outcome polls of the live device flow: any
     // answered poll resets it, and it bounds how long the loop rides out
@@ -162,24 +188,38 @@ export function createOauthFlow(options: {
     const isBusy = (): boolean => isStarting() || isCompleting();
 
     /**
+     * The paste diagnosis beside the callback field: standing only behind a
+     * refused completion, and only while the paste still holds nothing
+     * readable — a paste that reads retracts it without another ask.
+     */
+    const pasteError = (): string | null =>
+        hasPasteRefusal() && extractAuthorizationCode(code()) === null
+            ? UNREADABLE_PASTE_ERROR
+            : null;
+
+    /**
      * Discards the live flow: a consumed state is never retried — a failed
      * exchange burns the flow, and a terminal device outcome is consumed by
      * the one read that observed it (gateway README §7.2) — so only a fresh
-     * flow can retry.
+     * flow can retry. The stated failure and the paste's refusal gate go
+     * with the flow; a failure stated afresh after a discard rewrites the
+     * cleared signal.
      */
     const discardFlow = (): void => {
         setFlow(null);
         setCode("");
+        setHasPasteRefusal(false);
+        setFailure(null);
         failedPolls = 0;
     };
 
     /**
-     * The diagnosis of a failed completion, stated on the screen's channel.
-     * The device loop's non-gone failures are stated separately, where the
+     * The diagnosis of a failed completion, stated in the flow card. The
+     * device loop's non-gone failures are stated separately, where the
      * flow's liveness dictates the recovery line instead.
      */
     const reportCompletionFailure = (cause: unknown): void => {
-        options.channel(
+        setFailure(
             screenFailureNotice(cause, {
                 action: options.completeAction,
             }),
@@ -197,7 +237,7 @@ export function createOauthFlow(options: {
             return;
         }
 
-        options.channel(null);
+        setFailure(null);
         setIsStarting(true);
 
         const begun = await options.begin();
@@ -209,7 +249,7 @@ export function createOauthFlow(options: {
         }
 
         if (begun.status === "blocked") {
-            options.channel(begun.notice);
+            setFailure(begun.notice);
             return;
         }
 
@@ -218,7 +258,7 @@ export function createOauthFlow(options: {
         }
 
         if (begun.outcome.status === "failed") {
-            options.channel(
+            setFailure(
                 screenFailureNotice(begun.outcome.cause, {
                     action: options.startAction,
                 }),
@@ -245,7 +285,9 @@ export function createOauthFlow(options: {
         const pasted = extractAuthorizationCode(code());
 
         if (pasted === null) {
-            options.channel(UNREADABLE_PASTE_NOTICE);
+            // The paste is the field's own mistake: its diagnosis states
+            // itself inline beside the field, and the flow survives.
+            setHasPasteRefusal(true);
             return;
         }
 
@@ -286,7 +328,7 @@ export function createOauthFlow(options: {
 
         if (outcome.result.status === "failed") {
             discardFlow();
-            options.channel(flowFailedNotice(outcome.result.failure_message));
+            setFailure(flowFailedNotice(outcome.result.failure_message));
             return;
         }
 
@@ -316,7 +358,7 @@ export function createOauthFlow(options: {
         // says so instead of asking forever.
         if (nowMicros() >= startedFlow.expires_at) {
             discardFlow();
-            options.channel({
+            setFailure({
                 tone: "bad",
                 title: "The flow expired.",
                 detail: "The flow's expiry passed while this page waited for the outcome.",
@@ -362,7 +404,7 @@ export function createOauthFlow(options: {
             failedPolls += 1;
 
             if (failedPolls >= MAX_CONSECUTIVE_FAILED_POLLS) {
-                options.channel({
+                setFailure({
                     tone: "bad",
                     title: "The outcome poll kept failing, so this page stopped asking.",
                     detail: failure.detail,
@@ -372,7 +414,7 @@ export function createOauthFlow(options: {
                 return "done";
             }
 
-            options.channel({
+            setFailure({
                 tone: "bad",
                 title: "The last outcome poll failed.",
                 detail: failure.detail,
@@ -385,8 +427,8 @@ export function createOauthFlow(options: {
         if (outcome.result.status === "pending") {
             if (failedPolls > 0) {
                 // A poll answered again: the stated failure is stale, and the
-                // recovered loop owns the channel again.
-                options.channel(null);
+                // recovered loop clears it.
+                setFailure(null);
             }
 
             failedPolls = 0;
@@ -396,7 +438,7 @@ export function createOauthFlow(options: {
         discardFlow();
 
         if (outcome.result.status === "failed") {
-            options.channel(flowFailedNotice(outcome.result.failure_message));
+            setFailure(flowFailedNotice(outcome.result.failure_message));
             return "done";
         }
 
@@ -414,6 +456,8 @@ export function createOauthFlow(options: {
         isStarting,
         isCompleting,
         isBusy,
+        failure,
+        pasteError,
         start,
         complete,
         completeDevice,

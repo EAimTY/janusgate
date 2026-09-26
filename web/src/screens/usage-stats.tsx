@@ -79,7 +79,10 @@ function usageQuerySubject(filter: UsageSubjectFilter): UsageQuerySubject {
  * One subject's request accounting as aggregates: totals plus one row per
  * day, newest first. The gateway counts rows and sums tokens; names never
  * ride along, so this card shows numbers only. A failed read states its
- * diagnosis in place, like every other card that reads.
+ * diagnosis in place, like every other card that reads, and a failed re-read
+ * keeps the last-good totals and table standing beside it; the no-requests
+ * empty state — the claim a failure cannot prove — stands only where a read
+ * succeeded and found nothing.
  *
  * The buckets arrive through `readUsageBuckets`, which proved inside the read
  * cycle that every key carries the `day` its request asked for; the
@@ -157,17 +160,12 @@ export function EntityUsageCard(props: {
                     </div>
                 </Show>
 
-                <Show when={read.hasRead() && read.notice() === null}>
-                    <Show
-                        when={buckets().length > 0}
-                        fallback={
-                            <Notice
-                                tone="info"
-                                title={`No requests recorded for this ${props.subjectKind} yet.`}
-                                detail="One row appears per dispatched serving request — the moment the gateway sends upstream."
-                            />
-                        }
-                    >
+                {/* The last-good answer survives a failed re-read: the
+                    totals and table stand beside the failure notice, while
+                    the empty state is the one piece the notice withholds —
+                    a failed read cannot prove the subject recorded nothing. */}
+                <Show when={read.hasRead()}>
+                    <Show when={buckets().length > 0}>
                         <div class="grid gap-3 sm:grid-cols-3">
                             <Stat
                                 value={formatTokenCount(totals().requests)}
@@ -241,6 +239,14 @@ export function EntityUsageCard(props: {
                                 </tbody>
                             </table>
                         </div>
+                    </Show>
+
+                    <Show when={read.notice() === null && buckets().length === 0}>
+                        <Notice
+                            tone="info"
+                            title={`No requests recorded for this ${props.subjectKind} yet.`}
+                            detail="One row appears per dispatched serving request — the moment the gateway sends upstream."
+                        />
                     </Show>
                 </Show>
             </div>

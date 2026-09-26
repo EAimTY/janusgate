@@ -546,56 +546,38 @@ fn message_events_from_full(message: &MessageFields) -> Vec<IrEvent> {
     push_text_events(message, &mut events);
 
     for (index, tool_call) in message.tool_calls.iter().enumerate() {
-        events.extend(complete_call_events(index, tool_call));
+        events.extend(format::complete_call_events(
+            index,
+            tool_call.id.clone().unwrap_or_default(),
+            tool_call
+                .function
+                .as_ref()
+                .and_then(|function| function.name.clone())
+                .unwrap_or_default(),
+            tool_call
+                .function
+                .as_ref()
+                .and_then(|function| function.arguments.clone())
+                .unwrap_or_default(),
+            tool_call.thought_signature.clone(),
+        ));
     }
 
     if message.tool_calls.is_empty()
         && let Some(function_call) = &message.function_call
     {
-        events.extend(complete_call_events(
-            message.tool_calls.len(),
-            &ToolCallEntry {
-                id: Some(synthesized_call_id(message.tool_calls.len())),
-                function: Some(function_call.clone()),
-                ..ToolCallEntry::default()
-            },
+        let index = message.tool_calls.len();
+
+        events.extend(format::complete_call_events(
+            index,
+            synthesized_call_id(index),
+            function_call.name.clone().unwrap_or_default(),
+            function_call.arguments.clone().unwrap_or_default(),
+            None,
         ));
     }
 
     events
-}
-
-/// Emits the delta/done event pair of one complete tool-call entry.
-fn complete_call_events(index: usize, tool_call: &ToolCallEntry) -> Vec<IrEvent> {
-    let call_id = tool_call.id.clone().unwrap_or_default();
-
-    let name = tool_call
-        .function
-        .as_ref()
-        .and_then(|function| function.name.clone())
-        .unwrap_or_default();
-
-    let arguments = tool_call
-        .function
-        .as_ref()
-        .and_then(|function| function.arguments.clone())
-        .unwrap_or_default();
-
-    vec![
-        IrEvent::ToolCallDelta {
-            index,
-            call_id: Some(call_id.clone()),
-            name: Some(name.clone()),
-            arguments_delta: arguments.clone(),
-        },
-        IrEvent::ToolCallDone {
-            index,
-            call_id,
-            name,
-            arguments,
-            thought_signature: tool_call.thought_signature.clone(),
-        },
-    ]
 }
 
 #[cfg(test)]

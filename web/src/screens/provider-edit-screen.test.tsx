@@ -15,7 +15,9 @@ import { requestRefresh } from "/src/refresh-state";
 import { ProviderEditScreen } from "/src/screens/provider-edit-screen";
 import {
     buttonWithText,
+    cardWithTitle,
     labeledInput,
+    paragraphWithText,
     settle,
     stubManagementApi,
     switchWithLabel,
@@ -1001,6 +1003,16 @@ describe("ProviderEditScreen reauthorization", () => {
         expect(document.body.textContent).toContain("Start a fresh flow");
         expect(document.body.textContent).not.toContain("Credentials replaced.");
         expect(buttonWithText("Reconnect the account")).toBeInstanceOf(HTMLButtonElement);
+
+        // The exchange is a step of the flow the Credentials card runs, so
+        // its failure states itself on that card, beside the reconnect
+        // action it refused — never on the screen's read-level notice above
+        // the page.
+        expect(
+            cardWithTitle("Credentials").contains(
+                paragraphWithText("The upstream refused the exchange."),
+            ),
+        ).toBe(true);
     });
 
     it("states the replacement and reloads the listing when the completion succeeds", async () => {
@@ -1085,7 +1097,7 @@ describe("ProviderEditScreen reauthorization", () => {
         expect(document.body.textContent).toContain("Credentials replaced.");
     });
 
-    it("states the paste diagnosis with its fix when the paste carries no code", async () => {
+    it("states an unreadable paste inline beside the paste field, and retracts it once the paste reads", async () => {
         await mountAndReconnect(
             reauthorizeScreenApi({
                 complete: () => Promise.reject(new Error("route not expected in test")),
@@ -1096,10 +1108,25 @@ describe("ProviderEditScreen reauthorization", () => {
         buttonWithText("Replace the credentials").click();
         await settle();
 
-        expect(document.body.textContent).toContain("Paste the callback URL or the code.");
-        expect(document.body.textContent).toContain(
-            "Copy the whole address the login landed on, or just its code, and paste it here.",
+        // The unreadable paste is the field's own mistake, so its diagnosis
+        // is the field's own inline error: the lazy treatment every field's
+        // error gets, rendered in the field's frame inside the Credentials
+        // card — never the read-level notice above the page.
+        const diagnosis = paragraphWithText(
+            "That paste holds neither a bare code nor a URL with a code",
         );
+        expect(cardWithTitle("Credentials").contains(diagnosis)).toBe(true);
+        expect(
+            diagnosis.parentElement?.contains(labeledInput("Callback URL or authorization code")),
+        ).toBe(true);
         expect(document.body.textContent).not.toContain("Credentials replaced.");
+
+        // The lazy-error gate: pasting something readable retracts the
+        // diagnosis, and the completion is offered to the gateway again.
+        typeInto(labeledInput("Callback URL or authorization code"), "the-code");
+        await settle();
+        expect(document.body.textContent).not.toContain(
+            "That paste holds neither a bare code nor a URL with a code",
+        );
     });
 });

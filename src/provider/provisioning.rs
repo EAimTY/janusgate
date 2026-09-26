@@ -244,10 +244,10 @@ fn resolve_poll_value<'a>(
     }
 }
 
-/// Whether the long-running operation at one done path has completed: on JSON, the boolean
-/// `true`, the number `1`, or the string `true` all count — the upstream-owned done spelling is
-/// one of these truthy shapes — and on the flat form encoding, the one addressed member reads
-/// `true` or `1`, the string spellings those truthy scalars render in.
+/// Whether the long-running operation at one done path has completed: on JSON, the shared
+/// upstream truthy-scalar contract of [`control::is_truthy_scalar`] decides, and on the flat
+/// form encoding, the one addressed member reads `true` or `1` — the string spellings those
+/// truthy scalars render in.
 fn done_at(body: &DecodedBody, path: &ResponsePath) -> Result<bool, Error> {
     let Some(value) = resolve_poll_value(body, path, "done")? else {
         return Err(Error::Unavailable {
@@ -256,12 +256,7 @@ fn done_at(body: &DecodedBody, path: &ResponsePath) -> Result<bool, Error> {
     };
 
     Ok(match value {
-        PollValue::Json(json) => match json {
-            serde_json::Value::Bool(done) => *done,
-            serde_json::Value::Number(number) => number.as_i64() == Some(1),
-            serde_json::Value::String(text) => text == "true",
-            _ => false,
-        },
+        PollValue::Json(json) => control::is_truthy_scalar(json),
 
         // A form field carries only text, so the truthy boolean and number scalars surface in
         // their string spellings.

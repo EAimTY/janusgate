@@ -88,18 +88,7 @@ impl ConfigLoader {
     /// Returns the loading failure: an unreadable input, a schema the deserializer rejects, or TLS
     /// material that does not resolve.
     pub(crate) fn new(path: PathBuf) -> Result<(Self, impl Future<Output = ()> + Send), Error> {
-        let configuration = fs::read(&path).map_err(|source| Error::Read {
-            path: path.clone(),
-            source,
-        })?;
-
-        let schema: Config = serde_json::from_reader(StripComments::new(configuration.as_slice()))
-            .map_err(|source| Error::Parse {
-                path: path.clone(),
-                source,
-            })?;
-
-        let tls = self::tls::resolve(&schema)?;
+        let (schema, tls) = read_inputs(&path)?;
 
         let loader = Self {
             path,
@@ -171,21 +160,7 @@ impl ConfigLoader {
     /// any failure keeps the previously applied state and logs the failure — a running gateway
     /// never dies over a reload.
     fn reload(&self) {
-        let application = fs::read(&self.path)
-            .map_err(|source| Error::Read {
-                path: self.path.clone(),
-                source,
-            })
-            .and_then(|configuration| {
-                serde_json::from_reader::<_, Config>(StripComments::new(configuration.as_slice()))
-                    .map_err(|source| Error::Parse {
-                        path: self.path.clone(),
-                        source,
-                    })
-            })
-            .and_then(|schema| self::tls::resolve(&schema).map(|tls| (schema, tls)));
-
-        match application {
+        match read_inputs(&self.path) {
             Ok((schema, tls)) => {
                 log::set_max_level(schema.log_level);
 
@@ -203,6 +178,32 @@ impl ConfigLoader {
             }
         }
     }
+}
+
+/// The one configuration loading pipeline shared by startup ([`ConfigLoader::new`]) and every
+/// reload ([`ConfigLoader::reload`]): read the configuration file at `path`, strip its comments,
+/// deserialize the schema strictly, and resolve the TLS material into a Rustls server
+/// configuration.
+///
+/// # Errors
+///
+/// Returns the loading failure: an unreadable input, a schema the deserializer rejects, or TLS
+/// material that does not resolve.
+fn read_inputs(path: &Path) -> Result<(Config, Option<Arc<ServerConfig>>), Error> {
+    let configuration = fs::read(path).map_err(|source| Error::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    let schema: Config = serde_json::from_reader(StripComments::new(configuration.as_slice()))
+        .map_err(|source| Error::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    let tls = self::tls::resolve(&schema)?;
+
+    Ok((schema, tls))
 }
 
 /// Records one filesystem event's arrival: the event's shape is ignored — every event re-arms the

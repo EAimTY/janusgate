@@ -14,13 +14,15 @@ import type {
     StartProviderOauthResponse,
 } from "/src/management-api/generated/v0";
 import { ErrorCode } from "/src/management-api/generated/v0";
-import { PROVIDER_PRESETS } from "/src/management-api/presets";
+import { PROVIDER_PRESETS, type ProviderPreset } from "/src/management-api/presets";
 import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { ProviderNewScreen } from "/src/screens/provider-new-screen";
 import {
     buttonWithText,
+    cardWithTitle,
     labeledInput,
+    paragraphWithText,
     settle,
     stubManagementApi,
     switchWithLabel,
@@ -177,6 +179,17 @@ function baseAddressedPayload(): DefinitionPayload {
             ],
         },
     };
+}
+
+/** The catalog preset of the given id, failing the test when absent. */
+function presetById(id: string): ProviderPreset {
+    const preset = PROVIDER_PRESETS.find((candidate) => candidate.id === id);
+
+    if (preset === undefined) {
+        throw new Error(`no preset ${id} in the catalog`);
+    }
+
+    return preset;
 }
 
 describe("ProviderNewScreen creation", () => {
@@ -443,6 +456,11 @@ describe("ProviderNewScreen creation", () => {
         await settle();
 
         expect(document.body.textContent).toContain("the listing refused");
+
+        // A boot failure is the page-top notice's alone: it renders above
+        // the cards, never inside one — the one channel the flow's own
+        // failures may not reach.
+        expect(paragraphWithText("the listing refused").closest("section")).toBeNull();
     });
 
     it("states a failed definitions listing where the screen's failures stand", async () => {
@@ -496,6 +514,209 @@ describe("ProviderNewScreen creation", () => {
         );
         expect(document.body.textContent).not.toContain("Choose a provider name");
         expect(sent).toHaveLength(0);
+    });
+});
+
+describe("ProviderNewScreen preset switching over an edited recipe", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("switches presets instantly while the definition stands untouched", async () => {
+        disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
+        await settle();
+
+        buttonWithText("Claude Code").click();
+        await settle();
+
+        // The common path gains nothing: no confirm stands, and the editor
+        // already holds the picked preset's payload.
+        expect(document.body.textContent).not.toContain(
+            "Your edited connection recipe will be replaced.",
+        );
+        expect(definitionEditor().value).toBe(
+            JSON.stringify(presetById("claude-code").payload, null, 2),
+        );
+    });
+
+    it("arms the pick behind a confirm in the Preset card while the definition stands edited", async () => {
+        disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
+        await settle();
+
+        typeInto(definitionEditor(), "{}");
+        await settle();
+        buttonWithText("Claude Code").click();
+        await settle();
+
+        // The confirm states itself in the Preset card, naming the preset
+        // the click armed — and applies nothing: the edited JSON stands
+        // exactly as it was, its error still named, the selected preset's
+        // provenance still the previous one.
+        const presetCard = cardWithTitle("Preset");
+        expect(presetCard.textContent).toContain("Switch to Claude Code (Claude account)?");
+        expect(presetCard.textContent).toContain("Your edited connection recipe will be replaced.");
+        expect(definitionEditor().value).toBe("{}");
+        expect(document.body.textContent).toContain("definition.format is not an upstream format");
+        expect(document.body.textContent).toContain(
+            "platform.openai.com/docs/api-reference/responses",
+        );
+
+        // A later click moves the arming onto the new target: one confirm,
+        // always naming the latest click's switch.
+        buttonWithText("Devin").click();
+        await settle();
+        expect(cardWithTitle("Preset").textContent).toContain("Switch to Devin (Devin account)?");
+        expect(definitionEditor().value).toBe("{}");
+    });
+
+    it("performs the switch only on the confirm and keeps the edit on cancel", async () => {
+        disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
+        await settle();
+
+        typeInto(definitionEditor(), "{}");
+        await settle();
+        buttonWithText("Claude Code").click();
+        await settle();
+
+        // Cancel dissolves the arming and keeps the edit whole — and the
+        // next pick arms again rather than switching.
+        buttonWithText("Keep my edit").click();
+        await settle();
+        expect(document.body.textContent).not.toContain("Switch to Claude Code (Claude account)?");
+        expect(definitionEditor().value).toBe("{}");
+
+        buttonWithText("Claude Code").click();
+        await settle();
+        buttonWithText("Switch preset").click();
+        await settle();
+
+        // The confirm is the only switch: the edit gives way to the armed
+        // preset's payload, the provenance line names what now stands, and
+        // the switched-in preset is untouched — the next pick is instant.
+        expect(document.body.textContent).not.toContain(
+            "Your edited connection recipe will be replaced.",
+        );
+        expect(definitionEditor().value).toBe(
+            JSON.stringify(presetById("claude-code").payload, null, 2),
+        );
+        expect(document.body.textContent).toContain(
+            "verify against the live CLI before production use",
+        );
+        buttonWithText("Devin").click();
+        await settle();
+        expect(document.body.textContent).not.toContain("Switch to Devin (Devin account)?");
+        expect(definitionEditor().value).toBe(JSON.stringify(presetById("devin").payload, null, 2));
+    });
+
+    it("dissolves the arming when the definition is reset to the preset", async () => {
+        disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
+        await settle();
+
+        typeInto(definitionEditor(), "{}");
+        await settle();
+        buttonWithText("Claude Code").click();
+        await settle();
+        expect(document.body.textContent).toContain("Switch to Claude Code (Claude account)?");
+
+        buttonWithText("Reset to preset").click();
+        await settle();
+
+        // With the edit gone there is nothing the arming guards; the confirm
+        // goes with it instead of awaiting a switch the page would perform
+        // instantly anyway.
+        expect(document.body.textContent).not.toContain("Switch to Claude Code (Claude account)?");
+    });
+
+    it("dissolves the arming when an OAuth flow goes live", async () => {
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={oauthScreenApi({
+                            start: () => authorizationFlow,
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // Claude Code picked over the pristine form; then a still-valid edit
+        // touches the recipe, so the Kimi pick arms.
+        buttonWithText("Claude Code").click();
+        await settle();
+        typeInto(definitionEditor(), `${definitionEditor().value}\n`);
+        await settle();
+        buttonWithText("Kimi Code").click();
+        await settle();
+        expect(document.body.textContent).toContain("Switch to Kimi Code (Kimi account)?");
+
+        buttonWithText("Start the authorization").click();
+        await settle();
+        expect(document.body.textContent).toContain("Authorization URL");
+
+        // The live flow locks the picker, so the arming could await nothing:
+        // it dissolves with the lock instead of resurfacing stale once the
+        // flow ends.
+        expect(document.body.textContent).not.toContain("Switch to Kimi Code (Kimi account)?");
+        expect(buttonWithText("Kimi Code").disabled).toBe(true);
+    });
+
+    it("holds the confirm's buttons while a creation call is in flight", async () => {
+        // A holder rather than a bare `let`: the assignment happens inside
+        // the stubbed start below, and a bare variable would be narrowed to
+        // `null` at the release site.
+        const release: {
+            current: ((response: StartProviderOauthResponse) => void) | null;
+        } = {
+            current: null,
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={oauthScreenApi({
+                            start: () =>
+                                new Promise<StartProviderOauthResponse>((resolve) => {
+                                    release.current = resolve;
+                                }),
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The recipe edited (still valid) arms the Kimi pick, and the flow
+        // start goes out over it — held in flight, so the page's shared busy
+        // guard stands.
+        buttonWithText("Claude Code").click();
+        await settle();
+        typeInto(definitionEditor(), `${definitionEditor().value}\n`);
+        await settle();
+        buttonWithText("Kimi Code").click();
+        await settle();
+        expect(document.body.textContent).toContain("Switch to Kimi Code (Kimi account)?");
+        buttonWithText("Start the authorization").click();
+        await settle();
+        expect(document.body.textContent).toContain("Starting…");
+
+        // The confirm row is the switch's only path, so it stands behind the
+        // same busy guard as the picker, the editor, and the submit buttons:
+        // neither its action nor its way back may run `applyPreset` under a
+        // begin that is already ensuring the edited recipe.
+        expect(buttonWithText("Switch preset").disabled).toBe(true);
+        expect(buttonWithText("Keep my edit").disabled).toBe(true);
+
+        release.current?.(authorizationFlow);
+        await settle();
     });
 });
 
@@ -778,7 +999,11 @@ function goneFailure(message: string): ManagementApiError {
  * answers empty, and any route the flow never touches rejects loudly.
  */
 function oauthScreenApi(options: {
-    readonly start?: (request: StartProviderOauthRequest) => StartProviderOauthResponse;
+    readonly start?:
+        | ((
+              request: StartProviderOauthRequest,
+          ) => StartProviderOauthResponse | Promise<StartProviderOauthResponse>)
+        | undefined;
     readonly complete?: (
         request: CompleteProviderOauthRequest,
     ) => Promise<CompleteProviderOauthResponse>;
@@ -893,6 +1118,58 @@ describe("ProviderNewScreen OAuth flow", () => {
         // The refused exchange consumed the state (gateway README §7.2), so
         // the dead flow is gone and a fresh one can start.
         expect(buttonWithText("Start the authorization").disabled).toBe(false);
+
+        // The exchange is a step of the flow the Connect card runs, so its
+        // failure states itself on that card, beside the start button the
+        // reset uncovered — not on the page-top notice above the preset
+        // cards.
+        expect(
+            cardWithTitle("Connect the account").contains(
+                paragraphWithText("The upstream refused the exchange."),
+            ),
+        ).toBe(true);
+    });
+
+    it("states an unreadable paste inline beside the paste field and keeps the flow live", async () => {
+        vi.useFakeTimers();
+        // No completion route is provided: an unreadable paste must be
+        // refused in the browser, so the gateway is never asked.
+        mountScreen(
+            oauthScreenApi({
+                start: () => authorizationFlow,
+            }),
+        );
+        await flush();
+        buttonWithText("Claude Code").click();
+        await flush();
+        buttonWithText("Start the authorization").click();
+        await flush();
+        typeInto(labeledInput("Callback URL or authorization code"), "not a code at all");
+        await flush();
+        buttonWithText("Connect the account").click();
+        await flush();
+
+        // The unreadable paste is the field's own mistake, so its diagnosis
+        // is the field's own inline error: the lazy treatment every field's
+        // error gets, rendered in the field's frame inside the flow card —
+        // neither the page-top notice nor a card notice.
+        const diagnosis = paragraphWithText(
+            "That paste holds neither a bare code nor a URL with a code",
+        );
+        const connectCard = cardWithTitle("Connect the account");
+        expect(connectCard.contains(diagnosis)).toBe(true);
+        expect(
+            diagnosis.parentElement?.contains(labeledInput("Callback URL or authorization code")),
+        ).toBe(true);
+
+        // The flow survives the mistaken paste: the step still stands, and
+        // the lazy gate retracts the diagnosis once the paste reads.
+        expect(document.body.textContent).toContain("Authorization URL");
+        typeInto(labeledInput("Callback URL or authorization code"), "the-code");
+        await flush();
+        expect(document.body.textContent).not.toContain(
+            "That paste holds neither a bare code nor a URL with a code",
+        );
     });
 
     it("lands on the new provider's page when the completion succeeds", async () => {
@@ -1105,8 +1382,13 @@ describe("ProviderNewScreen OAuth flow", () => {
 
         // Devin's recipe references the base from the picker on: the same
         // pristine contract with nothing typed — the hint, not an error —
-        // and the gateway's refusal stays locked behind the held start.
+        // and the gateway's refusal stays locked behind the held start. The
+        // pick lands over the edited recipe, so it runs through the Preset
+        // card's confirm before the Devin payload stands.
         buttonWithText("Devin").click();
+        await flush();
+        expect(document.body.textContent).toContain("Switch to Devin (Devin account)?");
+        buttonWithText("Switch preset").click();
         await flush();
         expect(document.body.textContent).toContain(
             "Required. The upstream address this definition's requests evaluate against",
@@ -1230,6 +1512,12 @@ describe("ProviderNewScreen OAuth flow", () => {
         expect(document.body.textContent).toContain("no such flow");
         expect(buttonWithText("Start the authorization").disabled).toBe(false);
 
+        // The poll is the flow card's own step, so its diagnosis states
+        // itself on that card — never on the page-top notice.
+        expect(
+            cardWithTitle("Connect the account").contains(paragraphWithText("no such flow")),
+        ).toBe(true);
+
         const callsAfterFailure = completeCalls;
         await vi.advanceTimersByTimeAsync(appConfig.oauthDevicePollIntervalMs * 3);
         expect(completeCalls).toBe(callsAfterFailure);
@@ -1271,6 +1559,12 @@ describe("ProviderNewScreen OAuth flow", () => {
         expect(document.body.textContent).toContain("upstream wobbled");
         expect(document.body.textContent).not.toContain("Start a fresh flow");
         expect(document.body.textContent).toContain("Verification code");
+
+        // The riding-out failure states itself on the flow card, beside the
+        // polling step it belongs to.
+        expect(
+            cardWithTitle("Connect the account").contains(paragraphWithText("upstream wobbled")),
+        ).toBe(true);
 
         await vi.advanceTimersByTimeAsync(appConfig.oauthDevicePollIntervalMs);
         expect(completeCalls).toBe(2);
