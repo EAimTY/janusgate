@@ -385,29 +385,25 @@ pub(crate) fn validate_slot_value(name: &str, value: &str) -> Result<(), Error> 
     }
 }
 
-/// Validates one stored base-URL value: the shared routing-safe text contract of
-/// [`validate_slot_value`] plus the non-empty `http://` or `https://` scheme every instance
-/// `base_url` requires (README §7) — the same composition the management boundary enforces on
-/// operator-supplied URLs.
+/// Validates one stored base-URL value against the shared base-URL contract of
+/// [`crate::routing_text::is_base_url`] (README §7): routing-safe text plus the non-empty
+/// `http://` or `https://` scheme — the same composition the management boundary enforces on
+/// operator-supplied URLs. Shared by every OAuth response fold — the provisioning fold here and
+/// the exchange and refresh-grant folds in [`crate::provider::oauth::flow`] — so one contract
+/// guards one storage boundary.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Unavailable`] when the value falls outside the routing-safe text contract
-/// or carries no `http(s)://` scheme with anything after it.
+/// Returns [`Error::Unavailable`] when the value falls outside the shared base-URL contract.
 pub(crate) fn validate_base_url_value(value: &str) -> Result<(), Error> {
-    validate_slot_value("base_url", value)?;
-
-    let after_scheme = value
-        .strip_prefix("http://")
-        .or_else(|| value.strip_prefix("https://"));
-
-    match after_scheme {
-        Some(rest) if !rest.is_empty() => Ok(()),
-
-        _ => Err(Error::Unavailable {
-            detail: "the upstream reported a `base_url` value without an `http(s)://` scheme"
+    if crate::routing_text::is_base_url(value) {
+        Ok(())
+    } else {
+        Err(Error::Unavailable {
+            detail: "the upstream reported a `base_url` value outside printable ASCII without \
+                     whitespace or without an `http(s)://` scheme"
                 .to_string(),
-        }),
+        })
     }
 }
 

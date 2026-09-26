@@ -194,7 +194,7 @@ async fn handle_create(
     }
 
     let Some(version) = NonZeroI64::new(request.provider_definition_version) else {
-        return Err(definition_version_invalid());
+        return Err(super::definition_version_invalid());
     };
 
     let Some(definition) = storage::provider_definitions::find_definition(
@@ -227,7 +227,7 @@ async fn handle_create(
     // A definition whose URLs reference the base requires the instance base URL: every dispatch
     // evaluates those references against the stored row (README §3, §7.1).
     if definition.payload.references_base() && request.base_url.is_none() {
-        return Err(base_url_required(&definition));
+        return Err(super::base_url_required(&definition));
     }
 
     // The pre-insert check renders a clean 409; the database's UNIQUE constraint is the
@@ -261,28 +261,6 @@ async fn handle_create(
     info!("created provider `{}`", request.name);
 
     Ok(provider)
-}
-
-/// Builds the rejection for a non-positive `provider_definition_version` — the one spelling both
-/// provider write paths share.
-fn definition_version_invalid() -> Error {
-    Error::InvalidDefinition(crate::provider::definition::ValidationError::new(
-        "`provider_definition_version` must be a positive version number",
-    ))
-}
-
-/// Builds the 400 the provider writes render when the effective definition's URLs reference the
-/// base but no base URL is supplied (README §3, §7.1).
-fn base_url_required(definition: &crate::provider::ProviderDefinition) -> Error {
-    Error::Validation {
-        param: "base_url",
-        message: format!(
-            "`base_url` is required: provider definition `{}` version {} addresses its base \
-             URL, so the provider row must carry one",
-            definition.name,
-            definition.version.get(),
-        ),
-    }
 }
 
 /// Handles `POST /providers:update`.
@@ -352,7 +330,7 @@ async fn handle_update(
         (None, None) => None,
 
         _ => {
-            return Err(definition_version_invalid());
+            return Err(super::definition_version_invalid());
         }
     };
 
@@ -431,7 +409,7 @@ async fn handle_update(
         && definition.payload.references_base()
         && request.base_url.is_none()
     {
-        return Err(base_url_required(definition));
+        return Err(super::base_url_required(definition));
     }
 
     storage::providers::update_provider(

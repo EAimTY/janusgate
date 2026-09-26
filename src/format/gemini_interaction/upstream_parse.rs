@@ -24,8 +24,8 @@ pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
     is_started: bool,
 
-    /// Whether a finish was already emitted; a clean end-of-stream without one degrades to
-    /// [`IrFinishReason::Stop`] in the finish hook.
+    /// Whether a finish was already emitted; `finish` degrades a stream that ends without one
+    /// through [`format::degrade_finish_once`].
     is_finished: bool,
 
     /// Count of tool calls opened in this response; the stable per-call index source.
@@ -921,15 +921,7 @@ impl UpstreamEventParser for UpstreamParser {
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {
-        // A clean end-of-stream that carried no finish degrades to `Stop`, so streamed and
-        // aggregated renderings of the same stream agree.
-        if !self.is_finished {
-            self.is_finished = true;
-
-            return vec![IrEvent::Finish(IrFinishReason::Stop)];
-        }
-
-        Vec::new()
+        format::degrade_finish_once(&mut self.is_finished)
     }
 }
 

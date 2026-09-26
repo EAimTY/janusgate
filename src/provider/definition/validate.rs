@@ -550,6 +550,31 @@ impl DefinitionPayload {
 
                 if let Some(response) = response {
                     validate_response_descriptor(response, "token refresh")?;
+
+                    // RFC 6749 §6: the refresh response carries the access token — REQUIRED —
+                    // and a declared mapping wholly replaces the exchange's default as the
+                    // renewal's fold input, so a declared mapping with no `access_token`
+                    // target folds every renewal into a tokenless outcome: the lease is
+                    // acquired and cleared first, and the renewal then dies on the missing
+                    // token — a permanent failure on every dispatch of the provider past its
+                    // first expiry. An absent mapping defaults to the exchange's response, so the
+                    // defaulted case leans on the access-token rule above — a rule that also
+                    // admits a provisioning-supplied token, which leaves a provisioning-only-
+                    // token definition under grant mode as the known residual edge. That edge
+                    // wedges loudly at the runtime guard, and closing it — requiring the
+                    // effective (declared-or-defaulted) mapping to carry the token row — is
+                    // deliberately left for a focused follow-up.
+                    if !response
+                        .fields
+                        .iter()
+                        .any(|field| matches!(field.target, Target::AccessToken))
+                    {
+                        return Err(ValidationError::new(
+                            "token refresh response must map the `access_token` target: a \
+                             declared mapping replaces the exchange's default, and RFC 6749 §6 \
+                             makes the access token REQUIRED in a refresh response",
+                        ));
+                    }
                 }
 
                 validate_terminal_codes(terminal_codes, "token refresh")?;
@@ -3120,6 +3145,82 @@ mod tests {
                     ]
                 }
             ]);
+        });
+
+        outcome.unwrap();
+    }
+
+    /// RFC 6749 §6: the refresh response carries the access token — REQUIRED — and a declared
+    /// refresh response mapping wholly replaces the exchange's default as the renewal's fold
+    /// input, so a declared mapping with no `access_token` target folds every renewal into a
+    /// tokenless outcome: the lease is acquired and cleared first, and the renewal then dies
+    /// on the missing token. The Antigravity fixture's mapping is defaulted, so the rejection
+    /// case declares the exchange's mapping with its `access_token` row removed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tokenless declared refresh mapping validates.
+    #[test]
+    fn requires_a_declared_refresh_response_to_map_the_access_token() {
+        // The exchange's mapping minus its `access_token` row, declared wholesale: the
+        // default it replaces is the only token source the renewal would have folded.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            let declared: Vec<_> = payload["credential"]["exchange"]["response"]["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|field| field["target"]["type"] != "access_token")
+                .cloned()
+                .collect();
+
+            payload["credential"]["refresh"]["response"] = json!({
+              "encoding": "json",
+              "fields": declared
+            });
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("access_token"), "{error}");
+        assert!(error.contains("RFC 6749"), "{error}");
+
+        // The untouched fixture's mapping stays defaulted, so the exchange's own required
+        // `access_token` row is the renewal's fold input.
+        mutate_and_validate(good_antigravity_json(), |_| {}).unwrap();
+    }
+
+    /// A declared refresh response mapping that carries the `access_token` target satisfies
+    /// the rule — the declared rows are the renewal's whole fold input — whether it declares
+    /// the exchange's mapping wholesale or a narrower one whose token row is the only target.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a token-carrying declared refresh mapping is rejected.
+    #[test]
+    fn accepts_a_declared_refresh_response_mapping_the_access_token() {
+        // The exchange's full mapping, declared: the token row rides along.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            let response = payload["credential"]["exchange"]["response"].clone();
+
+            payload["credential"]["refresh"]["response"] = response;
+        });
+
+        outcome.unwrap();
+
+        // A narrower declared mapping whose `access_token` row is the only target.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["refresh"]["response"] = json!({
+              "encoding": "json",
+              "fields": [
+                {
+                  "path": ["access_token"],
+                  "target": {
+                    "type": "access_token"
+                  },
+                  "required": true
+                }
+              ]
+            });
         });
 
         outcome.unwrap();

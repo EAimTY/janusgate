@@ -255,6 +255,26 @@ pub(crate) trait UpstreamEventParser {
     }
 }
 
+/// Emits the degraded finish of a clean upstream end-of-stream that carried no finish of its own —
+/// no finish reason (Chat Completions) or no terminal event (Responses/Gemini): the missing finish
+/// degrades to [`IrFinishReason::Stop`], so streamed and aggregated renderings of the same stream
+/// agree (README §6.3).
+///
+/// The finished flag lives in each parser, which sets it on every path that emits a real finish —
+/// a streamed terminal event, a stop reason, or the complete-body parse — and whose
+/// [`UpstreamEventParser::finish`] hook delegates here: the first call on an unfinished parser
+/// marks the flag and returns the single [`IrEvent::Finish`] carrying [`IrFinishReason::Stop`], and
+/// a parser that already finished emits nothing.
+pub(in crate::format) fn degrade_finish_once(is_finished: &mut bool) -> Vec<IrEvent> {
+    if *is_finished {
+        return Vec::new();
+    }
+
+    *is_finished = true;
+
+    vec![IrEvent::Finish(IrFinishReason::Stop)]
+}
+
 /// Client-side SSE rendering contract implemented by every outward codec.
 pub(crate) trait ClientSseRenderer {
     /// Renders one IR event into zero or more SSE frames.

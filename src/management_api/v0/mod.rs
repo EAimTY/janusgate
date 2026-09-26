@@ -364,24 +364,59 @@ fn validate_routing_token(param: &'static str, value: &str) -> Result<(), Error>
     Ok(())
 }
 
-/// Validates a static-key provider's base URL (README §7): a non-empty `http://` or `https://`
-/// URL of printable ASCII without whitespace.
+/// Validates a static-key provider's base URL against the shared base-URL contract of
+/// [`crate::routing_text::is_base_url`] (README §7): routing-safe text plus the non-empty
+/// `http://` or `https://` scheme — the same composition the provisioning boundary enforces on
+/// upstream-reported URLs.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] when the value has no `http(s)` scheme, has nothing after it, or carries a
-/// character outside the allowed set.
+/// Returns [`Error::InvalidBaseUrl`] when the value falls outside the shared base-URL contract.
 fn validate_base_url(value: &str) -> Result<(), Error> {
-    let after_scheme = value
-        .strip_prefix("http://")
-        .or_else(|| value.strip_prefix("https://"));
-
-    match after_scheme {
-        Some(rest) if !rest.is_empty() && crate::routing_text::is_routing_safe_text(value) => {
-            Ok(())
-        }
-        _ => Err(Error::InvalidBaseUrl),
+    if crate::routing_text::is_base_url(value) {
+        Ok(())
+    } else {
+        Err(Error::InvalidBaseUrl)
     }
+}
+
+/// Builds the rejection for a non-positive `provider_definition_version` — the one spelling every
+/// path that resolves a definition reference shares: the provider write paths
+/// (`providers:create`, `providers:update`) and the OAuth flow paths (`oauth:start`, and
+/// `oauth:reauthorize` with an explicitly named target).
+fn definition_version_invalid() -> Error {
+    Error::InvalidDefinition(crate::provider::definition::ValidationError::new(
+        "`provider_definition_version` must be a positive version number",
+    ))
+}
+
+/// Builds the shared base-URL 400 template (README §3, §7.1): the effective definition's URLs
+/// reference the base, and `tail` states why the calling path cannot satisfy the requirement —
+/// a request-supplied base means the provider row must still carry one, a row-stored base means
+/// the row carries none.
+fn base_url_validation(definition: &crate::provider::ProviderDefinition, tail: &str) -> Error {
+    Error::Validation {
+        param: "base_url",
+        message: format!(
+            "`base_url` is required: provider definition `{}` version {} addresses its base \
+             URL, {tail}",
+            definition.name,
+            definition.version.get(),
+        ),
+    }
+}
+
+/// Builds the 400 the provider writes and `oauth:start` render when the effective definition's
+/// URLs reference the base but the request supplies no base URL: the written row must carry one.
+fn base_url_required(definition: &crate::provider::ProviderDefinition) -> Error {
+    base_url_validation(definition, "so the provider row must carry one")
+}
+
+/// Builds the 400 `oauth:reauthorize` renders when the effective target's URLs reference the base
+/// but the provider row stores no base URL: the flow runs from the stored base, and a
+/// reauthorization request cannot supply a replacement.
+fn stored_base_url_required(definition: &crate::provider::ProviderDefinition) -> Error {
+    base_url_validation(definition, "but the provider row carries none")
 }
 
 /// The success body of a route whose operation produces no fact the caller cannot know (README §7.0

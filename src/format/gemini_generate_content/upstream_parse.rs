@@ -26,9 +26,8 @@ pub(crate) struct UpstreamParser {
     /// the plain `STOP` reason, so the delivered calls decide the canonical tool-call finish.
     is_call_delivered: bool,
 
-    /// Whether a finish reason was already emitted; a clean end-of-stream without one degrades to
-    /// [`IrFinishReason::Stop`] in the parser's finish hook, matching the aggregated rendering
-    /// default.
+    /// Whether a finish was already emitted; `finish` degrades a stream that ends without one
+    /// through [`format::degrade_finish_once`].
     is_finished: bool,
 }
 
@@ -349,16 +348,7 @@ impl UpstreamEventParser for UpstreamParser {
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {
-        // An upstream may close its stream cleanly after streaming content without ever sending a
-        // `finishReason`; the missing finish reason degrades to `Stop` so the streamed client sees
-        // the same terminal finish reason as the aggregated rendering of the same stream.
-        if !self.is_finished {
-            self.is_finished = true;
-
-            return vec![IrEvent::Finish(IrFinishReason::Stop)];
-        }
-
-        Vec::new()
+        format::degrade_finish_once(&mut self.is_finished)
     }
 }
 

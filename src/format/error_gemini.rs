@@ -122,22 +122,8 @@ pub(crate) fn render(error: &Error) -> (StatusCode, GeminiErrorEnvelope) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::at;
     use serde_json::{Value, json};
-
-    /// Reads the JSON value at a pointer path of a rendered body.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the path is absent: a missing path is the failure under test.
-    fn at<'a>(value: &'a Value, pointer: &str) -> &'a Value {
-        #[expect(
-            clippy::expect_used,
-            reason = "rendered bodies are under test; a missing path is the failure"
-        )]
-        value
-            .pointer(pointer)
-            .expect("the rendered body carries the expected path")
-    }
 
     /// Serializes one rendered error body for inspection.
     ///

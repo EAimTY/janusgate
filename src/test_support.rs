@@ -1,7 +1,8 @@
-//! Test support: seeding helpers shared by the integration-style tests across the crate.
+//! Test support: seeding and JSON-pointer read helpers shared by the tests across the crate.
 //!
-//! Every helper panics when its fixed fixture fails to parse, validate, or insert — a test
-//! bug by construction, so the panic is the failure report.
+//! Every helper panics when its fixed fixture fails to parse, validate, or insert, or when a
+//! JSON pointer read misses its path — a test bug by construction, so the panic is the failure
+//! report.
 
 #![expect(
     clippy::panic,
@@ -14,7 +15,7 @@ use crate::{
     provider::{Provider, ProviderDefinition, StoredCredentials, definition::DefinitionPayload},
     storage,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{num::NonZero, path::PathBuf, time::Duration};
 
 /// File guard cleaning up the temporary SQLite test database on drop.
@@ -33,6 +34,21 @@ impl Drop for TempDirGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// Reads the JSON value at a pointer path of a rendered body.
+///
+/// # Panics
+///
+/// Panics if the path is absent: a missing path is the failure under test.
+pub(crate) fn at<'a>(value: &'a Value, pointer: &str) -> &'a Value {
+    #[expect(
+        clippy::expect_used,
+        reason = "rendered bodies are under test; a missing path is the failure"
+    )]
+    value
+        .pointer(pointer)
+        .expect("the rendered body carries the expected path")
 }
 
 /// Creates an initialized temporary SQLite test database.

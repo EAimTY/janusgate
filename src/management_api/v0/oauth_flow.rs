@@ -280,9 +280,7 @@ async fn oauth_definition(
     version: i64,
 ) -> Result<crate::provider::ProviderDefinition, Error> {
     let Some(version) = NonZeroI64::new(version) else {
-        return Err(invalid_definition(
-            "`provider_definition_version` must be a positive version number",
-        ));
+        return Err(super::definition_version_invalid());
     };
 
     let Some(definition) =
@@ -348,15 +346,7 @@ async fn handle_start(
     // it for the exchange and provisioning, and the created provider's every dispatch evaluates
     // those references against it (README §3, §7.1).
     if definition.payload.references_base() && request.base_url.is_none() {
-        return Err(Error::Validation {
-            param: "base_url",
-            message: format!(
-                "`base_url` is required: provider definition `{}` version {} addresses its \
-                 base URL, so the provider row must carry one",
-                definition.name,
-                definition.version.get(),
-            ),
-        });
+        return Err(super::base_url_required(&definition));
     }
 
     // The pre-insert check renders a clean 409 before any upstream round-trip; the database's
@@ -438,15 +428,7 @@ async fn handle_reauthorize_start(
     // explicit target, or the provider's own pair — whose URLs reference the base is satisfiable
     // only while the row carries one (README §3, §7.1).
     if definition.payload.references_base() && provider.base_url.is_none() {
-        return Err(Error::Validation {
-            param: "base_url",
-            message: format!(
-                "`base_url` is required: provider definition `{}` version {} addresses its \
-                 base URL, but the provider row carries none",
-                definition.name,
-                definition.version.get(),
-            ),
-        });
+        return Err(super::stored_base_url_required(&definition));
     }
 
     let slots = oauth::initialize_slots(&definition, provider.credentials.slots())?;

@@ -21,8 +21,8 @@ pub(crate) struct UpstreamParser {
     /// Whether [`IrEvent::MessageStart`] was emitted.
     is_started: bool,
 
-    /// Whether a finish reason was emitted; a clean end-of-stream without one degrades to
-    /// [`IrFinishReason::Stop`], so streamed and aggregated renderings agree.
+    /// Whether a finish reason was emitted; `finish` degrades a stream that ends without one
+    /// through [`crate::format::degrade_finish_once`].
     is_finished: bool,
 
     /// Input tokens reported by `message_start`, carried into the terminal usage report.
@@ -866,9 +866,9 @@ impl UpstreamEventParser for UpstreamParser {
         Ok(events)
     }
 
-    /// Ends a cleanly terminated stream: a missing finish degrades to [`IrFinishReason::Stop`],
-    /// and a usage-bearing stream that never published a report still publishes its columns
-    /// with a zero output observation.
+    /// Ends a cleanly terminated stream: a usage-bearing stream that never published a report
+    /// still publishes its columns with a zero output observation, and a stream that ends without
+    /// a finish degrades through [`crate::format::degrade_finish_once`].
     fn finish(&mut self) -> Vec<IrEvent> {
         let mut events = Vec::new();
 
@@ -881,11 +881,7 @@ impl UpstreamEventParser for UpstreamParser {
             events.push(self.usage_event(0));
         }
 
-        if !self.is_finished {
-            self.is_finished = true;
-
-            events.push(IrEvent::Finish(IrFinishReason::Stop));
-        }
+        events.extend(crate::format::degrade_finish_once(&mut self.is_finished));
 
         events
     }

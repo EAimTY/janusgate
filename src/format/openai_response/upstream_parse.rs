@@ -40,9 +40,8 @@ pub(crate) struct UpstreamParser {
     /// done item must still deliver that completion.
     completed_call_indices: Vec<usize>,
 
-    /// Whether a finish reason was already emitted; a clean end-of-stream without one degrades to
-    /// [`IrFinishReason::Stop`] in the parser's finish hook, matching the aggregated rendering
-    /// default.
+    /// Whether a finish was already emitted; `finish` degrades a stream that ends without one
+    /// through [`format::degrade_finish_once`].
     is_finished: bool,
 }
 
@@ -737,17 +736,7 @@ impl UpstreamEventParser for UpstreamParser {
     }
 
     fn finish(&mut self) -> Vec<IrEvent> {
-        // An upstream may close its stream cleanly after streaming deltas without ever sending the
-        // terminal `response.completed` or `response.incomplete` event; the missing finish reason
-        // degrades to `Stop` so the streamed client sees the same terminal finish as the aggregated
-        // rendering of the same stream.
-        if !self.is_finished {
-            self.is_finished = true;
-
-            return vec![IrEvent::Finish(IrFinishReason::Stop)];
-        }
-
-        Vec::new()
+        format::degrade_finish_once(&mut self.is_finished)
     }
 }
 
