@@ -68,6 +68,7 @@ function mountControls(fields: UsageFilterFields): {
                     apiKeys={[
                         apiKeyRow,
                     ]}
+                    statusError={null}
                     isDisabled={false}
                     onEdit={(edit) => {
                         edits.push(edit);

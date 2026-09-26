@@ -69,6 +69,82 @@ export type DefinitionPayloadResult =
       };
 
 /**
+ * Whether one string expression carries the `base` value part, directly or
+ * through a `coalesce` — the one compound part, whose arguments the walk
+ * descends into (README §5.1).
+ */
+function expressionReferencesBase(expression: StringExpr): boolean {
+    return expression.some(
+        (part) =>
+            part.type === "base" ||
+            (part.type === "coalesce" && expressionReferencesBase(part.parts)),
+    );
+}
+
+/** Whether one control request's URL carries the `base` value part. */
+function requestReferencesBase(request: ControlRequest): boolean {
+    return expressionReferencesBase(request.url);
+}
+
+/** Whether an optional member is present and its expression carries the `base` value part. */
+function optionalUrlReferencesBase(url: StringExpr | null | undefined): boolean {
+    return url !== undefined && url !== null && expressionReferencesBase(url);
+}
+
+/**
+ * Whether any URL-bearing member of this payload references the instance
+ * base URL — the `base` value part (gateway README §3). The browser-side
+ * mirror of the gateway's `DefinitionPayload::references_base`, so a page
+ * asks for a base URL exactly when the gateway would reject the write or
+ * flow start naming this definition without one. The walk covers exactly
+ * the members whose evaluation environment carries the base URL: the
+ * inference and streaming URLs, the discovery request URL, the provisioning
+ * step and poll request URLs, and the OAuth credential's device-
+ * authorization, token-exchange, and refresh-grant request URLs — each
+ * directly or through a `coalesce`. Headers, query rows, and body leaves
+ * never count, and neither does the authorize URL: the write-time
+ * validation bars the base reference at the authorize-URL stage (gateway
+ * README §5.1), so that expression can never evaluate against a base URL.
+ */
+export function hasBaseReference(payload: DefinitionPayload): boolean {
+    if (expressionReferencesBase(payload.inference.url)) {
+        return true;
+    }
+
+    if (optionalUrlReferencesBase(payload.inference.stream_url)) {
+        return true;
+    }
+
+    if (payload.credential.type === "oauth") {
+        const { grant, exchange, refresh } = payload.credential;
+
+        if (grant.type === "device" && requestReferencesBase(grant.authorization.request)) {
+            return true;
+        }
+
+        if (requestReferencesBase(exchange.request)) {
+            return true;
+        }
+
+        if (refresh.type === "grant" && requestReferencesBase(refresh.request)) {
+            return true;
+        }
+    }
+
+    if (
+        (payload.provisioning ?? []).some(
+            (step) =>
+                requestReferencesBase(step.request) ||
+                optionalUrlReferencesBase(step.poll?.request.url),
+        )
+    ) {
+        return true;
+    }
+
+    return optionalUrlReferencesBase(payload.discovery?.request.url);
+}
+
+/**
  * Validates one authored definition payload (README §5): the JSON a preset
  * emitted or an operator edited. The gateway parses descriptors with
  * `deny_unknown_fields` and answers a broken payload with errno 1, so this

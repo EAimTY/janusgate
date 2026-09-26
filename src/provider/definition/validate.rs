@@ -440,6 +440,37 @@ impl DefinitionPayload {
             ));
         }
 
+        // RFC 6749 §4.1.3: the token request presents the pasted authorization code — `code`
+        // is REQUIRED — and an authorization-code flow is consumed by its first completion
+        // attempt even when the exchange then fails (README §7.2), so an exchange request that
+        // never references the part burns every flow on that attempt: the same required-carry
+        // shape the verifier and redirect-URI rules above enforce.
+        if let Grant::AuthorizationCode { .. } = grant
+            && !request_references(&exchange.request, &ValueExpr::AuthorizationCode)
+        {
+            return Err(ValidationError::new(
+                "authorization-code grant requires the token exchange request to reference the \
+                 `authorization_code` value part: RFC 6749 §4.1.3 makes the authorization code \
+                 REQUIRED in the token request, and the flow is consumed by its first exchange \
+                 attempt even when that attempt fails",
+            ));
+        }
+
+        // RFC 8628 §3.4: the token request carries the device code — `device_code` is REQUIRED
+        // — and under a device grant this same request doubles as the polling request, so an
+        // exchange request that never references the part would ride non-terminal rejections
+        // until the flow's own expiry and never exchange: the same required-carry shape the
+        // authorization-code rules above enforce.
+        if let Grant::Device { .. } = grant
+            && !request_references(&exchange.request, &ValueExpr::DeviceCode)
+        {
+            return Err(ValidationError::new(
+                "device grant requires the token exchange request to reference the \
+                 `device_code` value part: RFC 8628 §3.4 makes the device code REQUIRED in the \
+                 token request this grant re-posts as its polling request",
+            ));
+        }
+
         validate_response_descriptor(&exchange.response, "token exchange")?;
         validate_terminal_codes(&exchange.terminal_codes, "token exchange")?;
 
@@ -2759,11 +2790,12 @@ mod tests {
 
         outcome.unwrap();
 
-        // Inside a coalesce's arguments.
+        // Inside a coalesce's arguments — over the `client_secret` field, whose value is free
+        // to change: the `code` field stays intact under the code-reference rule.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["grant"]["pkce"] = serde_json::json!("s256");
 
-            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][1];
+            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][3];
 
             field["value"] = serde_json::json!([
                 {
@@ -2833,20 +2865,163 @@ mod tests {
 
         outcome.unwrap();
 
-        // Inside a coalesce's arguments.
+        // Inside a coalesce's arguments — over the `client_secret` field, whose value is free
+        // to change: the `code` field stays intact under the code-reference rule.
         let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
             payload["credential"]["exchange"]["request"]["body"]["fields"]
                 .as_array_mut()
                 .unwrap()
                 .remove(4);
 
-            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][1];
+            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][3];
 
             field["value"] = serde_json::json!([
                 {
                     "type": "coalesce",
                     "parts": [
                         { "type": "redirect_uri" },
+                        { "type": "literal", "value": "fallback" }
+                    ]
+                }
+            ]);
+        });
+
+        outcome.unwrap();
+    }
+
+    /// RFC 6749 §4.1.3: the token request presents the pasted authorization code — `code` is
+    /// REQUIRED — so an authorization-code exchange that never references the
+    /// `authorization_code` value part is rejected at the write boundary, symmetric to the
+    /// `s256` verifier and redirect-URI rules, instead of burning every flow on its first
+    /// exchange attempt (README §7.2). The untouched fixture references the code as a form
+    /// field, so every researched authorization-code shape stays valid.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the non-conforming exchange validates.
+    #[test]
+    fn requires_the_authorization_code_exchange_to_reference_the_code() {
+        // The Antigravity shape's exchange presents the code as its second form field;
+        // dropping it leaves the token endpoint with no code to present.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(1);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("authorization_code"), "{error}");
+        assert!(error.contains("RFC 6749"), "{error}");
+
+        // The untouched fixture references the code as a form field.
+        mutate_and_validate(good_antigravity_json(), |_| {}).unwrap();
+    }
+
+    /// The code rule reads the whole exchange request, so the value part satisfies it wherever
+    /// the stage's expressions live: a query row, a coalesce argument, or a JSON body leaf
+    /// (the Claude Code and Devin catalog fixtures above carry the latter).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a code-carrying exchange is rejected.
+    #[test]
+    fn accepts_an_authorization_code_exchange_referencing_the_code() {
+        // As a query row on the exchange request.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(1);
+
+            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
+                { "name": "code", "value": [{ "type": "authorization_code" }] }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // Inside a coalesce's arguments.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][1];
+
+            field["value"] = serde_json::json!([
+                {
+                    "type": "coalesce",
+                    "parts": [
+                        { "type": "authorization_code" },
+                        { "type": "literal", "value": "fallback" }
+                    ]
+                }
+            ]);
+        });
+
+        outcome.unwrap();
+    }
+
+    /// RFC 8628 §3.4: the token request carries the flow's device code — `device_code` is
+    /// REQUIRED — and under a device grant this same request doubles as the polling request,
+    /// so a device exchange that never references the `device_code` value part is rejected at
+    /// the write boundary, symmetric to the authorization-code rules, instead of riding
+    /// non-terminal rejections until the flow's own expiry (README §5.3, §7.2). The untouched
+    /// Copilot fixture references the code as a form field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the non-conforming exchange validates.
+    #[test]
+    fn requires_the_device_exchange_to_reference_the_device_code() {
+        // The Copilot shape's exchange presents the device code as its final form field;
+        // dropping it leaves every poll with no device code to present.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(2);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("device_code"), "{error}");
+        assert!(error.contains("RFC 8628"), "{error}");
+
+        // The untouched fixture references the device code as a form field.
+        mutate_and_validate(good_copilot_json(), |_| {}).unwrap();
+    }
+
+    /// The device-code rule reads the whole exchange request, so the value part satisfies it
+    /// wherever the stage's expressions live: the fixture's own form field, a query row, or a
+    /// coalesce argument.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a device-code-carrying exchange is rejected.
+    #[test]
+    fn accepts_a_device_exchange_referencing_the_device_code() {
+        // As a query row on the exchange request.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(2);
+
+            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
+                { "name": "device_code", "value": [{ "type": "device_code" }] }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // Inside a coalesce's arguments.
+        let outcome = mutate_and_validate(good_copilot_json(), |payload| {
+            let field = &mut payload["credential"]["exchange"]["request"]["body"]["fields"][2];
+
+            field["value"] = serde_json::json!([
+                {
+                    "type": "coalesce",
+                    "parts": [
+                        { "type": "device_code" },
                         { "type": "literal", "value": "fallback" }
                     ]
                 }

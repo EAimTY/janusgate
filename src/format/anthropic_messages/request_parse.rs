@@ -69,6 +69,30 @@ struct InboundRequest {
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     thinking_summaries: Option<IgnoredAny>,
+
+    /// Request metadata (`metadata.user_id` foremost), accepted and ignored: the gateway is
+    /// stateless and never persists request metadata (README §6.6).
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    metadata: Option<IgnoredAny>,
+
+    /// Capacity-tier selection, accepted and ignored: a stateless gateway has no tier to honor
+    /// downstream (README §6.6).
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    service_tier: Option<IgnoredAny>,
+
+    /// Container reuse identifier, accepted and ignored: the gateway is stateless and never
+    /// chains containers (README §6.6).
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    container: Option<IgnoredAny>,
+
+    /// Top-level prompt-caching breakpoint, accepted and ignored: the stateless gateway renders
+    /// no caching markers downstream (README §6.6).
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    cache_control: Option<IgnoredAny>,
 }
 
 /// One inbound conversation turn, tagged by `role`.
@@ -98,12 +122,24 @@ enum InboundUserBlock {
     Text {
         /// The text content.
         text: String,
+
+        /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
+        /// caching markers downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        cache_control: Option<IgnoredAny>,
     },
 
     /// Image segment.
     Image {
         /// Inline data or remote URL source.
         source: InboundImageSource,
+
+        /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
+        /// caching markers downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        cache_control: Option<IgnoredAny>,
     },
 
     /// Tool result segment.
@@ -117,6 +153,12 @@ enum InboundUserBlock {
         /// Whether the tool reported an error.
         #[serde(default)]
         is_error: Option<bool>,
+
+        /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
+        /// caching markers downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        cache_control: Option<IgnoredAny>,
     },
 }
 
@@ -129,6 +171,12 @@ enum InboundAssistantBlock {
     Text {
         /// The text content.
         text: String,
+
+        /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
+        /// caching markers downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        cache_control: Option<IgnoredAny>,
     },
 
     /// Tool invocation segment.
@@ -141,6 +189,12 @@ enum InboundAssistantBlock {
 
         /// JSON arguments object; the fragment's shape is the caller's to define.
         input: Value,
+
+        /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
+        /// caching markers downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        cache_control: Option<IgnoredAny>,
     },
 
     /// Reasoning segment with its upstream signature.
@@ -179,6 +233,12 @@ struct InboundTextBlock {
 
     /// The instruction text.
     text: String,
+
+    /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no caching
+    /// markers downstream (README §6.6).
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    cache_control: Option<IgnoredAny>,
 }
 
 /// Image source of an inbound image block.
@@ -210,6 +270,12 @@ enum InboundToolResultPart {
     Text {
         /// The text content.
         text: String,
+
+        /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no
+        /// caching markers downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        cache_control: Option<IgnoredAny>,
     },
 
     /// Image segment, known-but-unsupported in tool results.
@@ -221,13 +287,18 @@ enum InboundToolResultPart {
     },
 }
 
-/// Advertised function tool: function tools only — a server-side tool shape fails on its unknown
-/// members.
+/// Advertised function tool: function tools only — a server-side tool discriminator is a 400
+/// naming `type`, and a server-side tool shape fails on its unknown members.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InboundTool {
     /// Function name the model calls.
     name: String,
+
+    /// Tool discriminator: `"custom"` marks a function tool; any other value names a
+    /// server-side tool and is a 400 naming `type` (README §6.6).
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
 
     /// Human-readable description.
     #[serde(default)]
@@ -235,6 +306,18 @@ struct InboundTool {
 
     /// JSON Schema of the accepted arguments.
     input_schema: Value,
+
+    /// Prompt-caching breakpoint, accepted and ignored: the stateless gateway renders no caching
+    /// markers downstream (README §6.6).
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    cache_control: Option<IgnoredAny>,
+
+    /// Schema-validation guarantee, accepted and ignored: the gateway exposes no such control
+    /// downstream (README §6.6).
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    strict: Option<bool>,
 }
 
 /// Tool choice restriction: `disable_parallel_tool_use` is accepted and ignored.
@@ -391,6 +474,15 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
 
     if let Some(tools_in) = &request.tools {
         for tool in tools_in {
+            // A non-`custom` discriminator names a server-side tool: function tools only, and
+            // the rejection names `type` (README §6.6).
+            if let Some(other) = tool.kind.as_deref().filter(|kind| *kind != "custom") {
+                return Err(InvalidRequest::field(
+                    "type",
+                    format!("Unsupported tool type `{other}`; function tools only"),
+                ));
+            }
+
             if !tool.input_schema.is_object() {
                 return Err(InvalidRequest::field(
                     "input_schema",
@@ -506,9 +598,9 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
 /// Returns [`InvalidRequest`] for image content inside tool results.
 fn user_block_to_part(block: &InboundUserBlock) -> Result<IrPart, InvalidRequest> {
     match block {
-        InboundUserBlock::Text { text } => Ok(IrPart::Text { text: text.clone() }),
+        InboundUserBlock::Text { text, .. } => Ok(IrPart::Text { text: text.clone() }),
 
-        InboundUserBlock::Image { source } => Ok(IrPart::Image {
+        InboundUserBlock::Image { source, .. } => Ok(IrPart::Image {
             image: match source {
                 InboundImageSource::Base64 { media_type, data } => IrImage::Inline {
                     mime_type: media_type.clone(),
@@ -523,6 +615,7 @@ fn user_block_to_part(block: &InboundUserBlock) -> Result<IrPart, InvalidRequest
             tool_use_id,
             content,
             is_error,
+            ..
         } => {
             let text = match content {
                 StringOrArray::Text(text) => text.clone(),
@@ -531,7 +624,7 @@ fn user_block_to_part(block: &InboundUserBlock) -> Result<IrPart, InvalidRequest
                     let texts = parts
                         .iter()
                         .map(|part| match part {
-                            InboundToolResultPart::Text { text } => Ok(text.as_str()),
+                            InboundToolResultPart::Text { text, .. } => Ok(text.as_str()),
 
                             InboundToolResultPart::Image { .. } => Err(InvalidRequest::field(
                                 "content",
@@ -570,9 +663,11 @@ fn user_block_to_part(block: &InboundUserBlock) -> Result<IrPart, InvalidRequest
 /// JSON object.
 fn assistant_block_to_part(block: &InboundAssistantBlock) -> Result<IrPart, InvalidRequest> {
     match block {
-        InboundAssistantBlock::Text { text } => Ok(IrPart::Text { text: text.clone() }),
+        InboundAssistantBlock::Text { text, .. } => Ok(IrPart::Text { text: text.clone() }),
 
-        InboundAssistantBlock::ToolUse { id, name, input } => {
+        InboundAssistantBlock::ToolUse {
+            id, name, input, ..
+        } => {
             if !input.is_object() {
                 return Err(InvalidRequest::field(
                     "input",
@@ -887,11 +982,129 @@ mod tests {
         );
     }
 
+    /// Official envelope and caching controls parse to the same IR as their absence: `metadata`
+    /// (`user_id` foremost), `service_tier`, `container`, the top-level `cache_control`,
+    /// `cache_control` on tools and on text/image blocks in user/assistant/system positions and
+    /// on `tool_use`/`tool_result` blocks and `tool_result` text parts, and the tool `strict`
+    /// flag are accepted-and-ignored (README §6.6) and never enter the IR, and the official
+    /// `type: "custom"` tool discriminator parses like its absence.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either body fails to parse or the two IRs diverge.
+    #[test]
+    fn accepts_and_ignores_official_envelope_and_caching_controls() {
+        let plain = json!({
+            "model": "claude-test",
+            "max_tokens": 128,
+            "system": [{"type": "text", "text": "be terse"}],
+            "tools": [{
+                "name": "get_weather",
+                "description": "City weather",
+                "input_schema": {"type": "object"},
+            }],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "sky?"},
+                    {"type": "image", "source": {
+                        "type": "url",
+                        "url": "https://example.com/i.png",
+                    }},
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "sun"},
+                    {"type": "tool_use", "id": "call_1", "name": "get_weather",
+                     "input": {"city": "Paris"}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1",
+                     "content": [{"type": "text", "text": "sunny"}]},
+                ]},
+            ],
+        });
+
+        let decorated = json!({
+            "model": "claude-test",
+            "max_tokens": 128,
+            "metadata": {"user_id": "user_abc"},
+            "service_tier": "auto",
+            "container": {"id": "cntr_1", "skills": []},
+            "cache_control": {"type": "ephemeral"},
+            "system": [{"type": "text", "text": "be terse",
+                        "cache_control": {"type": "ephemeral"}}],
+            "tools": [{
+                "type": "custom",
+                "name": "get_weather",
+                "description": "City weather",
+                "input_schema": {"type": "object"},
+                "cache_control": {"type": "ephemeral"},
+                "strict": true,
+            }],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "sky?", "cache_control": {"type": "ephemeral"}},
+                    {"type": "image", "source": {
+                        "type": "url",
+                        "url": "https://example.com/i.png",
+                     }, "cache_control": {"type": "ephemeral"}},
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "sun", "cache_control": {"type": "ephemeral"}},
+                    {"type": "tool_use", "id": "call_1", "name": "get_weather",
+                     "input": {"city": "Paris"}, "cache_control": {"type": "ephemeral"}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1",
+                     "content": [{"type": "text", "text": "sunny",
+                                  "cache_control": {"type": "ephemeral"}}],
+                     "cache_control": {"type": "ephemeral"}},
+                ]},
+            ],
+        });
+
+        #[expect(clippy::expect_used, reason = "the plain body is constructed to parse")]
+        let plain =
+            parse_inbound_request(plain.to_string().as_bytes()).expect("the plain body parses");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the decorated body is constructed to parse"
+        )]
+        let decorated = parse_inbound_request(decorated.to_string().as_bytes())
+            .expect("the decorated body parses");
+
+        // The decoration carries no semantics, so both parses land on the same IR, byte for
+        // byte across every IR member.
+        assert_eq!(plain.ir.model, decorated.ir.model);
+        assert_eq!(plain.ir.instructions, decorated.ir.instructions);
+        assert_eq!(plain.ir.messages, decorated.ir.messages);
+        assert_eq!(plain.ir.tools, decorated.ir.tools);
+        assert_eq!(plain.ir.tool_choice, decorated.ir.tool_choice);
+        assert_eq!(plain.ir.temperature, decorated.ir.temperature);
+        assert_eq!(plain.ir.top_p, decorated.ir.top_p);
+        assert_eq!(plain.ir.max_output_tokens, decorated.ir.max_output_tokens);
+        assert_eq!(plain.ir.response_format, decorated.ir.response_format);
+        assert_eq!(plain.ir.reasoning_effort, decorated.ir.reasoning_effort);
+        assert_eq!(plain.is_streaming, decorated.is_streaming);
+
+        // Sanity: the shared system array and tool list parse to their expected IR values, so
+        // the parity above compares real content rather than two empty shells.
+        assert_eq!(plain.ir.instructions.as_deref(), Some("be terse"));
+        assert_eq!(
+            plain.ir.tools,
+            vec![IrTool {
+                name: "get_weather".to_string(),
+                description: Some("City weather".to_string()),
+                parameters: Some(json!({"type": "object"})),
+            }],
+        );
+    }
+
     /// Rejects unsupported and malformed inbound controls exactly where the contract pins them:
     /// `stop_sequences`, `budget_tokens` (naming the field), `document` blocks, images inside
-    /// tool results, a missing `max_tokens`, and unknown members — while `thinking: disabled`
-    /// parses into `none` and `enabled`/`adaptive` plus `display` controls are accepted and
-    /// ignored.
+    /// tool results, a missing `max_tokens`, a non-`custom` tool `type`, and unknown members —
+    /// while `thinking: disabled` parses into `none` and `enabled`/`adaptive` plus `display`
+    /// controls are accepted and ignored.
     ///
     /// # Panics
     ///
@@ -911,6 +1124,13 @@ mod tests {
                 json!({"stop_sequences": ["x"], "model": "m", "max_tokens": 16,
                        "messages": [{"role": "user", "content": "hi"}]}),
                 None,
+            ),
+            (
+                json!({"model": "m", "max_tokens": 16, "tools": [
+                    {"type": "web_search_20250305", "name": "ws",
+                     "input_schema": {"type": "object"}},
+                ], "messages": [{"role": "user", "content": "hi"}]}),
+                Some("type"),
             ),
             (
                 json!({"model": "m", "max_tokens": 16,

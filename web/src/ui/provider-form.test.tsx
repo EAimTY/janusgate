@@ -2,7 +2,7 @@ import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
 import { modelPrefixError } from "/src/management-api/identifiers";
 import { CompatibleConnectionFields, ProviderIdentityFields } from "/src/ui/provider-form";
-import { settle } from "../screens/screen-test-support";
+import { labeledInput, settle } from "../screens/screen-test-support";
 
 const disposes: Array<() => void> = [];
 
@@ -29,25 +29,6 @@ function mountFields(): void {
             document.body,
         ),
     );
-}
-
-/** The input the given field label names, through the label's `for` pairing. */
-function inputWithLabel(label: string): HTMLInputElement {
-    const owner = Array.from(document.querySelectorAll("label")).find(
-        (candidate) => candidate.textContent === label,
-    );
-
-    if (owner === undefined) {
-        throw new Error(`No field labelled ${label}`);
-    }
-
-    const control = document.getElementById(owner.htmlFor);
-
-    if (!(control instanceof HTMLInputElement)) {
-        throw new Error(`No input labelled ${label}`);
-    }
-
-    return control;
 }
 
 /** The checkbox the given label text wraps. */
@@ -124,11 +105,11 @@ describe("CompatibleConnectionFields upstream key reveal", () => {
     it("masks the upstream key and pairs it with an unchecked reveal toggle", () => {
         mountFields();
 
-        const keyInput = inputWithLabel("API key");
+        const keyInput = labeledInput("API key");
 
         expect(keyInput.type).toBe("password");
         // The address beside it is never masked.
-        expect(inputWithLabel("Upstream base URL").type).toBe("url");
+        expect(labeledInput("Upstream base URL").type).toBe("url");
         expect(checkboxWithLabel("Show the API key while typing").checked).toBe(false);
     });
 
@@ -136,7 +117,7 @@ describe("CompatibleConnectionFields upstream key reveal", () => {
         mountFields();
 
         const toggle = checkboxWithLabel("Show the API key while typing");
-        const keyInput = inputWithLabel("API key");
+        const keyInput = labeledInput("API key");
 
         toggle.click();
         await settle();

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ModelsScreen } from "/src/screens/models-screen";
-import { settle, stubManagementApi } from "./screen-test-support";
+import { settle, stubManagementApi, typeInto } from "./screen-test-support";
 
 /**
  * A provider whose name shares nothing with its model's ids, so a search
@@ -57,18 +57,12 @@ function screenApi(options: {
     });
 }
 
-/** Types into the models search field the way a browser delivers keystrokes. */
-function typeIntoSearch(value: string): void {
+/** The models search field, under its fixed element id. */
+function searchInput(): HTMLInputElement {
     const input = document.getElementById("models-search");
 
     if (input instanceof HTMLInputElement) {
-        input.value = value;
-        input.dispatchEvent(
-            new Event("input", {
-                bubbles: true,
-            }),
-        );
-        return;
+        return input;
     }
 
     throw new Error("No models search input");
@@ -200,13 +194,13 @@ describe("ModelsScreen search", () => {
         mount();
         await settle();
 
-        typeIntoSearch("mix");
+        typeInto(searchInput(), "mix");
         await settle();
 
         expect(bodyText()).toContain("llama3-70b");
         expect(bodyText()).not.toContain("No models match");
 
-        typeIntoSearch("zzz");
+        typeInto(searchInput(), "zzz");
         await settle();
 
         expect(bodyText()).toContain('No models match "zzz"');

@@ -1,25 +1,7 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-
-/**
- * Drains the pending promises and scheduled work of one card exchange.
- */
-async function settle(): Promise<void> {
-    for (let round = 0; round < 10; round += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
-}
-
-function buttonWithText(text: string): HTMLButtonElement {
-    for (const candidate of document.querySelectorAll("button")) {
-        if (candidate.textContent?.includes(text) === true) {
-            return candidate as HTMLButtonElement;
-        }
-    }
-
-    throw new Error(`No button reading ${text}`);
-}
+import { buttonWithText, settle } from "../screens/screen-test-support";
 
 describe("ConfirmDeleteCard state machine", () => {
     const disposes: Array<() => void> = [];

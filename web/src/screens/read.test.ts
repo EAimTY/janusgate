@@ -407,7 +407,7 @@ describe("createScreenRead", () => {
         expect(read.notice()).toBeNull();
     });
 
-    it("keeps a kept-notice screen's first-read failure visible while a re-read runs", async () => {
+    it("keeps a kept-notice screen's first-read failure visible while a re-read runs, then clears it when the re-read lands", async () => {
         const state = manualLoad();
         const { read } = mountedRead({
             load: state.load,
@@ -420,12 +420,56 @@ describe("createScreenRead", () => {
         requestRefresh();
         await waitForCycles(state, 2);
 
-        // On an isNoticeKeptOnSuccess screen the first-read failure is also
-        // an action's reported outcome: it must stay stated while the
-        // re-read runs, never swapped for the skeleton.
+        // The standing failure holds the skeleton window closed through the
+        // re-read: the recovery runs under the failure it is recovering
+        // from, never stacking the skeleton over it.
         expect(read.isReading()).toBe(true);
         expect(read.isFirstRead()).toBe(false);
         expect(read.notice()).not.toBeNull();
+
+        // The re-read lands — the frame's Read-again recovery: the row takes
+        // over, and the failure's diagnosis, a read's own outcome, must not
+        // outlive the read that just succeeded, keep policy or not.
+        state.cycles[1]?.succeed();
+        await settle();
+
+        expect(read.hasRead()).toBe(true);
+        expect(read.notice()).toBeNull();
+    });
+
+    it("clears a kept-notice screen's failed refresh once a later read succeeds", async () => {
+        const state = manualLoad();
+        const { read } = mountedRead({
+            load: state.load,
+            isNoticeKeptOnSuccess: true,
+        });
+        await waitForCycles(state, 1);
+        state.cycles[0]?.succeed();
+        await settle();
+
+        read.showNotice({
+            tone: "ok",
+            title: "Saved.",
+        });
+
+        // A later refresh fails: its diagnosis replaces the action's
+        // outcome — a new failure replaces any notice.
+        requestRefresh();
+        await waitForCycles(state, 2);
+        state.cycles[1]?.fail();
+        await settle();
+        expect(read.notice()?.tone).toBe("bad");
+
+        // The next refresh succeeds: the failure diagnoses the cycle that
+        // just succeeded and is cleared — the keep policy never shields a
+        // read's own outcome over later successful reads.
+        requestRefresh();
+        await waitForCycles(state, 3);
+        state.cycles[2]?.succeed();
+        await settle();
+
+        expect(read.hasRead()).toBe(true);
+        expect(read.notice()).toBeNull();
     });
 
     it("renders a nested read's leaf diagnosis as the standing notice", async () => {

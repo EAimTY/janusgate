@@ -398,6 +398,103 @@ async fn provisioning_resolves_slots_previous_stages_placed() {
     mock.shutdown.send(()).ok();
 }
 
+/// The one-step provisioning sequence one expiry test runs: its response maps
+/// `expires_at_unix_seconds` from the `expires_at` member.
+///
+/// # Panics
+///
+/// Panics when the fixture fails to parse.
+fn expiry_step() -> Vec<crate::provider::definition::provisioning::ProvisioningStep> {
+    #[expect(clippy::unwrap_used, reason = "the fixture step always parses")]
+    serde_json::from_value(json!([
+        {
+            "request": {
+                "method": "POST",
+                "url": [{"type": "base"}, {"type": "literal", "value": "/token"}]
+            },
+            "response_encoding": "json",
+            "extract": [
+                {
+                    "path": ["expires_at"],
+                    "target": {"type": "expires_at_unix_seconds"},
+                    "shape": {"type": "integer"},
+                    "required": true
+                }
+            ]
+        }
+    ]))
+    .unwrap()
+}
+
+/// Pins the provisioning expiry contract (README §5.4, §7.2): an `expires_at_unix_seconds`
+/// extraction is consulted expiry evidence, so a zero, negative, or past timestamp is a
+/// malformed provisioning response that fails the step — never a stored always-elapsed expiry
+/// that would send every dispatch back into the refresh lease — while a future timestamp folds
+/// into the working state in database-clock microseconds.
+///
+/// # Panics
+///
+/// Panics when a fixture lands on the wrong side of its check.
+#[tokio::test]
+async fn provisioning_rejects_a_non_future_expires_at_as_malformed() {
+    let steps = expiry_step();
+
+    let constants = provisioning::ProvisioningEnv {
+        secret: Some("test-secret"),
+        client_id: "test-client-id",
+        client_secret: None,
+    };
+
+    for seconds in [0, -1, crate::unix_time::unix_now() - 3_600] {
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({ "expires_at": seconds })).unwrap(),
+        ])
+        .await;
+
+        let client = crate::http_client::control_plane();
+
+        let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
+
+        let outcome = provisioning::run_steps(&client, &steps, &constants, &mut state).await;
+
+        let Err(error) = outcome else {
+            panic!("an expiry of {seconds} seconds is always elapsed and must fail the step");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("expiry must be in the future, got {seconds}")),
+            "the rejection names the futurity rule with the offending value: {error}"
+        );
+
+        mock.shutdown.send(()).ok();
+    }
+
+    // A future timestamp folds into the working state, scaled to database-clock microseconds.
+    let seconds = crate::unix_time::unix_now() + 21_600;
+
+    let mock = MockUpstream::start(vec![
+        serde_json::to_string(&json!({ "expires_at": seconds })).unwrap(),
+    ])
+    .await;
+
+    let client = crate::http_client::control_plane();
+
+    let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
+
+    provisioning::run_steps(&client, &steps, &constants, &mut state)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        state.expires_at,
+        Some(seconds * crate::unix_time::MICROS_PER_SEC)
+    );
+
+    mock.shutdown.send(()).ok();
+}
+
 /// The environment one discovery test carries.
 fn discovery_env(base: &str) -> ValueEnv<'static> {
     let leaked: &'static str = Box::leak(base.to_string().into_boxed_str());
@@ -597,8 +694,8 @@ async fn device_authorization_rejects_non_positive_durations() {
 /// extracts the access token from one upstream call. `is_with_provisioning` false strips the
 /// sequence, leaving the exchange alone — which maps no access token here.
 ///
-/// The exchange references the `redirect_uri` value part because the write boundary requires
-/// that of every authorization-code grant (RFC 6749 §4.1.3).
+/// The exchange references the `authorization_code` and `redirect_uri` value parts because the
+/// write boundary requires both of every authorization-code grant (RFC 6749 §4.1.3).
 ///
 /// # Panics
 ///
@@ -624,6 +721,7 @@ fn completion_payload(is_with_provisioning: bool) -> serde_json::Value {
                     "method": "POST",
                     "url": [{"type": "literal", "value": "https://example.test/token"}],
                     "body": {"kind": "form", "fields": [
+                        {"name": "code", "value": [{"type": "authorization_code"}]},
                         {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
                     ]}
                 },
@@ -1186,6 +1284,67 @@ async fn completion_folds_the_exchange_base_url_into_the_working_base() {
     let base_url = completed_base_url(&client, &provisioned, &flow).await;
 
     assert_eq!(base_url.as_deref(), Some("https://provisioned.example"));
+
+    mock.shutdown.send(()).ok();
+}
+
+/// Pins the completion pipeline's expiry precedence (README §5.4, §7.2): a provisioning-extracted
+/// `expires_at_unix_seconds` supersedes the response's token data — the exchange's reported
+/// `expires_in` is never consulted when the extraction supplies an absolute expiry.
+///
+/// # Panics
+///
+/// Panics when the fixture fails to parse or the pipeline diverges from the precedence.
+#[tokio::test]
+async fn completion_prefers_the_provisioned_expiry_over_the_response_expiry() {
+    let seconds = crate::unix_time::unix_now() + 21_600;
+
+    let mock = MockUpstream::start(vec![
+        serde_json::to_string(&json!({ "expires_at": seconds })).unwrap(),
+    ])
+    .await;
+
+    let mut payload = completion_payload(true);
+
+    // The provisioning step extracts the absolute expiry instead of the access token.
+    *payload.get_mut("provisioning").unwrap().get_mut(0).unwrap() = json!({
+        "request": {
+            "method": "POST",
+            "url": [{"type": "base"}, {"type": "literal", "value": "/token"}]
+        },
+        "response_encoding": "json",
+        "extract": [
+            {
+                "path": ["expires_at"],
+                "target": {"type": "expires_at_unix_seconds"},
+                "shape": {"type": "integer"},
+                "required": true
+            }
+        ]
+    });
+
+    let definition = completion_definition(payload);
+
+    let flow = completion_flow(mock.base());
+
+    let client = crate::http_client::control_plane();
+
+    // The exchange response's token data reports a one-hour lifetime.
+    let outcome = oauth::ExchangeOutcome {
+        access_token: Some("exchange-token".to_string()),
+        expires_in_seconds: Some(3_600),
+        ..oauth::ExchangeOutcome::default()
+    };
+
+    let product = oauth::complete_exchange(&client, &definition, outcome, &flow)
+        .await
+        .unwrap();
+
+    let StoredCredentials::OAuth { expires_at, .. } = product.credentials else {
+        panic!("an OAuth completion produces OAuth credentials");
+    };
+
+    assert_eq!(expires_at, Some(seconds * crate::unix_time::MICROS_PER_SEC));
 
     mock.shutdown.send(()).ok();
 }

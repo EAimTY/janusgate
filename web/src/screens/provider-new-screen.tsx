@@ -3,6 +3,7 @@ import { createEffect, createMemo, createSignal, Match, Show, Switch } from "sol
 import type { ManagementApi } from "/src/management-api/client";
 import {
     type DefinitionPayloadResult,
+    hasBaseReference,
     validateDefinitionPayload,
 } from "/src/management-api/definition-payload";
 import type { DefinitionResponse } from "/src/management-api/generated/v0";
@@ -32,6 +33,7 @@ import {
     ProviderIdentityFields,
     ProviderPresetPicker,
 } from "/src/ui/provider-form";
+import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
 import { createOauthFlow } from "./oauth-flow";
 import { type ScreenNotice, screenFailureNotice } from "./read";
@@ -82,15 +84,22 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const [isDefinitionTouched, setIsDefinitionTouched] = createSignal(false);
 
     const pickPreset = (next: string): void => {
-        setPresetId(next);
+        // The preset comes from the picker's argument, not from re-reading
+        // `presetId()` — the setter's value is not immediately readable back
+        // in every Solid dev runtime, and the editor's prefill must be the
+        // selected preset's payload, never the previous selection's.
+        const nextPreset =
+            PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? PROVIDER_PRESETS[0];
+
+        setPresetId(nextPreset.id);
         setFailure(null);
         oauth.reset();
 
         setIsDefinitionTouched(false);
-        setDefinitionJson(JSON.stringify(preset().payload, null, 2));
+        setDefinitionJson(JSON.stringify(nextPreset.payload, null, 2));
 
         if (!isNameTouched()) {
-            setName(suggestProviderName(preset().suggestedName, takenNames()));
+            setName(suggestProviderName(nextPreset.suggestedName, takenNames()));
         }
     };
 
@@ -209,11 +218,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     const trimmedBaseUrl = (): string => baseUrl().trim();
 
-    const needsBaseUrl = (): boolean => preset().needsBaseUrl;
-
     /** Inline error for the base URL, shown where it was typed and only once
-     * it was typed: a pristine form states the requirement through the submit
-     * gate, never as alert-red from first paint. */
+     * it was typed: a pristine form states the requirement through the
+     * field's quiet hint, never as alert-red from first paint. */
     const baseUrlError = (): string | null => {
         if (!hasBaseUrlInput()) {
             return null;
@@ -260,6 +267,20 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const definitionError = (): string | null => {
         const parsed = parsedDefinition();
         return "error" in parsed ? parsed.error : null;
+    };
+
+    /**
+     * The base-URL neediness the definition under edit dictates, derived from
+     * the memoized payload's own URL expressions — the browser-side mirror of
+     * the gateway's base-URL requirement (gateway README §7.1 rejects the
+     * write or flow start naming a base-addressed definition without one),
+     * never a catalog fact. An edit that references the base opens the field
+     * and closes the gate; a parse-broken edit has no payload to ask about,
+     * and its submit is held by the definition error alone.
+     */
+    const needsBaseUrl = (): boolean => {
+        const parsed = parsedDefinition();
+        return "payload" in parsed && hasBaseReference(parsed.payload);
     };
 
     /**
@@ -336,8 +357,16 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
     };
 
-    /** An OAuth start or completion is submittable with a valid definition and a routable prefix. */
-    const canComplete = (): boolean => prefixError() === null && definitionError() === null;
+    /**
+     * An OAuth start or completion is submittable with a valid definition, a
+     * routable prefix, and — when the definition addresses the base — a valid
+     * base URL: exactly the static path's gate, so the gateway's 400 naming
+     * `base_url` never has a chance to leave the browser.
+     */
+    const canComplete = (): boolean =>
+        definitionError() === null &&
+        prefixError() === null &&
+        (!needsBaseUrl() || isBaseUrl(trimmedBaseUrl()));
 
     const inputName = (value: string): void => {
         setIsNameTouched(true);
@@ -653,6 +682,27 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             }
                         >
                             <div class="mt-4">
+                                <Show when={needsBaseUrl()}>
+                                    {/* The edited recipe addresses the base,
+                                        so the flow start needs the URL it
+                                        stores — the static path's field, the
+                                        requirement stated quietly from first
+                                        paint and the error only once typed. */}
+                                    <div class="mb-4 max-w-2xl">
+                                        <TextField
+                                            label="Upstream base URL"
+                                            type="url"
+                                            value={baseUrl()}
+                                            onInput={inputBaseUrl}
+                                            placeholder="https://upstream.example.com/v1"
+                                            isDisabled={isBusy()}
+                                            error={baseUrlError()}
+                                            hint={requiredHint(
+                                                "The upstream address this definition's requests evaluate against — the gateway refuses a flow start without one.",
+                                            )}
+                                        />
+                                    </div>
+                                </Show>
                                 <Button
                                     tone="primary"
                                     isDisabled={!canComplete()}

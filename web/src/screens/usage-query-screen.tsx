@@ -17,6 +17,7 @@ import { UsageFilterControls } from "/src/ui/usage-filter-controls";
 import {
     buildUsageFilter,
     EMPTY_USAGE_FILTER_FIELDS,
+    statusError,
     type UsageFilterFields,
 } from "/src/usage-filter";
 import { isSkeletonWindowOpen, ReadCallFailure, readOne, type ScreenNotice } from "./read";
@@ -155,14 +156,19 @@ export function UsageQueryScreen(props: {
     const fromError = (): string | null => boundError("From", fromInput());
     const toError = (): string | null => boundError("To", toInput());
 
-    /** Whether both typed bounds parse — the query never runs while one does not. */
-    const isWindowValid = (): boolean => fromError() === null && toError() === null;
+    /**
+     * Whether every hand-typed value — both bounds and the status list —
+     * parses: the query never runs while one does not.
+     */
+    const isFormValid = (): boolean =>
+        fromError() === null && toError() === null && statusError(fields().statusInput) === null;
 
     /** Runs the aggregation query, answering whether it produced buckets. */
     const runQuery = async (signal: AbortSignal): Promise<boolean> => {
-        // A malformed bound is named at its field: running without it would
-        // silently widen the question, so the query waits until it is fixed.
-        if (!isWindowValid()) {
+        // A malformed typed value is named at its field: running without it
+        // would silently widen the question, so the query waits until it is
+        // fixed.
+        if (!isFormValid()) {
             return false;
         }
 
@@ -234,7 +240,7 @@ export function UsageQueryScreen(props: {
     const submit = async (event: SubmitEvent): Promise<void> => {
         event.preventDefault();
 
-        if (isQuerying() || !isWindowValid()) {
+        if (isQuerying() || !isFormValid()) {
             return;
         }
 
@@ -317,6 +323,7 @@ export function UsageQueryScreen(props: {
                             providers={entities().providers}
                             models={entities().models}
                             apiKeys={entities().apiKeys}
+                            statusError={statusError(fields().statusInput)}
                             isDisabled={isQuerying()}
                             onEdit={(edits) =>
                                 setFields((current) => ({
@@ -331,7 +338,7 @@ export function UsageQueryScreen(props: {
                             type="submit"
                             tone="primary"
                             isBusy={isQuerying()}
-                            isDisabled={!isWindowValid()}
+                            isDisabled={!isFormValid()}
                         >
                             {isQuerying() ? "Querying…" : "Run query"}
                         </Button>

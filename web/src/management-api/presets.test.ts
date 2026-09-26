@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { hasBaseReference } from "./definition-payload";
 import { PROVIDER_PRESETS, type ProviderPreset } from "./presets";
 
 /** Finds one catalog preset by id, failing the test when absent. */
@@ -123,7 +124,7 @@ describe("preset catalog", () => {
             // authored-payload validator walks it wholesale (validation.test.ts);
             // what stays here is the part no type can carry: non-empty
             // expressions and terminal-code lists, and the catalog's own
-            // credential and base-URL facts.
+            // credential fact.
             const payload = candidate.payload;
             expect(payload.inference.url.length, candidate.id).toBeGreaterThan(0);
 
@@ -138,24 +139,307 @@ describe("preset catalog", () => {
             } else {
                 expect(candidate.grant, candidate.id).toBeNull();
             }
-
-            // A definition whose URLs reference the base either needs the
-            // operator's base URL at creation, or mints the base itself from
-            // an exchange/provisioning extraction (the Copilot account
-            // endpoint). A definition with pinned endpoints needs neither.
-            const urlText = JSON.stringify(payload.inference.url);
-            const referencesBase = urlText.includes('"base"');
-            const mintsBase = JSON.stringify(payload).includes('"base_url"');
-
-            if (referencesBase) {
-                expect(
-                    candidate.needsBaseUrl || mintsBase,
-                    `${candidate.id} references the base but neither asks for it nor mints it`,
-                ).toBe(true);
-            } else {
-                expect(candidate.needsBaseUrl, `${candidate.id}`).toBe(false);
-            }
         }
+    });
+});
+
+/** The OAuth credential of a preset known to carry one, failing the test otherwise. */
+function oauthCredentialOf(entry: ProviderPreset): Extract<
+    ProviderPreset["payload"]["credential"],
+    {
+        type: "oauth";
+    }
+> {
+    const { credential } = entry.payload;
+    if (credential.type !== "oauth") {
+        throw new Error(`preset ${entry.id} carries no OAuth credential`);
+    }
+    return credential;
+}
+
+describe("derived base-URL neediness", () => {
+    const claude = findPreset("claude-code");
+    const claudeOAuth = oauthCredentialOf(claude);
+    const claudeGrant = claudeOAuth.grant;
+    const claudeRefresh = claudeOAuth.refresh;
+    const claudeDiscovery = claude.payload.discovery;
+
+    if (claudeGrant.type !== "authorization_code") {
+        throw new Error("the claude-code preset runs an authorization-code grant");
+    }
+
+    if (claudeDiscovery === undefined || claudeDiscovery === null) {
+        throw new Error("the claude-code preset discovers its model list");
+    }
+
+    if (claudeRefresh.type !== "grant") {
+        throw new Error("the claude-code preset renews with a refresh grant");
+    }
+
+    const kimi = findPreset("kimi-code");
+    const kimiOAuth = oauthCredentialOf(kimi);
+    const kimiGrant = kimiOAuth.grant;
+
+    if (kimiGrant.type !== "device") {
+        throw new Error("the kimi-code preset runs a device grant");
+    }
+
+    it("answers each preset's neediness from its payload's own URL expressions", () => {
+        // The generic static-key presets address any compatible endpoint
+        // through the base, and GitHub Copilot's and Devin's inference and
+        // discovery URLs reference it too — their exchanges and provisioning
+        // re-mint the base afterwards, but the gateway still rejects a
+        // creation or flow start naming such a definition without a base
+        // URL, so neediness follows the expressions, not the renewal story.
+        // The remaining presets pin their endpoints.
+        for (const id of [
+            "generic-openai-responses",
+            "generic-openai-chat-completions",
+            "generic-gemini-generate-content",
+            "generic-gemini-interactions",
+            "generic-anthropic-messages",
+            "github-copilot",
+            "devin",
+        ]) {
+            expect(hasBaseReference(findPreset(id).payload), id).toBe(true);
+        }
+
+        for (const id of [
+            "codex",
+            "antigravity",
+            "claude-code",
+            "kimi-code",
+            "zen-openai-chat-completions",
+            "zen-openai-responses",
+            "zen-anthropic-messages",
+            "zen-gemini-generate-content",
+        ]) {
+            expect(hasBaseReference(findPreset(id).payload), id).toBe(false);
+        }
+    });
+
+    it("counts only the URL-bearing members the gateway's requirement reads", () => {
+        // An inference URL referencing the base — directly or through the
+        // coalesce, the one compound part — addresses the instance.
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                inference: {
+                    ...claude.payload.inference,
+                    url: [
+                        {
+                            type: "base",
+                        },
+                    ],
+                },
+            }),
+        ).toBe(true);
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                inference: {
+                    ...claude.payload.inference,
+                    url: [
+                        {
+                            type: "coalesce",
+                            parts: [
+                                {
+                                    type: "base",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            }),
+        ).toBe(true);
+
+        // The authorize URL is the one excluded member — its stage bars the
+        // base reference at write time (gateway README §5.1) — and headers,
+        // query rows, and body leaves never evaluate against the base.
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                credential: {
+                    ...claudeOAuth,
+                    grant: {
+                        ...claudeGrant,
+                        authorize_url: [
+                            {
+                                type: "base",
+                            },
+                        ],
+                    },
+                },
+            }),
+        ).toBe(false);
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                inference: {
+                    ...claude.payload.inference,
+                    headers: [
+                        {
+                            name: "X-Endpoint",
+                            value: [
+                                {
+                                    type: "base",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            }),
+        ).toBe(false);
+    });
+
+    it("answers true for a base reference planted in each URL-bearing member the walk reads", () => {
+        // The catalog's own neediness can never fail on these arms: every
+        // preset that carries one of them pins its endpoints, so a broken arm
+        // would stay green behind the inference URL's verdict. Each arm here
+        // carries the base itself — the gateway fixture's own shape — and
+        // must answer true on its own.
+        const plantedUrl = (): Array<{
+            type: "base";
+        }> => [
+            {
+                type: "base",
+            },
+        ];
+
+        // The streaming URL shares the inference URL's evaluation
+        // environment.
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                inference: {
+                    ...claude.payload.inference,
+                    stream_url: plantedUrl(),
+                },
+            }),
+        ).toBe(true);
+
+        // The device-authorization request URL addresses the instance.
+        expect(
+            hasBaseReference({
+                ...kimi.payload,
+                credential: {
+                    ...kimiOAuth,
+                    grant: {
+                        ...kimiGrant,
+                        authorization: {
+                            ...kimiGrant.authorization,
+                            request: {
+                                ...kimiGrant.authorization.request,
+                                url: plantedUrl(),
+                            },
+                        },
+                    },
+                },
+            }),
+        ).toBe(true);
+
+        // The token-exchange request URL addresses the instance.
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                credential: {
+                    ...claudeOAuth,
+                    exchange: {
+                        ...claudeOAuth.exchange,
+                        request: {
+                            ...claudeOAuth.exchange.request,
+                            url: plantedUrl(),
+                        },
+                    },
+                },
+            }),
+        ).toBe(true);
+
+        // The refresh grant's request URL addresses the instance.
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                credential: {
+                    ...claudeOAuth,
+                    refresh: {
+                        ...claudeRefresh,
+                        request: {
+                            ...claudeRefresh.request,
+                            url: plantedUrl(),
+                        },
+                    },
+                },
+            }),
+        ).toBe(true);
+
+        // A provisioning step's request URL addresses the instance.
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                provisioning: [
+                    {
+                        request: {
+                            method: "POST",
+                            url: plantedUrl(),
+                        },
+                        response_encoding: "json",
+                    },
+                ],
+            }),
+        ).toBe(true);
+
+        // A provisioning poll's request URL addresses the instance too.
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                provisioning: [
+                    {
+                        request: {
+                            method: "GET",
+                            url: [
+                                {
+                                    type: "literal",
+                                    value: "https://upstream.example.com/provision",
+                                },
+                            ],
+                        },
+                        response_encoding: "json",
+                        poll: {
+                            request: {
+                                method: "GET",
+                                url: plantedUrl(),
+                            },
+                            response_encoding: "json",
+                            done_path: [
+                                "done",
+                            ],
+                            error_path: [
+                                "error",
+                            ],
+                            interval_ms: 1_000,
+                            budget_ms: 60_000,
+                        },
+                    },
+                ],
+            }),
+        ).toBe(true);
+
+        // The discovery request URL addresses the instance too. No catalog
+        // preset can witness this arm — its discovery URL references the
+        // base only where its inference URL does as well — so the plant in
+        // the endpoints-pinning claude payload is the arm's only coverage.
+        expect(
+            hasBaseReference({
+                ...claude.payload,
+                discovery: {
+                    ...claudeDiscovery,
+                    request: {
+                        ...claudeDiscovery.request,
+                        url: plantedUrl(),
+                    },
+                },
+            }),
+        ).toBe(true);
     });
 });
 

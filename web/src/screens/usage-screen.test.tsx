@@ -13,7 +13,13 @@ import { requestRefresh } from "/src/refresh-state";
 import { USAGE_PAGE_SIZE } from "/src/screens/usage-pagination";
 import { UsageScreen } from "/src/screens/usage-screen";
 import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filter";
-import { settle, stubManagementApi } from "./screen-test-support";
+import {
+    buttonWithText,
+    labeledInput,
+    settle,
+    stubManagementApi,
+    typeInto,
+} from "./screen-test-support";
 
 /**
  * One accounting row whose only distinguishing rendering is `<duration> ms`:
@@ -143,16 +149,6 @@ function answerLastPage(
             ...rows,
         ],
     });
-}
-
-function buttonWithText(text: string): HTMLButtonElement {
-    for (const candidate of document.querySelectorAll("button")) {
-        if (candidate.textContent?.includes(text) === true) {
-            return candidate as HTMLButtonElement;
-        }
-    }
-
-    throw new Error(`No button reading ${text}`);
 }
 
 function linkTo(href: string): HTMLAnchorElement {
@@ -493,6 +489,44 @@ describe("UsageScreen filtering", () => {
         await settle();
 
         expect(`${window.location.pathname}${window.location.search}`).toBe("/usage");
+    });
+
+    it("holds Apply filters while the typed status list does not parse", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder));
+        await settle();
+        answerLastPage(holder, page(1050, 1));
+        await settle();
+
+        // The glob habit "2xx" fills the field and would ride the route, but
+        // narrows to nothing on the wire — the unfiltered answer: the apply
+        // is held until the field parses whole.
+        typeInto(labeledInput("HTTP statuses"), "2xx");
+        await settle();
+
+        expect(bodyText()).toContain("HTTP statuses must be plain integers");
+        expect(buttonWithText("Apply filters").disabled).toBe(true);
+
+        buttonWithText("Apply filters").click();
+        await settle();
+        expect(`${window.location.pathname}${window.location.search}`).toBe("/usage");
+
+        // Clearing the mistake releases the apply, and the whole list rides
+        // the route.
+        typeInto(labeledInput("HTTP statuses"), "200,429");
+        await settle();
+
+        expect(buttonWithText("Apply filters").disabled).toBe(false);
+        buttonWithText("Apply filters").click();
+        await settle();
+
+        expect(`${window.location.pathname}${window.location.search}`).toBe(
+            "/usage?status=200,429",
+        );
     });
 });
 

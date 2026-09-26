@@ -232,17 +232,54 @@ export function hasUsageFilter(draft: UsageFilterDraft): boolean {
 }
 
 /**
+ * The integer one comma-separated status entry names, or none when it is not
+ * one: a plain-decimal spelling within the safe-integer range — the same
+ * bound [`routeRowId`] applies to the route's row identifiers, and the shape
+ * the gateway's i64 status column carries. Spellings `Number` would accept —
+ * `1e3`, `0x10`, `+200`, a 20-digit entry — narrow to nothing here.
+ */
+function statusEntryValue(entry: string): number | null {
+    if (!/^\d+$/.test(entry) || !Number.isSafeInteger(Number(entry))) {
+        return null;
+    }
+
+    return Number(entry);
+}
+
+/**
  * Parses the operator's comma-separated status list: blank entries drop out,
- * and entries that are not integers never form a filter value, so a half-typed
- * list narrows to the statuses it does name.
+ * and entries outside the plain-decimal safe-integer shape never form a
+ * filter value. The forms hold their actions while [`statusError`] stands, so
+ * a hand-typed list reaches here only whole; a route-carried one still
+ * narrows to the statuses it does name.
  */
 export function parseStatusList(input: string): number[] {
     return input
         .split(",")
         .map((entry) => entry.trim())
         .filter((entry) => entry !== "")
-        .map((entry) => Number(entry))
-        .filter((entry) => Number.isInteger(entry));
+        .map((entry) => statusEntryValue(entry))
+        .filter((entry): entry is number => entry !== null);
+}
+
+/**
+ * The inline error for the hand-typed status list: every comma-separated
+ * entry must name an integer — the exact shape [`parseStatusList`] turns
+ * into a filter value — so a typo or a glob like `2xx` names its mistake
+ * instead of silently dropping the status narrow. Blank stays valid: an
+ * empty field sets no status filter.
+ */
+export function statusError(input: string): string | null {
+    const entries = input
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry !== "");
+
+    if (entries.every((entry) => statusEntryValue(entry) !== null)) {
+        return null;
+    }
+
+    return "HTTP statuses must be plain integers, comma-separated — like 200, 429 — or blank for no status filter.";
 }
 
 /** One outcome choice as the values the filter lists; nothing chosen lists nothing. */

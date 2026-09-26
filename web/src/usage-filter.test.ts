@@ -5,8 +5,10 @@ import {
     EMPTY_USAGE_FILTER_DRAFT,
     EMPTY_USAGE_FILTER_FIELDS,
     hasUsageFilter,
+    parseStatusList,
     parseUsageFilterDraft,
     serializeUsageFilterDraft,
+    statusError,
     windowBoundMicros,
 } from "./usage-filter";
 
@@ -138,6 +140,43 @@ describe("buildUsageFilter", () => {
         ).toEqual({
             from: 5,
         });
+    });
+});
+
+describe("statusError", () => {
+    it("accepts blank and a list whose every entry parses as an integer", () => {
+        expect(statusError("")).toBeNull();
+        expect(statusError("200, 429")).toBeNull();
+        expect(statusError(" 200 ,429 ")).toBeNull();
+    });
+
+    it("names the field's contract when an entry is no integer", () => {
+        expect(statusError("2xx")).toBe(
+            "HTTP statuses must be plain integers, comma-separated — like 200, 429 — or blank for no status filter.",
+        );
+        expect(statusError("abc")).not.toBeNull();
+
+        // Spellings `Number` would accept are not plain integers: the gate
+        // and the parse narrow one shape, the one the gateway's i64 status
+        // column holds.
+        expect(statusError("1e3")).not.toBeNull();
+        expect(statusError("0x10")).not.toBeNull();
+        expect(statusError("+200")).not.toBeNull();
+        expect(statusError("99999999999999999999")).not.toBeNull();
+    });
+
+    it("holds a partially valid list — the filter fires only when the whole field parses", () => {
+        // The pure builder keeps its narrowing for the raw text a route can
+        // still carry; the gate is what refuses a form that parses in part.
+        expect(parseStatusList("200, 2xx")).toEqual([
+            200,
+        ]);
+        expect(statusError("200, 2xx")).not.toBeNull();
+
+        // An entry outside the plain-decimal shape narrows out the same way.
+        expect(parseStatusList("200, 1e3")).toEqual([
+            200,
+        ]);
     });
 });
 

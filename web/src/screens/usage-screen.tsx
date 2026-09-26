@@ -22,6 +22,7 @@ import {
     draftUsageFilter,
     EMPTY_USAGE_FILTER_DRAFT,
     hasUsageFilter,
+    statusError,
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
 } from "/src/usage-filter";
@@ -203,6 +204,13 @@ export function UsageScreen(props: {
      * filter is a request for the newest rows, not a no-op.
      */
     const applyFilter = (): void => {
+        // A malformed status list is named at its field: applying it would
+        // run the stream with the entries that parse — or with no status
+        // narrow at all — so the apply waits until the field parses whole.
+        if (statusError(draft().statusInput) !== null) {
+            return;
+        }
+
         const target = hrefs.usage(draft());
 
         if (target === `${window.location.pathname}${window.location.search}`) {
@@ -266,6 +274,7 @@ export function UsageScreen(props: {
                             providers={entities().providers}
                             models={entities().models}
                             apiKeys={entities().apiKeys}
+                            statusError={statusError(draft().statusInput)}
                             isDisabled={read.isReading()}
                             onEdit={(edits) =>
                                 setDraft((current) => ({
@@ -280,6 +289,7 @@ export function UsageScreen(props: {
                             type="submit"
                             tone="primary"
                             isBusy={read.isReading()}
+                            isDisabled={statusError(draft().statusInput) !== null}
                         >
                             {read.isReading() ? "Reading…" : "Apply filters"}
                         </Button>

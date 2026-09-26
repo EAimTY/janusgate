@@ -1,5 +1,6 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buttonWithText } from "../screens/screen-test-support";
 import { CopyButton, copyText } from "./clipboard";
 
 /**
@@ -116,16 +117,6 @@ describe("copyText", () => {
 });
 
 describe("CopyButton", () => {
-    function buttonWithText(text: string): HTMLButtonElement {
-        for (const candidate of document.querySelectorAll("button")) {
-            if (candidate.textContent?.includes(text) === true) {
-                return candidate as HTMLButtonElement;
-            }
-        }
-
-        throw new Error(`No button reading ${text}`);
-    }
-
     /** Mounts one CopyButton over a fixed value, naming `subject` when given. */
     function mountCopyButton(subject?: string): void {
         disposes.push(

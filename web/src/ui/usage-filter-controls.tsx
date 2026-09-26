@@ -70,6 +70,8 @@ export function UsageFilterControls(props: {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
     readonly apiKeys: ReadonlyArray<ApiKeyResponse>;
+    /** The inline error for the hand-typed status list, computed and gated on by the screen. */
+    readonly statusError: string | null | undefined;
     readonly isDisabled: boolean;
     readonly onEdit: (edits: Partial<UsageFilterFields>) => void;
 }): JSX.Element {
@@ -204,6 +206,7 @@ export function UsageFilterControls(props: {
                     })
                 }
                 isDisabled={props.isDisabled}
+                error={props.statusError}
                 hint="Comma-separated, e.g. 200, 429. Never-answered requests match no status."
             />
         </>

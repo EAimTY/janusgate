@@ -2,6 +2,7 @@ import { render } from "@solidjs/web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appConfig } from "/src/config";
 import type { ManagementApi } from "/src/management-api/client";
+import type { DefinitionPayload } from "/src/management-api/definition-payload";
 import { ManagementApiError } from "/src/management-api/errors";
 import type {
     CompleteProviderOauthRequest,
@@ -17,7 +18,14 @@ import { PROVIDER_PRESETS } from "/src/management-api/presets";
 import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { ProviderNewScreen } from "/src/screens/provider-new-screen";
-import { settle, stubManagementApi } from "./screen-test-support";
+import {
+    buttonWithText,
+    labeledInput,
+    settle,
+    stubManagementApi,
+    switchWithLabel,
+    typeInto,
+} from "./screen-test-support";
 
 /**
  * A management API standing in for the gateway: `providers:create` records
@@ -92,52 +100,6 @@ function screenApi(
     });
 }
 
-function labeledInput(label: string): HTMLInputElement {
-    for (const candidate of document.querySelectorAll("label")) {
-        const id = candidate.getAttribute("for");
-
-        if (candidate.textContent === label && id !== null) {
-            const input = document.getElementById(id);
-
-            if (input instanceof HTMLInputElement) {
-                return input;
-            }
-        }
-    }
-
-    throw new Error(`No input labeled ${label}`);
-}
-
-function buttonWithText(text: string): HTMLButtonElement {
-    for (const candidate of document.querySelectorAll("button")) {
-        if (candidate.textContent?.includes(text) === true) {
-            return candidate as HTMLButtonElement;
-        }
-    }
-
-    throw new Error(`No button reading ${text}`);
-}
-
-/** Types into an input or textarea the way a browser delivers an edit. */
-function typeInto(field: HTMLInputElement | HTMLTextAreaElement, value: string): void {
-    field.value = value;
-    field.dispatchEvent(
-        new Event("input", {
-            bubbles: true,
-        }),
-    );
-}
-
-function switchWithLabel(label: string): HTMLButtonElement {
-    const candidate = document.querySelector(`button[role='switch'][aria-label='${label}']`);
-
-    if (candidate === null) {
-        throw new Error(`No switch labeled ${label}`);
-    }
-
-    return candidate as HTMLButtonElement;
-}
-
 /** One stored definition row of the given name and version, payload included. */
 function storedDefinitionRow(name: string, version: number): DefinitionResponse {
     return {
@@ -186,6 +148,25 @@ function definitionEditor(): HTMLTextAreaElement {
     }
 
     return editor;
+}
+
+/** The Claude Code recipe edited to address its requests through the base. */
+function baseAddressedPayload(): DefinitionPayload {
+    const preset = PROVIDER_PRESETS.find((candidate) => candidate.id === "claude-code");
+    if (preset === undefined) {
+        throw new Error("the claude-code preset is in the catalog");
+    }
+    return {
+        ...preset.payload,
+        inference: {
+            ...preset.payload.inference,
+            url: [
+                {
+                    type: "base",
+                },
+            ],
+        },
+    };
 }
 
 describe("ProviderNewScreen creation", () => {
@@ -1018,6 +999,101 @@ describe("ProviderNewScreen OAuth flow", () => {
         typeInto(labeledInput("Model prefix"), "repaired-");
         await flush();
         expect(buttonWithText("Start the authorization").disabled).toBe(false);
+    });
+
+    it("holds the flow start while the recipe references the base with none entered", async () => {
+        vi.useFakeTimers();
+        const calls: string[] = [];
+        const starts: StartProviderOauthRequest[] = [];
+        mountScreen(
+            stubManagementApi({
+                listProviderDefinitions: () =>
+                    Promise.resolve({
+                        provider_definitions: [],
+                    }),
+                createProviderDefinition: () => {
+                    calls.push("definition");
+                    return Promise.resolve({
+                        provider_definition: storedDefinitionRow("claude-code", 1),
+                    });
+                },
+                listProviders: () =>
+                    Promise.resolve({
+                        providers: [],
+                    }),
+                startProviderOauth: (request) => {
+                    calls.push("start");
+                    starts.push(request);
+                    return Promise.resolve(authorizationFlow);
+                },
+            }),
+        );
+        await flush();
+        buttonWithText("Claude Code").click();
+        await flush();
+
+        // The untouched Claude Code recipe pins its endpoints: no base-URL
+        // field, and Start stands open.
+        expect(
+            [
+                ...document.querySelectorAll("label"),
+            ].map((label) => label.textContent),
+        ).not.toContain("Upstream base URL");
+        expect(buttonWithText("Start the authorization").disabled).toBe(false);
+
+        // Editing the recipe to address the base opens the field, and the
+        // requirement states itself the way every required field does — the
+        // quiet hint from first paint, never alert-red — while Start is held.
+        typeInto(definitionEditor(), JSON.stringify(baseAddressedPayload()));
+        await flush();
+        expect(document.body.textContent).toContain(
+            "Required. The upstream address this definition's requests evaluate against",
+        );
+        expect(document.body.textContent).not.toContain(
+            "Base URL must be an http:// or https:// address",
+        );
+        expect(buttonWithText("Start the authorization").disabled).toBe(true);
+        buttonWithText("Start the authorization").click();
+        await flush();
+        expect(calls).toEqual([]);
+
+        // Devin's recipe references the base from the picker on: the same
+        // pristine contract with nothing typed — the hint, not an error —
+        // and the gateway's refusal stays locked behind the held start.
+        buttonWithText("Devin").click();
+        await flush();
+        expect(document.body.textContent).toContain(
+            "Required. The upstream address this definition's requests evaluate against",
+        );
+        expect(document.body.textContent).not.toContain(
+            "Base URL must be an http:// or https:// address",
+        );
+        expect(buttonWithText("Start the authorization").disabled).toBe(true);
+        buttonWithText("Start the authorization").click();
+        await flush();
+        expect(calls).toEqual([]);
+
+        // A typed but composition-invalid address keeps the hold and names
+        // the rule where the value was typed…
+        typeInto(labeledInput("Upstream base URL"), "not an address");
+        await flush();
+        expect(document.body.textContent).toContain(
+            "Base URL must be an http:// or https:// address",
+        );
+        expect(buttonWithText("Start the authorization").disabled).toBe(true);
+
+        // …and a valid one reopens the start, which then carries the base
+        // URL the flow stores for the recipe's base-addressed requests.
+        typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
+        await flush();
+        expect(buttonWithText("Start the authorization").disabled).toBe(false);
+        buttonWithText("Start the authorization").click();
+        await flush();
+        expect(calls).toEqual([
+            "definition",
+            "start",
+        ]);
+        expect(starts[0]?.base_url).toBe("https://upstream.example.com");
     });
 
     it("keeps polling a pending device flow on the configured interval", async () => {

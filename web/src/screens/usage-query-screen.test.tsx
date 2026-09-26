@@ -15,7 +15,14 @@ import type {
 import { requestRefresh } from "/src/refresh-state";
 import type { UsageQuerySubject } from "/src/router";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
-import { settle, stubManagementApi } from "./screen-test-support";
+import {
+    buttonWithText,
+    labeledInput,
+    settle,
+    stubManagementApi,
+    switchWithLabel,
+    typeInto,
+} from "./screen-test-support";
 
 const providerRow: ProviderResponse = {
     type: "api_key",
@@ -167,28 +174,6 @@ function skeleton(): Element | null {
     return document.querySelector(".wash");
 }
 
-function buttonWithText(text: string): HTMLButtonElement {
-    for (const candidate of document.querySelectorAll("button")) {
-        if (candidate.textContent?.includes(text) === true) {
-            return candidate as HTMLButtonElement;
-        }
-    }
-
-    throw new Error(`No button reading ${text}`);
-}
-
-/** Toggles one group-by switch the way a browser delivers a click. */
-function labeledSwitch(label: string): void {
-    const control = document.querySelector(`button[role="switch"][aria-label="${label}"]`);
-
-    if (control instanceof HTMLButtonElement) {
-        control.click();
-        return;
-    }
-
-    throw new Error(`No switch labeled ${label}`);
-}
-
 /** Picks one select the way a browser delivers a choice. */
 function labeledSelect(label: string, value: string): void {
     for (const candidate of document.querySelectorAll("label")) {
@@ -210,29 +195,6 @@ function labeledSelect(label: string, value: string): void {
     }
 
     throw new Error(`No select labeled ${label}`);
-}
-
-/** Types into one labeled text field the way a browser delivers keystrokes. */
-function labeledInput(label: string, value: string): void {
-    for (const candidate of document.querySelectorAll("label")) {
-        const id = candidate.getAttribute("for");
-
-        if (candidate.textContent === label && id !== null) {
-            const input = document.getElementById(id);
-
-            if (input instanceof HTMLInputElement) {
-                input.value = value;
-                input.dispatchEvent(
-                    new Event("input", {
-                        bubbles: true,
-                    }),
-                );
-                return;
-            }
-        }
-    }
-
-    throw new Error(`No input labeled ${label}`);
 }
 
 /** One bucket whose key carries exactly the requested dimensions. */
@@ -329,8 +291,8 @@ describe("UsageQueryScreen request assembly", () => {
         ]);
 
         // Toggling a dimension and filling two filters composes both.
-        labeledSwitch("Outcome");
-        labeledInput("HTTP statuses", "200, 429");
+        switchWithLabel("Outcome").click();
+        typeInto(labeledInput("HTTP statuses"), "200, 429");
         labeledSelect("Stream mode", "streamed");
         buttonWithText("Run query").click();
         await settle();
@@ -477,7 +439,7 @@ describe("UsageQueryScreen submit during the initial read", () => {
 
         // The operator picks the provider grouping and submits while that
         // first read is still in flight.
-        labeledSwitch("Provider");
+        switchWithLabel("Provider").click();
         buttonWithText("Run query").click();
         await settle();
 
@@ -559,7 +521,7 @@ describe("UsageQueryScreen refresh racing an in-flight submit", () => {
         // The operator picks the provider grouping and submits while that
         // first read is still in flight; the submit's own entity listings
         // are held.
-        labeledSwitch("Provider");
+        switchWithLabel("Provider").click();
         buttonWithText("Run query").click();
         await settle();
 
@@ -794,7 +756,7 @@ describe("UsageQueryScreen hand-typed bounds", () => {
         // A space instead of the T separator is malformed: the mistake is
         // named inline and the submit is held, so the query can never run
         // with the bound silently dropped.
-        labeledInput("From", "2026-09-23 10:00");
+        typeInto(labeledInput("From"), "2026-09-23 10:00");
         await settle();
 
         expect(document.body.textContent).toContain("From must be a complete date and time");
@@ -805,7 +767,7 @@ describe("UsageQueryScreen hand-typed bounds", () => {
         expect(requests).toHaveLength(1);
 
         // Completing the value releases the query, and the bound rides it.
-        labeledInput("From", "2026-09-23T10:00");
+        typeInto(labeledInput("From"), "2026-09-23T10:00");
         await settle();
 
         expect(buttonWithText("Run query").disabled).toBe(false);
@@ -826,5 +788,101 @@ describe("UsageQueryScreen hand-typed bounds", () => {
         expect(requests).toHaveLength(2);
         expect(requests[1]?.filter?.from).toBeTypeOf("number");
         expect(requests[1]?.filter?.to).toBeUndefined();
+    });
+});
+
+describe("UsageQueryScreen hand-typed status list", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("names an unparseable status inline and holds the query until it is fixed", async () => {
+        const requests: QueryUsageRequest[] = [];
+        const holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        } = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {});
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={{
+                            ...api,
+                            queryUsage: (request) => {
+                                requests.push(request);
+
+                                return Promise.resolve({
+                                    buckets: [],
+                                });
+                            },
+                        }}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The blank-field mount query ran as always.
+        expect(requests).toHaveLength(1);
+
+        // The glob habit "2xx" is no status list: the mistake is named
+        // inline and the submit is held, so the query can never silently
+        // run with the status narrow it names dropped.
+        typeInto(labeledInput("HTTP statuses"), "2xx");
+        await settle();
+
+        expect(document.body.textContent).toContain("HTTP statuses must be plain integers");
+        expect(buttonWithText("Run query").disabled).toBe(true);
+
+        buttonWithText("Run query").click();
+        await settle();
+        expect(requests).toHaveLength(1);
+
+        // Clearing the field releases the query, and no status narrow rides it.
+        typeInto(labeledInput("HTTP statuses"), "");
+        await settle();
+
+        expect(buttonWithText("Run query").disabled).toBe(false);
+        buttonWithText("Run query").click();
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        expect(requests).toHaveLength(2);
+        expect(requests[1]?.filter).toEqual({});
     });
 });

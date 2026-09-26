@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ProvidersScreen } from "/src/screens/providers-screen";
-import { settle, stubManagementApi } from "./screen-test-support";
+import { settle, stubManagementApi, typeInto } from "./screen-test-support";
 
 /**
  * A provider whose name and credential kind share nothing with its wire
@@ -43,18 +43,12 @@ function screenApi(options: {
     });
 }
 
-/** Types into the provider search field the way a browser delivers keystrokes. */
-function typeIntoSearch(value: string): void {
+/** The provider search field, named by its aria-label. */
+function searchInput(): HTMLInputElement {
     const input = document.querySelector('input[aria-label="Search providers"]');
 
     if (input instanceof HTMLInputElement) {
-        input.value = value;
-        input.dispatchEvent(
-            new Event("input", {
-                bubbles: true,
-            }),
-        );
-        return;
+        return input;
     }
 
     throw new Error("No provider search input");
@@ -92,13 +86,13 @@ describe("ProvidersScreen search", () => {
         );
         await settle();
 
-        typeIntoSearch("openai");
+        typeInto(searchInput(), "openai");
         await settle();
 
         expect(bodyText()).toContain("mix-ops");
         expect(bodyText()).not.toContain("No providers match");
 
-        typeIntoSearch("zzz");
+        typeInto(searchInput(), "zzz");
         await settle();
 
         expect(bodyText()).toContain('No providers match "zzz"');

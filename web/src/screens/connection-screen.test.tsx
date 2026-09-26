@@ -2,7 +2,7 @@ import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { connectionService } from "/src/connection/app-service";
 import { ConnectionScreen } from "/src/screens/connection-screen";
-import { settle } from "./screen-test-support";
+import { labeledInput, settle, typeInto } from "./screen-test-support";
 
 /**
  * The connection screen runs against the application's real connection
@@ -19,31 +19,6 @@ function jsonResponse(status: number, payload: unknown): Promise<Response> {
             headers: {
                 "Content-Type": "application/json",
             },
-        }),
-    );
-}
-
-/** The input the given field label names, through the label's `for`. */
-function inputForLabelText(labelText: string): HTMLInputElement {
-    for (const label of document.querySelectorAll("label")) {
-        if (label.textContent === labelText) {
-            const input = document.getElementById(label.htmlFor);
-
-            if (input instanceof HTMLInputElement) {
-                return input;
-            }
-        }
-    }
-
-    throw new Error(`No input labeled ${labelText}`);
-}
-
-/** Types into a field the way a browser delivers keystrokes. */
-function typeInto(input: HTMLInputElement, value: string): void {
-    input.value = value;
-    input.dispatchEvent(
-        new Event("input", {
-            bubbles: true,
         }),
     );
 }
@@ -106,8 +81,8 @@ describe("ConnectionScreen", () => {
         });
         await settle();
 
-        expect(inputForLabelText("Gateway address").value).toBe("");
-        expect(inputForLabelText("Management token").value).toBe("");
+        expect(labeledInput("Gateway address").value).toBe("");
+        expect(labeledInput("Management token").value).toBe("");
 
         // The mid-session 401: the pair drops and the screen explains it,
         // carrying the address the app already knew — never the token, which
@@ -121,19 +96,48 @@ describe("ConnectionScreen", () => {
         connectionService.reportUnauthorized("invalid management token");
         await settle();
 
-        expect(inputForLabelText("Gateway address").value).toBe(gatewayAddress);
-        expect(inputForLabelText("Management token").value).toBe("");
+        expect(labeledInput("Gateway address").value).toBe(gatewayAddress);
+        expect(labeledInput("Management token").value).toBe("");
         expect(document.body.textContent).toContain("invalid management token");
 
         // A refused re-probe leaves the field holding exactly the address the
         // attempt addressed: the entered form is normalized into the origin.
-        typeInto(inputForLabelText("Gateway address"), `${gatewayAddress}///`);
-        typeInto(inputForLabelText("Management token"), "replacement token");
+        typeInto(labeledInput("Gateway address"), `${gatewayAddress}///`);
+        typeInto(labeledInput("Management token"), "replacement token");
         await settle();
         submitConnectionForm();
         await settle();
 
-        expect(inputForLabelText("Gateway address").value).toBe(gatewayAddress);
+        expect(labeledInput("Gateway address").value).toBe(gatewayAddress);
         expect(connectionService.currentConnection()).toBeNull();
+    });
+
+    it("diagnoses an HTTPS page's HTTP gateway address without issuing the doomed probe", async () => {
+        vi.stubGlobal("location", {
+            ...window.location,
+            origin: "https://admin.example.com",
+        });
+        const refusedFetch = vi.fn(() => Promise.reject(new TypeError("Failed to fetch")));
+        vi.stubGlobal("fetch", refusedFetch);
+
+        dispose = render(() => <ConnectionScreen />, document.body);
+        await settle();
+
+        typeInto(labeledInput("Gateway address"), "http://gateway.example.com");
+        typeInto(labeledInput("Management token"), "any token");
+        await settle();
+        submitConnectionForm();
+        await settle();
+
+        // An HTTPS page cannot call an HTTP address: the browser refuses the
+        // call deterministically before any request is sent, so the diagnosis
+        // is certain on arrival and the reachability probe is never issued —
+        // the refused connect call is the only request.
+        expect(refusedFetch).toHaveBeenCalledTimes(1);
+        expect(document.body.textContent).toContain(
+            "An HTTPS page cannot call the HTTP address http://gateway.example.com.",
+        );
+        expect(document.body.textContent).toContain("Serve this app over HTTP as well");
+        expect(document.body.textContent).toContain("`tls`");
     });
 });

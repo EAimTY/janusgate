@@ -316,6 +316,12 @@ fn apply_target(
             Ok(())
         }
 
+        // Both expiry consult points prefer this extraction over the response's own token
+        // evidence (README §5.4), so a stored non-future timestamp is always elapsed for the
+        // freshness check and would send every dispatch back into the refresh lease. The
+        // contract for consulted evidence is that it must be in the future (README §7.2): a
+        // zero, negative, or past timestamp is a malformed provisioning response, the same
+        // failure the token path applies to a non-future `exp` claim.
         ResponseTarget::ExpiresAtUnixSeconds => {
             let Some(seconds) = extracted.as_integer() else {
                 return Err(Error::Unavailable {
@@ -328,6 +334,14 @@ fn apply_target(
                 .ok_or_else(|| Error::Unavailable {
                     detail: "provisioning extraction carries an overflowing expiry".to_string(),
                 })?;
+
+            if micros <= unix_time::unix_now_micros() {
+                let detail = format!(
+                    "malformed provisioning response: expiry must be in the future, got {seconds}"
+                );
+
+                return Err(Error::Unavailable { detail });
+            }
 
             state.expires_at = Some(micros);
 

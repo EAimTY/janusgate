@@ -9,7 +9,7 @@ import type {
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
-import { settle, stubManagementApi } from "./screen-test-support";
+import { buttonWithText, settle, stubManagementApi } from "./screen-test-support";
 
 const provider: ProviderResponse = {
     type: "api_key",
@@ -87,16 +87,6 @@ function screenApi(options: {
                 buckets: [],
             }),
     });
-}
-
-function buttonWithText(text: string): HTMLButtonElement {
-    for (const candidate of document.querySelectorAll("button")) {
-        if (candidate.textContent?.includes(text) === true) {
-            return candidate as HTMLButtonElement;
-        }
-    }
-
-    throw new Error(`No button reading ${text}`);
 }
 
 function bodyText(): string {

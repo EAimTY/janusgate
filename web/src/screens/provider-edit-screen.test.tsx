@@ -13,7 +13,14 @@ import type {
 import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ProviderEditScreen } from "/src/screens/provider-edit-screen";
-import { settle, stubManagementApi } from "./screen-test-support";
+import {
+    buttonWithText,
+    labeledInput,
+    settle,
+    stubManagementApi,
+    switchWithLabel,
+    typeInto,
+} from "./screen-test-support";
 
 const provider: ProviderResponse = {
     type: "api_key",
@@ -93,52 +100,6 @@ function screenApi(
             return Promise.resolve();
         },
     });
-}
-
-function labeledInput(label: string): HTMLInputElement {
-    for (const candidate of document.querySelectorAll("label")) {
-        const id = candidate.getAttribute("for");
-
-        if (candidate.textContent === label && id !== null) {
-            const input = document.getElementById(id);
-
-            if (input instanceof HTMLInputElement) {
-                return input;
-            }
-        }
-    }
-
-    throw new Error(`No input labeled ${label}`);
-}
-
-function buttonWithText(text: string): HTMLButtonElement {
-    for (const candidate of document.querySelectorAll("button")) {
-        if (candidate.textContent?.includes(text) === true) {
-            return candidate as HTMLButtonElement;
-        }
-    }
-
-    throw new Error(`No button reading ${text}`);
-}
-
-/** Types into an input the way a browser delivers an edit. */
-function typeInto(input: HTMLInputElement, value: string): void {
-    input.value = value;
-    input.dispatchEvent(
-        new Event("input", {
-            bubbles: true,
-        }),
-    );
-}
-
-function switchWithLabel(label: string): HTMLButtonElement {
-    const candidate = document.querySelector(`button[role='switch'][aria-label='${label}']`);
-
-    if (candidate === null) {
-        throw new Error(`No switch labeled ${label}`);
-    }
-
-    return candidate as HTMLButtonElement;
 }
 
 function goneFailure(message: string): ManagementApiError {

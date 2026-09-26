@@ -56,6 +56,7 @@ export type ActionContext = {
 export type Diagnosis = {
     readonly kind:
         | "blocked"
+        | "mixed-content"
         | "unreachable"
         | "no-answer"
         | "unauthorized"
@@ -80,6 +81,45 @@ function isCrossOrigin(baseUrl: string, pageOrigin: string): boolean {
     } catch {
         // An unparsable address is the connection screen's problem to state;
         // CORS is not the explanation to offer for it.
+        return false;
+    }
+}
+
+/**
+ * Whether the page and the address form the one pairing the browser refuses
+ * outright: an HTTPS page may not call an HTTP address, and it blocks every
+ * such call deterministically before any request is sent — so no probe could
+ * observe anything and the cause is certain without one.
+ *
+ * Calls to a loopback address are exempt: browsers deliver those from an
+ * HTTPS page normally (they are potentially trustworthy), so their failure is
+ * never a mixed-content block.
+ */
+function isMixedContent(pageOrigin: string, baseUrl: string): boolean {
+    try {
+        if (new URL(pageOrigin).protocol !== "https:" || new URL(baseUrl).protocol !== "http:") {
+            return false;
+        }
+
+        // WHATWG leaves a single trailing dot on a hostname (`localhost.`),
+        // though the browser resolves it like the bare name, so strip it
+        // before the loopback comparisons; over-exemption is always safe,
+        // because the probe then decides.
+        const host = new URL(baseUrl).hostname.replace(/\.$/, "");
+
+        return !(
+            host === "localhost" ||
+            host.endsWith(".localhost") ||
+            // The URL parser normalizes IPv4 hosts to dotted-quad decimal, so
+            // the whole 127.0.0.0/8 loopback is exactly this shape — four
+            // dotted decimals, and no domain that merely borrows the prefix.
+            /^127(\.\d{1,3}){3}$/.test(host) ||
+            host === "0.0.0.0" ||
+            host === "[::1]"
+        );
+    } catch {
+        // An unparsable address is the connection screen's problem to state;
+        // mixed content is not the explanation to offer for it.
         return false;
     }
 }
@@ -149,6 +189,20 @@ function networkDiagnosis(context: ActionContext): Diagnosis {
             title: `Nothing answered at ${baseUrl}.`,
             detail: "The browser could not complete the connection.",
             fix: "Check the address, that the gateway is running, and that its `listen` address is reachable from this browser.",
+        };
+    }
+
+    // The one refusal the diagnosis can be certain of without evidence: the
+    // browser blocks this pairing before any request is sent, so the probe is
+    // moot and every reachability reading of it would be a guess. The kind
+    // keys the connection screen's probing: anything but `no-answer` issues
+    // no request.
+    if (isMixedContent(pageOrigin, baseUrl)) {
+        return {
+            kind: "mixed-content",
+            title: `An HTTPS page cannot call the HTTP address ${baseUrl}.`,
+            detail: "This page is served over HTTPS, and the browser blocks its calls to HTTP addresses outright, so the gateway was never contacted.",
+            fix: "Serve this app over HTTP as well, or add a `tls` section to that instance's configuration file so the gateway answers HTTPS.",
         };
     }
 

@@ -33,8 +33,6 @@ export type ProviderPreset = {
     readonly grant: "authorization_code" | "device" | null;
     /** Suggested provider name base. */
     readonly suggestedName: string;
-    /** Whether the definition addresses the instance base URL. */
-    readonly needsBaseUrl: boolean;
     /** The reference-implementation provenance: repo + rev or doc URL. */
     readonly provenance: string;
     /** The verification status: live run or research only. */
@@ -63,7 +61,6 @@ const STATIC_KEY_PRESETS: readonly [
         description: "Any endpoint speaking the OpenAI Responses protocol with a static key.",
         grant: null,
         suggestedName: "openai",
-        needsBaseUrl: true,
         provenance:
             "OpenAI Responses API reference (platform.openai.com/docs/api-reference/responses)",
         verification: "live",
@@ -132,7 +129,6 @@ const STATIC_KEY_PRESETS: readonly [
         description: "Any endpoint speaking the Chat Completions protocol with a static key.",
         grant: null,
         suggestedName: "openai",
-        needsBaseUrl: true,
         provenance:
             "OpenAI Chat Completions API reference (platform.openai.com/docs/api-reference/chat)",
         verification: "live",
@@ -201,7 +197,6 @@ const STATIC_KEY_PRESETS: readonly [
         description: "Any endpoint speaking the Gemini GenerateContent protocol with a static key.",
         grant: null,
         suggestedName: "gemini",
-        needsBaseUrl: true,
         provenance: "Gemini API reference (ai.google.dev/api/generate-content)",
         verification: "live",
         payload: {
@@ -291,7 +286,6 @@ const STATIC_KEY_PRESETS: readonly [
         description: "Any endpoint speaking the Gemini Interactions protocol with a static key.",
         grant: null,
         suggestedName: "gemini",
-        needsBaseUrl: true,
         provenance: "Gemini Interactions API reference (ai.google.dev/api/interactions-api)",
         verification: "live",
         payload: {
@@ -384,7 +378,6 @@ const STATIC_KEY_PRESETS: readonly [
         description: "Any endpoint speaking the Anthropic Messages protocol with a static key.",
         grant: null,
         suggestedName: "anthropic",
-        needsBaseUrl: true,
         provenance: "Anthropic Messages API reference (docs.anthropic.com/en/api/messages)",
         verification: "live",
         payload: {
@@ -492,7 +485,6 @@ const OAUTH_PRESETS: readonly [
             "A Claude subscription account over the Messages API: the OAuth token rides `Authorization: Bearer` beside the `oauth-2025-04-20` beta header, on inference and model discovery alike.",
         grant: "authorization_code",
         suggestedName: "claude",
-        needsBaseUrl: false,
         provenance:
             "anthropics/claude-code research port (hosted paste-back callback, JSON token requests); verify against the live CLI before production use",
         verification: "unverified",
@@ -815,7 +807,6 @@ const OAUTH_PRESETS: readonly [
             "A Kimi account over the Coding endpoint: a device-code flow whose device ID slot rides the custom `X-Msh-*` headers on authorization, polling, and refresh alike.",
         grant: "device",
         suggestedName: "kimi",
-        needsBaseUrl: false,
         provenance:
             "Kimi Code CLI research port (auth.kimi.com device flow, X-Msh-* header set); verify against the live CLI before production use",
         verification: "unverified",
@@ -1227,7 +1218,6 @@ const OAUTH_PRESETS: readonly [
             "A GitHub account whose durable token is exchanged by reprovisioning for the short-lived Copilot session token and the account's API endpoint.",
         grant: "device",
         suggestedName: "copilot",
-        needsBaseUrl: false,
         provenance:
             "github/copilot-cli and VS Code Copilot Chat research port (device flow, copilot_internal/v2/token); verify against the live product before production use",
         verification: "unverified",
@@ -1608,7 +1598,6 @@ const OAUTH_PRESETS: readonly [
             "A Devin account whose ConnectRPC token exchange answers a static API key and API server URL — no refresh, no expiry; models are added manually.",
         grant: "authorization_code",
         suggestedName: "devin",
-        needsBaseUrl: false,
         provenance:
             "Devin OAuth research port (ConnectRPC exchange, api_key/api_server_url fields); the exchange fields and inference protocol carry research-level uncertainty — record a live confirmation before production use",
         verification: "unverified",
@@ -1768,7 +1757,6 @@ const OAUTH_PRESETS: readonly [
             "A ChatGPT account over the Codex Responses endpoint. Streaming is forced upstream and responses render with the OpenAI Responses format.",
         grant: "authorization_code",
         suggestedName: "codex",
-        needsBaseUrl: false,
         provenance: "openai/codex at rev fcf05456bb27e6c3d5677550f54011db6a2a0817 (codex-rs/login)",
         verification: "live",
         payload: {
@@ -2130,7 +2118,6 @@ const OAUTH_PRESETS: readonly [
             "A Google account over the Antigravity Gemini endpoint, with project onboarding and an enveloped GenerateContent request.",
         grant: "authorization_code",
         suggestedName: "antigravity",
-        needsBaseUrl: false,
         provenance:
             "NoeFabris/opencode-antigravity-auth at rev 16e0056 (src/antigravity/oauth.ts, src/plugin)",
         verification: "live",
@@ -2684,7 +2671,6 @@ const ZEN_PRESETS: readonly [
         description: "Zen over the OpenAI Chat Completions protocol with a static key.",
         grant: null,
         suggestedName: "zen",
-        needsBaseUrl: false,
         provenance: "OpenCode Zen documentation (opencode.ai/docs/zen)",
         verification: "unverified",
         payload: {
@@ -2764,7 +2750,6 @@ const ZEN_PRESETS: readonly [
         description: "Zen over the OpenAI Responses protocol with a static key.",
         grant: null,
         suggestedName: "zen",
-        needsBaseUrl: false,
         provenance: "OpenCode Zen documentation (opencode.ai/docs/zen)",
         verification: "unverified",
         payload: {
@@ -2844,7 +2829,6 @@ const ZEN_PRESETS: readonly [
         description: "Zen over the Anthropic Messages protocol with a static key.",
         grant: null,
         suggestedName: "zen",
-        needsBaseUrl: false,
         provenance: "OpenCode Zen documentation (opencode.ai/docs/zen)",
         verification: "unverified",
         payload: {
@@ -2925,7 +2909,6 @@ const ZEN_PRESETS: readonly [
         description: "Zen over the Gemini GenerateContent protocol with a static key.",
         grant: null,
         suggestedName: "zen",
-        needsBaseUrl: false,
         provenance: "OpenCode Zen documentation (opencode.ai/docs/zen)",
         verification: "unverified",
         payload: {

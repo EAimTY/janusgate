@@ -261,6 +261,91 @@ describe("diagnoseFailure", () => {
         expect(diagnosis.detail).not.toContain("Failed to fetch");
     });
 
+    it("diagnoses an HTTPS page's refused call to an HTTP address as blocked mixed content", () => {
+        const diagnosis = diagnoseFailure(
+            new ManagementApiError("transport", "Network request failed: Failed to fetch", {
+                cause: new TypeError("Failed to fetch"),
+            }),
+            {
+                baseUrl: "http://gateway.example.com",
+                pageOrigin: "https://admin.example.com",
+            },
+        );
+
+        expect(diagnosis.kind).toBe("mixed-content");
+        expect(diagnosis.title).toBe(
+            "An HTTPS page cannot call the HTTP address http://gateway.example.com.",
+        );
+        expect(diagnosis.detail).toBe(
+            "This page is served over HTTPS, and the browser blocks its calls to HTTP addresses outright, so the gateway was never contacted.",
+        );
+        expect(diagnosis.fix).toBe(
+            "Serve this app over HTTP as well, or add a `tls` section to that instance's configuration file so the gateway answers HTTPS.",
+        );
+    });
+
+    it("spares loopback HTTP addresses the mixed-content diagnosis the browser does not impose", () => {
+        for (const loopbackAddress of [
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+        ] as const) {
+            const diagnosis = diagnoseFailure(
+                new ManagementApiError("transport", "Network request failed: Failed to fetch"),
+                {
+                    baseUrl: loopbackAddress,
+                    pageOrigin: "https://admin.example.com",
+                },
+            );
+
+            expect(diagnosis.kind).toBe("no-answer");
+        }
+    });
+
+    it("keeps the mixed-content certainty for a 127-prefixed domain that is not the loopback", () => {
+        // `127.evil.com` only borrows the prefix: it is a public domain, not
+        // the normalized dotted-quad shape the URL parser gives the
+        // 127.0.0.0/8 loopback, so the browser blocks it like any HTTP
+        // address and the diagnosis is certain without a probe.
+        const diagnosis = diagnoseFailure(
+            new ManagementApiError("transport", "Network request failed: Failed to fetch"),
+            {
+                baseUrl: "http://127.evil.com",
+                pageOrigin: "https://admin.example.com",
+            },
+        );
+
+        expect(diagnosis.kind).toBe("mixed-content");
+    });
+
+    it("reads a trailing-dot loopback host as the loopback it resolves to", () => {
+        // WHATWG keeps the dot on the hostname while the browser resolves it
+        // like the bare name, so the comparison reads past it.
+        const diagnosis = diagnoseFailure(
+            new ManagementApiError("transport", "Network request failed: Failed to fetch"),
+            {
+                baseUrl: "http://localhost./",
+                pageOrigin: "https://admin.example.com",
+            },
+        );
+
+        expect(diagnosis.kind).toBe("no-answer");
+    });
+
+    it("keeps an HTTP page's call to an HTTP address on the probe's readings", () => {
+        const diagnosis = diagnoseFailure(
+            new ManagementApiError("transport", "Network request failed: Failed to fetch"),
+            {
+                baseUrl: "http://gateway.example.com",
+                pageOrigin: "http://admin.example.com",
+                reachability: "unreached",
+            },
+        );
+
+        expect(diagnosis.kind).toBe("unreachable");
+        expect(diagnosis.title).toBe("Nothing answered at http://gateway.example.com.");
+    });
+
     it("reports an unshaped HTTP failure with its status", () => {
         const diagnosis = diagnoseFailure(
             new ManagementApiError("transport", "HTTP 502", {

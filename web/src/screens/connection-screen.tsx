@@ -13,7 +13,9 @@ import { JanusMark } from "/src/ui/glyph";
  * and — when a connection is refused — what went wrong, in the one place a
  * stranger is most likely to give up. Cross-origin is the normal case, so a
  * blocked call and a dead address are told apart by probing the origin before
- * the diagnosis is written.
+ * the diagnosis is written — except the one pairing the browser refuses
+ * outright (an HTTPS page calling an HTTP address), which is diagnosed
+ * without issuing any probe.
  */
 export function ConnectionScreen(): JSX.Element {
     const pageOrigin = window.location.origin;

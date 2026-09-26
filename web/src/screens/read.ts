@@ -128,11 +128,11 @@ export async function readOne<TResult>(
  * Whether the skeleton window is open: a read is in flight, no read has ever
  * succeeded, and nothing stands in the notice. The notice clause is
  * load-bearing — it keeps a standing failure visible while its re-read runs
- * (on an `isNoticeKeptOnSuccess` screen that notice is also an action's
- * reported outcome), so the skeleton never replaces it. The harness's
- * `isFirstRead` accessor is this one predicate over its own signals; a screen
- * outside the harness — the usage query screen, whose read cycle is also a
- * form submission — calls it with its own.
+ * (on an `isNoticeKeptOnSuccess` screen a standing notice may also be an
+ * action's reported outcome), so the skeleton never replaces it. The
+ * harness's `isFirstRead` accessor is this one predicate over its own
+ * signals; a screen outside the harness — the usage query screen, whose read
+ * cycle is also a form submission — calls it with its own.
  */
 export function isSkeletonWindowOpen(
     isReading: boolean,
@@ -178,6 +178,19 @@ export type ScreenRead = {
 };
 
 /**
+ * Where the harness's standing notice came from: a failed read cycle's
+ * diagnosis, or an action's reported outcome. The origin decides what may
+ * clear the notice (the two-origin rule, README §6.3).
+ */
+type NoticeOrigin = "read" | "action";
+
+/** The harness's standing notice, paired with the origin its clearing reads. */
+type StandingNotice = {
+    readonly notice: ScreenNotice;
+    readonly origin: NoticeOrigin;
+};
+
+/**
  * The screen read harness (README §6.3): one read per mount, repeated when
  * *refresh* is pressed, cancelled when the screen goes away, with the first
  * failure diagnosed where failures are stated. A route-identity move is a
@@ -189,19 +202,31 @@ export type ScreenRead = {
  *
  * A failed cycle replaces the standing notice with its diagnosis. A
  * successful cycle clears it — except where `isNoticeKeptOnSuccess` holds,
- * for screens whose notice is also an action's reported outcome, where only
- * a new failure replaces it.
+ * for screens whose notice is also an action's reported outcome. The
+ * exception is an origin rule, not a blanket (README §6.3): the policy keeps
+ * only what an action stated, so a save's outcome survives the reload the
+ * save itself triggered, while a read-failure notice diagnoses the last read
+ * cycle and is cleared by the first read that succeeds, on kept screens too
+ * — the Read-again recovery lands on the row, not under its failure.
  */
 export function createScreenRead(options: {
     /** The screen's reads, run under the cycle's signal; throws `ReadCallFailure` to fail the cycle. */
     readonly load: (signal: AbortSignal) => Promise<void>;
-    /** Whether a successful read keeps the standing notice (an action's reported outcome). */
+    /**
+     * Whether a successful read keeps a notice an action stated (a read
+     * failure is cleared by the read that succeeds regardless).
+     */
     readonly isNoticeKeptOnSuccess?: boolean;
 }): ScreenRead {
     const [hasRead, setHasRead] = createSignal(false);
     const [isReading, setIsReading] = createSignal(true);
-    const [notice, setNotice] = createSignal<ScreenNotice | null>(null);
+    const [standing, setStanding] = createSignal<StandingNotice | null>(null);
     const [isDisposed, setIsDisposed] = createSignal(false);
+
+    // The notice and its origin are one signal, so every write pairs them
+    // and the clearing rule always reads the origin of the notice that
+    // actually stands — one notice owner, with no second state to drift.
+    const notice = (): ScreenNotice | null => standing()?.notice ?? null;
 
     let controller: AbortController | null = null;
 
@@ -224,7 +249,10 @@ export function createScreenRead(options: {
 
             if (error instanceof ReadCallFailure) {
                 setIsReading(false);
-                setNotice(error.notice);
+                setStanding({
+                    notice: error.notice,
+                    origin: "read",
+                });
                 return;
             }
 
@@ -240,8 +268,20 @@ export function createScreenRead(options: {
 
         setIsReading(false);
 
-        if (options.isNoticeKeptOnSuccess !== true) {
-            setNotice(null);
+        // The two-origin rule (README §6.3): the keep policy exists so a
+        // save's reported outcome survives the reload the save itself
+        // triggered, so it shields only a notice an action stated. A
+        // read-failure notice diagnoses the last read cycle — this one,
+        // which just succeeded — and is stale on any screen, kept or not,
+        // so a successful read clears it. Neither origin reaches across:
+        // reads never clear an action's notice on a kept screen, and
+        // actions never clear a read's except by stating their own or
+        // dismissing explicitly (`showNotice(null)`).
+        const isNoticeShielded =
+            options.isNoticeKeptOnSuccess === true && standing()?.origin === "action";
+
+        if (!isNoticeShielded) {
+            setStanding(null);
         }
 
         setHasRead(true);
@@ -274,8 +314,15 @@ export function createScreenRead(options: {
         isFirstRead,
         isDisposed,
         notice,
-        showNotice: (standing) => {
-            setNotice(standing);
+        showNotice: (stated) => {
+            setStanding(
+                stated === null
+                    ? null
+                    : {
+                          notice: stated,
+                          origin: "action",
+                      },
+            );
         },
         reportAction: <TResult>(
             outcome: ManagementCallOutcome<TResult>,
@@ -296,7 +343,10 @@ export function createScreenRead(options: {
                     options?.onGone?.();
                 }
 
-                setNotice(screenFailureNotice(outcome.cause, call));
+                setStanding({
+                    notice: screenFailureNotice(outcome.cause, call),
+                    origin: "action",
+                });
 
                 return false;
             }
