@@ -218,6 +218,13 @@ pub(crate) fn provider_not_found_message(id: i64) -> String {
     format!("Provider {id} does not exist")
 }
 
+/// The wire wording for a referenced provider-definition version that does not exist, owned once
+/// here so the storage rebind path and the management error variant render a missing definition
+/// identically — the same single-homing its sibling wordings carry.
+pub(crate) fn provider_definition_not_found_message(name: &str, version: i64) -> String {
+    format!("Provider definition `{name}` version {version} does not exist")
+}
+
 /// The wire wording for an unknown model row id (README §7 404 `not_found`), owned once here so the
 /// row-addressed writes that re-read the row render a missing model identically.
 pub(crate) fn model_not_found_message(id: i64) -> String {

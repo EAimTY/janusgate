@@ -1,17 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { drainWrites } from "/src/screens/screen-test-support";
 import {
     type DirtyFormRegistration,
     hasDirtyForms,
     registerDirtyForm,
 } from "./dirty-form-registry";
-
-// Solid settles a signal write on a microtask, so a seat's report becomes
-// observable only after a drain of the queue.
-function drainWrites(): Promise<void> {
-    return new Promise((resolve) => {
-        setTimeout(resolve, 0);
-    });
-}
 
 // The registry is module state shared by every test in this process: each
 // test gives the seats it took back, so a leftover dirty form cannot leave

@@ -261,10 +261,15 @@ export function UsageScreen(props: {
                             value={draft().window}
                             options={USAGE_WINDOW_OPTIONS}
                             onChange={(window) =>
-                                setDraft({
-                                    ...draft(),
+                                // Merged functionally like the sibling
+                                // controls' edits: two edits in one task — a
+                                // change event following an input event —
+                                // must build on the pending write, never on a
+                                // field set read before the first landed.
+                                setDraft((current) => ({
+                                    ...current,
                                     window,
-                                })
+                                }))
                             }
                             isDisabled={read.isReading()}
                             hint="Rolling, resolved when the stream is read."

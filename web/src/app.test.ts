@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { drainWrites } from "/src/screens/screen-test-support";
 import { guardUnsavedFormsOnLeave } from "./app";
 import { type DirtyFormRegistration, registerDirtyForm } from "./dirty-form-registry";
 
@@ -31,11 +32,6 @@ function leaveStandIn(): {
 // Solid settles a signal write on a microtask, so a seat's report becomes
 // observable to the guard only after a drain of the queue — exactly the gap
 // the real event-time read always sits beyond.
-function drainWrites(): Promise<void> {
-    return new Promise((resolve) => {
-        setTimeout(resolve, 0);
-    });
-}
 
 // The registry is module state: every test gives the seats it took back, so
 // no test leaves the guard armed for the next one.

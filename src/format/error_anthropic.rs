@@ -3,11 +3,11 @@
 //!
 //! Anthropic renders `{"type": "error", "error": {type, message}}`, mapping each rendered HTTP
 //! status onto the official status↔type table: 400/405 `invalid_request_error`, 401
-//! `authentication_error`, 403 `permission_error`, 404 `not_found_error`, 413
-//! `request_too_large`, 429 `rate_limit_error`, 504 `timeout_error`, 529 `overloaded_error`,
-//! and the 500-class failures `api_error`. Mirrored 503 also renders `overloaded_error` — the
-//! closest semantic member as an explicit gateway extension, the same pattern the Gemini
-//! surface documents, because the official table has no 503 row.
+//! `authentication_error`, 402 `billing_error`, 403 `permission_error`, 404 `not_found_error`,
+//! 409 `conflict_error`, 413 `request_too_large`, 429 `rate_limit_error`, 504 `timeout_error`,
+//! 529 `overloaded_error`, and the 500-class failures `api_error`. Mirrored 503 also renders
+//! `overloaded_error` — the closest semantic member as an explicit gateway extension, the same
+//! pattern the Gemini surface documents, because the official table has no 503 row.
 
 use crate::api::Error;
 use axum::http::StatusCode;
@@ -44,9 +44,13 @@ fn mirrored_error_type(status: u16) -> &'static str {
 
         401 => "authentication_error",
 
+        402 => "billing_error",
+
         403 => "permission_error",
 
         404 => "not_found_error",
+
+        409 => "conflict_error",
 
         413 => "request_too_large",
 
@@ -193,10 +197,10 @@ mod tests {
     }
 
     /// Maps every mirrored upstream status to its row — 400 `invalid_request_error`, 401
-    /// `authentication_error`, 403 `permission_error`, 404 `not_found_error`, 429
-    /// `rate_limit_error`, 529 `overloaded_error`, 504 `timeout_error` — with mirrored 503
-    /// rendering `overloaded_error` as the closest-semantic-member gateway extension where the
-    /// official table has no row.
+    /// `authentication_error`, 402 `billing_error`, 403 `permission_error`, 404
+    /// `not_found_error`, 409 `conflict_error`, 429 `rate_limit_error`, 529 `overloaded_error`,
+    /// 504 `timeout_error` — with mirrored 503 rendering `overloaded_error` as the
+    /// closest-semantic-member gateway extension where the official table has no row.
     ///
     /// # Panics
     ///
@@ -212,8 +216,10 @@ mod tests {
         let cases: Vec<(StatusCode, &str)> = vec![
             (StatusCode::BAD_REQUEST, "invalid_request_error"),
             (StatusCode::UNAUTHORIZED, "authentication_error"),
+            (StatusCode::PAYMENT_REQUIRED, "billing_error"),
             (StatusCode::FORBIDDEN, "permission_error"),
             (StatusCode::NOT_FOUND, "not_found_error"),
+            (StatusCode::CONFLICT, "conflict_error"),
             (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error"),
             (StatusCode::SERVICE_UNAVAILABLE, "overloaded_error"),
             (overloaded, "overloaded_error"),

@@ -18,6 +18,7 @@ import { UsageQueryScreen } from "/src/screens/usage-query-screen";
 import {
     buttonWithText,
     labeledInput,
+    labeledSelect,
     settle,
     stubManagementApi,
     switchWithLabel,
@@ -174,27 +175,15 @@ function skeleton(): Element | null {
     return document.querySelector(".wash");
 }
 
-/** Picks one select the way a browser delivers a choice. */
-function labeledSelect(label: string, value: string): void {
-    for (const candidate of document.querySelectorAll("label")) {
-        const id = candidate.getAttribute("for");
-
-        if (candidate.textContent === label && id !== null) {
-            const select = document.getElementById(id);
-
-            if (select instanceof HTMLSelectElement) {
-                select.value = value;
-                select.dispatchEvent(
-                    new Event("change", {
-                        bubbles: true,
-                    }),
-                );
-                return;
-            }
-        }
-    }
-
-    throw new Error(`No select labeled ${label}`);
+/** Sets one select the way a browser delivers a choice. */
+function chooseSelect(label: string, value: string): void {
+    const select = labeledSelect(label);
+    select.value = value;
+    select.dispatchEvent(
+        new Event("change", {
+            bubbles: true,
+        }),
+    );
 }
 
 /** One bucket whose key carries exactly the requested dimensions. */
@@ -293,7 +282,7 @@ describe("UsageQueryScreen request assembly", () => {
         // Toggling a dimension and filling two filters composes both.
         switchWithLabel("Outcome").click();
         typeInto(labeledInput("HTTP statuses"), "200, 429");
-        labeledSelect("Stream mode", "streamed");
+        chooseSelect("Stream mode", "streamed");
         buttonWithText("Run query").click();
         await settle();
 

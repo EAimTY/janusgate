@@ -5,7 +5,9 @@
 //! The lease lives inside the credentials JSON document and every transition conditions on
 //! `json_extract(credentials, …)`; the engine never read–modify–writes a stale document in Rust.
 //! Only a known, elapsed `expires_at` initiates time-based refresh: a `null` expiry never does,
-//! and `refresh: none` never enters the lease.
+//! and `refresh: none` never enters the lease. A renewable row whose expiry is `null` is
+//! therefore dispatched as-is — the lease cannot be granted for it, so the loop returns the
+//! freshly read row instead of waiting for a concurrent refresher that can never exist.
 
 use super::{Error, flow};
 use crate::{
@@ -97,6 +99,19 @@ fn is_renewable(provider: &Provider) -> bool {
     !matches!(recipe.refresh, TokenRefresh::None)
 }
 
+/// Whether the provider's credentials carry a refresh schedule at all: a known `expires_at`. A
+/// `null` expiry is the no-scheduled-refresh state — the lease is never granted for it, because
+/// the acquire requires a known expiry on both of its arms — so a renewable row in this state
+/// is dispatched as-is: waiting for a concurrent refresher would poll a lease that can never be
+/// granted until the wait limit fails every dispatch (README §3).
+#[must_use]
+fn is_refresh_scheduled(provider: &Provider) -> bool {
+    match &provider.credentials {
+        StoredCredentials::OAuth { expires_at, .. } => expires_at.is_some(),
+        StoredCredentials::ApiKey { .. } => false,
+    }
+}
+
 /// Returns the provider with a valid access token, renewing it under the database lease when
 /// expired.
 ///
@@ -106,7 +121,9 @@ fn is_renewable(provider: &Provider) -> bool {
 /// same holds for a lease acquire whose read snapshot a concurrent commit invalidated: the engine
 /// refuses the write upgrade with the stale-snapshot busy error, which is classified as "lease
 /// not acquired" so the burst of simultaneous acquirers on one expired token waits its turn
-/// instead of failing.
+/// instead of failing. A freshly read row whose expiry is `null` — the no-scheduled-refresh
+/// state, for which the lease can never be granted — is returned as-is: the token is sent until
+/// the upstream rejects it, never waited on.
 ///
 /// # Errors
 ///
@@ -144,7 +161,11 @@ pub(crate) async fn ensure_fresh_token(
             });
         };
 
-        if !is_renewable(&current) || is_token_fresh(&current) {
+        // The re-read is authoritative for all three short-circuits: fresh tokens and
+        // `refresh: none` need no lease, and a `null` expiry is the no-scheduled-refresh state
+        // the dispatch sends as-is — the acquire would refuse it on both arms, so reading its
+        // refusal as "a live holder exists" would wedge every dispatch until the wait limit.
+        if !is_renewable(&current) || is_token_fresh(&current) || !is_refresh_scheduled(&current) {
             rollback(transaction).await?;
 
             return Ok(current);
@@ -474,8 +495,10 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
 
             // The working slots absorb the identity-token claims and the response's slot
             // targets; the stored slots the flow carried stay in place. The fold borrows the
-            // outcome, so it runs before the access token and rotation are moved out of it.
-            let renewed_slots = flow::absorb_exchange_slots(slots, &outcome, id_token_claims);
+            // outcome, so it runs before the access token and rotation are moved out of it, and
+            // a claimed value outside the routing-safety contract fails the renewal like any
+            // other fold.
+            let renewed_slots = flow::absorb_exchange_slots(slots, &outcome, id_token_claims)?;
 
             let access_token = outcome.access_token.ok_or_else(|| Error::Unavailable {
                 detail: "token refresh response lacks an access token".to_string(),
@@ -556,7 +579,7 @@ mod tests {
         reason = "the fixtures are constructed so each unwrap lands on its documented side"
     )]
 
-    use super::{Error, renew_and_build_state, renew_and_store};
+    use super::{Error, ensure_fresh_token, renew_and_build_state, renew_and_store};
     use crate::{
         database::{Database, schema::Registry},
         http_client,
@@ -573,9 +596,15 @@ mod tests {
     const POOL_WAIT: Duration = Duration::from_millis(1000);
 
     /// When the test releases the held connection: after the persist's pool wait has failed
-    /// (it times out at one wait) but within the clear's own wait window, so the clear — whose
-    /// success the assertion depends on — runs against the recovered pool.
+    /// (it times out at one wait) but within the clear's own wait window, so the clear —
+    /// whose success the assertion depends on — runs against the recovered pool.
     const RELEASE_AFTER: Duration = Duration::from_millis(1500);
+
+    /// The bound the null-expiry dispatch test holds [`ensure_fresh_token`] to: a correct
+    /// dispatch of the no-scheduled-refresh row answers after one transaction, while the wedge
+    /// this test pins — polling the ungrantable lease to the 100-second wait limit — fails the
+    /// bound in seconds instead of costing the full wait.
+    const NULL_EXPIRY_DISPATCH_BOUND: Duration = Duration::from_secs(5);
 
     /// Parses the reprovision-drift fixture: a reprovision refresh whose provisioning sequence
     /// supplies only the access token, never an expiry. Parsed without validation, which is
@@ -938,5 +967,293 @@ mod tests {
         mock.shutdown.send(()).ok();
 
         let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Parses the renewal-fold fixture: a refresh grant whose response maps the access token, a
+    /// `base_url` target, and a slot target, so the fold's storage boundary is exercised on the
+    /// renewal path. Parsed without validation — the boundary under test is the fold, not the
+    /// write-time descriptor checks.
+    ///
+    /// The exchange references the `redirect_uri` value part because the write boundary requires
+    /// that of every authorization-code grant (RFC 6749 §4.1.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to parse — a broken fixture is the failure report.
+    fn renewal_fold_definition(token_url: String) -> crate::provider::ProviderDefinition {
+        #[expect(clippy::unwrap_used, reason = "the fixture payload always parses")]
+        let payload: DefinitionPayload = serde_json::from_value(serde_json::json!({
+            "format": "openai_chat_completion",
+            "inference": {
+                "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
+                "upstream_streaming": "match_client"
+            },
+            "credential": {
+                "type": "oauth",
+                "client_id": "fixture-client",
+                "grant": {
+                    "type": "authorization_code",
+                    "authorize_url": [
+                        {"type": "literal", "value": "https://accounts.example/auth"}
+                    ],
+                    "redirect_uri": "http://localhost:1/callback",
+                    "pkce": "none"
+                },
+                "exchange": {
+                    "request": {
+                        "method": "POST",
+                        "url": [{"type": "literal", "value": token_url}],
+                        "body": {"kind": "form", "fields": [
+                            {"name": "grant_type", "value": [
+                                {"type": "literal", "value": "authorization_code"}
+                            ]},
+                            {"name": "code", "value": [{"type": "authorization_code"}]},
+                            {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
+                        ]}
+                    },
+                    "response": {"encoding": "json", "fields": [
+                        {
+                            "path": ["access_token"],
+                            "target": {"type": "access_token"},
+                            "required": true
+                        },
+                        {
+                            "path": ["refresh_token"],
+                            "target": {"type": "refresh_token"},
+                            "required": true
+                        }
+                    ]},
+                    "terminal_codes": ["invalid_grant"]
+                },
+                "refresh": {
+                    "type": "grant",
+                    "request": {
+                        "method": "POST",
+                        "url": [{"type": "literal", "value": token_url}],
+                        "body": {"kind": "form", "fields": [
+                            {"name": "grant_type", "value": [
+                                {"type": "literal", "value": "refresh_token"}
+                            ]},
+                            {"name": "refresh_token", "value": [{"type": "refresh_token"}]}
+                        ]}
+                    },
+                    "response": {"encoding": "json", "fields": [
+                        {
+                            "path": ["access_token"],
+                            "target": {"type": "access_token"},
+                            "required": true
+                        },
+                        {
+                            "path": ["endpoint"],
+                            "target": {"type": "base_url"},
+                            "required": true
+                        },
+                        {
+                            "path": ["stage"],
+                            "target": {"type": "slot", "name": "stage"},
+                            "required": true
+                        }
+                    ]},
+                    "terminal_codes": ["invalid_grant"]
+                }
+            }
+        }))
+        .unwrap();
+
+        crate::provider::ProviderDefinition {
+            name: "renewal-fold".to_string(),
+            version: NonZero::new(1).unwrap(),
+            payload,
+            created_at: 0,
+        }
+    }
+
+    /// A renewable provider whose credentials carry the `null` no-scheduled-refresh expiry
+    /// dispatches as-is (README §3): the lease is never granted for a `null` expiry — both
+    /// acquire arms require a known `expires_at` — so no concurrent refresher can ever finish,
+    /// and reading the failed acquire as "a live holder exists" polls the ungrantable lease
+    /// until the wait limit fails every dispatch. The row flows to dispatch untouched: no
+    /// renewal runs and the `null` expiry survives.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the dispatch does not answer within the bound.
+    #[tokio::test]
+    async fn a_renewable_provider_with_a_null_expiry_dispatches_without_the_lease() {
+        let db_path = std::env::temp_dir().join(format!(
+            "janusgate-refresh-null-test-{}.db",
+            rand::random::<u64>()
+        ));
+
+        #[expect(clippy::unwrap_used, reason = "non-zero literal")]
+        let one = NonZero::new(1_usize).unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
+        let database = Database::open(&db_path, Registry::Main, one, POOL_WAIT)
+            .await
+            .unwrap();
+
+        // The mock's renewal answer must never be consumed: a consumed answer would mean the
+        // loop treated the unscheduled row as refreshable.
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(
+                &serde_json::json!({"access_token": "renewed", "expires_in": 3600}),
+            )
+            .unwrap(),
+        ])
+        .await;
+
+        let definition =
+            insert_refresh_grant_definition(&database, "null-expiry-def", &mock.base()).await;
+
+        let provider = crate::test_support::insert_provider(
+            &database,
+            &definition,
+            "unscheduled",
+            "u-",
+            None,
+            StoredCredentials::OAuth {
+                access_token: "elapsed".to_string(),
+                refresh_token: Some("stored".to_string()),
+                slots: BTreeMap::new(),
+                expires_at: None,
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        let dispatched = tokio::time::timeout(
+            NULL_EXPIRY_DISPATCH_BOUND,
+            ensure_fresh_token(&database, &http_client::control_plane(), &provider),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(dispatched.id, provider.id);
+
+        assert_eq!(dispatched.credentials.secret(), "elapsed");
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent credential kind is the failure report"
+        )]
+        let StoredCredentials::OAuth {
+            expires_at,
+            refresh_started_at,
+            ..
+        } = dispatched.credentials
+        else {
+            panic!("the dispatched row carries OAuth credentials");
+        };
+
+        assert_eq!(expires_at, None, "the null expiry flows to dispatch as-is");
+
+        assert_eq!(refresh_started_at, None, "no lease is ever stamped");
+
+        mock.shutdown.send(()).ok();
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// The renewal's response fold is a storage boundary (README §7): a refresh response whose
+    /// `base_url` carries no `http(s)://` scheme or whose slot text falls outside routing-safe
+    /// machine-consumed text fails the renewal instead of persisting the poisoned values, and a
+    /// response whose values satisfy the contracts renews with them stored.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixture fails to parse or a renewal lands on the wrong side of its check.
+    #[tokio::test]
+    async fn a_renewal_response_mapping_unroutable_slot_or_base_url_text_fails_the_renewal() {
+        // One mock serving the responses in walk order: the scheme-less base URL, the slot text
+        // with whitespace, and the valid response the successful renewal consumes.
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&serde_json::json!({
+                "access_token": "renewed",
+                "endpoint": "upstream.example",
+                "stage": "clean"
+            }))
+            .unwrap(),
+            serde_json::to_string(&serde_json::json!({
+                "access_token": "renewed",
+                "endpoint": "https://upstream.example",
+                "stage": "has space"
+            }))
+            .unwrap(),
+            serde_json::to_string(&serde_json::json!({
+                "access_token": "renewed",
+                "endpoint": "https://upstream.example",
+                "stage": "clean"
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let http = http_client::control_plane();
+
+        let provider = Provider {
+            id: 1,
+            name: "renewal-fold".to_string(),
+            model_prefix: String::new(),
+            base_url: None,
+            is_enabled: true,
+            credentials: StoredCredentials::OAuth {
+                access_token: "elapsed".to_string(),
+                refresh_token: Some("stored".to_string()),
+                slots: BTreeMap::new(),
+                expires_at: Some(1),
+                refresh_started_at: None,
+            },
+            definition: renewal_fold_definition(mock.base()),
+        };
+
+        #[expect(
+            clippy::panic,
+            reason = "a success where the fold failed is the failure report"
+        )]
+        let Err(Error::Unavailable { detail }) = renew_and_build_state(&http, &provider).await
+        else {
+            panic!("a scheme-less renewed base_url must fail the renewal");
+        };
+
+        assert!(detail.contains("base_url"), "{detail}");
+
+        #[expect(
+            clippy::panic,
+            reason = "a success where the fold failed is the failure report"
+        )]
+        let Err(Error::Unavailable { detail }) = renew_and_build_state(&http, &provider).await
+        else {
+            panic!("renewed slot text with whitespace must fail the renewal");
+        };
+
+        assert!(detail.contains("stage"), "{detail}");
+
+        let renewal = renew_and_build_state(&http, &provider).await.unwrap();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent renewal arm is the failure report"
+        )]
+        let super::Renewal::Grant { credentials } = renewal else {
+            panic!("the grant renewal builds a grant renewal state");
+        };
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent credential kind is the failure report"
+        )]
+        let StoredCredentials::OAuth { slots, .. } = credentials else {
+            panic!("the renewed credentials carry OAuth credentials");
+        };
+
+        assert_eq!(
+            slots.get("stage").map(String::as_str),
+            Some("clean"),
+            "valid renewed values store"
+        );
+
+        mock.shutdown.send(()).ok();
     }
 }

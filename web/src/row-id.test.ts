@@ -1,19 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isRowIdText, parseRowIdentifier } from "./row-id";
-
-describe("isRowIdText", () => {
-    it("accepts plain decimal integers", () => {
-        expect(isRowIdText("12")).toBe(true);
-    });
-
-    it("rejects everything else", () => {
-        expect(isRowIdText("")).toBe(false);
-        expect(isRowIdText("codex")).toBe(false);
-        expect(isRowIdText("12x")).toBe(false);
-        expect(isRowIdText("-3")).toBe(false);
-        expect(isRowIdText("1.5")).toBe(false);
-    });
-});
+import { parseRowIdentifier } from "./row-id";
 
 describe("parseRowIdentifier", () => {
     it("accepts plain decimal integers", () => {

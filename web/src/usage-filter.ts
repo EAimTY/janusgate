@@ -5,7 +5,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import { findApiLogEndpointType, findApiLogOutcome } from "/src/management-api/vocabulary";
 import { DAY_MICROS } from "./format";
-import { isRowIdText } from "./row-id";
+import { parseRowIdentifier } from "./row-id";
 
 /**
  * The gateway's one usage filter, as the screens' forms hold it: every field
@@ -105,15 +105,16 @@ export function windowBoundMicros(window: UsageWindowChoice, nowMicros: number):
 }
 
 /**
- * Reads one route value as a row identifier, answering absent when it is not
- * one. The safe-integer bound is the same one `parseRowIdentifier` applies to
- * path ids: a digit string beyond it names no row the gateway could hold, and
- * its `Number` would only distort the value put on the wire.
+ * Reads one route value as a row identifier, keeping its text when
+ * [`parseRowIdentifier`] reads a row out of it and answering absent
+ * otherwise: a digit string beyond the safe-integer range names no row the
+ * gateway could hold, and its `Number` would only distort the value put on
+ * the wire.
  */
 function routeRowId(parameters: URLSearchParams, name: string): string {
     const raw = parameters.get(name);
 
-    return raw !== null && isRowIdText(raw) && Number.isSafeInteger(Number(raw)) ? raw : "";
+    return raw !== null && parseRowIdentifier(raw) !== null ? raw : "";
 }
 
 /** Reads one route value as a window, answering all time when it names no window. */
@@ -232,33 +233,21 @@ export function hasUsageFilter(draft: UsageFilterDraft): boolean {
 }
 
 /**
- * The integer one comma-separated status entry names, or none when it is not
- * one: a plain-decimal spelling within the safe-integer range — the same
- * bound [`routeRowId`] applies to the route's row identifiers, and the shape
- * the gateway's i64 status column carries. Spellings `Number` would accept —
- * `1e3`, `0x10`, `+200`, a 20-digit entry — narrow to nothing here.
- */
-function statusEntryValue(entry: string): number | null {
-    if (!/^\d+$/.test(entry) || !Number.isSafeInteger(Number(entry))) {
-        return null;
-    }
-
-    return Number(entry);
-}
-
-/**
  * Parses the operator's comma-separated status list: blank entries drop out,
- * and entries outside the plain-decimal safe-integer shape never form a
- * filter value. The forms hold their actions while [`statusError`] stands, so
- * a hand-typed list reaches here only whole; a route-carried one still
- * narrows to the statuses it does name.
+ * and every remaining entry is read by [`parseRowIdentifier`] — the one
+ * row-identifier rule, whose plain-decimal safe-integer shape is the one the
+ * gateway's i64 status column carries — so spellings `Number` would accept
+ * (`1e3`, `0x10`, `+200`, a 20-digit entry) narrow to nothing. The forms hold
+ * their actions while [`statusError`] stands, so a hand-typed list reaches
+ * here only whole; a route-carried one still narrows to the statuses it does
+ * name.
  */
 export function parseStatusList(input: string): number[] {
     return input
         .split(",")
         .map((entry) => entry.trim())
         .filter((entry) => entry !== "")
-        .map((entry) => statusEntryValue(entry))
+        .map((entry) => parseRowIdentifier(entry))
         .filter((entry): entry is number => entry !== null);
 }
 
@@ -275,7 +264,7 @@ export function statusError(input: string): string | null {
         .map((entry) => entry.trim())
         .filter((entry) => entry !== "");
 
-    if (entries.every((entry) => statusEntryValue(entry) !== null)) {
+    if (entries.every((entry) => parseRowIdentifier(entry) !== null)) {
         return null;
     }
 

@@ -88,8 +88,10 @@ pub(crate) async fn complete_exchange(
         });
     };
 
-    // The working slots absorb the identity-token claims and the exchange's slots.
-    let working_slots = flow::absorb_exchange_slots(&flow.slots, &outcome, &recipe.id_token_claims);
+    // The working slots absorb the identity-token claims and the exchange's slots; a claimed
+    // value outside the routing-safety contract fails the flow like any other fold.
+    let working_slots =
+        flow::absorb_exchange_slots(&flow.slots, &outcome, &recipe.id_token_claims)?;
 
     // The working base URL follows the slots' precedence (README §5.3): the exchange's
     // extracted `base_url` replaces the flow's stored one, and a provisioning extraction

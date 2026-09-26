@@ -1,8 +1,8 @@
 import type { ManagementApi } from "/src/management-api/client";
 
 /**
- * Test support the screen suites share: the full management API stub their
- * mounts run against, the promise drain their screen exchanges rely on, and
+ * Test support the suites share: the full management API stub the screen
+ * mounts run against, the promise drains the suites' exchanges rely on, and
  * the DOM lookups and keystrokes their user interactions drive.
  */
 
@@ -58,6 +58,18 @@ export async function settle(): Promise<void> {
     }
 }
 
+/**
+ * Drains exactly one macrotask tick: the round a settled Solid signal write
+ * needs before a test can observe it. The unit suites over bare signals
+ * prefer this one round — their writes cascade no deeper; only a screen
+ * mount's exchange spans enough awaiting to need the fuller `settle`.
+ */
+export function drainWrites(): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, 0);
+    });
+}
+
 /** The button whose visible label contains the given text. */
 export function buttonWithText(text: string): HTMLButtonElement {
     for (const candidate of document.querySelectorAll("button")) {
@@ -86,6 +98,23 @@ export function labeledInput(label: string): HTMLInputElement {
     throw new Error(`No input labeled ${label}`);
 }
 
+/** The select the given field label names, through the label's `for` pairing. */
+export function labeledSelect(label: string): HTMLSelectElement {
+    for (const candidate of document.querySelectorAll("label")) {
+        const id = candidate.getAttribute("for");
+
+        if (candidate.textContent === label && id !== null) {
+            const select = document.getElementById(id);
+
+            if (select instanceof HTMLSelectElement) {
+                return select;
+            }
+        }
+    }
+
+    throw new Error(`No select labeled ${label}`);
+}
+
 /** The switch the given aria-label names. */
 export function switchWithLabel(label: string): HTMLButtonElement {
     const candidate = document.querySelector(`button[role='switch'][aria-label='${label}']`);
@@ -95,6 +124,22 @@ export function switchWithLabel(label: string): HTMLButtonElement {
     }
 
     return candidate as HTMLButtonElement;
+}
+
+/** The page's whole text content, as the assertions read it. */
+export function bodyText(): string {
+    return document.body.textContent ?? "";
+}
+
+/** The anchor addressing the given href. */
+export function linkTo(href: string): HTMLAnchorElement {
+    for (const candidate of document.querySelectorAll("a")) {
+        if (candidate.getAttribute("href") === href) {
+            return candidate;
+        }
+    }
+
+    throw new Error(`No link to ${href}`);
 }
 
 /** Types into an input or textarea the way a browser delivers an edit. */

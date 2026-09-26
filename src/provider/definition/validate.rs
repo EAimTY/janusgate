@@ -471,6 +471,26 @@ impl DefinitionPayload {
             ));
         }
 
+        // RFC 6749 §6: renewing an access token is a `grant_type=refresh_token` request
+        // carrying the stored refresh token — `refresh_token` is REQUIRED — and the stage
+        // vocabulary already allows the part exactly at the refresh grant, so a grant whose
+        // request never references it dies at the upstream on every renewal. The rejection
+        // code lands in the grant's `terminal_codes`, so the flow then misdiagnoses the
+        // healthy provider as one whose grant is revoked or expired and needs
+        // re-authorization — an endless re-authorize/refresh-fail loop: the same
+        // required-carry shape the exchange rules above enforce. Scope: the grant mode only —
+        // `reprovision` reuses the provisioning extraction contract and `none` carries no
+        // request.
+        if let TokenRefresh::Grant { request, .. } = refresh
+            && !request_references(request, &ValueExpr::RefreshToken)
+        {
+            return Err(ValidationError::new(
+                "refresh grant requires the token refresh request to reference the \
+                 `refresh_token` value part: RFC 6749 §6 makes the refresh token REQUIRED in \
+                 a refresh-token grant request",
+            ));
+        }
+
         validate_response_descriptor(&exchange.response, "token exchange")?;
         validate_terminal_codes(&exchange.terminal_codes, "token exchange")?;
 
@@ -3022,6 +3042,80 @@ mod tests {
                     "type": "coalesce",
                     "parts": [
                         { "type": "device_code" },
+                        { "type": "literal", "value": "fallback" }
+                    ]
+                }
+            ]);
+        });
+
+        outcome.unwrap();
+    }
+
+    /// RFC 6749 §6: renewing an access token is a `grant_type=refresh_token` request carrying
+    /// the stored refresh token — `refresh_token` is REQUIRED — so a refresh grant whose
+    /// request never references the `refresh_token` value part is rejected at the write
+    /// boundary, symmetric to the exchange rules above. Left in place, every renewal dies at
+    /// the upstream and the rejection code lands in the grant's `terminal_codes`, so the flow
+    /// misdiagnoses the healthy provider as one whose grant is revoked or expired and needs
+    /// re-authorization — an endless re-authorize/refresh-fail loop. The untouched fixture
+    /// references the refresh token as a form field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the non-conforming refresh grant validates.
+    #[test]
+    fn requires_the_refresh_grant_to_reference_the_refresh_token() {
+        // The Antigravity shape's refresh request presents the refresh token as its second
+        // form field; dropping it leaves every renewal with no refresh token to present.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(1);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("refresh_token"), "{error}");
+        assert!(error.contains("RFC 6749"), "{error}");
+
+        // The untouched fixture references the refresh token as a form field.
+        mutate_and_validate(good_antigravity_json(), |_| {}).unwrap();
+    }
+
+    /// The refresh-token rule reads the whole refresh request, so the value part satisfies it
+    /// wherever the stage's expressions live: the fixture's own form field, a query row, or a
+    /// coalesce argument. (The JSON-body leaves are covered by the Codex, Claude Code, and
+    /// Kimi Code catalog fixtures above.)
+    ///
+    /// # Panics
+    ///
+    /// Panics if a refresh-token-carrying refresh grant is rejected.
+    #[test]
+    fn accepts_a_refresh_grant_referencing_the_refresh_token() {
+        // As a query row on the refresh request.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(1);
+
+            payload["credential"]["refresh"]["request"]["query"] = serde_json::json!([
+                { "name": "refresh_token", "value": [{ "type": "refresh_token" }] }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // Inside a coalesce's arguments.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            let field = &mut payload["credential"]["refresh"]["request"]["body"]["fields"][1];
+
+            field["value"] = serde_json::json!([
+                {
+                    "type": "coalesce",
+                    "parts": [
+                        { "type": "refresh_token" },
                         { "type": "literal", "value": "fallback" }
                     ]
                 }

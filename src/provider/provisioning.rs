@@ -7,6 +7,12 @@
 //! the conditional arm Antigravity's onboarding needs. A step's long-running operation poll
 //! repeats its request until the done path turns true, within the wall-clock budget, and folds
 //! the completed operation's result extractions into the same state.
+//!
+//! This module is also the shared home of the machine-consumed-text validators every OAuth
+//! response fold applies before storage (README §7): [`validate_slot_value`] and
+//! [`validate_base_url_value`] are the one contract the provisioning fold and the exchange and
+//! refresh-grant folds in [`crate::provider::oauth::flow`] share, so a value an upstream
+//! response extracts is validated identically whichever stage extracted it.
 
 use crate::{
     provider::{
@@ -309,7 +315,7 @@ fn apply_target(
         ResponseTarget::BaseUrl => {
             let value = extracted.as_text();
 
-            validate_slot_value("base_url", &value)?;
+            validate_base_url_value(&value)?;
 
             state.base_url = Some(value);
 
@@ -357,10 +363,17 @@ fn apply_target(
     }
 }
 
-/// Validates one stored slot or base-URL value against the shared routing-safe text contract
-/// (README §7). An upstream value outside the set fails the step instead of storing an
-/// unusable value.
-fn validate_slot_value(name: &str, value: &str) -> Result<(), Error> {
+/// Validates one stored slot value against the shared routing-safe text contract (README §7):
+/// non-empty printable ASCII without whitespace. An upstream value outside the set fails the
+/// stage instead of storing an unusable value. Shared by every OAuth response fold — the
+/// provisioning fold here and the exchange and refresh-grant folds in
+/// [`crate::provider::oauth::flow`] — so one contract guards one storage boundary.
+///
+/// # Errors
+///
+/// Returns [`Error::Unavailable`] when the value carries a character outside the allowed set or
+/// is empty.
+pub(crate) fn validate_slot_value(name: &str, value: &str) -> Result<(), Error> {
     if crate::routing_text::is_routing_safe_text(value) {
         Ok(())
     } else {
@@ -369,5 +382,132 @@ fn validate_slot_value(name: &str, value: &str) -> Result<(), Error> {
                 "the upstream reported a `{name}` value outside printable ASCII without whitespace"
             ),
         })
+    }
+}
+
+/// Validates one stored base-URL value: the shared routing-safe text contract of
+/// [`validate_slot_value`] plus the non-empty `http://` or `https://` scheme every instance
+/// `base_url` requires (README §7) — the same composition the management boundary enforces on
+/// operator-supplied URLs.
+///
+/// # Errors
+///
+/// Returns [`Error::Unavailable`] when the value falls outside the routing-safe text contract
+/// or carries no `http(s)://` scheme with anything after it.
+pub(crate) fn validate_base_url_value(value: &str) -> Result<(), Error> {
+    validate_slot_value("base_url", value)?;
+
+    let after_scheme = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"));
+
+    match after_scheme {
+        Some(rest) if !rest.is_empty() => Ok(()),
+
+        _ => Err(Error::Unavailable {
+            detail: "the upstream reported a `base_url` value without an `http(s)://` scheme"
+                .to_string(),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "the fixtures are constructed so each unwrap lands on its documented side"
+    )]
+    #![expect(
+        clippy::panic,
+        reason = "a fixture landing on the wrong side of its check is the failure report"
+    )]
+
+    use super::{ResponseTarget, WorkingState, apply_target};
+    use crate::provider::control::Extracted;
+
+    /// The provisioning fold shares the exchange fold's storage boundary (README §7): slot text
+    /// must be routing-safe machine-consumed text, and a mapped `base_url` must additionally
+    /// carry the non-empty `http(s)://` scheme — an upstream value outside the contracts fails
+    /// the step instead of storing an unusable value, and valid values fold in verbatim.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[test]
+    fn the_provisioning_fold_validates_slot_and_base_url_targets() {
+        let Err(base_url_error) = fold(
+            &mut WorkingState::default(),
+            &ResponseTarget::BaseUrl,
+            "upstream.example",
+        ) else {
+            panic!("a scheme-less base_url must fail the provisioning fold");
+        };
+
+        assert!(
+            base_url_error.to_string().contains("base_url"),
+            "{base_url_error}"
+        );
+
+        let Err(_) = fold(
+            &mut WorkingState::default(),
+            &ResponseTarget::BaseUrl,
+            "ftp://upstream.example",
+        ) else {
+            panic!("a non-http base_url scheme must fail the provisioning fold");
+        };
+
+        let mut state = WorkingState::default();
+
+        fold(
+            &mut state,
+            &ResponseTarget::BaseUrl,
+            "https://upstream.example/v1",
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.base_url.as_deref(),
+            Some("https://upstream.example/v1"),
+            "a valid base_url stores"
+        );
+
+        let Err(slot_error) = fold(
+            &mut WorkingState::default(),
+            &ResponseTarget::Slot {
+                name: "stage".to_string(),
+            },
+            "has space",
+        ) else {
+            panic!("slot text with whitespace must fail the provisioning fold");
+        };
+
+        assert!(slot_error.to_string().contains("stage"), "{slot_error}");
+
+        let mut state = WorkingState::default();
+
+        fold(
+            &mut state,
+            &ResponseTarget::Slot {
+                name: "stage".to_string(),
+            },
+            "clean-value",
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.slots.get("stage").map(String::as_str),
+            Some("clean-value"),
+            "valid slot text stores"
+        );
+    }
+
+    /// Folds one text value into the state through the given target, returning the fold's
+    /// result so the test can pin its failure side.
+    fn fold(
+        state: &mut WorkingState,
+        target: &ResponseTarget,
+        value: &str,
+    ) -> Result<(), super::Error> {
+        apply_target(state, target, Extracted::Text(value.to_string()))
     }
 }

@@ -395,9 +395,10 @@ mod tests {
             api_keys::{self, ApiKeyFields},
             models::ModelCreate,
         },
+        test_support::create_test_database,
     };
     use serde::Serialize;
-    use std::{error::Error as StdError, num::NonZero, path::PathBuf};
+    use std::{error::Error as StdError, num::NonZero};
 
     /// Renders one value through the published wire vocabulary; every rendered body of this crate
     /// is a typed payload whose serialization is total.
@@ -426,37 +427,6 @@ mod tests {
             reason = "the schema pins every row at fourteen columns"
         )]
         &row[index]
-    }
-
-    /// File guard cleaning up the temporary main test database on drop.
-    struct TempDbGuard(PathBuf);
-
-    impl Drop for TempDbGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    /// Creates an initialized temporary main SQLite test database.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn create_test_database() -> (Database, TempDbGuard) {
-        let db_path = std::env::temp_dir().join(format!(
-            "janusgate-apilogs-test-{}.db",
-            rand::random::<u64>()
-        ));
-
-        #[expect(clippy::unwrap_used, reason = "non-zero literal")]
-        let max_connections = NonZero::new(2).unwrap();
-
-        #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
-        let database = Database::open(&db_path, Registry::Main, max_connections, SHARD_POOL_WAIT)
-            .await
-            .unwrap();
-
-        (database, TempDbGuard(db_path))
     }
 
     /// Reads every column of every stored row of one shard, in rowid order, as raw values the

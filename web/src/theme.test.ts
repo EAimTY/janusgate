@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { drainWrites } from "/src/screens/screen-test-support";
 import { cycleTheme, nextThemePreference, themePreference } from "./theme";
 
 // jsdom implements neither matchMedia nor storage. The module reads storage
@@ -20,11 +21,6 @@ window.matchMedia = (media: string): MediaQueryList => ({
 // Solid settles a signal write on a microtask, so a click's new preference
 // becomes observable only after a drain of the queue. The repaint does not
 // wait: it applies the clicked value directly.
-function drainWrites(): Promise<void> {
-    return new Promise((resolve) => {
-        setTimeout(resolve, 0);
-    });
-}
 
 describe("nextThemePreference", () => {
     it("cycles light → dark → system and wraps to light", () => {

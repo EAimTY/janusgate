@@ -22,6 +22,8 @@ use crate::{
     storage::{
         Error as StorageError,
         api_keys::{api_key_not_found_message, api_key_taken_message},
+        provider_definition_not_found_message, provider_name_taken_message,
+        provider_not_found_message,
     },
 };
 use as_http_status_code::{AsStatusCode, StatusCode};
@@ -226,8 +228,10 @@ pub(super) enum Error {
         name: String,
     },
 
-    /// A creation references a definition version that does not exist.
-    #[error("Provider definition `{name}` version {version} does not exist")]
+    /// A creation references a definition version that does not exist. The display renders
+    /// through [`provider_definition_not_found_message`], the single home it shares with the
+    /// storage rejection the transactional rebind constructs, so both failures read identically.
+    #[error("{}", provider_definition_not_found_message(name, *version))]
     DefinitionNotFound {
         /// The definition name the request referenced.
         name: String,
@@ -259,15 +263,19 @@ pub(super) enum Error {
         state_grant: String,
     },
 
-    /// The addressed provider row does not exist.
-    #[error("Provider {id} does not exist")]
+    /// The addressed provider row does not exist. The display renders through
+    /// [`provider_not_found_message`], the single home it shares with the storage rejection the
+    /// transactional re-reads construct, so both 404s read identically.
+    #[error("{}", provider_not_found_message(*.id))]
     ProviderNotFound {
         /// Identifier of the missing provider row.
         id: i64,
     },
 
-    /// A creation names a provider name another provider already holds.
-    #[error("Provider name `{name}` is already taken")]
+    /// A creation names a provider name another provider already holds. The display renders
+    /// through [`provider_name_taken_message`], the single home it shares with the storage
+    /// rejection the checked rename constructs, so both 409s read identically.
+    #[error("{}", provider_name_taken_message(.name))]
     ProviderNameTaken {
         /// The taken name.
         name: String,

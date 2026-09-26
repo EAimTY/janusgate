@@ -27,6 +27,7 @@ import type {
     ResponseTarget,
     StringExpr,
     TemplateNode,
+    TokenRefresh,
     UpstreamStreaming,
     ValueExpr,
 } from "/src/management-api/generated/v0";
@@ -1202,22 +1203,7 @@ function expectExchange(value: unknown, context: string): Exchange {
 }
 
 /** How an OAuth-acquired credential renews, rebuilt from its mode (README §5.3). */
-function expectTokenRefresh(
-    value: unknown,
-    context: string,
-):
-    | {
-          type: "grant";
-          request: ControlRequest;
-          response?: ResponseDescriptor | null;
-          terminal_codes: Array<string>;
-      }
-    | {
-          type: "reprovision";
-      }
-    | {
-          type: "none";
-      } {
+function expectTokenRefresh(value: unknown, context: string): TokenRefresh {
     const record = expectRecord(value, context);
     const type = expectString(Reflect.get(record, "type"), `${context}.type`);
 
@@ -1233,12 +1219,12 @@ function expectTokenRefresh(
             context,
         );
 
-        const refresh: {
-            type: "grant";
-            request: ControlRequest;
-            response?: ResponseDescriptor | null;
-            terminal_codes: Array<string>;
-        } = {
+        const refresh: Extract<
+            TokenRefresh,
+            {
+                type: "grant";
+            }
+        > = {
             type: "grant",
             request: expectControlRequest(Reflect.get(record, "request"), `${context}.request`),
             terminal_codes: expectArray(

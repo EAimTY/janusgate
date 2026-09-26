@@ -268,9 +268,7 @@ pub(crate) async fn update_provider(
             .await?
             else {
                 return Err(Error::NotFound {
-                    message: format!(
-                        "Provider definition `{name}` version {version} does not exist"
-                    ),
+                    message: super::provider_definition_not_found_message(name, version.get()),
                 });
             };
 
@@ -386,9 +384,13 @@ pub(crate) async fn update_provider(
 /// credentials' `refresh_started_at` member.
 ///
 /// The lease is granted only when the stored expiry is known and elapsed (no later than
-/// `freshness_margin` microseconds into the future — a `null` expiry never refreshes) and no
-/// other holder owns a lease acquired after `lease_stale_before`. Returns the acquired lease
-/// stamp, or `None` when another holder owns a live lease.
+/// `freshness_margin` microseconds into the future) and no other holder owns a lease acquired
+/// after `lease_stale_before`. Returns the acquired lease stamp, or `None` when no lease was
+/// granted — another holder owns a live lease, the stored expiry is still beyond the freshness
+/// margin, or the stored expiry is `null`, the no-scheduled-refresh state for which no lease
+/// can ever be granted. The `null` case is the caller's dispatch-as-is contract (README §3):
+/// the engine's loop decides it from the freshly read row before waiting, so `None` there
+/// always means a live holder.
 ///
 /// The raw [`DatabaseError`] is returned instead of an [`Error`] because the caller must classify
 /// a stale-snapshot busy failure — a concurrent commit invalidating the read-then-write upgrade —

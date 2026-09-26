@@ -10,7 +10,7 @@
  * plain decimal integer, unsigned and unbounded. The safe-integer bound is
  * applied by the readers on top of it.
  */
-export function isRowIdText(value: string): boolean {
+function isRowIdText(value: string): boolean {
     return /^\d+$/.test(value);
 }
 

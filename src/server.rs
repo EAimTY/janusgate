@@ -341,12 +341,13 @@ mod tests {
             api_keys::{self, ApiKeyFields},
             models::ModelCreate,
         },
+        test_support::TempDirGuard,
     };
     use std::{
         error::Error as StdError,
         io::Error as IoError,
         num::NonZero,
-        path::{Path, PathBuf},
+        path::Path,
         sync::{
             Arc,
             atomic::{AtomicU8, Ordering},
@@ -375,15 +376,6 @@ mod tests {
 
     /// The mock holds its first frame back, so a client can leave before any frame was enqueued.
     const MOCK_SSE_DELAYED: u8 = 5;
-
-    /// File guard removing the temporary end-to-end directory on drop.
-    struct TempDirGuard(PathBuf);
-
-    impl Drop for TempDirGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     /// One recorded row as the scenario assertions read it.
     #[derive(Debug)]

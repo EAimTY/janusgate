@@ -14,8 +14,11 @@ import { USAGE_PAGE_SIZE } from "/src/screens/usage-pagination";
 import { UsageScreen } from "/src/screens/usage-screen";
 import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filter";
 import {
+    bodyText,
     buttonWithText,
     labeledInput,
+    labeledSelect,
+    linkTo,
     settle,
     stubManagementApi,
     typeInto,
@@ -149,20 +152,6 @@ function answerLastPage(
             ...rows,
         ],
     });
-}
-
-function linkTo(href: string): HTMLAnchorElement {
-    for (const candidate of document.querySelectorAll("a")) {
-        if (candidate.getAttribute("href") === href) {
-            return candidate;
-        }
-    }
-
-    throw new Error(`No link to ${href}`);
-}
-
-function bodyText(): string {
-    return document.body.textContent ?? "";
 }
 
 describe("UsageScreen stream continuation", () => {
@@ -526,6 +515,40 @@ describe("UsageScreen filtering", () => {
 
         expect(`${window.location.pathname}${window.location.search}`).toBe(
             "/usage?status=200,429",
+        );
+    });
+
+    it("lands a window change delivered in the same batch as a field edit", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder));
+        await settle();
+        answerLastPage(holder, page(1050, 1));
+        await settle();
+
+        // Both edits ride one task — the status field's input event, then the
+        // window's change event. Signal writes defer to a microtask, so the
+        // window's merge must be functional: a field set read inside its own
+        // setter would build on the pre-edit draft and drop the typed status.
+        typeInto(labeledInput("HTTP statuses"), "200,429");
+        const windowSelect = labeledSelect("Window");
+        windowSelect.value = "24h";
+        windowSelect.dispatchEvent(
+            new Event("change", {
+                bubbles: true,
+            }),
+        );
+        await settle();
+
+        // Both edits landed: the applied route carries them together.
+        buttonWithText("Apply filters").click();
+        await settle();
+
+        expect(`${window.location.pathname}${window.location.search}`).toBe(
+            "/usage?window=24h&status=200,429",
         );
     });
 });

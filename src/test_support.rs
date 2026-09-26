@@ -11,10 +11,7 @@
 
 use crate::{
     database::Database,
-    provider::{
-        CredentialKind, Provider, ProviderDefinition, StoredCredentials,
-        definition::DefinitionPayload,
-    },
+    provider::{Provider, ProviderDefinition, StoredCredentials, definition::DefinitionPayload},
     storage,
 };
 use serde_json::json;
@@ -26,6 +23,15 @@ pub(crate) struct TempDbGuard(PathBuf);
 impl Drop for TempDbGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Directory guard removing the temporary test directory tree on drop.
+pub(crate) struct TempDirGuard(pub(crate) PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -204,10 +210,6 @@ pub(crate) async fn insert_failing_refresh_definition(
 ///
 /// Panics if the insert fails, or if the fixture credentials disagree with the definition's
 /// credential kind — a test bug the assertion surfaces.
-///
-/// # Panics
-///
-/// Panics if the fixture assertion fails.
 pub(crate) async fn insert_provider(
     database: &Database,
     definition: &ProviderDefinition,
@@ -221,8 +223,6 @@ pub(crate) async fn insert_provider(
         definition.credential_kind(),
         "fixture credentials must match the definition's credential kind"
     );
-
-    let _ = CredentialKind::ApiKey;
 
     storage::providers::insert_provider(
         database,

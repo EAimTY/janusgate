@@ -1,6 +1,5 @@
-//! Shared fixtures for the shard-store and read-engine tests: the temporary shard-directory
-//! guard, the store constructor, the raw shard opener, and the write fixture both test modules
-//! place rows with.
+//! Shared fixtures for the shard-store and read-engine tests: the store constructor, the raw
+//! shard opener, and the write fixture both test modules place rows with.
 
 use super::{
     ApiLogWrite,
@@ -9,24 +8,16 @@ use super::{
 use crate::{
     accounting::{ApiLogEndpointType, ApiLogOutcome},
     database::{Database, schema::Registry},
+    test_support::TempDirGuard,
 };
-use std::{num::NonZero, path::PathBuf};
-
-/// Directory guard cleaning up the temporary shard tree on drop.
-pub(super) struct TempStoreGuard(pub(super) PathBuf);
-
-impl Drop for TempStoreGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use std::num::NonZero;
 
 /// Creates a shard store over a fresh temporary directory with `retention_days`.
 ///
 /// # Panics
 ///
 /// Panics on a zero `retention_days`, which no test passes.
-pub(super) fn create_test_store(retention_days: u32) -> (ApiLogStore, TempStoreGuard) {
+pub(super) fn create_test_store(retention_days: u32) -> (ApiLogStore, TempDirGuard) {
     let directory =
         std::env::temp_dir().join(format!("janusgate-apilogs-test-{}", rand::random::<u64>()));
 
@@ -35,7 +26,7 @@ pub(super) fn create_test_store(retention_days: u32) -> (ApiLogStore, TempStoreG
 
     (
         ApiLogStore::new(directory.clone(), retention),
-        TempStoreGuard(directory),
+        TempDirGuard(directory),
     )
 }
 

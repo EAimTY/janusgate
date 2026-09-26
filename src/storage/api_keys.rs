@@ -281,43 +281,8 @@ fn api_key_from_row(row: &crate::database::Row) -> Result<ApiKey, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::Database;
-    use std::{error::Error as StdError, num::NonZero, time::Duration};
-
-    /// File guard cleaning up the temporary SQLite test database on drop.
-    struct TempDbGuard(std::path::PathBuf);
-
-    impl Drop for TempDbGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    /// Creates an initialized temporary SQLite test database.
-    ///
-    /// # Panics
-    ///
-    /// Panics if opening the test database fails.
-    async fn create_test_database() -> (Database, TempDbGuard) {
-        let db_path = std::env::temp_dir().join(format!(
-            "janusgate-apikeys-test-{}.db",
-            rand::random::<u64>()
-        ));
-
-        #[expect(clippy::unwrap_used, reason = "non-zero literal")]
-        let max_connections = NonZero::new(2).unwrap();
-        #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
-        let database = Database::open(
-            &db_path,
-            crate::database::schema::Registry::Main,
-            max_connections,
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-
-        (database, TempDbGuard(db_path))
-    }
+    use crate::test_support::create_test_database;
+    use std::error::Error as StdError;
 
     /// Verifies the key lifecycle: insertion stamps the creation time from the database clock and
     /// returns the written row, names are not unique, and the enabled-secrets listing carries only

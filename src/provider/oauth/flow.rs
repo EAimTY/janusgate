@@ -4,7 +4,9 @@
 //! Every provider-specific fact — endpoints, client credentials, parameter names, header sets —
 //! lives in the definition the flow references; this engine carries the grant mechanics alone.
 //! The control-request executor runs each stage's request, and the stage's response descriptor
-//! maps its product.
+//! maps its product. The exchange and refresh-grant fold applies the shared machine-consumed
+//! text validators (README §7) before any slot or base-URL value reaches storage, and the
+//! identity-token claim absorption applies the slot validator before a claimed value lands.
 
 use super::Error;
 use crate::{
@@ -17,6 +19,7 @@ use crate::{
             eval::ValueEnv,
             template::{ResponseField, ResponseTarget as Target},
         },
+        provisioning::{validate_base_url_value, validate_slot_value},
     },
     unix_time,
 };
@@ -156,14 +159,21 @@ pub(crate) fn jwt_claims(jwt: &str) -> Option<serde_json::Map<String, serde_json
 
 /// Copies the definition's identity-token claims into the working slots: a claim whose path
 /// resolves into a string member of the payload names its slot's value, and any other claim is
-/// skipped.
+/// skipped. Every claimed value passes the shared routing-safety validation before it lands —
+/// the absorption is a storage boundary like the response-field folds (README §5.4) — so a
+/// hostile identity token fails the stage instead of poisoning the persisted slots.
+///
+/// # Errors
+///
+/// Returns [`Error::Unavailable`] when a resolved claim value falls outside the routing-safe
+/// text contract, naming the slot the claim targets.
 pub(crate) fn apply_id_token_claims(
     id_token: &str,
     claims: &[IdTokenClaim],
     slots: &mut BTreeMap<String, String>,
-) {
+) -> Result<(), Error> {
     let Some(payload) = jwt_claims(id_token) else {
-        return;
+        return Ok(());
     };
 
     let payload = serde_json::Value::Object(payload);
@@ -174,30 +184,43 @@ pub(crate) fn apply_id_token_claims(
             .resolve(&payload)
             .and_then(serde_json::Value::as_str)
         {
+            validate_slot_value(&claim.slot, text).map_err(|_| Error::Unavailable {
+                detail: format!(
+                    "malformed token response: id_token claim for slot `{}` is not routing-safe",
+                    claim.slot
+                ),
+            })?;
+
             slots.insert(claim.slot.clone(), text.to_string());
         }
     }
+
+    Ok(())
 }
 
 /// Folds one executed token stage's identity artifacts into the stored working slots: the
 /// stored slots stay in place, the identity token's claims copy over, and the stage's own slot
 /// targets extend the result (README §5.3). The completion pipeline and the refresh grant share
 /// this fold.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns [`Error`] when an identity-token claim value fails the routing-safety validation
+/// (README §5.4) — the stage's own slot targets validated at the mapping boundary already.
 pub(crate) fn absorb_exchange_slots(
     stored: &BTreeMap<String, String>,
     outcome: &ExchangeOutcome,
     claims: &[IdTokenClaim],
-) -> BTreeMap<String, String> {
+) -> Result<BTreeMap<String, String>, Error> {
     let mut slots = stored.clone();
 
     if let Some(id_token) = &outcome.id_token {
-        apply_id_token_claims(id_token, claims, &mut slots);
+        apply_id_token_claims(id_token, claims, &mut slots)?;
     }
 
     slots.extend(outcome.slots.clone());
 
-    slots
+    Ok(slots)
 }
 
 /// Derives the PKCE S256 challenge of a verifier: Base64URL (unpadded) of SHA-256 over the
@@ -662,7 +685,9 @@ fn classify_error_code(code: &str, terminal_codes: &[String]) -> ExchangeProduct
 
 /// Maps one executed token stage's response fields into the outcome per the definition's
 /// targets: the exchange and the refresh grant share the same fold, differing only in the
-/// mapping slice and the stage label the failures carry.
+/// mapping slice and the stage label the failures carry. The fold is a storage boundary — the
+/// machine-consumed targets (`base_url`, `slot:<name>`) validate through the shared contract
+/// (README §7) before any value reaches it.
 fn map_exchange_fields(
     decoded: &DecodedBody,
     fields: &[ResponseField],
@@ -677,7 +702,10 @@ fn map_exchange_fields(
     Ok(outcome)
 }
 
-/// Folds one extracted exchange value into the outcome per its target.
+/// Folds one extracted exchange value into the outcome per its target, validating the values
+/// that must stay machine-consumed text (slots and base URLs) at the storage boundary (README
+/// §7): a hostile token endpoint fails the stage instead of poisoning the persisted routing
+/// state.
 fn apply_exchange_target(
     outcome: &mut ExchangeOutcome,
     target: &Target,
@@ -707,10 +735,20 @@ fn apply_exchange_target(
 
         Target::IdToken => outcome.id_token = Some(extracted.as_text()),
 
-        Target::BaseUrl => outcome.base_url = Some(extracted.as_text()),
+        Target::BaseUrl => {
+            let value = extracted.as_text();
+
+            validate_base_url_value(&value)?;
+
+            outcome.base_url = Some(value);
+        }
 
         Target::Slot { name } => {
-            outcome.slots.insert(name.clone(), extracted.as_text());
+            let value = extracted.as_text();
+
+            validate_slot_value(name, &value)?;
+
+            outcome.slots.insert(name.clone(), value);
         }
 
         // The write-time validation rejects a device-authorization or provisioning target in an
@@ -776,8 +814,121 @@ pub(crate) async fn execute_refresh_grant(
 
 #[cfg(test)]
 mod tests {
-    use super::jwt_exp_claim;
+    #![expect(
+        clippy::unwrap_used,
+        reason = "the fixtures are constructed so each unwrap lands on its documented side"
+    )]
+    #![expect(
+        clippy::panic,
+        reason = "a fixture landing on the wrong side of its check is the failure report"
+    )]
+
+    use super::{
+        ExchangeOutcome, IdTokenClaim, Target, absorb_exchange_slots, apply_exchange_target,
+        jwt_exp_claim,
+    };
+    use crate::provider::{control::Extracted, definition::template::ResponsePath};
     use base64::{Engine as _, engine::general_purpose};
+    use std::collections::BTreeMap;
+
+    /// Folds one text value into a fresh outcome through the given target, returning the fold's
+    /// result so a test can pin its failure side.
+    fn fold_target(target: &Target, value: &str) -> Result<(), super::Error> {
+        let mut outcome = ExchangeOutcome::default();
+
+        apply_exchange_target(&mut outcome, target, Extracted::Text(value.to_string()))
+    }
+
+    /// The exchange fold is a storage boundary (README §7): a mapped `base_url` must carry the
+    /// non-empty `http(s)://` scheme and mapped slot text must be routing-safe machine-consumed
+    /// text, so a hostile token endpoint fails the stage instead of poisoning the persisted
+    /// routing state; valid values fold in verbatim.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[test]
+    fn the_exchange_fold_validates_base_url_and_slot_targets() {
+        let Err(base_url_error) = fold_target(&Target::BaseUrl, "upstream.example/v1") else {
+            panic!("a scheme-less base_url must fail the fold");
+        };
+
+        assert!(
+            base_url_error.to_string().contains("base_url"),
+            "{base_url_error}"
+        );
+
+        let Err(_) = fold_target(&Target::BaseUrl, "ftp://upstream.example") else {
+            panic!("a non-http base_url scheme must fail the fold");
+        };
+
+        let mut outcome = ExchangeOutcome::default();
+
+        apply_exchange_target(
+            &mut outcome,
+            &Target::BaseUrl,
+            Extracted::Text("https://upstream.example/v1".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.base_url.as_deref(),
+            Some("https://upstream.example/v1"),
+            "a valid base_url stores"
+        );
+
+        let Err(slot_error) = fold_target(
+            &Target::Slot {
+                name: "stage".to_string(),
+            },
+            "has space",
+        ) else {
+            panic!("slot text with whitespace must fail the fold");
+        };
+
+        assert!(slot_error.to_string().contains("stage"), "{slot_error}");
+
+        let Err(_) = fold_target(
+            &Target::Slot {
+                name: "stage".to_string(),
+            },
+            "日本語",
+        ) else {
+            panic!("non-ASCII slot text must fail the fold");
+        };
+
+        let mut outcome = ExchangeOutcome::default();
+
+        apply_exchange_target(
+            &mut outcome,
+            &Target::Slot {
+                name: "stage".to_string(),
+            },
+            Extracted::Text("clean-value".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.slots.get("stage").map(String::as_str),
+            Some("clean-value"),
+            "valid slot text stores"
+        );
+    }
+
+    /// Builds one JWT whose payload carries exactly the given claims.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture fails to serialize — a broken fixture is the failure report.
+    fn jwt_with_payload(payload: serde_json::Value) -> String {
+        #[expect(clippy::unwrap_used, reason = "a JSON object always serializes")]
+        let payload = serde_json::to_vec(&payload).unwrap();
+
+        format!(
+            "header.{}.signature",
+            general_purpose::URL_SAFE_NO_PAD.encode(payload)
+        )
+    }
 
     /// Builds one JWT whose payload carries only the `exp` claim.
     ///
@@ -785,13 +936,55 @@ mod tests {
     ///
     /// Panics when the fixture fails to serialize — a broken fixture is the failure report.
     fn jwt_with_exp(exp: serde_json::Value) -> String {
-        #[expect(clippy::unwrap_used, reason = "a JSON object always serializes")]
-        let payload = serde_json::to_vec(&serde_json::json!({ "exp": exp })).unwrap();
+        jwt_with_payload(serde_json::json!({ "exp": exp }))
+    }
 
-        format!(
-            "header.{}.signature",
-            general_purpose::URL_SAFE_NO_PAD.encode(payload)
-        )
+    /// The identity-token claim absorption is the same storage boundary as the exchange fold
+    /// (README §5.4): a claimed value outside routing-safe machine-consumed text — whitespace,
+    /// control characters, non-ASCII — fails the fold naming its slot instead of poisoning the
+    /// persisted slots, and a valid claim lands in its slot verbatim.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[test]
+    fn the_id_token_claim_absorption_validates_routing_safety() {
+        let jwt = jwt_with_payload(serde_json::json!({
+            "project": "has space",
+            "org": "日本語",
+            "team": "tab\tstopped",
+            "account": "clean-value",
+        }));
+
+        let outcome = ExchangeOutcome {
+            id_token: Some(jwt.clone()),
+            ..ExchangeOutcome::default()
+        };
+
+        let claimed = |member: &str, slot: &str| IdTokenClaim {
+            claim: ResponsePath(vec![member.to_string()]),
+            slot: slot.to_string(),
+        };
+
+        for (member, slot) in [("project", "project"), ("org", "org"), ("team", "team")] {
+            let Err(error) =
+                absorb_exchange_slots(&BTreeMap::new(), &outcome, &[claimed(member, slot)])
+            else {
+                panic!("a non-routing-safe id_token claim must fail the fold (slot `{slot}`)");
+            };
+
+            assert!(error.to_string().contains(slot), "{error}");
+        }
+
+        let slots =
+            absorb_exchange_slots(&BTreeMap::new(), &outcome, &[claimed("account", "account")])
+                .unwrap();
+
+        assert_eq!(
+            slots.get("account").map(String::as_str),
+            Some("clean-value"),
+            "a valid id_token claim stores"
+        );
     }
 
     /// RFC 7519 §2 lets a NumericDate carry a fractional part: the claim ceils to the first

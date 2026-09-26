@@ -10,7 +10,7 @@ import type {
     UsageBucket,
 } from "/src/management-api/generated/v0";
 import { HomeScreen } from "/src/screens/home-screen";
-import { settle, stubManagementApi } from "./screen-test-support";
+import { bodyText, linkTo, settle, stubManagementApi } from "./screen-test-support";
 
 const BASE_URL = "https://gateway.example.com";
 
@@ -168,20 +168,6 @@ function overviewApi(
             });
         },
     });
-}
-
-function linkTo(href: string): HTMLAnchorElement {
-    for (const candidate of document.querySelectorAll("a")) {
-        if (candidate.getAttribute("href") === href) {
-            return candidate;
-        }
-    }
-
-    throw new Error(`No link to ${href}`);
-}
-
-function bodyText(): string {
-    return document.body.textContent ?? "";
 }
 
 /** The chart's bars, by their accessible names. */

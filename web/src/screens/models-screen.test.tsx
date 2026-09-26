@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ModelsScreen } from "/src/screens/models-screen";
-import { settle, stubManagementApi, typeInto } from "./screen-test-support";
+import { bodyText, linkTo, settle, stubManagementApi, typeInto } from "./screen-test-support";
 
 /**
  * A provider whose name shares nothing with its model's ids, so a search
@@ -98,20 +98,6 @@ function optionRepr(option: HTMLOptionElement): {
         label: option.textContent ?? "",
         isSelected: option.selected,
     };
-}
-
-function bodyText(): string {
-    return document.body.textContent ?? "";
-}
-
-function linkTo(href: string): HTMLAnchorElement {
-    for (const candidate of document.querySelectorAll("a")) {
-        if (candidate.getAttribute("href") === href) {
-            return candidate;
-        }
-    }
-
-    throw new Error(`No link to ${href}`);
 }
 
 describe("ModelsScreen empty gateway", () => {

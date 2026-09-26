@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ProvidersScreen } from "/src/screens/providers-screen";
-import { settle, stubManagementApi, typeInto } from "./screen-test-support";
+import { bodyText, settle, stubManagementApi, typeInto } from "./screen-test-support";
 
 /**
  * A provider whose name and credential kind share nothing with its wire
@@ -52,10 +52,6 @@ function searchInput(): HTMLInputElement {
     }
 
     throw new Error("No provider search input");
-}
-
-function bodyText(): string {
-    return document.body.textContent ?? "";
 }
 
 describe("ProvidersScreen search", () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { drainWrites } from "/src/screens/screen-test-support";
 import { currentLocation, hrefs, matchAppRoute, routeTitle } from "./router";
 import { EMPTY_USAGE_FILTER_DRAFT } from "./usage-filter";
 
@@ -447,11 +448,6 @@ describe("routeTitle", () => {
 describe("currentLocation", () => {
     // Solid settles a signal write on a microtask, so a dispatched popstate's
     // write — or the absence of one — becomes observable only after a drain.
-    function drainWrites(): Promise<void> {
-        return new Promise((resolve) => {
-            setTimeout(resolve, 0);
-        });
-    }
 
     // One traversal step: the address moves first, then the browser fires
     // popstate — the event the router's history listener answers. pushState

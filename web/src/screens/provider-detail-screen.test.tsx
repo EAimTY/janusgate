@@ -9,7 +9,7 @@ import type {
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
-import { buttonWithText, settle, stubManagementApi } from "./screen-test-support";
+import { bodyText, buttonWithText, settle, stubManagementApi } from "./screen-test-support";
 
 const provider: ProviderResponse = {
     type: "api_key",
@@ -87,10 +87,6 @@ function screenApi(options: {
                 buckets: [],
             }),
     });
-}
-
-function bodyText(): string {
-    return document.body.textContent ?? "";
 }
 
 /** A discovery answer held back until the test resolves it by hand. */

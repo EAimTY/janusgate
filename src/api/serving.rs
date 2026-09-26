@@ -752,30 +752,21 @@ mod tests {
     use super::*;
     use crate::{
         format::openai_chat_completion::Format as ChatCompletionFormat, ir::IrFinishReason,
-        storage::api_logs::list_api_logs,
+        storage::api_logs::list_api_logs, test_support::TempDirGuard,
     };
-    use std::{num::NonZero, path::PathBuf};
+    use std::num::NonZero;
     use tokio::sync::{mpsc, oneshot};
 
     /// Capacity of the fixture event channel: wide enough that every fixture send completes
     /// without awaiting the consumer.
     const EVENT_CHANNEL_BUFFER: usize = 8;
 
-    /// Directory guard cleaning up the temporary shard tree on drop.
-    struct TempStoreGuard(PathBuf);
-
-    impl Drop for TempStoreGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     /// Creates a shard store over a fresh temporary directory, with its cleanup guard.
     ///
     /// # Panics
     ///
     /// Panics if the literal retention is zero, which the positive literal prevents.
-    fn test_store() -> (api_logs::ApiLogStore, TempStoreGuard) {
+    fn test_store() -> (api_logs::ApiLogStore, TempDirGuard) {
         let directory =
             std::env::temp_dir().join(format!("janusgate-serving-test-{}", rand::random::<u64>()));
 
@@ -784,7 +775,7 @@ mod tests {
 
         (
             api_logs::ApiLogStore::new(directory.clone(), retention),
-            TempStoreGuard(directory),
+            TempDirGuard(directory),
         )
     }
 
