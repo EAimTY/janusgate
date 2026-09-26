@@ -112,48 +112,81 @@ function expectNullableInteger(value: unknown, context: string): number | null {
     return value;
 }
 
+/**
+ * One composite-key dimension: its wire field name and the narrowing that
+ * types a present value. The narrowed type correlates with the name through
+ * `UsageBucketKey`, so a dimension added to the contract extends the table
+ * below, not the walk, and a mispaired narrowing cannot compile.
+ */
+type BucketKeyField = {
+    readonly [TFieldName in keyof UsageBucketKey]-?: {
+        readonly name: TFieldName;
+        readonly narrow: (value: unknown, context: string) => UsageBucketKey[TFieldName];
+    };
+}[keyof UsageBucketKey];
+
+/** Every dimension the composite bucket key can carry, in bindings order. */
+const BUCKET_KEY_FIELDS: ReadonlyArray<BucketKeyField> = [
+    {
+        name: "day",
+        narrow: expectString,
+    },
+    {
+        name: "model_id",
+        narrow: expectInteger,
+    },
+    {
+        name: "provider_id",
+        narrow: expectInteger,
+    },
+    {
+        name: "api_key_id",
+        narrow: expectInteger,
+    },
+    {
+        name: "endpoint_type",
+        narrow: parseApiLogEndpointType,
+    },
+    {
+        name: "outcome",
+        narrow: parseApiLogOutcome,
+    },
+    {
+        name: "is_stream",
+        narrow: expectBoolean,
+    },
+    {
+        name: "http_status",
+        narrow: expectNullableInteger,
+    },
+];
+
+/**
+ * Types one present dimension into the key through its correlated narrowing;
+ * an absent one passes through, exactly as the wire omits it.
+ */
+function writeBucketKeyField<TFieldName extends keyof UsageBucketKey>(
+    key: UsageBucketKey,
+    field: {
+        readonly name: TFieldName;
+        readonly narrow: (value: unknown, context: string) => UsageBucketKey[TFieldName];
+    },
+    record: object,
+    context: string,
+): void {
+    const value = Reflect.get(record, field.name);
+
+    if (value !== undefined) {
+        key[field.name] = field.narrow(value, `${context}.${field.name}`);
+    }
+}
+
 function expectBucketKey(value: unknown, context: string): UsageBucketKey {
     const record = expectRecord(value, context);
     const key: UsageBucketKey = {};
 
-    const day = Reflect.get(record, "day");
-    if (day !== undefined) {
-        key.day = expectString(day, `${context}.day`);
-    }
-
-    const modelId = Reflect.get(record, "model_id");
-    if (modelId !== undefined) {
-        key.model_id = expectInteger(modelId, `${context}.model_id`);
-    }
-
-    const providerId = Reflect.get(record, "provider_id");
-    if (providerId !== undefined) {
-        key.provider_id = expectInteger(providerId, `${context}.provider_id`);
-    }
-
-    const apiKeyId = Reflect.get(record, "api_key_id");
-    if (apiKeyId !== undefined) {
-        key.api_key_id = expectInteger(apiKeyId, `${context}.api_key_id`);
-    }
-
-    const endpointType = Reflect.get(record, "endpoint_type");
-    if (endpointType !== undefined) {
-        key.endpoint_type = parseApiLogEndpointType(endpointType, `${context}.endpoint_type`);
-    }
-
-    const outcome = Reflect.get(record, "outcome");
-    if (outcome !== undefined) {
-        key.outcome = parseApiLogOutcome(outcome, `${context}.outcome`);
-    }
-
-    const isStream = Reflect.get(record, "is_stream");
-    if (isStream !== undefined) {
-        key.is_stream = expectBoolean(isStream, `${context}.is_stream`);
-    }
-
-    const httpStatus = Reflect.get(record, "http_status");
-    if (httpStatus !== undefined) {
-        key.http_status = expectNullableInteger(httpStatus, `${context}.http_status`);
+    for (const field of BUCKET_KEY_FIELDS) {
+        writeBucketKeyField(key, field, record, context);
     }
 
     return key;

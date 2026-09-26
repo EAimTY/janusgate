@@ -344,11 +344,10 @@ mod tests {
             api_keys::{self, ApiKeyFields},
             models::ModelCreate,
         },
-        test_support::TempDirGuard,
+        test_support::{MockAction, MockUpstream, TempDirGuard},
     };
     use std::{
         error::Error as StdError,
-        io::Error as IoError,
         num::NonZero,
         path::Path,
         sync::{
@@ -357,7 +356,6 @@ mod tests {
         },
         time::Duration,
     };
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio_stream::StreamExt as _;
 
     /// The mock answers one chat completion JSON carrying usage (prompt 11, completion 7, no
@@ -377,7 +375,9 @@ mod tests {
     /// The mock streams forever, so the client can abort mid-stream.
     const MOCK_SSE_FOREVER: u8 = 4;
 
-    /// The mock holds its first frame back, so a client can leave before any frame was enqueued.
+    /// The mock holds its first frame back, so a client can leave before any frame was enqueued:
+    /// the frame arrives long after the gateway handed its response to the client, and the
+    /// frame's arrival is what makes the render task notice the broken channel.
     const MOCK_SSE_DELAYED: u8 = 5;
 
     /// One recorded row as the scenario assertions read it.
@@ -470,173 +470,65 @@ mod tests {
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
     }
 
-    /// Starts the mock upstream on an ephemeral port, returning its address and the shared mode
-    /// selector the test flips between scenarios.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when binding or addressing the mock listener fails.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the bound listener reports no address.
-    async fn spawn_mock_upstream() -> Result<(std::net::SocketAddr, Arc<AtomicU8>), IoError> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-
-        #[expect(clippy::expect_used, reason = "a bound listener reports its address")]
-        let address = listener
-            .local_addr()
-            .expect("a bound listener reports its address");
-
-        let mode = Arc::new(AtomicU8::new(MOCK_JSON_SUCCESS));
-        let shared = Arc::clone(&mode);
-
-        tokio::spawn(async move {
-            while let Ok((stream, _peer)) = listener.accept().await {
-                tokio::spawn(serve_mock(stream, Arc::clone(&shared)));
-            }
-        });
-
-        Ok((address, mode))
-    }
-
-    /// Serves one mock upstream connection: reads the request head and body, then applies the
+    /// Starts the shared mock upstream on an ephemeral port, returning the mock and the shared
+    /// mode selector the test flips between scenarios; every request is answered per the
     /// currently selected mode.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the socket read or write fails — including the write against a
-    /// client that already left, which is how the forever-streaming mode terminates.
-    ///
     /// # Panics
     ///
-    /// Panics on a mode the test never sets, which would be a harness bug.
-    async fn serve_mock(
-        mut stream: tokio::net::TcpStream,
-        mode: Arc<AtomicU8>,
-    ) -> std::io::Result<()> {
-        read_mock_request(&mut stream).await?;
+    /// Panics when the mock cannot bind — a broken mock is the failure report.
+    async fn spawn_mock_upstream() -> (MockUpstream, Arc<AtomicU8>) {
+        let mode = Arc::new(AtomicU8::new(MOCK_JSON_SUCCESS));
+        let selected = Arc::clone(&mode);
 
-        match mode.load(Ordering::SeqCst) {
-            MOCK_JSON_SUCCESS => {
-                stream
-                    .write_all(
-                        http_response("200 OK", "application/json", MOCK_COMPLETION_BODY)
-                            .as_bytes(),
-                    )
-                    .await
-            }
+        let mock = MockUpstream::start_responding(move || {
+            match selected.load(Ordering::SeqCst) {
+                MOCK_JSON_SUCCESS => MockAction::Respond(http_response(
+                    "200 OK",
+                    "application/json",
+                    MOCK_COMPLETION_BODY,
+                )),
 
-            MOCK_UPSTREAM_429 => {
-                stream
-                    .write_all(
-                        http_response("429 Too Many Requests", "application/json", MOCK_ERROR_BODY)
-                            .as_bytes(),
-                    )
-                    .await
-            }
+                MOCK_UPSTREAM_429 => MockAction::Respond(http_response(
+                    "429 Too Many Requests",
+                    "application/json",
+                    MOCK_ERROR_BODY,
+                )),
 
-            // Dropping the accepted socket without answering fails the gateway's send(): the
-            // transport-failure scenario.
-            MOCK_CLOSE_ON_ARRIVAL => Ok(()),
+                // Dropping the accepted socket without answering fails the gateway's send():
+                // the transport-failure scenario.
+                MOCK_CLOSE_ON_ARRIVAL => MockAction::Close,
 
-            MOCK_SSE_COMPLETE => {
-                stream.write_all(sse_head().as_bytes()).await?;
-                stream.write_all(MOCK_SSE_COMPLETION.as_bytes()).await
-            }
-
-            MOCK_SSE_FOREVER => {
-                stream.write_all(sse_head().as_bytes()).await?;
-
-                loop {
-                    stream.write_all(MOCK_SSE_HEARTBEAT.as_bytes()).await?;
-                    tokio::time::sleep(Duration::from_millis(20)).await;
+                MOCK_SSE_COMPLETE => {
+                    MockAction::Respond(format!("{}{MOCK_SSE_COMPLETION}", sse_head()))
                 }
-            }
 
-            MOCK_SSE_DELAYED => {
-                stream.write_all(sse_head().as_bytes()).await?;
+                MOCK_SSE_FOREVER => MockAction::StreamForever {
+                    head: sse_head().to_string(),
+                    frame: MOCK_SSE_HEARTBEAT.to_string(),
+                    interval: Duration::from_millis(20),
+                },
 
-                // The frame arrives long after the gateway handed its response to the client, so
-                // a client that already left has enqueued nothing — and the frame's arrival is
-                // what makes the render task notice the broken channel.
-                tokio::time::sleep(Duration::from_millis(1_200)).await;
-                stream.write_all(MOCK_SSE_HEARTBEAT.as_bytes()).await
-            }
+                MOCK_SSE_DELAYED => MockAction::StreamAfterDelay {
+                    head: sse_head().to_string(),
+                    frame: MOCK_SSE_HEARTBEAT.to_string(),
+                    delay: Duration::from_millis(1_200),
+                },
 
-            other => {
-                #[expect(
-                    clippy::panic,
-                    reason = "the test only ever selects the six declared mock modes"
-                )]
-                {
-                    panic!("unknown mock mode {other}");
-                }
-            }
-        }
-    }
-
-    /// Reads one HTTP/1.1 request head plus its `Content-Length` body off the mock connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the read fails.
-    async fn read_mock_request(stream: &mut tokio::net::TcpStream) -> std::io::Result<()> {
-        let mut collected: Vec<u8> = Vec::new();
-
-        let head_end = loop {
-            let read = stream.read_buf(&mut collected).await?;
-
-            if read == 0 {
-                return Ok(());
-            }
-
-            if let Some(position) = head_end(&collected) {
-                break position;
-            }
-        };
-
-        let body_length = {
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "head_end is an in-bounds offset into the same buffer"
-            )]
-            let head = String::from_utf8_lossy(&collected[..head_end]).into_owned();
-
-            head.lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-
-                    if name.eq_ignore_ascii_case("content-length") {
-                        value.trim().parse::<usize>().ok()
-                    } else {
-                        None
+                other => {
+                    #[expect(
+                        clippy::panic,
+                        reason = "the test only ever selects the six declared mock modes"
+                    )]
+                    {
+                        panic!("unknown mock mode {other}");
                     }
-                })
-                .unwrap_or(0)
-        };
-
-        let mut body_read = collected.len() - head_end;
-
-        while body_read < body_length {
-            let read = stream.read_buf(&mut collected).await?;
-
-            if read == 0 {
-                break;
+                }
             }
+        })
+        .await;
 
-            body_read += read;
-        }
-
-        Ok(())
-    }
-
-    /// Returns the byte offset just past the request head's terminating blank line.
-    fn head_end(collected: &[u8]) -> Option<usize> {
-        collected
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .map(|position| position + 4)
+        (mock, mode)
     }
 
     /// Renders the end-to-end configuration, pointed at the temporary database and an ephemeral
@@ -846,7 +738,7 @@ mod tests {
         let config_path = directory.join("config.jsonc");
         let shard_directory = directory.join("api-logs");
 
-        let (mock_address, mock_mode) = spawn_mock_upstream().await?;
+        let (mock, mock_mode) = spawn_mock_upstream().await;
 
         std::fs::write(
             &config_path,
@@ -890,7 +782,7 @@ mod tests {
         )
         .await?;
 
-        let mock_base = format!("http://{mock_address}");
+        let mock_base = mock.base();
 
         let definition = crate::test_support::insert_static_key_definition(
             &database,

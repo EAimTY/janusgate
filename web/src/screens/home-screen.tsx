@@ -292,11 +292,18 @@ export function HomeScreen(props: {
                             <CardHeader title="Needs attention" />
                             <ul class="mt-4 flex flex-col divide-y divide-rule">
                                 <Show when={entities().apiKeys.length === 0}>
-                                    <li class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
-                                        <Glyph
-                                            name="key"
-                                            class="shrink-0 text-ink-faint"
-                                        />
+                                    <AttentionRow
+                                        lead={
+                                            <Glyph
+                                                name="key"
+                                                class="shrink-0 text-ink-faint"
+                                            />
+                                        }
+                                        action={{
+                                            href: hrefs.apiKeyNew(),
+                                            label: "Create API key",
+                                        }}
+                                    >
                                         <p class="min-w-0 flex-1 text-[13.5px]">
                                             <span class="font-medium">No API keys yet.</span>
                                             <span class="text-ink-dim">
@@ -305,26 +312,48 @@ export function HomeScreen(props: {
                                                 }
                                             </span>
                                         </p>
-                                        <ButtonLink href={hrefs.apiKeyNew()}>
-                                            Create API key
-                                        </ButtonLink>
-                                    </li>
+                                    </AttentionRow>
                                 </Show>
                                 <For each={attentionProviders()}>
                                     {(item) => (
                                         <AttentionRow
-                                            provider={item.provider}
-                                            attention={item.attention}
-                                        />
+                                            lead={
+                                                <Badge
+                                                    tone="warn"
+                                                    label={item.attention.label}
+                                                />
+                                            }
+                                            action={{
+                                                // Reauthorization lives on the edit page's Credentials card.
+                                                href: hrefs.providerEdit(item.provider.id),
+                                                label: "Reconnect",
+                                            }}
+                                        >
+                                            <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
+                                                <span class="font-medium">
+                                                    {item.provider.name}
+                                                </span>
+                                                <span class="text-ink-dim">
+                                                    {` · ${credentialKindLabel(item.provider.type)} · ${item.attention.detail}`}
+                                                </span>
+                                            </p>
+                                        </AttentionRow>
                                     )}
                                 </For>
                                 <For each={providersWithoutServingModels()}>
                                     {(item) => (
-                                        <li class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
-                                            <Glyph
-                                                name="stack"
-                                                class="shrink-0 text-ink-faint"
-                                            />
+                                        <AttentionRow
+                                            lead={
+                                                <Glyph
+                                                    name="stack"
+                                                    class="shrink-0 text-ink-faint"
+                                                />
+                                            }
+                                            action={{
+                                                href: item.attention.href,
+                                                label: item.attention.action,
+                                            }}
+                                        >
                                             <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
                                                 <span class="font-medium">
                                                     {item.provider.name}
@@ -333,10 +362,7 @@ export function HomeScreen(props: {
                                                     {item.attention.detail}
                                                 </span>
                                             </p>
-                                            <ButtonLink href={item.attention.href}>
-                                                {item.attention.action}
-                                            </ButtonLink>
-                                        </li>
+                                        </AttentionRow>
                                     )}
                                 </For>
                             </ul>
@@ -488,19 +514,24 @@ function credentialAttention(provider: ProviderResponse): {
     };
 }
 
-function AttentionRow(props: ProviderAttention): JSX.Element {
+/**
+ * One needs-attention line: its lead mark, its statement, and the action that
+ * answers it. Every attention kind the overview lists renders through here, so
+ * the rows share one anatomy instead of drifting apart.
+ */
+function AttentionRow(props: {
+    readonly lead: JSX.Element;
+    readonly action: {
+        readonly href: string;
+        readonly label: string;
+    };
+    readonly children: JSX.Element;
+}): JSX.Element {
     return (
         <li class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
-            <Badge
-                tone="warn"
-                label={props.attention.label}
-            />
-            <p class="min-w-0 flex-1 basis-48 text-[13.5px]">
-                <span class="font-medium">{props.provider.name}</span>
-                <span class="text-ink-dim">{` · ${credentialKindLabel(props.provider.type)} · ${props.attention.detail}`}</span>
-            </p>
-            {/* Reauthorization lives on the edit page's Credentials card. */}
-            <ButtonLink href={hrefs.providerEdit(props.provider.id)}>Reconnect</ButtonLink>
+            {props.lead}
+            {props.children}
+            <ButtonLink href={props.action.href}>{props.action.label}</ButtonLink>
         </li>
     );
 }
@@ -518,7 +549,7 @@ function GettingStarted(): JSX.Element {
                 tone="primary"
                 glyph="plus"
             >
-                Add your first provider
+                Create your first provider
             </ButtonLink>
             <ol class="mt-2 flex w-full list-none flex-col gap-2 text-[13.5px]">
                 <GettingStartedStep
@@ -528,7 +559,7 @@ function GettingStarted(): JSX.Element {
                 />
                 <GettingStartedStep
                     index={2}
-                    title="Add a provider"
+                    title="Create a provider"
                 />
                 <GettingStartedStep
                     index={3}

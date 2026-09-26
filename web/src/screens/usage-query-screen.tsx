@@ -22,7 +22,12 @@ import {
     type UsageFilterFields,
 } from "/src/usage-filter";
 import { isSkeletonWindowOpen, ReadCallFailure, readOne, type ScreenNotice } from "./read";
-import { indexUsageEntities, type UsageEntityIndex, usageDimensionLabel } from "./usage-labels";
+import {
+    bucketKeyField,
+    indexUsageEntities,
+    type UsageEntityIndex,
+    usageDimensionLabel,
+} from "./usage-labels";
 import { readUsageBuckets, readUsageEntities, type UsageEntities } from "./usage-read";
 
 /**
@@ -144,6 +149,31 @@ export function UsageQueryScreen(props: {
 
     // Indexed once per entities change, so every bucket key's id lookups are O(1).
     const index = createMemo(() => indexUsageEntities(entities()));
+
+    /**
+     * The buckets as the table displays them: while the standing grouping
+     * includes day, the buckets display newest-day-first — the same direction
+     * the detail usage card renders its per-day series, so arriving through
+     * its aggregates door never flips the series — with the gateway's own
+     * order kept within equal days; any other grouping keeps the gateway's
+     * order untouched. The day part is the invariant `readUsageBuckets`
+     * proved inside the read cycle, so the sort asserts it exactly as the
+     * key cells do.
+     */
+    const displayedBuckets = createMemo(() => {
+        if (!responseDimensions().includes("day")) {
+            return buckets();
+        }
+
+        return [
+            ...buckets(),
+        ].sort((left, right) => {
+            const leftDay = bucketKeyField(left.key.day, "day");
+            const rightDay = bucketKeyField(right.key.day, "day");
+
+            return leftDay === rightDay ? 0 : leftDay < rightDay ? 1 : -1;
+        });
+    });
 
     /** Adds the dimension to the requested set, or removes it from it. */
     const toggleDimension = (dimension: UsageGroupBy, isOn: boolean): void => {
@@ -457,7 +487,7 @@ export function UsageQueryScreen(props: {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <For each={buckets()}>
+                                    <For each={displayedBuckets()}>
                                         {(bucket) => (
                                             <tr class="border-t border-rule">
                                                 <BucketKeyCell
@@ -497,6 +527,11 @@ export function UsageQueryScreen(props: {
                             Token totals skip rows where the upstream reported no usage — an absent
                             breakdown never inflates or deflates a total.
                         </p>
+                        <Show when={responseDimensions().includes("day")}>
+                            <p class="mt-1 text-[12.5px] text-ink-faint">
+                                Days are UTC — the gateway's own day boundary.
+                            </p>
+                        </Show>
                     </Card>
                 </Show>
             </Show>

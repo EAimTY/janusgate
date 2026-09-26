@@ -19,6 +19,21 @@ const dayBucket: UsageBucket = {
     reasoning_tokens: 0,
 };
 
+/** One counted day bucket on the given day. */
+function dayBucketOn(day: string): UsageBucket {
+    return {
+        key: {
+            day,
+        },
+        requests: 1,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+    };
+}
+
 /** One held `usage:query` call: the ways the test ends it. */
 type HeldQuery = {
     readonly answer: (result: QueryUsageResponse) => void;
@@ -170,5 +185,60 @@ describe("EntityUsageCard read failures", () => {
 
         expect(bodyText()).toContain("No requests recorded for this provider yet.");
         expect(bodyText()).not.toContain("first read refused");
+    });
+});
+
+describe("EntityUsageCard per-day series", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** The usage table's row labels in rendered order — the displayed series. */
+    function dayRows(): Array<string | null> {
+        return Array.from(
+            document.querySelectorAll<HTMLTableCellElement>("tbody th[scope=row]"),
+        ).map((cell) => cell.textContent);
+    }
+
+    it("renders the days newest-first and states the UTC boundary under the table", async () => {
+        disposes.push(
+            render(
+                () => (
+                    <EntityUsageCard
+                        api={stubManagementApi({
+                            queryUsage: () =>
+                                Promise.resolve({
+                                    buckets: [
+                                        dayBucketOn("2026-09-01"),
+                                        dayBucketOn("2026-09-02"),
+                                        dayBucketOn("2026-09-03"),
+                                    ],
+                                }),
+                        })}
+                        filter={{
+                            provider_id: 1,
+                        }}
+                        subjectKind="provider"
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The gateway answers ascending by day; the card's series reads
+        // newest-first, and the boundary the days split on is stated under
+        // the table.
+        expect(dayRows()).toEqual([
+            "2026-09-03",
+            "2026-09-02",
+            "2026-09-01",
+        ]);
+        expect(bodyText()).toContain("Days are UTC — the gateway's own day boundary.");
     });
 });

@@ -1,31 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ApiLogResponse } from "/src/management-api/generated/v0";
+import { API_LOG_CURSOR_BASE, apiLogRow } from "./screen-test-support";
 import { nextUsagePage, USAGE_PAGE_SIZE, usageCursor } from "./usage-pagination";
 
-/** The base instant every fixture row's stamp offsets, marking rows by it. */
-const CURSOR_BASE = 1_700_000_000_000_000;
-
-function row(offset: number): ApiLogResponse {
-    return {
-        started_at: CURSOR_BASE + offset,
-        api_key_id: 7,
-        provider_id: 1,
-        model_id: 9,
-        endpoint_type: "openai_chat_completions",
-        is_stream: false,
-        http_status: 200,
-        outcome: "completed",
-        duration: 120,
-        input_tokens: 10,
-        output_tokens: 20,
-        cached_tokens: null,
-        cache_write_tokens: null,
-        reasoning_tokens: null,
-    };
-}
-
 function rowsFromIds(ids: ReadonlyArray<number>): ReadonlyArray<ApiLogResponse> {
-    return ids.map(row);
+    return ids.map((offset) => apiLogRow(offset));
 }
 
 /** A page filled to `USAGE_PAGE_SIZE`, ids descending as the gateway orders them. */
@@ -83,7 +62,7 @@ describe("usage pagination", () => {
                     2,
                 ]),
             ),
-        ).toBe(CURSOR_BASE + 2);
+        ).toBe(API_LOG_CURSOR_BASE + 2);
         expect(usageCursor([])).toBe(null);
     });
 
@@ -100,10 +79,10 @@ describe("usage pagination", () => {
         );
 
         expect(continuation.rows.map((listed) => listed.started_at)).toEqual([
-            CURSOR_BASE + 5,
-            CURSOR_BASE + 4,
-            CURSOR_BASE + 3,
-            CURSOR_BASE + 2,
+            API_LOG_CURSOR_BASE + 5,
+            API_LOG_CURSOR_BASE + 4,
+            API_LOG_CURSOR_BASE + 3,
+            API_LOG_CURSOR_BASE + 2,
         ]);
     });
 });

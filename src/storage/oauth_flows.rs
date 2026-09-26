@@ -609,12 +609,13 @@ pub(crate) async fn persist_device_poll(
 /// One device poll attempt's persisted outcome.
 pub(crate) enum DevicePollOutcome {
     /// The upstream reported the flow still pending (or the transport backed off): the next
-    /// attempt is scheduled, with the interval optionally raised permanently by `slow_down`.
+    /// attempt is scheduled at `next_poll_at`, and the stored interval is raised permanently
+    /// only by `slow_down` — a transport-timeout backoff rides `next_poll_at` alone.
     Retry {
-        /// The next attempt instant, in UTC microseconds.
+        /// The next attempt instant, in UTC microseconds; it carries any transient backoff.
         next_poll_at: i64,
 
-        /// The interval the next attempt must respect, in seconds.
+        /// The flow interval persisted as the stored schedule, in seconds.
         interval_seconds: i64,
     },
 

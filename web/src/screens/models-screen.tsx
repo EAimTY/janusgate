@@ -94,6 +94,39 @@ export function ModelsScreen(props: {
         });
     });
 
+    // The provider listing is the authority on a filter's subject's
+    // existence: a filtered model listing for an id the listing no longer
+    // carries answers an empty list, so that emptiness proves nothing about
+    // the provider's models.
+    const isFilteredProviderListed = createMemo(
+        () =>
+            props.providerFilter !== null &&
+            providers().some((row) => row.id === props.providerFilter),
+    );
+
+    // The empty answer names exactly the narrows in force: a search under a
+    // filter names both, and a filter whose provider the listing no longer
+    // carries states that listing fact — beside the select's "(no longer
+    // listed)" option, which already does — instead of a models verdict the
+    // empty filtered list cannot prove.
+    const emptyNoticeTitle = createMemo(() => {
+        const needle = search().trim();
+
+        if (needle !== "") {
+            return props.providerFilter === null
+                ? `No models match "${needle}".`
+                : `No models of this provider match "${needle}".`;
+        }
+
+        if (props.providerFilter === null) {
+            return "No models on any provider yet — discover or add one.";
+        }
+
+        return isFilteredProviderListed()
+            ? "This provider holds no models."
+            : "This provider is no longer listed — pick another in the Provider filter.";
+    });
+
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
@@ -167,13 +200,7 @@ export function ModelsScreen(props: {
                         fallback={
                             <Notice
                                 tone="info"
-                                title={
-                                    search().trim() !== ""
-                                        ? `No models match "${search().trim()}".`
-                                        : props.providerFilter === null
-                                          ? "No models on any provider yet — discover or add one."
-                                          : "This provider holds no models."
-                                }
+                                title={emptyNoticeTitle()}
                             />
                         }
                     >

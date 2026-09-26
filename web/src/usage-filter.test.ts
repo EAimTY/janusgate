@@ -9,6 +9,11 @@ import {
     parseUsageFilterDraft,
     serializeUsageFilterDraft,
     statusError,
+    USAGE_QUERY_SUBJECT_DIMENSIONS,
+    USAGE_QUERY_SUBJECT_FIELDS,
+    type UsageQuerySubjectDimension,
+    type UsageSubjectFilter,
+    usageQuerySubjectOfFilter,
     windowBoundMicros,
 } from "./usage-filter";
 
@@ -211,5 +216,28 @@ describe("hasUsageFilter", () => {
                 outcome: "failures",
             }),
         ).toBe(true);
+    });
+});
+
+/**
+ * The subject filter one table dimension names, built under that dimension's
+ * own wire field. The computed key's union spelling reads as an index
+ * signature, so the fixture asserts the one table pairing the round-trip
+ * below pins.
+ */
+function subjectFilterNamed(dimension: UsageQuerySubjectDimension, id: number): UsageSubjectFilter {
+    return {
+        [USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField]: id,
+    } as UsageSubjectFilter;
+}
+
+describe("usageQuerySubjectOfFilter", () => {
+    it("round-trips every dimension through the table: the filter built under its wire field reads back as its subject", () => {
+        for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
+            expect(usageQuerySubjectOfFilter(subjectFilterNamed(dimension, 12))).toEqual({
+                dimension,
+                id: 12,
+            });
+        }
     });
 });

@@ -15,9 +15,9 @@
 //! whichever stage extracted it. They live inside the oauth engine because every production
 //! fold runs there — a provisioning sequence only ever executes under this engine's stages.
 
-use super::Error;
 use crate::{
     provider::{
+        Error,
         control::{self, DecodedBody, Extracted},
         definition::{
             eval::ValueEnv,

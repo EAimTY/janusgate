@@ -14,6 +14,8 @@ import { USAGE_PAGE_SIZE } from "/src/screens/usage-pagination";
 import { UsageScreen } from "/src/screens/usage-screen";
 import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filter";
 import {
+    API_LOG_CURSOR_BASE,
+    apiLogRow,
     bodyText,
     buttonWithText,
     labeledInput,
@@ -26,28 +28,16 @@ import {
 
 /**
  * One accounting row whose only distinguishing rendering is `<duration> ms`:
- * every stream assertion below marks rows by that number. The row's stamp is
- * the base instant plus the same offset, so a page's cursor derives from it.
+ * every stream assertion below marks rows by that number. The shared row's
+ * token columns are blanked and its duration is the offset, so a page's
+ * cursor derives from the same stamp the durations read by.
  */
-const CURSOR_BASE = 1_700_000_000_000_000;
-
 function logRow(offset: number): ApiLogResponse {
-    return {
-        started_at: CURSOR_BASE + offset,
-        api_key_id: 7,
-        provider_id: 1,
-        model_id: 9,
-        endpoint_type: "openai_chat_completions",
-        is_stream: false,
-        http_status: 200,
-        outcome: "completed",
+    return apiLogRow(offset, {
         duration: offset,
         input_tokens: null,
         output_tokens: null,
-        cached_tokens: null,
-        cache_write_tokens: null,
-        reasoning_tokens: null,
-    };
+    });
 }
 
 /** One page of `count` rows, newest first, stamps counting down from `newest`. */
@@ -197,7 +187,7 @@ describe("UsageScreen stream continuation", () => {
 
         expect(bodyText()).toContain("Loading…");
         const stalePage = holder.pages.at(-1);
-        expect(stalePage?.request.before).toBe(CURSOR_BASE + 951);
+        expect(stalePage?.request.before).toBe(API_LOG_CURSOR_BASE + 951);
 
         // The refresh takes the stream over wholesale: the loader dies
         // mid-flight and the refresh's own first page is the only open call.
@@ -279,7 +269,7 @@ describe("UsageScreen stream continuation", () => {
 
         buttonWithText("Load more").click();
         await settle();
-        expect(holder.pages.at(-1)?.request.before).toBe(CURSOR_BASE + 951);
+        expect(holder.pages.at(-1)?.request.before).toBe(API_LOG_CURSOR_BASE + 951);
 
         holder.pages.at(-1)?.refuse(new Error("page load refused"));
         await settle();
@@ -306,7 +296,7 @@ describe("UsageScreen stream continuation", () => {
 
         // The retry carries the stream's own cursor: the failure never
         // displaced it.
-        expect(holder.pages.at(-1)?.request.before).toBe(CURSOR_BASE + 951);
+        expect(holder.pages.at(-1)?.request.before).toBe(API_LOG_CURSOR_BASE + 951);
 
         answerLastPage(holder, page(950, 3));
         await settle();
@@ -378,7 +368,7 @@ describe("UsageScreen filtering", () => {
 
         const next = holder.pages.at(-1)?.request;
 
-        expect(next?.before).toBe(CURSOR_BASE + 951);
+        expect(next?.before).toBe(API_LOG_CURSOR_BASE + 951);
         // The rolling window is resolved once per cycle: pages carrying
         // different bounds could skip or repeat rows at the seam.
         expect(next?.filter).toEqual(first?.filter);
@@ -429,7 +419,7 @@ describe("UsageScreen filtering", () => {
 
         const continued = holder.pages.at(-1)?.request;
 
-        expect(continued?.before).toBe(CURSOR_BASE + 951);
+        expect(continued?.before).toBe(API_LOG_CURSOR_BASE + 951);
         expect(continued?.filter?.from).toBe(first?.filter?.from);
 
         answerLastPage(holder, page(950, 3));

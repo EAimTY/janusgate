@@ -203,8 +203,11 @@ describe("ModelsScreen provider filter", () => {
         disposes.length = 0;
     });
 
-    /** Mounts the screen over a gateway with the provider but none of its models. */
-    function mountFiltered(providerFilter: number | null): void {
+    /** Mounts the screen over a gateway holding the provider and the given models. */
+    function mountFiltered(
+        providerFilter: number | null,
+        models: ReadonlyArray<ModelResponse> = [],
+    ): void {
         disposes.push(
             render(
                 () => (
@@ -213,7 +216,9 @@ describe("ModelsScreen provider filter", () => {
                             providers: [
                                 providerRow,
                             ],
-                            models: [],
+                            models: [
+                                ...models,
+                            ],
                         })}
                         providerFilter={providerFilter}
                     />
@@ -238,6 +243,35 @@ describe("ModelsScreen provider filter", () => {
         await settle();
 
         expect(bodyText()).toContain("This provider holds no models.");
+    });
+
+    it("names both narrows when a search runs under a filter", async () => {
+        mountFiltered(3, [
+            modelRow,
+        ]);
+        await settle();
+
+        typeInto(searchInput(), "zzz");
+        await settle();
+
+        expect(bodyText()).toContain('No models of this provider match "zzz"');
+        // The filter's narrow is part of the answer, never folded away into
+        // the search-only wording.
+        expect(bodyText()).not.toContain('No models match "zzz"');
+    });
+
+    it("states a no-longer-listed filter instead of its models", async () => {
+        mountFiltered(9);
+        await settle();
+
+        // The empty filtered list proves nothing about the provider's models
+        // — the provider list is the authority on existence — so the notice
+        // states the listing fact the select's option already names and
+        // points there.
+        expect(bodyText()).toContain(
+            "This provider is no longer listed — pick another in the Provider filter.",
+        );
+        expect(bodyText()).not.toContain("This provider holds no models.");
     });
 
     it("keeps a filter naming an unlisted provider stated as its own option", async () => {

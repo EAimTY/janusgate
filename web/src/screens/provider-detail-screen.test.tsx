@@ -344,4 +344,34 @@ describe("ProviderDetailScreen facts", () => {
         expect(bodyText()).toContain("Recipe");
         expect(bodyText()).toContain("generic-openai-chat-completions v1");
     });
+
+    it("names a static key's kind once — on the header line, never as a badge", async () => {
+        const api = screenApi({
+            providers: [
+                provider,
+            ],
+            models: [
+                discoveredModel,
+            ],
+            onDiscover: () => undefined,
+        });
+
+        disposes.push(
+            render(
+                () => (
+                    <ProviderDetailScreen
+                        api={api}
+                        providerId={5}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // One term per surface: the header line names "Static API key", and
+        // the shorter "Static key" alias must not return as a badge beside it.
+        expect(bodyText().split("Static API key").length - 1).toBe(1);
+        expect(bodyText()).not.toContain("Static key");
+    });
 });

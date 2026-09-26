@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { isCredentialExpired, nowMicros } from "/src/format";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
 import {
@@ -8,24 +8,22 @@ import {
     upstreamFormatLabel,
 } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
-import { AppLink } from "/src/ui/app-link";
 import { Badge, type BadgeTone } from "/src/ui/feedback";
-import { Glyph } from "/src/ui/glyph";
+import { RowLink } from "/src/ui/row-link";
 
 /**
- * The one readable statement of a provider's credential state. A static key
- * never expires; an OAuth login without a stored expiry was never fresh, and
- * one past its expiry reconnects before it serves again.
+ * The one glance at a credential that can go stale: a fresh OAuth login reads
+ * `Valid`, one past its expiry `Expired`, and one with no stored expiry was
+ * never fresh — `Stale`. A static key never expires, and the row's own line
+ * already names its kind, so it earns no credential badge and this answers
+ * `null` for it.
  */
 export function credentialBadge(provider: ProviderResponse): {
     readonly tone: BadgeTone;
     readonly label: string;
-} {
+} | null {
     if (!isOAuthProviderRow(provider)) {
-        return {
-            tone: "muted",
-            label: "Static key",
-        };
+        return null;
     }
 
     if (provider.expires_at === null) {
@@ -47,8 +45,8 @@ export function credentialBadge(provider: ProviderResponse): {
 }
 
 /**
- * One provider's row: its name, its kind, its model count, and its two
- * states. The row is one link to the provider's own page, where its models
+ * One provider's row: its name, its kind, its model count, and its enabled
+ * state. The row is one link to the provider's own page, where its models
  * and usage live and the edit page behind it owns every change.
  */
 function ProviderRow(props: {
@@ -58,37 +56,35 @@ function ProviderRow(props: {
     const credential = (): {
         readonly tone: BadgeTone;
         readonly label: string;
-    } => credentialBadge(props.provider);
+    } | null => credentialBadge(props.provider);
 
     return (
         <li>
-            <AppLink
+            <RowLink
                 href={hrefs.providerDetail(props.provider.id)}
-                class="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3.5 transition-colors duration-150 ease-out hover:border-ink-faint"
-            >
-                <span class="min-w-0 flex-1 basis-48">
+                primary={
                     <span class="block truncate text-[14.5px] font-semibold">
                         {props.provider.name}
                     </span>
-                    <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
-                        {`${upstreamFormatLabel(props.provider.format)} · ${credentialKindLabel(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
-                    </span>
-                </span>
-                <span class="flex items-center gap-2">
-                    <Badge
-                        tone={props.provider.is_enabled ? "ok" : "muted"}
-                        label={props.provider.is_enabled ? "Enabled" : "Disabled"}
-                    />
-                    <Badge
-                        tone={credential().tone}
-                        label={credential().label}
-                    />
-                </span>
-                <Glyph
-                    name="chev-right"
-                    class="text-ink-faint transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink-dim"
-                />
-            </AppLink>
+                }
+                secondary={`${upstreamFormatLabel(props.provider.format)} · ${credentialKindLabel(props.provider.type)} · ${props.modelCount} ${props.modelCount === 1 ? "model" : "models"}`}
+                badges={
+                    <>
+                        <Badge
+                            tone={props.provider.is_enabled ? "ok" : "muted"}
+                            label={props.provider.is_enabled ? "Enabled" : "Disabled"}
+                        />
+                        <Show when={credential()}>
+                            {(current) => (
+                                <Badge
+                                    tone={current().tone}
+                                    label={current().label}
+                                />
+                            )}
+                        </Show>
+                    </>
+                }
+            />
         </li>
     );
 }

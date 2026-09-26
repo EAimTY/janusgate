@@ -3,6 +3,32 @@ import { Show } from "solid-js";
 import { Switch, TextField } from "/src/ui/controls";
 
 /**
+ * The override a model write carries: the trimmed field while the switch is
+ * on and names something, or `null` — no override, so the composed ID
+ * stands. Both model forms derive their gates, writes, and hints from this
+ * one function, so what the off-state hints is what the write sends.
+ */
+export function normalizedPublicIdOverride(
+    hasIdOverride: boolean,
+    idOverride: string,
+): string | null {
+    return !hasIdOverride || idOverride.trim() === "" ? null : idOverride.trim();
+}
+
+/**
+ * The public ID a model serves under when no override stands: the owning
+ * provider's prefix over the upstream ID, verbatim. A standing override
+ * takes the whole place.
+ */
+export function composedPublicId(
+    modelPrefix: string,
+    upstreamId: string,
+    override: string | null,
+): string {
+    return override ?? `${modelPrefix}${upstreamId}`;
+}
+
+/**
  * A model's public ID override: the composed ID while the switch is off, or
  * a hand-set name while it is on. An empty value while on is the same as
  * off — the composed ID stands.

@@ -8,10 +8,10 @@ use deadpool::{
     },
 };
 use std::{fs, io::Error as IoError, num::NonZero, path::Path, time::Duration};
-use turso::{Builder as TursoBuilder, Connection, Database as TursoDatabase, Error as TursoError};
+use turso::{Builder as TursoBuilder, Connection, Database as TursoDatabase};
 
 #[rustfmt::skip]
-pub(crate) use turso::{IntoParams, Row, Value, params};
+pub(crate) use turso::{Error as TursoError, IntoParams, Row, Value, params};
 
 pub(crate) mod schema;
 
@@ -91,11 +91,12 @@ struct Manager {
 }
 
 impl Database {
-    /// Opens the in-process SQLite database at the specified path and initializes a connection pool
-    /// with at most `max_connections` concurrent connections, waiting at most `pool_timeout` for a
-    /// free connection when every connection is checked out. The `registry` names the schema
-    /// version registry the database migrates under — the main control-plane schema, or the
-    /// api-log shard schema for shard files.
+    /// Opens the in-process SQLite database at the specified path, creating the file and its
+    /// parent directory when absent, and initializes a connection pool with at most
+    /// `max_connections` concurrent connections, waiting at most `pool_timeout` for a free
+    /// connection when every connection is checked out. The `registry` names the schema version
+    /// registry the database migrates under — the main control-plane schema, or the api-log shard
+    /// schema for shard files.
     ///
     /// Before the pool is created, the schema version stored in `PRAGMA user_version` is verified
     /// and the database is migrated forward to the latest schema version of the registry: a fresh
@@ -120,9 +121,7 @@ impl Database {
 
         // Validate before mutating the filesystem, so an invalid path never
         // leaves freshly created parent directories behind.
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| Error::InvalidPath(path.to_string_lossy().into_owned()))?;
+        let path_str = database_path(path)?;
 
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -130,6 +129,66 @@ impl Database {
             fs::create_dir_all(parent)?;
         }
 
+        Self::open_pooled(path_str, registry, max_connections, pool_timeout).await
+    }
+
+    /// Opens the existing database at the specified path without creating anything: a missing
+    /// file is `Ok(None)` — the empty partition a missing shard file reads as (README §3
+    /// *ApiLog Shard Store*) — and neither the file nor its parent directory is ever created.
+    /// Otherwise the open is exactly [`Database::open`]: the same pool sizing, wait, schema
+    /// verification, and forward migration, so an outdated shard a read opens first walks to
+    /// the latest schema version before it serves.
+    ///
+    /// The existence check sits directly before the engine open, and the engine's open itself is
+    /// create-on-open: a file that still vanishes between the two is replaced by a fresh, empty
+    /// database, which the read answers as the empty partition the vanished file became. The
+    /// residue is an empty schema'd file at the path, which retention expires like any other
+    /// shard when a sweep next runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] if the path is not valid UTF-8, opening the database fails, or the
+    /// connection pool cannot be built.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the schema bootstrap connection fails, the migration workflow fails, or the
+    /// stored schema version is unknown.
+    pub(crate) async fn open_existing(
+        path: impl AsRef<Path>,
+        registry: schema::Registry,
+        max_connections: NonZero<usize>,
+        pool_timeout: Duration,
+    ) -> Result<Option<Self>, Error> {
+        let path_str = database_path(path.as_ref())?;
+
+        if !path.as_ref().exists() {
+            return Ok(None);
+        }
+
+        Self::open_pooled(path_str, registry, max_connections, pool_timeout)
+            .await
+            .map(Some)
+    }
+
+    /// Builds the pooled database over an already-validated path string: engine open, schema
+    /// bootstrap, and connection pool construction — the body shared by the creating
+    /// [`Database::open`] and the refuse-to-create [`Database::open_existing`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] if opening the database or creating the connection pool fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the schema bootstrap connection fails, the migration workflow fails, or the
+    /// stored schema version is unknown.
+    async fn open_pooled(
+        path_str: &str,
+        registry: schema::Registry,
+        max_connections: NonZero<usize>,
+        pool_timeout: Duration,
+    ) -> Result<Self, Error> {
         let database = TursoBuilder::new_local(path_str).build().await?;
 
         bootstrap_schema(&database, registry, path_str).await;
@@ -391,6 +450,18 @@ impl Drop for Transaction {
     }
 }
 
+/// Validates that a database path is UTF-8, which the engine's local-file open requires. Both
+/// open modes run this before anything is created, so an invalid path never leaves freshly
+/// created parent directories behind.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidPath`] for a path that is not valid UTF-8.
+fn database_path(path: &Path) -> Result<&str, Error> {
+    path.to_str()
+        .ok_or_else(|| Error::InvalidPath(path.to_string_lossy().into_owned()))
+}
+
 /// Prepares and executes a cached SQL statement against the given connection.
 ///
 /// # Errors
@@ -475,4 +546,70 @@ async fn bootstrap_schema(database: &TursoDatabase, registry: schema::Registry, 
         .expect("failed to configure database connection");
 
     schema::migrate(&connection, registry, path).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Database, schema::Registry};
+    use crate::test_support::TempDirGuard;
+    use std::{error::Error as StdError, num::NonZero, time::Duration};
+
+    /// The fixed pool sizing every test here opens databases with: one connection and the
+    /// five-second wait the shipped configuration uses.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a zero literal, which the fixed `1` never is.
+    fn pool_connections() -> NonZero<usize> {
+        #[expect(clippy::expect_used, reason = "the literal 1 is nonzero")]
+        NonZero::new(1).expect("1 is nonzero")
+    }
+
+    /// Verifies the refuse-to-create open mode (README §3 *ApiLog Shard Store*): `open_existing`
+    /// against an absent database file answers `Ok(None)` — the empty partition — and creates
+    /// neither the file nor its parent directory, while the creating `open` still builds both;
+    /// once the file exists, `open_existing` opens that same file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a database open or assertion fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the creating open unexpectedly fails.
+    #[tokio::test]
+    async fn open_existing_refuses_to_create() -> Result<(), Box<dyn StdError>> {
+        let directory =
+            std::env::temp_dir().join(format!("janusgate-db-open-{}", rand::random::<u64>()));
+        let _guard = TempDirGuard(directory.clone());
+        let path = directory.join("shard.db");
+
+        let connections = pool_connections();
+        let wait = Duration::from_secs(5);
+
+        // An absent file is the empty partition: no error, and nothing created on disk.
+        assert!(
+            Database::open_existing(&path, Registry::Main, connections, wait)
+                .await?
+                .is_none()
+        );
+        assert!(!path.exists());
+        assert!(
+            !directory.exists(),
+            "a refuse-to-create open must not create the parent directory"
+        );
+
+        // The creating open builds the file and its directory.
+        Database::open(&path, Registry::Main, connections, wait).await?;
+        assert!(path.exists());
+
+        // From then on the existing mode opens that same file.
+        assert!(
+            Database::open_existing(&path, Registry::Main, connections, wait)
+                .await?
+                .is_some()
+        );
+
+        Ok(())
+    }
 }

@@ -211,6 +211,26 @@ function bucketFor(dimensions: ReadonlyArray<UsageGroupBy>): UsageBucket {
     };
 }
 
+/** One counted bucket whose key carries exactly the given parts. */
+function bucketWith(key: UsageBucket["key"]): UsageBucket {
+    return {
+        key,
+        requests: 1,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+    };
+}
+
+/** The three entity listings one read cycle holds back, keyed by their routes. */
+type HeldListings = {
+    readonly providers: Array<(answer: ListProvidersResponse) => void>;
+    readonly models: Array<(answer: ListModelsResponse) => void>;
+    readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+};
+
 describe("UsageQueryScreen request assembly", () => {
     const disposes: Array<() => void> = [];
 
@@ -1250,5 +1270,190 @@ describe("UsageQueryScreen empty answer", () => {
         expect(document.body.textContent).not.toContain("No rows in this window.");
         expect(document.body.textContent).not.toContain("these filters");
         expect(document.body.textContent).not.toContain("Clear filters");
+    });
+});
+
+describe("UsageQueryScreen displayed bucket order", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** The table's row labels in rendered order — the displayed bucket order. */
+    function rowLabels(): Array<string | null> {
+        return Array.from(
+            document.querySelectorAll<HTMLTableCellElement>("tbody th[scope=row]"),
+        ).map((cell) => cell.textContent);
+    }
+
+    /** Answers one cycle's own held entity listings — a submit reads them itself. */
+    function answerListings(holder: HeldListings): void {
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+    }
+
+    /**
+     * Mounts the bare page whose query answers whatever `answer` currently
+     * holds, and settles its first cycle — the held entity listings included.
+     * The mutable answer lets a test run a second query under a different
+     * grouping without remounting.
+     */
+    async function mountWithAnswer(answer: { buckets: Array<UsageBucket> }): Promise<HeldListings> {
+        const holder: HeldListings = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={{
+                            ...screenApi(holder, () => {}),
+                            queryUsage: () =>
+                                Promise.resolve({
+                                    buckets: [
+                                        ...answer.buckets,
+                                    ],
+                                }),
+                        }}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerListings(holder);
+        await settle();
+
+        return holder;
+    }
+
+    it("displays a day grouping newest-first and states the UTC boundary", async () => {
+        const answer: {
+            buckets: Array<UsageBucket>;
+        } = {
+            buckets: [
+                bucketWith({
+                    day: "2026-09-01",
+                }),
+                bucketWith({
+                    day: "2026-09-02",
+                }),
+                bucketWith({
+                    day: "2026-09-03",
+                }),
+            ],
+        };
+        await mountWithAnswer(answer);
+
+        // The gateway answers ascending by day; the table reads newest-first
+        // — the detail usage card's own direction — and the boundary the days
+        // split on is stated under the table.
+        expect(rowLabels()).toEqual([
+            "2026-09-03",
+            "2026-09-02",
+            "2026-09-01",
+        ]);
+        expect(document.body.textContent).toContain(
+            "Days are UTC — the gateway's own day boundary.",
+        );
+    });
+
+    it("keeps the gateway's order within equal days of a day grouping", async () => {
+        const answer: {
+            buckets: Array<UsageBucket>;
+        } = {
+            buckets: [
+                bucketWith({
+                    day: "2026-09-01",
+                }),
+            ],
+        };
+        const holder = await mountWithAnswer(answer);
+
+        // The outcome dimension joins the day: the next query's keys are
+        // composite, and the gateway answers ascending by day, then outcome.
+        switchWithLabel("Outcome").click();
+        answer.buckets = [
+            bucketWith({
+                day: "2026-09-01",
+                outcome: "completed",
+            }),
+            bucketWith({
+                day: "2026-09-01",
+                outcome: "upstream_error",
+            }),
+            bucketWith({
+                day: "2026-09-02",
+                outcome: "completed",
+            }),
+        ];
+        buttonWithText("Run query").click();
+        await settle();
+
+        answerListings(holder);
+        await settle();
+
+        // Newest day first; within the equal 09-01 days the gateway's own
+        // order — completed before upstream error — stands.
+        expect(rowLabels()).toEqual([
+            "2026-09-02 · Completed",
+            "2026-09-01 · Completed",
+            "2026-09-01 · Upstream error",
+        ]);
+    });
+
+    it("keeps a grouping without day in the gateway's order and states no boundary", async () => {
+        const answer: {
+            buckets: Array<UsageBucket>;
+        } = {
+            buckets: [
+                bucketWith({
+                    day: "2026-09-01",
+                }),
+            ],
+        };
+        const holder = await mountWithAnswer(answer);
+
+        // The day dimension leaves the question: the next query's buckets
+        // split on the outcome alone.
+        switchWithLabel("Day").click();
+        switchWithLabel("Outcome").click();
+        answer.buckets = [
+            bucketWith({
+                outcome: "upstream_error",
+            }),
+            bucketWith({
+                outcome: "completed",
+            }),
+        ];
+        buttonWithText("Run query").click();
+        await settle();
+
+        answerListings(holder);
+        await settle();
+
+        // Nothing reorders the answer — the gateway's order stands as it
+        // came — and no day boundary is stated where no day is rendered.
+        expect(rowLabels()).toEqual([
+            "Upstream error",
+            "Completed",
+        ]);
+        expect(document.body.textContent).not.toContain("Days are UTC");
     });
 });

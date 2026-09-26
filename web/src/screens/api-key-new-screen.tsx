@@ -67,7 +67,7 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
             <Show when={failure()}>
                 {(current) => (
                     <Notice
-                        tone="bad"
+                        tone={current().tone}
                         title={current().title}
                         detail={current().detail}
                         fix={current().fix}

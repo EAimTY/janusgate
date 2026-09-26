@@ -309,19 +309,33 @@ fn validate_identifier(param: &'static str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validates a machine-consumed identifier or secret (README §7): `upstream_id`, a present
-/// `id_override`, gateway API key secrets, upstream static keys, and hand-replaced OAuth
-/// credential fields. The value must be non-empty printable ASCII without whitespace — an empty
-/// value is [`Error::EmptyIdentifier`], any other composition failure
+/// Validates a machine-consumed secret (README §7): gateway API key secrets (`key`) and upstream
+/// static keys (`api_key`). The value must be non-empty printable ASCII without whitespace — an
+/// empty value is [`Error::EmptyIdentifier`], any other composition failure
 /// [`Error::InvalidIdentifier`].
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when the value is empty or carries a character outside the allowed set.
 fn validate_composition(param: &'static str, value: &str) -> Result<(), Error> {
+    validate_routing_safe(param, value, crate::routing_text::is_routing_safe_text)
+}
+
+/// The shared body of the two composition validators: the non-empty check followed by the
+/// caller-supplied routing-safety predicate. An empty value is [`Error::EmptyIdentifier`], any
+/// other composition failure [`Error::InvalidIdentifier`].
+///
+/// # Errors
+///
+/// Returns [`Error`] when the value is empty or carries a character outside the allowed set.
+fn validate_routing_safe(
+    param: &'static str,
+    value: &str,
+    is_routing_safe: fn(&str) -> bool,
+) -> Result<(), Error> {
     validate_identifier(param, value)?;
 
-    if !crate::routing_text::is_routing_safe_text(value) {
+    if !is_routing_safe(value) {
         return Err(Error::InvalidIdentifier { param });
     }
 
@@ -355,13 +369,7 @@ fn validate_model_prefix(value: &str) -> Result<(), Error> {
 ///
 /// Returns [`Error`] when the value is empty or carries a character outside the allowed set.
 fn validate_routing_token(param: &'static str, value: &str) -> Result<(), Error> {
-    validate_identifier(param, value)?;
-
-    if !crate::routing_text::is_routing_safe_token(value) {
-        return Err(Error::InvalidIdentifier { param });
-    }
-
-    Ok(())
+    validate_routing_safe(param, value, crate::routing_text::is_routing_safe_token)
 }
 
 /// Validates a static-key provider's base URL against the shared base-URL contract of

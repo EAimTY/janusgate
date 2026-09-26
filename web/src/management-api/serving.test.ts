@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
-import { indexRowsById, isModelEffectivelyServing, servingModelCountsByProvider } from "./serving";
+import {
+    indexRowsById,
+    isModelEffectivelyServing,
+    modelCountsByProvider,
+    servingModelCountsByProvider,
+} from "./serving";
 
 const provider: ProviderResponse = {
     type: "api_key",
@@ -77,6 +82,30 @@ describe("isModelEffectivelyServing", () => {
 
     it("is false when the provider row is not at hand", () => {
         expect(isModelEffectivelyServing(model(), undefined)).toBe(false);
+    });
+});
+
+describe("modelCountsByProvider", () => {
+    const listed = [
+        model(),
+        model({
+            id: 10,
+            upstream_id: "qwen3:14b",
+            discovery_state: "vanished",
+        }),
+    ];
+
+    it("counts every listed row per provider when no predicate narrows it", () => {
+        expect(modelCountsByProvider(listed).get(provider.id)).toBe(2);
+    });
+
+    it("counts only the rows the optional predicate includes", () => {
+        const counts = modelCountsByProvider(
+            listed,
+            (candidate) => candidate.discovery_state !== "vanished",
+        );
+
+        expect(counts.get(provider.id)).toBe(1);
     });
 });
 

@@ -1,3 +1,4 @@
+import { ContractViolationError } from "/src/management-api/errors";
 import type {
     ApiLogEndpointType,
     ApiLogOutcome,
@@ -455,3 +456,40 @@ export type UsageSubjectFilter = {
         readonly [TWireField in (typeof USAGE_QUERY_SUBJECT_FIELDS)[TDimension]["wireField"]]: number;
     };
 }[UsageQuerySubjectDimension];
+
+/** The wire fields a subject filter can name: one per dimension, from the table. */
+type UsageSubjectWireField =
+    (typeof USAGE_QUERY_SUBJECT_FIELDS)[UsageQuerySubjectDimension]["wireField"];
+
+/**
+ * The subject filter as one lookup over the table's wire fields, every entry
+ * optional: the shape the dimension walk reads a [`UsageSubjectFilter`] as,
+ * so one indexed read per dimension needs no per-member narrowing.
+ */
+type UsageSubjectFilterValues = Readonly<Partial<Record<UsageSubjectWireField, number>>>;
+
+/**
+ * The aggregates subject one [`UsageSubjectFilter`] names: the dimension
+ * whose wire field it carries, and the id under it. The walk follows
+ * [`USAGE_QUERY_SUBJECT_DIMENSIONS`] through [`USAGE_QUERY_SUBJECT_FIELDS`] —
+ * the same walk the aggregates route's parameters and the stream's subject
+ * narrow make — so a dimension added to the table is answered here with no
+ * edit. The filter's type holds exactly one dimension's field; one naming
+ * none cannot exist, and reads as the contract violation it is.
+ */
+export function usageQuerySubjectOfFilter(filter: UsageSubjectFilter): UsageQuerySubject {
+    const values: UsageSubjectFilterValues = filter;
+
+    for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
+        const id = values[USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField];
+
+        if (id !== undefined) {
+            return {
+                dimension,
+                id,
+            };
+        }
+    }
+
+    throw new ContractViolationError("the usage subject filter names no subject dimension");
+}

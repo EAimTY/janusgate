@@ -74,13 +74,23 @@ export function usageApiKeyLabel(
 }
 
 /**
+ * The one sentence a missing bucket-key field is stated with, whatever error
+ * domain throws it: the read proves every requested dimension is present
+ * while the cycle can still state its diagnosis, and the render asserts the
+ * same invariant — two deliberate error domains over one shared sentence.
+ */
+export function missingBucketKeyFieldMessage(field: string): string {
+    return `the bucket key carries no ${field}`;
+}
+
+/**
  * Reads one bucket key field the request's own dimension list guarantees:
  * a key carries exactly the requested dimensions, so an absent field is a
  * contract violation, not a blank to render past.
  */
 export function bucketKeyField<TValue>(value: TValue | undefined, field: string): TValue {
     if (value === undefined) {
-        throw new ContractViolationError(`the bucket key carries no ${field}`);
+        throw new ContractViolationError(missingBucketKeyFieldMessage(field));
     }
 
     return value;

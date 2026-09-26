@@ -1,10 +1,11 @@
-//! Provider entities: stored credentials, provider rows, model rows, and the routing resolution
-//! they back.
+//! Provider entities: stored credentials, provider rows, model rows, the routing resolution
+//! they back, and the control engines' shared failure vocabulary.
 //!
 //! The descriptor types a provider's definition carries live in [`definition`]; the storage tier
 //! holding every database statement — including the providers' own rows — lives beside this
 //! module in [`crate::storage`].
 
+use crate::storage::Error as StorageError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -17,6 +18,100 @@ pub(crate) mod discovery;
 pub(crate) mod oauth;
 
 pub(crate) use definition::{DefinitionPayload, ProviderDefinition};
+
+/// The provider control engine's shared failure vocabulary: the device authorization, the token
+/// exchange, the refresh grants, reprovisioning, the lease-guarded renewal loop over them, and
+/// the upstream model discovery — which runs the same stages for static-API-key providers.
+///
+/// Every upstream-facing variant renders the complete human message both HTTP surfaces display;
+/// the surfaces only decide the status and the machine-readable code. Upstream rejections on
+/// these paths always pin 502, so the foreign status rides in the message and the variant
+/// payload.
+#[derive(Debug, Clone, thiserror::Error)]
+pub(crate) enum Error {
+    /// The upstream endpoint answered a non-2xx status. These paths never forward foreign
+    /// statuses, so the status rides in the message.
+    #[error("Upstream request failed with status {status}: {detail}")]
+    Rejected {
+        /// Upstream status code, embedded in the message.
+        status: u16,
+
+        /// Truncated upstream body excerpt.
+        detail: String,
+    },
+
+    /// The upstream endpoint failed without a usable HTTP response: a transport failure, a
+    /// malformed body, or a missing required field.
+    #[error("Upstream request failed: {detail}")]
+    Unavailable {
+        /// Human-readable failure detail.
+        detail: String,
+    },
+
+    /// The upstream endpoint was cut off by the HTTP client's timeout budget and produced no
+    /// usable response. Rendered exactly like every other transport failure; carried typed so
+    /// the device poller's backoff can match the fact instead of parsing the message.
+    #[error("Upstream request failed: {detail}")]
+    Timeout {
+        /// Human-readable failure detail.
+        detail: String,
+    },
+
+    /// The addressed provider row vanished mid-refresh. Every management consumer classifies
+    /// this as a 404 `not_found` — the reauthorize surface's vanished-provider precedent, which
+    /// `models:discover` now shares because its refresh runs inside the same token-refresh
+    /// engine; the dispatch surface renders it as an internal failure.
+    #[error("{message}")]
+    NotFound {
+        /// Human-readable failure message.
+        message: String,
+    },
+
+    /// Token acquisition failed on JanusGate's side: a lease transaction could not be driven, or
+    /// storage reported drift.
+    #[error("{message}")]
+    Internal {
+        /// Human-readable failure message.
+        message: String,
+    },
+}
+
+impl From<StorageError> for Error {
+    fn from(error: StorageError) -> Self {
+        match error {
+            StorageError::NotFound { message } => Self::NotFound { message },
+
+            // Constraint and busy contention cannot arise from the refresh path's unconditional
+            // writes; the surfaces render them as gateway-internal failures.
+            other => Self::Internal {
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
+impl From<crate::database::Error> for Error {
+    fn from(error: crate::database::Error) -> Self {
+        Self::Internal {
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<control::ControlFailure> for Error {
+    fn from(failure: control::ControlFailure) -> Self {
+        match failure {
+            control::ControlFailure::Rejected { status, body } => Self::Rejected {
+                status,
+                detail: crate::http_body::truncate_excerpt(&body),
+            },
+
+            control::ControlFailure::Unavailable { detail } => Self::Unavailable { detail },
+
+            control::ControlFailure::Timeout { detail } => Self::Timeout { detail },
+        }
+    }
+}
 
 /// The plaintext credentials a provider row stores (README §3): a tagged JSON enum whose
 /// `type` discriminator is the only stored credential-kind representation, and which must match

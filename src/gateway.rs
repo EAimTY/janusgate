@@ -12,14 +12,13 @@ use super::{
     http_body, ids,
     ir::{InvalidRequest, IrEvent, IrRequest},
     provider::{
-        ModelRouting, Provider,
+        Error as ProviderError, ModelRouting, Provider,
         definition::{
             eval::ValueEnv,
             inference::{Inference, UpstreamStreaming},
             template::TemplateNode,
         },
         oauth,
-        oauth::Error as OAuthError,
     },
     sse::{SseFrame, SseParser},
     storage::{
@@ -86,7 +85,7 @@ pub(crate) enum Error {
 
     /// Token acquisition failed (the lease-guarded refresh).
     #[error(transparent)]
-    OAuth(#[from] OAuthError),
+    OAuth(#[from] ProviderError),
 
     /// Storage failed under the pipeline: routing lookup, lease driving, or credentials
     /// persistence.

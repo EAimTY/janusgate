@@ -876,6 +876,51 @@ describe("ProviderNewScreen refresh", () => {
         expect(refreshStamp()).not.toBeNull();
     });
 
+    it("recovers a failed boot read from the page's Read again button", async () => {
+        let isProvidersFailing = true;
+        let providerReads = 0;
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={screenApi([], {
+                            providers: () => {
+                                providerReads += 1;
+                                return isProvidersFailing
+                                    ? Promise.reject(new Error("the listing refused"))
+                                    : Promise.resolve({
+                                          providers: [
+                                              providerRowNamed("openai"),
+                                          ],
+                                      });
+                            },
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The failed mount read stands on the notice with the page's own way
+        // back beside it — the same recovery the row screens' frame renders,
+        // here for a page whose boot read owns no skeleton.
+        expect(document.body.textContent).toContain("the listing refused");
+        expect(buttonWithText("Read again").disabled).toBe(false);
+
+        // The button re-runs the boot read in place: the listing answers this
+        // time, the failed read's notice is recovered away, and the stamp
+        // lands — a full page recovery, not a bare re-ask.
+        isProvidersFailing = false;
+        buttonWithText("Read again").click();
+        await settle();
+
+        expect(providerReads).toBe(2);
+        expect(document.body.textContent).not.toContain("the listing refused");
+        expect(labeledInput("Name").placeholder).toBe("openai-1");
+        expect(refreshStamp()).not.toBeNull();
+    });
+
     it("re-reads the stored definition versions on the refresh pulse", async () => {
         let storedVersion = 1;
         disposes.push(

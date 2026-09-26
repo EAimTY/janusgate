@@ -18,12 +18,13 @@ use std::{fs, path::Path, sync::Arc};
 const ALPN_PROTOCOLS: [&[u8]; 2] = [b"h2", b"http/1.1"];
 
 impl ConfigLoader {
-    /// The currently applied TLS server configuration, `None` for plaintext HTTP.
+    /// The TLS server configuration of the currently applied configuration generation, `None` for
+    /// plaintext HTTP.
     ///
     /// Established connections keep the configuration they were accepted with; each new connection
     /// reads the current one.
     pub(crate) fn tls(&self) -> Option<Arc<ServerConfig>> {
-        self.tls_server_config.load_full().as_ref().clone()
+        self.applied.load_full().tls_server_config.clone()
     }
 }
 

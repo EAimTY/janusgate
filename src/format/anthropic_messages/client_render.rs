@@ -97,6 +97,19 @@ impl ResponseUsage {
             output_tokens_details: None,
         }
     }
+
+    /// Opens the streamed message from a stream-head partial report: its input and cache
+    /// columns ride the opening usage, while the output stays zero until a terminal report
+    /// overwrites the partial one (README §6.2).
+    fn from_head_report(usage: IrUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: 0,
+            cache_creation_input_tokens: usage.cache_write_tokens,
+            cache_read_input_tokens: usage.cached_tokens,
+            output_tokens_details: None,
+        }
+    }
 }
 
 /// Renders an aggregated completion as a non-streaming Messages response.
@@ -170,9 +183,14 @@ pub(super) struct SseRenderer {
     /// Currently open content block, closed lazily when the next block starts or the turn ends.
     open_block: Option<OpenOutBlock>,
 
-    /// Whether the `message_start` frame was emitted; the gateway sends exactly one
-    /// [`IrEvent::MessageStart`], and a repeated one renders nothing.
+    /// Whether the stream's [`IrEvent::MessageStart`] was observed; the gateway sends exactly
+    /// one, and a repeated one renders nothing.
     is_started: bool,
+
+    /// Whether the `message_start` frame is buffered awaiting the one-event lookahead: the
+    /// frame emits when the next event resolves it, folding the stream-head partial usage
+    /// report when that event is exactly the report (README §6.2).
+    is_start_buffered: bool,
 
     /// Tool calls buffered from deltas, emitted whole on their done event so the `tool_use`
     /// start event carries its authoritative identity.
@@ -242,7 +260,8 @@ struct StreamMessageHead {
     /// Never stopped on: always null.
     stop_sequence: Option<String>,
 
-    /// Zero usage; the terminal delta carries the observed report.
+    /// Zero usage; the terminal delta carries the observed report. A stream-head partial
+    /// report folds its input and cache columns in when the upstream published one.
     usage: ResponseUsage,
 }
 
@@ -410,6 +429,7 @@ impl SseRenderer {
             next_index: 0,
             open_block: None,
             is_started: false,
+            is_start_buffered: false,
             tool_buffers: Vec::new(),
             usage: None,
             finish: None,
@@ -523,6 +543,26 @@ impl SseRenderer {
             .expect("the tool buffer exists after insertion")
     }
 
+    /// Builds the `message_start` frame carrying the given opening usage.
+    fn message_start_frame(&self, usage: ResponseUsage) -> String {
+        Self::frame(
+            "message_start",
+            &MessageStartPayload {
+                kind: "message_start",
+                message: StreamMessageHead {
+                    id: self.id.clone(),
+                    kind: "message",
+                    role: "assistant",
+                    content: Vec::new(),
+                    model: self.model.clone(),
+                    stop_reason: None,
+                    stop_sequence: None,
+                    usage,
+                },
+            },
+        )
+    }
+
     /// Emits the terminal `message_delta` frame carrying the stop reason and the final usage.
     /// Rendered at [`IrEvent::Done`], not at [`IrEvent::Finish`]: cross-format upstreams
     /// deliver usage after the finish reason, so only Done-time usage is final.
@@ -547,30 +587,34 @@ impl SseRenderer {
 impl ClientSseRenderer for SseRenderer {
     /// Renders one IR event into zero or more SSE frames.
     fn render(&mut self, event: &IrEvent) -> Vec<String> {
-        match event {
+        // One-event lookahead: the head stays buffered until the next event resolves it, so
+        // the stream-head partial usage report — published immediately after
+        // [`IrEvent::MessageStart`] per the IR contract (README §6.2) — folds its input and
+        // cache columns into the opening usage; every other event resolves the buffer with
+        // zeros first, keeping `message_start` exactly once and first in every stream.
+        let mut frames = Vec::new();
+
+        if self.is_start_buffered {
+            self.is_start_buffered = false;
+
+            let usage = match event {
+                IrEvent::Usage(reported) => ResponseUsage::from_head_report(*reported),
+                _ => ResponseUsage::zero(),
+            };
+
+            frames.push(self.message_start_frame(usage));
+        }
+
+        frames.extend(match event {
             IrEvent::MessageStart { .. } => {
-                if self.is_started {
-                    return Vec::new();
+                if !self.is_started {
+                    self.is_started = true;
+                    // Buffered one event: the resolving event decides between the partial
+                    // report's columns and zeros — the lookahead above.
+                    self.is_start_buffered = true;
                 }
 
-                self.is_started = true;
-
-                vec![Self::frame(
-                    "message_start",
-                    &MessageStartPayload {
-                        kind: "message_start",
-                        message: StreamMessageHead {
-                            id: self.id.clone(),
-                            kind: "message",
-                            role: "assistant",
-                            content: Vec::new(),
-                            model: self.model.clone(),
-                            stop_reason: None,
-                            stop_sequence: None,
-                            usage: ResponseUsage::zero(),
-                        },
-                    },
-                )]
+                Vec::new()
             }
 
             IrEvent::TextDelta(delta) => {
@@ -793,13 +837,26 @@ impl ClientSseRenderer for SseRenderer {
 
                 frames
             }
-        }
+        });
+
+        frames
     }
 
     /// Renders a mid-stream error as a terminal `error` event, classified once through the
-    /// shared API error (README §6.7).
+    /// shared API error (README §6.7). A failure while the `message_start` head is still
+    /// buffered flushes it ahead of the error frame — exactly once and first — so a stream
+    /// that fails between the start and its first resolving event still opens natively; the
+    /// two frames ride one body write, which SSE clients split on the blank-line delimiter.
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
-        Self::frame(
+        let head = if self.is_start_buffered {
+            self.is_start_buffered = false;
+
+            self.message_start_frame(ResponseUsage::zero())
+        } else {
+            String::new()
+        };
+
+        head + &Self::frame(
             "error",
             &StreamErrorPayload {
                 kind: "error",
@@ -844,6 +901,47 @@ mod tests {
             .get(index)
             .expect("the event renders the expected frame")
     }
+
+    /// Lists the event names of rendered frames in stream order.
+    fn kinds(frames: &[String]) -> Vec<String> {
+        frames
+            .iter()
+            .map(|frame| {
+                frame
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start_matches("event: ")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Parses each rendered frame's JSON payload in stream order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a frame carries no data line or its data is not rendered JSON: a malformed
+    /// frame is the failure under test.
+    fn payloads(frames: &[String]) -> Vec<Value> {
+        frames
+            .iter()
+            .map(|frame| {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the rendered frames are under test; a malformed frame is the failure"
+                )]
+                serde_json::from_str::<Value>(
+                    frame
+                        .split_once("data: ")
+                        .expect("every frame carries a data line")
+                        .1,
+                )
+                .expect("frame data is rendered JSON")
+            })
+            .collect()
+    }
+
     /// Renders one aggregated Messages response: thinking replays verbatim, text and tool calls
     /// follow in order, the stop reason and cache columns ride through, and reasoning text is
     /// never duplicated between blocks and prose.
@@ -931,11 +1029,13 @@ mod tests {
         );
     }
 
-    /// Streams one turn through the client renderer: block indexes ascend across text,
-    /// thinking, and tool blocks; the signature closes the thinking block; the tool call
-    /// emits whole on its done event; and the terminal delta rides `Done` — after the usage
-    /// that cross-format upstreams report following the finish — carrying the stop reason and
-    /// the final usage before `message_stop`.
+    /// Streams one turn through the client renderer: the `message_start` head waits one event
+    /// and resolves on the first event after the start — zero usage when no partial report
+    /// preceded — block indexes ascend across text, thinking, and tool blocks; the signature
+    /// closes the thinking block; the tool call emits whole on its done event; and the
+    /// terminal delta rides `Done` — after the usage that cross-format upstreams report
+    /// following the finish — carrying the stop reason and the final usage before
+    /// `message_stop`.
     ///
     /// # Panics
     ///
@@ -944,60 +1044,39 @@ mod tests {
     fn streams_native_frames_with_ascending_block_indexes() {
         let mut renderer = SseRenderer::new("claude-test".to_string());
 
-        let kinds = |frames: &[String]| {
-            frames
-                .iter()
-                .map(|frame| {
-                    frame
-                        .lines()
-                        .next()
-                        .unwrap_or_default()
-                        .trim_start_matches("event: ")
-                        .to_string()
-                })
-                .collect::<Vec<_>>()
-        };
-
-        let payloads = |frames: &[String]| {
-            frames
-                .iter()
-                .map(|frame| {
-                    #[expect(
-                        clippy::expect_used,
-                        reason = "the rendered frames are under test; a malformed frame is the \
-                                  failure"
-                    )]
-                    serde_json::from_str::<Value>(
-                        frame
-                            .split_once("data: ")
-                            .expect("every frame carries a data line")
-                            .1,
-                    )
-                    .expect("frame data is rendered JSON")
-                })
-                .collect::<Vec<_>>()
-        };
-
-        let start = renderer.render(&IrEvent::MessageStart {
+        // The head is buffered one event for the lookahead: the start alone renders nothing.
+        let buffered = renderer.render(&IrEvent::MessageStart {
             id: "up".to_string(),
             model: "up-model".to_string(),
         });
 
-        assert_eq!(kinds(&start), ["message_start"]);
-        assert_eq!(
-            at(first_payload(&payloads(&start)), "/message/model"),
-            &json!("claude-test")
-        );
+        assert!(buffered.is_empty());
 
         let text = renderer.render(&IrEvent::TextDelta("hi".to_string()));
 
-        assert_eq!(kinds(&text), ["content_block_start", "content_block_delta"],);
+        assert_eq!(
+            kinds(&text),
+            [
+                "message_start",
+                "content_block_start",
+                "content_block_delta",
+            ],
+        );
 
         let text_payloads = payloads(&text);
 
-        assert_eq!(at(payload_at(&text_payloads, 0), "/index"), &json!(0));
+        // No partial report preceded the first delta: the head opens with zero usage.
         assert_eq!(
-            at(payload_at(&text_payloads, 1), "/delta"),
+            at(first_payload(&text_payloads), "/message/usage"),
+            &json!({"input_tokens": 0, "output_tokens": 0}),
+        );
+        assert_eq!(
+            at(first_payload(&text_payloads), "/message/model"),
+            &json!("claude-test")
+        );
+        assert_eq!(at(payload_at(&text_payloads, 1), "/index"), &json!(0));
+        assert_eq!(
+            at(payload_at(&text_payloads, 2), "/delta"),
             &json!({"type": "text_delta", "text": "hi"}),
         );
 
@@ -1143,20 +1222,6 @@ mod tests {
     /// Panics if any frame other than the error frame is rendered around the failure.
     #[test]
     fn renders_only_the_error_frame_for_a_failure_after_finish() {
-        let kinds = |frames: &[String]| {
-            frames
-                .iter()
-                .map(|frame| {
-                    frame
-                        .lines()
-                        .next()
-                        .unwrap_or_default()
-                        .trim_start_matches("event: ")
-                        .to_string()
-                })
-                .collect::<Vec<_>>()
-        };
-
         let mut renderer = SseRenderer::new("m".to_string());
 
         renderer.render(&IrEvent::MessageStart {
@@ -1164,15 +1229,113 @@ mod tests {
             model: "up-model".to_string(),
         });
 
+        // The finish resolves the still-buffered head with zeros and closes no block.
         let finish = renderer.render(&IrEvent::Finish(IrFinishReason::Stop));
         let failure = vec![renderer.error_frame(&crate::api::Error::Internal)];
 
-        assert!(finish.is_empty());
+        assert_eq!(kinds(&finish), ["message_start"]);
         assert_eq!(kinds(&failure), ["error"]);
 
         let rendered = [finish, failure].concat();
 
         assert!(!rendered.iter().any(|frame| frame.contains("message_delta")));
         assert!(!rendered.iter().any(|frame| frame.contains("message_stop")));
+    }
+
+    /// Folds the stream-head partial usage report into the opening `message_start`: the
+    /// partial report published immediately after [`IrEvent::MessageStart`] (README §6.2)
+    /// rides the head's input and cache columns while the stream keeps its native order and
+    /// emits the head exactly once, and the consumed partial stands as the last observation
+    /// in the terminal delta when no terminal report overwrites it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered stream diverges from the native shape.
+    #[test]
+    fn folds_the_stream_head_partial_usage_report_into_message_start() {
+        let mut renderer = SseRenderer::new("claude-test".to_string());
+
+        // The head waits one event: the start alone renders nothing yet.
+        let buffered = renderer.render(&IrEvent::MessageStart {
+            id: "up".to_string(),
+            model: "up-model".to_string(),
+        });
+
+        assert!(buffered.is_empty());
+
+        let start = renderer.render(&IrEvent::Usage(IrUsage {
+            input_tokens: 10,
+            output_tokens: 0,
+            cached_tokens: Some(2),
+            cache_write_tokens: Some(3),
+            reasoning_tokens: None,
+        }));
+
+        assert_eq!(kinds(&start), ["message_start"]);
+
+        // The report's input and cache columns ride the opening usage; the output stays zero
+        // until a terminal report.
+        assert_eq!(
+            at(first_payload(&payloads(&start)), "/message/usage"),
+            &json!({
+                "input_tokens": 10,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 2,
+            }),
+        );
+
+        // The consumed report renders no frame of its own and the head is not repeated.
+        let text = renderer.render(&IrEvent::TextDelta("hi".to_string()));
+
+        assert_eq!(kinds(&text), ["content_block_start", "content_block_delta"]);
+
+        // The finish closes the text block the delta opened; the partial stands as the last
+        // observation, so the terminal delta carries it.
+        let finish = renderer.render(&IrEvent::Finish(IrFinishReason::Stop));
+
+        assert_eq!(kinds(&finish), ["content_block_stop"]);
+
+        let terminal = renderer.render(&IrEvent::Done);
+
+        assert_eq!(kinds(&terminal), ["message_delta", "message_stop"]);
+        assert_eq!(
+            at(payload_at(&payloads(&terminal), 0), "/usage"),
+            &json!({
+                "input_tokens": 10,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 2,
+            }),
+        );
+    }
+
+    /// Pins the failure-path ordering when the stream fails while the head is still buffered:
+    /// the buffered `message_start` rides ahead of the terminal `error` frame — exactly once
+    /// and first — so a stream that fails between the start and its first resolving event
+    /// still opens natively.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered frames diverge from the native failure shape.
+    #[test]
+    fn renders_the_buffered_head_before_a_mid_stream_failure() {
+        let mut renderer = SseRenderer::new("m".to_string());
+
+        renderer.render(&IrEvent::MessageStart {
+            id: "up".to_string(),
+            model: "up-model".to_string(),
+        });
+
+        let failure = renderer.error_frame(&crate::api::Error::Internal);
+
+        assert!(failure.starts_with("event: message_start\n"));
+        assert!(failure.contains("event: error\n"));
+
+        // The head was flushed once: a second failure renders the error frame alone.
+        let repeated = renderer.error_frame(&crate::api::Error::Internal);
+
+        assert!(repeated.starts_with("event: error\n"));
+        assert!(!repeated.contains("message_start"));
     }
 }

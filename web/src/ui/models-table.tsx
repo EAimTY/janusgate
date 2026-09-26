@@ -4,9 +4,8 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { isModelEffectivelyServing } from "/src/management-api/serving";
 import { discoveryStateLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
-import { AppLink } from "/src/ui/app-link";
 import { Badge, type BadgeTone } from "/src/ui/feedback";
-import { Glyph } from "/src/ui/glyph";
+import { RowLink } from "/src/ui/row-link";
 
 /**
  * How one model reads at a glance, under the gateway's three-input effective
@@ -112,38 +111,40 @@ function ModelRow(props: {
         readonly label: string;
     } => modelDiscoveryBadge(props.model);
 
+    // The provider's name prefixes the upstream id wherever the row's own
+    // provider column is not shown; a hand-set override appends its notice.
+    const subline = (): string => {
+        const origin =
+            props.showProvider === true && props.provider !== undefined
+                ? `${props.provider.name} · ${props.model.upstream_id}`
+                : props.model.upstream_id;
+
+        return props.model.id_override !== null ? `${origin} · Custom ID` : origin;
+    };
+
     return (
         <li>
-            <AppLink
+            <RowLink
                 href={hrefs.modelDetail(props.model.id)}
-                class="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3 transition-colors duration-150 ease-out hover:border-ink-faint"
-            >
-                <span class="min-w-0 flex-1 basis-56">
+                primary={
                     <span class="tnum block truncate text-[13.5px] font-medium">
                         {props.model.public_id}
                     </span>
-                    <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
-                        {props.showProvider === true && props.provider !== undefined
-                            ? `${props.provider.name} · ${props.model.upstream_id}`
-                            : props.model.upstream_id}
-                        {props.model.id_override !== null ? " · Custom ID" : ""}
-                    </span>
-                </span>
-                <span class="flex items-center gap-2">
-                    <Badge
-                        tone={serving().tone}
-                        label={serving().label}
-                    />
-                    <Badge
-                        tone={discovery().tone}
-                        label={discovery().label}
-                    />
-                </span>
-                <Glyph
-                    name="chev-right"
-                    class="text-ink-faint transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink-dim"
-                />
-            </AppLink>
+                }
+                secondary={subline()}
+                badges={
+                    <>
+                        <Badge
+                            tone={serving().tone}
+                            label={serving().label}
+                        />
+                        <Badge
+                            tone={discovery().tone}
+                            label={discovery().label}
+                        />
+                    </>
+                }
+            />
         </li>
     );
 }

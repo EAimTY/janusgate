@@ -24,13 +24,12 @@
 use self::models::ModelEntry;
 use crate::{
     database::{
-        Database, Error as DatabaseError, IntoParams, Row, Transaction, Value, params,
+        Database, Error as DatabaseError, IntoParams, Row, Transaction, TursoError, Value, params,
         params::IntoValue,
     },
     provider::{CredentialKind, DiscoveryState, Model, Provider, definition::ProviderDefinition},
 };
 use std::{collections::HashMap, num::NonZeroI64};
-use turso::Error as TursoError;
 
 pub(crate) mod api_keys;
 pub(crate) mod api_logs;

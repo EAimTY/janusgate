@@ -41,23 +41,19 @@ fn shard_read_pool_connections() -> std::num::NonZero<usize> {
 }
 
 impl ApiLogStore {
-    /// Opens an existing shard file for reading. A file that vanished between the directory
-    /// listing and this open reads as the empty partition it became.
+    /// Opens an existing shard file for reading, refusing to create: the open is
+    /// [`Database::open_existing`], so a shard file absent at the open — one the retention sweep
+    /// deleted between the directory listing and this open — reads as the empty partition it
+    /// became (README §3 *ApiLog Shard Store*), and a read never recreates a shard file or its
+    /// directory.
     async fn open_shard_for_read(&self, day: ShardDay) -> Result<Option<Database>, Error> {
-        let path = self.shard_path(day);
-
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        Database::open(
-            &path,
+        Database::open_existing(
+            self.shard_path(day),
             Registry::ApiLogShard,
             shard_read_pool_connections(),
             SHARD_POOL_WAIT,
         )
         .await
-        .map(Some)
         .map_err(Error::from)
     }
 
@@ -1702,6 +1698,61 @@ mod tests {
                 .any(|detail| detail.contains("idx_api_logs_model_started_at")),
             "the filtered usage window must read through idx_api_logs_model_started_at; \
              plan: {filtered_details:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Verifies that shard reads refuse to create (README §3 *ApiLog Shard Store*): a read whose
+    /// shard file is absent — one the retention sweep deleted between the directory listing and
+    /// the open — answers the empty partition and leaves neither a shard file nor a directory
+    /// behind, and the full `usage:list` and `usage:query` reads over a directory holding no
+    /// shard files do the same.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a store operation or assertion fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a read recreates the vanished shard file or its directory.
+    #[tokio::test]
+    async fn reads_against_absent_shards_leave_nothing_behind() -> Result<(), Box<dyn StdError>> {
+        let (store, guard) = create_test_store(90);
+        let day = ShardDay::of_started_at(unix_time::unix_now_micros());
+
+        // The store's directory exists — any served day creates it — but this shard's file was
+        // deleted, as the retention sweep deletes an expired shard between the directory listing
+        // and a read's open.
+        std::fs::create_dir(&guard.0)?;
+
+        assert!(store.open_shard_for_read(day).await?.is_none());
+        assert!(
+            !store.shard_path(day).exists(),
+            "a shard read must not recreate the vanished shard file"
+        );
+
+        // The full usage reads answer the empty partition the same way, still creating nothing.
+        let no_filter = UsageFilter::default();
+        assert!(
+            list_api_logs(Some(&store), 100, None, &no_filter)
+                .await?
+                .is_empty()
+        );
+
+        let buckets = query_usage(
+            Some(&store),
+            &UsageSelection {
+                group_by: vec![UsageGroupBy::Day],
+                filter: no_filter,
+            },
+        )
+        .await?;
+        assert!(buckets.is_empty());
+
+        assert!(
+            !store.shard_path(day).exists(),
+            "a usage read must not recreate the vanished shard file"
         );
 
         Ok(())

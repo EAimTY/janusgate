@@ -1,5 +1,6 @@
-//! The OAuth protocol engine: flow begin (both grants), token exchange with terminal-code
-//! classification, identity-claim extraction, and expiry resolution (README §5.3).
+//! The OAuth protocol engine: flow begin for both grants through the persisted flow row, the
+//! token exchange with terminal-code classification, the identity-claim extraction, and the
+//! expiry resolution (README §5.3, §7.1).
 //!
 //! Every provider-specific fact — endpoints, client credentials, parameter names, header sets —
 //! lives in the definition the flow references; this engine carries the grant mechanics alone.
@@ -8,20 +9,24 @@
 //! text validators (README §7) before any slot or base-URL value reaches storage, and the
 //! identity-token claim absorption applies the slot validator before a claimed value lands.
 
-use super::{
-    Error,
-    provisioning::{validate_base_url_value, validate_slot_value},
-};
+use super::provisioning::{validate_base_url_value, validate_slot_value};
 use crate::{
+    database::Database,
     provider::{
+        Error,
         control::{self, ControlFailure, DecodedBody, Extracted},
         definition::{
             credential::{
-                CredentialAcquisition, Exchange, Grant, IdTokenClaim, Pkce, SlotGenerator,
+                CredentialAcquisition, Exchange, Grant, IdTokenClaim, OAuthRecipe, Pkce,
+                SlotGenerator,
             },
             eval::ValueEnv,
             template::{ResponseField, ResponseTarget as Target},
         },
+    },
+    storage::{
+        self,
+        oauth_flows::{FlowGrant, FlowPurpose, NewFlow, OngoingFlow},
     },
     unix_time,
 };
@@ -31,7 +36,7 @@ use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
 /// Lifetime of a pending authorization-code flow, in database-clock microseconds.
-pub(crate) const AUTHORIZATION_CODE_TTL: i64 = 600 * unix_time::MICROS_PER_SEC;
+const AUTHORIZATION_CODE_TTL: i64 = 600 * unix_time::MICROS_PER_SEC;
 
 /// The polling interval a device authorization response implies when it reports none: five
 /// seconds per RFC 8628 §3.2.
@@ -61,9 +66,11 @@ pub(crate) fn resolve_expiry(
     }
 
     if let Some(lifetime) = expires_in_seconds {
-        return Ok(Some(seconds_from_now(lifetime, || Error::Unavailable {
-            detail: format!("malformed token response: `expires_in` overflow, got {lifetime}"),
-        })?));
+        return Ok(Some(unix_time::seconds_from_now(lifetime).ok_or_else(
+            || Error::Unavailable {
+                detail: format!("malformed token response: `expires_in` overflow, got {lifetime}"),
+            },
+        )?));
     }
 
     if let Some(access_token) = access_token
@@ -96,29 +103,13 @@ pub(crate) fn resolve_expiry(
         return Ok(None);
     };
 
-    Ok(Some(seconds_from_now(lifetime, || Error::Unavailable {
-        detail: format!(
-            "malformed definition: `access_token_lifetime_seconds` overflow, got {lifetime}"
-        ),
-    })?))
-}
-
-/// Scales one upstream-reported duration in seconds to the absolute instant that many seconds
-/// from the current database clock, mapping an overflow to the caller's upstream-unavailable
-/// failure: the magnitude originates in an upstream response, so one this large is a malformed
-/// response — the same guard [`resolve_expiry`] applies to the token path's expiry.
-///
-/// # Errors
-///
-/// Returns the `overflow` failure when the scaled instant overflows the database clock.
-pub(crate) fn seconds_from_now(seconds: i64, overflow: impl Fn() -> Error) -> Result<i64, Error> {
-    let micros = seconds
-        .checked_mul(unix_time::MICROS_PER_SEC)
-        .ok_or_else(&overflow)?;
-
-    unix_time::unix_now_micros()
-        .checked_add(micros)
-        .ok_or_else(overflow)
+    Ok(Some(unix_time::seconds_from_now(lifetime).ok_or_else(
+        || Error::Unavailable {
+            detail: format!(
+                "malformed definition: `access_token_lifetime_seconds` overflow, got {lifetime}"
+            ),
+        },
+    )?))
 }
 
 /// Reads the `exp` claim of an access token JWT, or `None` when the token is not a decodable JWT
@@ -233,7 +224,7 @@ pub(crate) fn pkce_challenge(verifier: &str) -> String {
 
 /// Generates `byte_count` random bytes encoded as unpadded URL-safe Base64.
 #[must_use]
-pub(crate) fn random_url_safe(byte_count: usize) -> String {
+fn random_url_safe(byte_count: usize) -> String {
     let mut bytes = vec![0_u8; byte_count];
 
     rand::fill(&mut bytes[..]);
@@ -278,10 +269,284 @@ pub(crate) fn initialize_slots(
     Ok(slots)
 }
 
+/// What one flow begin is for, with the purpose's own inputs: a create flow names the provider
+/// it will create, a reauthorize flow targets one existing provider's row. The pairs are the
+/// flow schema's cross-column checks (README §3) in type form.
+pub(crate) enum BeginPurpose {
+    /// The flow creates a new provider when it completes.
+    Create {
+        /// The new provider's name.
+        provider_name: String,
+
+        /// The new provider's public model name prefix.
+        model_prefix: String,
+    },
+
+    /// The flow replaces the credentials — and optionally the definition reference — of one
+    /// existing provider.
+    Reauthorize {
+        /// The reauthorized provider's row identifier.
+        target_provider_id: i64,
+    },
+}
+
+/// The begin facts one grant kind produces: the authorization-code grant's URL the
+/// administrator opens, or the device grant's verification facts the administrator approves
+/// through while the gateway polls.
+pub(crate) enum BeginFacts {
+    /// An authorization-code flow: the URL the administrator opens to authorize.
+    AuthorizationCode {
+        /// URL the administrator opens to authorize.
+        authorize_url: String,
+    },
+
+    /// A device flow: the verification facts the administrator approves through.
+    Device {
+        /// The human-readable code the administrator enters at the verification URI.
+        user_code: String,
+
+        /// The URI the administrator opens, when the response carried one.
+        verification_uri: Option<String>,
+
+        /// The verification URI carrying the user code, when the response carried one.
+        verification_uri_complete: Option<String>,
+    },
+}
+
+/// The engine's outcome of one flow begin: the persisted flow row — the source of truth for
+/// every stored fact it carries — beside the grant's begin facts, so the wire surface maps the
+/// outcome without recomputing anything.
+pub(crate) struct BeganFlow {
+    /// The flow row the insert persisted and returned.
+    pub(crate) flow: OngoingFlow,
+
+    /// The grant's begin facts.
+    pub(crate) facts: BeginFacts,
+}
+
+/// Begins one flow against its definition (README §5.3, §7.1): mints the state token and the
+/// optional PKCE verifier, builds the authorize URL or executes the device authorization,
+/// resolves the expiry, and persists the flow row whose stored facts the outcome carries.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the authorize-URL evaluation fails, the device authorization fails,
+/// a device duration overflows the database clock, or the row insert fails.
+///
+/// # Panics
+///
+/// Panics on stored device-flow drift: the authorization response omits `expires_in_seconds`
+/// and the definition carries no `expires_in_fallback_seconds` — unreachable for definitions
+/// that pass write-time validation. Panics on begin/persist drift when the persisted row reads
+/// back as an authorization-code flow while no authorize URL was built — the match arm that
+/// stamps the row's grant type is the same arm that builds the URL. Panics on schema-backstop
+/// drift when the persisted device row carries no `user_code` — the schema requires a device
+/// row to carry its user code, so a row without one is stored drift.
+pub(crate) async fn begin_flow(
+    database: &Database,
+    http: &Client,
+    definition: &crate::provider::ProviderDefinition,
+    purpose: BeginPurpose,
+    base_url: Option<String>,
+    slots: BTreeMap<String, String>,
+) -> Result<BeganFlow, Error> {
+    let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
+        return Err(Error::Internal {
+            message: "the flow's definition carries no OAuth credential".to_string(),
+        });
+    };
+
+    let OAuthRecipe {
+        client_id,
+        client_secret,
+        grant,
+        ..
+    } = &**recipe;
+
+    let state_token = random_url_safe(32);
+
+    // The purpose's target fields are the schema's cross-column checks in storage form: a
+    // create row carries its new provider's naming, a reauthorize row its target.
+    let (purpose, provider_name, model_prefix, target_provider_id) = match purpose {
+        BeginPurpose::Create {
+            provider_name,
+            model_prefix,
+        } => (
+            FlowPurpose::Create,
+            Some(provider_name),
+            Some(model_prefix),
+            None,
+        ),
+
+        BeginPurpose::Reauthorize { target_provider_id } => (
+            FlowPurpose::Reauthorize,
+            None,
+            None,
+            Some(target_provider_id),
+        ),
+    };
+
+    // The per-grant begin persists the row and yields the one fact storage cannot recover: the
+    // authorization-code grant's authorize URL. The device grant's verification facts exist
+    // only as the row's stored columns, so no fact is computed twice.
+    let (new_flow, authorize_url) = match grant {
+        Grant::AuthorizationCode { pkce, .. } => {
+            let code_verifier = match pkce {
+                Pkce::S256 => Some(random_url_safe(64)),
+                Pkce::None => None,
+            };
+
+            let env = ValueEnv::for_authorize_url(
+                &slots,
+                client_id.as_str(),
+                client_secret.as_deref(),
+                &state_token,
+            );
+
+            let authorize_url =
+                build_authorize_url(grant, &env, &state_token, code_verifier.as_deref())?;
+
+            let expires_at = unix_time::unix_now_micros() + AUTHORIZATION_CODE_TTL;
+
+            let new_flow = NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token,
+                purpose,
+                provider_name,
+                model_prefix,
+                base_url,
+                target_provider_id,
+                grant_type: FlowGrant::AuthorizationCode,
+                slots,
+                code_verifier,
+                device_code: None,
+                device_user_code: None,
+                device_verification_uri: None,
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: None,
+                device_next_poll_at: None,
+                expires_at,
+            };
+
+            (new_flow, Some(authorize_url))
+        }
+
+        Grant::Device {
+            authorization: _,
+            expires_in_fallback_seconds,
+        } => {
+            let env = ValueEnv::for_device_authorization(
+                &slots,
+                base_url.as_deref(),
+                client_id.as_str(),
+                client_secret.as_deref(),
+            );
+
+            let device = execute_device_authorization(http, grant, &env).await?;
+
+            // The expiry comes from the response's lifetime, else the definition's explicit
+            // fallback. The write-time validation makes a definition carrying neither
+            // unrepresentable: a stored-drift definition must fail fast instead of silently
+            // inventing a lifetime.
+            #[expect(
+                clippy::expect_used,
+                reason = "write-time validation requires a reported expiry or the configured \
+                          fallback; a definition with neither is stored drift"
+            )]
+            let expires_in = device
+                .expires_in_seconds
+                .or_else(|| {
+                    expires_in_fallback_seconds
+                        .map(|fallback| i64::try_from(fallback.get()).unwrap_or(i64::MAX))
+                })
+                .expect("device-flow expiry is guaranteed by the write-time validation");
+
+            let interval = device
+                .interval_seconds
+                .unwrap_or(DEFAULT_DEVICE_INTERVAL_SECONDS);
+
+            let expires_at =
+                unix_time::seconds_from_now(expires_in).ok_or_else(|| Error::Unavailable {
+                    detail: "malformed device authorization response: `expires_in` overflow"
+                        .to_string(),
+                })?;
+
+            let new_flow = NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token,
+                purpose,
+                provider_name,
+                model_prefix,
+                base_url,
+                target_provider_id,
+                grant_type: FlowGrant::Device,
+                slots,
+                code_verifier: None,
+                device_code: Some(device.device_code),
+                device_user_code: Some(device.user_code),
+                device_verification_uri: device.verification_uri,
+                device_verification_uri_complete: device.verification_uri_complete,
+                device_poll_interval_seconds: Some(interval),
+                device_next_poll_at: Some(unix_time::seconds_from_now(interval).ok_or_else(
+                    || {
+                        Error::Unavailable {
+                            detail: "malformed device authorization response: `interval` overflow"
+                                .to_string(),
+                        }
+                    },
+                )?),
+                expires_at,
+            };
+
+            (new_flow, None)
+        }
+    };
+
+    // The stored row is the response's source of truth: the state token, the expiry, and the
+    // device facts all read back from the row the insert returns, never from the caller's
+    // local copy.
+    let flow = storage::oauth_flows::insert_flow(database, new_flow).await?;
+
+    let facts = match flow.grant_type {
+        FlowGrant::AuthorizationCode => {
+            #[expect(
+                clippy::expect_used,
+                reason = "the authorization-code arm above always built its URL"
+            )]
+            let authorize_url = authorize_url.expect("the begin built its authorize URL");
+
+            BeginFacts::AuthorizationCode { authorize_url }
+        }
+
+        FlowGrant::Device => {
+            // The schema requires a device row to carry its user code; a row without one is
+            // stored drift.
+            #[expect(
+                clippy::expect_used,
+                reason = "the schema requires a device row to carry its user code"
+            )]
+            let user_code = flow
+                .device_user_code
+                .clone()
+                .expect("a device row carries its user code");
+
+            BeginFacts::Device {
+                user_code,
+                verification_uri: flow.device_verification_uri.clone(),
+                verification_uri_complete: flow.device_verification_uri_complete.clone(),
+            }
+        }
+    };
+
+    Ok(BeganFlow { flow, facts })
+}
+
 /// Builds the authorize URL of an authorization-code grant: the evaluated base URL, the standard
 /// parameters the builder appends itself (`response_type`, `client_id`, `redirect_uri`,
 /// `state`, and the PKCE pair when configured), and the definition's extra parameters in order.
-pub(crate) fn build_authorize_url(
+fn build_authorize_url(
     grant: &Grant,
     env: &ValueEnv<'_>,
     state_token: &str,
@@ -787,11 +1052,25 @@ mod tests {
     )]
 
     use super::{
-        ExchangeOutcome, IdTokenClaim, Target, absorb_exchange_slots, apply_exchange_target,
-        jwt_exp_claim, token_error_code,
+        AUTHORIZATION_CODE_TTL, BeginFacts, BeginPurpose, ExchangeOutcome, IdTokenClaim, Target,
+        absorb_exchange_slots, apply_exchange_target, begin_flow, jwt_exp_claim, token_error_code,
     };
-    use crate::provider::{control::Extracted, definition::template::ResponsePath};
+    use crate::{
+        format::UpstreamFormat,
+        provider::{
+            control::Extracted,
+            definition::{
+                credential::{CredentialAcquisition, Grant},
+                template::ResponsePath,
+            },
+        },
+        storage::provider_definitions::{self, NewDefinition},
+        test_support::{
+            self, MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
+        },
+    };
     use base64::{Engine as _, engine::general_purpose};
+    use serde_json::json;
     use std::collections::BTreeMap;
 
     /// Pins the token-endpoint error-code reader across every wire shape the researched upstreams
@@ -1018,5 +1297,255 @@ mod tests {
             jwt_exp_claim(&jwt_with_exp(serde_json::json!("soon"))),
             None
         );
+    }
+
+    /// The device grant one begin test swaps into the shared OAuth skeleton: the authorization
+    /// request posts to the given base and maps the required codes plus the verification URI,
+    /// reporting neither `expires_in` nor `interval` — so the begin resolves the documented
+    /// fallbacks, the definition's expiry fallback and the five-second RFC 8628 default.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the fixture grant fails to parse — a broken fixture is the failure report.
+    fn device_begin_grant(base: &str) -> Grant {
+        #[expect(clippy::unwrap_used, reason = "the fixture grant always parses")]
+        serde_json::from_value(json!({
+            "type": "device",
+            "authorization": {
+                "request": {
+                    "method": "POST",
+                    "url": [{"type": "literal", "value": format!("{base}/device/code")}]
+                },
+                "response": {
+                    "encoding": "json",
+                    "fields": [
+                        {
+                            "path": ["device_code"],
+                            "target": {"type": "device_code"},
+                            "required": true
+                        },
+                        {
+                            "path": ["user_code"],
+                            "target": {"type": "user_code"},
+                            "required": true
+                        },
+                        {
+                            "path": ["verification_uri"],
+                            "target": {"type": "verification_uri"},
+                            "required": false
+                        }
+                    ]
+                }
+            },
+            "expires_in_fallback_seconds": 900
+        }))
+        .unwrap()
+    }
+
+    /// The engine's begin orchestration persists the flow row its outcome carries (README §5.3,
+    /// §7.1): an authorization-code begin stores the row with the fixed ten-minute expiry and
+    /// its create purpose's naming, and the begin facts carry the authorize URL — carrying the
+    /// minted state — the one fact storage cannot recover.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[tokio::test]
+    async fn begin_flow_persists_an_authorization_code_flow_and_carries_its_url() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = test_support::insert_oauth_definition(&database, "oauth-def").await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        let began = begin_flow(
+            &database,
+            &crate::http_client::control_plane(),
+            &definition,
+            BeginPurpose::Create {
+                provider_name: "created".to_string(),
+                model_prefix: String::new(),
+            },
+            Some("https://upstream.example".to_string()),
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent facts variant is the failure report"
+        )]
+        let BeginFacts::AuthorizationCode { authorize_url } = began.facts else {
+            panic!("an authorization-code definition begins an authorization-code flow");
+        };
+
+        assert!(
+            authorize_url.starts_with("https://accounts.example/auth?"),
+            "{authorize_url}"
+        );
+
+        assert!(
+            authorize_url.ends_with(&format!("&state={}", began.flow.state_token)),
+            "{authorize_url}"
+        );
+
+        // The expiry is the fixed ten-minute TTL, read from the persisted row.
+        assert!(
+            began.flow.expires_at - now >= AUTHORIZATION_CODE_TTL,
+            "{}",
+            began.flow.expires_at - now
+        );
+
+        // The row is persisted and carries its purpose's target fields.
+        #[expect(clippy::expect_used, reason = "the began flow row is persisted")]
+        let stored = crate::storage::oauth_flows::find_flow_by_state(
+            &database,
+            &began.flow.state_token,
+            now,
+        )
+        .await
+        .unwrap()
+        .expect("the began flow row is persisted");
+
+        assert_eq!(stored.id, began.flow.id);
+        assert_eq!(
+            stored.grant_type,
+            crate::storage::oauth_flows::FlowGrant::AuthorizationCode
+        );
+        assert_eq!(
+            stored.purpose,
+            crate::storage::oauth_flows::FlowPurpose::Create
+        );
+        assert_eq!(stored.provider_name.as_deref(), Some("created"));
+        assert_eq!(stored.model_prefix.as_deref(), Some(""));
+        assert_eq!(stored.base_url.as_deref(), Some("https://upstream.example"));
+    }
+
+    /// The engine's device begin persists the flow row on its stored schedule (README §5.3,
+    /// §7.1): the row carries the response's device facts, the definition's expiry fallback
+    /// scaled to the database clock, and the five-second default interval the response implied
+    /// by reporting none — and the begin facts carry the verification facts.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[tokio::test]
+    async fn begin_flow_persists_a_device_flow_on_its_stored_schedule() {
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&json!({
+                "device_code": "device-code",
+                "user_code": "user-code",
+                "verification_uri": "https://verify.example",
+            }))
+            .unwrap(),
+        ])
+        .await;
+
+        let exchange_url = mock.base();
+
+        // The shared OAuth skeleton with the grant's authorization redirected at the mock: the
+        // skeleton's own exchange references the device_code value part, so the payload
+        // validates with the swapped grant too.
+        let mut payload = test_support::oauth_definition_payload(OAuthDefinitionFixture {
+            format: UpstreamFormat::OpenAiChatCompletion,
+            inference_suffix: Some("/chat/completions"),
+            client_id: "fixture-client",
+            initial_slots: &[],
+            grant: OAuthGrantFixture::Device {
+                has_grant_type_field: true,
+            },
+            exchange_url: &exchange_url,
+            response_fields: vec![],
+            terminal_codes: &["invalid_grant"],
+            refresh: OAuthRefreshFixture::None,
+            provisioning: None,
+        });
+
+        #[expect(
+            clippy::panic,
+            reason = "the fixture payload always carries an OAuth credential"
+        )]
+        let CredentialAcquisition::OAuth(recipe) = &mut payload.credential else {
+            panic!("the OAuth fixture payload carries an OAuth credential");
+        };
+
+        recipe.grant = device_begin_grant(&exchange_url);
+
+        payload.validate().unwrap();
+
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = provider_definitions::insert_definition(
+            &database,
+            NewDefinition {
+                name: "device-def",
+                base_version: None,
+                payload: &payload,
+                created_at: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+        let now = crate::unix_time::unix_now_micros();
+
+        let began = begin_flow(
+            &database,
+            &crate::http_client::control_plane(),
+            &definition,
+            BeginPurpose::Reauthorize {
+                target_provider_id: 1,
+            },
+            None,
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent facts variant is the failure report"
+        )]
+        let BeginFacts::Device {
+            user_code,
+            verification_uri,
+            verification_uri_complete,
+        } = began.facts
+        else {
+            panic!("a device definition begins a device flow");
+        };
+
+        assert_eq!(user_code, "user-code");
+        assert_eq!(verification_uri.as_deref(), Some("https://verify.example"));
+        assert_eq!(verification_uri_complete, None);
+
+        // The stored schedule: the response implied no interval, so the five-second RFC 8628
+        // default persists, both instants resolve from the fallback lifetime and the default,
+        // and the row carries its reauthorize target.
+        assert_eq!(began.flow.device_poll_interval_seconds, Some(5));
+        assert!(began.flow.device_next_poll_at.unwrap() > now);
+        assert!(began.flow.expires_at > now);
+
+        assert_eq!(began.flow.device_code.as_deref(), Some("device-code"));
+        assert_eq!(began.flow.device_user_code.as_deref(), Some("user-code"));
+        assert_eq!(
+            began.flow.purpose,
+            crate::storage::oauth_flows::FlowPurpose::Reauthorize
+        );
+        assert_eq!(began.flow.provider_name, None);
+        assert_eq!(began.flow.target_provider_id, Some(1));
+
+        #[expect(clippy::expect_used, reason = "the began flow row is persisted")]
+        let stored = crate::storage::oauth_flows::find_flow_by_state(
+            &database,
+            &began.flow.state_token,
+            now,
+        )
+        .await
+        .unwrap()
+        .expect("the began flow row is persisted");
+
+        assert_eq!(stored.id, began.flow.id);
     }
 }

@@ -47,7 +47,13 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
         );
     });
 
-    const enabledCount = createMemo(() => keys().filter((row) => row.is_enabled).length);
+    // The count line counts the enabled rows the search leaves visible, so a
+    // standing search narrows its claim to the screen; with no search the
+    // visible rows are the whole listing, and the denominator stays the whole
+    // listing either way, like the models screen's "X of Y models".
+    const visibleEnabledCount = createMemo(
+        () => visibleKeys().filter((row) => row.is_enabled).length,
+    );
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -99,13 +105,6 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                         class="sm:max-w-xs"
                     />
 
-                    <p
-                        class="text-[12.5px] text-ink-faint"
-                        role="status"
-                    >
-                        {`${enabledCount()} of ${keys().length} ${keys().length === 1 ? "key" : "keys"} enabled`}
-                    </p>
-
                     <Show
                         when={visibleKeys().length > 0}
                         fallback={
@@ -115,6 +114,12 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                             />
                         }
                     >
+                        <p
+                            class="text-[12.5px] text-ink-faint"
+                            role="status"
+                        >
+                            {`${visibleEnabledCount()} of ${keys().length} ${keys().length === 1 ? "key" : "keys"} enabled`}
+                        </p>
                         <ul class="flex flex-col gap-2">
                             <For each={visibleKeys()}>{(row) => <ApiKeyRow apiKey={row} />}</For>
                         </ul>

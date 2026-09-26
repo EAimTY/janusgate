@@ -9,8 +9,8 @@ import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
 import {
     USAGE_QUERY_SUBJECT_FIELDS,
-    type UsageQuerySubject,
     type UsageSubjectFilter,
+    usageQuerySubjectOfFilter,
 } from "/src/usage-filter";
 import { createScreenRead, readOne } from "./read";
 import { ReadNotice } from "./read-notice";
@@ -19,56 +19,21 @@ import { readUsageBuckets } from "./usage-read";
 
 /**
  * The subject as the shared `usage` filter the query route carries: the one
- * id, listed under the dimension table's wire field.
+ * id, listed under the dimension table's wire field for the dimension the
+ * subject read names. The values ride as the subject slice of the filter —
+ * the table's fields optional, exactly one set — and `UsageFilter` leaves
+ * every field the subject never names absent.
  */
 function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
-    if (USAGE_QUERY_SUBJECT_FIELDS.provider.wireField in filter) {
-        return {
-            [USAGE_QUERY_SUBJECT_FIELDS.provider.wireField]: [
-                filter[USAGE_QUERY_SUBJECT_FIELDS.provider.wireField],
-            ],
-        };
-    }
-
-    if (USAGE_QUERY_SUBJECT_FIELDS.model.wireField in filter) {
-        return {
-            [USAGE_QUERY_SUBJECT_FIELDS.model.wireField]: [
-                filter[USAGE_QUERY_SUBJECT_FIELDS.model.wireField],
-            ],
-        };
-    }
-
-    return {
-        [USAGE_QUERY_SUBJECT_FIELDS.api_key.wireField]: [
-            filter[USAGE_QUERY_SUBJECT_FIELDS.api_key.wireField],
+    const subject = usageQuerySubjectOfFilter(filter);
+    const wireField = USAGE_QUERY_SUBJECT_FIELDS[subject.dimension].wireField;
+    const values: Partial<Record<typeof wireField, number[]>> = {
+        [wireField]: [
+            subject.id,
         ],
     };
-}
 
-/**
- * The same subject as the aggregates page's route carries it, so the card's
- * "Open aggregates" link lands with the grouping and the filter field
- * prefilled to the subject the operator was just reading.
- */
-function usageQuerySubject(filter: UsageSubjectFilter): UsageQuerySubject {
-    if (USAGE_QUERY_SUBJECT_FIELDS.provider.wireField in filter) {
-        return {
-            dimension: "provider",
-            id: filter[USAGE_QUERY_SUBJECT_FIELDS.provider.wireField],
-        };
-    }
-
-    if (USAGE_QUERY_SUBJECT_FIELDS.model.wireField in filter) {
-        return {
-            dimension: "model",
-            id: filter[USAGE_QUERY_SUBJECT_FIELDS.model.wireField],
-        };
-    }
-
-    return {
-        dimension: "api_key",
-        id: filter[USAGE_QUERY_SUBJECT_FIELDS.api_key.wireField],
-    };
+    return values;
 }
 
 /**
@@ -140,7 +105,7 @@ export function EntityUsageCard(props: {
                 title="Usage"
                 description="Requests and tokens per day — numbers only, never content."
             >
-                <ButtonLink href={hrefs.usageQuery(usageQuerySubject(props.filter))}>
+                <ButtonLink href={hrefs.usageQuery(usageQuerySubjectOfFilter(props.filter))}>
                     Open aggregates
                 </ButtonLink>
             </CardHeader>
@@ -235,6 +200,10 @@ export function EntityUsageCard(props: {
                                 </tbody>
                             </table>
                         </div>
+
+                        <p class="mt-3 text-[12.5px] text-ink-faint">
+                            Days are UTC — the gateway's own day boundary.
+                        </p>
                     </Show>
 
                     <Show when={read.notice() === null && buckets().length === 0}>

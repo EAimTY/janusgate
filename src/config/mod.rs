@@ -2,12 +2,13 @@
 //! ([`schema::Config`]), the reloadable owner
 //! ([`ConfigLoader`]), and the loading, hot-reload, TLS, and CORS machinery.
 //!
-//! [`ConfigLoader`] owns the live state — the applied schema and the resolved TLS server
-//! configuration — and the reload pipeline. Its watcher future, returned by [`ConfigLoader::new`]
-//! for the caller to spawn, watches the configuration file and the configured TLS material through
-//! the platform's native filesystem notifications; a reload is debounced — it applies once the
-//! watched inputs have been quiet for a fixed window — and a reload that fails for any reason keeps
-//! the previously applied state and logs the failure. Only startup is fatal.
+//! [`ConfigLoader`] owns the live state — the applied configuration generation, the schema and the
+//! TLS server configuration resolved from it as one value ([`AppliedConfig`]) — and the reload
+//! pipeline. Its watcher future, returned by [`ConfigLoader::new`] for the caller to spawn, watches
+//! the configuration file and the configured TLS material through the platform's native filesystem
+//! notifications; a reload is debounced — it applies once the watched inputs have been quiet for a
+//! fixed window — and a reload that fails for any reason keeps the previously applied state and
+//! logs the failure. Only startup is fatal.
 
 use self::schema::Config;
 use arc_swap::ArcSwap;
@@ -21,10 +22,7 @@ use std::{
     future::Future,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicPtr, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -43,26 +41,41 @@ pub(crate) use self::error::Error;
 /// scale.
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(500);
 
-/// The gateway's live configuration loader: the currently applied schema and the resolved TLS
-/// server configuration, plus the reload pipeline that keeps them current with their files.
+/// One applied configuration generation: the schema and the TLS server configuration resolved from
+/// it, packed into a single value so [`ConfigLoader`] can swap both with one store. Every reader —
+/// the [`Deref`]-based schema reads and [`ConfigLoader::tls`] alike — therefore observes exactly
+/// one generation, and a reload can never present a new schema with the previous generation's TLS
+/// material, or the reverse (README §8).
+#[derive(Debug)]
+struct AppliedConfig {
+    /// The applied schema. Deliberately leaked: a dereferenced schema reference is borrowed from
+    /// [`ConfigLoader`], a process-lifetime static, so an applied schema must outlive it — no
+    /// schema is ever freed, at a cost of a few hundred bytes per reload. The leak is what lets
+    /// [`Deref::deref`] hand out a plain `&Config` with no lock, guard, or copy: the generation
+    /// handle keeps only the shell below alive, while the schema reference itself is `'static`.
+    schema: &'static Config,
+
+    /// The TLS server configuration resolved from [`AppliedConfig::schema`]; `None` serves
+    /// plaintext HTTP. Refcounted: dropping a superseded generation releases the superseded
+    /// configuration's last owning reference once the connections accepted under it finish, so
+    /// reloads never accumulate.
+    tls_server_config: Option<Arc<ServerConfig>>,
+}
+
+/// The gateway's live configuration loader: the currently applied configuration generation
+/// ([`AppliedConfig`]) and the reload pipeline that keeps it current with its files.
 ///
-/// Schema reads are plain dereferences — `crate::CONFIG.field` — through [`Deref`]. To make that
-/// sound, an applied schema is deliberately leaked: it lives for the rest of the process, because a
-/// dereferenced reference is borrowed from the loader, which is a process-lifetime static — so no
-/// schema is ever freed, at a cost of a few hundred bytes per reload. The TLS server configuration
-/// is refcounted instead ([`ConfigLoader::tls`] hands out owned clones), so its material reloads
-/// without accumulation.
+/// Schema reads are plain dereferences — `crate::CONFIG.field` — through [`Deref`]; TLS reads go
+/// through [`ConfigLoader::tls`]. Both read the one generation held in the loader's single
+/// [`ArcSwap`] cell, so they never disagree, and a reload applies with one store.
 #[derive(Clone, Debug)]
 pub(crate) struct ConfigLoader {
     /// Path of the configuration file, as given on the command line.
     path: PathBuf,
 
-    /// Pointer to the currently applied, deliberately leaked configuration schema; see the struct
-    /// documentation for why it is never freed.
-    schema: Arc<AtomicPtr<Config>>,
-
-    /// The currently applied TLS server configuration; `None` serves plaintext HTTP.
-    tls_server_config: Arc<ArcSwap<Option<Arc<ServerConfig>>>>,
+    /// The currently applied configuration generation; [`AppliedConfig`] documents the lifetime of
+    /// its halves.
+    applied: Arc<ArcSwap<AppliedConfig>>,
 }
 
 /// Reads the schema as plain fields: `crate::CONFIG.management_api.token` dereferences the static,
@@ -71,11 +84,11 @@ impl Deref for ConfigLoader {
     type Target = Config;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: every pointer ever stored in `schema` came from `Box::into_raw` over a schema
-        // that is deliberately never freed, so a loaded pointer stays valid for the rest of the
-        // process. The Acquire load pairs with the Release store, so the dereferencing thread sees
-        // a fully constructed schema.
-        unsafe { &*self.schema.load(Ordering::Acquire) }
+        // The generation handle keeps the generation shell alive while the field is read; the
+        // schema reference itself is `'static` — an applied schema is deliberately leaked, see
+        // [`AppliedConfig`] — so the copied reference stays valid for the rest of the process and
+        // no unsafe dereference is needed.
+        self.applied.load_full().schema
     }
 }
 
@@ -88,12 +101,11 @@ impl ConfigLoader {
     /// Returns the loading failure: an unreadable input, a schema the deserializer rejects, or TLS
     /// material that does not resolve.
     pub(crate) fn new(path: PathBuf) -> Result<(Self, impl Future<Output = ()> + Send), Error> {
-        let (schema, tls) = read_inputs(&path)?;
+        let applied = read_inputs(&path)?;
 
         let loader = Self {
             path,
-            schema: Arc::new(AtomicPtr::new(Box::into_raw(Box::new(schema)))),
-            tls_server_config: Arc::new(ArcSwap::from_pointee(tls)),
+            applied: Arc::new(ArcSwap::from_pointee(applied)),
         };
 
         let watcher = loader.clone().watch();
@@ -153,23 +165,21 @@ impl ConfigLoader {
     }
 
     /// Reads the configuration file and its TLS material and applies them: parse, resolve, and —
-    /// only when everything succeeded — swap both cells together, moving the global log filter to
-    /// the new `log_level`.
+    /// only when everything succeeded — swap the one configuration generation in a single store,
+    /// moving the global log filter to the new `log_level`.
     ///
     /// A configuration whose TLS material does not resolve keeps the previous schema as well, and
     /// any failure keeps the previously applied state and logs the failure — a running gateway
     /// never dies over a reload.
     fn reload(&self) {
         match read_inputs(&self.path) {
-            Ok((schema, tls)) => {
-                log::set_max_level(schema.log_level);
+            Ok(applied) => {
+                log::set_max_level(applied.schema.log_level);
 
-                // Leak the new schema: dereferenced references borrow the process-lifetime loader,
-                // so every applied schema must outlive it (see the struct documentation).
-                self.schema
-                    .store(Box::into_raw(Box::new(schema)), Ordering::Release);
+                // One store: the schema and the TLS server configuration are one generation and
+                // swap together, so no reader ever observes a half-applied reload (README §8).
+                self.applied.store(Arc::new(applied));
 
-                self.tls_server_config.store(Arc::new(tls));
                 info!("applied the configuration");
             }
 
@@ -183,13 +193,13 @@ impl ConfigLoader {
 /// The one configuration loading pipeline shared by startup ([`ConfigLoader::new`]) and every
 /// reload ([`ConfigLoader::reload`]): read the configuration file at `path`, strip its comments,
 /// deserialize the schema strictly, and resolve the TLS material into a Rustls server
-/// configuration.
+/// configuration, packed into one configuration generation.
 ///
 /// # Errors
 ///
 /// Returns the loading failure: an unreadable input, a schema the deserializer rejects, or TLS
 /// material that does not resolve.
-fn read_inputs(path: &Path) -> Result<(Config, Option<Arc<ServerConfig>>), Error> {
+fn read_inputs(path: &Path) -> Result<AppliedConfig, Error> {
     let configuration = fs::read(path).map_err(|source| Error::Read {
         path: path.to_path_buf(),
         source,
@@ -201,9 +211,15 @@ fn read_inputs(path: &Path) -> Result<(Config, Option<Arc<ServerConfig>>), Error
             source,
         })?;
 
-    let tls = self::tls::resolve(&schema)?;
+    let tls_server_config = self::tls::resolve(&schema)?;
 
-    Ok((schema, tls))
+    // Leak the schema: dereferenced references borrow the process-lifetime loader, so every
+    // applied schema must outlive it (see [`AppliedConfig`]). Leaked only past the resolution
+    // above, so a failed load drops the schema instead of leaking it.
+    Ok(AppliedConfig {
+        schema: Box::leak(Box::new(schema)),
+        tls_server_config,
+    })
 }
 
 /// Records one filesystem event's arrival: the event's shape is ignored — every event re-arms the
@@ -588,7 +604,9 @@ mod tests {
     /// Verifies that a reload applies a changed configuration file, that a failed reload keeps the
     /// previous state — an unparsable file, and a configuration whose TLS material does not resolve
     /// keeps the previous schema as well — and that dropping the TLS section applies and serves
-    /// plaintext.
+    /// plaintext. Together these pin the single-generation property (README §8): a successful
+    /// reload replaces the schema and the TLS server configuration together even when the TLS
+    /// material files are unchanged, and a failed one keeps both halves.
     ///
     /// # Panics
     ///
@@ -608,6 +626,9 @@ mod tests {
 
         let schema_before: &Config = &loader;
 
+        #[expect(clippy::expect_used, reason = "the initial TLS configuration exists")]
+        let tls_before = loader.tls().expect("the TLS configuration exists");
+
         write_test_file(
             "reload",
             "configuration.jsonc",
@@ -618,10 +639,22 @@ mod tests {
         assert_eq!(loader.management_api.token, "second");
         assert!(!std::ptr::eq(schema_before, &*loader));
 
+        // The two halves move together: one generation, replaced wholly, though the TLS material
+        // files themselves are unchanged.
+        #[expect(clippy::expect_used, reason = "the reloaded TLS configuration exists")]
+        let tls_second = loader.tls().expect("the reloaded TLS configuration exists");
+
+        assert!(!Arc::ptr_eq(&tls_before, &tls_second));
+
         write_test_file("reload", "configuration.jsonc", "not json");
 
         loader.reload();
         assert_eq!(loader.management_api.token, "second");
+        assert!(
+            loader
+                .tls()
+                .is_some_and(|tls| Arc::ptr_eq(&tls, &tls_second))
+        );
 
         write_test_file(
             "reload",
@@ -629,8 +662,14 @@ mod tests {
             &configuration_body("third", Some(missing_tls_paths())),
         );
 
+        // Or not at all: a failed reload keeps the whole previous generation, both halves.
         loader.reload();
         assert_eq!(loader.management_api.token, "second");
+        assert!(
+            loader
+                .tls()
+                .is_some_and(|tls| Arc::ptr_eq(&tls, &tls_second))
+        );
 
         write_test_file(
             "reload",

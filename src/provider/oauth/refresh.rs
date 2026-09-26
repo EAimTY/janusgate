@@ -10,14 +10,14 @@
 //! freshly read row instead of waiting for a concurrent refresher that can never exist.
 
 use super::{
-    Error, flow,
+    flow,
     provisioning::{self, WorkingState},
 };
 use crate::{
     database::{Database, Error as DatabaseError, Transaction},
     http_client,
     provider::{
-        Provider, StoredCredentials,
+        Error, Provider, StoredCredentials,
         definition::{
             credential::{CredentialAcquisition, OAuthRecipe, TokenRefresh},
             eval::ValueEnv,
@@ -586,11 +586,11 @@ mod tests {
         database::{Database, schema::Registry},
         format::UpstreamFormat,
         http_client,
-        provider::{Provider, StoredCredentials, engine_tests::MockUpstream},
+        provider::{Provider, StoredCredentials},
         storage,
         test_support::{
-            FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
-            OAuthResponseField, OAuthTarget, oauth_definition_payload,
+            FIXTURE_TOKEN_URL, MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture,
+            OAuthRefreshFixture, OAuthResponseField, OAuthTarget, oauth_definition_payload,
         },
         unix_time,
     };

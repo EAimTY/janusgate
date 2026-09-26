@@ -232,10 +232,7 @@ async fn handle_create(
 
     // The pre-insert check renders a clean 409; the database's UNIQUE constraint is the
     // concurrent backstop.
-    if storage::providers::find_provider(database, &request.name)
-        .await?
-        .is_some()
-    {
+    if storage::providers::is_provider_name_taken(database, &request.name).await? {
         return Err(Error::ProviderNameTaken {
             name: request.name.clone(),
         });

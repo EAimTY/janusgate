@@ -6,13 +6,16 @@
 //! competing pollers and restarts never double-exchange an upstream grant. Only the current
 //! claimant persists the result or next schedule: every persist conditions on the claim stamp.
 
-use super::{Error, completion, flow};
+use super::{completion, flow};
 use crate::{
     database::Database,
     http_client,
-    provider::definition::{
-        credential::{CredentialAcquisition, Grant, OAuthRecipe},
-        eval::ValueEnv,
+    provider::{
+        Error,
+        definition::{
+            credential::{CredentialAcquisition, Grant, OAuthRecipe},
+            eval::ValueEnv,
+        },
     },
     storage,
     storage::oauth_flows::{DevicePollOutcome, FlowPurpose, OngoingFlow},
@@ -27,7 +30,7 @@ use std::time::Duration;
 /// poller that died mid-exchange.
 const CLAIM_STALE_AFTER: Duration = http_client::CONTROL_PLANE_TOTAL_TIMEOUT;
 
-/// The interval a connection-timeout backoff grows to before it stops doubling.
+/// The delay a connection-timeout backoff grows to before it stops doubling.
 const BACKOFF_INTERVAL_CAP_SECONDS: i64 = 120;
 
 /// How often the poller wakes to sweep expiries and claim due flows.
@@ -43,18 +46,10 @@ pub(crate) fn spawn_device_poller(database: Database, http: Client) {
                 warn!("device poller failed to sweep expired flows: {error}");
             }
 
-            let claim_stale_before =
-                now - i64::try_from(CLAIM_STALE_AFTER.as_micros()).unwrap_or(i64::MAX);
-
             // Every due flow is claimed and driven before the next tick; a claim loop error ends
             // the batch and the next tick retries.
             loop {
-                let flow = storage::oauth_flows::claim_due_device_flow(
-                    &database,
-                    unix_time::unix_now_micros(),
-                    claim_stale_before,
-                )
-                .await;
+                let flow = claim_next_due_flow(&database).await;
 
                 let Ok(Some(flow)) = flow else {
                     if let Err(error) = flow {
@@ -75,6 +70,25 @@ pub(crate) fn spawn_device_poller(database: Database, http: Client) {
             tokio::time::sleep(POLL_TICK).await;
         }
     });
+}
+
+/// Claims the next due device flow: the claim stamp and its staleness threshold derive from one
+/// fresh instant per claim, so a batch of slow flows cannot stretch the window in which a dead
+/// poller's claim stays unstealable — a threshold frozen at the tick start would delay a stale
+/// claim's recovery by the whole batch's runtime.
+///
+/// # Errors
+///
+/// Returns [`storage::Error`] when the claim statement fails.
+async fn claim_next_due_flow(database: &Database) -> Result<Option<OngoingFlow>, storage::Error> {
+    let now = unix_time::unix_now_micros();
+
+    storage::oauth_flows::claim_due_device_flow(
+        database,
+        now,
+        now - i64::try_from(CLAIM_STALE_AFTER.as_micros()).unwrap_or(i64::MAX),
+    )
+    .await
 }
 
 /// Drives one claimed flow's poll attempt: executes the definition's exchange request, classifies
@@ -147,9 +161,11 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
     let product = match flow::execute_exchange(http, exchange, &env).await {
         Ok(product) => product,
 
-        // A transport timeout backs off exponentially before retrying; any other transport or
-        // response failure schedules the plain interval retry, so a transient outage never
-        // kills the flow.
+        // A transport timeout backs off the next attempt — the stored interval is persisted
+        // unchanged, so the transient doubling never compounds across claims (RFC 8628 §3.5
+        // reserves the permanent raise for `slow_down`); any other transport or response
+        // failure schedules the plain interval retry, so a transient outage never kills the
+        // flow.
         Err(error) => {
             debug!("device flow {} exchange attempt failed: {error}", flow.id);
 
@@ -162,7 +178,9 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         .unwrap_or(flow::DEFAULT_DEVICE_INTERVAL_SECONDS);
 
     match product {
-        flow::ExchangeProduct::Pending => schedule_retry_at(database, flow, interval).await,
+        flow::ExchangeProduct::Pending => {
+            schedule_retry_at(database, flow, interval, interval).await
+        }
 
         flow::ExchangeProduct::SlowDown => {
             // `slow_down` permanently raises this flow's interval (RFC 8628 §3.5); an interval
@@ -172,7 +190,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
                 .checked_add(flow::SLOW_DOWN_PENALTY_SECONDS)
                 .ok_or_else(|| interval_overflow(interval))?;
 
-            schedule_retry_at(database, flow, raised).await
+            schedule_retry_at(database, flow, raised, raised).await
         }
 
         flow::ExchangeProduct::Other(code) => {
@@ -186,7 +204,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
                 flow.id
             );
 
-            schedule_retry_at(database, flow, interval).await
+            schedule_retry_at(database, flow, interval, interval).await
         }
 
         flow::ExchangeProduct::Terminal(code) => {
@@ -209,8 +227,9 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
     }
 }
 
-/// Schedules the next attempt after a failed transport round-trip: a timeout doubles the flow's
-/// interval with exponential backoff, everything else keeps the stored interval.
+/// Schedules the next attempt after a failed transport round-trip: a timeout doubles only the
+/// next attempt's delay while the stored interval is persisted unchanged — the transient
+/// backoff never compounds across claims — and everything else keeps the stored interval.
 async fn schedule_retry(
     database: &Database,
     flow: &OngoingFlow,
@@ -220,7 +239,7 @@ async fn schedule_retry(
         .device_poll_interval_seconds
         .unwrap_or(flow::DEFAULT_DEVICE_INTERVAL_SECONDS);
 
-    let interval = if is_timeout {
+    let delay = if is_timeout {
         stored
             .checked_mul(2)
             .map(|doubled| doubled.min(BACKOFF_INTERVAL_CAP_SECONDS))
@@ -229,21 +248,25 @@ async fn schedule_retry(
         stored
     };
 
-    schedule_retry_at(database, flow, interval).await
+    schedule_retry_at(database, flow, stored, delay).await
 }
 
-/// Persists one retry schedule while the caller still owns its claim. A lost claim is ordinary
-/// contention: the winning poller owns the schedule, so the discard is logged and ignored.
+/// Schedules the next attempt while the caller still owns its claim: `delay_seconds` sets the
+/// next attempt instant and `interval_seconds` is the flow interval persisted as the stored
+/// schedule. The two differ only on a transport-timeout backoff, whose doubling is transient.
+/// A lost claim is ordinary contention: the winning poller owns the schedule, so the discard is
+/// logged and ignored.
 async fn schedule_retry_at(
     database: &Database,
     flow: &OngoingFlow,
     interval_seconds: i64,
+    delay_seconds: i64,
 ) -> Result<(), Error> {
     let Some(claim) = flow.device_poll_started_at else {
         return Ok(());
     };
 
-    let next_poll_at = next_poll_instant(interval_seconds)?;
+    let next_poll_at = next_poll_instant(delay_seconds)?;
 
     let is_persisted = storage::oauth_flows::persist_device_poll(
         database,
@@ -273,10 +296,10 @@ fn interval_overflow(interval_seconds: i64) -> Error {
 }
 
 /// The next-poll instant for one interval, in UTC microseconds: the interval scaled to the
-/// database clock through the shared engine helper [`flow::seconds_from_now`], with the overflow
-/// of the upstream-reported magnitude raised as [`interval_overflow`].
+/// database clock through the shared clock helper [`unix_time::seconds_from_now`], with the
+/// overflow of the upstream-reported magnitude raised as [`interval_overflow`].
 fn next_poll_instant(interval_seconds: i64) -> Result<i64, Error> {
-    flow::seconds_from_now(interval_seconds, || interval_overflow(interval_seconds))
+    unix_time::seconds_from_now(interval_seconds).ok_or_else(|| interval_overflow(interval_seconds))
 }
 
 /// Persists one terminal failure while the caller still owns the claim stamped
@@ -341,10 +364,7 @@ async fn commit_success(
     if flow.purpose == FlowPurpose::Create {
         let name = flow.provider_name.as_deref().unwrap_or_default();
 
-        if storage::providers::find_provider(database, name)
-            .await?
-            .is_some()
-        {
+        if storage::providers::is_provider_name_taken(database, name).await? {
             return persist_terminal(
                 database,
                 flow,
@@ -470,16 +490,16 @@ mod tests {
         reason = "the fixtures are constructed so each unwrap lands on its documented side"
     )]
 
-    use super::{commit_success, flow, process};
+    use super::{claim_next_due_flow, commit_success, flow, process, schedule_retry};
     use crate::{
         http_client,
-        provider::{StoredCredentials, engine_tests::MockUpstream},
+        provider::StoredCredentials,
         storage,
         storage::oauth_flows::{
             FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
             find_flow_by_state, insert_flow, restamp_claim,
         },
-        test_support,
+        test_support::{self, MockUpstream},
     };
     use std::collections::BTreeMap;
 
@@ -577,6 +597,300 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    /// A transport timeout's backoff is transient (RFC 8628 §3.5 reserves a permanent raise for
+    /// `slow_down`): the timeout schedules one doubled delay for the next attempt while the
+    /// flow's stored interval persists unchanged, and the next attempt — reading the preserved
+    /// base — writes it back, so the interval never ratchets across claims.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the backoff schedule diverges from the contract.
+    #[tokio::test]
+    async fn a_transport_timeout_backs_off_transitorily_and_never_ratchets_the_stored_interval() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            "http://127.0.0.1:1/token",
+            false,
+        )
+        .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(now - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        let before = crate::unix_time::unix_now_micros();
+
+        schedule_retry(&database, &claimed, true).await.unwrap();
+
+        let after = crate::unix_time::unix_now_micros();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let backed_off = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row survives the timeout");
+
+        // The stored base interval is untouched; only the next attempt's delay doubled.
+        assert_eq!(
+            backed_off.device_poll_interval_seconds,
+            Some(5),
+            "the timeout must not raise the stored interval"
+        );
+
+        let doubled = 10 * crate::unix_time::MICROS_PER_SEC;
+
+        assert!(
+            backed_off.device_next_poll_at.unwrap() >= before + doubled
+                && backed_off.device_next_poll_at.unwrap() <= after + doubled,
+            "the next attempt rides the doubled delay"
+        );
+
+        assert_eq!(backed_off.device_poll_started_at, None);
+
+        // The next attempt — due at the doubled instant — reads the preserved base and writes
+        // it back, so the interval never ratchets.
+        let due_at = backed_off.device_next_poll_at.unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed again")]
+        let claimed_again =
+            claim_due_device_flow(&database, due_at, due_at - crate::unix_time::MICROS_PER_SEC)
+                .await
+                .unwrap()
+                .expect("the flow is due again at the doubled instant");
+
+        assert_eq!(
+            claimed_again.device_poll_interval_seconds,
+            Some(5),
+            "the next attempt reads the preserved base"
+        );
+
+        let before = crate::unix_time::unix_now_micros();
+
+        schedule_retry(&database, &claimed_again, false)
+            .await
+            .unwrap();
+
+        let after = crate::unix_time::unix_now_micros();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row survives the next failure");
+
+        assert_eq!(settled.device_poll_interval_seconds, Some(5));
+
+        let base = 5 * crate::unix_time::MICROS_PER_SEC;
+
+        assert!(
+            settled.device_next_poll_at.unwrap() >= before + base
+                && settled.device_next_poll_at.unwrap() <= after + base,
+            "the next attempt rides the stored interval"
+        );
+    }
+
+    /// The connection-timeout backoff stops doubling at the cap, and the cap bounds only the
+    /// transient next-attempt delay: an upstream-reported interval above it persists unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the capped schedule diverges from the contract.
+    #[tokio::test]
+    async fn a_transport_timeout_backoff_caps_the_delay_without_raising_the_stored_interval() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            "http://127.0.0.1:1/token",
+            false,
+        )
+        .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(100),
+                device_next_poll_at: Some(now - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        let before = crate::unix_time::unix_now_micros();
+
+        schedule_retry(&database, &claimed, true).await.unwrap();
+
+        let after = crate::unix_time::unix_now_micros();
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let backed_off = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row survives the timeout");
+
+        // The doubled delay is capped while the upstream-reported interval persists unchanged.
+        assert_eq!(
+            backed_off.device_poll_interval_seconds,
+            Some(100),
+            "the capped backoff must not raise the stored interval"
+        );
+
+        let capped = super::BACKOFF_INTERVAL_CAP_SECONDS * crate::unix_time::MICROS_PER_SEC;
+
+        assert!(
+            backed_off.device_next_poll_at.unwrap() >= before + capped
+                && backed_off.device_next_poll_at.unwrap() <= after + capped,
+            "the next attempt rides the capped delay"
+        );
+    }
+
+    /// The batch's claim staleness threshold derives from each claim's own instant, not the
+    /// tick start: a claim that has aged past the staleness window by the time the batch
+    /// reaches its flow is recovered by that very claim call, while a claim still inside the
+    /// window at the call's own instant is respected — so a slow flow ahead in the batch can
+    /// never stretch a dead poller's recovery delay.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the claims diverge from the contract.
+    #[tokio::test]
+    async fn a_claim_recovers_a_claim_stale_at_the_claim_call_s_own_instant() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            "http://127.0.0.1:1/token",
+            false,
+        )
+        .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        // Two due flows whose claims are fabricated through the same conditional claim the
+        // poller uses: one stamped 31 seconds ago — past the staleness window relative to the
+        // claim call's own instant — and one stamped 29 seconds ago, still inside it. The
+        // fresh fixture's threshold protects the stale stamp, so each stamp lands on its own
+        // row.
+        let stale_at = now - 31 * crate::unix_time::MICROS_PER_SEC;
+        let fresh_at = now - 29 * crate::unix_time::MICROS_PER_SEC;
+
+        for (state_token, claim_at) in [("stale-claim", stale_at), ("fresh-claim", fresh_at)] {
+            insert_flow(
+                &database,
+                NewFlow {
+                    definition_name: definition.name.clone(),
+                    definition_version: definition.version,
+                    state_token: state_token.to_string(),
+                    purpose: FlowPurpose::Create,
+                    provider_name: Some("created".to_string()),
+                    model_prefix: Some(String::new()),
+                    base_url: None,
+                    target_provider_id: None,
+                    grant_type: FlowGrant::Device,
+                    slots: BTreeMap::new(),
+                    code_verifier: None,
+                    device_code: Some("device-code".to_string()),
+                    device_user_code: Some("user-code".to_string()),
+                    device_verification_uri: Some("https://verify.example".to_string()),
+                    device_verification_uri_complete: None,
+                    device_poll_interval_seconds: Some(5),
+                    device_next_poll_at: Some(claim_at - 1),
+                    expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+                },
+            )
+            .await
+            .unwrap();
+
+            #[expect(clippy::expect_used, reason = "the fixture flow is claimed")]
+            let claimed = claim_due_device_flow(&database, claim_at, stale_at)
+                .await
+                .unwrap()
+                .expect("the fixture flow is claimed");
+
+            assert_eq!(claimed.state_token, state_token);
+        }
+
+        // The poller's claim call derives its threshold from its own instant: the 31-second-old
+        // claim is past the window and is recovered, with a fresh stamp.
+        #[expect(clippy::expect_used, reason = "the stale claim is recovered")]
+        let recovered = claim_next_due_flow(&database)
+            .await
+            .unwrap()
+            .expect("the claim past the window at the call's own instant is recovered");
+
+        assert_eq!(recovered.state_token, "stale-claim");
+        assert!(
+            recovered.device_poll_started_at.unwrap() > stale_at,
+            "the recovery stamps a fresh claim"
+        );
+
+        // The 29-second-old claim is respected — still inside the window at the call's own
+        // instant — so nothing else is due.
+        assert!(
+            claim_next_due_flow(&database).await.unwrap().is_none(),
+            "a claim inside the window at the call's own instant is respected"
         );
     }
 

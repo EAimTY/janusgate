@@ -10,7 +10,11 @@ import { ReadNotice } from "/src/screens/read-notice";
 import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { ModelIdOverrideFields } from "/src/ui/model-form";
+import {
+    composedPublicId,
+    ModelIdOverrideFields,
+    normalizedPublicIdOverride,
+} from "/src/ui/model-form";
 import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
 import { createScreenRead, readAll, type ScreenNotice } from "./read";
@@ -141,7 +145,7 @@ function ModelCreateForm(props: {
     const trimmedUpstream = (): string => upstreamId().trim();
 
     const normalizedOverride = (): string | null =>
-        !hasIdOverride() || idOverride().trim() === "" ? null : idOverride().trim();
+        normalizedPublicIdOverride(hasIdOverride(), idOverride());
 
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
     const upstreamError = (): string | null => routingTokenError(trimmedUpstream(), "Upstream ID");
@@ -149,15 +153,12 @@ function ModelCreateForm(props: {
     const overrideError = (): string | null =>
         routingTokenError(normalizedOverride(), "Public ID override");
 
-    const composedId = (): string => {
-        const provider = selectedProvider();
-
-        if (provider === null) {
-            return normalizedOverride() ?? trimmedUpstream();
-        }
-
-        return normalizedOverride() ?? `${provider.model_prefix}${trimmedUpstream()}`;
-    };
+    const composedId = (): string =>
+        composedPublicId(
+            selectedProvider()?.model_prefix ?? "",
+            trimmedUpstream(),
+            normalizedOverride(),
+        );
 
     /** The creation's composition rules: an owned provider with a routable identity. */
     const canCompose = (): boolean =>

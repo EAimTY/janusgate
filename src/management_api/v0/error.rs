@@ -16,7 +16,7 @@
 //! `AsStatusCode`, so a category and its status can never drift apart.
 
 use crate::{
-    provider::{definition::ValidationError, oauth::Error as OAuthError},
+    provider::{Error as ProviderError, definition::ValidationError},
     storage::{
         Error as StorageError,
         api_keys::{api_key_not_found_message, api_key_taken_message},
@@ -353,9 +353,9 @@ pub(super) enum Error {
 
     /// The provider's OAuth token endpoint failed. Upstream model discovery reports through this
     /// variant too: discovery and the token stages reject on the same upstream surface and share
-    /// one failure vocabulary ([`OAuthError`]).
+    /// one failure vocabulary ([`ProviderError`]).
     #[error(transparent)]
-    OAuth(#[from] OAuthError),
+    OAuth(#[from] ProviderError),
 }
 
 /// The flat management error body every failed management request renders (README §7). It is part
@@ -419,13 +419,13 @@ impl Error {
             }
 
             Self::OAuth(error) => match error {
-                OAuthError::NotFound { .. } => ErrorCode::NotFound,
+                ProviderError::NotFound { .. } => ErrorCode::NotFound,
 
-                OAuthError::Rejected { .. }
-                | OAuthError::Unavailable { .. }
-                | OAuthError::Timeout { .. } => ErrorCode::UpstreamError,
+                ProviderError::Rejected { .. }
+                | ProviderError::Unavailable { .. }
+                | ProviderError::Timeout { .. } => ErrorCode::UpstreamError,
 
-                OAuthError::Internal { .. } => ErrorCode::Internal,
+                ProviderError::Internal { .. } => ErrorCode::Internal,
             },
             Self::Storage(error) => match error {
                 StorageError::NotFound { .. } => ErrorCode::NotFound,
@@ -491,7 +491,7 @@ impl From<Error> for ErrorResponse {
             Error::Storage(
                 StorageError::Busy { .. } | StorageError::Drift { .. } | StorageError::Database(_),
             )
-            | Error::OAuth(OAuthError::Internal { .. }) => INTERNAL_MESSAGE.to_string(),
+            | Error::OAuth(ProviderError::Internal { .. }) => INTERNAL_MESSAGE.to_string(),
 
             _ => error.to_string(),
         };
@@ -510,7 +510,7 @@ impl From<ErrorCode> for u16 {
 mod tests {
     use super::{CONSTRAINT_MESSAGE, Error, ErrorCode, ErrorResponse, INTERNAL_MESSAGE};
     use crate::{
-        database::Error as DatabaseError, provider::oauth::Error as OAuthError,
+        database::Error as DatabaseError, provider::Error as ProviderError,
         storage::Error as StorageError,
     };
     use as_http_status_code::{AsStatusCode as _, StatusCode};
@@ -713,32 +713,32 @@ mod tests {
                 ErrorCode::Internal,
             ),
             (
-                Error::from(OAuthError::Rejected {
+                Error::from(ProviderError::Rejected {
                     status: 429,
                     detail: "rate limited".to_string(),
                 }),
                 ErrorCode::UpstreamError,
             ),
             (
-                Error::from(OAuthError::Unavailable {
+                Error::from(ProviderError::Unavailable {
                     detail: "unreachable".to_string(),
                 }),
                 ErrorCode::UpstreamError,
             ),
             (
-                Error::from(OAuthError::Timeout {
+                Error::from(ProviderError::Timeout {
                     detail: "cut off".to_string(),
                 }),
                 ErrorCode::UpstreamError,
             ),
             (
-                Error::from(OAuthError::NotFound {
+                Error::from(ProviderError::NotFound {
                     message: "vanished".to_string(),
                 }),
                 ErrorCode::NotFound,
             ),
             (
-                Error::from(OAuthError::Internal {
+                Error::from(ProviderError::Internal {
                     message: "lease".to_string(),
                 }),
                 ErrorCode::Internal,
@@ -894,7 +894,7 @@ mod tests {
     /// Panics if the preserved message diverges.
     #[test]
     fn preserves_domain_messages() {
-        let body = ErrorResponse::from(Error::from(OAuthError::Rejected {
+        let body = ErrorResponse::from(Error::from(ProviderError::Rejected {
             status: 429,
             detail: "rate limited".to_string(),
         }));

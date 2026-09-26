@@ -8,13 +8,13 @@
 //! provider write alone, the flow row already consumed.
 
 use super::{
-    Error, flow,
+    flow,
     provisioning::{self, WorkingState},
 };
 use crate::{
     database::Transaction,
     provider::{
-        StoredCredentials,
+        Error, StoredCredentials,
         definition::{ProviderDefinition, credential::CredentialAcquisition},
     },
     storage,

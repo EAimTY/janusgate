@@ -9,6 +9,7 @@ import { ModelEditScreen } from "/src/screens/model-edit-screen";
 import {
     buttonWithText,
     labeledInput,
+    paragraphWithText,
     settle,
     stubManagementApi,
     switchWithLabel,
@@ -140,6 +141,32 @@ describe("ModelEditScreen refresh against an open form", () => {
             ),
         );
     }
+
+    it("hints the composed ID once the override is toggled off over stale field text", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [
+                model,
+            ],
+        };
+        mount(holder);
+        await settle();
+
+        switchWithLabel("Override the public ID").click();
+        await settle();
+        typeInto(labeledInput("Public ID override"), "custom-gpt-x");
+        await settle();
+        switchWithLabel("Override the public ID").click();
+        await settle();
+
+        // The switch is off, so the save discards the field's stale text and
+        // the gateway recomposes the public ID from the provider's prefix —
+        // the off-hint must name exactly that ID, never the discarded
+        // override.
+        expect(paragraphWithText("Clients call").textContent).toBe("Clients call alpha-gpt-x.");
+    });
 
     it("keeps a dirty form across a refresh whose listings re-answer the same rows", async () => {
         const holder = {

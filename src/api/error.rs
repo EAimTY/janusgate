@@ -19,7 +19,7 @@
 
 use crate::{
     accounting::ApiLogOutcome, gateway::Error as GatewayError, ir::InvalidRequest,
-    provider::oauth::Error as OAuthError, storage::Error as StorageError,
+    provider::Error as ProviderError, storage::Error as StorageError,
 };
 use axum::http::StatusCode;
 use log::{debug, error};
@@ -209,15 +209,15 @@ impl From<StorageError> for Error {
     }
 }
 
-impl From<OAuthError> for Error {
-    fn from(error: OAuthError) -> Self {
+impl From<ProviderError> for Error {
+    fn from(error: ProviderError) -> Self {
         match error {
             // A provider vanishing between routing resolution and the lease-guarded token refresh
             // is a gateway-side concurrency condition, so it renders like any other internal
             // failure.
-            OAuthError::NotFound { .. } | OAuthError::Internal { .. } => Self::Internal,
+            ProviderError::NotFound { .. } | ProviderError::Internal { .. } => Self::Internal,
 
-            OAuthError::Rejected { status, detail } => match StatusCode::from_u16(status) {
+            ProviderError::Rejected { status, detail } => match StatusCode::from_u16(status) {
                 Ok(status) => Self::Upstream {
                     status,
                     message: detail,
@@ -228,7 +228,7 @@ impl From<OAuthError> for Error {
                 },
             },
 
-            OAuthError::Unavailable { detail } | OAuthError::Timeout { detail } => {
+            ProviderError::Unavailable { detail } | ProviderError::Timeout { detail } => {
                 Self::UpstreamUnavailable { message: detail }
             }
         }
@@ -256,7 +256,7 @@ impl From<GatewayError> for Error {
 
             GatewayError::Unavailable { detail } => Self::UpstreamUnavailable { message: detail },
 
-            // The OAuth classification lives once, in `From<OAuthError>`.
+            // The OAuth classification lives once, in `From<ProviderError>`.
             GatewayError::OAuth(error) => Self::from(error),
 
             GatewayError::Storage(_) | GatewayError::Internal { .. } => Self::Internal,
@@ -384,7 +384,7 @@ mod tests {
             Error::from(GatewayError::Internal {
                 message: "storage drift".to_string(),
             }),
-            Error::from(GatewayError::OAuth(OAuthError::NotFound {
+            Error::from(GatewayError::OAuth(ProviderError::NotFound {
                 message: "provider vanished during token refresh".to_string(),
             })),
             Error::from(StorageError::Drift {

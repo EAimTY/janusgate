@@ -1,9 +1,11 @@
 import type { ManagementApi } from "/src/management-api/client";
+import type { ApiLogResponse } from "/src/management-api/generated/v0";
 
 /**
  * Test support the suites share: the full management API stub the screen
- * mounts run against, the promise drains the suites' exchanges rely on, and
- * the DOM lookups and keystrokes their user interactions drive.
+ * mounts run against, the shared usage-row fixture their pages are built
+ * from, the promise drains the suites' exchanges rely on, and the DOM
+ * lookups and keystrokes their user interactions drive.
  */
 
 /** Rejects the way every route a screen test did not expect must: loudly. */
@@ -48,6 +50,35 @@ export function stubManagementApi(overrides: Partial<ManagementApi>): Management
         createApiKey: overrides.createApiKey ?? (() => refusedRoute("createApiKey")),
         updateApiKey: overrides.updateApiKey ?? (() => refusedRoute("updateApiKey")),
         deleteApiKey: overrides.deleteApiKey ?? (() => refusedRoute("deleteApiKey")),
+    };
+}
+
+/** The base instant the shared usage row's stamp offsets, marking rows by it. */
+export const API_LOG_CURSOR_BASE = 1_700_000_000_000_000;
+
+/**
+ * One `usage:list` row the suites share: the stamp is the base instant plus
+ * the offset marking the row — a page's continuation cursor derives from it —
+ * the entity ids are fixed, and the overrides adjust the columns a suite's
+ * assertions read.
+ */
+export function apiLogRow(offset: number, overrides: Partial<ApiLogResponse> = {}): ApiLogResponse {
+    return {
+        started_at: API_LOG_CURSOR_BASE + offset,
+        api_key_id: 7,
+        provider_id: 1,
+        model_id: 9,
+        endpoint_type: "openai_chat_completions",
+        is_stream: false,
+        http_status: 200,
+        outcome: "completed",
+        duration: 120,
+        input_tokens: 10,
+        output_tokens: 20,
+        cached_tokens: null,
+        cache_write_tokens: null,
+        reasoning_tokens: null,
+        ...overrides,
     };
 }
 

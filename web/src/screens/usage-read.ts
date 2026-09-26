@@ -10,6 +10,7 @@ import type {
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
 import { type ReadCall, readAll } from "./read";
+import { missingBucketKeyFieldMessage } from "./usage-labels";
 
 /** The entity lists a usage screen reads alongside the accounting rows. */
 export type UsageEntities = {
@@ -99,7 +100,7 @@ export function readUsageBuckets(
                     if (bucket.key[field] === undefined) {
                         throw new ManagementApiError(
                             "contract",
-                            `Unexpected management API response: the bucket key carries no ${field}`,
+                            `Unexpected management API response: ${missingBucketKeyFieldMessage(field)}`,
                         );
                     }
                 }

@@ -90,7 +90,8 @@ const MANAGEMENT_API_PATH = "/management-api/v0";
  * `{baseUrl}/management-api/v0{path}` (README §3.2, §4.2). Each method rejects
  * with a `ManagementApiError` whose category and errno drive the caller's
  * reaction, and an `AbortSignal` cancels the call at the transport.
- */ export type ManagementApi = {
+ */
+export type ManagementApi = {
     readonly listProviderDefinitions: (
         signal?: AbortSignal,
     ) => Promise<ListProviderDefinitionsResponse>;

@@ -12,193 +12,16 @@
     reason = "a fixture landing on the wrong side of its check is the failure report"
 )]
 
-use crate::provider::{
-    StoredCredentials,
-    definition::{discovery::Discovery, eval::ValueEnv},
-    oauth::{self, ProvisioningEnv, WorkingState, run_steps},
+use crate::{
+    provider::{
+        Error, StoredCredentials,
+        definition::{discovery::Discovery, eval::ValueEnv},
+        oauth::{self, ProvisioningEnv, WorkingState, run_steps},
+    },
+    test_support::MockUpstream,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
-use tokio::io::AsyncReadExt as _;
-
-/// A tiny HTTP/1.1 mock: answers every request from `handler` and shuts down on drop.
-pub(crate) struct MockUpstream {
-    /// The socket address the mock answers at.
-    address: std::net::SocketAddr,
-
-    /// The shutdown signal stopping the mock's accept loop.
-    pub(crate) shutdown: tokio::sync::oneshot::Sender<()>,
-}
-
-impl MockUpstream {
-    /// Serves `responses` round-robin: one entry per request, each framed as a 200 JSON
-    /// response.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the mock cannot bind, accept, or serve its fixture — a
-    /// broken mock is the failure report.
-    pub(crate) async fn start(responses: Vec<String>) -> Self {
-        let (mock, _) = Self::start_recording(responses).await;
-
-        mock
-    }
-
-    /// Serves `responses` round-robin as complete HTTP responses — status line, headers, and
-    /// body — sent verbatim: one entry per request, so a fixture controls the response status
-    /// itself (a redirect fixture in particular).
-    ///
-    /// # Panics
-    ///
-    /// Panics when the mock cannot bind, accept, or serve its fixture — a
-    /// broken mock is the failure report.
-    pub(crate) async fn start_raw(responses: Vec<String>) -> Self {
-        let (mock, _) = Self::start_serving(responses).await;
-
-        mock
-    }
-}
-
-impl MockUpstream {
-    /// The `http://` base URL the mock answers at.
-    pub(crate) fn base(&self) -> String {
-        format!("http://{}", self.address)
-    }
-
-    /// Serves `responses` round-robin, each entry framed as a 200 JSON response, and records
-    /// every request's `METHOD /target` line, so a test can pin the exact URLs the engine
-    /// rendered.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the mock cannot bind, accept, or serve its fixture — a
-    /// broken mock is the failure report.
-    async fn start_recording(
-        responses: Vec<String>,
-    ) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-        let framed = responses
-            .into_iter()
-            .map(|body| {
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                )
-            })
-            .collect();
-
-        Self::start_serving(framed).await
-    }
-
-    /// Serves `responses` round-robin — complete HTTP responses, one per request — and records
-    /// every request's `METHOD /target` line, so a test can pin the exact URLs the engine
-    /// rendered.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the mock cannot bind, accept, or serve its fixture — a
-    /// broken mock is the failure report.
-    async fn start_serving(
-        responses: Vec<String>,
-    ) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-        let responses = std::sync::Arc::new(std::sync::Mutex::new(responses));
-
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-
-        let recorded = seen.clone();
-
-        tokio::spawn(async move {
-            loop {
-                let accepted = tokio::select! {
-                    _ = &mut shutdown_rx => break,
-                    accepted = listener.accept() => accepted,
-                };
-
-                let Ok((mut socket, _)) = accepted else {
-                    break;
-                };
-
-                let responses = responses.clone();
-                let seen = recorded.clone();
-
-                tokio::spawn(async move {
-                    // Read the request head through its blank line.
-                    let mut buffer = Vec::new();
-                    let mut chunk = [0_u8; 1024];
-
-                    loop {
-                        let read = socket.read(&mut chunk).await.unwrap_or(0);
-                        if read == 0 {
-                            return;
-                        }
-
-                        buffer.extend_from_slice(chunk.get(..read).unwrap_or(&chunk));
-
-                        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-
-                    if let Some((method, target)) = std::str::from_utf8(&buffer)
-                        .ok()
-                        .and_then(|head| head.lines().next())
-                        .and_then(|line| {
-                            let mut parts = line.split_whitespace();
-                            Some((parts.next()?, parts.next()?.to_string()))
-                        })
-                    {
-                        seen.lock().unwrap().push(format!("{method} {target}"));
-                    }
-
-                    let index = {
-                        let mut guard = responses.lock().unwrap();
-                        // The single-response mock serves its one entry forever; the
-                        // multi-response one walks in order. The len==0 case is the
-                        // fixture-authoring bug the unwrap reports.
-                        #[expect(
-                            clippy::indexing_slicing,
-                            reason = "an empty fixture is a test bug the panic reports"
-                        )]
-                        if guard.len() > 1 {
-                            guard.remove(0)
-                        } else {
-                            guard[0].clone()
-                        }
-                    };
-
-                    let _ = socket.send_all(index.as_bytes()).await;
-                });
-            }
-        });
-
-        (
-            Self {
-                address,
-                shutdown: shutdown_tx,
-            },
-            seen,
-        )
-    }
-}
-
-/// Sends everything buffered on `socket`.
-trait SendAll {
-    async fn send_all(&mut self, bytes: &[u8]) -> std::io::Result<()>;
-}
-
-impl SendAll for tokio::net::TcpStream {
-    async fn send_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        use tokio::io::AsyncWriteExt;
-
-        self.write_all(bytes).await
-    }
-}
 
 /// Pins discovery pagination: the token loop walks both pages, strips prefixes, and stops when
 /// the next-page token is absent.
@@ -733,7 +556,7 @@ fn device_grant(base: &str) -> crate::provider::definition::credential::Grant {
 /// Panics when the mock cannot start.
 async fn device_authorization_response(
     body: serde_json::Value,
-) -> Result<oauth::DeviceAuthorization, oauth::Error> {
+) -> Result<oauth::DeviceAuthorization, Error> {
     let mock = MockUpstream::start(vec![serde_json::to_string(&body).unwrap()]).await;
 
     let grant = device_grant(&mock.base());
@@ -1086,10 +909,7 @@ async fn completion_supplies_the_access_token_from_provisioning() {
         panic!("a completion without any access token must fail");
     };
 
-    assert!(matches!(
-        error,
-        crate::provider::oauth::Error::Internal { .. }
-    ));
+    assert!(matches!(error, crate::provider::Error::Internal { .. }));
 
     mock.shutdown.send(()).ok();
 }
@@ -1175,7 +995,7 @@ async fn raw_exchange_outcome(
     client: &reqwest::Client,
     definition: &crate::provider::ProviderDefinition,
     flow: &crate::storage::oauth_flows::OngoingFlow,
-) -> Result<oauth::ExchangeOutcome, oauth::Error> {
+) -> Result<oauth::ExchangeOutcome, Error> {
     let crate::provider::definition::credential::CredentialAcquisition::OAuth(recipe) =
         &definition.payload.credential
     else {

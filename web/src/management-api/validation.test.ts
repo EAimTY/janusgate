@@ -401,6 +401,33 @@ describe("response validation", () => {
             ],
         });
 
+        // A key requesting every dimension types them all in one pass.
+        const fullBucket = {
+            ...usageBucket,
+            key: {
+                day: "2026-09-22",
+                model_id: 9,
+                provider_id: 1,
+                api_key_id: 7,
+                endpoint_type: "openai_responses",
+                outcome: "completed",
+                is_stream: true,
+                http_status: null,
+            },
+        };
+
+        expect(
+            parseQueryUsageResponse({
+                buckets: [
+                    fullBucket,
+                ],
+            }),
+        ).toEqual({
+            buckets: [
+                fullBucket,
+            ],
+        });
+
         // A present key field must still type-check and stay in vocabulary.
         expect(() =>
             parseQueryUsageResponse({

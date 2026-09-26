@@ -455,7 +455,9 @@ where
 ///   and `client_aborted` + `NULL` status when it does not — no response was ever produced for a
 ///   departed client;
 /// - a failed stream finalizes the outcome and status the shared [`Error`] classification yields,
-///   regardless of the client — the upstream failure, not the departure, is what the row records.
+///   regardless of the client — the upstream failure, not the departure, is what the row records —
+///   carrying whatever usage the stream delivered before it failed (`NULL` columns when it
+///   delivered none, README §6.2's last-observation rule).
 async fn aggregated_response_task<TFormat>(
     events: IrEventStream,
     public_id: String,
@@ -498,8 +500,9 @@ async fn aggregated_response_task<TFormat>(
             }
         }
 
-        Err(error) => {
-            // An upstream failure records its classification regardless of the client.
+        Err((error, usage)) => {
+            // An upstream failure records its classification regardless of the client, carrying
+            // the usage the stream delivered before it failed — `None` when it delivered none.
             let (outcome, http_status) = error.accounting();
 
             api_logs::finalize_api_log(
@@ -507,7 +510,7 @@ async fn aggregated_response_task<TFormat>(
                 &log,
                 outcome,
                 Some(http_status),
-                None,
+                usage,
             )
             .await;
 
@@ -714,27 +717,40 @@ fn declared_status(is_status_declared: bool) -> Option<i64> {
 }
 
 /// Folds an IR event stream into one aggregated JSON response, yielding the response beside the
-/// terminal usage the aggregation observed — `None` when the stream carried no usage report, and
-/// always `None` for a failed stream, whose error carries no terminal usage.
+/// usage the stream delivered — the terminal usage of a clean end, and for a failed stream the
+/// last usage observation it reported before failing (`None` when it delivered none), so a failed
+/// non-streaming dispatch records the usage the upstream already delivered exactly as its
+/// streaming twin does (README §3 *ApiLog*, §6.2's last-observation rule).
 ///
 /// # Errors
 ///
-/// Returns the stream's failure when it carries one.
+/// Returns the stream's failure beside the usage observed before it.
 async fn aggregated_response<TBody>(
     events: IrEventStream,
     render_json_fn: impl Fn(&IrAggregation) -> TBody,
-) -> Result<(Response, Option<IrUsage>), Error>
+) -> Result<(Response, Option<IrUsage>), (Error, Option<IrUsage>)>
 where
     TBody: Serialize,
 {
     let mut aggregator = Aggregator::default();
 
+    // The last usage the stream reported, kept beside either way the stream settles: a mid-stream
+    // failure does not undo the usage the upstream already delivered.
+    let mut last_usage: Option<IrUsage> = None;
+
     let mut events = events;
 
     while let Some(item) = events.next().await {
         match item {
-            Ok(event) => aggregator.ingest(&event),
-            Err(error) => return Err(Error::from(error)),
+            Ok(event) => {
+                if let IrEvent::Usage(reported) = &event {
+                    last_usage = Some(*reported);
+                }
+
+                aggregator.ingest(&event);
+            }
+
+            Err(error) => return Err((Error::from(error), last_usage)),
         }
     }
 
@@ -855,6 +871,47 @@ mod tests {
                 id: "resp-1".to_string(),
                 model: "upstream-model".to_string(),
             }),
+            Err(gateway::Error::Unavailable {
+                detail: "upstream stream failed: broken".to_string(),
+            }),
+            Ok(IrEvent::Done),
+        ];
+
+        for event in events {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture channel is wide enough and its receiver lives in the task \
+                          under test"
+            )]
+            sender
+                .send(event)
+                .await
+                .expect("the fixture channel accepts the event");
+        }
+    }
+
+    /// Sends a mid-stream upstream failure that first delivers a usage observation — one start
+    /// event, the usage report, the transport failure, the pump's terminal `Done` — through the
+    /// fixture channel and closes the stream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a fixture send fails, which the wide buffer and the task-owned receiver prevent.
+    async fn send_failing_events_with_usage(
+        sender: &mpsc::Sender<Result<IrEvent, gateway::Error>>,
+    ) {
+        let events = [
+            Ok(IrEvent::MessageStart {
+                id: "resp-1".to_string(),
+                model: "upstream-model".to_string(),
+            }),
+            Ok(IrEvent::Usage(IrUsage {
+                input_tokens: 11,
+                output_tokens: 7,
+                cached_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            })),
             Err(gateway::Error::Unavailable {
                 detail: "upstream stream failed: broken".to_string(),
             }),
@@ -1059,6 +1116,13 @@ mod tests {
         assert_eq!(row.outcome, ApiLogOutcome::UpstreamError);
         assert_eq!(row.http_status, Some(502));
 
+        // The failing stream delivered no usage observation: the five token columns stay `NULL`.
+        assert_eq!(row.input_tokens, None);
+        assert_eq!(row.output_tokens, None);
+        assert_eq!(row.cached_tokens, None);
+        assert_eq!(row.cache_write_tokens, None);
+        assert_eq!(row.reasoning_tokens, None);
+
         // The client departed before the failure: the row still classifies the upstream failure —
         // never `client_aborted` — because the stream, not the client, is what failed.
         let (departed_store, _departed_guard) = test_store();
@@ -1086,5 +1150,52 @@ mod tests {
 
         assert_eq!(departed_row.outcome, ApiLogOutcome::UpstreamError);
         assert_eq!(departed_row.http_status, Some(502));
+
+        assert_eq!(departed_row.input_tokens, None);
+        assert_eq!(departed_row.output_tokens, None);
+        assert_eq!(departed_row.cached_tokens, None);
+        assert_eq!(departed_row.cache_write_tokens, None);
+        assert_eq!(departed_row.reasoning_tokens, None);
+    }
+
+    /// Verifies the detached non-streaming finalization records the usage a failed stream
+    /// delivered before its failure (README §3 *ApiLog*, §6.2's last-observation rule): an
+    /// upstream that reports usage and then fails mid-generation finalizes the classified
+    /// `upstream_error` row carrying that usage — the same attribution its streaming twin
+    /// records, and `NULL` columns only when the stream delivered no usage at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the finalization contract diverges.
+    #[tokio::test]
+    async fn finalizes_the_usage_a_failed_stream_delivered_before_its_failure() {
+        let (store, _guard) = test_store();
+        let (events_sender, events) = event_channel();
+
+        let (outcome_sender, _outcome_receiver) = oneshot::channel();
+
+        let task = aggregated_response_task::<ChatCompletionFormat>(
+            events,
+            "public-model".to_string(),
+            Some(store.clone()),
+            stamped_draft(),
+            log_context(),
+            outcome_sender,
+        );
+
+        send_failing_events_with_usage(&events_sender).await;
+        drop(events_sender);
+
+        task.await;
+
+        let row = recorded_row(&store).await;
+
+        assert_eq!(row.outcome, ApiLogOutcome::UpstreamError);
+        assert_eq!(row.http_status, Some(502));
+        assert_eq!(row.input_tokens, Some(11));
+        assert_eq!(row.output_tokens, Some(7));
+        assert_eq!(row.cached_tokens, None);
+        assert_eq!(row.cache_write_tokens, None);
+        assert_eq!(row.reasoning_tokens, None);
     }
 }

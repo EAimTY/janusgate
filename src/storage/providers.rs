@@ -91,7 +91,8 @@ pub(crate) async fn list_providers(database: &Database) -> Result<Vec<Provider>,
     rows.iter().map(provider_from_row).collect()
 }
 
-/// Fetches one provider by name, for creation-time name-taken checks.
+/// Fetches one provider by name — the read behind [`is_provider_name_taken`]'s name-taken check;
+/// all addressing of an existing provider goes through its id.
 ///
 /// # Errors
 ///
@@ -103,6 +104,19 @@ pub(crate) async fn find_provider(
     let rows = database.query(find_provider_sql(), params![name]).await?;
 
     rows.first().map(provider_from_row).transpose()
+}
+
+/// Whether any stored provider row already carries `name` — the single-homed pre-insert
+/// name-taken check behind creation: `providers:create` and `oauth:start` map its affirmative to
+/// their clean 409 before any write or upstream round-trip, and the device poller's success
+/// commit maps it to the flow's terminal `name_conflict` outcome. The database's UNIQUE
+/// constraint stays the concurrent backstop behind all three (README §7.1, §7.2).
+///
+/// # Errors
+///
+/// Returns [`Error`] when the query fails or a row is malformed.
+pub(crate) async fn is_provider_name_taken(database: &Database, name: &str) -> Result<bool, Error> {
+    Ok(find_provider(database, name).await?.is_some())
 }
 
 /// The `WHERE id = ?1` provider read generic over the pooled or transactional executor, so the

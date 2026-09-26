@@ -78,6 +78,8 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     // the flow fragment states its own inside the Connect card — so the two
     // channels cannot render one outcome twice.
     const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
+    /** Whether the boot read's cycle is in flight — the read-again button's busy state. */
+    const [isBootReading, setIsBootReading] = createSignal(true);
 
     const preset = (): ProviderPreset =>
         PROVIDER_PRESETS.find((candidate) => candidate.id === presetId()) ?? PROVIDER_PRESETS[0];
@@ -122,58 +124,6 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             : (PROVIDER_PRESETS.find((candidate) => candidate.id === armedId) ?? null);
     });
 
-    /** Installs the preset: its payload in the editor, the flow discarded. */
-    const applyPreset = (nextPreset: ProviderPreset): void => {
-        setPresetId(nextPreset.id);
-        oauth.reset();
-
-        setIsDefinitionTouched(false);
-        setDefinitionJson(JSON.stringify(nextPreset.payload, null, 2));
-
-        if (!isNameTouched()) {
-            setName(suggestProviderName(nextPreset.suggestedName, takenNames()));
-        }
-    };
-
-    const pickPreset = (next: string): void => {
-        // The preset comes from the picker's argument, not from re-reading
-        // `presetId()` — the setter's value is not immediately readable back
-        // in every Solid dev runtime, and the editor's prefill must be the
-        // selected preset's payload, never the previous selection's.
-        const nextPreset =
-            PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? PROVIDER_PRESETS[0];
-
-        // An edited connection recipe is the operator's own work: the pick
-        // arms instead of applying, and only the Preset card's confirm
-        // performs the switch. An untouched definition switches instantly —
-        // the common path gains no friction.
-        if (isDefinitionTouched()) {
-            setArmedPresetId(nextPreset.id);
-            return;
-        }
-
-        applyPreset(nextPreset);
-    };
-
-    /** The confirm's action: the armed switch replaces the edited recipe. */
-    const confirmPresetSwitch = (): void => {
-        const armedId = armedPresetId();
-        setArmedPresetId(null);
-
-        if (armedId === null) {
-            return;
-        }
-
-        applyPreset(
-            PROVIDER_PRESETS.find((candidate) => candidate.id === armedId) ?? PROVIDER_PRESETS[0],
-        );
-    };
-
-    /** The confirm's way back: the arming dissolves, the edit stands. */
-    const cancelPresetSwitch = (): void => {
-        setArmedPresetId(null);
-    };
-
     // The taken names arrive after the boot read; until then the preset's
     // base name stands in, and a hand-typed name is never overwritten. A read
     // that fails is stated where every failure on this page stands — never
@@ -186,16 +136,17 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
      * the refresh pulse directly instead of through the shared read harness:
      * the page renders fully without these reads — they refine the
      * suggestion and the stored-version line, and own no skeleton — so the
-     * pulse must re-run them here, where a failed boot read is a refresh's
-     * to recover (README §6.1). It writes only the listing signals and the
-     * notice, never the live OAuth flow's state: a refresh may not unlock or
-     * disturb a flow in flight.
+     * pulse re-runs them here, and the page's own Read again control beside
+     * the failure notice reruns them in place (README §6.3). It writes only
+     * the listing signals and the notice, never the live OAuth flow's state:
+     * neither rerun may unlock or disturb a flow in flight.
      */
     const readBootState = (): void => {
         bootController?.abort();
 
         const cycle = new AbortController();
         bootController = cycle;
+        setIsBootReading(true);
 
         // Both calls must answer for the cycle to count as read: a failed
         // one states its diagnosis on the notice, and only an answered cycle
@@ -210,9 +161,18 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 failedCount += 1;
             }
 
-            if (settledCount === 2 && failedCount === 0) {
-                setFailure(null);
-                reportRefresh();
+            if (settledCount === 2) {
+                // The cycle is fully answered: the in-flight state lifts
+                // whether the cycle read or failed — a failed one keeps the
+                // notice, and the read-again button beside it, standing.
+                // An aborted call never settles here, so a superseded cycle
+                // cannot flip the state the newer cycle owns.
+                setIsBootReading(false);
+
+                if (failedCount === 0) {
+                    setFailure(null);
+                    reportRefresh();
+                }
             }
         };
 
@@ -492,6 +452,62 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         },
     });
 
+    // The preset switching stands below the OAuth flow it interacts with:
+    // `applyPreset` discards a live flow (`oauth.reset`), so the helpers are
+    // defined after the fragment they reset and the file reads top to bottom
+    // with no forward reference for a reader to reconstruct.
+    /** Installs the preset: its payload in the editor, the flow discarded. */
+    const applyPreset = (nextPreset: ProviderPreset): void => {
+        setPresetId(nextPreset.id);
+        oauth.reset();
+
+        setIsDefinitionTouched(false);
+        setDefinitionJson(JSON.stringify(nextPreset.payload, null, 2));
+
+        if (!isNameTouched()) {
+            setName(suggestProviderName(nextPreset.suggestedName, takenNames()));
+        }
+    };
+
+    const pickPreset = (next: string): void => {
+        // The preset comes from the picker's argument, not from re-reading
+        // `presetId()` — the setter's value is not immediately readable back
+        // in every Solid dev runtime, and the editor's prefill must be the
+        // selected preset's payload, never the previous selection's.
+        const nextPreset =
+            PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? PROVIDER_PRESETS[0];
+
+        // An edited connection recipe is the operator's own work: the pick
+        // arms instead of applying, and only the Preset card's confirm
+        // performs the switch. An untouched definition switches instantly —
+        // the common path gains no friction.
+        if (isDefinitionTouched()) {
+            setArmedPresetId(nextPreset.id);
+            return;
+        }
+
+        applyPreset(nextPreset);
+    };
+
+    /** The confirm's action: the armed switch replaces the edited recipe. */
+    const confirmPresetSwitch = (): void => {
+        const armedId = armedPresetId();
+        setArmedPresetId(null);
+
+        if (armedId === null) {
+            return;
+        }
+
+        applyPreset(
+            PROVIDER_PRESETS.find((candidate) => candidate.id === armedId) ?? PROVIDER_PRESETS[0],
+        );
+    };
+
+    /** The confirm's way back: the arming dissolves, the edit stands. */
+    const cancelPresetSwitch = (): void => {
+        setArmedPresetId(null);
+    };
+
     // The static-key creation's shared action: the page's prelude ensures the
     // definition first — a refused ensure states its notice and no provider
     // call runs — and a succeeded creation lands on the new provider's page.
@@ -581,12 +597,27 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
             <Show when={failure()}>
                 {(current) => (
-                    <Notice
-                        tone="bad"
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
+                    <div class="flex flex-col items-start gap-3">
+                        <Notice
+                            tone={current().tone}
+                            title={current().title}
+                            detail={current().detail}
+                            fix={current().fix}
+                        />
+                        {/* The failed boot read's way back, on the page it
+                            failed: rerunning `readBootState` — the read
+                            aborts the cycle in flight and writes only the
+                            listing signals and the notice, so a live OAuth
+                            flow stands through it untouched. */}
+                        <Button
+                            glyph="refresh"
+                            tone="ghost"
+                            isBusy={isBootReading()}
+                            onClick={readBootState}
+                        >
+                            Read again
+                        </Button>
+                    </div>
                 )}
             </Show>
 

@@ -242,10 +242,14 @@ export function ProviderDetailScreen(props: {
                             tone={row.is_enabled ? "ok" : "muted"}
                             label={row.is_enabled ? "Enabled" : "Disabled"}
                         />
-                        <Badge
-                            tone={credentialBadge(row).tone}
-                            label={credentialBadge(row).label}
-                        />
+                        <Show when={credentialBadge(row)}>
+                            {(credential) => (
+                                <Badge
+                                    tone={credential().tone}
+                                    label={credential().label}
+                                />
+                            )}
+                        </Show>
                         <ButtonLink href={hrefs.providerEdit(row.id)}>Edit provider</ButtonLink>
                     </PageHeader>
 

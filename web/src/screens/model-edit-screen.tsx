@@ -19,7 +19,11 @@ import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
 import { Switch } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { ModelIdOverrideFields } from "/src/ui/model-form";
+import {
+    composedPublicId,
+    ModelIdOverrideFields,
+    normalizedPublicIdOverride,
+} from "/src/ui/model-form";
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { RowNotFound } from "./row-not-found";
 
@@ -151,16 +155,18 @@ function ModelSettingsForm(props: {
     const [hasIdOverride, setHasIdOverride] = createSignal(props.initialModel.id_override !== null);
     const [idOverride, setIdOverride] = createSignal(props.initialModel.id_override ?? "");
 
-    const composedId = (): string => {
-        const prefix = props.provider?.model_prefix ?? "";
-
-        return idOverride().trim() === ""
-            ? `${prefix}${current().upstream_id}`
-            : idOverride().trim();
-    };
-
+    // Both derivations run through the shared toggle-aware helpers, so the
+    // off-hint always names the ID the write produces — even with stale text
+    // left in the override field after the switch goes off.
     const normalizedOverride = (): string | null =>
-        !hasIdOverride() || idOverride().trim() === "" ? null : idOverride().trim();
+        normalizedPublicIdOverride(hasIdOverride(), idOverride());
+
+    const composedId = (): string =>
+        composedPublicId(
+            props.provider?.model_prefix ?? "",
+            current().upstream_id,
+            normalizedOverride(),
+        );
 
     /** Inline composition error for the override, shown where it was typed. */
     const overrideError = (): string | null =>

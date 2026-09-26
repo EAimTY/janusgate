@@ -98,6 +98,11 @@ export function Badge(props: {
     );
 }
 
+// The headline-figure typography `Stat` and `StatLink` share. `StatLink`'s
+// inline `span`s append `block` where `Stat`'s `p`s are block-level already.
+const STAT_VALUE_CLASS = "tnum truncate text-[26px] leading-none font-semibold tracking-tight";
+const STAT_LABEL_CLASS = "mt-2 text-[13px] font-medium text-ink-dim";
+
 /** One headline figure for the overview: a number with its name. */
 export function Stat(props: {
     readonly value: string;
@@ -106,10 +111,8 @@ export function Stat(props: {
 }): JSX.Element {
     return (
         <div class="min-w-0">
-            <p class="tnum truncate text-[26px] leading-none font-semibold tracking-tight">
-                {props.value}
-            </p>
-            <p class="mt-2 text-[13px] font-medium text-ink-dim">{props.label}</p>
+            <p class={STAT_VALUE_CLASS}>{props.value}</p>
+            <p class={STAT_LABEL_CLASS}>{props.label}</p>
             <Show when={props.hint}>
                 {(hint) => <p class="mt-0.5 text-[12.5px] text-ink-faint">{hint()}</p>}
             </Show>
@@ -133,10 +136,8 @@ export function StatLink(props: {
             class="group flex items-start justify-between gap-3 rounded-2xl border border-rule bg-surface px-4 py-4 transition-colors duration-150 ease-out hover:border-ink-faint hover:bg-hover"
         >
             <span class="min-w-0">
-                <span class="tnum block truncate text-[26px] leading-none font-semibold tracking-tight">
-                    {props.value}
-                </span>
-                <span class="mt-2 block text-[13px] font-medium text-ink-dim">{props.label}</span>
+                <span class={joinClass(STAT_VALUE_CLASS, "block")}>{props.value}</span>
+                <span class={joinClass(STAT_LABEL_CLASS, "block")}>{props.label}</span>
             </span>
             <Glyph
                 name="chev-right"
@@ -146,7 +147,8 @@ export function StatLink(props: {
     );
 }
 
-/** A page with nothing to show yet: what this is, and the one way forward. */ export function EmptyState(props: {
+/** A page with nothing to show yet: what this is, and the one way forward. */
+export function EmptyState(props: {
     readonly glyph?: GlyphName | undefined;
     readonly title: string;
     readonly description: string;
