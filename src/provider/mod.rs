@@ -14,7 +14,6 @@ mod engine_tests;
 pub(crate) mod control;
 pub(crate) mod definition;
 pub(crate) mod discovery;
-pub(crate) mod http_body;
 pub(crate) mod oauth;
 pub(crate) mod provisioning;
 

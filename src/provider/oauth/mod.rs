@@ -67,7 +67,10 @@ pub(crate) enum Error {
         detail: String,
     },
 
-    /// The addressed provider row vanished mid-refresh.
+    /// The addressed provider row vanished mid-refresh. Every management consumer classifies
+    /// this as a 404 `not_found` — the reauthorize surface's vanished-provider precedent, which
+    /// `models:discover` now shares because its refresh runs inside this engine; the dispatch
+    /// surface renders it as an internal failure.
     #[error("{message}")]
     NotFound {
         /// Human-readable failure message.
@@ -110,7 +113,7 @@ impl From<crate::provider::control::ControlFailure> for Error {
         match failure {
             crate::provider::control::ControlFailure::Rejected { status, body } => Self::Rejected {
                 status,
-                detail: crate::provider::http_body::truncate_excerpt(&body),
+                detail: crate::http_body::truncate_excerpt(&body),
             },
 
             crate::provider::control::ControlFailure::Unavailable { detail } => {

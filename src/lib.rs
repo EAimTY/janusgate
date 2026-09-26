@@ -19,6 +19,7 @@ mod context;
 mod database;
 mod format;
 mod gateway;
+pub(crate) mod http_body;
 mod http_client;
 mod ids;
 mod ir;

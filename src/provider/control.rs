@@ -5,8 +5,9 @@
 //! sets `Content-Type` from the body variant (every other header is an explicit row), sends, and
 //! decodes the response through its declared encoding and field mappings.
 
-use crate::provider::{
-    definition::{
+use crate::{
+    http_body,
+    provider::definition::{
         eval::{EvalError, ValueEnv},
         provisioning::ProvisionExtraction,
         template::{
@@ -14,7 +15,6 @@ use crate::provider::{
             ResponseField, ResponsePath, ResponseTarget, TemplateNode,
         },
     },
-    http_body,
 };
 use reqwest::{Client, Method, RequestBuilder};
 use serde_json::Value as Json;

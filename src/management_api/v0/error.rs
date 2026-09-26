@@ -16,9 +16,7 @@
 //! `AsStatusCode`, so a category and its status can never drift apart.
 
 use crate::{
-    provider::{
-        definition::ValidationError, discovery::Error as DiscoveryError, oauth::Error as OAuthError,
-    },
+    provider::{definition::ValidationError, oauth::Error as OAuthError},
     storage::{
         Error as StorageError,
         api_keys::{api_key_not_found_message, api_key_taken_message},
@@ -353,13 +351,11 @@ pub(super) enum Error {
     #[error(transparent)]
     Storage(#[from] StorageError),
 
-    /// The provider's OAuth token endpoint failed.
+    /// The provider's OAuth token endpoint failed. Upstream model discovery reports through this
+    /// variant too: discovery and the token stages reject on the same upstream surface and share
+    /// one failure vocabulary ([`OAuthError`]).
     #[error(transparent)]
     OAuth(#[from] OAuthError),
-
-    /// Upstream model discovery failed.
-    #[error(transparent)]
-    Discovery(#[from] DiscoveryError),
 }
 
 /// The flat management error body every failed management request renders (README §7). It is part
@@ -431,13 +427,6 @@ impl Error {
 
                 OAuthError::Internal { .. } => ErrorCode::Internal,
             },
-            Self::Discovery(error) => match error {
-                DiscoveryError::Rejected { .. } | DiscoveryError::Unavailable { .. } => {
-                    ErrorCode::UpstreamError
-                }
-
-                DiscoveryError::Internal { .. } => ErrorCode::Internal,
-            },
             Self::Storage(error) => match error {
                 StorageError::NotFound { .. } => ErrorCode::NotFound,
 
@@ -502,8 +491,7 @@ impl From<Error> for ErrorResponse {
             Error::Storage(
                 StorageError::Busy { .. } | StorageError::Drift { .. } | StorageError::Database(_),
             )
-            | Error::OAuth(OAuthError::Internal { .. })
-            | Error::Discovery(DiscoveryError::Internal { .. }) => INTERNAL_MESSAGE.to_string(),
+            | Error::OAuth(OAuthError::Internal { .. }) => INTERNAL_MESSAGE.to_string(),
 
             _ => error.to_string(),
         };
@@ -522,8 +510,7 @@ impl From<ErrorCode> for u16 {
 mod tests {
     use super::{CONSTRAINT_MESSAGE, Error, ErrorCode, ErrorResponse, INTERNAL_MESSAGE};
     use crate::{
-        database::Error as DatabaseError,
-        provider::{discovery::Error as DiscoveryError, oauth::Error as OAuthError},
+        database::Error as DatabaseError, provider::oauth::Error as OAuthError,
         storage::Error as StorageError,
     };
     use as_http_status_code::{AsStatusCode as _, StatusCode};
@@ -753,25 +740,6 @@ mod tests {
             (
                 Error::from(OAuthError::Internal {
                     message: "lease".to_string(),
-                }),
-                ErrorCode::Internal,
-            ),
-            (
-                Error::from(DiscoveryError::Rejected {
-                    status: 429,
-                    detail: "rate limited".to_string(),
-                }),
-                ErrorCode::UpstreamError,
-            ),
-            (
-                Error::from(DiscoveryError::Unavailable {
-                    detail: "no models".to_string(),
-                }),
-                ErrorCode::UpstreamError,
-            ),
-            (
-                Error::from(DiscoveryError::Internal {
-                    message: "config".to_string(),
                 }),
                 ErrorCode::Internal,
             ),

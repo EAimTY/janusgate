@@ -25,7 +25,6 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose};
 use reqwest::Client;
-use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
@@ -523,62 +522,33 @@ pub(crate) enum ExchangeProduct {
 }
 
 /// The error code of one token-endpoint rejection body, read in every wire shape the researched
-/// upstreams send: the RFC 6749 §5.2 string form, the object form carrying the code in a `code`
-/// member, and the form-encoded `error=` field. A body carrying none yields `None`.
+/// upstreams send: a JSON body per [`error_code_of_json`], else the form-encoded `error=` field
+/// (RFC 6749 §5.2). A body carrying none yields `None`.
 #[must_use]
 pub(crate) fn token_error_code(body: &str) -> Option<String> {
-    if let Ok(decoded) = serde_json::from_str::<TokenErrorResponse>(body)
-        && let Some(code) = decoded.error_code()
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(code) = error_code_of_json(&json)
     {
         return Some(code);
     }
 
-    if let Ok(fields) = serde_json::from_str::<BTreeMap<String, String>>(body)
-        && let Some(code) = fields.get("error")
-    {
-        return Some(code.clone());
+    control::parse_form(body).get("error").cloned()
+}
+
+/// The error code one parsed JSON body carries, in either wire shape the researched upstreams
+/// send: the RFC 6749 §5.2 string form and the object form carrying the machine-readable name in
+/// its `code` member. The payload is upstream-owned, so any other shape reads as no code.
+fn error_code_of_json(json: &serde_json::Value) -> Option<String> {
+    match json.get("error") {
+        Some(serde_json::Value::String(code)) => Some(code.clone()),
+
+        Some(serde_json::Value::Object(object)) => object
+            .get("code")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+
+        _ => None,
     }
-
-    let form = control::parse_form(body);
-
-    form.get("error").cloned()
-}
-
-/// The rejection body's error field in either JSON wire shape.
-#[derive(Debug, Deserialize)]
-struct TokenErrorResponse {
-    /// Machine-readable failure name, in either wire shape.
-    error: Option<TokenErrorName>,
-}
-
-impl TokenErrorResponse {
-    /// The failure name this body carries.
-    fn error_code(&self) -> Option<String> {
-        match &self.error {
-            Some(TokenErrorName::Name(code)) => Some(code.clone()),
-            Some(TokenErrorName::Object(object)) => object.code.clone(),
-            None => None,
-        }
-    }
-}
-
-/// One token-endpoint failure name in either wire shape it arrives in.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum TokenErrorName {
-    /// RFC 6749 §5.2 string form, such as `invalid_grant`.
-    Name(String),
-
-    /// Object form, carrying the failure in its `code` field.
-    Object(TokenErrorObject),
-}
-
-/// The object-form failure: the machine-readable failure is its `code` field. The payload is
-/// upstream-owned, so only the code is modeled and unknown fields are ignored.
-#[derive(Debug, Deserialize)]
-struct TokenErrorObject {
-    /// Machine-readable failure code, such as `token_expired`.
-    code: Option<String>,
 }
 
 /// Executes one token exchange against the definition's exchange request and classifies the
@@ -628,17 +598,15 @@ fn classify_exchange_rejection(
     let Some(code) = token_error_code(body) else {
         return Err(Error::Rejected {
             status,
-            detail: crate::provider::http_body::truncate_excerpt(body),
+            detail: crate::http_body::truncate_excerpt(body),
         });
     };
 
     match classify_error_code(&code, terminal_codes) {
         ExchangeProduct::Other(code) => Err(Error::Rejected {
             status,
-            detail: crate::provider::http_body::truncate_excerpt(&format!(
-                "upstream error `{code}`"
-            ))
-            .to_string(),
+            detail: crate::http_body::truncate_excerpt(&format!("upstream error `{code}`"))
+                .to_string(),
         }),
 
         classified => Ok(classified),
@@ -649,14 +617,7 @@ fn classify_exchange_rejection(
 /// rejection bodies use, consulted on the decoded tree.
 fn decoded_error_code(decoded: &DecodedBody) -> Option<String> {
     match decoded {
-        DecodedBody::Json(json) => match json.get("error") {
-            Some(serde_json::Value::String(code)) => Some(code.clone()),
-            Some(serde_json::Value::Object(object)) => object
-                .get("code")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
-            _ => None,
-        },
+        DecodedBody::Json(json) => error_code_of_json(json),
 
         DecodedBody::Form(fields) => fields.get("error").cloned(),
     }
@@ -802,7 +763,7 @@ pub(crate) async fn execute_refresh_grant(
 
             return Err(Error::Rejected {
                 status,
-                detail: crate::provider::http_body::truncate_excerpt(&body),
+                detail: crate::http_body::truncate_excerpt(&body),
             });
         }
 
@@ -825,11 +786,46 @@ mod tests {
 
     use super::{
         ExchangeOutcome, IdTokenClaim, Target, absorb_exchange_slots, apply_exchange_target,
-        jwt_exp_claim,
+        jwt_exp_claim, token_error_code,
     };
     use crate::provider::{control::Extracted, definition::template::ResponsePath};
     use base64::{Engine as _, engine::general_purpose};
     use std::collections::BTreeMap;
+
+    /// Pins the token-endpoint error-code reader across every wire shape the researched upstreams
+    /// send: the RFC 6749 §5.2 string form, the object form carrying the code in `error.code`,
+    /// and the form-encoded `error=` field. A sibling member of a non-string JSON kind is
+    /// upstream-owned payload the reader does not model and must never blind the read of the
+    /// `error` member, and a body carrying no recognizable shape reads as no code.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a body reads as anything but its pinned code.
+    #[test]
+    fn token_error_codes_read_in_every_wire_shape() {
+        assert_eq!(
+            token_error_code(r#"{"error": "invalid_grant"}"#),
+            Some("invalid_grant".to_string())
+        );
+
+        assert_eq!(
+            token_error_code(r#"{"error": {"code": "token_expired"}}"#),
+            Some("token_expired".to_string())
+        );
+
+        assert_eq!(
+            token_error_code("error=invalid_grant"),
+            Some("invalid_grant".to_string())
+        );
+
+        assert_eq!(
+            token_error_code(r#"{"error": "invalid_grant", "expires_in": 3600}"#),
+            Some("invalid_grant".to_string()),
+            "a non-string sibling member must not blind the `error` read"
+        );
+
+        assert_eq!(token_error_code("neither code nor shape"), None);
+    }
 
     /// Folds one text value into a fresh outcome through the given target, returning the fold's
     /// result so a test can pin its failure side.

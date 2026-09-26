@@ -162,6 +162,22 @@ function definitionEditor(): HTMLTextAreaElement {
     return editor;
 }
 
+/**
+ * The `toggle` event a browser pairs with the disclosure's state change.
+ * The stub DOM flips `open` on a summary click but delivers the event late
+ * and unreliably, so the tests that depend on the screen's tracking of the
+ * state simulate the browser's event deterministically here.
+ */
+function fireDefinitionToggle(): void {
+    const disclosure = document.querySelector("details");
+
+    if (disclosure === null) {
+        throw new Error("No definition disclosure");
+    }
+
+    disclosure.dispatchEvent(new Event("toggle"));
+}
+
 /** The Claude Code recipe edited to address its requests through the base. */
 function baseAddressedPayload(): DefinitionPayload {
     const preset = PROVIDER_PRESETS.find((candidate) => candidate.id === "claude-code");
@@ -300,6 +316,7 @@ describe("ProviderNewScreen creation", () => {
         expect(document.body.textContent).not.toContain("The connection recipe is invalid");
 
         typeInto(definitionEditor(), '{"format": 7}');
+        fireDefinitionToggle();
         await settle();
         expect(document.body.textContent).toContain(
             "definition.format is not an upstream format: 7",
@@ -316,6 +333,8 @@ describe("ProviderNewScreen creation", () => {
                     bubbles: true,
                 }),
             );
+        fireDefinitionToggle();
+        await settle();
         expect(document.querySelector("details")?.open).toBe(false);
         expect(document.body.textContent).toContain("The connection recipe is invalid");
         expect(document.body.textContent).toContain(
@@ -324,6 +343,40 @@ describe("ProviderNewScreen creation", () => {
         expect(document.body.textContent).toContain(
             "definition.format is not an upstream format: 7",
         );
+    });
+
+    it("states the invalid recipe by its inline path error alone while the disclosure stands open", async () => {
+        disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
+        await settle();
+
+        // The recipe breaks while the disclosure stands open: the pointer
+        // outside instructs opening what is already open, so with the editor
+        // and the path error both in view the pointer must yield and the
+        // inline error alone is the statement.
+        definitionEditor();
+        fireDefinitionToggle();
+        typeInto(definitionEditor(), '{"format": 7}');
+        await settle();
+
+        expect(document.body.textContent).toContain(
+            "definition.format is not an upstream format: 7",
+        );
+        expect(document.body.textContent).not.toContain("The connection recipe is invalid");
+
+        // Closing the disclosure brings the pointer back — the instruction
+        // becomes followable exactly when the path error left the view.
+        document
+            .querySelector("details")
+            ?.querySelector("summary")
+            ?.dispatchEvent(
+                new MouseEvent("click", {
+                    bubbles: true,
+                }),
+            );
+        fireDefinitionToggle();
+        await settle();
+        expect(document.querySelector("details")?.open).toBe(false);
+        expect(document.body.textContent).toContain("The connection recipe is invalid");
     });
 
     it("renders the selected preset's provenance", async () => {
@@ -510,7 +563,7 @@ describe("ProviderNewScreen creation", () => {
         expect(document.body.textContent).toContain("definition name already stored");
         expect(document.body.textContent).toContain("The stored version moved");
         expect(document.body.textContent).toContain(
-            "refresh the page's stored versions, then submit again",
+            "use Refresh in the bar above; it re-reads the stored versions and leaves this form untouched — then submit again",
         );
         expect(document.body.textContent).not.toContain("Choose a provider name");
         expect(sent).toHaveLength(0);

@@ -73,7 +73,8 @@ export function AuthorizeStep(props: {
             <FlowFacts flow={props.flow} />
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
-                Both are single-use and expire quickly — finish promptly after approving access.
+                The state is single-use and the flow expires quickly — finish promptly after
+                approving access.
             </p>
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">

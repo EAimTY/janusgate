@@ -31,7 +31,7 @@ describe("RowNotFound", () => {
         expect(document.body.querySelector("h1")?.textContent).toBe("Edit provider");
         expect(document.body.textContent).toContain("Provider not found");
         expect(document.body.textContent).toContain(
-            "The gateway holds no provider here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back.",
+            "The gateway holds no provider here. It was deleted, or the address was typed wrong. Nothing here can bring it back.",
         );
         // The way back leads to the listing twice — the header's back link
         // and the primary action — and the primary action carries the

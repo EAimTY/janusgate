@@ -77,12 +77,14 @@ function mountIdentityFields(props: {
 }
 
 describe("ProviderIdentityFields derived-prefix error", () => {
-    it("names an invalid derived prefix while the custom field stays hidden", async () => {
+    it("names the derivation and its escapes while the custom field stays hidden", async () => {
         // The default prefix is the free-form name's shadow (`${name}-`), so
         // a name holding a space closes every submit gate while no prefix
-        // input is mounted to state why (README §4.5): the error must render
-        // with the toggle off, and the toggle — not the error — stays the
-        // only thing that exposes the custom field.
+        // input is mounted to state why (README §4.5): with the toggle off
+        // the alert must carry the derivation and both escapes — the rule's
+        // own field is not on the page, so the field-naming message would
+        // name a control the operator never opened. The toggle — not the
+        // error — stays the only thing that exposes the custom field.
         mountIdentityFields({
             name: "has space",
             isCustomPrefix: false,
@@ -91,8 +93,9 @@ describe("ProviderIdentityFields derived-prefix error", () => {
         await settle();
 
         expect(document.body.textContent).toContain(
-            'Model prefix accepts letters, numbers, and symbols only — no spaces, non-ASCII text, "/", or ":".',
+            `The default prefix is the provider's name plus a dash, and the name's characters make it unroutable — a prefix accepts letters, numbers, and symbols only, with no spaces, non-ASCII text, "/", or ":". Rename the provider without them, or turn on Custom model prefix and set one.`,
         );
+        expect(document.body.textContent).not.toContain("Model prefix accepts letters");
         expect(
             Array.from(document.querySelectorAll("label")).find(
                 (candidate) => candidate.textContent === "Model prefix",

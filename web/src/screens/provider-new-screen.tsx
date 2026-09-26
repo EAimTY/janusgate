@@ -96,6 +96,15 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const [isDefinitionTouched, setIsDefinitionTouched] = createSignal(false);
 
     /**
+     * Whether the Advanced disclosure stands open, tracked from its `toggle`
+     * event: the invalid-recipe pointer outside the disclosure instructs
+     * opening it, so the pointer must yield while the disclosure is showing
+     * the offending path itself — both statements at once would give an
+     * instruction that cannot be followed.
+     */
+    const [isDefinitionOpen, setIsDefinitionOpen] = createSignal(false);
+
+    /**
      * The preset a pick armed while an edited connection recipe stands: the
      * switch is pending, not applied — the Preset card's confirm is the only
      * way it happens, so a stray click in the grid cannot destroy the edited
@@ -665,7 +674,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     <Show when={isFlowLive()}>
                         <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>
                     </Show>
-                    <details class="group mt-2">
+                    <details
+                        class="group mt-2"
+                        onToggle={(event) => setIsDefinitionOpen(event.currentTarget.open)}
+                    >
                         <summary class="flex cursor-pointer list-none items-center gap-1.5 text-[13px] font-medium text-ink-dim transition-colors duration-150 ease-out hover:text-ink [&::-webkit-details-marker]:hidden">
                             <Glyph
                                 name="chev-right"
@@ -702,7 +714,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             </div>
                         </div>
                     </details>
-                    <Show when={definitionError() !== null}>
+                    {/* The pointer stands only while the disclosure hides
+                        the path error: open, the disclosure states the
+                        offense itself, and a pointer telling the operator to
+                        open it would be impossible to follow. */}
+                    <Show when={definitionError() !== null && !isDefinitionOpen()}>
                         <p class="mt-2 text-[12.5px] text-red-600 dark:text-red-400">
                             The connection recipe is invalid — open the Advanced disclosure above
                             for the offending path.

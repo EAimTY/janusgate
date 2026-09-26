@@ -9,7 +9,7 @@ use super::{
         PayloadError, UpstreamEventParser, UpstreamFormat, anthropic_messages,
         gemini_generate_content, gemini_interaction, openai_chat_completion, openai_response,
     },
-    ids,
+    http_body, ids,
     ir::{InvalidRequest, IrEvent, IrRequest},
     provider::{
         ModelRouting, Provider,
@@ -18,7 +18,7 @@ use super::{
             inference::{Inference, UpstreamStreaming},
             template::TemplateNode,
         },
-        http_body, oauth,
+        oauth,
         oauth::Error as OAuthError,
     },
     sse::{SseFrame, SseParser},

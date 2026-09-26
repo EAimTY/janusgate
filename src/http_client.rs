@@ -4,8 +4,11 @@
 //! streams long-lived completions, while the control plane (OAuth token exchange and refresh, model
 //! discovery, project onboarding) performs short JSON round-trips. Splitting them lets each client
 //! carry the timeout profile its traffic class needs instead of one compromise profile (README §4).
+//! Both clients refuse redirects outright (`reqwest::redirect::Policy::none`): a 3xx surfaces as
+//! the upstream response it is and flows through the caller's non-2xx path, so credential headers
+//! and request bodies are never re-dispatched to the Location origin.
 
-use reqwest::Client;
+use reqwest::{Client, redirect::Policy};
 use std::time::Duration;
 
 /// Total wall-clock budget of one control-plane request.
@@ -44,6 +47,7 @@ pub(crate) fn data_plane() -> Client {
     let client = Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(DATA_PLANE_READ_TIMEOUT)
+        .redirect(Policy::none())
         .build()
         .expect("failed to build the data-plane HTTP client");
 
@@ -64,6 +68,7 @@ pub(crate) fn control_plane() -> Client {
     let client = Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(CONTROL_PLANE_TOTAL_TIMEOUT)
+        .redirect(Policy::none())
         .build()
         .expect("failed to build the control-plane HTTP client");
 

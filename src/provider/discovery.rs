@@ -6,9 +6,11 @@
 //! does not support its definition's format produces the upstream error when called. The
 //! existing `discovered`/`vanished`/`manual` state machine is untouched: an empty or failed
 //! upstream list never mass-vanishes existing rows, because a failed refresh is rejected before
-//! the storage layer is reached.
+//! the storage layer is reached. Failures speak the OAuth engine's error vocabulary
+//! ([`oauth::Error`]) — the two engines reject on the same upstream surface and fail through the
+//! same token refresh.
 
-use super::{Provider, control, http_body, oauth};
+use super::{Provider, control, oauth};
 use crate::provider::definition::{
     discovery as descriptor,
     discovery::{Discovery, DiscoveryExtract, Pagination},
@@ -19,81 +21,28 @@ use reqwest::Client;
 use serde_json::Value as Json;
 use std::num::NonZeroU64;
 
-/// Upstream model discovery failures. These paths never forward foreign statuses, so an upstream
-/// rejection pins 502 with the status embedded in the message.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
-    /// The upstream answered a non-2xx status.
-    #[error("Upstream request failed with status {status}: {detail}")]
-    Rejected {
-        /// Upstream status code, embedded in the message.
-        status: u16,
-
-        /// Truncated upstream body excerpt.
-        detail: String,
-    },
-
-    /// The upstream failed without a usable response, or answered with a payload that does not
-    /// carry any recognizable model list.
-    #[error("Upstream request failed: {detail}")]
-    Unavailable {
-        /// Human-readable failure detail.
-        detail: String,
-    },
-
-    /// Discovery failed on JanusGate's side: the stored provider configuration violates an
-    /// invariant.
-    #[error("{message}")]
-    Internal {
-        /// Human-readable failure message.
-        message: String,
-    },
-}
-
-impl From<oauth::Error> for Error {
-    fn from(error: oauth::Error) -> Self {
-        match error {
-            oauth::Error::Rejected { status, detail } => Self::Rejected { status, detail },
-            oauth::Error::Unavailable { detail }
-            | oauth::Error::Timeout { detail }
-            | oauth::Error::NotFound { message: detail } => Self::Unavailable { detail },
-            oauth::Error::Internal { message } => Self::Internal { message },
-        }
-    }
-}
-
-impl From<control::ControlFailure> for Error {
-    fn from(failure: control::ControlFailure) -> Self {
-        match failure {
-            control::ControlFailure::Rejected { status, body } => Self::Rejected {
-                status,
-                detail: http_body::truncate_excerpt(&body),
-            },
-            // Discovery has no timeout-dependent schedule, so a transport timeout collapses
-            // into the unavailable class like every other transport failure.
-            control::ControlFailure::Unavailable { detail }
-            | control::ControlFailure::Timeout { detail } => Self::Unavailable { detail },
-        }
-    }
-}
-
 /// Fetches the upstream model identifiers (`upstream_id` values) of a provider through its
 /// definition's discovery descriptor, refreshing the access token first when a known expiry
 /// requires it.
 ///
+/// Failures share the OAuth engine's vocabulary ([`oauth::Error`]): discovery and the token
+/// stages reject on the same upstream surface, and the vanish race inside the token refresh —
+/// the provider row deleted mid-refresh — classifies as a 404 `not_found`, consistent with the
+/// reauthorize surface's vanished-provider precedent.
+///
 /// # Errors
 ///
-/// Returns [`Error`] when the token refresh fails, the upstream call fails, the payload does not
-/// carry the configured shape, or a discovered identifier is not routing-safe.
+/// Returns [`oauth::Error`] when the token refresh fails, the upstream call fails, the payload
+/// does not carry the configured shape, or a discovered identifier is not routing-safe.
 pub(crate) async fn discover_upstream_models(
     database: &crate::database::Database,
     http: &Client,
     provider: &Provider,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<String>, oauth::Error> {
     let provider = oauth::ensure_fresh_token(database, http, provider).await?;
 
     let Some(discovery) = &provider.definition.payload.discovery else {
-        return Err(Error::Internal {
+        return Err(oauth::Error::Internal {
             message: format!(
                 "provider `{}` carries no discovery configuration",
                 provider.name
@@ -111,12 +60,14 @@ pub(crate) async fn discover_upstream_models(
 ///
 /// # Errors
 ///
-/// Returns [`Error`] per the discovery failure contract.
+/// Returns [`oauth::Error`] per the discovery failure contract: upstream rejections and
+/// unrecognizable payloads are upstream failures, and only a violated gateway invariant is
+/// internal.
 pub(crate) async fn run_discovery(
     http: &Client,
     discovery: &Discovery,
     env: &ValueEnv<'_>,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<String>, oauth::Error> {
     let mut ids = Vec::new();
 
     let mut request = discovery.request.clone();
@@ -152,7 +103,7 @@ pub(crate) async fn run_discovery(
                 // deliver a truncated list. The failure mirrors the cursor mode's
                 // missing-last-identifier guard.
                 if token_value.is_some_and(|value| !matches!(value, Json::String(_) | Json::Null)) {
-                    return Err(Error::Unavailable {
+                    return Err(oauth::Error::Unavailable {
                         detail: "model discovery page carries a malformed next-page token"
                             .to_string(),
                     });
@@ -202,7 +153,7 @@ pub(crate) async fn run_discovery(
                     .and_then(Json::as_str)
                     .map(str::to_string)
                 else {
-                    return Err(Error::Unavailable {
+                    return Err(oauth::Error::Unavailable {
                         detail: "model discovery page lacks its last identifier".to_string(),
                     });
                 };
@@ -223,7 +174,7 @@ pub(crate) async fn run_discovery(
         .iter()
         .find(|id| !crate::routing_text::is_routing_safe_token(id))
     {
-        return Err(Error::Unavailable {
+        return Err(oauth::Error::Unavailable {
             detail: format!("model discovery reported the unroutable identifier `{invalid}`"),
         });
     }
@@ -258,8 +209,8 @@ fn encoding_of(discovery: &Discovery) -> ResponseEncoding {
 /// truncated identifier list would reach the apply step, whose blanket mark suspends every row
 /// the truncated list fails to re-state, so the refresh fails here — before any storage write —
 /// like every other upstream anomaly (README §7.1).
-fn page_budget_exhausted(max_pages: NonZeroU64) -> Error {
-    Error::Unavailable {
+fn page_budget_exhausted(max_pages: NonZeroU64) -> oauth::Error {
+    oauth::Error::Unavailable {
         detail: format!(
             "upstream reported more pages than the {max_pages}-page discovery budget fetches; \
              refusing to truncate the provider's model rows"
@@ -298,9 +249,9 @@ fn set_query_param(request: &mut ControlRequest, name: &str, value: &str) {
 fn extract_ids(
     body: &control::DecodedBody,
     extract: &descriptor::DiscoveryExtract,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<String>, oauth::Error> {
     let control::DecodedBody::Json(json) = body else {
-        return Err(Error::Unavailable {
+        return Err(oauth::Error::Unavailable {
             detail: "model discovery response must be a JSON document".to_string(),
         });
     };
@@ -312,7 +263,7 @@ fn extract_ids(
             strip_prefix,
         } => {
             let Some(array) = array_at.resolve(json).and_then(Json::as_array) else {
-                return Err(Error::Unavailable {
+                return Err(oauth::Error::Unavailable {
                     detail: "model discovery payload lacks the configured array".to_string(),
                 });
             };
@@ -324,7 +275,7 @@ fn extract_ids(
                         .resolve(entry)
                         .and_then(Json::as_str)
                         .map(str::to_string)
-                        .ok_or_else(|| Error::Unavailable {
+                        .ok_or_else(|| oauth::Error::Unavailable {
                             detail: "model discovery entry lacks its identifier".to_string(),
                         })?;
 
@@ -338,7 +289,7 @@ fn extract_ids(
 
         DiscoveryExtract::MapKeys { at } => {
             let Some(object) = at.resolve(json).and_then(Json::as_object) else {
-                return Err(Error::Unavailable {
+                return Err(oauth::Error::Unavailable {
                     detail: "model discovery payload lacks the configured object".to_string(),
                 });
             };
@@ -359,7 +310,7 @@ mod tests {
         reason = "a fixture landing on the wrong side of its check is the failure report"
     )]
 
-    use super::{Error, run_discovery};
+    use super::{oauth::Error, run_discovery};
     use crate::provider::{
         definition::{discovery::Discovery, eval::ValueEnv},
         engine_tests::MockUpstream,

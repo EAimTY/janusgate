@@ -31,7 +31,7 @@ const KIND_COPY: Record<
         listHref: hrefs.apiKeys(),
         backActionLabel: "Back to API keys",
         description:
-            "The gateway holds no API key here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back.",
+            "The gateway holds no API key here. It was deleted, or the address was typed wrong. Nothing here can bring it back.",
     },
     model: {
         rowName: "Model",
@@ -47,7 +47,7 @@ const KIND_COPY: Record<
         listHref: hrefs.providers(),
         backActionLabel: "Back to providers",
         description:
-            "The gateway holds no provider here. It was deleted — on this page, in another session, or by hand. Nothing here can bring it back.",
+            "The gateway holds no provider here. It was deleted, or the address was typed wrong. Nothing here can bring it back.",
     },
 };
 

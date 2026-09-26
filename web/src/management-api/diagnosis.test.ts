@@ -73,7 +73,7 @@ describe("diagnoseFailure", () => {
 
         expect(diagnosis.kind).toBe("conflict");
         expect(diagnosis.fix).toBe(
-            "The stored version moved — refresh the page's stored versions, then submit again.",
+            "The stored version moved — use Refresh in the bar above; it re-reads the stored versions and leaves this form untouched — then submit again.",
         );
     });
 

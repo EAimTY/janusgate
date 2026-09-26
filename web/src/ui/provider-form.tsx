@@ -8,6 +8,15 @@ import { Glyph } from "/src/ui/glyph";
 import { requiredHint } from "./required-hint";
 
 /**
+ * The alert beside the prefix switch while the derived prefix is invalid. No
+ * prefix field stands, and the failure is not the operator's — the free-form
+ * name's shadow failed the routing-safe rule — so the wording states the
+ * derivation, the rule itself (covering spaces, non-ASCII text, "/", and ":"
+ * alike, per the composition vocabulary), and both escapes.
+ */
+const DERIVED_PREFIX_ERROR = `The default prefix is the provider's name plus a dash, and the name's characters make it unroutable — a prefix accepts letters, numbers, and symbols only, with no spaces, non-ASCII text, "/", or ":". Rename the provider without them, or turn on Custom model prefix and set one.`;
+
+/**
  * The preset picker: one card per catalog entry, the static-key compatible
  * APIs first and the OAuth products after. A preset prefills the definition
  * the creation flow registers; the operator edits the JSON it produced, the
@@ -68,10 +77,11 @@ export function ProviderPresetPicker(props: {
  * model reads as `name-upstream-id`; flipping the switch on exposes the field
  * for a hand-set value — including an empty one — which is then used exactly
  * as typed. A prefix never holds a slash or a colon: it is a routing token,
- * and the Gemini URL path cannot address either. Its inline error is stated
- * however the value was reached: with the switch off the default is the
- * free-form name's shadow and no prefix input stands, so the error renders
- * beside the switch rather than only inside the hidden field.
+ * and the Gemini URL path cannot address either. With the switch on the
+ * error is the field's own inline statement; with it off the default is the
+ * free-form name's shadow and no prefix input stands, so the alert beside
+ * the switch carries the derivation and both escapes instead of the field's
+ * message, which would name a control that is not on the page.
  */
 export function ProviderIdentityFields(props: {
     readonly name: string;
@@ -111,21 +121,21 @@ export function ProviderIdentityFields(props: {
             <Show
                 when={props.isCustomPrefix}
                 // The toggle governs editing only: an invalid derived prefix
-                // has no input to state itself in, so the error renders here.
+                // has no input to state itself in, and its field is not on
+                // the page, so the alert beside the switch names the
+                // derivation and the escapes rather than the field's rule.
                 fallback={
-                    <Show when={props.prefixError}>
-                        {(error) => (
-                            <p
-                                class="flex items-start gap-1.5 text-[13px] text-bad"
-                                role="alert"
-                            >
-                                <Glyph
-                                    name="alert"
-                                    class="mt-0.5 shrink-0"
-                                />
-                                {error()}
-                            </p>
-                        )}
+                    <Show when={props.prefixError !== null && props.prefixError !== undefined}>
+                        <p
+                            class="flex items-start gap-1.5 text-[13px] text-bad"
+                            role="alert"
+                        >
+                            <Glyph
+                                name="alert"
+                                class="mt-0.5 shrink-0"
+                            />
+                            {DERIVED_PREFIX_ERROR}
+                        </p>
                     </Show>
                 }
             >

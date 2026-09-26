@@ -1,16 +1,11 @@
-import {
-    describeManagementFailure,
-    isAbortFailure,
-    managementFailureErrno,
-} from "/src/management-api/errors";
-
-import type { ErrorCode } from "/src/management-api/generated/v0";
+import { isAbortFailure } from "/src/management-api/errors";
 
 /**
- * How one management call ended, as a screen consumes it: a value, a failure —
- * its message for a person to read, its errno for the wire's own category, and
- * the cause whole, because the panel's diagnosis reads the failure rather than
- * its prose — or nothing to do because the visitor navigated away mid-flight.
+ * How one management call ended, as a screen consumes it: a value, a failure
+ * carried whole as its cause — the diagnosis, not the outcome, makes both the
+ * message and the errno from the cause, so a transport failure can never be
+ * rendered as if the gateway had worded it — or nothing to do because the
+ * visitor navigated away mid-flight.
  */
 export type ManagementCallOutcome<TResult> =
     | {
@@ -19,8 +14,6 @@ export type ManagementCallOutcome<TResult> =
       }
     | {
           readonly status: "failed";
-          readonly message: string;
-          readonly errno: ErrorCode | null;
           readonly cause: unknown;
       }
     | {
@@ -44,8 +37,6 @@ export async function performManagementCall<TResult>(
 
         return {
             status: "failed",
-            message: describeManagementFailure(error),
-            errno: managementFailureErrno(error),
             cause: error,
         };
     }

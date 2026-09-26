@@ -806,7 +806,8 @@ mod tests {
         Ok(())
     }
 
-    /// a missing-table or syntax failure, which would make the rejection meaningless.
+    /// Verifies that a probe's failure classifies as a constraint violation — never a
+    /// missing-table or syntax failure, which would make the rejection meaningless.
     ///
     /// # Panics
     ///

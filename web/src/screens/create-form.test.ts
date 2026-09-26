@@ -33,8 +33,6 @@ function failedRow(cause: unknown): CreateActionBegin<CreatedRow> {
         status: "called",
         outcome: {
             status: "failed",
-            message: "the creation refused",
-            errno: ErrorCode.Conflict,
             cause,
         },
     };

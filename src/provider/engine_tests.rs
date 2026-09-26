@@ -32,7 +32,8 @@ pub(crate) struct MockUpstream {
 }
 
 impl MockUpstream {
-    /// Serves `responses` round-robin: one entry per request.
+    /// Serves `responses` round-robin: one entry per request, each framed as a 200 JSON
+    /// response.
     ///
     /// # Panics
     ///
@@ -40,6 +41,20 @@ impl MockUpstream {
     /// broken mock is the failure report.
     pub(crate) async fn start(responses: Vec<String>) -> Self {
         let (mock, _) = Self::start_recording(responses).await;
+
+        mock
+    }
+
+    /// Serves `responses` round-robin as complete HTTP responses — status line, headers, and
+    /// body — sent verbatim: one entry per request, so a fixture controls the response status
+    /// itself (a redirect fixture in particular).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the mock cannot bind, accept, or serve its fixture — a
+    /// broken mock is the failure report.
+    pub(crate) async fn start_raw(responses: Vec<String>) -> Self {
+        let (mock, _) = Self::start_serving(responses).await;
 
         mock
     }
@@ -51,14 +66,41 @@ impl MockUpstream {
         format!("http://{}", self.address)
     }
 
-    /// Serves `responses` round-robin and records every request's `METHOD /target` line, so a
-    /// test can pin the exact URLs the engine rendered.
+    /// Serves `responses` round-robin, each entry framed as a 200 JSON response, and records
+    /// every request's `METHOD /target` line, so a test can pin the exact URLs the engine
+    /// rendered.
     ///
     /// # Panics
     ///
     /// Panics when the mock cannot bind, accept, or serve its fixture — a
     /// broken mock is the failure report.
     async fn start_recording(
+        responses: Vec<String>,
+    ) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let framed = responses
+            .into_iter()
+            .map(|body| {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+            })
+            .collect();
+
+        Self::start_serving(framed).await
+    }
+
+    /// Serves `responses` round-robin — complete HTTP responses, one per request — and records
+    /// every request's `METHOD /target` line, so a test can pin the exact URLs the engine
+    /// rendered.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the mock cannot bind, accept, or serve its fixture — a
+    /// broken mock is the failure report.
+    async fn start_serving(
         responses: Vec<String>,
     ) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -131,17 +173,7 @@ impl MockUpstream {
                         }
                     };
 
-                    let _ = socket
-                        .send_all(
-                            format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                index.len(),
-                                index
-                            )
-                            .as_bytes(),
-                        )
-                        .await;
+                    let _ = socket.send_all(index.as_bytes()).await;
                 });
             }
         });
@@ -830,6 +862,75 @@ async fn device_authorization_rejects_non_positive_durations() {
         error.to_string().contains("must be a string"),
         "the rejection names the shape rule: {error}"
     );
+}
+
+/// Pins the upstream clients' redirect refusal (README §4): neither upstream HTTP client follows
+/// a 3xx — the re-dispatch would carry definition-declared credential headers and request bodies
+/// to the Location origin — so the redirection itself is the response the caller sees and flows
+/// through the non-2xx path. The device-authorization round-trip therefore fails on the redirect
+/// response, and the Location origin never answers.
+///
+/// # Panics
+///
+/// Panics when a fixture lands on the wrong side of its check.
+#[tokio::test]
+async fn upstream_clients_surface_redirects_without_following_them() {
+    // The Location origin answers the success shape the device-authorization stage consumes, so
+    // a followed redirect would complete the stage on the foreign origin's answer.
+    let (target, target_seen) = MockUpstream::start_recording(vec![
+        serde_json::to_string(&json!({
+            "device_code": "dc",
+            "user_code": "uc",
+            "verification_uri": "https://verify.example"
+        }))
+        .unwrap(),
+    ])
+    .await;
+
+    let redirect = MockUpstream::start_raw(vec![format!(
+        "HTTP/1.1 302 Found\r\nLocation: {}/device/code\r\nContent-Length: 0\r\n\
+         Connection: close\r\n\r\n",
+        target.base()
+    )])
+    .await;
+
+    let grant = device_grant(&redirect.base());
+
+    let slots = BTreeMap::new();
+
+    let env = ValueEnv::for_device_authorization(&slots, None, "client-id", None);
+
+    let outcome =
+        oauth::execute_device_authorization(&crate::http_client::control_plane(), &grant, &env)
+            .await;
+
+    let Err(error) = outcome else {
+        panic!("a redirect from the token endpoint must surface as a rejection, never be followed");
+    };
+
+    assert!(
+        error.to_string().contains("status 302"),
+        "the rejection is the redirect response itself: {error}"
+    );
+
+    // The Location origin never received the re-dispatched request.
+    assert_eq!(*target_seen.lock().unwrap(), Vec::<String>::new());
+
+    // The data-plane client refuses redirects the same way: the 3xx is the response.
+    let response = crate::http_client::data_plane()
+        .get(format!("{}/chat/completions", redirect.base()))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(
+        response.status().is_redirection(),
+        "the data plane received the redirect itself, not the followed response: {}",
+        response.status()
+    );
+
+    redirect.shutdown.send(()).ok();
+    target.shutdown.send(()).ok();
 }
 
 /// The definition payload of a completion test: an OAuth recipe whose provisioning sequence

@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { ManagementApiError } from "/src/management-api/errors";
-import { ErrorCode } from "/src/management-api/generated/v0";
 import { performManagementCall } from "./outcome";
 
 describe("performManagementCall", () => {
@@ -13,11 +11,8 @@ describe("performManagementCall", () => {
         });
     });
 
-    it("keeps the gateway's message, errno and cause for a rendered failure", async () => {
-        const failure = new ManagementApiError("gateway", "model row not found", {
-            httpStatus: 404,
-            errno: ErrorCode.NotFound,
-        });
+    it("carries a failed call's cause whole for the diagnosis to word", async () => {
+        const failure = new Error("Failed to fetch");
 
         const outcome = await performManagementCall(async () => {
             throw failure;
@@ -25,22 +20,7 @@ describe("performManagementCall", () => {
 
         expect(outcome).toEqual({
             status: "failed",
-            message: "model row not found",
-            errno: ErrorCode.NotFound,
             cause: failure,
-        });
-    });
-
-    it("reports a failure outside the gateway's error domain without an errno", async () => {
-        const outcome = await performManagementCall(async () => {
-            throw new Error("Failed to fetch");
-        });
-
-        expect(outcome).toEqual({
-            status: "failed",
-            message: "Failed to fetch",
-            errno: null,
-            cause: expect.any(Error),
         });
     });
 

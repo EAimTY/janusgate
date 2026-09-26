@@ -76,10 +76,6 @@ export function isAbortFailure(value: unknown): boolean {
     );
 }
 
-export function managementFailureErrno(value: unknown): ErrorCode | null {
-    return value instanceof ManagementApiError ? value.errno : null;
-}
-
 /**
  * The administrator-facing message of a failure: the gateway's own message for
  * a rendered management error, and the underlying error's message when the

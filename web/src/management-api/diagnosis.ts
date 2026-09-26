@@ -140,7 +140,7 @@ function conflictFix(action: ActionName | undefined): string {
         // shell's refresh re-runs the boot read that re-binds it, keeping the
         // in-progress form intact.
         case "ensure-definition":
-            return "The stored version moved — refresh the page's stored versions, then submit again.";
+            return "The stored version moved — use Refresh in the bar above; it re-reads the stored versions and leaves this form untouched — then submit again.";
 
         case "create-provider":
         case "update-provider":
