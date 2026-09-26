@@ -7,7 +7,10 @@ use super::{
 };
 use crate::{
     format,
-    ir::{InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
+    ir::{
+        InvalidRequest, IrImage, IrMessage, IrPart, IrRequest, IrResponseFormat, IrRole,
+        IrToolChoice,
+    },
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -164,118 +167,121 @@ enum ToolChoiceMode {
 }
 
 /// Renders the stateless full-history `input` replay: every message in order, with consecutive
-/// user messages coalesced into one `user_input` step whose blocks concatenate — the several
-/// turns of plain chat then ride as one step per message, exactly the 1:1 shape.
+/// user messages coalesced into one `user_input` step whose blocks concatenate, while assistant
+/// and tool messages render one step per rendered part, exactly the 1:1 shape.
 ///
-/// A message whose parts all drop renders nothing and is transparent: it contributes no step and
-/// cannot split a user run, since it produces no step to alternate against.
+/// Runs are keyed on message role, so any assistant or tool message closes the user run it
+/// follows even when none of its own parts render; a user run whose parts all drop renders no
+/// step.
 ///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] per [`format::resolve_tool_output_name`] and for non-object tool call
 /// arguments.
 fn render_input(ir: &IrRequest) -> Result<Vec<RenderStep>, InvalidRequest> {
-    let mut steps: Vec<RenderStep> = Vec::new();
-    let mut user_run: Vec<ContentBlock> = Vec::new();
-
-    // Pushes the open user run as one step; a no-op when the run is empty.
-    let flush_user_run = |steps: &mut Vec<RenderStep>, run: &mut Vec<ContentBlock>| {
-        if !run.is_empty() {
-            steps.push(RenderStep::Typed(TypedStep::UserInput {
-                content: std::mem::take(run),
-            }));
-        }
-    };
+    // The contribution is the message itself, so runs break exactly where the message role
+    // changes; each closed run renders whole below.
+    let mut runs: format::RoleRun<IrRole, &IrMessage> = format::RoleRun::default();
 
     for message in &ir.messages {
-        match message.role {
-            IrRole::User => {
-                for part in &message.parts {
-                    match part {
-                        IrPart::Text { text } => {
-                            user_run.push(ContentBlock::Text { text: text.clone() })
-                        }
+        runs.push(message.role, vec![message]);
+    }
 
-                        IrPart::Image { image } => user_run.push(render_image(image)),
+    let mut steps: Vec<RenderStep> = Vec::new();
+
+    for (role, messages) in runs.into_runs() {
+        match role {
+            IrRole::User => {
+                let content = messages
+                    .iter()
+                    .flat_map(|message| &message.parts)
+                    .filter_map(|part| match part {
+                        IrPart::Text { text } => Some(ContentBlock::Text { text: text.clone() }),
+
+                        IrPart::Image { image } => Some(render_image(image)),
 
                         // A user turn has no slot for calls, outputs, or reasoning: the IR type
                         // system never routes them here, and a misplaced part is dropped rather
                         // than rendered into a step whose role would misattribute it.
                         IrPart::ToolCall { .. }
                         | IrPart::ToolOutput { .. }
-                        | IrPart::Reasoning { .. } => {}
-                    }
+                        | IrPart::Reasoning { .. } => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                if !content.is_empty() {
+                    steps.push(RenderStep::Typed(TypedStep::UserInput { content }));
                 }
             }
 
             IrRole::Assistant => {
-                flush_user_run(&mut steps, &mut user_run);
+                for message in &messages {
+                    for part in &message.parts {
+                        match part {
+                            IrPart::Text { text } => {
+                                steps.push(RenderStep::Typed(TypedStep::ModelOutput {
+                                    content: vec![ContentBlock::Text { text: text.clone() }],
+                                }));
+                            }
 
-                for part in &message.parts {
-                    match part {
-                        IrPart::Text { text } => {
-                            steps.push(RenderStep::Typed(TypedStep::ModelOutput {
-                                content: vec![ContentBlock::Text { text: text.clone() }],
-                            }));
+                            IrPart::Image { .. } | IrPart::ToolOutput { .. } => {
+                                // An assistant turn has no image or tool-output slot on this
+                                // family's wire: images are request
+                                // content and outputs answer calls, so a
+                                // misplaced part is dropped rather than rendered into a foreign
+                                // step.
+                            }
+
+                            IrPart::ToolCall {
+                                call_id,
+                                name,
+                                arguments,
+                                // The official function_call step carries no signature member: the
+                                // replayable thought signature rides the `thought` step, so this
+                                // family's tool-call signature has no wire slot here.
+                                thought_signature: _,
+                            } => {
+                                let arguments = format::arguments_as_object(arguments)?;
+
+                                steps.push(RenderStep::Typed(TypedStep::FunctionCall {
+                                    id: call_id.clone(),
+                                    name: name.clone(),
+                                    arguments: Value::Object(arguments),
+                                }));
+                            }
+
+                            IrPart::Reasoning {
+                                text,
+                                signature,
+                                opaque,
+                            } => steps.push(render_thought(text, signature.clone(), opaque)),
                         }
-
-                        IrPart::Image { .. } | IrPart::ToolOutput { .. } => {
-                            // An assistant turn has no image or tool-output slot on this family's
-                            // wire: images are request content and outputs answer calls, so a
-                            // misplaced part is dropped rather than rendered into a foreign step.
-                        }
-
-                        IrPart::ToolCall {
-                            call_id,
-                            name,
-                            arguments,
-                            // The official function_call step carries no signature member: the
-                            // replayable thought signature rides the `thought` step, so this
-                            // family's tool-call signature has no wire slot here.
-                            thought_signature: _,
-                        } => {
-                            let arguments = format::arguments_as_object(arguments)?;
-
-                            steps.push(RenderStep::Typed(TypedStep::FunctionCall {
-                                id: call_id.clone(),
-                                name: name.clone(),
-                                arguments: Value::Object(arguments),
-                            }));
-                        }
-
-                        IrPart::Reasoning {
-                            text,
-                            signature,
-                            opaque,
-                        } => steps.push(render_thought(text, signature.clone(), opaque)),
                     }
                 }
             }
 
             IrRole::Tool => {
-                flush_user_run(&mut steps, &mut user_run);
+                for message in &messages {
+                    for part in &message.parts {
+                        if let IrPart::ToolOutput {
+                            call_id, content, ..
+                        } = part
+                        {
+                            let name = format::resolve_tool_output_name(call_id, ir)?;
 
-                for part in &message.parts {
-                    if let IrPart::ToolOutput {
-                        call_id, content, ..
-                    } = part
-                    {
-                        let name = format::resolve_tool_output_name(call_id, ir)?;
-
-                        steps.push(RenderStep::Typed(TypedStep::FunctionResult {
-                            name,
-                            call_id: call_id.clone(),
-                            result: vec![ContentBlock::Text {
-                                text: content.clone(),
-                            }],
-                        }));
+                            steps.push(RenderStep::Typed(TypedStep::FunctionResult {
+                                name,
+                                call_id: call_id.clone(),
+                                result: vec![ContentBlock::Text {
+                                    text: content.clone(),
+                                }],
+                            }));
+                        }
                     }
                 }
             }
         }
     }
-
-    flush_user_run(&mut steps, &mut user_run);
 
     Ok(steps)
 }

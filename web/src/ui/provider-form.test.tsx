@@ -55,6 +55,8 @@ function mountIdentityFields(props: {
     readonly name: string;
     readonly isCustomPrefix: boolean;
     readonly prefixError: string | null;
+    readonly isDisabled?: boolean;
+    readonly onCustomPrefixToggle?: (isCustom: boolean) => void;
 }): void {
     disposes.push(
         render(
@@ -64,11 +66,12 @@ function mountIdentityFields(props: {
                     namePlaceholder=""
                     onNameInput={() => undefined}
                     isCustomPrefix={props.isCustomPrefix}
-                    onCustomPrefixToggle={() => undefined}
+                    onCustomPrefixToggle={props.onCustomPrefixToggle ?? (() => undefined)}
                     customPrefix=""
                     onCustomPrefixInput={() => undefined}
                     defaultPrefix={`${props.name}-`}
                     prefixError={props.prefixError}
+                    isDisabled={props.isDisabled ?? false}
                 />
             ),
             document.body,
@@ -131,5 +134,51 @@ describe("CompatibleConnectionFields upstream key reveal", () => {
         toggle.click();
         await settle();
         expect(keyInput.type).toBe("password");
+    });
+});
+
+/** The label element the given switch's visible text stands in. */
+function switchLabel(label: string): HTMLLabelElement {
+    const owner = Array.from(document.querySelectorAll("label")).find(
+        (candidate) => candidate.textContent === label,
+    );
+
+    if (owner === undefined) {
+        throw new Error(`No switch label ${label}`);
+    }
+
+    return owner;
+}
+
+describe("ProviderIdentityFields switch label", () => {
+    it("toggles the switch when its visible label is clicked", () => {
+        const toggles: boolean[] = [];
+        mountIdentityFields({
+            name: "upstream",
+            isCustomPrefix: false,
+            prefixError: null,
+            onCustomPrefixToggle: (isCustom) => toggles.push(isCustom),
+        });
+
+        switchLabel("Custom model prefix").click();
+
+        expect(toggles).toEqual([
+            true,
+        ]);
+    });
+
+    it("does not toggle the switch through its label while the switch is disabled", () => {
+        const toggles: boolean[] = [];
+        mountIdentityFields({
+            name: "upstream",
+            isCustomPrefix: false,
+            prefixError: null,
+            isDisabled: true,
+            onCustomPrefixToggle: (isCustom) => toggles.push(isCustom),
+        });
+
+        switchLabel("Custom model prefix").click();
+
+        expect(toggles).toEqual([]);
     });
 });

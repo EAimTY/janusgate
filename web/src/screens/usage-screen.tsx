@@ -10,7 +10,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
-import { hrefs, navigate, type UsageQuerySubject } from "/src/router";
+import { hrefs, navigate } from "/src/router";
 import { ReadNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
 import { Button, ButtonLink, SelectField } from "/src/ui/controls";
@@ -23,8 +23,11 @@ import {
     EMPTY_USAGE_FILTER_DRAFT,
     hasUsageFilter,
     statusError,
+    USAGE_QUERY_SUBJECT_DIMENSIONS,
+    USAGE_QUERY_SUBJECT_FIELDS,
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
+    type UsageQuerySubject,
 } from "/src/usage-filter";
 import { createScreenRead, readAll, type ScreenNotice, screenFailureNotice } from "./read";
 import { SkeletonRows } from "./skeleton-rows";
@@ -437,25 +440,15 @@ function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | 
     // The route parser admits an entity field only when it reads as a row
     // identifier, so the `Number` here is the same trusted spelling
     // `buildUsageFilter` puts on the wire.
-    if (filter.providerId !== "") {
-        named.push({
-            dimension: "provider",
-            id: Number(filter.providerId),
-        });
-    }
+    for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
+        const value = filter[USAGE_QUERY_SUBJECT_FIELDS[dimension].draftField];
 
-    if (filter.modelId !== "") {
-        named.push({
-            dimension: "model",
-            id: Number(filter.modelId),
-        });
-    }
-
-    if (filter.apiKeyId !== "") {
-        named.push({
-            dimension: "api_key",
-            id: Number(filter.apiKeyId),
-        });
+        if (value !== "") {
+            named.push({
+                dimension,
+                id: Number(value),
+            });
+        }
     }
 
     const [subject] = named;
@@ -582,7 +575,7 @@ function UsageRow(props: {
             </p>
             <p class="tnum mt-1 text-[12.5px] text-ink-faint">
                 {props.row.http_status === null ? "—" : props.row.http_status}
-                {` · ${props.row.duration} ms · in ${formatTokenCount(props.row.input_tokens)} · out ${formatTokenCount(props.row.output_tokens)} · cached ${formatTokenCount(props.row.cached_tokens)} · write ${formatTokenCount(props.row.cache_write_tokens)} · reasoning ${formatTokenCount(props.row.reasoning_tokens)}`}
+                {` · ${props.row.duration} ms · in ${formatTokenCount(props.row.input_tokens)} · out ${formatTokenCount(props.row.output_tokens)} · cached ${formatTokenCount(props.row.cached_tokens)} · cache write ${formatTokenCount(props.row.cache_write_tokens)} · reasoning ${formatTokenCount(props.row.reasoning_tokens)}`}
             </p>
         </li>
     );

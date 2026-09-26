@@ -58,6 +58,14 @@ export function createEditForm<TResult>(options: {
     // the screen it leaves behind is never armed.
     onCleanup(() => options.onDirtyChange(false));
 
+    // The one disposal guard, set when the consuming screen goes away: a
+    // call answering afterwards must state nothing, re-baseline nothing,
+    // and reload nothing.
+    let isDisposed = false;
+    onCleanup(() => {
+        isDisposed = true;
+    });
+
     const save = async (): Promise<void> => {
         if (isSaving() || !options.canSave()) {
             return;
@@ -68,6 +76,10 @@ export function createEditForm<TResult>(options: {
         const outcome = await performManagementCall(options.perform);
 
         setIsSaving(false);
+
+        if (isDisposed) {
+            return;
+        }
 
         if (
             !options.read.reportAction(

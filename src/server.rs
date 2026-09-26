@@ -298,8 +298,11 @@ fn bind_tcp_listener() -> (TcpListener, SocketAddr) {
         .set_nonblocking(true)
         .expect("cannot configure nonblocking mode on the TCP socket");
 
-    // Make socket reusable right after restart in debug builds.
-    #[cfg(debug_assertions)]
+    // Pin `SO_REUSEADDR` on Unix platforms so a prompt restart never fails to bind while the
+    // previous run's connections still drain in TIME_WAIT. Windows is left at the socket default:
+    // its `SO_REUSEADDR` semantics let a second socket bind over a port another socket actively
+    // holds, a hijack hazard socket2's documentation warns about.
+    #[cfg(not(windows))]
     {
         #[expect(
             clippy::expect_used,

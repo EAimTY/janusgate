@@ -173,18 +173,11 @@ impl Error {
 
     /// Whether the error is the calling client's own fault — a malformed or unsupported request, a
     /// failed authentication, an unknown model, a wrong method, or an oversized body — as opposed
-    /// to a gateway or upstream failure.
+    /// to a gateway or upstream failure. Derived from [`Error::accounting`], never parallel to it:
+    /// the client faults are exactly the variants that record [`ApiLogOutcome::Completed`], so
+    /// severity classification and the accounting row cannot drift apart when a variant is added.
     fn is_client_fault(&self) -> bool {
-        match self {
-            Self::InvalidApiKey
-            | Self::InvalidUrl { .. }
-            | Self::MethodNotAllowed
-            | Self::PayloadTooLarge
-            | Self::MalformedRequest { .. }
-            | Self::ModelNotFound { .. } => true,
-
-            Self::Upstream { .. } | Self::UpstreamUnavailable { .. } | Self::Internal => false,
-        }
+        matches!(self.accounting().0, ApiLogOutcome::Completed)
     }
 }
 

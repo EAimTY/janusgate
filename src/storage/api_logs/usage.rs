@@ -394,53 +394,40 @@ fn filter_conditions(filter: &UsageFilter) -> (Vec<String>, Vec<Value>) {
     }
 
     if let Some(ids) = &filter.api_key_id {
-        push_in_condition(
-            &mut conditions,
-            &mut values,
-            "api_key_id",
-            &ids.iter().map(|id| Value::Integer(*id)).collect::<Vec<_>>(),
-        );
+        push_in_condition_mapped(&mut conditions, &mut values, "api_key_id", ids, |id| {
+            Value::Integer(*id)
+        });
     }
 
     if let Some(ids) = &filter.provider_id {
-        push_in_condition(
-            &mut conditions,
-            &mut values,
-            "provider_id",
-            &ids.iter().map(|id| Value::Integer(*id)).collect::<Vec<_>>(),
-        );
+        push_in_condition_mapped(&mut conditions, &mut values, "provider_id", ids, |id| {
+            Value::Integer(*id)
+        });
     }
 
     if let Some(ids) = &filter.model_id {
-        push_in_condition(
-            &mut conditions,
-            &mut values,
-            "model_id",
-            &ids.iter().map(|id| Value::Integer(*id)).collect::<Vec<_>>(),
-        );
+        push_in_condition_mapped(&mut conditions, &mut values, "model_id", ids, |id| {
+            Value::Integer(*id)
+        });
     }
 
     if let Some(types) = &filter.endpoint_type {
-        push_in_condition(
+        push_in_condition_mapped(
             &mut conditions,
             &mut values,
             "endpoint_type",
-            &types
-                .iter()
-                .map(|kind| Value::Text(kind.as_str().to_string()))
-                .collect::<Vec<_>>(),
+            types,
+            |kind| Value::Text(kind.as_str().to_string()),
         );
     }
 
     if let Some(outcomes) = &filter.outcome {
-        push_in_condition(
+        push_in_condition_mapped(
             &mut conditions,
             &mut values,
             "outcome",
-            &outcomes
-                .iter()
-                .map(|outcome| Value::Text(outcome.as_str().to_string()))
-                .collect::<Vec<_>>(),
+            outcomes,
+            |outcome| Value::Text(outcome.as_str().to_string()),
         );
     }
 
@@ -456,14 +443,12 @@ fn filter_conditions(filter: &UsageFilter) -> (Vec<String>, Vec<Value>) {
     if let Some(statuses) = &filter.http_status {
         // SQL `NULL` never satisfies an `IN` list, so the never-answered rows match nothing
         // here by the engine's own semantics (README §7.1).
-        push_in_condition(
+        push_in_condition_mapped(
             &mut conditions,
             &mut values,
             "http_status",
-            &statuses
-                .iter()
-                .map(|status| Value::Integer(*status))
-                .collect::<Vec<_>>(),
+            statuses,
+            |status| Value::Integer(*status),
         );
     }
 
@@ -495,6 +480,25 @@ fn push_in_condition(
 
     values.extend_from_slice(list);
     conditions.push(format!("{column} IN ({placeholders})"));
+}
+
+/// Appends one `column IN (…)` condition over a mapped list: every element maps through
+/// `to_value` into its bound value, and the placeholders number in order, so the clause binds
+/// exactly the values it pushed. The list is non-empty by its `Vec1` type — the wire parser
+/// rejects an empty array — so the `IN` never degenerates.
+fn push_in_condition_mapped<T>(
+    conditions: &mut Vec<String>,
+    values: &mut Vec<Value>,
+    column: &str,
+    list: &Vec1<T>,
+    to_value: impl Fn(&T) -> Value,
+) {
+    push_in_condition(
+        conditions,
+        values,
+        column,
+        &list.iter().map(to_value).collect::<Vec<_>>(),
+    );
 }
 
 /// Joins the built conditions into the WHERE clause text; empty when no condition applies.

@@ -225,6 +225,68 @@ describe("createEditForm", () => {
 
         expect(reports[reports.length - 1]).toBe(false);
     });
+
+    it("runs no success tail and states nothing when the save answers after the screen went away", async () => {
+        let loadCount = 0;
+        const read = mountedRead(async () => {
+            loadCount += 1;
+        });
+        await settle();
+        const loadsAfterMount = loadCount;
+
+        let isRebaselined = false;
+        let isLatched = false;
+        let releaseWrite: (() => void) | undefined;
+        const box: {
+            form?: ReturnType<typeof createEditForm>;
+        } = {};
+        const dispose = createRoot((teardown) => {
+            box.form = createEditForm({
+                read,
+                action: "update-provider",
+                isDirty: () => true,
+                canSave: () => true,
+                perform: () =>
+                    new Promise<void>((resolve) => {
+                        releaseWrite = resolve;
+                    }),
+                onSucceeded: () => {
+                    isRebaselined = true;
+
+                    return {
+                        tone: "ok",
+                        title: "Saved.",
+                    };
+                },
+                onDirtyChange: () => {},
+                onSaved: () => {
+                    isLatched = true;
+                },
+            });
+            return teardown;
+        });
+
+        const form = box.form;
+
+        if (form === undefined) {
+            throw new Error("The form did not mount");
+        }
+
+        form.submit(new SubmitEvent("submit"));
+        await Promise.resolve();
+
+        // The visitor leaves with the save in flight; its late answer runs
+        // no re-baseline, latches no hold, states no notice, and reloads
+        // nothing.
+        dispose();
+        releaseWrite?.();
+        await settle();
+
+        expect(isRebaselined).toBe(false);
+        expect(isLatched).toBe(false);
+        expect(loadCount).toBe(loadsAfterMount);
+        expect(read.notice()).toBeNull();
+    });
 });
 
 describe("createDeleteAction", () => {

@@ -9,7 +9,10 @@
 //! therefore dispatched as-is — the lease cannot be granted for it, so the loop returns the
 //! freshly read row instead of waiting for a concurrent refresher that can never exist.
 
-use super::{Error, flow};
+use super::{
+    Error, flow,
+    provisioning::{self, WorkingState},
+};
 use crate::{
     database::{Database, Error as DatabaseError, Transaction},
     http_client,
@@ -19,7 +22,6 @@ use crate::{
             credential::{CredentialAcquisition, OAuthRecipe, TokenRefresh},
             eval::ValueEnv,
         },
-        provisioning::{self, WorkingState},
     },
     storage,
     storage::Error as StorageError,
@@ -34,10 +36,10 @@ use tokio::time as tokio_time;
 /// microseconds, so a token is never used into its final seconds. The same margin participates
 /// in the refresh-lease predicate, keeping "expired enough to refresh" consistent with
 /// [`is_token_fresh`].
-pub(crate) const TOKEN_FRESHNESS_MARGIN: i64 = 60 * unix_time::MICROS_PER_SEC;
+const TOKEN_FRESHNESS_MARGIN: i64 = 60 * unix_time::MICROS_PER_SEC;
 
 /// Lease duration after which an abandoned token refresh is considered dead.
-pub(crate) const REFRESH_LEASE_STALE_AFTER: Duration = Duration::from_secs(90);
+const REFRESH_LEASE_STALE_AFTER: Duration = Duration::from_secs(90);
 
 /// Upper bound on how long a request waits for a concurrent token refresh to finish before
 /// failing.
@@ -74,7 +76,7 @@ enum RefreshOutcome {
 /// no-scheduled-refresh state, never a stale one: the token is sent until the upstream rejects
 /// it or an explicit credential update or reauthorization occurs.
 #[must_use]
-pub(crate) fn is_token_fresh(provider: &Provider) -> bool {
+fn is_token_fresh(provider: &Provider) -> bool {
     match &provider.credentials {
         StoredCredentials::OAuth { expires_at, .. } => expires_at.is_some_and(|expires_at| {
             expires_at > unix_time::unix_now_micros() + TOKEN_FRESHNESS_MARGIN
@@ -582,11 +584,15 @@ mod tests {
     use super::{Error, ensure_fresh_token, renew_and_build_state, renew_and_store};
     use crate::{
         database::{Database, schema::Registry},
+        format::UpstreamFormat,
         http_client,
-        provider::{
-            Provider, StoredCredentials, definition::DefinitionPayload, engine_tests::MockUpstream,
+        provider::{Provider, StoredCredentials, engine_tests::MockUpstream},
+        storage,
+        test_support::{
+            FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
+            OAuthResponseField, OAuthTarget, oauth_definition_payload,
         },
-        storage, unix_time,
+        unix_time,
     };
     use std::{collections::BTreeMap, num::NonZero, time::Duration};
 
@@ -610,80 +616,39 @@ mod tests {
     /// supplies only the access token, never an expiry. Parsed without validation, which is
     /// exactly the stored-drift state the write-time rule rejects.
     ///
-    /// The exchange references the `redirect_uri` value part because the write boundary requires
-    /// that of every authorization-code grant (RFC 6749 §4.1.3).
-    ///
     /// # Panics
     ///
     /// Panics when the fixture fails to parse — a broken fixture is the failure report.
     fn reprovision_without_expiry_definition(
         token_url: String,
     ) -> crate::provider::ProviderDefinition {
-        #[expect(clippy::unwrap_used, reason = "the fixture payload always parses")]
-        let payload: DefinitionPayload = serde_json::from_value(serde_json::json!({
-            "format": "openai_chat_completion",
-            "inference": {
-                "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
-                "upstream_streaming": "match_client"
-            },
-            "credential": {
-                "type": "oauth",
-                "client_id": "fixture-client",
-                "grant": {
-                    "type": "authorization_code",
-                    "authorize_url": [
-                        {"type": "literal", "value": "https://accounts.example/auth"}
-                    ],
-                    "redirect_uri": "http://localhost:1/callback",
-                    "pkce": "none"
+        let payload = oauth_definition_payload(OAuthDefinitionFixture {
+            format: UpstreamFormat::OpenAiChatCompletion,
+            inference_suffix: Some("/chat/completions"),
+            client_id: "fixture-client",
+            initial_slots: &[],
+            grant: OAuthGrantFixture::AuthorizationCode,
+            exchange_url: FIXTURE_TOKEN_URL,
+            response_fields: vec![OAuthResponseField::new(
+                "refresh_token",
+                OAuthTarget::RefreshToken,
+            )],
+            terminal_codes: &["invalid_grant"],
+            refresh: OAuthRefreshFixture::Reprovision,
+            provisioning: Some(serde_json::json!([{
+                "request": {
+                    "method": "POST",
+                    "url": [{"type": "literal", "value": token_url}]
                 },
-                "exchange": {
-                    "request": {
-                        "method": "POST",
-                        "url": [{"type": "literal", "value": "http://127.0.0.1:1/token"}],
-                        "body": {"kind": "form", "fields": [
-                            {"name": "grant_type", "value": [
-                                {"type": "literal", "value": "authorization_code"}
-                            ]},
-                            {"name": "code", "value": [{"type": "authorization_code"}]},
-                            {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
-                        ]}
-                    },
-                    "response": {"encoding": "json", "fields": [
-                        {
-                            "path": ["access_token"],
-                            "target": {"type": "access_token"},
-                            "required": true
-                        },
-                        {
-                            "path": ["refresh_token"],
-                            "target": {"type": "refresh_token"},
-                            "required": true
-                        }
-                    ]},
-                    "terminal_codes": ["invalid_grant"]
-                },
-                "refresh": {"type": "reprovision"}
-            },
-            "provisioning": [
-                {
-                    "request": {
-                        "method": "POST",
-                        "url": [{"type": "literal", "value": token_url}]
-                    },
-                    "response_encoding": "json",
-                    "extract": [
-                        {
-                            "path": ["token"],
-                            "target": {"type": "access_token"},
-                            "shape": {"type": "string"},
-                            "required": true
-                        }
-                    ]
-                }
-            ]
-        }))
-        .unwrap();
+                "response_encoding": "json",
+                "extract": [{
+                    "path": ["token"],
+                    "target": {"type": "access_token"},
+                    "shape": {"type": "string"},
+                    "required": true
+                }]
+            }])),
+        });
 
         crate::provider::ProviderDefinition {
             name: "reprovision-drift".to_string(),
@@ -741,9 +706,6 @@ mod tests {
     /// Inserts one refresh-grant definition whose grant posts to `refresh_url`, for the lease
     /// tests.
     ///
-    /// The exchange references the `redirect_uri` value part because the write boundary requires
-    /// that of every authorization-code grant (RFC 6749 §4.1.3).
-    ///
     /// # Panics
     ///
     /// Panics if the payload does not parse, validate, or insert — a broken fixture is the
@@ -753,74 +715,27 @@ mod tests {
         name: &str,
         refresh_url: &str,
     ) -> crate::provider::ProviderDefinition {
-        #[expect(clippy::unwrap_used, reason = "the fixture payload always parses")]
-        let payload: DefinitionPayload = serde_json::from_value(serde_json::json!({
-            "format": "openai_chat_completion",
-            "inference": {
-                "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
-                "upstream_streaming": "match_client"
+        let payload = oauth_definition_payload(OAuthDefinitionFixture {
+            format: UpstreamFormat::OpenAiChatCompletion,
+            inference_suffix: Some("/chat/completions"),
+            client_id: "fixture-client",
+            initial_slots: &[],
+            grant: OAuthGrantFixture::AuthorizationCode,
+            exchange_url: FIXTURE_TOKEN_URL,
+            response_fields: vec![OAuthResponseField::new(
+                "refresh_token",
+                OAuthTarget::RefreshToken,
+            )],
+            terminal_codes: &["invalid_grant"],
+            refresh: OAuthRefreshFixture::Grant {
+                url: refresh_url,
+                response: Some(vec![OAuthResponseField::new(
+                    "access_token",
+                    OAuthTarget::AccessToken,
+                )]),
             },
-            "credential": {
-                "type": "oauth",
-                "client_id": "fixture-client",
-                "grant": {
-                    "type": "authorization_code",
-                    "authorize_url": [
-                        {"type": "literal", "value": "https://accounts.example/auth"}
-                    ],
-                    "redirect_uri": "http://localhost:1/callback",
-                    "pkce": "none"
-                },
-                "exchange": {
-                    "request": {
-                        "method": "POST",
-                        "url": [{"type": "literal", "value": "http://127.0.0.1:1/token"}],
-                        "body": {"kind": "form", "fields": [
-                            {"name": "grant_type", "value": [
-                                {"type": "literal", "value": "authorization_code"}
-                            ]},
-                            {"name": "code", "value": [{"type": "authorization_code"}]},
-                            {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
-                        ]}
-                    },
-                    "response": {"encoding": "json", "fields": [
-                        {
-                            "path": ["access_token"],
-                            "target": {"type": "access_token"},
-                            "required": true
-                        },
-                        {
-                            "path": ["refresh_token"],
-                            "target": {"type": "refresh_token"},
-                            "required": true
-                        }
-                    ]},
-                    "terminal_codes": ["invalid_grant"]
-                },
-                "refresh": {
-                    "type": "grant",
-                    "request": {
-                        "method": "POST",
-                        "url": [{"type": "literal", "value": refresh_url}],
-                        "body": {"kind": "form", "fields": [
-                            {"name": "grant_type", "value": [
-                                {"type": "literal", "value": "refresh_token"}
-                            ]},
-                            {"name": "refresh_token", "value": [{"type": "refresh_token"}]}
-                        ]}
-                    },
-                    "response": {"encoding": "json", "fields": [
-                        {
-                            "path": ["access_token"],
-                            "target": {"type": "access_token"},
-                            "required": true
-                        }
-                    ]},
-                    "terminal_codes": ["invalid_grant"]
-                }
-            }
-        }))
-        .unwrap();
+            provisioning: None,
+        });
 
         #[expect(
             clippy::unwrap_used,
@@ -974,91 +889,32 @@ mod tests {
     /// renewal path. Parsed without validation — the boundary under test is the fold, not the
     /// write-time descriptor checks.
     ///
-    /// The exchange references the `redirect_uri` value part because the write boundary requires
-    /// that of every authorization-code grant (RFC 6749 §4.1.3).
-    ///
     /// # Panics
     ///
     /// Panics when the fixture fails to parse — a broken fixture is the failure report.
     fn renewal_fold_definition(token_url: String) -> crate::provider::ProviderDefinition {
-        #[expect(clippy::unwrap_used, reason = "the fixture payload always parses")]
-        let payload: DefinitionPayload = serde_json::from_value(serde_json::json!({
-            "format": "openai_chat_completion",
-            "inference": {
-                "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
-                "upstream_streaming": "match_client"
+        let payload = oauth_definition_payload(OAuthDefinitionFixture {
+            format: UpstreamFormat::OpenAiChatCompletion,
+            inference_suffix: Some("/chat/completions"),
+            client_id: "fixture-client",
+            initial_slots: &[],
+            grant: OAuthGrantFixture::AuthorizationCode,
+            exchange_url: &token_url,
+            response_fields: vec![OAuthResponseField::new(
+                "refresh_token",
+                OAuthTarget::RefreshToken,
+            )],
+            terminal_codes: &["invalid_grant"],
+            refresh: OAuthRefreshFixture::Grant {
+                url: &token_url,
+                response: Some(vec![
+                    OAuthResponseField::new("access_token", OAuthTarget::AccessToken),
+                    OAuthResponseField::new("endpoint", OAuthTarget::BaseUrl),
+                    OAuthResponseField::new("stage", OAuthTarget::Slot("stage")),
+                ]),
             },
-            "credential": {
-                "type": "oauth",
-                "client_id": "fixture-client",
-                "grant": {
-                    "type": "authorization_code",
-                    "authorize_url": [
-                        {"type": "literal", "value": "https://accounts.example/auth"}
-                    ],
-                    "redirect_uri": "http://localhost:1/callback",
-                    "pkce": "none"
-                },
-                "exchange": {
-                    "request": {
-                        "method": "POST",
-                        "url": [{"type": "literal", "value": token_url}],
-                        "body": {"kind": "form", "fields": [
-                            {"name": "grant_type", "value": [
-                                {"type": "literal", "value": "authorization_code"}
-                            ]},
-                            {"name": "code", "value": [{"type": "authorization_code"}]},
-                            {"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}
-                        ]}
-                    },
-                    "response": {"encoding": "json", "fields": [
-                        {
-                            "path": ["access_token"],
-                            "target": {"type": "access_token"},
-                            "required": true
-                        },
-                        {
-                            "path": ["refresh_token"],
-                            "target": {"type": "refresh_token"},
-                            "required": true
-                        }
-                    ]},
-                    "terminal_codes": ["invalid_grant"]
-                },
-                "refresh": {
-                    "type": "grant",
-                    "request": {
-                        "method": "POST",
-                        "url": [{"type": "literal", "value": token_url}],
-                        "body": {"kind": "form", "fields": [
-                            {"name": "grant_type", "value": [
-                                {"type": "literal", "value": "refresh_token"}
-                            ]},
-                            {"name": "refresh_token", "value": [{"type": "refresh_token"}]}
-                        ]}
-                    },
-                    "response": {"encoding": "json", "fields": [
-                        {
-                            "path": ["access_token"],
-                            "target": {"type": "access_token"},
-                            "required": true
-                        },
-                        {
-                            "path": ["endpoint"],
-                            "target": {"type": "base_url"},
-                            "required": true
-                        },
-                        {
-                            "path": ["stage"],
-                            "target": {"type": "slot", "name": "stage"},
-                            "required": true
-                        }
-                    ]},
-                    "terminal_codes": ["invalid_grant"]
-                }
-            }
-        }))
-        .unwrap();
+            provisioning: None,
+        });
 
         crate::provider::ProviderDefinition {
             name: "renewal-fold".to_string(),

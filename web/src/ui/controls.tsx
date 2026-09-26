@@ -256,8 +256,10 @@ export function ButtonLink(props: {
 /**
  * A labeled on/off switch. The switch sits next to its label on the left
  * and the knob's position is mirrored by `aria-checked`, so the state is
- * never color alone. The hint, when present, states the current
- * consequence of the switch's position.
+ * never color alone. The label is a real `<label>` paired to the switch
+ * through `for`, so clicking the visible text toggles exactly as clicking
+ * the knob does — natively inert while the switch is disabled. The hint,
+ * when present, states the current consequence of the switch's position.
  */
 export function Switch(props: {
     readonly label: string;
@@ -267,11 +269,19 @@ export function Switch(props: {
     readonly onToggle: (isOn: boolean) => void;
     readonly class?: string | undefined;
 }): JSX.Element {
+    const controlId = createUniqueId();
+
     return (
         <div class={props.class}>
             <div class="flex items-center gap-2.5">
-                <p class="text-[13px] font-medium text-ink">{props.label}</p>
+                <label
+                    for={controlId}
+                    class="text-[13px] font-medium text-ink"
+                >
+                    {props.label}
+                </label>
                 <button
+                    id={controlId}
                     type="button"
                     role="switch"
                     aria-checked={ariaBoolean(props.isOn)}

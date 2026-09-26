@@ -499,10 +499,12 @@ async fn begin_flow(
             let authorize_url =
                 oauth::build_authorize_url(grant, &env, &state_token, code_verifier.as_deref())?;
 
+            let expires_at = unix_time::unix_now_micros() + oauth::AUTHORIZATION_CODE_TTL;
+
             let response = StartProviderOauthResponse::AuthorizationCode {
-                authorize_url: authorize_url.clone(),
+                authorize_url,
                 state: state_token.clone(),
-                expires_at: unix_time::unix_now_micros() + oauth::AUTHORIZATION_CODE_TTL,
+                expires_at,
             };
 
             let new_flow = NewFlow {
@@ -523,7 +525,7 @@ async fn begin_flow(
                 device_verification_uri_complete: None,
                 device_poll_interval_seconds: None,
                 device_next_poll_at: None,
-                expires_at: unix_time::unix_now_micros() + oauth::AUTHORIZATION_CODE_TTL,
+                expires_at,
             };
 
             (FlowGrant::AuthorizationCode, new_flow, response)
@@ -598,9 +600,9 @@ async fn begin_flow(
         }
     };
 
-    // The stored row is the response's source of truth: the device facts read back from the row
-    // the insert returns, never from the caller's local copy. An authorization-code response
-    // carries only facts built before the insert, so it returns as built.
+    // The stored row is the response's source of truth: every server-minted response fact — the
+    // expiry on either grant and the device facts — reads back from the row the insert returns,
+    // never from the caller's local copy.
     let stored = storage::oauth_flows::insert_flow(database, new_flow).await?;
 
     info!(
@@ -611,7 +613,15 @@ async fn begin_flow(
     );
 
     Ok(match response {
-        StartProviderOauthResponse::AuthorizationCode { .. } => response,
+        StartProviderOauthResponse::AuthorizationCode {
+            authorize_url,
+            state,
+            ..
+        } => StartProviderOauthResponse::AuthorizationCode {
+            authorize_url,
+            state,
+            expires_at: stored.expires_at,
+        },
 
         StartProviderOauthResponse::Device { state, .. } => StartProviderOauthResponse::Device {
             state,

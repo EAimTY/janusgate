@@ -555,7 +555,13 @@ async fn ensure_id_routable_in_transaction(
 pub(crate) mod fixtures {
     use super::models::ModelEntry;
     use crate::{
-        database::Database, format::UpstreamFormat, provider::StoredCredentials, test_support,
+        database::Database,
+        format::UpstreamFormat,
+        provider::StoredCredentials,
+        test_support::{
+            self, FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthGrantFixture,
+            OAuthRefreshFixture, OAuthResponseField, OAuthTarget, oauth_definition_payload,
+        },
     };
     use std::error::Error as StdError;
 
@@ -611,157 +617,31 @@ pub(crate) mod fixtures {
             })
     }
 
-    /// Inserts one fixture OAuth definition version 1 carrying a refresh grant.
+    /// Builds one fixture OAuth definition version 1: a device grant whose credential never
+    /// renews.
     ///
     /// # Panics
     ///
-    /// Panics if the insert or validation fails.
+    /// Panics if the payload fails to parse or validate — neither can occur for the fixed
+    /// fixture payload.
     pub(crate) fn oauth_definition() -> crate::provider::definition::ProviderDefinition {
-        #[expect(clippy::unwrap_used, reason = "the fixture payload parses")]
-        let payload: crate::provider::DefinitionPayload =
-            serde_json::from_value(serde_json::json!({
-              "format": "openai_chat_completion",
-              "inference": {
-                "url": [
-                  {
-                    "type": "base"
-                  },
-                  {
-                    "type": "literal",
-                    "value": "/chat/completions"
-                  }
-                ],
-                "upstream_streaming": "match_client"
-              },
-              "credential": {
-                "type": "oauth",
-                "client_id": "fixture-client",
-                "grant": {
-                  "type": "device",
-                  "authorization": {
-                    "request": {
-                      "method": "POST",
-                      "url": [
-                        {
-                          "type": "literal",
-                          "value": "http://127.0.0.1:1/device"
-                        }
-                      ],
-                      "body": {
-                        "kind": "form",
-                        "fields": [
-                          {
-                            "name": "client_id",
-                            "value": [
-                              {
-                                "type": "client_id"
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    },
-                    "response": {
-                      "encoding": "form",
-                      "fields": [
-                        {
-                          "path": [
-                            "device_code"
-                          ],
-                          "target": {
-                            "type": "device_code"
-                          },
-                          "required": true
-                        },
-                        {
-                          "path": [
-                            "user_code"
-                          ],
-                          "target": {
-                            "type": "user_code"
-                          },
-                          "required": true
-                        },
-                        {
-                          "path": [
-                            "verification_uri"
-                          ],
-                          "target": {
-                            "type": "verification_uri"
-                          },
-                          "required": false
-                        }
-                      ]
-                    }
-                  },
-                  "expires_in_fallback_seconds": 900
-                },
-                "exchange": {
-                  "request": {
-                    "method": "POST",
-                    "url": [
-                      {
-                        "type": "literal",
-                        "value": "http://127.0.0.1:1/token"
-                      }
-                    ],
-                    "body": {
-                      "kind": "form",
-                      "fields": [
-                        {
-                          "name": "grant_type",
-                          "value": [
-                            {
-                              "type": "literal",
-                              "value": "urn:ietf:params:oauth:grant-type:device_code"
-                            }
-                          ]
-                        },
-                        {
-                          "name": "device_code",
-                          "value": [
-                            {
-                              "type": "device_code"
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  },
-                  "response": {
-                    "encoding": "json",
-                    "fields": [
-                      {
-                        "path": [
-                          "access_token"
-                        ],
-                        "target": {
-                          "type": "access_token"
-                        },
-                        "required": true
-                      },
-                      {
-                        "path": [
-                          "refresh_token"
-                        ],
-                        "target": {
-                          "type": "refresh_token"
-                        },
-                        "required": true
-                      }
-                    ]
-                  },
-                  "terminal_codes": [
-                    "expired_token",
-                    "access_denied"
-                  ]
-                },
-                "refresh": {
-                  "type": "none"
-                }
-              }
-            }))
-            .unwrap();
+        let payload = oauth_definition_payload(OAuthDefinitionFixture {
+            format: UpstreamFormat::OpenAiChatCompletion,
+            inference_suffix: Some("/chat/completions"),
+            client_id: "fixture-client",
+            initial_slots: &[],
+            grant: OAuthGrantFixture::Device {
+                has_grant_type_field: true,
+            },
+            exchange_url: FIXTURE_TOKEN_URL,
+            response_fields: vec![OAuthResponseField::new(
+                "refresh_token",
+                OAuthTarget::RefreshToken,
+            )],
+            terminal_codes: &["expired_token", "access_denied"],
+            refresh: OAuthRefreshFixture::None,
+            provisioning: None,
+        });
 
         #[expect(clippy::unwrap_used, reason = "the fixture payload validates")]
         payload.validate().unwrap();

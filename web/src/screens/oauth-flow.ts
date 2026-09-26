@@ -20,7 +20,7 @@
 import { type Accessor, createSignal, onCleanup } from "solid-js";
 import { nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import type { ActionName } from "/src/management-api/diagnosis";
+import type { ActionName, Diagnosis } from "/src/management-api/diagnosis";
 import type {
     ProviderResponse,
     StartProviderOauthResponse,
@@ -129,6 +129,22 @@ function flowFailedNotice(failureMessage: string): ScreenNotice {
 }
 
 /**
+ * The notice a completion whose flow state proved gone states: the flow's
+ * own verdict, naming this flow as the subject and the spent state as the
+ * cause where the raw row diagnosis names neither, with the gateway's
+ * message kept verbatim as the detail and the one recovery a spent flow
+ * leaves.
+ */
+function goneFlowNotice(diagnosis: Diagnosis): ScreenNotice {
+    return {
+        tone: "bad",
+        title: "This authorization flow is no longer completable — its state expired or was already used.",
+        detail: diagnosis.detail,
+        fix: FRESH_FLOW_FIX,
+    };
+}
+
+/**
  * The OAuth flow state machine, shared by the provider creation and
  * reauthorization screens (README §6.3).
  */
@@ -214,23 +230,16 @@ export function createOauthFlow(options: {
     };
 
     /**
-     * The diagnosis of a failed completion, stated in the flow card. The
-     * device loop's non-gone failures are stated separately, where the
-     * flow's liveness dictates the recovery line instead.
+     * The diagnosis of a failed completion, the raw material both verdicts
+     * state: a gone state is reshaped into the flow's own notice, and any
+     * other failure states the diagnosis verbatim. The device loop's
+     * non-gone failures are stated separately, where the flow's liveness
+     * dictates the recovery line instead.
      */
-    const reportCompletionFailure = (cause: unknown): void => {
-        setFailure(
-            screenFailureNotice(cause, {
-                action: options.completeAction,
-            }),
-        );
-    };
-
-    /** Whether a failed completion's flow state proves gone. */
-    const isCompletionGone = (cause: unknown): boolean =>
+    const completionDiagnosis = (cause: unknown): Diagnosis =>
         describeCallFailure(cause, {
             action: options.completeAction,
-        }).kind === "gone";
+        });
 
     const start = async (): Promise<void> => {
         if (isBusy() || flow() !== null) {
@@ -314,14 +323,27 @@ export function createOauthFlow(options: {
         }
 
         if (outcome.status === "failed") {
-            if (isCompletionGone(outcome.cause)) {
+            const diagnosis = completionDiagnosis(outcome.cause);
+
+            if (diagnosis.kind === "gone") {
                 // The state is unknown, expired, or already consumed: this
-                // flow is dead, so it resets instead of being retried.
+                // flow is dead, so it resets instead of being retried — and
+                // the notice is the flow's own verdict, not the raw row
+                // diagnosis, which names neither this flow nor the way
+                // forward.
                 discardFlow();
                 options.onGone?.();
+                setFailure(goneFlowNotice(diagnosis));
+
+                return;
             }
 
-            reportCompletionFailure(outcome.cause);
+            setFailure({
+                tone: "bad",
+                title: diagnosis.title,
+                detail: diagnosis.detail,
+                fix: diagnosis.fix,
+            });
 
             return;
         }
@@ -386,10 +408,18 @@ export function createOauthFlow(options: {
         }
 
         if (outcome.status === "failed") {
-            if (isCompletionGone(outcome.cause)) {
+            const diagnosis = completionDiagnosis(outcome.cause);
+
+            if (diagnosis.kind === "gone") {
+                // The state is unknown, expired, or already consumed: this
+                // flow is dead, so it resets instead of being retried — and
+                // the notice is the flow's own verdict, not the raw row
+                // diagnosis, which names neither this flow nor the way
+                // forward.
                 discardFlow();
                 options.onGone?.();
-                reportCompletionFailure(outcome.cause);
+                setFailure(goneFlowNotice(diagnosis));
+
                 return "done";
             }
 
@@ -398,16 +428,13 @@ export function createOauthFlow(options: {
             // dead — and re-arm the loop, until too many polls fail in a row.
             // Then this page stops asking, stating the last failure with the
             // fresh-flow recovery as its one exit beside "Start over".
-            const failure = screenFailureNotice(outcome.cause, {
-                action: options.completeAction,
-            });
             failedPolls += 1;
 
             if (failedPolls >= MAX_CONSECUTIVE_FAILED_POLLS) {
                 setFailure({
                     tone: "bad",
                     title: "The outcome poll kept failing, so this page stopped asking.",
-                    detail: failure.detail,
+                    detail: diagnosis.detail,
                     fix: FRESH_FLOW_FIX,
                 });
 
@@ -417,7 +444,7 @@ export function createOauthFlow(options: {
             setFailure({
                 tone: "bad",
                 title: "The last outcome poll failed.",
-                detail: failure.detail,
+                detail: diagnosis.detail,
                 fix: POLL_RETRY_FIX,
             });
 

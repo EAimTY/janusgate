@@ -8,7 +8,10 @@
 //! text validators (README §7) before any slot or base-URL value reaches storage, and the
 //! identity-token claim absorption applies the slot validator before a claimed value lands.
 
-use super::Error;
+use super::{
+    Error,
+    provisioning::{validate_base_url_value, validate_slot_value},
+};
 use crate::{
     provider::{
         control::{self, ControlFailure, DecodedBody, Extracted},
@@ -19,7 +22,6 @@ use crate::{
             eval::ValueEnv,
             template::{ResponseField, ResponseTarget as Target},
         },
-        provisioning::{validate_base_url_value, validate_slot_value},
     },
     unix_time,
 };
@@ -150,7 +152,7 @@ fn jwt_exp_claim(jwt: &str) -> Option<i64> {
 /// Decodes the JSON object a JWT payload carries, or `None` when the token is not a decodable
 /// JWT.
 #[must_use]
-pub(crate) fn jwt_claims(jwt: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+fn jwt_claims(jwt: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
     let payload = jwt.split('.').nth(1)?;
 
     serde_json::from_slice(&general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?).ok()

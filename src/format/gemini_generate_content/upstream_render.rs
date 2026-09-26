@@ -295,13 +295,10 @@ struct ThinkingConfig<'a> {
 pub(crate) fn render_generate_content_request(
     ir: &IrRequest,
 ) -> Result<GenerateContentRequest<'_>, InvalidRequest> {
-    let mut contents: Vec<Content<'_>> = Vec::new();
-
-    // The open run's role and accumulated parts; a message whose parts render to nothing is
-    // transparent — it contributes nothing and cannot split a run, since it produces no content
-    // entry to alternate against.
-    let mut run_role: Option<&'static str> = None;
-    let mut run_parts: Vec<Part<'_>> = Vec::new();
+    // The Gemini API requires `contents` roles to alternate, so consecutive same-role messages
+    // coalesce into one content entry through the shared role-run accumulator; `IrRole::Tool`
+    // rides the `user` side, the side tool results belong to.
+    let mut runs: format::RoleRun<&'static str, Part<'_>> = format::RoleRun::default();
 
     for message in &ir.messages {
         let role = match message.role {
@@ -318,30 +315,14 @@ pub(crate) fn render_generate_content_request(
             .flatten()
             .collect();
 
-        if parts.is_empty() {
-            continue;
-        }
-
-        if run_role != Some(role)
-            && let Some(previous_role) = run_role.replace(role)
-        {
-            contents.push(Content {
-                role: previous_role,
-                parts: run_parts,
-            });
-
-            run_parts = Vec::new();
-        }
-
-        run_parts.extend(parts);
+        runs.push(role, parts);
     }
 
-    if let Some(previous_role) = run_role {
-        contents.push(Content {
-            role: previous_role,
-            parts: run_parts,
-        });
-    }
+    let contents: Vec<Content<'_>> = runs
+        .into_runs()
+        .into_iter()
+        .map(|(role, parts)| Content { role, parts })
+        .collect();
 
     let system_instruction = ir
         .instructions

@@ -60,6 +60,10 @@ struct OutUsage {
     /// Tokens produced by the output, excluding reasoning.
     total_output_tokens: u64,
 
+    /// Total tokens of the interaction: the sum of the input, output, and thought members —
+    /// the official member's documented meaning (`ai.google.dev/api/interactions-api`).
+    total_tokens: u64,
+
     /// Tokens spent on model reasoning, omitted when the upstream reported none.
     #[serde(skip_serializing_if = "Option::is_none")]
     total_thought_tokens: Option<u64>,
@@ -70,13 +74,17 @@ struct OutUsage {
 }
 
 impl OutUsage {
-    /// Splits an IR usage report back into the Interactions members.
+    /// Splits an IR usage report back into the Interactions members, the total rendered as the
+    /// sum of the members the gateway emits.
     fn from_usage(usage: &IrUsage) -> Self {
+        let output = usage
+            .output_tokens
+            .saturating_sub(usage.reasoning_tokens.unwrap_or(0));
+
         Self {
             total_input_tokens: usage.input_tokens,
-            total_output_tokens: usage
-                .output_tokens
-                .saturating_sub(usage.reasoning_tokens.unwrap_or(0)),
+            total_output_tokens: output,
+            total_tokens: usage.input_tokens + output + usage.reasoning_tokens.unwrap_or(0),
             total_thought_tokens: usage.reasoning_tokens,
             total_cached_tokens: usage.cached_tokens,
         }
@@ -910,6 +918,7 @@ mod tests {
                 "total_output_tokens": 20,
                 "total_thought_tokens": 8,
                 "total_cached_tokens": 3,
+                "total_tokens": 38,
             })),
         );
     }
@@ -1143,6 +1152,9 @@ mod tests {
 
         assert!(completed.contains(STATUS_COMPLETED));
         assert!(completed.contains("total_input_tokens"));
+        // The completed frame's usage carries the official total member: the sum of the input,
+        // output, and thought members (no thought reported here, so input + output).
+        assert!(completed.contains(r#""total_tokens":11"#));
 
         #[expect(
             clippy::expect_used,

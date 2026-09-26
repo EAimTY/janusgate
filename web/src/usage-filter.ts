@@ -2,6 +2,7 @@ import type {
     ApiLogEndpointType,
     ApiLogOutcome,
     UsageFilter,
+    UsageGroupBy,
 } from "/src/management-api/generated/v0";
 import { findApiLogEndpointType, findApiLogOutcome } from "/src/management-api/vocabulary";
 import { DAY_MICROS } from "./format";
@@ -227,9 +228,26 @@ export function serializeUsageFilterDraft(draft: UsageFilterDraft): string {
     return parameters.toString().replaceAll("%2C", ",");
 }
 
+/**
+ * Whether any filter field is chosen — the fields half of [`hasUsageFilter`],
+ * shared with the aggregates page, whose form holds the fields without a
+ * window: its narrow question is these fields alone.
+ */
+export function hasUsageFilterFields(fields: UsageFilterFields): boolean {
+    return (
+        fields.providerId !== "" ||
+        fields.modelId !== "" ||
+        fields.apiKeyId !== "" ||
+        fields.endpointType !== "" ||
+        fields.outcome !== "" ||
+        fields.streamChoice !== "" ||
+        fields.statusInput !== ""
+    );
+}
+
 /** Whether anything is chosen — a window alone counts as a filter. */
 export function hasUsageFilter(draft: UsageFilterDraft): boolean {
-    return serializeUsageFilterDraft(draft) !== "";
+    return draft.window !== "all" || hasUsageFilterFields(draft);
 }
 
 /**
@@ -369,3 +387,71 @@ export function draftUsageFilter(draft: UsageFilterDraft, nowMicros: number): Us
         from: windowBoundMicros(draft.window, nowMicros),
     });
 }
+
+/**
+ * The entity dimensions an aggregates subject can name: the `usage:query`
+ * grouping dimensions that have a filter field of their own.
+ */
+export type UsageQuerySubjectDimension = Extract<UsageGroupBy, "provider" | "model" | "api_key">;
+
+/** The subject an aggregates link carries: one entity dimension and the row to preselect there. */
+export type UsageQuerySubject = {
+    readonly dimension: UsageQuerySubjectDimension;
+    readonly id: number;
+};
+
+/** The subject dimensions, in the order the subject derivations walk them. */
+export const USAGE_QUERY_SUBJECT_DIMENSIONS: ReadonlyArray<UsageQuerySubjectDimension> = [
+    "provider",
+    "model",
+    "api_key",
+];
+
+/**
+ * The names one subject dimension's row rides under: the draft field the usage
+ * forms hold it as, the route parameter the usage routes address it under —
+ * the stream's own name, so both usage routes address an entity alike — and
+ * the wire filter field the usage reads narrow by.
+ */
+type UsageQuerySubjectFieldNames = {
+    readonly draftField: keyof UsageFilterFields;
+    readonly routeParameter: string;
+    readonly wireField: keyof UsageFilter & string;
+};
+
+/**
+ * The one dimension↔field pairing behind every aggregates-subject shape. Each
+ * derivation that reads a subject — the detail card's wire filter and
+ * aggregates link, the stream's subject narrow, the aggregates route's
+ * parameters — takes its field names from this table, so one dimension's
+ * three spellings can never drift apart.
+ */
+export const USAGE_QUERY_SUBJECT_FIELDS = {
+    provider: {
+        draftField: "providerId",
+        routeParameter: "provider",
+        wireField: "provider_id",
+    },
+    model: {
+        draftField: "modelId",
+        routeParameter: "model",
+        wireField: "model_id",
+    },
+    api_key: {
+        draftField: "apiKeyId",
+        routeParameter: "key",
+        wireField: "api_key_id",
+    },
+} as const satisfies Record<UsageQuerySubjectDimension, UsageQuerySubjectFieldNames>;
+
+/**
+ * Which recorded rows the stats count: exactly one subject's, named by its
+ * wire filter field. Derived from [`USAGE_QUERY_SUBJECT_FIELDS`], so the
+ * shape stays the wire spelling of the dimension table rather than a parallel
+ * vocabulary.
+ */
+export type UsageSubjectFilter = {
+    readonly [TDimension in UsageQuerySubjectDimension]: {
+        readonly [TWireField in (typeof USAGE_QUERY_SUBJECT_FIELDS)[TDimension]["wireField"]]: number;
+    };
+}[UsageQuerySubjectDimension];

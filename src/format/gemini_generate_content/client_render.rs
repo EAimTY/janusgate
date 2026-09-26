@@ -102,6 +102,11 @@ pub(crate) struct UsageMetadataOut {
     #[serde(rename = "candidatesTokenCount")]
     pub(crate) candidates_token_count: u64,
 
+    /// Total tokens of the generation: the sum of the prompt, candidate, and thought members
+    /// below — the official member's documented arithmetic (`ai.google.dev/api/generate-content`).
+    #[serde(rename = "totalTokenCount")]
+    pub(crate) total_token_count: u64,
+
     /// Tokens spent on reasoning, omitted when unreported.
     #[serde(rename = "thoughtsTokenCount", skip_serializing_if = "Option::is_none")]
     pub(crate) thoughts_token_count: Option<u64>,
@@ -162,13 +167,16 @@ fn finish_reason_to_gemini(reason: IrFinishReason) -> &'static str {
 }
 
 /// Renders IR usage into the Gemini usage shape: the output total keeps including reasoning
-/// (matching the upstream codec), so the candidates count is the output minus reasoning.
+/// (matching the upstream codec), so the candidates count is the output minus reasoning, and the
+/// official total member is the sum of the members rendered here.
 fn usage_to_gemini(usage: IrUsage) -> UsageMetadataOut {
     let reasoning = usage.reasoning_tokens.unwrap_or(0);
+    let candidates = usage.output_tokens.saturating_sub(reasoning);
 
     UsageMetadataOut {
         prompt_token_count: usage.input_tokens,
-        candidates_token_count: usage.output_tokens.saturating_sub(reasoning),
+        candidates_token_count: candidates,
+        total_token_count: usage.input_tokens + candidates + reasoning,
         thoughts_token_count: usage.reasoning_tokens,
         cached_content_token_count: usage.cached_tokens,
     }
@@ -437,6 +445,10 @@ mod tests {
             Some(&serde_json::json!(1))
         );
         assert_eq!(
+            value.pointer("/usageMetadata/totalTokenCount"),
+            Some(&serde_json::json!(16))
+        );
+        assert_eq!(
             value.pointer("/modelVersion"),
             Some(&serde_json::json!("m"))
         );
@@ -490,5 +502,29 @@ mod tests {
         });
 
         assert!(done.is_empty());
+
+        // The terminal usage chunk carries the full usage shape, total included: the sum of the
+        // prompt, candidate, and thought counts.
+        let mut with_usage = SseRenderer::new("m".to_string());
+
+        with_usage.render(&IrEvent::Usage(IrUsage {
+            input_tokens: 10,
+            output_tokens: 6,
+            cached_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: Some(1),
+        }));
+
+        let usage_frames = with_usage.render(&IrEvent::Done);
+
+        assert_eq!(usage_frames.len(), 1);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the single rendered frame is asserted above"
+        )]
+        let usage_frame = &usage_frames[0];
+        assert!(usage_frame.contains(r#""promptTokenCount":10"#));
+        assert!(usage_frame.contains(r#""candidatesTokenCount":5"#));
+        assert!(usage_frame.contains(r#""totalTokenCount":16"#));
     }
 }

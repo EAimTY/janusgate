@@ -181,25 +181,42 @@ impl RouteContext {
     }
 }
 
-/// Accumulates consecutive same-role parts into single IR messages: parts of one role extend the
-/// open run, and a part of another role flushes it as one [`IrMessage`] before opening the next
-/// run. A contribution carrying no parts is transparent — it neither extends nor splits a run.
+/// Accumulates consecutive same-role contributions into runs: a contribution whose role equals
+/// the open run's extends it, and a contribution of any other role flushes the open run as one
+/// closed `(role, parts)` run before opening the next. A contribution carrying no parts is
+/// transparent — it neither extends nor splits a run, since it produces no boundary to alternate
+/// against.
 ///
-/// The role-merging request parsers share this accumulator: the Anthropic Messages parser chunks
-/// a user turn's mixed content into user and tool messages (README §5.8), and the Interactions
-/// parser coalesces consecutive same-role steps into one message per run.
-#[derive(Default)]
-pub(in crate::format) struct RoleRun {
-    /// Messages flushed so far, in order.
-    messages: Vec<IrMessage>,
+/// The role-merging parsers and renderers share this accumulator over their own role and part
+/// types. The Anthropic Messages parser chunks a user turn's mixed content into user and tool
+/// messages (README §5.8) and the Interactions parser coalesces consecutive same-role steps into
+/// one message per run, both finishing into [`IrMessage`]s through [`RoleRun::finish`]; the Gemini
+/// renderers coalesce consecutive same-role messages into one content entry or input step per run,
+/// as their protocols' role-alternation rules require, taking the closed runs from
+/// [`RoleRun::into_runs`].
+pub(in crate::format) struct RoleRun<R, P> {
+    /// Runs flushed so far, in order.
+    runs: Vec<(R, Vec<P>)>,
 
     /// The open run: its role and the parts accumulated since it opened.
-    open: Option<(IrRole, Vec<IrPart>)>,
+    open: Option<(R, Vec<P>)>,
 }
 
-impl RoleRun {
-    /// Extends the open run when it carries `role`, else flushes it and opens a new one.
-    pub(in crate::format) fn push(&mut self, role: IrRole, parts: Vec<IrPart>) {
+impl<R, P> Default for RoleRun<R, P> {
+    /// The empty accumulator: nothing flushed, no run open. Deliberately bound-free: roles and
+    /// parts carry no default of their own, and emptiness needs none.
+    fn default() -> Self {
+        Self {
+            runs: Vec::new(),
+            open: None,
+        }
+    }
+}
+
+impl<R: PartialEq, P> RoleRun<R, P> {
+    /// Extends the open run when it carries `role`, else flushes it and opens a new one. A
+    /// `parts` vector carrying no parts is transparent: it neither extends nor splits a run.
+    pub(in crate::format) fn push(&mut self, role: R, parts: Vec<P>) {
         if parts.is_empty() {
             return;
         }
@@ -214,17 +231,30 @@ impl RoleRun {
         }
     }
 
-    /// Closes the accumulator, flushing the open run and returning every message in order.
-    pub(in crate::format) fn finish(mut self) -> Vec<IrMessage> {
+    /// Closes the accumulator, flushing the open run and returning every run — its role and its
+    /// parts — in order.
+    pub(in crate::format) fn into_runs(mut self) -> Vec<(R, Vec<P>)> {
         self.flush_open();
-        self.messages
+        self.runs
     }
 
-    /// Moves the open run, when one exists, into the finished messages.
+    /// Moves the open run, when one exists, into the finished runs.
     fn flush_open(&mut self) {
         if let Some((role, parts)) = self.open.take() {
-            self.messages.push(IrMessage { role, parts });
+            self.runs.push((role, parts));
         }
+    }
+}
+
+impl RoleRun<IrRole, IrPart> {
+    /// Closes the accumulator, flushing the open run and returning every coalesced message in
+    /// order — the IR form the request parsers consume, pairing each run [`RoleRun::into_runs`]
+    /// returns into an [`IrMessage`].
+    pub(in crate::format) fn finish(self) -> Vec<IrMessage> {
+        self.into_runs()
+            .into_iter()
+            .map(|(role, parts)| IrMessage { role, parts })
+            .collect()
     }
 }
 
@@ -798,4 +828,29 @@ where
         reason = "rendered wire types are first-party and serialize totally"
     )]
     serde_json::to_string(value).expect("rendered wire payloads serialize")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RoleRun;
+
+    /// A zero-part contribution is transparent: it neither extends nor splits the open run, so a
+    /// foreign-role contribution carrying no parts leaves a same-role run unbroken, and a
+    /// same-role one leaves it continuous.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the closed runs diverge from the transparency rule.
+    #[test]
+    fn zero_part_contributions_are_transparent() {
+        let mut runs = RoleRun::default();
+
+        runs.push('a', vec![1]);
+        runs.push('b', vec![]);
+        runs.push('a', vec![2, 3]);
+        runs.push('a', vec![]);
+        runs.push('b', vec![4]);
+
+        assert_eq!(runs.into_runs(), vec![('a', vec![1, 2, 3]), ('b', vec![4])]);
+    }
 }

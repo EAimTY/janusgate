@@ -1183,6 +1183,44 @@ describe("ProviderNewScreen OAuth flow", () => {
         ).toBe(true);
     });
 
+    it("states the flow's own verdict when the completion answers gone", async () => {
+        vi.useFakeTimers();
+        mountScreen(
+            oauthScreenApi({
+                start: () => authorizationFlow,
+                complete: () => Promise.reject(goneFailure("no such flow")),
+            }),
+        );
+        await flush();
+        buttonWithText("Claude Code").click();
+        await flush();
+        buttonWithText("Start the authorization").click();
+        await flush();
+        typeInto(labeledInput("Callback URL or authorization code"), "the-code");
+        await flush();
+        buttonWithText("Connect the account").click();
+        await flush();
+
+        // The gone answer is the spent flow's own verdict — the flow named
+        // as the subject, the gateway's message kept as the detail, the
+        // fresh-flow recovery as the way forward — never the raw row
+        // diagnosis, which names neither this flow nor any way forward.
+        expect(document.body.textContent).toContain(
+            "This authorization flow is no longer completable — its state expired or was already used.",
+        );
+        expect(document.body.textContent).toContain("no such flow");
+        expect(document.body.textContent).toContain("Start a fresh flow");
+        expect(document.body.textContent).not.toContain("The gateway holds no such row.");
+
+        // The spent flow reset, so a fresh one can start, and the verdict
+        // states itself on the Connect card beside the button that took the
+        // action — never on the page-top notice.
+        expect(buttonWithText("Start the authorization").disabled).toBe(false);
+        expect(
+            cardWithTitle("Connect the account").contains(paragraphWithText("no such flow")),
+        ).toBe(true);
+    });
+
     it("states an unreadable paste inline beside the paste field and keeps the flow live", async () => {
         vi.useFakeTimers();
         // No completion route is provided: an unreadable paste must be
@@ -1541,7 +1579,7 @@ describe("ProviderNewScreen OAuth flow", () => {
         }
     });
 
-    it("stops the loop and states the diagnosis when a poll fails gone", async () => {
+    it("stops the loop and states the flow's own verdict when a poll fails gone", async () => {
         vi.useFakeTimers();
         let completeCalls = 0;
         mountScreen(
@@ -1559,14 +1597,21 @@ describe("ProviderNewScreen OAuth flow", () => {
         buttonWithText("Start the authorization").click();
         await flush();
 
-        // The failed poll is the loop's end, and the failure is stated where
-        // the screen states them — never swallowed into more polling.
-        expect(document.body.textContent).toContain("The gateway holds no such row.");
+        // The failed poll is the loop's end, and the gone answer states the
+        // spent flow's own verdict — the flow named as the subject, the
+        // gateway's message kept as the detail, the fresh-flow recovery as
+        // the way forward — never the raw row diagnosis.
+        expect(document.body.textContent).toContain(
+            "This authorization flow is no longer completable — its state expired or was already used.",
+        );
         expect(document.body.textContent).toContain("no such flow");
+        expect(document.body.textContent).toContain("Start a fresh flow");
+        expect(document.body.textContent).not.toContain("The gateway holds no such row.");
         expect(buttonWithText("Start the authorization").disabled).toBe(false);
 
         // The poll is the flow card's own step, so its diagnosis states
-        // itself on that card — never on the page-top notice.
+        // itself on that card — never swallowed into more polling, and never
+        // on the page-top notice.
         expect(
             cardWithTitle("Connect the account").contains(paragraphWithText("no such flow")),
         ).toBe(true);

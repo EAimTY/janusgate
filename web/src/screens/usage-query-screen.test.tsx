@@ -875,3 +875,380 @@ describe("UsageQueryScreen hand-typed status list", () => {
         expect(requests[1]?.filter).toEqual({});
     });
 });
+
+describe("UsageQueryScreen refresh holding on a marked field", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("states the hold on the failure channel and keeps the standing buckets", async () => {
+        let queryCount = 0;
+        const holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        } = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {
+            queryCount += 1;
+        });
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The mount query ran and its answer stands.
+        expect(queryCount).toBe(1);
+        expect(document.body.textContent).toContain("2026-09-01");
+
+        // A malformed bound marks its field. The submit button is guarded,
+        // so only the shell's Refresh can start a cycle that reaches the
+        // query while a field stands marked.
+        typeInto(labeledInput("From"), "2026-09-23 10:00");
+        await settle();
+
+        requestRefresh();
+        await settle();
+
+        // The refresh's cycle re-reads the entity lists — a second held
+        // round.
+        expect(holder.providers).toHaveLength(2);
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The query never ran again, and the half-run is stated: the hold
+        // notice names the way out while the standing buckets stay visible
+        // beside it.
+        expect(queryCount).toBe(1);
+        expect(document.body.textContent).toContain("The query is held while a field is marked.");
+        expect(document.body.textContent).toContain("2026-09-01");
+    });
+
+    it("clears the hold notice when a later cycle succeeds", async () => {
+        let queryCount = 0;
+        const holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        } = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {
+            queryCount += 1;
+        });
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The hold arrives the way the screen can only produce it: a shell
+        // refresh landing on a marked field.
+        typeInto(labeledInput("From"), "2026-09-23 10:00");
+        await settle();
+        requestRefresh();
+        await settle();
+
+        expect(holder.providers).toHaveLength(2);
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        expect(document.body.textContent).toContain("The query is held while a field is marked.");
+
+        // Correcting the field releases the submit, and the successful
+        // cycle replaces both the buckets and the notice.
+        typeInto(labeledInput("From"), "2026-09-23T10:00");
+        await settle();
+        buttonWithText("Run query").click();
+        await settle();
+
+        expect(holder.providers).toHaveLength(3);
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        expect(queryCount).toBe(2);
+        expect(document.body.textContent).not.toContain(
+            "The query is held while a field is marked.",
+        );
+        expect(document.body.textContent).toContain("2026-09-01");
+    });
+});
+
+describe("UsageQueryScreen clear filters", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("resets the fields and bounds, keeps the dimensions, and hides once nothing is set", async () => {
+        const requests: QueryUsageRequest[] = [];
+        const holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        } = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={{
+                            ...screenApi(holder, () => {}),
+                            queryUsage: (request) => {
+                                requests.push(request);
+
+                                // Each answer carries exactly the key its
+                                // request's dimensions name, as the label
+                                // resolver's contract demands.
+                                const key: UsageBucket["key"] = {
+                                    day: "2026-09-01",
+                                };
+
+                                if (request.group_by.includes("provider")) {
+                                    key.provider_id = 1;
+                                }
+
+                                if (request.group_by.includes("outcome")) {
+                                    key.outcome = "completed";
+                                }
+
+                                return Promise.resolve({
+                                    buckets: [
+                                        {
+                                            key,
+                                            requests: 1,
+                                            input_tokens: 0,
+                                            output_tokens: 0,
+                                            cached_tokens: 0,
+                                            cache_write_tokens: 0,
+                                            reasoning_tokens: 0,
+                                        },
+                                    ],
+                                });
+                            },
+                        }}
+                        subject={{
+                            dimension: "provider",
+                            id: 1,
+                        }}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The arrival subject's prefilled field is a set filter, so the
+        // clear action stands beside the submit from the start.
+        expect(requests).toHaveLength(1);
+        expect(buttonWithText("Clear filters")).toBeInstanceOf(HTMLButtonElement);
+
+        // A bound, a status narrow, and one more dimension join the
+        // question — the clear must reset the first two and keep the
+        // third.
+        typeInto(labeledInput("From"), "2026-09-23T10:00");
+        typeInto(labeledInput("HTTP statuses"), "429");
+        switchWithLabel("Outcome").click();
+        await settle();
+
+        buttonWithText("Clear filters").click();
+        await settle();
+
+        // The clear re-runs the whole cycle — a second held round of
+        // listings behind the query.
+        expect(holder.providers).toHaveLength(2);
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The subject's id narrow, the status list, and the bound are
+        // gone, while the dimension switches — the arrival subject's
+        // provider included — stay in the grouping.
+        expect(requests[1]).toEqual({
+            group_by: [
+                "day",
+                "provider",
+                "outcome",
+            ],
+            filter: {},
+        });
+
+        // With nothing set the action is gone from the form.
+        expect(() => buttonWithText("Clear filters")).toThrow("No button reading Clear filters");
+    });
+});
+
+describe("UsageQueryScreen empty answer", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** Mounts the screen against a gateway whose query answers empty, and answers its listings. */
+    async function mountAndAnswer(subject: UsageQuerySubject | null): Promise<void> {
+        const holder: {
+            readonly providers: Array<(answer: ListProvidersResponse) => void>;
+            readonly models: Array<(answer: ListModelsResponse) => void>;
+            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
+        } = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const api = screenApi(holder, () => {}, []);
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={subject}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+    }
+
+    it("states the filter mismatch, naming the clear action it stands beside, while filters are set", async () => {
+        await mountAndAnswer({
+            dimension: "provider",
+            id: 1,
+        });
+
+        // The carried subject's own narrow stands, so the empty answer is
+        // the filter's doing: every clause of the notice is true — the
+        // widening, the dropping, and the action it names all exist.
+        expect(document.body.textContent).toContain("No rows in this window.");
+        expect(document.body.textContent).toContain("Nothing recorded matches these filters");
+        expect(document.body.textContent).toContain("Clear filters sits in the form above.");
+        expect(buttonWithText("Clear filters")).toBeInstanceOf(HTMLButtonElement);
+    });
+
+    it("states the bare question's empty record without naming filters or a clear action", async () => {
+        await mountAndAnswer(null);
+
+        // Nothing stands set — no filter to drop, no bound to widen, and no
+        // clear action on the page — so the notice states the record itself
+        // instead of a mismatch a control that is not there would clear.
+        expect(document.body.textContent).toContain("Nothing recorded in this window.");
+        expect(document.body.textContent).not.toContain("No rows in this window.");
+        expect(document.body.textContent).not.toContain("these filters");
+        expect(document.body.textContent).not.toContain("Clear filters");
+    });
+});

@@ -22,30 +22,59 @@ export function ConnectionScreen(): JSX.Element {
     const [baseUrl, setBaseUrl] = createSignal("");
     const [token, setToken] = createSignal("");
     const [isTokenVisible, setIsTokenVisible] = createSignal(false);
-    const [baseUrlError, setBaseUrlError] = createSignal<string | null>(null);
-    const [tokenError, setTokenError] = createSignal<string | null>(null);
+    // The fields' inline errors open behind the first submit, then follow
+    // their field's current value: a pristine form is not an error — the
+    // hints state the requirements quietly — and an edit that fixes a field
+    // retracts its error without another submit (the app's lazy-error
+    // convention).
+    const [hasSubmitted, setHasSubmitted] = createSignal(false);
     const [diagnosis, setDiagnosis] = createSignal<Diagnosis | null>(null);
 
     const state = connectionService.connectionState;
     const isVerifying = (): boolean => state().status === "verifying";
 
+    /** The address field's inline error, open only once a submit was made. */
+    const baseUrlError = (): string | null => {
+        if (!hasSubmitted()) {
+            return null;
+        }
+
+        const normalization = normalizeBaseUrl(baseUrl());
+        return normalization.ok ? null : normalization.reason;
+    };
+
+    /** The token field's inline error, open only once a submit was made. */
+    const tokenError = (): string | null =>
+        hasSubmitted() && token() === "" ? "Enter the management token." : null;
+
     createEffect(
         () => {
             const current = state();
-            return current.status === "unconnected" ? (current.failure ?? null) : null;
+            return current.status === "unconnected" ? current : null;
         },
-        (failure) => {
-            if (failure === null) {
-                setDiagnosis(null);
-                return;
+        (unconnected) => {
+            // The refusal seeds from the address its failure carried — a
+            // mid-session 401's, so the field reopens with it and a later
+            // edit of the field cannot misattribute the failure — and a
+            // deliberate forget seeds from the address the connection
+            // served, so the standard token rotation (disconnect, forget,
+            // paste, connect) never demands an origin retype. The token is
+            // never carried or seeded: it is a bearer secret only the user
+            // can re-enter.
+            const seedBaseUrl =
+                unconnected?.failure?.baseUrl ?? unconnected?.forgottenBaseUrl ?? null;
+
+            if (seedBaseUrl !== null) {
+                setBaseUrl(seedBaseUrl);
             }
 
-            // The failure carries the address its attempt addressed — a
-            // mid-session 401 the dying connection's — so the field reopens
-            // seeded with it. The token is never carried or seeded: it is a
-            // bearer secret only the user can re-enter.
-            if (failure.baseUrl !== null) {
-                setBaseUrl(failure.baseUrl);
+            const failure = unconnected?.failure ?? null;
+
+            if (failure === null) {
+                // Connected, verifying, pristine, or freshly forgotten: a
+                // forget diagnoses nothing, because nothing was refused.
+                setDiagnosis(null);
+                return;
             }
 
             const attempted = failure.baseUrl ?? baseUrl();
@@ -92,13 +121,13 @@ export function ConnectionScreen(): JSX.Element {
             return;
         }
 
+        // The first submit opens the fields' error gate; from then on each
+        // error follows its field's value until a fix retracts it.
+        setHasSubmitted(true);
+
         const normalization = normalizeBaseUrl(baseUrl());
-        const tokenFailure = token() === "" ? "Enter the management token." : null;
 
-        setBaseUrlError(normalization.ok ? null : normalization.reason);
-        setTokenError(tokenFailure);
-
-        if (!normalization.ok || tokenFailure !== null) {
+        if (!normalization.ok || token() === "") {
             return;
         }
 

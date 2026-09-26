@@ -12,6 +12,7 @@ describe("reduceConnectionState", () => {
         expect(initialConnectionState).toEqual({
             status: "unconnected",
             failure: null,
+            forgottenBaseUrl: null,
         });
     });
 
@@ -35,6 +36,7 @@ describe("reduceConnectionState", () => {
                 cause: null,
                 baseUrl: null,
             },
+            forgottenBaseUrl: null,
         };
 
         expect(
@@ -45,6 +47,7 @@ describe("reduceConnectionState", () => {
         ).toEqual({
             status: "unconnected",
             failure: null,
+            forgottenBaseUrl: null,
         });
     });
 
@@ -56,6 +59,7 @@ describe("reduceConnectionState", () => {
                 cause: null,
                 baseUrl: null,
             },
+            forgottenBaseUrl: null,
         };
 
         expect(
@@ -166,6 +170,7 @@ describe("reduceConnectionState", () => {
                 cause: probeFailure,
                 baseUrl: attempted,
             },
+            forgottenBaseUrl: null,
         });
 
         // The lazy revalidation path: a 401 answering a management call while
@@ -193,25 +198,29 @@ describe("reduceConnectionState", () => {
                 cause: null,
                 baseUrl: "https://gateway.example.com",
             },
+            forgottenBaseUrl: null,
         });
     });
 
-    it("forgets back to a clean unconnected state from any state", () => {
-        const forgetting = {
-            type: "connectionForgotten",
-        } as const;
-
+    it("forgets into an unconnected state that carries the forgotten address", () => {
+        // From a connected session the address the pair served travels so the
+        // setup form reopens with it; from any other state there is no
+        // address to carry. A forget is never a refusal: no failure lands.
         expect(
             reduceConnectionState(
                 {
                     status: "connected",
                     connection,
                 },
-                forgetting,
+                {
+                    type: "connectionForgotten",
+                    baseUrl: connection.baseUrl,
+                },
             ),
         ).toEqual({
             status: "unconnected",
             failure: null,
+            forgottenBaseUrl: connection.baseUrl,
         });
 
         expect(
@@ -219,11 +228,15 @@ describe("reduceConnectionState", () => {
                 {
                     status: "verifying",
                 },
-                forgetting,
+                {
+                    type: "connectionForgotten",
+                    baseUrl: null,
+                },
             ),
         ).toEqual({
             status: "unconnected",
             failure: null,
+            forgottenBaseUrl: null,
         });
 
         expect(
@@ -235,12 +248,17 @@ describe("reduceConnectionState", () => {
                         cause: null,
                         baseUrl: null,
                     },
+                    forgottenBaseUrl: null,
                 },
-                forgetting,
+                {
+                    type: "connectionForgotten",
+                    baseUrl: null,
+                },
             ),
         ).toEqual({
             status: "unconnected",
             failure: null,
+            forgottenBaseUrl: null,
         });
     });
 });

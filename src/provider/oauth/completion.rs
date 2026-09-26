@@ -7,13 +7,15 @@
 //! succeeded outcome inside its claim transaction, while the synchronous completion commits the
 //! provider write alone, the flow row already consumed.
 
-use super::{Error, flow};
+use super::{
+    Error, flow,
+    provisioning::{self, WorkingState},
+};
 use crate::{
     database::Transaction,
     provider::{
         StoredCredentials,
         definition::{ProviderDefinition, credential::CredentialAcquisition},
-        provisioning::{self, WorkingState},
     },
     storage,
     storage::oauth_flows::{FlowPurpose, OngoingFlow},
@@ -120,7 +122,7 @@ pub(crate) async fn complete_exchange(
 
     // The access token must exist before the provider write; the definition's validation
     // guarantees the exchange or a provisioning step supplies it.
-    let Some(access_token) = state.access_token.clone() else {
+    let Some(access_token) = state.access_token else {
         return Err(Error::Internal {
             message: "the completed exchange produced no access token".to_string(),
         });
@@ -137,8 +139,9 @@ pub(crate) async fn complete_exchange(
     };
 
     // An empty slot evaluates exactly like an absent one, so the stored credentials keep only
-    // the slots carrying values.
-    let mut slots = state.slots.clone();
+    // the slots carrying values. The state is consumed field by field from here on: nothing
+    // reads it whole after the access token check.
+    let mut slots = std::mem::take(&mut state.slots);
 
     slots.retain(|_, value| !value.is_empty());
 
@@ -150,7 +153,7 @@ pub(crate) async fn complete_exchange(
             expires_at,
             refresh_started_at: None,
         },
-        base_url: state.base_url.clone(),
+        base_url: state.base_url,
     })
 }
 

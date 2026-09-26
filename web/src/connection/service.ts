@@ -25,6 +25,10 @@ type ConnectionService = {
     /** The connection to administer with, or `null` while unconnected. */
     readonly currentConnection: () => Connection | null;
     readonly connect: (candidate: Connection) => Promise<void>;
+    /**
+     * Drops the pair at the operator's hand: storage is cleared and setup
+     * reopens with the address the forgotten connection served.
+     */
     readonly forget: () => void;
     /**
      * A management call answered 401: the pair is cleared, setup explains it,
@@ -94,10 +98,19 @@ export function createConnectionService(
     };
 
     const forget = (): void => {
+        // The address is captured before the pair drops, so the setup form
+        // reopens with it — the standard manual token rotation (disconnect,
+        // forget, paste, connect) never demands an origin retype. The token
+        // deliberately does not travel: it is a bearer secret only the user
+        // can re-enter.
+        const forgottenBaseUrl =
+            currentState.status === "connected" ? currentState.connection.baseUrl : null;
+
         clearStoredConnection(dependencies.storage);
 
         dispatch({
             type: "connectionForgotten",
+            baseUrl: forgottenBaseUrl,
         });
     };
 

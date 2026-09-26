@@ -3,48 +3,44 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { formatTokenCount } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { UsageBucket, UsageFilter } from "/src/management-api/generated/v0";
-import { hrefs, type UsageQuerySubject } from "/src/router";
+import { hrefs } from "/src/router";
 import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
+import {
+    USAGE_QUERY_SUBJECT_FIELDS,
+    type UsageQuerySubject,
+    type UsageSubjectFilter,
+} from "/src/usage-filter";
 import { createScreenRead, readOne } from "./read";
 import { ReadNotice } from "./read-notice";
 import { bucketKeyField } from "./usage-labels";
 import { readUsageBuckets } from "./usage-read";
 
-/** Which recorded rows the stats count: exactly one subject's. */
-type UsageSubjectFilter =
-    | {
-          readonly provider_id: number;
-      }
-    | {
-          readonly model_id: number;
-      }
-    | {
-          readonly api_key_id: number;
-      };
-
-/** The subject as the shared `usage` filter the query route carries: the one id, listed. */
+/**
+ * The subject as the shared `usage` filter the query route carries: the one
+ * id, listed under the dimension table's wire field.
+ */
 function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
-    if ("provider_id" in filter) {
+    if (USAGE_QUERY_SUBJECT_FIELDS.provider.wireField in filter) {
         return {
-            provider_id: [
-                filter.provider_id,
+            [USAGE_QUERY_SUBJECT_FIELDS.provider.wireField]: [
+                filter[USAGE_QUERY_SUBJECT_FIELDS.provider.wireField],
             ],
         };
     }
 
-    if ("model_id" in filter) {
+    if (USAGE_QUERY_SUBJECT_FIELDS.model.wireField in filter) {
         return {
-            model_id: [
-                filter.model_id,
+            [USAGE_QUERY_SUBJECT_FIELDS.model.wireField]: [
+                filter[USAGE_QUERY_SUBJECT_FIELDS.model.wireField],
             ],
         };
     }
 
     return {
-        api_key_id: [
-            filter.api_key_id,
+        [USAGE_QUERY_SUBJECT_FIELDS.api_key.wireField]: [
+            filter[USAGE_QUERY_SUBJECT_FIELDS.api_key.wireField],
         ],
     };
 }
@@ -55,23 +51,23 @@ function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
  * prefilled to the subject the operator was just reading.
  */
 function usageQuerySubject(filter: UsageSubjectFilter): UsageQuerySubject {
-    if ("provider_id" in filter) {
+    if (USAGE_QUERY_SUBJECT_FIELDS.provider.wireField in filter) {
         return {
             dimension: "provider",
-            id: filter.provider_id,
+            id: filter[USAGE_QUERY_SUBJECT_FIELDS.provider.wireField],
         };
     }
 
-    if ("model_id" in filter) {
+    if (USAGE_QUERY_SUBJECT_FIELDS.model.wireField in filter) {
         return {
             dimension: "model",
-            id: filter.model_id,
+            id: filter[USAGE_QUERY_SUBJECT_FIELDS.model.wireField],
         };
     }
 
     return {
         dimension: "api_key",
-        id: filter.api_key_id,
+        id: filter[USAGE_QUERY_SUBJECT_FIELDS.api_key.wireField],
     };
 }
 

@@ -63,6 +63,7 @@ describe("createConnectionService", () => {
         expect(service.connectionState()).toEqual({
             status: "unconnected",
             failure: null,
+            forgottenBaseUrl: null,
         });
 
         expect(service.currentConnection()).toBeNull();
@@ -112,6 +113,7 @@ describe("createConnectionService", () => {
             failure: expect.objectContaining({
                 message: expect.stringContaining("Failed to fetch"),
             }),
+            forgottenBaseUrl: null,
         });
 
         expect(service.currentConnection()).toBeNull();
@@ -150,7 +152,7 @@ describe("createConnectionService", () => {
         });
     });
 
-    it("forgets the stored pair", () => {
+    it("forgets the stored pair, leaving its address for the setup form", () => {
         const storage = createStorage(connection);
 
         const service = createConnectionService({
@@ -163,9 +165,24 @@ describe("createConnectionService", () => {
 
         expect(readStoredConnection(storage)).toBeNull();
 
+        // The forgotten connection's address travels so the setup form
+        // reopens with it — the manual token rotation never demands an
+        // origin retype; the token structurally cannot travel.
         expect(service.connectionState()).toEqual({
             status: "unconnected",
             failure: null,
+            forgottenBaseUrl: "https://gateway.example.com",
+        });
+
+        // Forgetting again carries no address: nothing is connected that
+        // could be forgotten.
+        service.forget();
+        flush();
+
+        expect(service.connectionState()).toEqual({
+            status: "unconnected",
+            failure: null,
+            forgottenBaseUrl: null,
         });
     });
 
@@ -191,6 +208,7 @@ describe("createConnectionService", () => {
                 // screen seeds its field; the token structurally cannot.
                 baseUrl: "https://gateway.example.com",
             },
+            forgottenBaseUrl: null,
         });
     });
 });

@@ -298,9 +298,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
 
         const trimmed = trimmedBaseUrl();
-        return (!needsBaseUrl() || isBaseUrl(trimmed)) && (needsBaseUrl() || trimmed === "")
-            ? null
-            : baseUrlMessage();
+        return !needsBaseUrl() || isBaseUrl(trimmed) ? null : baseUrlMessage();
     };
 
     /** Types into the base URL field, opening its inline error. */

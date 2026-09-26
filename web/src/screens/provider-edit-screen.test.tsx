@@ -1015,6 +1015,43 @@ describe("ProviderEditScreen reauthorization", () => {
         ).toBe(true);
     });
 
+    it("states the flow's own verdict when the completion answers gone and reloads the listing", async () => {
+        const base = reauthorizeScreenApi({
+            complete: () => Promise.reject(goneFailure("no such flow")),
+        });
+        let listCount = 0;
+        const api: ManagementApi = {
+            ...base,
+            listProviders: (signal) => {
+                listCount += 1;
+                return base.listProviders(signal);
+            },
+        };
+        await mountAndReconnect(api);
+        buttonWithText("Replace the credentials").click();
+        await settle();
+
+        // The gone answer is the spent flow's own verdict — the flow named
+        // as the subject, the gateway's message kept as the detail, the
+        // fresh-flow recovery as the way forward — never the raw row
+        // diagnosis, which names neither this flow nor any way forward.
+        expect(document.body.textContent).toContain(
+            "This authorization flow is no longer completable — its state expired or was already used.",
+        );
+        expect(document.body.textContent).toContain("no such flow");
+        expect(document.body.textContent).toContain("Start a fresh flow");
+        expect(document.body.textContent).not.toContain("The gateway holds no such row.");
+        expect(document.body.textContent).not.toContain("Credentials replaced.");
+
+        // The spent flow reset, so a fresh reauthorization can start, and
+        // the verdict states itself on the Credentials card beside the
+        // action it answered — the gone handover's listing reload lands
+        // beside it without clearing the verdict.
+        expect(buttonWithText("Reconnect the account")).toBeInstanceOf(HTMLButtonElement);
+        expect(cardWithTitle("Credentials").contains(paragraphWithText("no such flow"))).toBe(true);
+        expect(listCount).toBe(2);
+    });
+
     it("states the replacement and reloads the listing when the completion succeeds", async () => {
         const base = reauthorizeScreenApi({
             complete: () =>

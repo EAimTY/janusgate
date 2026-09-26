@@ -15,8 +15,7 @@
 use crate::provider::{
     StoredCredentials,
     definition::{discovery::Discovery, eval::ValueEnv},
-    oauth::{self},
-    provisioning::{self, WorkingState},
+    oauth::{self, ProvisioningEnv, WorkingState, run_steps},
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -316,13 +315,13 @@ async fn provisioning_runs_steps_and_polls_the_operation() {
 
     let mut state = WorkingState::new(slots, base_url.clone());
 
-    let constants = provisioning::ProvisioningEnv {
+    let constants = ProvisioningEnv {
         secret: Some("test-secret"),
         client_id: "test-client-id",
         client_secret: None,
     };
 
-    provisioning::run_steps(&client, &steps, &constants, &mut state)
+    run_steps(&client, &steps, &constants, &mut state)
         .await
         .unwrap();
 
@@ -390,13 +389,13 @@ async fn provisioning_polls_a_form_encoded_operation_to_completion() {
 
         let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
 
-        let constants = provisioning::ProvisioningEnv {
+        let constants = ProvisioningEnv {
             secret: Some("test-secret"),
             client_id: "test-client-id",
             client_secret: None,
         };
 
-        provisioning::run_steps(&client, &steps, &constants, &mut state)
+        run_steps(&client, &steps, &constants, &mut state)
             .await
             .unwrap();
 
@@ -453,13 +452,13 @@ async fn a_form_encoded_poll_surfaces_its_error_member_as_the_failure_payload() 
 
     let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
 
-    let constants = provisioning::ProvisioningEnv {
+    let constants = ProvisioningEnv {
         secret: Some("test-secret"),
         client_id: "test-client-id",
         client_secret: None,
     };
 
-    let outcome = provisioning::run_steps(&client, &steps, &constants, &mut state).await;
+    let outcome = run_steps(&client, &steps, &constants, &mut state).await;
 
     let Err(error) = outcome else {
         panic!("a form poll carrying its error member must fail on the payload");
@@ -545,13 +544,13 @@ async fn provisioning_resolves_slots_previous_stages_placed() {
 
     let mut state = WorkingState::new(BTreeMap::new(), base_url.clone());
 
-    let constants = provisioning::ProvisioningEnv {
+    let constants = ProvisioningEnv {
         secret: Some("test-secret"),
         client_id: "test-client-id",
         client_secret: None,
     };
 
-    provisioning::run_steps(&client, &steps, &constants, &mut state)
+    run_steps(&client, &steps, &constants, &mut state)
         .await
         .unwrap();
 
@@ -613,7 +612,7 @@ fn expiry_step() -> Vec<crate::provider::definition::provisioning::ProvisioningS
 async fn provisioning_rejects_a_non_future_expires_at_as_malformed() {
     let steps = expiry_step();
 
-    let constants = provisioning::ProvisioningEnv {
+    let constants = ProvisioningEnv {
         secret: Some("test-secret"),
         client_id: "test-client-id",
         client_secret: None,
@@ -629,7 +628,7 @@ async fn provisioning_rejects_a_non_future_expires_at_as_malformed() {
 
         let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
 
-        let outcome = provisioning::run_steps(&client, &steps, &constants, &mut state).await;
+        let outcome = run_steps(&client, &steps, &constants, &mut state).await;
 
         let Err(error) = outcome else {
             panic!("an expiry of {seconds} seconds is always elapsed and must fail the step");
@@ -657,7 +656,7 @@ async fn provisioning_rejects_a_non_future_expires_at_as_malformed() {
 
     let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
 
-    provisioning::run_steps(&client, &steps, &constants, &mut state)
+    run_steps(&client, &steps, &constants, &mut state)
         .await
         .unwrap();
 

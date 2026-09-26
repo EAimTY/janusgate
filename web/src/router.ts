@@ -1,12 +1,14 @@
 import { type Accessor, createSignal } from "solid-js";
-import type { UsageGroupBy } from "/src/management-api/generated/v0";
 import { isRoutingToken } from "/src/management-api/identifiers";
 import { parseRowIdentifier } from "./row-id";
 import {
     EMPTY_USAGE_FILTER_DRAFT,
     parseUsageFilterDraft,
     serializeUsageFilterDraft,
+    USAGE_QUERY_SUBJECT_DIMENSIONS,
+    USAGE_QUERY_SUBJECT_FIELDS,
     type UsageFilterDraft,
+    type UsageQuerySubject,
 } from "./usage-filter";
 
 /**
@@ -90,27 +92,13 @@ type AppLocation = {
     readonly search: string;
 };
 
-/** The entity dimensions an aggregates link can carry its subject as: the ones with a filter field of their own. */
-export type UsageQuerySubjectDimension = Extract<UsageGroupBy, "provider" | "model" | "api_key">;
-
-/** The subject an aggregates link carries: one entity dimension and the row to preselect there. */
-export type UsageQuerySubject = {
-    readonly dimension: UsageQuerySubjectDimension;
-    readonly id: number;
-};
-
-/** The query parameter one subject dimension rides under — the usage stream's own names, so both usage routes address an entity alike. */
-const USAGE_QUERY_SUBJECT_PARAMETERS: Record<UsageQuerySubjectDimension, string> = {
-    provider: "provider",
-    model: "model",
-    api_key: "key",
-};
-
-const USAGE_QUERY_SUBJECT_DIMENSIONS: ReadonlyArray<UsageQuerySubjectDimension> = [
-    "provider",
-    "model",
-    "api_key",
-];
+/**
+ * The aggregates-subject vocabulary — the dimension union, the subject shape,
+ * and the dimension↔field table every subject derivation reads — is defined
+ * once beside the shared usage filter (`/src/usage-filter`); the router
+ * re-exports the types its routes carry.
+ */
+export type { UsageQuerySubject, UsageQuerySubjectDimension } from "./usage-filter";
 
 /**
  * The query string one aggregates link carries for its subject: a single
@@ -118,7 +106,7 @@ const USAGE_QUERY_SUBJECT_DIMENSIONS: ReadonlyArray<UsageQuerySubjectDimension> 
  * stream's route applies to its own entity fields.
  */
 function serializeUsageQuerySubject(subject: UsageQuerySubject): string {
-    return `${USAGE_QUERY_SUBJECT_PARAMETERS[subject.dimension]}=${subject.id}`;
+    return `${USAGE_QUERY_SUBJECT_FIELDS[subject.dimension].routeParameter}=${subject.id}`;
 }
 
 /**
@@ -132,7 +120,9 @@ function parseUsageQuerySubject(search: string): UsageQuerySubject | null {
     const named: UsageQuerySubject[] = [];
 
     for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
-        const id = parseRowIdentifier(parameters.get(USAGE_QUERY_SUBJECT_PARAMETERS[dimension]));
+        const id = parseRowIdentifier(
+            parameters.get(USAGE_QUERY_SUBJECT_FIELDS[dimension].routeParameter),
+        );
 
         if (id !== null) {
             named.push({

@@ -49,6 +49,14 @@ describe("ConnectionScreen", () => {
         // The environment may offer no storage at all; the service then lives
         // in memory for the file, which needs no cleanup beyond disposal.
         window.localStorage?.clear();
+        // The service singleton outlives one test, and one forget cannot reset
+        // it: from connected — the very rotation this suite tests — it
+        // dispatches the forgotten address as the seed. The second forget runs
+        // from that unconnected state, captures nothing, and dispatches
+        // `baseUrl: null`, so after both the state equals the initial one:
+        // unconnected, no failure, no forgotten seed, whatever the test left.
+        connectionService.forget();
+        connectionService.forget();
     });
 
     it("offers this app's origin as a copyable value in the requirements", async () => {
@@ -110,6 +118,82 @@ describe("ConnectionScreen", () => {
 
         expect(labeledInput("Gateway address").value).toBe(gatewayAddress);
         expect(connectionService.currentConnection()).toBeNull();
+    });
+
+    it("reopens the forgotten connection's address and leaves the token empty", async () => {
+        // The session is connected and the screen has never been filled: both
+        // fields are empty while the app administers the gateway.
+        vi.stubGlobal("fetch", () =>
+            jsonResponse(200, {
+                providers: [],
+            }),
+        );
+        dispose = render(() => <ConnectionScreen />, document.body);
+        await settle();
+
+        await connectionService.connect({
+            baseUrl: gatewayAddress,
+            token: "dying token",
+        });
+        await settle();
+
+        // The standard manual token rotation: Disconnect, then "Forget
+        // token". The forgotten connection's address reopens in the field —
+        // the origin need not be retyped — and since nothing was refused, no
+        // diagnosis stands. The token structurally cannot travel.
+        connectionService.forget();
+        await settle();
+
+        expect(labeledInput("Gateway address").value).toBe(gatewayAddress);
+        expect(labeledInput("Management token").value).toBe("");
+        expect(document.querySelector("[role='alert']")).toBeNull();
+    });
+
+    it("raises both fields' errors on a refused submit and retracts each on fix", async () => {
+        const probe = vi.fn(() =>
+            jsonResponse(200, {
+                providers: [],
+            }),
+        );
+        vi.stubGlobal("fetch", probe);
+
+        dispose = render(() => <ConnectionScreen />, document.body);
+        await settle();
+
+        // A pristine form states no error — the hints carry the requirements
+        // quietly — so the first submit opens the fields' errors and holds
+        // the probe back.
+        submitConnectionForm();
+        await settle();
+
+        expect(document.body.textContent).toContain("Enter the JanusGate base URL.");
+        expect(document.body.textContent).toContain("Enter the management token.");
+        expect(probe).not.toHaveBeenCalled();
+
+        // Each error derives from its field's current value: fixing one
+        // retracts it without another submit, while the untouched field's
+        // stands.
+        typeInto(labeledInput("Gateway address"), gatewayAddress);
+        await settle();
+
+        expect(document.body.textContent).not.toContain("Enter the JanusGate base URL.");
+        expect(document.body.textContent).toContain("Enter the management token.");
+
+        typeInto(labeledInput("Management token"), "replacement token");
+        await settle();
+
+        expect(document.body.textContent).not.toContain("Enter the management token.");
+
+        // The corrected resubmit probes and connects exactly as a first-valid
+        // submit would.
+        submitConnectionForm();
+        await settle();
+
+        expect(probe).toHaveBeenCalledTimes(1);
+        expect(connectionService.currentConnection()).toEqual({
+            baseUrl: gatewayAddress,
+            token: "replacement token",
+        });
     });
 
     it("diagnoses an HTTPS page's HTTP gateway address without issuing the doomed probe", async () => {

@@ -17,6 +17,7 @@ import { UsageFilterControls } from "/src/ui/usage-filter-controls";
 import {
     buildUsageFilter,
     EMPTY_USAGE_FILTER_FIELDS,
+    hasUsageFilterFields,
     statusError,
     type UsageFilterFields,
 } from "/src/usage-filter";
@@ -84,6 +85,21 @@ function boundError(label: string, value: string): string | null {
 
     return `${label} must be a complete date and time, like 2026-09-23T10:00 — or blank for no bound.`;
 }
+
+/**
+ * What a cycle states when it reaches the query while a field stands marked —
+ * the half-run made observable. Only the shell's Refresh can produce the
+ * state (the submit is guarded at its button, and every form-driven cycle
+ * starts from fields the guards released), so the notice says what the cycle
+ * did instead of naming the way it was started, and points at the marked
+ * field's own inline error as the thing to fix.
+ */
+const HELD_QUERY_NOTICE: ScreenNotice = {
+    tone: "warn",
+    title: "The query is held while a field is marked.",
+    detail: "This cycle re-read the entity lists but not the buckets — the standing answer is the last query's, and the marked field names its mistake inline.",
+    fix: "Correct the marked field, then run the query again.",
+};
 
 /**
  * Request accounting as aggregates: one bucket per distinct combination of
@@ -167,8 +183,12 @@ export function UsageQueryScreen(props: {
     const runQuery = async (signal: AbortSignal): Promise<boolean> => {
         // A malformed typed value is named at its field: running without it
         // would silently widen the question, so the query waits until it is
-        // fixed.
+        // fixed. A cycle that arrives here anyway — only the shell's refresh
+        // can, the submit being guarded at its button — states the hold on
+        // the failure channel instead of half-running silently; the next
+        // successful cycle clears it.
         if (!isFormValid()) {
+            setFailure(HELD_QUERY_NOTICE);
             return false;
         }
 
@@ -245,6 +265,23 @@ export function UsageQueryScreen(props: {
         }
 
         await runCycle(true);
+    };
+
+    /** Whether any filter field or bound holds a value — the Clear filters button's visibility. */
+    const isAnyFilterSet = (): boolean =>
+        hasUsageFilterFields(fields()) || fromInput().trim() !== "" || toInput().trim() !== "";
+
+    /**
+     * Resets the filter fields and the bounds — the dimension switches stay,
+     * so a carried subject's grouping survives — and re-runs the cycle, the
+     * form-driven path the submit button is: the reset fields are whole by
+     * construction, so the cycle's query can never arrive held.
+     */
+    const clearFilters = (): void => {
+        setFields(EMPTY_USAGE_FILTER_FIELDS);
+        setFromInput("");
+        setToInput("");
+        void runCycle(true);
     };
 
     createEffect(
@@ -333,7 +370,7 @@ export function UsageQueryScreen(props: {
                             }
                         />
                     </div>
-                    <div>
+                    <div class="flex flex-wrap items-center gap-2">
                         <Button
                             type="submit"
                             tone="primary"
@@ -342,6 +379,15 @@ export function UsageQueryScreen(props: {
                         >
                             {isQuerying() ? "Querying…" : "Run query"}
                         </Button>
+                        <Show when={isAnyFilterSet()}>
+                            <Button
+                                tone="ghost"
+                                isDisabled={isQuerying()}
+                                onClick={clearFilters}
+                            >
+                                Clear filters
+                            </Button>
+                        </Show>
                     </div>
                 </form>
             </Card>
@@ -354,11 +400,28 @@ export function UsageQueryScreen(props: {
                 <Show
                     when={buckets().length > 0}
                     fallback={
-                        <Notice
-                            tone="info"
-                            title="No rows in this window."
-                            detail="Nothing recorded matches these filters — widen the window or clear a filter."
-                        />
+                        // One behavior with two wordings, split exactly on the
+                        // Clear filters action's visibility: a set filter makes
+                        // the emptiness the filter's — the notice names the
+                        // action that drops it — while a bare question matching
+                        // nothing is the record itself, with no action on the
+                        // page to point at.
+                        <Show
+                            when={isAnyFilterSet()}
+                            fallback={
+                                <Notice
+                                    tone="info"
+                                    title="Nothing recorded in this window."
+                                    detail="No filter or bound narrows the question, so an empty answer is the gateway's whole record — it holds no usage yet."
+                                />
+                            }
+                        >
+                            <Notice
+                                tone="info"
+                                title="No rows in this window."
+                                detail="Nothing recorded matches these filters — widen the bounds, drop a filter, or query without one. Clear filters sits in the form above."
+                            />
+                        </Show>
                     }
                 >
                     <Card>

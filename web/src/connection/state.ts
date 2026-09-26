@@ -23,6 +23,14 @@ export type ConnectionState =
     | {
           readonly status: "unconnected";
           readonly failure: ConnectionFailure | null;
+          /**
+           * The address the connection the operator deliberately forgot was
+           * serving, so the setup form reopens with it and the manual token
+           * rotation never demands an origin retype. A refused attempt's
+           * address travels on its failure instead, so the two sources never
+           * both carry a seed.
+           */
+          readonly forgottenBaseUrl: string | null;
       }
     | {
           readonly status: "verifying";
@@ -50,11 +58,17 @@ export type ConnectionEvent =
       }
     | {
           readonly type: "connectionForgotten";
+          /**
+           * The forgotten connection's address, captured by the service
+           * before the pair drops — `null` when nothing was connected.
+           */
+          readonly baseUrl: string | null;
       };
 
 export const initialConnectionState: ConnectionState = {
     status: "unconnected",
     failure: null,
+    forgottenBaseUrl: null,
 };
 
 /**
@@ -74,6 +88,7 @@ export function reduceConnectionState(
                 ? {
                       status: "unconnected",
                       failure: null,
+                      forgottenBaseUrl: null,
                   }
                 : {
                       status: "connected",
@@ -99,12 +114,14 @@ export function reduceConnectionState(
             return {
                 status: "unconnected",
                 failure: event.failure,
+                forgottenBaseUrl: null,
             };
 
         case "connectionForgotten":
             return {
                 status: "unconnected",
                 failure: null,
+                forgottenBaseUrl: event.baseUrl,
             };
     }
 }
