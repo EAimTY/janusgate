@@ -210,9 +210,12 @@ describe("HomeScreen", () => {
         expect(linkTo("/providers").textContent).toContain("1");
 
         // One routing model, one vanished row: the figure is the gateway's
-        // three-input status, derived from the rows, never the row count.
+        // three-input status, derived from the rows, never the row count —
+        // and the hint names the listed total the figure selects from, so
+        // the smaller serving count cannot read as a wrong count.
         expect(linkTo("/models").textContent).toContain("Models routing");
         expect(linkTo("/models").textContent).toContain("1");
+        expect(linkTo("/models").textContent).toContain("serving of 2 listed");
 
         expect(linkTo("/api-keys").textContent).toContain("API keys");
         expect(linkTo("/api-keys").textContent).toContain("1");

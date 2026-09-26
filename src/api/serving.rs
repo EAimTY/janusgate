@@ -4,7 +4,7 @@
 //! `/gemini-v1beta` Interactions, `/anthropic-v1`) previously each carried a copy of: the
 //! completion pipeline [`run_completion`], the SSE and aggregated response machinery with the
 //! request-accounting finalization rules, the body-extractor rejection, the authentication
-//! middleware, the 404/405 fallbacks, and the two pipeline constants. This duplication is README
+//! middleware, the 404/405 fallbacks, and the body-size constant. This duplication is README
 //! §3's accounting invariant itself — exactly three finalization points (dispatch failure in
 //! [`gateway::execute`], the detached non-streaming aggregation task, the SSE render task), the
 //! declared-status rule, and the client-abort classification — so it is single-sourced here and
@@ -44,12 +44,6 @@ use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 
 /// Maximum accepted request body size, large enough for inline image data.
 pub(super) const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
-
-/// Capacity of the channel between the SSE rendering task and the response body stream.
-///
-/// Mirrors `gateway`'s `EVENT_CHANNEL_BUFFER` for the adjacent pipeline stage: both hops buffer
-/// equally, so one slow stage cannot accumulate an asymmetric backlog in the other.
-pub(super) const SSE_CHANNEL_BUFFER: usize = 64;
 
 /// The per-surface identity the shared pipeline renders through: the two conventions that are
 /// deliberately not shared — how a request presents its credential, and how an [`Error`] lands on
@@ -608,7 +602,7 @@ fn sse_response(
     log: ApiLogDraft,
 ) -> Response {
     let (sender, receiver) =
-        tokio::sync::mpsc::channel::<Result<Bytes, IoError>>(SSE_CHANNEL_BUFFER);
+        tokio::sync::mpsc::channel::<Result<Bytes, IoError>>(gateway::EVENT_CHANNEL_BUFFER);
 
     tokio::spawn(async move {
         let mut events = events;

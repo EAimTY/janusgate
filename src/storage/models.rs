@@ -619,7 +619,7 @@ mod tests {
         list_model_entries, update_model_overrides_checked,
     };
     use crate::{
-        storage::fixtures::{entry, insert_test_provider},
+        storage::test_support::{entry, insert_test_provider},
         test_support,
     };
     use std::error::Error as StdError;

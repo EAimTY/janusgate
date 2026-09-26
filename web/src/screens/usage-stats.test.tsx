@@ -4,7 +4,8 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { QueryUsageResponse, UsageBucket } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { EntityUsageCard } from "/src/screens/usage-stats";
-import { bodyText, settle, stubManagementApi } from "./screen-test-support";
+import type { UsageSubjectFilter } from "/src/usage-filter";
+import { bodyText, linkTo, settle, stubManagementApi } from "./screen-test-support";
 
 /** One day bucket: the last-good table a failed re-read must keep standing. */
 const dayBucket: UsageBucket = {
@@ -240,5 +241,82 @@ describe("EntityUsageCard per-day series", () => {
             "2026-09-01",
         ]);
         expect(bodyText()).toContain("Days are UTC — the gateway's own day boundary.");
+    });
+});
+
+describe("EntityUsageCard doors", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("carries the subject through both doors — the stream's narrow and the aggregates preselection", async () => {
+        // One case per subject dimension: each door fills the subject into
+        // the route parameter that dimension's field names — the stream's
+        // own parameter spelling — and nothing else rides along.
+        const cases: ReadonlyArray<{
+            readonly filter: UsageSubjectFilter;
+            readonly subjectKind: string;
+            readonly streamHref: string;
+            readonly aggregatesHref: string;
+        }> = [
+            {
+                filter: {
+                    provider_id: 1,
+                },
+                subjectKind: "provider",
+                streamHref: "/usage?provider=1",
+                aggregatesHref: "/usage/query?provider=1",
+            },
+            {
+                filter: {
+                    model_id: 9,
+                },
+                subjectKind: "model",
+                streamHref: "/usage?model=9",
+                aggregatesHref: "/usage/query?model=9",
+            },
+            {
+                filter: {
+                    api_key_id: 7,
+                },
+                subjectKind: "api key",
+                streamHref: "/usage?key=7",
+                aggregatesHref: "/usage/query?key=7",
+            },
+        ];
+
+        for (const testCase of cases) {
+            disposes.push(
+                render(
+                    () => (
+                        <EntityUsageCard
+                            api={stubManagementApi({
+                                queryUsage: () =>
+                                    Promise.resolve({
+                                        buckets: [],
+                                    }),
+                            })}
+                            filter={testCase.filter}
+                            subjectKind={testCase.subjectKind}
+                        />
+                    ),
+                    document.body,
+                ),
+            );
+            await settle();
+
+            expect(linkTo(testCase.streamHref).textContent).toContain("View requests");
+            expect(linkTo(testCase.aggregatesHref).textContent).toContain("Open aggregates");
+
+            for (const dispose of disposes.reverse()) {
+                dispose();
+            }
+            disposes.length = 0;
+        }
     });
 });

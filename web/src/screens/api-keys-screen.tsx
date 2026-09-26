@@ -4,7 +4,7 @@ import { formatTimestamp } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
-import { createScreenRead, readAll } from "/src/screens/read";
+import { createScreenRead, readOne } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
 import { CopyButton } from "/src/ui/clipboard";
@@ -26,7 +26,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
 
     const read = createScreenRead({
         load: async (signal) => {
-            const [keysResult] = await readAll(signal, {
+            const keysResult = await readOne(signal, {
                 run: (cycle) => props.api.listApiKeys(cycle),
             });
 

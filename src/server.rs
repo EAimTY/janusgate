@@ -661,8 +661,8 @@ mod tests {
         Ok(recorded)
     }
 
-    /// Waits until at least `count` rows are recorded — the only asynchronous finalization is the
-    /// streaming task's — polling for five seconds before failing.
+    /// Waits until at least `count` rows are recorded — both finalization tasks record
+    /// asynchronously after their response boundary — polling for five seconds before failing.
     ///
     /// # Errors
     ///
@@ -929,7 +929,9 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let _body = response.text().await?;
 
-        let rows = recorded_rows(&shard_directory).await?;
+        // The non-streaming row finalizes asynchronously after the response hand-off (README §3
+        // *ApiLog*), so the row's arrival is awaited, never assumed ordered with the response.
+        let rows = wait_for_rows(&shard_directory, baseline + 1).await?;
         assert_one_new_row(&rows, baseline, "completed", Some(200));
 
         #[expect(clippy::expect_used, reason = "the row was just asserted present")]
@@ -952,7 +954,7 @@ mod tests {
         let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 
-        let rows = recorded_rows(&shard_directory).await?;
+        let rows = wait_for_rows(&shard_directory, baseline + 1).await?;
         assert_one_new_row(&rows, baseline, "upstream_error", Some(429));
 
         #[expect(clippy::expect_used, reason = "the row was just asserted present")]
@@ -967,7 +969,7 @@ mod tests {
         let response = send_completion(&client, &base, "sk-e2e", "e2e-model", false).await?;
         assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
 
-        let rows = recorded_rows(&shard_directory).await?;
+        let rows = wait_for_rows(&shard_directory, baseline + 1).await?;
         assert_one_new_row(&rows, baseline, "upstream_error", Some(502));
 
         baseline = rows.len();

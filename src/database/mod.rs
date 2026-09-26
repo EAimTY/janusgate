@@ -101,7 +101,10 @@ impl Database {
     /// Before the pool is created, the schema version stored in `PRAGMA user_version` is verified
     /// and the database is migrated forward to the latest schema version of the registry: a fresh
     /// database receives the initial schema, an outdated one is migrated step by step, and an
-    /// unknown version is fatal. See the [`schema`] module for the versioning and migration design.
+    /// unknown version is fatal. The registry's stamp in the database's
+    /// `gateway_database_registry` marker table is verified on an existing database, so a file
+    /// belonging to the other registry is fatal too. See the [`schema`] module for the versioning
+    /// and migration design.
     ///
     /// # Errors
     ///
@@ -109,8 +112,9 @@ impl Database {
     ///
     /// # Panics
     ///
-    /// Panics if the schema bootstrap connection fails, the migration workflow fails, or the
-    /// stored schema version is unknown.
+    /// Panics if the schema bootstrap connection fails, the migration workflow fails, the stored
+    /// schema version is unknown, or the database is stamped for another schema registry (or
+    /// predates the stamp).
     pub(crate) async fn open(
         path: impl AsRef<Path>,
         registry: schema::Registry,
@@ -152,8 +156,9 @@ impl Database {
     ///
     /// # Panics
     ///
-    /// Panics if the schema bootstrap connection fails, the migration workflow fails, or the
-    /// stored schema version is unknown.
+    /// Panics if the schema bootstrap connection fails, the migration workflow fails, the stored
+    /// schema version is unknown, or the database is stamped for another schema registry (or
+    /// predates the stamp).
     pub(crate) async fn open_existing(
         path: impl AsRef<Path>,
         registry: schema::Registry,
@@ -181,8 +186,9 @@ impl Database {
     ///
     /// # Panics
     ///
-    /// Panics if the schema bootstrap connection fails, the migration workflow fails, or the
-    /// stored schema version is unknown.
+    /// Panics if the schema bootstrap connection fails, the migration workflow fails, the stored
+    /// schema version is unknown, or the database is stamped for another schema registry (or
+    /// predates the stamp).
     async fn open_pooled(
         path_str: &str,
         registry: schema::Registry,
@@ -611,5 +617,33 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Verifies the registry-stamp fatality through the real open path: a file created under the
+    /// shard registry panics at open under the main registry — the startup-time fatal, not a
+    /// pool that serves and fails later on first query.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the second open does not panic.
+    #[tokio::test]
+    #[should_panic(
+        expected = "is stamped for the shard registry but was opened under the main registry"
+    )]
+    async fn open_panics_when_a_shard_file_opens_under_the_main_registry() {
+        let directory =
+            std::env::temp_dir().join(format!("janusgate-db-registry-{}", rand::random::<u64>()));
+        let _guard = TempDirGuard(directory.clone());
+        let path = directory.join("shard.db");
+
+        let connections = pool_connections();
+        let wait = Duration::from_secs(5);
+
+        #[expect(clippy::expect_used, reason = "the creating shard open must succeed")]
+        Database::open(&path, Registry::ApiLogShard, connections, wait)
+            .await
+            .expect("the creating shard open succeeds");
+
+        let _ = Database::open(&path, Registry::Main, connections, wait).await;
     }
 }

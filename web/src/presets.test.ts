@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasBaseReference } from "./definition-payload";
+import { hasBaseReference } from "/src/management-api/definition-payload";
 import { PROVIDER_PRESETS, type ProviderPreset } from "./presets";
 
 /** Finds one catalog preset by id, failing the test when absent. */

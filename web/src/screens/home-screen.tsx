@@ -223,10 +223,16 @@ export function HomeScreen(props: {
                             value={String(entities().providers.length)}
                             label="Providers"
                         />
+                        {/* The figure counts only the effectively-serving
+                            rows — the three-input status — while its sibling
+                            figures are raw counts, so the hint names the
+                            listed total the figure selects from and the
+                            smaller number cannot read as a wrong count. */}
                         <StatLink
                             href={hrefs.models(null)}
                             value={String(servingModels())}
                             label="Models routing"
+                            hint={`serving of ${entities().models.length} listed`}
                         />
                         <StatLink
                             href={hrefs.apiKeys()}

@@ -17,7 +17,7 @@ import {
 } from "/src/ui/model-form";
 import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
-import { createScreenRead, readAll, type ScreenNotice } from "./read";
+import { createScreenRead, readOne, type ScreenNotice } from "./read";
 
 /**
  * One creation page for a manually added model. When opened from a
@@ -38,7 +38,7 @@ export function ModelNewScreen(props: {
 
     const read = createScreenRead({
         load: async (signal) => {
-            const [providersResult] = await readAll(signal, {
+            const providersResult = await readOne(signal, {
                 run: (cycle) => props.api.listProviders(cycle),
             });
 

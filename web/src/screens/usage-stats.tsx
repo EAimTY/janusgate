@@ -8,13 +8,16 @@ import { ButtonLink } from "/src/ui/controls";
 import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
 import {
+    EMPTY_USAGE_FILTER_DRAFT,
     USAGE_QUERY_SUBJECT_FIELDS,
+    type UsageFilterDraft,
+    type UsageQuerySubject,
     type UsageSubjectFilter,
     usageQuerySubjectOfFilter,
 } from "/src/usage-filter";
 import { createScreenRead, readOne } from "./read";
 import { ReadNotice } from "./read-notice";
-import { bucketKeyField } from "./usage-labels";
+import { bucketKeyField, daysNewestFirst } from "./usage-labels";
 import { readUsageBuckets } from "./usage-read";
 
 /**
@@ -37,9 +40,33 @@ function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
 }
 
 /**
+ * The stream draft one subject narrows: the unfiltered listing with the
+ * subject's id alone filled into its dimension's draft field, the field name
+ * read from the shared table — the same pairing the stream route reads back —
+ * so the card's two doors can never spell one entity differently. The window
+ * and every other field stay at their default: the stream's own semantics
+ * are its own.
+ */
+function subjectStreamDraft(subject: UsageQuerySubject): UsageFilterDraft {
+    const field = USAGE_QUERY_SUBJECT_FIELDS[subject.dimension].draftField;
+    const narrow: Partial<Record<typeof field, string>> = {
+        [field]: String(subject.id),
+    };
+
+    return {
+        ...EMPTY_USAGE_FILTER_DRAFT,
+        ...narrow,
+    };
+}
+
+/**
  * One subject's request accounting as aggregates: totals plus one row per
- * day, newest first. The gateway counts rows and sums tokens; names never
- * ride along, so this card shows numbers only. A failed read states its
+ * day, newest first. The header carries the card's two doors — *Open
+ * aggregates* onto the aggregates page with the subject preselected, and
+ * *View requests* onto the stream narrowed to the subject alone, the reverse
+ * crossing of the stream header's own aggregates door. The gateway counts
+ * rows and sums tokens; names never ride along, so this card shows numbers
+ * only. A failed read states its
  * diagnosis in place, like every other card that reads, and a failed re-read
  * keeps the last-good totals and table standing beside it; the no-requests
  * empty state — the claim a failure cannot prove — stands only where a read
@@ -75,11 +102,10 @@ export function EntityUsageCard(props: {
         },
     });
 
-    const newestFirst = createMemo(() =>
-        [
-            ...buckets(),
-        ].reverse(),
-    );
+    // The per-day series as every usage display shows it: the shared
+    // `daysNewestFirst` orders it newest-day-first — the same direction the
+    // aggregates screen's table reads.
+    const newestFirst = createMemo(() => daysNewestFirst(buckets()));
 
     const totals = createMemo(() => {
         let requests = 0;
@@ -99,14 +125,19 @@ export function EntityUsageCard(props: {
         };
     });
 
+    // The subject is fixed for the card's whole life — the owning screen
+    // remounts per subject — so both doors' addresses read it once here.
+    const subject = usageQuerySubjectOfFilter(props.filter);
+
     return (
         <Card>
             <CardHeader
                 title="Usage"
                 description="Requests and tokens per day — numbers only, never content."
             >
-                <ButtonLink href={hrefs.usageQuery(usageQuerySubjectOfFilter(props.filter))}>
-                    Open aggregates
+                <ButtonLink href={hrefs.usageQuery(subject)}>Open aggregates</ButtonLink>
+                <ButtonLink href={hrefs.usage(subjectStreamDraft(subject))}>
+                    View requests
                 </ButtonLink>
             </CardHeader>
 

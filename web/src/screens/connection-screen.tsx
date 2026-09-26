@@ -147,7 +147,7 @@ export function ConnectionScreen(): JSX.Element {
 
                 <div>
                     <h1 class="text-[22px] font-semibold tracking-tight text-balance">
-                        Connect to your gateway
+                        Connect to JanusGate
                     </h1>
                     <p class="mt-2 text-ink-dim">
                         This app administers a JanusGate gateway: its upstream accounts, their

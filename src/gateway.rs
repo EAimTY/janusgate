@@ -31,8 +31,12 @@ use reqwest::{Client, StatusCode};
 use std::pin::Pin;
 use tokio_stream::{Stream, StreamExt as _, wrappers::ReceiverStream};
 
-/// Number of IR events buffered between the upstream pump task and the response stream.
-const EVENT_CHANNEL_BUFFER: usize = 64;
+/// The shared pipeline-stage buffer size: the capacity of the channel at every adjacent
+/// execution-pipeline hop — the IR event channel between the upstream pump task and the response
+/// stream here, and the SSE body channel between the render task and the client in
+/// `api::serving`. Adjacent stages buffer equally, so one slow stage cannot accumulate an
+/// asymmetric backlog in the other.
+pub(crate) const EVENT_CHANNEL_BUFFER: usize = 64;
 
 /// Outward completion pipeline failures, from routing resolution through upstream dispatch. The
 /// client request can fail validation here too — the upstream renderers reject requests the chosen

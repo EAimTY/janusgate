@@ -6,11 +6,9 @@ import type {
     ProviderResponse,
     QueryUsageRequest,
     QueryUsageResponse,
-    UsageBucketKey,
-    UsageGroupBy,
 } from "/src/management-api/generated/v0";
 import { type ReadCall, readAll } from "./read";
-import { missingBucketKeyFieldMessage } from "./usage-labels";
+import { DIMENSION_KEY_FIELD, missingBucketKeyFieldMessage } from "./usage-labels";
 
 /** The entity lists a usage screen reads alongside the accounting rows. */
 export type UsageEntities = {
@@ -53,28 +51,6 @@ export function readUsageEntities(
     };
 }
 
-/** The bucket-key field each requested dimension's part rides on. */
-function bucketKeyFieldOf(dimension: UsageGroupBy): keyof UsageBucketKey {
-    switch (dimension) {
-        case "day":
-            return "day";
-        case "model":
-            return "model_id";
-        case "provider":
-            return "provider_id";
-        case "api_key":
-            return "api_key_id";
-        case "endpoint_type":
-            return "endpoint_type";
-        case "outcome":
-            return "outcome";
-        case "is_stream":
-            return "is_stream";
-        case "http_status":
-            return "http_status";
-    }
-}
-
 /**
  * Runs one `usage:query` and proves its answer inside the read cycle: a
  * bucket key carries exactly the request's dimensions, so a key missing one
@@ -95,7 +71,7 @@ export function readUsageBuckets(
 
             for (const bucket of result.buckets) {
                 for (const dimension of request.group_by) {
-                    const field = bucketKeyFieldOf(dimension);
+                    const field = DIMENSION_KEY_FIELD[dimension];
 
                     if (bucket.key[field] === undefined) {
                         throw new ManagementApiError(

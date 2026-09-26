@@ -1,9 +1,16 @@
 //! Shard schema version 1: the initial api-log shard layout (README §3 *ApiLog Shard Store*).
 //!
-//! Version 1 creates the `api_logs` table and its four indexes — moved verbatim from the main
-//! schema's history into the shard store's own registry — so its [`Schema::migration`] is empty:
-//! there is no previous version to migrate from. A fresh shard file receives this version's DDL
-//! directly, and every later version's migration transforms it.
+//! Version 1 creates the `gateway_database_registry` marker, the `api_logs` table, and its four
+//! indexes — moved verbatim from the main schema's history into the shard store's own registry —
+//! so its [`Schema::migration`] is empty: there is no previous version to migrate from. A fresh
+//! shard file receives this version's DDL directly, and every later version's migration
+//! transforms it.
+//!
+//! The `gateway_database_registry` marker stamps the file's registry: one row whose `registry`
+//! column is `CHECK`-pinned to `shard`, written by version 1's DDL itself and never at runtime.
+//! The bootstrap verifies the stamp on any shard that already carries a schema version, so a
+//! file opened under the wrong registry — or a file predating the stamp, an unreleased
+//! development artifact the operator recreates — fails at startup instead of at first query.
 //!
 //! `api_logs` is request accounting: one row per dispatched inference request:
 //!
@@ -51,6 +58,13 @@ pub(super) const SCHEMA: Schema = Schema {
 
 /// Complete DDL of version 1, applied to a fresh shard file.
 const SCHEMA_SQL: &str = r###"
+CREATE TABLE gateway_database_registry (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    registry TEXT NOT NULL CHECK (registry = 'shard')
+) STRICT;
+
+INSERT INTO gateway_database_registry (id, registry) VALUES (1, 'shard');
+
 CREATE TABLE api_logs (
     id INTEGER PRIMARY KEY NOT NULL,
     started_at INTEGER NOT NULL,

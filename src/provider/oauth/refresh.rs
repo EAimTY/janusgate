@@ -10,7 +10,7 @@
 //! freshly read row instead of waiting for a concurrent refresher that can never exist.
 
 use super::{
-    flow,
+    exchange::{absorb_exchange_slots, execute_refresh_grant, resolve_expiry},
     provisioning::{self, WorkingState},
 };
 use crate::{
@@ -486,7 +486,7 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
                 refresh_token.as_deref(),
             );
 
-            let outcome = flow::execute_refresh_grant(
+            let outcome = execute_refresh_grant(
                 http,
                 request,
                 &env,
@@ -500,13 +500,13 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
             // outcome, so it runs before the access token and rotation are moved out of it, and
             // a claimed value outside the routing-safety contract fails the renewal like any
             // other fold.
-            let renewed_slots = flow::absorb_exchange_slots(slots, &outcome, id_token_claims)?;
+            let renewed_slots = absorb_exchange_slots(slots, &outcome, id_token_claims)?;
 
             let access_token = outcome.access_token.ok_or_else(|| Error::Unavailable {
                 detail: "token refresh response lacks an access token".to_string(),
             })?;
 
-            let expires_at = flow::resolve_expiry(
+            let expires_at = resolve_expiry(
                 outcome.expires_in_seconds,
                 Some(&access_token),
                 *access_token_lifetime_seconds,

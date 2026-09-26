@@ -15,12 +15,8 @@ import {
     modelPrefixError,
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
-import {
-    matchStoredDefinition,
-    PROVIDER_PRESETS,
-    type ProviderPreset,
-} from "/src/management-api/presets";
 import { defaultModelPrefix, suggestProviderName } from "/src/management-api/provider-defaults";
+import { matchStoredDefinition, PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, navigate } from "/src/router";
 import { Button, TextField } from "/src/ui/controls";
@@ -81,8 +77,11 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     /** Whether the boot read's cycle is in flight — the read-again button's busy state. */
     const [isBootReading, setIsBootReading] = createSignal(true);
 
-    const preset = (): ProviderPreset =>
-        PROVIDER_PRESETS.find((candidate) => candidate.id === presetId()) ?? PROVIDER_PRESETS[0];
+    /** The catalog preset of the given id, falling back to the first entry. */
+    const presetById = (id: string): ProviderPreset =>
+        PROVIDER_PRESETS.find((candidate) => candidate.id === id) ?? PROVIDER_PRESETS[0];
+
+    const preset = (): ProviderPreset => presetById(presetId());
 
     /**
      * The latest stored version of this preset's definition, when the gateway
@@ -150,16 +149,21 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
         // Both calls must answer for the cycle to count as read: a failed
         // one states its diagnosis on the notice, and only an answered cycle
-        // clears the notice and stamps the shell.
+        // clears the notice and stamps the shell. Each continuation records
+        // its failure in its declared-call slot and writes nothing itself —
+        // the notice is written once at settle time, naming the first failed
+        // call by declared order (the shared harness's `readAll` contract,
+        // which this boot read mirrors without adopting it), never whichever
+        // continuation happened to settle last.
         let settledCount = 0;
-        let failedCount = 0;
+        const failureCauses: Array<unknown | null> = [
+            null,
+            null,
+        ];
 
-        const settleBootCall = (isSuccessful: boolean): void => {
+        const settleBootCall = (index: 0 | 1, failureCause: unknown | null): void => {
             settledCount += 1;
-
-            if (!isSuccessful) {
-                failedCount += 1;
-            }
+            failureCauses[index] = failureCause;
 
             if (settledCount === 2) {
                 // The cycle is fully answered: the in-flight state lifts
@@ -169,9 +173,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 // cannot flip the state the newer cycle owns.
                 setIsBootReading(false);
 
-                if (failedCount === 0) {
+                const firstFailure = failureCauses.find((cause) => cause !== null);
+
+                if (firstFailure === undefined) {
                     setFailure(null);
                     reportRefresh();
+                } else {
+                    setFailure(screenFailureNotice(firstFailure));
                 }
             }
         };
@@ -182,8 +190,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             }
 
             if (outcome.status === "failed") {
-                setFailure(screenFailureNotice(outcome.cause));
-                settleBootCall(false);
+                settleBootCall(0, outcome.cause);
                 return;
             }
 
@@ -191,10 +198,10 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             setTakenNames(taken);
 
             if (!isNameTouched()) {
-                setName(suggestProviderName(preset().suggestedName, taken));
+                setName(suggestion());
             }
 
-            settleBootCall(true);
+            settleBootCall(0, null);
         });
 
         void performManagementCall(() => props.api.listProviderDefinitions(cycle.signal)).then(
@@ -205,14 +212,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
                 if (outcome.status === "failed") {
                     setIsStoredKnown("unreadable");
-                    setFailure(screenFailureNotice(outcome.cause));
-                    settleBootCall(false);
+                    settleBootCall(1, outcome.cause);
                     return;
                 }
 
                 setIsStoredKnown("read");
                 setDefinitions(outcome.result.provider_definitions);
-                settleBootCall(true);
+                settleBootCall(1, null);
             },
         );
     };
@@ -233,7 +239,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     const suggestion = createMemo(() => suggestProviderName(preset().suggestedName, takenNames()));
 
-    /** The name the request carries: what was typed, or the suggestion when untouched. */
+    /** The name the request carries: what was typed, or the suggestion when the field stands empty. */
     const resolvedName = createMemo(() => (name().trim() === "" ? suggestion() : name().trim()));
 
     /**
@@ -269,12 +275,19 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
 
     const apiKeyError = (): string | null => bearerSecretError(apiKey(), "API key");
 
-    /** A static-key creation is submittable with a valid definition and a complete, routable connection. */
-    const canCreateStatic = (): boolean =>
+    /**
+     * An OAuth start or completion is submittable with a valid definition, a
+     * routable prefix, and — when the definition addresses the base — a valid
+     * base URL, so the gateway's 400 naming `base_url` never has a chance to
+     * leave the browser.
+     */
+    const canComplete = (): boolean =>
         definitionError() === null &&
         prefixError() === null &&
-        (!needsBaseUrl() || isBaseUrl(trimmedBaseUrl())) &&
-        isBearerSecret(apiKey());
+        (!needsBaseUrl() || isBaseUrl(trimmedBaseUrl()));
+
+    /** A static-key creation is submittable under the shared gate with a complete connection. */
+    const canCreateStatic = (): boolean => canComplete() && isBearerSecret(apiKey());
 
     /**
      * The edited definition payload, validated, or the offending JSON path.
@@ -386,17 +399,6 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         }
     };
 
-    /**
-     * An OAuth start or completion is submittable with a valid definition, a
-     * routable prefix, and — when the definition addresses the base — a valid
-     * base URL: exactly the static path's gate, so the gateway's 400 naming
-     * `base_url` never has a chance to leave the browser.
-     */
-    const canComplete = (): boolean =>
-        definitionError() === null &&
-        prefixError() === null &&
-        (!needsBaseUrl() || isBaseUrl(trimmedBaseUrl()));
-
     const inputName = (value: string): void => {
         setIsNameTouched(true);
         setName(value);
@@ -465,7 +467,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         setDefinitionJson(JSON.stringify(nextPreset.payload, null, 2));
 
         if (!isNameTouched()) {
-            setName(suggestProviderName(nextPreset.suggestedName, takenNames()));
+            setName(suggestion());
         }
     };
 
@@ -474,8 +476,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         // `presetId()` — the setter's value is not immediately readable back
         // in every Solid dev runtime, and the editor's prefill must be the
         // selected preset's payload, never the previous selection's.
-        const nextPreset =
-            PROVIDER_PRESETS.find((candidate) => candidate.id === next) ?? PROVIDER_PRESETS[0];
+        const nextPreset = presetById(next);
 
         // An edited connection recipe is the operator's own work: the pick
         // arms instead of applying, and only the Preset card's confirm
@@ -498,9 +499,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             return;
         }
 
-        applyPreset(
-            PROVIDER_PRESETS.find((candidate) => candidate.id === armedId) ?? PROVIDER_PRESETS[0],
-        );
+        applyPreset(presetById(armedId));
     };
 
     /** The confirm's way back: the arming dissolves, the edit stands. */

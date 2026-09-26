@@ -21,6 +21,7 @@ import {
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
+import { AppLink } from "/src/ui/app-link";
 import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -253,6 +254,35 @@ export function ProviderDetailScreen(props: {
                         <ButtonLink href={hrefs.providerEdit(row.id)}>Edit provider</ButtonLink>
                     </PageHeader>
 
+                    {/* A lapsed credential's fix lives one page over, where
+                        reauthorization runs — named and linked the way the
+                        overview's attention rows name it, not left to a bare
+                        badge beside a generic edit button. */}
+                    <Show when={lapsedCredentialLabel(row)}>
+                        {(label) => (
+                            <Notice
+                                tone="warn"
+                                title={
+                                    label() === "Expired"
+                                        ? "The OAuth credentials have expired."
+                                        : "The OAuth credentials were never fresh."
+                                }
+                                detail={
+                                    <>
+                                        {"Reconnect on the "}
+                                        <AppLink
+                                            href={hrefs.providerEdit(row.id)}
+                                            class="font-medium text-accent hover:text-accent-strong"
+                                        >
+                                            edit page
+                                        </AppLink>
+                                        {" — its Credentials card replaces them."}
+                                    </>
+                                }
+                            />
+                        )}
+                    </Show>
+
                     <FactsCard provider={row} />
 
                     <ModelsCard
@@ -275,6 +305,20 @@ export function ProviderDetailScreen(props: {
             )}
         </ScreenFrame>
     );
+}
+
+/**
+ * The credential badge's word when it names a credential the gateway cannot
+ * use as stored — `Expired`, or the never-fresh `Stale` — and `null` when it
+ * does not: a valid OAuth login needs no reconnect, and a static key, which
+ * never expires, earns no credential badge at all. The page's reconnect line
+ * gates on exactly this, so the notice and the header badge can never
+ * disagree about whether a fix is called for.
+ */
+function lapsedCredentialLabel(provider: ProviderResponse): "Expired" | "Stale" | null {
+    const label = credentialBadge(provider)?.label;
+
+    return label === "Expired" || label === "Stale" ? label : null;
 }
 
 /** What this provider is, read-only: every change lives on the edit page. */

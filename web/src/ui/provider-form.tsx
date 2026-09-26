@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
-import type { ProviderPreset } from "/src/management-api/presets";
+import type { ProviderPreset } from "/src/presets";
 import { ariaBoolean, joinClass } from "/src/ui/attributes";
 import { Switch, TextField } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
@@ -206,7 +206,7 @@ export function CompatibleConnectionFields(props: {
                 />
             </Show>
             <TextField
-                label={props.apiKeyLabel ?? "API key"}
+                label={props.apiKeyLabel ?? "Upstream API key"}
                 type={isKeyVisible() ? "text" : "password"}
                 value={props.apiKey}
                 onInput={props.onApiKeyInput}

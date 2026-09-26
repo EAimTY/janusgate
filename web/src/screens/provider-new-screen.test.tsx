@@ -14,7 +14,7 @@ import type {
     StartProviderOauthResponse,
 } from "/src/management-api/generated/v0";
 import { ErrorCode } from "/src/management-api/generated/v0";
-import { PROVIDER_PRESETS, type ProviderPreset } from "/src/management-api/presets";
+import { PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
 import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
 import { hrefs } from "/src/router";
 import { ProviderNewScreen } from "/src/screens/provider-new-screen";
@@ -232,7 +232,7 @@ describe("ProviderNewScreen creation", () => {
         await settle();
         typeInto(labeledInput("Model prefix"), "beta-");
         typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
-        typeInto(labeledInput("API key"), "sk-test");
+        typeInto(labeledInput("Upstream API key"), "sk-test");
         await settle();
         buttonWithText("Create provider").click();
         await settle();
@@ -294,7 +294,7 @@ describe("ProviderNewScreen creation", () => {
         await settle();
 
         typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
-        typeInto(labeledInput("API key"), "sk-test");
+        typeInto(labeledInput("Upstream API key"), "sk-test");
         await settle();
         expect(buttonWithText("Create provider").disabled).toBe(false);
 
@@ -405,9 +405,9 @@ describe("ProviderNewScreen creation", () => {
             ...document.querySelectorAll("label"),
         ].map((label) => label.textContent);
         expect(labels).not.toContain("Upstream base URL");
-        expect(labels).toContain("API key");
+        expect(labels).toContain("Upstream API key");
 
-        typeInto(labeledInput("API key"), "sk-zen");
+        typeInto(labeledInput("Upstream API key"), "sk-zen");
         await settle();
         buttonWithText("Create provider").click();
         await settle();
@@ -441,7 +441,7 @@ describe("ProviderNewScreen creation", () => {
         expect(document.body.textContent).toContain("Stored as version 2.");
 
         typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
-        typeInto(labeledInput("API key"), "sk-test");
+        typeInto(labeledInput("Upstream API key"), "sk-test");
         await settle();
         buttonWithText("Create provider").click();
         await settle();
@@ -536,6 +536,55 @@ describe("ProviderNewScreen creation", () => {
         expect(document.body.textContent).not.toContain("Not stored yet");
     });
 
+    it("states the first declared call's failure when both boot reads fail", async () => {
+        // Holders rather than bare `let`s: the assignment happens inside the
+        // stubbed listings below, and a bare variable would be narrowed to
+        // `null` at the reject sites.
+        const providersReject: {
+            current: ((error: unknown) => void) | null;
+        } = {
+            current: null,
+        };
+        const definitionsReject: {
+            current: ((error: unknown) => void) | null;
+        } = {
+            current: null,
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={screenApi([], {
+                            providers: () =>
+                                new Promise((_resolve, reject) => {
+                                    providersReject.current = reject;
+                                }),
+                            definitions: () =>
+                                new Promise((_resolve, reject) => {
+                                    definitionsReject.current = reject;
+                                }),
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // Both calls fail — the providers listing settling first, the
+        // definitions listing last — so the diagnosis must name the first
+        // declared call's failure, the shared harness's `readAll` contract,
+        // never whichever continuation settled last.
+        providersReject.current?.(new Error("the listing refused"));
+        definitionsReject.current?.(new Error("the definitions refused"));
+        await settle();
+
+        expect(document.body.textContent).toContain("the listing refused");
+        expect(document.body.textContent).not.toContain("the definitions refused");
+        // The definitions call's own side state stands beside the notice.
+        expect(document.body.textContent).toContain("The stored versions could not be read.");
+    });
+
     it("diagnoses a definition-write conflict as the definition's own recovery", async () => {
         const sent: CreateProviderRequest[] = [];
         const api: ManagementApi = {
@@ -552,7 +601,7 @@ describe("ProviderNewScreen creation", () => {
         await settle();
 
         typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
-        typeInto(labeledInput("API key"), "sk-test");
+        typeInto(labeledInput("Upstream API key"), "sk-test");
         await settle();
         buttonWithText("Create provider").click();
         await settle();

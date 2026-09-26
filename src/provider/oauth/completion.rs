@@ -8,7 +8,7 @@
 //! provider write alone, the flow row already consumed.
 
 use super::{
-    flow,
+    exchange::{ExchangeOutcome, ExchangeProduct, absorb_exchange_slots, resolve_expiry},
     provisioning::{self, WorkingState},
 };
 use crate::{
@@ -38,20 +38,18 @@ pub(crate) struct CompletionProduct {
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for every classification but [`flow::ExchangeProduct::Completed`].
-pub(crate) fn completed_outcome(
-    product: flow::ExchangeProduct,
-) -> Result<flow::ExchangeOutcome, Error> {
+/// Returns [`Error`] for every classification but [`ExchangeProduct::Completed`].
+pub(crate) fn completed_outcome(product: ExchangeProduct) -> Result<ExchangeOutcome, Error> {
     match product {
-        flow::ExchangeProduct::Completed(outcome) => Ok(outcome),
+        ExchangeProduct::Completed(outcome) => Ok(outcome),
 
-        flow::ExchangeProduct::Pending | flow::ExchangeProduct::SlowDown => Err(Error::Internal {
+        ExchangeProduct::Pending | ExchangeProduct::SlowDown => Err(Error::Internal {
             message: "the exchange classified as a poll outcome under an authorization-code \
                           flow"
                 .to_string(),
         }),
 
-        flow::ExchangeProduct::Terminal(code) => Err(Error::Unavailable {
+        ExchangeProduct::Terminal(code) => Err(Error::Unavailable {
             detail: format!(
                 "the token endpoint rejected the authorization code with `{code}`: the code is \
                  expired, already used, or invalid — start a fresh flow, authorize its URL, and \
@@ -59,7 +57,7 @@ pub(crate) fn completed_outcome(
             ),
         }),
 
-        flow::ExchangeProduct::Other(code) => Err(Error::Unavailable {
+        ExchangeProduct::Other(code) => Err(Error::Unavailable {
             detail: format!("the token endpoint rejected the authorization code: `{code}`"),
         }),
     }
@@ -81,7 +79,7 @@ pub(crate) fn completed_outcome(
 pub(crate) async fn complete_exchange(
     http: &Client,
     definition: &ProviderDefinition,
-    outcome: flow::ExchangeOutcome,
+    outcome: ExchangeOutcome,
     flow: &OngoingFlow,
 ) -> Result<CompletionProduct, Error> {
     let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
@@ -92,8 +90,7 @@ pub(crate) async fn complete_exchange(
 
     // The working slots absorb the identity-token claims and the exchange's slots; a claimed
     // value outside the routing-safety contract fails the flow like any other fold.
-    let working_slots =
-        flow::absorb_exchange_slots(&flow.slots, &outcome, &recipe.id_token_claims)?;
+    let working_slots = absorb_exchange_slots(&flow.slots, &outcome, &recipe.id_token_claims)?;
 
     // The working base URL follows the slots' precedence (README §5.3): the exchange's
     // extracted `base_url` replaces the flow's stored one, and a provisioning extraction
@@ -131,7 +128,7 @@ pub(crate) async fn complete_exchange(
     let expires_at = match state.expires_at {
         Some(expires_at) => Some(expires_at),
 
-        None => flow::resolve_expiry(
+        None => resolve_expiry(
             outcome.expires_in_seconds,
             Some(&access_token),
             recipe.access_token_lifetime_seconds,

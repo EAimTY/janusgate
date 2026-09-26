@@ -1,5 +1,6 @@
 import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
+import { DAY_MICROS, nowMicros, parseDateTimeInputToMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ApiKeyResponse,
@@ -713,13 +714,9 @@ describe("UsageQueryScreen hand-typed bounds", () => {
         disposes.length = 0;
     });
 
-    it("names a malformed bound inline and holds the query until it is fixed", async () => {
+    it("opens a bound's error only behind input to its field, then holds the query until it is fixed", async () => {
         const requests: QueryUsageRequest[] = [];
-        const holder: {
-            readonly providers: Array<(answer: ListProvidersResponse) => void>;
-            readonly models: Array<(answer: ListModelsResponse) => void>;
-            readonly apiKeys: Array<(answer: ListApiKeysResponse) => void>;
-        } = {
+        const holder: HeldListings = {
             providers: [],
             models: [],
             apiKeys: [],
@@ -762,10 +759,18 @@ describe("UsageQueryScreen hand-typed bounds", () => {
         // The blank-bounds mount query ran as always.
         expect(requests).toHaveLength(1);
 
-        // A space instead of the T separator is malformed: the mistake is
-        // named inline and the submit is held, so the query can never run
+        // A pristine form is not an error: the format lesson lives in the
+        // fields' permanent hints, never as alert-red from first paint — the
+        // bounds' errors open behind input to their own field (the app's
+        // lazy-error convention).
+        expect(document.body.textContent).toContain("like 2026-09-23T10:00");
+        expect(document.body.textContent).not.toContain("From must be a complete date and time");
+        expect(document.body.textContent).not.toContain("To must be a complete date and time");
+
+        // A partially-typed bound is a mistake the moment the field receives
+        // it: named inline, with the submit held, so the query can never run
         // with the bound silently dropped.
-        typeInto(labeledInput("From"), "2026-09-23 10:00");
+        typeInto(labeledInput("From"), "2026-09-23T1");
         await settle();
 
         expect(document.body.textContent).toContain("From must be a complete date and time");
@@ -775,10 +780,12 @@ describe("UsageQueryScreen hand-typed bounds", () => {
         await settle();
         expect(requests).toHaveLength(1);
 
-        // Completing the value releases the query, and the bound rides it.
+        // Completing the value retracts the error without another submit and
+        // releases the query, and the bound rides it.
         typeInto(labeledInput("From"), "2026-09-23T10:00");
         await settle();
 
+        expect(document.body.textContent).not.toContain("From must be a complete date and time");
         expect(buttonWithText("Run query").disabled).toBe(false);
         buttonWithText("Run query").click();
         await settle();
@@ -797,6 +804,134 @@ describe("UsageQueryScreen hand-typed bounds", () => {
         expect(requests).toHaveLength(2);
         expect(requests[1]?.filter?.from).toBeTypeOf("number");
         expect(requests[1]?.filter?.to).toBeUndefined();
+    });
+});
+
+describe("UsageQueryScreen rolling-window quick-sets", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /**
+     * Mounts the bare screen, answers its first cycle's held listings so the
+     * mount query lands, and hands the listings holder over for the cycles
+     * the test still runs.
+     */
+    async function mountAndAnswerFirstCycle(
+        requests: Array<QueryUsageRequest>,
+    ): Promise<HeldListings> {
+        const holder: HeldListings = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={{
+                            ...screenApi(holder, () => {}),
+                            queryUsage: (request) => {
+                                requests.push(request);
+
+                                return Promise.resolve({
+                                    buckets: [],
+                                });
+                            },
+                        }}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        return holder;
+    }
+
+    /** Runs the submit through its own held listings, answering them. */
+    async function runQueryAndAnswer(holder: HeldListings): Promise<void> {
+        buttonWithText("Run query").click();
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+    }
+
+    it("fills both bounds with the stream's window and runs the query with them", async () => {
+        const requests: QueryUsageRequest[] = [];
+        const holder = await mountAndAnswerFirstCycle(requests);
+
+        // The mount query ran bare.
+        expect(requests).toHaveLength(1);
+
+        const before = nowMicros();
+
+        buttonWithText("Last 24 hours").click();
+        await settle();
+
+        // The fill lands in the hand-typed fields themselves — From one
+        // complete spelling a window back, To left open — the stream page's
+        // own rolling-window semantics, in the fields' own minute-precision
+        // shape.
+        expect(labeledInput("To").value).toBe("");
+
+        const from = parseDateTimeInputToMicros(labeledInput("From").value);
+        expect(from).not.toBeNull();
+        expect(from).toBeLessThanOrEqual(before - DAY_MICROS);
+        expect(from).toBeGreaterThan(before - DAY_MICROS - 2 * 60_000_000);
+
+        await runQueryAndAnswer(holder);
+
+        // The filled bounds ride the query exactly as a hand-typed pair would.
+        expect(requests).toHaveLength(2);
+        expect(requests[1]?.filter?.from).toBe(from);
+        expect(requests[1]?.filter?.to).toBeUndefined();
+    });
+
+    it("empties both bounds for all time, overwriting a hand-typed one", async () => {
+        const requests: QueryUsageRequest[] = [];
+        const holder = await mountAndAnswerFirstCycle(requests);
+
+        typeInto(labeledInput("From"), "2026-09-23T10:00");
+        buttonWithText("All time").click();
+        await settle();
+
+        // All time is the fields' own empty state: both bounds drop,
+        // whatever they held.
+        expect(labeledInput("From").value).toBe("");
+        expect(labeledInput("To").value).toBe("");
+
+        await runQueryAndAnswer(holder);
+
+        expect(requests).toHaveLength(2);
+        expect(requests[1]?.filter).toEqual({});
     });
 });
 

@@ -3,9 +3,11 @@ import type {
     ApiKeyResponse,
     ModelResponse,
     ProviderResponse,
+    UsageBucket,
     UsageBucketKey,
 } from "/src/management-api/generated/v0";
 import {
+    daysNewestFirst,
     indexUsageEntities,
     usageApiKeyLabel,
     usageDimensionLabel,
@@ -145,5 +147,71 @@ describe("usage labels", () => {
                 index,
             ),
         ).toThrow(/the bucket key carries no model_id/);
+    });
+});
+
+/** One counted day bucket on the given day, distinguishable by its request count. */
+function dayBucket(day: string, requests: number): UsageBucket {
+    return {
+        key: {
+            day,
+        },
+        requests,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+    };
+}
+
+describe("daysNewestFirst", () => {
+    it("orders the day series newest-first, keeping the answer's order within equal days", () => {
+        const answer = [
+            dayBucket("2026-09-01", 1),
+            dayBucket("2026-09-03", 2),
+            dayBucket("2026-09-02", 3),
+            dayBucket("2026-09-03", 4),
+        ];
+
+        const displayed = daysNewestFirst(answer);
+
+        // Newest day first; within the equal 09-03 days the answer's own
+        // order stands — the comparison answers 0 for equal days and the
+        // sort is stable.
+        expect(displayed).toEqual([
+            dayBucket("2026-09-03", 2),
+            dayBucket("2026-09-03", 4),
+            dayBucket("2026-09-02", 3),
+            dayBucket("2026-09-01", 1),
+        ]);
+        // The answer is copied, never reordered in place.
+        expect(answer.map((bucket) => bucket.requests)).toEqual([
+            1,
+            2,
+            3,
+            4,
+        ]);
+    });
+
+    it("asserts the day part a day-series read guarantees", () => {
+        const dayless: UsageBucket = {
+            key: {},
+            requests: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+        };
+
+        // The comparator reads each compared bucket's day, so the assert
+        // fires the moment two buckets are ordered against each other.
+        expect(() =>
+            daysNewestFirst([
+                dayless,
+                dayBucket("2026-09-01", 2),
+            ]),
+        ).toThrow(/the bucket key carries no day/);
     });
 });

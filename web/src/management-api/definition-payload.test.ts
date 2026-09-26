@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { PROVIDER_PRESETS } from "/src/presets";
 import {
     parseListProviderDefinitionsResponse,
     validateDefinitionPayload,
 } from "./definition-payload";
-import { PROVIDER_PRESETS } from "./presets";
 
 /** One minimal stored definition row every field the app reads, plus its payload. */
 const storedDefinition = {

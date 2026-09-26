@@ -674,7 +674,7 @@ mod tests {
     use crate::{
         storage::{
             self as storage_cr,
-            fixtures::{insert_test_provider, oauth_definition},
+            test_support::{insert_test_provider, oauth_definition},
         },
         test_support,
     };

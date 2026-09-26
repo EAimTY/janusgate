@@ -122,13 +122,16 @@ export function Stat(props: {
 
 /**
  * One headline figure that is also a door: the whole card is the link, so the
- * figure and the page that explains it are one target. The chevron marks the
+ * figure and the page that explains it are one target. The optional hint
+ * qualifies the figure the same line `Stat` states its own — a figure the raw
+ * count alone can misread states its scope under it. The chevron marks the
  * card as navigation — the same affordance a table row carries.
  */
 export function StatLink(props: {
     readonly href: string;
     readonly value: string;
     readonly label: string;
+    readonly hint?: string | undefined;
 }): JSX.Element {
     return (
         <AppLink
@@ -138,6 +141,11 @@ export function StatLink(props: {
             <span class="min-w-0">
                 <span class={joinClass(STAT_VALUE_CLASS, "block")}>{props.value}</span>
                 <span class={joinClass(STAT_LABEL_CLASS, "block")}>{props.label}</span>
+                <Show when={props.hint}>
+                    {(hint) => (
+                        <span class="mt-0.5 block text-[12.5px] text-ink-faint">{hint()}</span>
+                    )}
+                </Show>
             </span>
             <Glyph
                 name="chev-right"

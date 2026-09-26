@@ -681,7 +681,7 @@ mod tests {
     };
     use crate::{
         provider::StoredCredentials,
-        storage::{self as storage_cr, fixtures::oauth_definition},
+        storage::{self as storage_cr, test_support::oauth_definition},
         test_support,
     };
     use std::{collections::BTreeMap, error::Error as StdError};

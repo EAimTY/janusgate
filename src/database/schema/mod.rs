@@ -12,6 +12,14 @@
 //! version, each committed atomically together with its `user_version` advance — so a fresh
 //! database and an outdated one both end at the latest version of their registry.
 //!
+//! Each registry stamps its identity into the schema itself: version 1's DDL creates a one-row
+//! `gateway_database_registry` marker table whose `registry` column is `CHECK`-pinned to the
+//! registry's closed value — `main` or `shard`. Before walking an existing database, the
+//! bootstrap verifies the stamp and panics on a mismatch, so a file opened under the wrong
+//! registry fails at startup instead of surfacing later as missing-table errors on first query.
+//! A database file predating the stamp carries none and fails the same startup verification —
+//! an unreleased development artifact the operator recreates.
+//!
 //! Migration texts run under foreign key enforcement: the bootstrap connection enables
 //! `PRAGMA foreign_keys` before the walk, and each text executes inside its own transaction, where
 //! SQLite defines the pragma as a no-op (Turso currently accepting it mid-transaction is a
@@ -24,9 +32,9 @@ mod shard_version_1;
 mod version_1;
 
 use log::{debug, info};
-#[cfg(test)]
-use turso::Builder as TursoBuilder;
 use turso::Connection;
+#[cfg(test)]
+use turso::{Builder as TursoBuilder, Database as TursoDatabase};
 
 /// One version of a SQLite database schema.
 ///
@@ -82,6 +90,15 @@ impl Registry {
             Self::ApiLogShard => SHARD_SCHEMAS,
         }
     }
+
+    /// The closed value the registry's version-1 DDL stamps into the `gateway_database_registry`
+    /// marker table, and the value the bootstrap expects to find on an existing database.
+    fn stamp(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::ApiLogShard => "shard",
+        }
+    }
 }
 
 /// Brings the schema of the database behind `connection` up to the latest version of `registry`,
@@ -94,38 +111,55 @@ impl Registry {
 ///
 /// Panics under the same conditions as [`bring_up_to_latest`].
 pub(super) async fn migrate(connection: &Connection, registry: Registry, path: &str) {
-    bring_up_to_latest(connection, registry.schemas(), path).await;
+    bring_up_to_latest(connection, registry, registry.schemas(), path).await;
 }
 
 /// Walks `schemas` — schema versions in ascending order — forward from the database's stored
-/// version, bringing the database behind `connection` to `schemas`' latest version and logging
+/// version, bringing the database behind `connection` to the latest version and logging
 /// progress under the database's `path`.
 ///
 /// The current version is read from `PRAGMA user_version`. A fresh database (`0`) receives the
-/// first version's DDL and joins the walk from there — so a fresh database ends at the latest
-/// version, however many exist, through the same later migrations an outdated database applies.
-/// A database at a known version applies the migrations of every later version in order; a
-/// database already at the latest version does nothing. Each step — one schema or migration text
-/// plus its `user_version` write — commits atomically, so a crash mid-chain leaves the database
-/// on its last committed version and the next startup resumes from there.
+/// first version's DDL — which stamps `registry` into the `gateway_database_registry` marker —
+/// and joins the walk from there, so a fresh database ends at the latest version, however many
+/// exist, through the same later migrations an outdated database applies. The fresh-database
+/// decision re-runs inside the write-locked bootstrap transaction: of several opens
+/// bootstrapping one file at once — a shard write racing a shard read — exactly one applies the
+/// DDL, and the others join the version it committed, stamp verification included. A database at
+/// a known version first has its stamp verified against `registry` — a mismatch, or a missing
+/// stamp on a file predating it, is fatal — and then applies the migrations of every later
+/// version in order; a database already at the latest version does nothing. Each step — one
+/// schema or migration text plus its `user_version` write — commits atomically, so a crash
+/// mid-chain leaves the database on its last committed version and the next startup resumes
+/// from there.
 ///
-/// The schema table is a parameter rather than [`SCHEMAS`] itself so tests can exercise the walk
-/// over chains with more versions than the registry currently contains.
+/// The schema versions and the registry are parameters rather than [`MAIN_SCHEMAS`],
+/// [`SHARD_SCHEMAS`], and their [`Registry`] values themselves so tests can exercise the walk
+/// over chains with more versions than a registry currently contains; a synthetic chain carries
+/// the marker in its version 1 exactly like a real registry.
 ///
 /// # Panics
 ///
-/// Panics if reading `user_version`, applying a schema or migration batch, or advancing
-/// `user_version` fails, or if the stored version is negative or newer than the latest known
-/// version — a database this build cannot interpret.
-async fn bring_up_to_latest(connection: &Connection, schemas: &[Schema], path: &str) {
+/// Panics if reading `user_version`, beginning or aborting a bootstrap transaction, verifying
+/// the registry stamp, applying a schema or migration batch, or advancing `user_version` fails,
+/// if the stored version is negative or newer than the latest known version — a database this
+/// build cannot interpret — or if the database's stamp names a registry other than `registry`.
+async fn bring_up_to_latest(
+    connection: &Connection,
+    registry: Registry,
+    schemas: &[Schema],
+    path: &str,
+) {
     let mut current_version = query_user_version(connection).await;
 
     if current_version == 0 {
-        // A fresh database receives the first version's DDL and joins the walk from there, exactly
-        // like a database already at version 1 — whatever later versions exist still apply.
-        let first = first_schema(schemas);
-        apply(connection, first.schema, first.version, path).await;
-        current_version = first.version;
+        // A fresh database receives the first version's DDL — stamping the registry — and joins
+        // the walk from there, exactly like a database already at version 1 — whatever later
+        // versions exist still apply.
+        current_version = apply_first_version(connection, registry, schemas, path).await;
+    } else {
+        // An existing database carries a schema version, so it must carry this registry's stamp;
+        // verify it before any DDL runs against the file.
+        verify_registry_stamp(connection, registry, path).await;
     }
 
     match schemas.binary_search_by(|schema| schema.version.cmp(&current_version)) {
@@ -159,6 +193,46 @@ async fn bring_up_to_latest(connection: &Connection, schemas: &[Schema], path: &
     }
 }
 
+/// Applies the first version's DDL to a database whose stored version read `0`, returning the
+/// version the database carries afterwards for the walk to continue from.
+///
+/// The fresh-database decision races any concurrent bootstrap of the same file: before either
+/// connection commits, both read `0` from `PRAGMA user_version`, and the loser re-applying the
+/// DDL would die on the first `CREATE TABLE`. The decision therefore re-runs inside the
+/// write-locked bootstrap transaction — [`begin_write_transaction`] serializes it against every
+/// other writer of the file: a connection still reading `0` inside the transaction is the
+/// bootstrapper and applies the DDL; one finding the version a racing bootstrap committed aborts
+/// its empty transaction and verifies that database's stamp — a mismatch stays fatal — returning
+/// the found version to continue the walk from.
+///
+/// # Panics
+///
+/// Panics if beginning or aborting the transaction, reading `user_version`, applying the DDL
+/// batch, or verifying the registry stamp fails, or if the database's stamp names a registry
+/// other than `registry`.
+async fn apply_first_version(
+    connection: &Connection,
+    registry: Registry,
+    schemas: &[Schema],
+    path: &str,
+) -> i64 {
+    begin_write_transaction(connection).await;
+
+    if query_user_version(connection).await == 0 {
+        let first = first_schema(schemas);
+        apply_batch(connection, first.schema, first.version, path).await;
+
+        first.version
+    } else {
+        let raced_version = query_user_version(connection).await;
+
+        rollback_write_transaction(connection).await;
+        verify_registry_stamp(connection, registry, path).await;
+
+        raced_version
+    }
+}
+
 /// Applies a schema or migration text together with its `user_version` advance in one atomic
 /// transaction and logs the step.
 ///
@@ -167,9 +241,20 @@ async fn bring_up_to_latest(connection: &Connection, schemas: &[Schema], path: &
 ///
 /// # Panics
 ///
-/// Panics if executing the batch fails.
+/// Panics if beginning the transaction or executing the batch fails.
 async fn apply(connection: &Connection, text: &str, version: i64, path: &str) {
-    let batch = format!("BEGIN IMMEDIATE;\n{text}PRAGMA user_version = {version};\nCOMMIT;",);
+    begin_write_transaction(connection).await;
+    apply_batch(connection, text, version, path).await;
+}
+
+/// Executes the version batch — the schema or migration text plus the `user_version` advance —
+/// on the caller's open bootstrap transaction, committing it, and logs the step.
+///
+/// # Panics
+///
+/// Panics if executing the batch fails.
+async fn apply_batch(connection: &Connection, text: &str, version: i64, path: &str) {
+    let batch = format!("{text}PRAGMA user_version = {version};\nCOMMIT;",);
 
     #[expect(
         clippy::expect_used,
@@ -181,6 +266,40 @@ async fn apply(connection: &Connection, text: &str, version: i64, path: &str) {
         .expect("failed to apply a database schema version");
 
     info!("brought database {path} to schema version {version}");
+}
+
+/// Begins the bootstrap's immediate transaction, taking the database's write lock so the
+/// caller's version reads and DDL decisions hold against every concurrent writer of the file.
+///
+/// # Panics
+///
+/// Panics if beginning the transaction fails.
+async fn begin_write_transaction(connection: &Connection) {
+    #[expect(
+        clippy::expect_used,
+        reason = "beginning a schema bootstrap transaction is fatal on failure"
+    )]
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .await
+        .expect("failed to begin a database schema bootstrap transaction");
+}
+
+/// Aborts the caller's empty bootstrap transaction — the raced fresh-bootstrap loser's only
+/// outcome — leaving the racing bootstrap's committed schema untouched.
+///
+/// # Panics
+///
+/// Panics if aborting the transaction fails.
+async fn rollback_write_transaction(connection: &Connection) {
+    #[expect(
+        clippy::expect_used,
+        reason = "aborting the empty schema bootstrap transaction is fatal on failure"
+    )]
+    connection
+        .execute_batch("ROLLBACK;")
+        .await
+        .expect("failed to abort a database schema bootstrap transaction");
 }
 
 /// Retrieves the schema version stored in `PRAGMA user_version`.
@@ -216,6 +335,69 @@ async fn query_user_version(connection: &Connection) -> i64 {
         .expect("failed to get the user_version integer value")
 }
 
+/// Verifies that the database behind `connection` is stamped for `registry`, panicking with both
+/// registries named when the stored stamp disagrees.
+///
+/// The marker's value is written by the registry's own version-1 DDL and never again, so the
+/// stored value is the file's registry identity; a disagreement means the file belongs to the
+/// other registry and no statement may run against it.
+///
+/// # Panics
+///
+/// Panics if reading the stamp fails — a file predating the stamp carries no marker table — or
+/// if the stored stamp names a registry other than `registry`.
+async fn verify_registry_stamp(connection: &Connection, registry: Registry, path: &str) {
+    let stored = query_registry_stamp(connection).await;
+    let expected = registry.stamp();
+
+    if stored != expected {
+        #[expect(
+            clippy::panic,
+            reason = "a registry mismatch is fatal: the file is another registry's database"
+        )]
+        {
+            panic!(
+                "database {path} is stamped for the {stored} registry but was opened under the \
+                 {expected} registry; the main and api-log shard registries live in separate files"
+            );
+        }
+    }
+}
+
+/// Reads the `registry` value of the database's one-row `gateway_database_registry` marker.
+///
+/// # Panics
+///
+/// Panics if executing the query or extracting its single text value fails, or if the marker
+/// table holds no row.
+async fn query_registry_stamp(connection: &Connection) -> String {
+    #[expect(
+        clippy::expect_used,
+        reason = "reading the registry stamp of a versioned database is fatal on failure"
+    )]
+    let mut rows = connection
+        .query("SELECT registry FROM gateway_database_registry", ())
+        .await
+        .expect("failed to query the database's registry stamp");
+
+    #[expect(
+        clippy::expect_used,
+        reason = "the marker table holds exactly one row, enforced by its primary key"
+    )]
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read the registry stamp row")
+        .expect("the registry stamp table holds no row");
+
+    #[expect(
+        clippy::expect_used,
+        reason = "the registry stamp column is a text value"
+    )]
+    row.get(0)
+        .expect("failed to get the registry stamp text value")
+}
+
 /// Returns the first schema version of `schemas`.
 ///
 /// # Panics
@@ -248,6 +430,24 @@ fn last_schema(schemas: &[Schema]) -> &Schema {
         .expect("the schema registry always contains version 1")
 }
 
+/// Opens a fresh in-memory test database, for tests that need several connections to one
+/// database — the bootstrap-race staging below.
+///
+/// # Panics
+///
+/// Panics if building the in-memory database fails.
+#[cfg(test)]
+async fn open_memory_database() -> TursoDatabase {
+    #[expect(
+        clippy::expect_used,
+        reason = "an in-memory test database always builds"
+    )]
+    TursoBuilder::new_local(":memory:")
+        .build()
+        .await
+        .expect("failed to build an in-memory test database")
+}
+
 /// Opens a connection to a fresh in-memory test database, shared by the per-version schema
 /// tests in the `version_x` modules and the workflow tests below.
 ///
@@ -258,28 +458,18 @@ fn last_schema(schemas: &[Schema]) -> &Schema {
 pub(crate) async fn open_memory_connection() -> Connection {
     #[expect(
         clippy::expect_used,
-        reason = "an in-memory test database always builds"
-    )]
-    let database = TursoBuilder::new_local(":memory:")
-        .build()
-        .await
-        .expect("failed to build an in-memory test database");
-
-    #[expect(
-        clippy::expect_used,
         reason = "a fresh in-memory database always connects"
     )]
-    let connection = database
+    open_memory_database()
+        .await
         .connect()
-        .expect("failed to connect to the in-memory test database");
-
-    connection
+        .expect("failed to connect to the in-memory test database")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{collections::BTreeSet, error::Error as StdError};
+    use std::{collections::BTreeSet, error::Error as StdError, time::Duration};
     use turso_parser::{
         ast::{
             Cmd, ColumnConstraint, ColumnDefinition, CreateTableBody, ForeignKeyClause,
@@ -370,7 +560,8 @@ mod tests {
 
     /// Verifies the full startup workflow on a fresh database for each registry: [`migrate`]
     /// brings `user_version` to the registry's latest version, and a second run over the
-    /// now-current database is a no-op.
+    /// now-current database is a no-op. The second run exercises the stamp verification on an
+    /// existing database: the stamp the fresh run wrote must satisfy the same registry.
     ///
     /// # Panics
     ///
@@ -410,33 +601,253 @@ mod tests {
     -> Result<(), Box<dyn StdError>> {
         let connection = open_memory_connection().await;
 
+        // The synthetic version 1 carries the registry marker like every real registry's version
+        // 1, so the second run's stamp verification sees what a real stamped database carries.
         let schemas = [
             Schema {
                 version: 1,
-                schema: "CREATE TABLE synthetic (value INTEGER) STRICT;\n",
+                schema: "CREATE TABLE gateway_database_registry (\
+                             id INTEGER PRIMARY KEY CHECK (id = 1),\
+                             registry TEXT NOT NULL CHECK (registry = 'main')\
+                         ) STRICT;\n\
+                         INSERT INTO gateway_database_registry (id, registry) VALUES (1, 'main');\n\
+                         CREATE TABLE synthetic (value INTEGER) STRICT;\n",
                 migration: "",
             },
             Schema {
                 version: 2,
-                schema: "CREATE TABLE synthetic (value INTEGER, label TEXT) STRICT;\n",
+                schema: "CREATE TABLE gateway_database_registry (\
+                             id INTEGER PRIMARY KEY CHECK (id = 1),\
+                             registry TEXT NOT NULL CHECK (registry = 'main')\
+                         ) STRICT;\n\
+                         INSERT INTO gateway_database_registry (id, registry) VALUES (1, 'main');\n\
+                         CREATE TABLE synthetic (value INTEGER, label TEXT) STRICT;\n",
                 migration: "ALTER TABLE synthetic ADD COLUMN label TEXT;\n",
             },
         ];
 
-        bring_up_to_latest(&connection, &schemas, ":memory:").await;
+        bring_up_to_latest(&connection, Registry::Main, &schemas, ":memory:").await;
         assert_eq!(
             query_user_version(&connection).await,
             last_schema(&schemas).version,
         );
         assert_declared_schema(&connection, last_schema(&schemas)).await?;
 
-        bring_up_to_latest(&connection, &schemas, ":memory:").await;
+        bring_up_to_latest(&connection, Registry::Main, &schemas, ":memory:").await;
         assert_eq!(
             query_user_version(&connection).await,
             last_schema(&schemas).version,
         );
 
         Ok(())
+    }
+
+    /// Verifies the fresh-bootstrap race: a concurrent bootstrap commits version 1 — DDL, stamp
+    /// row, and version advance — into the database while [`bring_up_to_latest`], whose initial
+    /// version read already returned 0, waits on the write lock. The raced bootstrap must join
+    /// the committed version instead of re-applying the DDL: two opens bootstrapping one file at
+    /// once — a shard write racing a shard read — would otherwise both apply the first version,
+    /// and the duplicate `CREATE TABLE` of the registry marker kills the loser.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the workflow fails or the database does not end at version 1.
+    #[tokio::test]
+    async fn a_bootstrap_racing_a_committed_fresh_bootstrap_joins_its_version()
+    -> Result<(), Box<dyn StdError>> {
+        let database = open_memory_database().await;
+        let racer = connect_staging(&database).await;
+        let raced = connect_staging(&database).await;
+
+        // The racer holds the write lock over written-but-uncommitted version 1, so the raced
+        // bootstrap's initial version read still sees 0.
+        stage(&racer, "BEGIN IMMEDIATE;").await;
+        stage(&racer, version_1::SCHEMA.schema).await;
+        stage(&racer, "PRAGMA user_version = 1;").await;
+
+        // The commit lands while the raced bootstrap waits on the lock inside its own
+        // transaction, after its initial read.
+        tokio::join!(
+            async {
+                bring_up_to_latest(&raced, Registry::Main, MAIN_SCHEMAS, ":memory:").await;
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                stage(&racer, "COMMIT;").await;
+            },
+        );
+
+        assert_eq!(query_user_version(&raced).await, 1);
+
+        Ok(())
+    }
+
+    /// Verifies that the loser of the fresh-bootstrap race still verifies the registry stamp: a
+    /// racer committing the shard registry's stamped version 1 into a database the bootstrap is
+    /// bringing up under the main registry is fatal, naming both registries — the race must not
+    /// bypass the startup stamp verification.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bootstrap does not panic.
+    #[tokio::test]
+    #[should_panic(
+        expected = "is stamped for the shard registry but was opened under the main registry"
+    )]
+    async fn a_bootstrap_racing_a_foreign_registry_fresh_bootstrap_is_fatal() {
+        let database = open_memory_database().await;
+        let racer = connect_staging(&database).await;
+        let raced = connect_staging(&database).await;
+
+        stage(&racer, "BEGIN IMMEDIATE;").await;
+        stage(&racer, shard_version_1::SCHEMA.schema).await;
+        stage(&racer, "PRAGMA user_version = 1;").await;
+
+        tokio::join!(
+            async {
+                bring_up_to_latest(&raced, Registry::Main, MAIN_SCHEMAS, ":memory:").await;
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                stage(&racer, "COMMIT;").await;
+            },
+        );
+    }
+
+    /// Connects to the shared staging database of the bootstrap-race tests, with the busy wait
+    /// the production bootstrap connection configures — the staged racing transaction holds the
+    /// write lock, and the raced bootstrap's transaction begin must wait out its commit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if connecting or configuring the connection fails.
+    async fn connect_staging(database: &TursoDatabase) -> Connection {
+        #[expect(
+            clippy::expect_used,
+            reason = "a fresh in-memory staging database always connects"
+        )]
+        let connection = database
+            .connect()
+            .expect("failed to connect to the staging database");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the staging busy timeout always applies"
+        )]
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .expect("failed to configure the staging connection's busy timeout");
+
+        connection
+    }
+
+    /// Executes one statement of a staged bootstrap-race scenario.
+    ///
+    /// # Panics
+    ///
+    /// Panics if executing the staging statement fails — a broken staging is a test bug, and the
+    /// failure is the report.
+    async fn stage(connection: &Connection, statement: &str) {
+        #[expect(
+            clippy::expect_used,
+            reason = "a broken staging is a test bug, and the failure is the report"
+        )]
+        connection
+            .execute_batch(statement)
+            .await
+            .expect("the bootstrap-race staging applies");
+    }
+
+    /// Stamps an in-memory database by hand: applies `schema` — DDL plus its stamp row — and
+    /// advances `user_version` to 1, reproducing the database an existing file carries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the DDL or the `user_version` write fails.
+    async fn open_stamped_memory_database(schema: &str) -> Connection {
+        let connection = open_memory_connection().await;
+
+        #[expect(
+            clippy::expect_used,
+            reason = "a registry's schema always applies to a fresh in-memory test database"
+        )]
+        connection
+            .execute_batch(schema)
+            .await
+            .expect("a registry's schema applies to a fresh in-memory test database");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the user_version write always succeeds on a fresh in-memory test database"
+        )]
+        connection
+            .execute_batch("PRAGMA user_version = 1;")
+            .await
+            .expect("the user_version write succeeds on a fresh in-memory test database");
+
+        connection
+    }
+
+    /// Verifies the registry-stamp fatality in the shard-under-main direction: a database
+    /// stamped for the shard registry panics when the bootstrap brings it up under the main
+    /// registry, naming both registries — instead of passing validation and failing later with
+    /// a missing-table error on first query.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bootstrap does not panic.
+    #[tokio::test]
+    #[should_panic(
+        expected = "is stamped for the shard registry but was opened under the main registry"
+    )]
+    async fn a_shard_stamped_database_is_fatal_under_the_main_registry() {
+        let connection = open_stamped_memory_database(shard_version_1::SCHEMA.schema).await;
+
+        migrate(&connection, Registry::Main, ":memory:").await;
+    }
+
+    /// Verifies the registry-stamp fatality in the mirror direction: a database stamped for the
+    /// main registry panics when the bootstrap brings it up under the shard registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bootstrap does not panic.
+    #[tokio::test]
+    #[should_panic(
+        expected = "is stamped for the main registry but was opened under the shard registry"
+    )]
+    async fn a_main_stamped_database_is_fatal_under_the_shard_registry() {
+        let connection = open_stamped_memory_database(version_1::SCHEMA.schema).await;
+
+        migrate(&connection, Registry::ApiLogShard, ":memory:").await;
+    }
+
+    /// Verifies that a database carrying a schema version but no registry stamp — a file
+    /// predating the stamp, from before this change — fails the startup verification like any
+    /// other database this build cannot interpret; the operator recreates the file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bootstrap does not panic.
+    #[tokio::test]
+    #[should_panic(expected = "failed to query the database's registry stamp")]
+    async fn a_database_predating_the_registry_stamp_is_fatal() {
+        let connection = open_memory_connection().await;
+
+        // The era's layout without the marker: one table, a stamped version.
+        #[expect(
+            clippy::expect_used,
+            reason = "the synthetic pre-stamp layout always applies to a fresh test database"
+        )]
+        connection
+            .execute_batch(
+                "CREATE TABLE pre_stamp (value INTEGER) STRICT;
+                 PRAGMA user_version = 1;",
+            )
+            .await
+            .expect("the pre-stamp layout applies to a fresh test database");
+
+        migrate(&connection, Registry::Main, ":memory:").await;
     }
 
     /// Asserts that the database's current schema objects match the declared schema of `schema`.
@@ -601,6 +1012,10 @@ mod tests {
 
                 vec![line]
             }
+
+            // The registry stamp row is data, not a schema object: the structural comparison
+            // covers stored objects only, and the row itself is never compared.
+            Stmt::Insert { .. } => Vec::new(),
 
             _ => {
                 #[expect(

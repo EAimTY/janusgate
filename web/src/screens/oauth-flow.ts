@@ -241,6 +241,25 @@ export function createOauthFlow(options: {
             action: options.completeAction,
         });
 
+    /**
+     * The state is unknown, expired, or already consumed: this flow is dead,
+     * so it resets instead of being retried — and the notice is the flow's
+     * own verdict, not the raw row diagnosis, which names neither this flow
+     * nor the way forward.
+     */
+    const failGoneFlow = (diagnosis: Diagnosis): void => {
+        discardFlow();
+        options.onGone?.();
+        setFailure(goneFlowNotice(diagnosis));
+    };
+
+    /** Ends a flow whose exchange the gateway answered as failed: the
+     * burned flow resets, and the failure states the fresh-flow recovery. */
+    const failExchange = (failureMessage: string): void => {
+        discardFlow();
+        setFailure(flowFailedNotice(failureMessage));
+    };
+
     const start = async (): Promise<void> => {
         if (isBusy() || flow() !== null) {
             return;
@@ -326,14 +345,7 @@ export function createOauthFlow(options: {
             const diagnosis = completionDiagnosis(outcome.cause);
 
             if (diagnosis.kind === "gone") {
-                // The state is unknown, expired, or already consumed: this
-                // flow is dead, so it resets instead of being retried — and
-                // the notice is the flow's own verdict, not the raw row
-                // diagnosis, which names neither this flow nor the way
-                // forward.
-                discardFlow();
-                options.onGone?.();
-                setFailure(goneFlowNotice(diagnosis));
+                failGoneFlow(diagnosis);
 
                 return;
             }
@@ -349,8 +361,7 @@ export function createOauthFlow(options: {
         }
 
         if (outcome.result.status === "failed") {
-            discardFlow();
-            setFailure(flowFailedNotice(outcome.result.failure_message));
+            failExchange(outcome.result.failure_message);
             return;
         }
 
@@ -411,14 +422,7 @@ export function createOauthFlow(options: {
             const diagnosis = completionDiagnosis(outcome.cause);
 
             if (diagnosis.kind === "gone") {
-                // The state is unknown, expired, or already consumed: this
-                // flow is dead, so it resets instead of being retried — and
-                // the notice is the flow's own verdict, not the raw row
-                // diagnosis, which names neither this flow nor the way
-                // forward.
-                discardFlow();
-                options.onGone?.();
-                setFailure(goneFlowNotice(diagnosis));
+                failGoneFlow(diagnosis);
 
                 return "done";
             }
@@ -462,14 +466,13 @@ export function createOauthFlow(options: {
             return "pending";
         }
 
-        discardFlow();
-
         if (outcome.result.status === "failed") {
-            setFailure(flowFailedNotice(outcome.result.failure_message));
+            failExchange(outcome.result.failure_message);
             return "done";
         }
 
         if (outcome.result.status === "succeeded") {
+            discardFlow();
             options.onSucceeded(outcome.result.provider);
         }
 

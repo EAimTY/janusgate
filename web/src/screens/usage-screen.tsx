@@ -10,7 +10,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
-import { hrefs, navigate } from "/src/router";
+import { hrefs, isCurrentAddress, navigate } from "/src/router";
 import { ReadNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
 import { Button, ButtonLink, SelectField } from "/src/ui/controls";
@@ -19,6 +19,7 @@ import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { UsageFilterControls } from "/src/ui/usage-filter-controls";
 import {
+    buildUsageFilter,
     draftUsageFilter,
     EMPTY_USAGE_FILTER_DRAFT,
     hasUsageFilter,
@@ -219,7 +220,7 @@ export function UsageScreen(props: {
 
         const target = hrefs.usage(draft());
 
-        if (target === `${window.location.pathname}${window.location.search}`) {
+        if (isCurrentAddress(target)) {
             read.reload();
             return;
         }
@@ -428,25 +429,29 @@ export function UsageScreen(props: {
  * narrow, when exactly one of provider, model, or key is named, as the
  * aggregates page's prefilled subject — so landing on the aggregates page
  * from a narrowed stream keeps asking about that entity instead of silently
- * totaling the whole gateway. A filter naming no entity, or more than one,
- * carries no subject: a subject is one entity, and a compound narrow belongs
- * to the aggregates page's own filter, not to a link. The window and every
+ * totaling the whole gateway. The narrow is read off the wire filter
+ * `buildUsageFilter` spells — the one trusted conversion from the form's
+ * strings to row ids — so this link's subject cannot drift from the filter
+ * the stream runs under. A filter naming no entity, or more than one, carries
+ * no subject: a subject is one entity, and a compound narrow belongs to the
+ * aggregates page's own filter, not to a link. The window and every
  * non-entity field stay behind — only the entity subject crosses, the
  * aggregates page's window semantics being its own.
  */
 function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | undefined {
+    const wire = buildUsageFilter(filter);
     const named: UsageQuerySubject[] = [];
 
-    // The route parser admits an entity field only when it reads as a row
-    // identifier, so the `Number` here is the same trusted spelling
-    // `buildUsageFilter` puts on the wire.
     for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
-        const value = filter[USAGE_QUERY_SUBJECT_FIELDS[dimension].draftField];
+        const ids = wire[USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField];
 
-        if (value !== "") {
+        if (ids !== undefined) {
+            // `buildUsageFilter` names a field with exactly one id — one draft
+            // field, one wire value — so the element read is a proven
+            // invariant of this module's own builder.
             named.push({
                 dimension,
-                id: Number(value),
+                id: ids[0]!,
             });
         }
     }

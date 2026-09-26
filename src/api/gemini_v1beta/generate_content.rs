@@ -153,25 +153,21 @@ struct ModelAction {
 ///
 /// Returns [`Error::InvalidUrl`] for captures outside the two action shapes.
 fn parse_model_action(rest: &str) -> Result<ModelAction, Error> {
+    let invalid_url = || Error::InvalidUrl {
+        method: Method::POST.as_str().to_string(),
+        path: format!("/api/gemini-v1beta/models/{rest}"),
+    };
+
     // A `/` inside the capture means the model segment itself contained a slash: the
     // URL path cannot carry such a public ID, so the path is unmapped.
     if rest.contains('/') {
-        return Err(Error::InvalidUrl {
-            method: Method::POST.as_str().to_string(),
-            path: format!("/api/gemini-v1beta/models/{rest}"),
-        });
+        return Err(invalid_url());
     }
 
-    let (model, action) = rest.split_once(':').ok_or_else(|| Error::InvalidUrl {
-        method: Method::POST.as_str().to_string(),
-        path: format!("/api/gemini-v1beta/models/{rest}"),
-    })?;
+    let (model, action) = rest.split_once(':').ok_or_else(invalid_url)?;
 
     if model.is_empty() || model.contains(':') {
-        return Err(Error::InvalidUrl {
-            method: Method::POST.as_str().to_string(),
-            path: format!("/api/gemini-v1beta/models/{rest}"),
-        });
+        return Err(invalid_url());
     }
 
     match action {
@@ -185,10 +181,7 @@ fn parse_model_action(rest: &str) -> Result<ModelAction, Error> {
             is_streaming: true,
         }),
 
-        _ => Err(Error::InvalidUrl {
-            method: Method::POST.as_str().to_string(),
-            path: format!("/api/gemini-v1beta/models/{rest}"),
-        }),
+        _ => Err(invalid_url()),
     }
 }
 

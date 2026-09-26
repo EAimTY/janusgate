@@ -1,6 +1,5 @@
+import type { DefinitionPayload } from "/src/management-api/definition-payload";
 import type { DefinitionResponse } from "/src/management-api/generated/v0";
-
-import type { DefinitionPayload } from "./definition-payload";
 
 /**
  * The preset catalog (gateway README §5.6): hardcoded, versioned definition documents

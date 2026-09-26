@@ -37,6 +37,8 @@ pub(crate) mod models;
 pub(crate) mod oauth_flows;
 pub(crate) mod provider_definitions;
 pub(crate) mod providers;
+#[cfg(test)]
+mod test_support;
 
 /// Column order of provider selects: the row identity, the routing columns, the credential
 /// state, and then the definition columns the row references, consumed positionally by
@@ -547,116 +549,6 @@ async fn ensure_id_routable_in_transaction(
     Ok(())
 }
 
-/// Test fixtures shared by the storage entity modules' test modules: each entity's tests live in
-/// its own module beside its statements, and the fixtures more than one of those modules seed
-/// from live here once.
-#[cfg(test)]
-pub(crate) mod fixtures {
-    use super::models::ModelEntry;
-    use crate::{
-        database::Database,
-        format::UpstreamFormat,
-        provider::StoredCredentials,
-        test_support::{
-            self, FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthGrantFixture,
-            OAuthRefreshFixture, OAuthResponseField, OAuthTarget, oauth_definition_payload,
-        },
-    };
-    use std::error::Error as StdError;
-
-    /// Inserts one enabled static-key test provider, returning its stored row.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the insert fails.
-    pub(crate) async fn insert_test_provider(
-        database: &Database,
-        name: &str,
-        model_prefix: &str,
-    ) -> Result<i64, Box<dyn StdError>> {
-        let definition = test_support::insert_static_key_definition(
-            database,
-            &format!("def-{name}"),
-            UpstreamFormat::OpenAiChatCompletion,
-        )
-        .await;
-
-        let provider = test_support::insert_provider(
-            database,
-            &definition,
-            name,
-            model_prefix,
-            Some("http://localhost:8080"),
-            StoredCredentials::ApiKey {
-                api_key: "test-secret".to_string(),
-            },
-        )
-        .await;
-
-        Ok(provider.id)
-    }
-
-    /// Fetches one listing entry by its upstream identifier, expecting it to be present.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the entry is absent; every caller looks up a row the test just verified exists.
-    pub(crate) fn entry<'a>(entries: &'a [ModelEntry], upstream_id: &str) -> &'a ModelEntry {
-        entries
-            .iter()
-            .find(|entry| entry.model.upstream_id == upstream_id)
-            .unwrap_or_else(|| {
-                #[expect(
-                    clippy::panic,
-                    reason = "every caller looks up a row the test just verified exists"
-                )]
-                {
-                    panic!("model row `{upstream_id}` must be listed")
-                }
-            })
-    }
-
-    /// Builds one fixture OAuth definition version 1: a device grant whose credential never
-    /// renews.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the payload fails to parse or validate — neither can occur for the fixed
-    /// fixture payload.
-    pub(crate) fn oauth_definition() -> crate::provider::definition::ProviderDefinition {
-        let payload = oauth_definition_payload(OAuthDefinitionFixture {
-            format: UpstreamFormat::OpenAiChatCompletion,
-            inference_suffix: Some("/chat/completions"),
-            client_id: "fixture-client",
-            initial_slots: &[],
-            grant: OAuthGrantFixture::Device {
-                has_grant_type_field: true,
-            },
-            exchange_url: FIXTURE_TOKEN_URL,
-            response_fields: vec![OAuthResponseField::new(
-                "refresh_token",
-                OAuthTarget::RefreshToken,
-            )],
-            terminal_codes: &["expired_token", "access_denied"],
-            refresh: OAuthRefreshFixture::None,
-            provisioning: None,
-        });
-
-        #[expect(clippy::unwrap_used, reason = "the fixture payload validates")]
-        payload.validate().unwrap();
-
-        #[expect(clippy::unwrap_used, reason = "a positive literal version")]
-        let version = std::num::NonZeroI64::new(1).unwrap();
-
-        crate::provider::definition::ProviderDefinition {
-            name: "fixture-oauth".to_string(),
-            version,
-            payload,
-            created_at: 1,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -665,12 +557,12 @@ mod tests {
     )]
 
     use super::{
-        fixtures::{entry, insert_test_provider, oauth_definition},
         models::{
             ModelUpdate, apply_discovered_models, find_routing, list_enabled_models_with_owner,
             list_model_entries, update_model_overrides_checked,
         },
         providers::{ProviderUpdate, list_providers, update_provider},
+        test_support::{entry, insert_test_provider, oauth_definition},
         *,
     };
     use crate::{

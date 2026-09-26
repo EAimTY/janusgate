@@ -55,6 +55,14 @@ pub(super) struct SseRenderer {
     /// streamed bytes are not a prefix of (README §6.2).
     streamed_arguments: Vec<(usize, String)>,
 
+    /// Outward ordinals of the tool calls seen so far, mapping each call's IR index to the dense
+    /// outward `tool_calls[].index` its chunks render. The IR index is only the call's stable
+    /// internal identity — a Responses upstream reports the item's `output_index`, its position
+    /// among all output items, so a reasoning-plus-tool turn opens its first call at a nonzero IR
+    /// index — while the outward Chat Completions contract requires a dense zero-based numbering
+    /// per choice, so first sight of an IR index allocates the next free ordinal (README §6.2).
+    outward_indexes: Vec<(usize, usize)>,
+
     /// Whether the trailing usage chunk is wanted.
     should_include_usage: bool,
 
@@ -188,7 +196,8 @@ struct Delta {
 /// adds.
 #[derive(Debug, Serialize)]
 struct DeltaToolCall {
-    /// Stable index of the call within the response.
+    /// Stable index of the call within the response, renumbered outward-only into the dense
+    /// zero-based ordinal of the choice's tool calls array (README §6.2).
     index: usize,
 
     /// Invocation identifier, revealed by the opening chunk.
@@ -255,6 +264,7 @@ impl SseRenderer {
             created: unix_time::unix_now(),
             is_role_sent: false,
             streamed_arguments: Vec::new(),
+            outward_indexes: Vec::new(),
             should_include_usage,
             usage: None,
         }
@@ -291,6 +301,23 @@ impl SseRenderer {
         };
 
         sse::format_data_frame(&format::render_json(&chunk))
+    }
+
+    /// Returns the outward ordinal for the tool call the IR index identifies, allocating the next
+    /// dense ordinal on first sight; every chunk of a call — deltas, residuals, and the done's
+    /// full-call shape alike — renders the same ordinal (README §6.2).
+    fn outward_index(&mut self, ir_index: usize) -> usize {
+        if let Some((_, outward_index)) = self
+            .outward_indexes
+            .iter()
+            .find(|(seen_index, _)| *seen_index == ir_index)
+        {
+            return *outward_index;
+        }
+
+        let outward_index = self.outward_indexes.len();
+        self.outward_indexes.push((ir_index, outward_index));
+        outward_index
     }
 }
 
@@ -367,8 +394,10 @@ impl ClientSseRenderer for SseRenderer {
                         .push((*index, arguments_delta.clone())),
                 }
 
+                let outward_index = self.outward_index(*index);
+
                 let tool_call = DeltaToolCall {
-                    index: *index,
+                    index: outward_index,
                     id: call_id.clone(),
                     tool_type: call_id.as_ref().map(|_| "function"),
                     function: Some(DeltaFunction {
@@ -394,6 +423,8 @@ impl ClientSseRenderer for SseRenderer {
                 arguments,
                 thought_signature,
             } => {
+                let outward_index = self.outward_index(*index);
+
                 let streamed = self
                     .streamed_arguments
                     .iter()
@@ -408,7 +439,7 @@ impl ClientSseRenderer for SseRenderer {
                         // tool_calls delta chunk, exactly the shape a delta
                         // would have produced.
                         let tool_call = DeltaToolCall {
-                            index: *index,
+                            index: outward_index,
                             id: Some(call_id.clone()),
                             tool_type: Some("function"),
                             function: Some(DeltaFunction {
@@ -445,7 +476,7 @@ impl ClientSseRenderer for SseRenderer {
                             frames.push(self.chunk_frame(
                                 Delta {
                                     tool_calls: Some(vec![DeltaToolCall {
-                                        index: *index,
+                                        index: outward_index,
                                         id: None,
                                         tool_type: None,
                                         function: Some(DeltaFunction {
@@ -464,7 +495,7 @@ impl ClientSseRenderer for SseRenderer {
                             frames.push(self.chunk_frame(
                                 Delta {
                                     tool_calls: Some(vec![DeltaToolCall {
-                                        index: *index,
+                                        index: outward_index,
                                         id: None,
                                         tool_type: None,
                                         function: None,
@@ -621,6 +652,30 @@ mod tests {
             .collect()
     }
 
+    /// Reads the outward tool-call index each rendered frame delivers,
+    /// exactly as a client assembling the stream would.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a rendered frame lacks exactly one tool call carrying a
+    /// numeric index.
+    #[expect(
+        clippy::expect_used,
+        reason = "the rendered frames are under test; a missing or malformed frame is the failure"
+    )]
+    fn outward_tool_call_indexes(frames: &[String]) -> Vec<usize> {
+        frame_payloads(frames)
+            .iter()
+            .map(|payload| {
+                payload
+                    .pointer("/choices/0/delta/tool_calls/0/index")
+                    .expect("every rendered chunk carries one tool call")
+                    .as_u64()
+                    .expect("a tool-call index renders as a JSON number") as usize
+            })
+            .collect()
+    }
+
     /// Parses the JSON payload of the only rendered SSE frame.
     ///
     /// # Panics
@@ -670,7 +725,11 @@ mod tests {
 
         assert_eq!(assembled_arguments(&opened), "");
 
+        assert_eq!(outward_tool_call_indexes(&opened), vec![0]);
+
         assert_eq!(assembled_arguments(&done), r#"{"city":"Paris","unit":"c"}"#);
+
+        assert_eq!(outward_tool_call_indexes(&done), vec![0]);
     }
 
     /// Live deltas that already streamed the full arguments — the Gemini
@@ -807,9 +866,11 @@ mod tests {
         assert!(done.is_empty());
     }
 
-    /// A done for an index no delta ever opened — the recovery class of
+    /// A done for an IR index no delta ever opened — the recovery class of
     /// README §6.2 — renders the complete call as one full tool_calls delta
-    /// chunk, exactly the shape a delta would have produced.
+    /// chunk, exactly the shape a delta would have produced, under the
+    /// outward ordinal its first sight allocates: index 0 for the first-seen
+    /// IR index.
     ///
     /// # Panics
     ///
@@ -819,7 +880,7 @@ mod tests {
         let mut renderer = SseRenderer::new("m".to_string(), false);
 
         let done = renderer.render(&IrEvent::ToolCallDone {
-            index: 2,
+            index: 0,
             call_id: "call_3".to_string(),
             name: "get_weather".to_string(),
             arguments: "{}".to_string(),
@@ -831,7 +892,7 @@ mod tests {
             Some(&serde_json::json!([{
                 "index": 0,
                 "delta": {"tool_calls": [{
-                    "index": 2,
+                    "index": 0,
                     "id": "call_3",
                     "type": "function",
                     "function": {"name": "get_weather", "arguments": "{}"},
@@ -839,6 +900,109 @@ mod tests {
                 }]},
                 "finish_reason": null,
             }]))
+        );
+    }
+
+    /// Tool-call chunks renumber the calls outward-only: IR indexes that
+    /// start at 1 and skip — a Responses upstream reports each item's
+    /// `output_index`, its position among all output items — render as dense
+    /// outward indexes from zero, and a done for an opened call reuses the
+    /// outward ordinal its deltas opened.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered stream diverges from the documented behavior.
+    #[test]
+    fn sparse_ir_indexes_render_dense_outward_indexes() {
+        let mut renderer = SseRenderer::new("m".to_string(), false);
+
+        let first = renderer.render(&IrEvent::ToolCallDelta {
+            index: 1,
+            call_id: Some("call_1".to_string()),
+            name: Some("get_weather".to_string()),
+            arguments_delta: String::new(),
+        });
+
+        let second = renderer.render(&IrEvent::ToolCallDelta {
+            index: 3,
+            call_id: Some("call_2".to_string()),
+            name: Some("get_weather".to_string()),
+            arguments_delta: r#"{"city":"Paris"}"#.to_string(),
+        });
+
+        // The done carries the full arguments the empty opening delta never
+        // streamed, so it renders the residual frame at the call's outward
+        // ordinal.
+        let first_done = renderer.render(&IrEvent::ToolCallDone {
+            index: 1,
+            call_id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            arguments: r#"{"city":"Paris","unit":"c"}"#.to_string(),
+            thought_signature: None,
+        });
+
+        // The second call's deltas already streamed its full arguments, so
+        // its done renders nothing.
+        let second_done = renderer.render(&IrEvent::ToolCallDone {
+            index: 3,
+            call_id: "call_2".to_string(),
+            name: "get_weather".to_string(),
+            arguments: r#"{"city":"Paris"}"#.to_string(),
+            thought_signature: None,
+        });
+
+        assert_eq!(outward_tool_call_indexes(&first), vec![0]);
+
+        assert_eq!(outward_tool_call_indexes(&second), vec![1]);
+
+        assert_eq!(outward_tool_call_indexes(&first_done), vec![0]);
+
+        assert_eq!(
+            assembled_arguments(&first_done),
+            r#"{"city":"Paris","unit":"c"}"#
+        );
+
+        assert!(second_done.is_empty());
+    }
+
+    /// A done for an IR index no delta ever opened allocates the next dense
+    /// outward ordinal — after the ordinal the opened IR index took — and
+    /// renders the complete call under it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered stream diverges from the documented behavior.
+    #[test]
+    fn done_for_a_never_opened_index_allocates_the_next_outward_ordinal() {
+        let mut renderer = SseRenderer::new("m".to_string(), false);
+
+        let opened = renderer.render(&IrEvent::ToolCallDelta {
+            index: 1,
+            call_id: Some("call_1".to_string()),
+            name: Some("get_weather".to_string()),
+            arguments_delta: r#"{"city":"Paris"}"#.to_string(),
+        });
+
+        let done = renderer.render(&IrEvent::ToolCallDone {
+            index: 4,
+            call_id: "call_5".to_string(),
+            name: "get_time".to_string(),
+            arguments: "{}".to_string(),
+            thought_signature: Some("sig".to_string()),
+        });
+
+        assert_eq!(outward_tool_call_indexes(&opened), vec![0]);
+
+        let payload = lone_frame_payload(&done);
+
+        assert_eq!(
+            payload.pointer("/choices/0/delta/tool_calls/0/index"),
+            Some(&serde_json::json!(1))
+        );
+
+        assert_eq!(
+            payload.pointer("/choices/0/delta/tool_calls/0/id"),
+            Some(&serde_json::json!("call_5"))
         );
     }
 }

@@ -9,7 +9,13 @@ import type {
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
-import { bodyText, buttonWithText, settle, stubManagementApi } from "./screen-test-support";
+import {
+    bodyText,
+    buttonWithText,
+    paragraphWithText,
+    settle,
+    stubManagementApi,
+} from "./screen-test-support";
 
 const provider: ProviderResponse = {
     type: "api_key",
@@ -373,5 +379,83 @@ describe("ProviderDetailScreen facts", () => {
         // the shorter "Static key" alias must not return as a badge beside it.
         expect(bodyText().split("Static API key").length - 1).toBe(1);
         expect(bodyText()).not.toContain("Static key");
+    });
+});
+
+describe("ProviderDetailScreen credential reconnect", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** One OAuth provider whose authorization lapsed long ago. */
+    const expiredOauth: ProviderResponse = {
+        type: "oauth",
+        id: 5,
+        name: "local",
+        model_prefix: "local-",
+        is_enabled: true,
+        provider_definition_name: "codex-oauth",
+        provider_definition_version: 1,
+        format: "openai_response",
+        base_url: null,
+        expires_at: 1,
+    };
+
+    /** The same provider with an authorization good for decades yet. */
+    const validOauth: ProviderResponse = {
+        ...expiredOauth,
+        expires_at: 4_102_444_800_000_000,
+    };
+
+    function mount(providers: ReadonlyArray<ProviderResponse>): void {
+        disposes.push(
+            render(
+                () => (
+                    <ProviderDetailScreen
+                        api={screenApi({
+                            providers,
+                            models: [
+                                discoveredModel,
+                            ],
+                            onDiscover: () => undefined,
+                        })}
+                        providerId={5}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("names reconnect on the edit page under a lapsed credential badge", async () => {
+        mount([
+            expiredOauth,
+        ]);
+        await settle();
+
+        expect(bodyText()).toContain("The OAuth credentials have expired.");
+
+        // The edit page already has a header button; the line is the pin, so
+        // the link is read out of the reconnect line itself.
+        const reconnectLine = paragraphWithText("Reconnect on the");
+        const editLink = reconnectLine.querySelector("a");
+
+        expect(editLink?.getAttribute("href")).toBe("/providers/5/edit");
+        expect(editLink?.textContent).toContain("edit page");
+    });
+
+    it("states no reconnect line while the credential is valid", async () => {
+        mount([
+            validOauth,
+        ]);
+        await settle();
+
+        expect(bodyText()).toContain("Valid");
+        expect(bodyText()).not.toContain("Reconnect on the");
     });
 });

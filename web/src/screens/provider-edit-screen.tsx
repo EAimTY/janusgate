@@ -349,10 +349,7 @@ function DetailsCard(props: {
             isEnabled() !== baselineRow.is_enabled ||
             name() !== baselineRow.name ||
             effectivePrefix() !== baselineRow.model_prefix ||
-            (isStatic() &&
-                (trimmedBaseUrl() !==
-                    (isOAuthProviderRow(baselineRow) ? "" : (baselineRow.base_url ?? "")) ||
-                    apiKey() !== ""))
+            (isStatic() && (trimmedBaseUrl() !== (baselineRow.base_url ?? "") || apiKey() !== ""))
         );
     });
 
@@ -473,7 +470,7 @@ function DetailsCard(props: {
                         apiKey={apiKey()}
                         onBaseUrlInput={setBaseUrl}
                         onApiKeyInput={setApiKey}
-                        apiKeyLabel="Replace the API key"
+                        apiKeyLabel="Replace the upstream API key"
                         apiKeyHint="Write-only: the gateway never returns it, so leaving this empty keeps what is stored."
                         baseUrlError={baseUrlError()}
                         apiKeyError={apiKeyError()}

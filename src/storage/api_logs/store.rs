@@ -217,7 +217,10 @@ impl ApiLogStore {
     /// only when no file is present yet.
     ///
     /// The asynchronous lock is held across the whole decision, so concurrent writers
-    /// serialize on cache misses only; the returned handle is pooled and used outside the lock.
+    /// serialize on cache misses only; the returned handle is pooled and used outside the
+    /// lock. The lock is held on the executor thread while the miss's blocking filesystem
+    /// work — the shard open and the retention sweep — runs on the blocking thread pool, so
+    /// no syscall ever blocks a worker thread and the get-or-open serialization is unchanged.
     async fn shard_for_write(&self, day: ShardDay) -> Result<Database, Error> {
         let mut hot = self.inner.hot.lock().await;
 
@@ -231,18 +234,43 @@ impl ApiLogStore {
 
         let path = self.shard_path(day);
         let is_new = !path.exists();
-        let database = Database::open(
-            &path,
-            Registry::ApiLogShard,
-            shard_write_pool_connections(),
-            SHARD_POOL_WAIT,
-        )
-        .await?;
+        let database = Self::open_shard_blocking(path).await?;
 
         if is_new {
-            // Creating a new file is the sweep's only trigger; opening an existing shard for a
-            // late write never sweeps.
-            self.sweep(&mut hot, day);
+            // Creating a new file is the sweep's only trigger; opening an existing shard for
+            // a late write never sweeps. The sweep's directory listing and unlinking are
+            // blocking syscalls, so they run on the blocking thread pool while this lock
+            // stays held, keeping the eviction-before-unlink ordering atomic with respect to
+            // concurrent writers. The guarded cache is handed over owned (`std::mem::take`)
+            // and restored after: while taken, the lock hides the temporarily empty vector
+            // from every other writer.
+            let swept = {
+                let cache = std::mem::take(&mut *hot);
+                let directory = self.inner.directory.clone();
+                let retention_days = self.inner.retention_days;
+
+                tokio::task::spawn_blocking(move || {
+                    Self::sweep(directory, retention_days, cache, day)
+                })
+                .await
+            };
+
+            match swept {
+                Ok(swept) => *hot = swept,
+
+                // A panic in the sweep is a bug: resume it on this thread, where it fails
+                // fast instead of being masked as tolerated maintenance damage.
+                Err(join_error) if join_error.is_panic() => {
+                    std::panic::resume_unwind(join_error.into_panic());
+                }
+
+                // The task was cancelled before it ran — only possible while the runtime is
+                // shutting down — and the taken cache died with it. An empty cache is
+                // correct: it is a performance hint, and misses lazily reopen their shards.
+                Err(join_error) => {
+                    warn!("the api log retention sweep task never ran: {join_error}");
+                }
+            }
         }
 
         hot.insert(0, (day, database.clone()));
@@ -251,27 +279,81 @@ impl ApiLogStore {
         Ok(database)
     }
 
+    /// Opens one shard database on the blocking thread pool: [`Database::open`] creates the
+    /// file and its parent directory and runs the engine open and the shard schema bootstrap
+    /// synchronously inside Turso, so the open future is driven to completion off the async
+    /// executor thread. The caller holds the store lock across the call, so the get-or-open
+    /// serialization is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] exactly when [`Database::open`] fails.
+    ///
+    /// # Panics
+    ///
+    /// Resumes a panic of the underlying open — a failed schema bootstrap, a failed
+    /// migration, or an unknown stored schema version, per [`Database::open`].
+    async fn open_shard_blocking(path: PathBuf) -> Result<Database, Error> {
+        let runtime = tokio::runtime::Handle::current();
+
+        let opened = tokio::task::spawn_blocking(move || {
+            runtime.block_on(Database::open(
+                path,
+                Registry::ApiLogShard,
+                shard_write_pool_connections(),
+                SHARD_POOL_WAIT,
+            ))
+        })
+        .await;
+
+        match opened {
+            Ok(outcome) => outcome.map_err(Error::from),
+
+            // A panic in the open is fatal by contract: resume it rather than mask it as an
+            // ordinary open failure.
+            Err(join_error) if join_error.is_panic() => {
+                std::panic::resume_unwind(join_error.into_panic())
+            }
+
+            #[expect(
+                clippy::unreachable,
+                reason = "the open task is never aborted, and a panic inside it is resumed in \
+                          the arm above; only runtime shutdown can cancel the task"
+            )]
+            Err(join_error) => {
+                unreachable!("the shard-open blocking task cannot be cancelled: {join_error}")
+            }
+        }
+    }
+
     /// Deletes the expired shard files: every shard whose day-end is strictly older than now
     /// minus the retention, except the file just created. A cached shard is evicted before its
     /// file is unlinked, so the pool never keeps writing into a deleted file. Unparseable
     /// filenames are left alone, and every failure here is logged and swallowed — retention is
     /// a maintenance sweep, never an error surface.
     ///
-    /// Called with the hot cache locked, immediately after a new shard file was created.
-    fn sweep(&self, hot: &mut Vec<(ShardDay, Database)>, just_created: ShardDay) {
+    /// Runs on the blocking thread pool, called with the store lock held by the caller: the
+    /// guarded cache is handed over owned and returned, so the eviction-before-unlink ordering
+    /// stays exclusive to the caller's lock.
+    fn sweep(
+        directory: PathBuf,
+        retention_days: NonZero<u32>,
+        mut cache: Vec<(ShardDay, Database)>,
+        just_created: ShardDay,
+    ) -> Vec<(ShardDay, Database)> {
         let cutoff = i128::from(unix_time::unix_now_micros())
-            - i128::from(self.inner.retention_days.get()) * i128::from(MICROS_PER_DAY);
+            - i128::from(retention_days.get()) * i128::from(MICROS_PER_DAY);
 
-        let entries = match std::fs::read_dir(&self.inner.directory) {
+        let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
 
             Err(failure) => {
                 warn!(
                     "failed to list the api log shard directory {}: {failure}",
-                    self.inner.directory.display()
+                    directory.display()
                 );
 
-                return;
+                return cache;
             }
         };
 
@@ -298,7 +380,7 @@ impl ApiLogStore {
                 continue;
             }
 
-            hot.retain(|(cached, _)| *cached != day);
+            cache.retain(|(cached, _)| *cached != day);
 
             if let Err(failure) = std::fs::remove_file(entry.path()) {
                 warn!(
@@ -314,10 +396,12 @@ impl ApiLogStore {
             for suffix in ["-wal", "-shm"] {
                 let mut sibling = entry.file_name().to_os_string();
                 sibling.push(suffix);
-                let sibling = self.inner.directory.join(sibling);
+                let sibling = directory.join(sibling);
                 let _ = std::fs::remove_file(sibling);
             }
         }
+
+        cache
     }
 
     /// Every shard day the directory currently holds, ascending. An absent directory reads as

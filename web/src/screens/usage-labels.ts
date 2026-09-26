@@ -3,6 +3,7 @@ import type {
     ApiKeyResponse,
     ModelResponse,
     ProviderResponse,
+    UsageBucket,
     UsageBucketKey,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
@@ -84,6 +85,25 @@ export function missingBucketKeyFieldMessage(field: string): string {
 }
 
 /**
+ * The bucket-key field each requested dimension's part rides on: the one
+ * pairing the read's per-key proof (`readUsageBuckets`) and the render's
+ * per-cell assert (`usageDimensionLabel`) both consume, so a dimension and
+ * its wire field cannot drift apart. The literal-preserving type keeps every
+ * entry's field exact, so a dimension narrowed by the dispatch reads its key
+ * part with precisely the value type its renderer expects.
+ */
+export const DIMENSION_KEY_FIELD = {
+    day: "day",
+    model: "model_id",
+    provider: "provider_id",
+    api_key: "api_key_id",
+    endpoint_type: "endpoint_type",
+    outcome: "outcome",
+    is_stream: "is_stream",
+    http_status: "http_status",
+} as const satisfies Readonly<Record<UsageGroupBy, keyof UsageBucketKey>>;
+
+/**
  * Reads one bucket key field the request's own dimension list guarantees:
  * a key carries exactly the requested dimensions, so an absent field is a
  * contract violation, not a blank to render past.
@@ -97,10 +117,32 @@ export function bucketKeyField<TValue>(value: TValue | undefined, field: string)
 }
 
 /**
+ * The day series as every usage display shows it: newest day first, with the
+ * gateway's own order kept within equal days — the comparison answers 0 for
+ * equal days, so the stable sort (ES2019+) preserves the answer's order
+ * inside a day and invents no ordering the gateway did not state. The day
+ * part is the invariant `readUsageBuckets` proved inside the read cycle, so
+ * the comparator asserts it exactly as the key cells do.
+ */
+export function daysNewestFirst(buckets: ReadonlyArray<UsageBucket>): Array<UsageBucket> {
+    return [
+        ...buckets,
+    ].sort((left, right) => {
+        const leftDay = bucketKeyField(left.key.day, "day");
+        const rightDay = bucketKeyField(right.key.day, "day");
+
+        return leftDay === rightDay ? 0 : leftDay < rightDay ? 1 : -1;
+    });
+}
+
+/**
  * One requested dimension's part of a bucket key, in the operator's words:
  * the day verbatim, ids resolved through the entity index, the enum
- * dimensions through their vocabularies. The `NULL` status bucket reads as
- * an em dash — the wire's `null` is a real bucket, never a missing one.
+ * dimensions through their vocabularies. The part rides the dimension's own
+ * `DIMENSION_KEY_FIELD` field — the same pairing the read proved — asserted
+ * through `bucketKeyField`, never rendered past when absent. The `NULL`
+ * status bucket reads as an em dash — the wire's `null` is a real bucket,
+ * never a missing one.
  */
 export function usageDimensionLabel(
     dimension: UsageGroupBy,
@@ -108,33 +150,51 @@ export function usageDimensionLabel(
     index: UsageEntityIndex,
 ): string {
     switch (dimension) {
-        case "day":
-            return bucketKeyField(key.day, "day");
+        case "day": {
+            const field = DIMENSION_KEY_FIELD[dimension];
 
-        case "model":
-            return usageModelLabel(index.modelsById, bucketKeyField(key.model_id, "model_id")).text;
+            return bucketKeyField(key[field], field);
+        }
 
-        case "provider":
-            return usageProviderLabel(
-                index.providersById,
-                bucketKeyField(key.provider_id, "provider_id"),
-            ).text;
+        case "model": {
+            const field = DIMENSION_KEY_FIELD[dimension];
 
-        case "api_key":
-            return usageApiKeyLabel(index.apiKeysById, bucketKeyField(key.api_key_id, "api_key_id"))
-                .text;
+            return usageModelLabel(index.modelsById, bucketKeyField(key[field], field)).text;
+        }
 
-        case "endpoint_type":
-            return apiLogEndpointLabel(bucketKeyField(key.endpoint_type, "endpoint_type"));
+        case "provider": {
+            const field = DIMENSION_KEY_FIELD[dimension];
 
-        case "outcome":
-            return apiLogOutcomeLabel(bucketKeyField(key.outcome, "outcome"));
+            return usageProviderLabel(index.providersById, bucketKeyField(key[field], field)).text;
+        }
 
-        case "is_stream":
-            return bucketKeyField(key.is_stream, "is_stream") ? "Streamed" : "Non-streamed";
+        case "api_key": {
+            const field = DIMENSION_KEY_FIELD[dimension];
+
+            return usageApiKeyLabel(index.apiKeysById, bucketKeyField(key[field], field)).text;
+        }
+
+        case "endpoint_type": {
+            const field = DIMENSION_KEY_FIELD[dimension];
+
+            return apiLogEndpointLabel(bucketKeyField(key[field], field));
+        }
+
+        case "outcome": {
+            const field = DIMENSION_KEY_FIELD[dimension];
+
+            return apiLogOutcomeLabel(bucketKeyField(key[field], field));
+        }
+
+        case "is_stream": {
+            const field = DIMENSION_KEY_FIELD[dimension];
+
+            return bucketKeyField(key[field], field) ? "Streamed" : "Non-streamed";
+        }
 
         case "http_status": {
-            const status = bucketKeyField(key.http_status, "http_status");
+            const field = DIMENSION_KEY_FIELD[dimension];
+            const status = bucketKeyField(key[field], field);
 
             return status === null ? "—" : String(status);
         }

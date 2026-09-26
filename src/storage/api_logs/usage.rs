@@ -3,10 +3,12 @@
 //!
 //! Both reads run per shard — each retained shard answers its own page or aggregation under the
 //! shared [`UsageFilter`] — and merge in Rust: pages sort newest first on `started_at` with each
-//! shard's per-shard rowid tie-break preserved, and buckets merge by key, then order by the key
-//! expressions in request order under SQLite's ordering, re-implemented by
-//! [`compare_bucket_keys`]. Day grouping is shard-aligned, so day buckets never straddle shards
-//! and the merge is exact. The page read walks the shards newest day first and stops once a
+//! shard's per-shard rowid tie-break preserved, and buckets merge by key, then order by the
+//! key expressions in request order under SQLite's ordering, re-implemented by
+//! [`compare_bucket_keys`]. The day dimension derives no SQL key column: one shard is one UTC
+//! day, so the merge stamps the bucket day from each row's own shard — the same [`ShardDay`]
+//! mapping the write path used to place the row — and day buckets never straddle shards, so
+//! the merge is exact. The page read walks the shards newest day first and stops once a
 //! finished shard has filled the page — every row of a newer shard outranks every row of an
 //! older one, so the aggregation scan of every remaining shard is never paid for a page that is
 //! already complete; `usage:query` keeps scanning all candidate shards, since an aggregation
@@ -147,10 +149,12 @@ impl ApiLogStore {
     }
 
     /// Aggregates accounting rows into `selection`'s buckets: each retained shard groups and
-    /// sums its own rows, and the per-shard buckets merge in Rust — counts and sums combine,
-    /// buckets merge by key, and the merged buckets order by the key expressions in request
-    /// order under SQLite's ordering, re-implemented by [`compare_bucket_keys`]. Day grouping
-    /// is shard-aligned, so day buckets never straddle shards and the merge is exact.
+    /// sums its own rows under [`key_expression`]'s SQL key columns, and the per-shard buckets
+    /// merge in Rust — counts and sums combine, buckets merge by key, and the merged buckets
+    /// order by the key expressions in request order under SQLite's ordering, re-implemented
+    /// by [`compare_bucket_keys`]. Day grouping is shard-aligned — the merge stamps each day
+    /// bucket with its shard's own day, and one shard is one day — so day buckets never
+    /// straddle shards and the merge is exact.
     ///
     /// An empty grouping aggregates one total bucket: over an empty store, exactly one zeroed
     /// bucket, never an empty list.
@@ -162,7 +166,7 @@ impl ApiLogStore {
         let key_expressions: Vec<&str> = selection
             .group_by
             .iter()
-            .map(|dimension| key_expression(*dimension))
+            .filter_map(|dimension| key_expression(*dimension))
             .collect();
         let key_list = key_expressions.join(", ");
 
@@ -171,8 +175,9 @@ impl ApiLogStore {
              COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), \
              COALESCE(SUM(reasoning_tokens), 0)";
 
-        // No dimensions, no key columns and no grouping: every shard answers the single total
-        // bucket an aggregate without `GROUP BY` produces.
+        // No SQL-backed dimensions — an empty selection, or the day dimension alone, whose key
+        // the merge stamps from each shard — no key columns and no grouping: every shard answers
+        // the single row an aggregate without `GROUP BY` produces.
         let (select_keys, grouping) = if key_expressions.is_empty() {
             (String::new(), String::new())
         } else {
@@ -202,7 +207,10 @@ impl ApiLogStore {
             let rows = database.query(sql, values).await?;
 
             for row in &rows {
-                let aggregate = usage_aggregate_from_row(row, &selection.group_by)?;
+                let Some(aggregate) = usage_aggregate_from_row(row, &selection.group_by, day)?
+                else {
+                    continue;
+                };
 
                 match merged.entry(aggregate.key.clone()) {
                     Entry::Occupied(mut existing) => existing.get_mut().absorb(&aggregate),
@@ -526,39 +534,63 @@ fn api_log_from_row(row: &Row) -> Result<ApiLog, Error> {
     })
 }
 
-/// Parses one aggregation row: one key column per requested dimension, in request order, then
-/// the count and the five coalesced sums.
-fn usage_aggregate_from_row(row: &Row, group_by: &[UsageGroupBy]) -> Result<UsageAggregate, Error> {
+/// Parses one aggregation row: one SQL key column per SQL-backed requested dimension, in
+/// request order, then the count and the five coalesced sums. The day dimension carries no key
+/// column (see [`key_expression`]): the key is stamped with the row's own shard's day before
+/// the columns walk.
+///
+/// Answers [`None`] for the one row a day-only selection must never see: a shard whose
+/// selection matched no rows still answers one zero-count row when the query groups by
+/// nothing, and a day-only selection is exactly such a query — one shard is one day, so SQL
+/// groups by nothing and the shard's empty partition must stay bucketless, as a `GROUP BY`-ed
+/// day query would answer. A group in any other selection forms only around rows, so its
+/// `requests` is never zero, and the empty selection's total bucket needs its zero row (README
+/// §7.1).
+fn usage_aggregate_from_row(
+    row: &Row,
+    group_by: &[UsageGroupBy],
+    shard_day: ShardDay,
+) -> Result<Option<UsageAggregate>, Error> {
+    let key_columns = group_by
+        .iter()
+        .filter_map(|dimension| key_expression(*dimension))
+        .count();
+    let requests: i64 = row.get(key_columns)?;
+
+    if key_columns == 0 && group_by.contains(&UsageGroupBy::Day) && requests == 0 {
+        return Ok(None);
+    }
+
     let mut key = UsageBucketKey::default();
 
-    for (index, dimension) in group_by.iter().enumerate() {
-        match dimension {
-            UsageGroupBy::Day => key.day = Some(row.get(index)?),
-            UsageGroupBy::Model => key.model_id = Some(row.get(index)?),
-            UsageGroupBy::Provider => key.provider_id = Some(row.get(index)?),
-            UsageGroupBy::ApiKey => key.api_key_id = Some(row.get(index)?),
-            UsageGroupBy::EndpointType => {
-                key.endpoint_type = Some(endpoint_type_from_value(row.get_value(index)?)?);
-            }
-            UsageGroupBy::Outcome => {
-                key.outcome = Some(outcome_from_value(row.get_value(index)?)?);
-            }
-            UsageGroupBy::IsStream => key.is_stream = Some(row.get::<i64>(index)? != 0),
-            // The status column is the one nullable key column: its `NULL` bucket reads as
-            // `None` and renders `null` on the wire.
-            UsageGroupBy::HttpStatus => key.http_status = row.get(index)?,
+    // One shard is one UTC day (README §3 *ApiLog Shard Store*): every row this shard answers
+    // carries the shard's own day, stamped here so the bucket day is the floor-day of every
+    // stamp by construction — the same [`ShardDay`] mapping the write path used — never a
+    // SQL-side re-derivation of it.
+    if group_by.contains(&UsageGroupBy::Day) {
+        key.day = Some(shard_day.file_stem());
+    }
+
+    let mut column = 0;
+
+    for dimension in group_by {
+        // The SQL-backed dimensions sit at consecutive columns in request order, so each reads
+        // the next column and the columnless day dimension reads none.
+        if key_expression(*dimension).is_some() {
+            read_key_part(&mut key, *dimension, row, column)?;
+            column += 1;
         }
     }
 
-    Ok(UsageAggregate {
+    Ok(Some(UsageAggregate {
         key,
-        requests: row.get(group_by.len())?,
-        input_tokens: row.get(group_by.len() + 1)?,
-        output_tokens: row.get(group_by.len() + 2)?,
-        cached_tokens: row.get(group_by.len() + 3)?,
-        cache_write_tokens: row.get(group_by.len() + 4)?,
-        reasoning_tokens: row.get(group_by.len() + 5)?,
-    })
+        requests,
+        input_tokens: row.get(key_columns + 1)?,
+        output_tokens: row.get(key_columns + 2)?,
+        cached_tokens: row.get(key_columns + 3)?,
+        cache_write_tokens: row.get(key_columns + 4)?,
+        reasoning_tokens: row.get(key_columns + 5)?,
+    }))
 }
 
 /// Reads the `endpoint_type` column, failing with internal drift on anything outside the closed
@@ -722,26 +754,107 @@ pub(crate) struct UsageSelection {
     pub(crate) filter: UsageFilter,
 }
 
-/// The SQL key expression the dimension groups, selects, and orders by (README §7.1): the
-/// stored column itself, except the day dimension, whose expression derives the UTC day of
-/// the dispatch stamp.
-fn key_expression(dimension: UsageGroupBy) -> &'static str {
+/// One dimension's bucket-key value: the single ordered view the dimension descriptor speaks.
+/// The merge ordering compares two keys dimension by dimension through [`key_part`], and only
+/// the view's inner order is ever exercised — both compared parts always answer the same
+/// requested dimension, so the derived cross-variant order (declaration order) carries no
+/// contract. Each variant's inner order is its stored column's SQLite ordering (README §7.1):
+/// text by its bytes, numbers ascending, booleans as their stored `0`/`1`, and every absence
+/// — carried by the [`Option`] wrapper [`key_part`] returns, never inside a variant — first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum KeyPart<'a> {
+    /// The `day` text, byte-ordered like every SQLite text column.
+    Text(&'a str),
+
+    /// A numeric column: a row id, or the `http_status` number.
+    Id(i64),
+
+    /// A closed-vocabulary column's stored spelling, byte-ordered — the enums order by their
+    /// recorded vocabularies exactly as the SQL `GROUP BY` ordered them.
+    EnumStr(&'static str),
+
+    /// The stream flag, ordered as its stored `0`/`1` — `false` before `true`.
+    Flag(bool),
+}
+
+/// Reads the key's part for `dimension`: [`None`] when the dimension was not requested — every
+/// key field of an unrequested dimension defaults to [`None`] — and the dimension's [`KeyPart`]
+/// view otherwise. The view folds the one nullable bucket value into the same wrapper: the
+/// `http_status` `NULL` rows' bucket reads [`None`] exactly as `NULL` sorts before every
+/// answered status, so `Option<KeyPart>` orders as SQLite orders the column.
+fn key_part(key: &UsageBucketKey, dimension: UsageGroupBy) -> Option<KeyPart<'_>> {
     match dimension {
-        UsageGroupBy::Day => "date(started_at / 1000000, 'unixepoch')",
-        UsageGroupBy::Model => "model_id",
-        UsageGroupBy::Provider => "provider_id",
-        UsageGroupBy::ApiKey => "api_key_id",
-        UsageGroupBy::EndpointType => "endpoint_type",
-        UsageGroupBy::Outcome => "outcome",
-        UsageGroupBy::IsStream => "is_stream",
-        UsageGroupBy::HttpStatus => "http_status",
+        UsageGroupBy::Day => key.day.as_deref().map(KeyPart::Text),
+        UsageGroupBy::Model => key.model_id.map(KeyPart::Id),
+        UsageGroupBy::Provider => key.provider_id.map(KeyPart::Id),
+        UsageGroupBy::ApiKey => key.api_key_id.map(KeyPart::Id),
+        UsageGroupBy::EndpointType => key
+            .endpoint_type
+            .map(|kind| KeyPart::EnumStr(kind.as_str())),
+        UsageGroupBy::Outcome => key
+            .outcome
+            .map(|outcome| KeyPart::EnumStr(outcome.as_str())),
+        UsageGroupBy::IsStream => key.is_stream.map(KeyPart::Flag),
+        UsageGroupBy::HttpStatus => key.http_status.map(KeyPart::Id),
     }
 }
 
-/// Orders two bucket keys the way SQLite orders the key expressions: per requested dimension in
-/// request order, `NULL` first, text by its bytes — the stored spellings — and numbers
-/// ascending. The first non-equal dimension decides; `Option`'s own ordering is SQLite's,
-/// placing `None` before every value.
+/// The SQL key column a dimension groups, selects, and orders by — [`None`] when it needs no
+/// SQL column at all. Only the day dimension needs none: one shard is one UTC day (README §3
+/// *ApiLog Shard Store*), so [`usage_aggregate_from_row`] stamps the bucket day from each row's
+/// own shard — the very [`ShardDay`] mapping the write path used to place the row — and the key
+/// is the floor-day of every stamp by construction, signed stamps included. Deriving the day in
+/// SQL instead would re-implement that mapping with SQLite's `/`, which truncates toward zero
+/// and so disagrees with the shard's floor division for a pre-epoch stamp — a divergence from
+/// the shard-alignment invariant, unreachable through the dispatch clock but never the
+/// mapping's to assume.
+fn key_expression(dimension: UsageGroupBy) -> Option<&'static str> {
+    match dimension {
+        UsageGroupBy::Day => None,
+        UsageGroupBy::Model => Some("model_id"),
+        UsageGroupBy::Provider => Some("provider_id"),
+        UsageGroupBy::ApiKey => Some("api_key_id"),
+        UsageGroupBy::EndpointType => Some("endpoint_type"),
+        UsageGroupBy::Outcome => Some("outcome"),
+        UsageGroupBy::IsStream => Some("is_stream"),
+        UsageGroupBy::HttpStatus => Some("http_status"),
+    }
+}
+
+/// Reads the one SQL key column at `column` — the per-dimension key columns sit in request
+/// order — into its key field. Every column carries exactly its stored type's values (README §3
+/// *ApiLog*): the ids, the flag, and the enum spellings are `NOT NULL`, and only `http_status`
+/// may read `NULL`, landing as the [`None`] that [`key_part`] orders first. The day dimension
+/// carries no column — [`usage_aggregate_from_row`] stamps its key from the shard.
+fn read_key_part(
+    key: &mut UsageBucketKey,
+    dimension: UsageGroupBy,
+    row: &Row,
+    column: usize,
+) -> Result<(), Error> {
+    match dimension {
+        UsageGroupBy::Day => {}
+        UsageGroupBy::Model => key.model_id = Some(row.get(column)?),
+        UsageGroupBy::Provider => key.provider_id = Some(row.get(column)?),
+        UsageGroupBy::ApiKey => key.api_key_id = Some(row.get(column)?),
+        UsageGroupBy::EndpointType => {
+            key.endpoint_type = Some(endpoint_type_from_value(row.get_value(column)?)?);
+        }
+        UsageGroupBy::Outcome => {
+            key.outcome = Some(outcome_from_value(row.get_value(column)?)?);
+        }
+        UsageGroupBy::IsStream => key.is_stream = Some(row.get::<i64>(column)? != 0),
+        UsageGroupBy::HttpStatus => key.http_status = row.get(column)?,
+    }
+
+    Ok(())
+}
+
+/// Orders two bucket keys the way SQLite orders the key expressions (README §7.1): per
+/// requested dimension in request order, the first non-equal dimension deciding. Each
+/// dimension's ordering is [`KeyPart`]'s derived order through [`key_part`] — `NULL` first,
+/// text by its bytes (the enums by their stored spellings), numbers ascending — so the
+/// per-dimension comparison exists exactly once.
 fn compare_bucket_keys(
     first: &UsageBucketKey,
     second: &UsageBucketKey,
@@ -750,22 +863,7 @@ fn compare_bucket_keys(
     use std::cmp::Ordering;
 
     for dimension in group_by {
-        let ordering = match dimension {
-            UsageGroupBy::Day => first.day.cmp(&second.day),
-            UsageGroupBy::Model => first.model_id.cmp(&second.model_id),
-            UsageGroupBy::Provider => first.provider_id.cmp(&second.provider_id),
-            UsageGroupBy::ApiKey => first.api_key_id.cmp(&second.api_key_id),
-            UsageGroupBy::EndpointType => first
-                .endpoint_type
-                .map(ApiLogEndpointType::as_str)
-                .cmp(&second.endpoint_type.map(ApiLogEndpointType::as_str)),
-            UsageGroupBy::Outcome => first
-                .outcome
-                .map(ApiLogOutcome::as_str)
-                .cmp(&second.outcome.map(ApiLogOutcome::as_str)),
-            UsageGroupBy::IsStream => first.is_stream.cmp(&second.is_stream),
-            UsageGroupBy::HttpStatus => first.http_status.cmp(&second.http_status),
-        };
+        let ordering = key_part(first, *dimension).cmp(&key_part(second, *dimension));
 
         if ordering != Ordering::Equal {
             return ordering;

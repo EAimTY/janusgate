@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
-import { formatTokenCount, parseDateTimeInputToMicros } from "/src/format";
+import { formatTokenCount, nowMicros, parseDateTimeInputToMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     QueryUsageRequest,
@@ -19,11 +19,14 @@ import {
     EMPTY_USAGE_FILTER_FIELDS,
     hasUsageFilterFields,
     statusError,
+    USAGE_WINDOW_OPTIONS,
     type UsageFilterFields,
+    type UsageWindowChoice,
+    windowBoundMicros,
 } from "/src/usage-filter";
 import { isSkeletonWindowOpen, ReadCallFailure, readOne, type ScreenNotice } from "./read";
 import {
-    bucketKeyField,
+    daysNewestFirst,
     indexUsageEntities,
     type UsageEntityIndex,
     usageDimensionLabel,
@@ -79,9 +82,9 @@ function arrivalFields(subject: UsageQuerySubject | null): UsageFilterFields {
 }
 
 /**
- * The inline error for one hand-typed bound: any non-blank value must be a
- * complete date and time, so a malformed bound names its mistake instead of
- * silently running the query without it.
+ * The raw verdict on one hand-typed bound: any non-blank value must be a
+ * complete date and time. The submit gate reads it ungated, and each field's
+ * inline error reads it once that field was typed in.
  */
 function boundError(label: string, value: string): string | null {
     if (value.trim() === "" || parseDateTimeInputToMicros(value) !== null) {
@@ -89,6 +92,18 @@ function boundError(label: string, value: string): string | null {
     }
 
     return `${label} must be a complete date and time, like 2026-09-23T10:00 — or blank for no bound.`;
+}
+
+/**
+ * A moment as the bounds' own spelling — `YYYY-MM-DDTHH:MM` in this browser's
+ * zone, minute precision, the exact shape [`parseDateTimeInputToMicros`] reads
+ * — so a quick-set's fill and the fields' parser can never disagree about
+ * what a filled bound means.
+ */
+function dateTimeInputValue(date: Date): string {
+    const part = (value: number): string => String(value).padStart(2, "0");
+
+    return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}T${part(date.getHours())}:${part(date.getMinutes())}`;
 }
 
 /**
@@ -131,6 +146,12 @@ export function UsageQueryScreen(props: {
     );
     const [fromInput, setFromInput] = createSignal("");
     const [toInput, setToInput] = createSignal("");
+    // The bounds' errors open behind input to their own field — a pristine
+    // form is not an error, the hints state the format quietly (the app's
+    // lazy-error convention) — and an edit that completes a bound retracts
+    // its error without another submit.
+    const [hasFromInput, setHasFromInput] = createSignal(false);
+    const [hasToInput, setHasToInput] = createSignal(false);
     const [fields, setFields] = createSignal<UsageFilterFields>(arrivalFields(props.subject));
     const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
     // The dimensions the displayed buckets were grouped by — the request's own
@@ -152,27 +173,17 @@ export function UsageQueryScreen(props: {
 
     /**
      * The buckets as the table displays them: while the standing grouping
-     * includes day, the buckets display newest-day-first — the same direction
-     * the detail usage card renders its per-day series, so arriving through
-     * its aggregates door never flips the series — with the gateway's own
-     * order kept within equal days; any other grouping keeps the gateway's
-     * order untouched. The day part is the invariant `readUsageBuckets`
-     * proved inside the read cycle, so the sort asserts it exactly as the
-     * key cells do.
+     * includes day, the shared `daysNewestFirst` orders the series
+     * newest-day-first — the same direction the detail usage card renders its
+     * per-day series, so arriving through its aggregates door never flips the
+     * series; any other grouping keeps the gateway's order untouched.
      */
     const displayedBuckets = createMemo(() => {
         if (!responseDimensions().includes("day")) {
             return buckets();
         }
 
-        return [
-            ...buckets(),
-        ].sort((left, right) => {
-            const leftDay = bucketKeyField(left.key.day, "day");
-            const rightDay = bucketKeyField(right.key.day, "day");
-
-            return leftDay === rightDay ? 0 : leftDay < rightDay ? 1 : -1;
-        });
+        return daysNewestFirst(buckets());
     });
 
     /** Adds the dimension to the requested set, or removes it from it. */
@@ -199,15 +210,39 @@ export function UsageQueryScreen(props: {
         }),
     });
 
-    const fromError = (): string | null => boundError("From", fromInput());
-    const toError = (): string | null => boundError("To", toInput());
+    /** The From bound's inline error, open only once the field was typed in. */
+    const fromError = (): string | null =>
+        hasFromInput() ? boundError("From", fromInput()) : null;
+
+    /** The To bound's inline error, open only once the field was typed in. */
+    const toError = (): string | null => (hasToInput() ? boundError("To", toInput()) : null);
 
     /**
      * Whether every hand-typed value — both bounds and the status list —
-     * parses: the query never runs while one does not.
+     * parses: the query never runs while one does not. The bounds are judged
+     * raw, not through their gated inline errors: a field that was never
+     * typed into holds no error text, but a malformed value holds the submit
+     * all the same.
      */
     const isFormValid = (): boolean =>
-        fromError() === null && toError() === null && statusError(fields().statusInput) === null;
+        boundError("From", fromInput()) === null &&
+        boundError("To", toInput()) === null &&
+        statusError(fields().statusInput) === null;
+
+    /**
+     * Fills both bounds with one rolling window — the stream page's own
+     * window semantics, resolved once here against the current moment through
+     * the shared window arithmetic: the lower bound one window back, the
+     * upper left open. `all` empties both fields, which is the form's own
+     * spelling of no bounds. The fields stay hand-editable; the fill is not
+     * input, so it opens no inline error.
+     */
+    const applyWindow = (window: UsageWindowChoice): void => {
+        const from = windowBoundMicros(window, nowMicros());
+
+        setFromInput(from === null ? "" : dateTimeInputValue(new Date(from / 1000)));
+        setToInput("");
+    };
 
     /** Runs the aggregation query, answering whether it produced buckets. */
     const runQuery = async (signal: AbortSignal): Promise<boolean> => {
@@ -368,11 +403,34 @@ export function UsageQueryScreen(props: {
                             Any dimension set works — none selected totals every matching row.
                         </p>
                     </div>
+                    <div>
+                        <p class="text-[13px] font-medium text-ink">Window</p>
+                        <div class="mt-2 flex flex-wrap gap-2">
+                            <For each={USAGE_WINDOW_OPTIONS}>
+                                {(option) => (
+                                    <Button
+                                        tone="ghost"
+                                        isDisabled={isQuerying()}
+                                        onClick={() => applyWindow(option.value)}
+                                    >
+                                        {option.label}
+                                    </Button>
+                                )}
+                            </For>
+                        </div>
+                        <p class="mt-2 max-w-[70ch] text-[13px] text-ink-faint">
+                            Fills the bounds below — from one window back, to left open — resolved
+                            now; the fields stay hand-editable.
+                        </p>
+                    </div>
                     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <TextField
                             label="From"
                             value={fromInput()}
-                            onInput={setFromInput}
+                            onInput={(value) => {
+                                setHasFromInput(true);
+                                setFromInput(value);
+                            }}
                             isDisabled={isQuerying()}
                             error={fromError()}
                             hint="Inclusive, in this browser's zone — like 2026-09-23T10:00. Blank sets no bound."
@@ -380,7 +438,10 @@ export function UsageQueryScreen(props: {
                         <TextField
                             label="To"
                             value={toInput()}
-                            onInput={setToInput}
+                            onInput={(value) => {
+                                setHasToInput(true);
+                                setToInput(value);
+                            }}
                             isDisabled={isQuerying()}
                             error={toError()}
                             hint="Exclusive, in this browser's zone — like 2026-09-23T10:00. Blank sets no bound."

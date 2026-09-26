@@ -6,7 +6,13 @@
 //! competing pollers and restarts never double-exchange an upstream grant. Only the current
 //! claimant persists the result or next schedule: every persist conditions on the claim stamp.
 
-use super::{completion, flow};
+use super::{
+    completion,
+    exchange::{
+        DEFAULT_DEVICE_INTERVAL_SECONDS, ExchangeOutcome, ExchangeProduct,
+        SLOW_DOWN_PENALTY_SECONDS, execute_exchange,
+    },
+};
 use crate::{
     database::Database,
     http_client,
@@ -158,7 +164,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         flow.id, flow.device_next_poll_at, definition.name
     );
 
-    let product = match flow::execute_exchange(http, exchange, &env).await {
+    let product = match execute_exchange(http, exchange, &env).await {
         Ok(product) => product,
 
         // A transport timeout backs off the next attempt — the stored interval is persisted
@@ -175,25 +181,23 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
 
     let interval = flow
         .device_poll_interval_seconds
-        .unwrap_or(flow::DEFAULT_DEVICE_INTERVAL_SECONDS);
+        .unwrap_or(DEFAULT_DEVICE_INTERVAL_SECONDS);
 
     match product {
-        flow::ExchangeProduct::Pending => {
-            schedule_retry_at(database, flow, interval, interval).await
-        }
+        ExchangeProduct::Pending => schedule_retry_at(database, flow, interval, interval).await,
 
-        flow::ExchangeProduct::SlowDown => {
+        ExchangeProduct::SlowDown => {
             // `slow_down` permanently raises this flow's interval (RFC 8628 §3.5); an interval
             // huge enough to overflow the adjustment is upstream-reported drift, mapped to the
             // upstream-unavailable failure like every overflowing duration.
             let raised = interval
-                .checked_add(flow::SLOW_DOWN_PENALTY_SECONDS)
+                .checked_add(SLOW_DOWN_PENALTY_SECONDS)
                 .ok_or_else(|| interval_overflow(interval))?;
 
             schedule_retry_at(database, flow, raised, raised).await
         }
 
-        flow::ExchangeProduct::Other(code) => {
+        ExchangeProduct::Other(code) => {
             // A failure code outside the configured terminal codes is not a terminal outcome
             // (README §5.3): only the configured codes — plus the engine-owned polling codes —
             // end a flow. The retry rides the stored interval until the flow's own expiry
@@ -207,7 +211,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
             schedule_retry_at(database, flow, interval, interval).await
         }
 
-        flow::ExchangeProduct::Terminal(code) => {
+        ExchangeProduct::Terminal(code) => {
             persist_terminal(
                 database,
                 flow,
@@ -221,7 +225,7 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
             .await
         }
 
-        flow::ExchangeProduct::Completed(outcome) => {
+        ExchangeProduct::Completed(outcome) => {
             commit_success(database, http, flow, &definition, outcome).await
         }
     }
@@ -237,7 +241,7 @@ async fn schedule_retry(
 ) -> Result<(), Error> {
     let stored = flow
         .device_poll_interval_seconds
-        .unwrap_or(flow::DEFAULT_DEVICE_INTERVAL_SECONDS);
+        .unwrap_or(DEFAULT_DEVICE_INTERVAL_SECONDS);
 
     let delay = if is_timeout {
         stored
@@ -346,14 +350,17 @@ async fn persist_terminal(
 /// and the provider write and the succeeded outcome commit in one transaction. A provisioning
 /// failure fails the flow terminally with the gateway-owned `provisioning_failed` pair,
 /// persisted with the claim the flow still holds — the failure never reaches the re-stamp — so
-/// the poll loop stops at the terminal outcome instead of re-running the exchange; a claim the
-/// re-stamp finds stolen abandons the provider write, leaving the newer state untouched.
+/// the poll loop stops at the terminal outcome instead of re-running the exchange; a failure of
+/// the commit transaction itself — after the re-stamp — fails the flow the same terminal way
+/// with the gateway-owned `commit_failed` pair, because the exchange is consumed upstream
+/// either way; a claim the re-stamp finds stolen abandons the provider write, leaving the
+/// newer state untouched.
 async fn commit_success(
     database: &Database,
     http: &Client,
     flow: &OngoingFlow,
     definition: &crate::provider::definition::ProviderDefinition,
-    outcome: flow::ExchangeOutcome,
+    outcome: ExchangeOutcome,
 ) -> Result<(), Error> {
     // A create flow whose provider name another row already holds can never succeed. Leaving
     // the insert's unique-constraint failure to the spawn loop's warning would re-claim and
@@ -415,10 +422,61 @@ async fn commit_success(
         return Ok(());
     };
 
+    // From here the exchange is consumed upstream: no failure of the record may leave the flow
+    // pending, or the claim-staleness recovery would hand the flow back to the poll loop and
+    // re-run the already-consumed grant exchange — an RFC 8628 token endpoint answers the
+    // re-presented device code with a terminal rejection, turning a succeeded grant into a
+    // misleading failure. So an error of the commit transaction — the transaction begin, the
+    // provider write (its unique constraint included), the claim-conditioned outcome commit,
+    // or the commit itself — persists the gateway-owned terminal pair against the fresh claim
+    // the row still carries before the error propagates for the spawn loop's warning. The
+    // provider write never survived the failed transaction, so the pair records a failure,
+    // never a `succeeded` outcome.
+    if let Err(error) =
+        commit_success_transaction(database, flow, definition, &product, claim).await
+    {
+        if let Err(persist_error) = persist_terminal(
+            database,
+            flow,
+            Some(claim),
+            "commit_failed",
+            &format!("the exchange succeeded but the gateway failed to record the result: {error}"),
+        )
+        .await
+        {
+            warn!(
+                "device flow {} also failed to record its terminal outcome: {persist_error}",
+                flow.id
+            );
+        }
+
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+/// Commits the provider write and the succeeded outcome in one transaction under the fresh
+/// post-restamp `claim`: the claim-conditioned outcome commit makes the provider and the
+/// consumable result appear together, and a claim lost between the re-stamp and the commit
+/// rolls the provider write back — the winner owns the row. A reauthorize flow whose target
+/// provider was deleted mid-commit fails terminally under the fresh stamp.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the transaction begins, the provider write, the claim-conditioned
+/// outcome commit, or the commit itself fails.
+async fn commit_success_transaction(
+    database: &Database,
+    flow: &OngoingFlow,
+    definition: &crate::provider::definition::ProviderDefinition,
+    product: &completion::CompletionProduct,
+    claim: i64,
+) -> Result<(), Error> {
     let mut transaction = database.transaction().await?;
 
     let result_provider_id =
-        completion::write_completion_provider(&mut transaction, flow, definition, &product).await?;
+        completion::write_completion_provider(&mut transaction, flow, definition, product).await?;
 
     let Some(result_provider_id) = result_provider_id else {
         // A concurrent `providers:delete` won: the flow fails with the vanished-target
@@ -490,7 +548,7 @@ mod tests {
         reason = "the fixtures are constructed so each unwrap lands on its documented side"
     )]
 
-    use super::{claim_next_due_flow, commit_success, flow, process, schedule_retry};
+    use super::{ExchangeOutcome, claim_next_due_flow, commit_success, process, schedule_retry};
     use crate::{
         http_client,
         provider::StoredCredentials,
@@ -574,9 +632,9 @@ mod tests {
             &http_client::control_plane(),
             &claimed,
             &definition,
-            flow::ExchangeOutcome {
+            ExchangeOutcome {
                 access_token: Some("exchange-token".to_string()),
-                ..flow::ExchangeOutcome::default()
+                ..ExchangeOutcome::default()
             },
         )
         .await
@@ -1283,9 +1341,9 @@ mod tests {
             &http_client::control_plane(),
             &claimed,
             &definition,
-            flow::ExchangeOutcome {
+            ExchangeOutcome {
                 access_token: Some("exchange-token".to_string()),
-                ..flow::ExchangeOutcome::default()
+                ..ExchangeOutcome::default()
             },
         )
         .await
@@ -1379,9 +1437,9 @@ mod tests {
             &http_client::control_plane(),
             &claimed,
             &definition,
-            flow::ExchangeOutcome {
+            ExchangeOutcome {
                 access_token: Some("exchange-token".to_string()),
-                ..flow::ExchangeOutcome::default()
+                ..ExchangeOutcome::default()
             },
         )
         .await
@@ -1474,9 +1532,9 @@ mod tests {
             &http_client::control_plane(),
             &claimed,
             &definition,
-            flow::ExchangeOutcome {
+            ExchangeOutcome {
                 access_token: Some("exchange-token".to_string()),
-                ..flow::ExchangeOutcome::default()
+                ..ExchangeOutcome::default()
             },
         )
         .await
@@ -1608,5 +1666,134 @@ mod tests {
         );
 
         mock.shutdown.send(()).ok();
+    }
+
+    /// A failure of the success commit's transaction after a completed exchange — here a forced
+    /// storage error at the provider write, behind the claim re-stamp — fails the flow
+    /// terminally (README §3, §7.2): the grant is consumed upstream, so the row records the
+    /// gateway-owned `commit_failed` pair under the fresh re-stamped claim the flow still
+    /// holds, the claim is released, and the terminal row is unclaimable — the poll loop never
+    /// re-runs the already-consumed grant exchange, whose re-presented device code an
+    /// RFC-conforming upstream would answer with a misleading terminal rejection. The original
+    /// error still propagates for the spawn loop's warning, and the pair records a failure —
+    /// the provider write never survived the failed transaction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the flow outcome diverges.
+    #[tokio::test]
+    async fn a_commit_failure_after_a_completed_exchange_fails_the_flow_terminally() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let definition = insert_device_poll_definition(
+            &database,
+            "device-def",
+            "http://127.0.0.1:1/token",
+            false,
+        )
+        .await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        // A reauthorize flow: its commit carries no create-name pre-check, so the forced
+        // storage error below surfaces exactly at the transaction's provider write.
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Reauthorize,
+                provider_name: None,
+                model_prefix: None,
+                base_url: None,
+                target_provider_id: Some(1),
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(now - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        // The forced storage error: the provider write's table is gone, so the commit's
+        // INSERT-or-UPDATE fails after the exchange completed and the claim was re-stamped,
+        // while the flow table the terminal persist writes stays intact.
+        database
+            .execute("DROP TABLE providers", crate::database::params![])
+            .await
+            .unwrap();
+
+        let result = commit_success(
+            &database,
+            &http_client::control_plane(),
+            &claimed,
+            &definition,
+            ExchangeOutcome {
+                access_token: Some("exchange-token".to_string()),
+                ..ExchangeOutcome::default()
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "the commit failure propagates for the spawn loop's warning"
+        );
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", now)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        // The gateway-owned terminal pair: the grant succeeded, the record failed — never an
+        // overclaiming `succeeded` outcome, never a pending row awaiting a doomed re-run.
+        assert_eq!(settled.outcome, Some(FlowOutcome::Failed));
+        assert_eq!(settled.failure_code.as_deref(), Some("commit_failed"));
+        assert!(
+            settled
+                .failure_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with(
+                    "the exchange succeeded but the gateway failed to record the result"
+                )),
+            "the terminal message names the failed record: {:?}",
+            settled.failure_message
+        );
+
+        assert_eq!(
+            settled.device_poll_started_at, None,
+            "the persisted terminal outcome clears the claim stamp"
+        );
+
+        // The terminal row is unclaimable, so the poll loop can never re-run the consumed
+        // exchange.
+        #[expect(clippy::unwrap_used, reason = "the claim query executes")]
+        let reclaims = claim_due_device_flow(
+            &database,
+            now + 60 * crate::unix_time::MICROS_PER_SEC,
+            now + 30 * crate::unix_time::MICROS_PER_SEC,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            reclaims.is_none(),
+            "a terminal flow is never re-claimed for another exchange"
+        );
     }
 }

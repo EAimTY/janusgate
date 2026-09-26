@@ -111,7 +111,7 @@ describe("CompatibleConnectionFields upstream key reveal", () => {
     it("masks the upstream key and pairs it with an unchecked reveal toggle", () => {
         mountFields();
 
-        const keyInput = labeledInput("API key");
+        const keyInput = labeledInput("Upstream API key");
 
         expect(keyInput.type).toBe("password");
         // The address beside it is never masked.
@@ -123,7 +123,7 @@ describe("CompatibleConnectionFields upstream key reveal", () => {
         mountFields();
 
         const toggle = checkboxWithLabel("Show the API key while typing");
-        const keyInput = labeledInput("API key");
+        const keyInput = labeledInput("Upstream API key");
 
         toggle.click();
         await settle();

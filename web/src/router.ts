@@ -421,11 +421,24 @@ const [location, setLocation] = createSignal<AppLocation>(readLocation());
 /** The current location; route matching memoizes over it. */
 export const currentLocation: Accessor<AppLocation> = location;
 
+/**
+ * Whether `target` names the address the browser already holds — the one rule
+ * of "same address", read from the location the router alone sees. Selecting
+ * the address already shown is not a navigation, and every caller that
+ * branches reload-versus-navigate asks this instead of re-reading the
+ * location itself.
+ */
+export function isCurrentAddress(target: string): boolean {
+    const current = readLocation();
+
+    return target === `${current.pathname}${current.search}`;
+}
+
 /** Client-side navigation: push a history entry and re-render. */
 export function navigate(target: string): void {
     // Selecting the route already shown is not a navigation: it would only add
     // a duplicate history entry and remount the screen.
-    if (target === `${window.location.pathname}${window.location.search}`) {
+    if (isCurrentAddress(target)) {
         return;
     }
 
