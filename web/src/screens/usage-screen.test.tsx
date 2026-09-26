@@ -518,6 +518,76 @@ describe("UsageScreen filtering", () => {
         );
     });
 
+    it("carries the stream's one-entity narrow as the aggregates link's subject", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        // Each entity dimension arrives under its own parameter — the key's
+        // dimension spells `api_key` on the wire but rides as `key=` — and the
+        // window stays behind: the aggregates page's window semantics are its
+        // own, so only the entity subject crosses.
+        mount(streamApi(holder), {
+            ...EMPTY_USAGE_FILTER_DRAFT,
+            window: "24h",
+            providerId: "3",
+        });
+        mount(streamApi(holder), {
+            ...EMPTY_USAGE_FILTER_DRAFT,
+            modelId: "9",
+        });
+        mount(streamApi(holder), {
+            ...EMPTY_USAGE_FILTER_DRAFT,
+            apiKeyId: "7",
+        });
+        await settle();
+
+        expect(linkTo("/usage/query?provider=3").textContent).toContain("View aggregates");
+        expect(linkTo("/usage/query?model=9").textContent).toContain("View aggregates");
+        expect(linkTo("/usage/query?key=7").textContent).toContain("View aggregates");
+
+        for (const held of holder.pages) {
+            held.answer({
+                api_logs: [],
+            });
+        }
+        await settle();
+    });
+
+    it("links the bare aggregates page when the narrow names no single entity", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        // Two entity fields at once: a subject is one entity, so a compound
+        // narrow carries none rather than picking one.
+        mount(streamApi(holder), {
+            ...EMPTY_USAGE_FILTER_DRAFT,
+            providerId: "3",
+            modelId: "9",
+        });
+        // An entity-free narrow — window, outcome, status only — and the
+        // every-row stream land on the bare page alike.
+        mount(streamApi(holder), filtered);
+        mount(streamApi(holder));
+        await settle();
+
+        expect(linkTo("/usage/query").textContent).toContain("View aggregates");
+        expect(() => linkTo("/usage/query?provider=3")).toThrow(
+            "No link to /usage/query?provider=3",
+        );
+        expect(() => linkTo("/usage/query?key=7")).toThrow("No link to /usage/query?key=7");
+
+        for (const held of holder.pages) {
+            held.answer({
+                api_logs: [],
+            });
+        }
+        await settle();
+    });
+
     it("lands a window change delivered in the same batch as a field edit", async () => {
         const holder: {
             readonly pages: Array<HeldPage>;

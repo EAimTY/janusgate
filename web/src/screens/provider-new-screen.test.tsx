@@ -125,6 +125,16 @@ function storedDefinitionRow(name: string, version: number): DefinitionResponse 
     };
 }
 
+/** How many flow-lock reason lines the screen currently states. */
+function flowLockLines(): number {
+    const text = document.body.textContent ?? "";
+    return (
+        text.split(
+            "Locked while the authorization is live — the provider is created from what the flow's start already sent.",
+        ).length - 1
+    );
+}
+
 /** Opens the definition disclosure and answers its editor. */
 function definitionEditor(): HTMLTextAreaElement {
     const disclosure = document.querySelector("details");
@@ -941,6 +951,42 @@ describe("ProviderNewScreen OAuth flow", () => {
         expect(switchWithLabel("Custom model prefix").disabled).toBe(true);
         expect(labeledInput("Model prefix").disabled).toBe(true);
         expect(definitionEditor().disabled).toBe(true);
+    });
+
+    it("states the flow lock's reason on each editable card and retracts it when the flow ends", async () => {
+        vi.useFakeTimers();
+        mountScreen(
+            oauthScreenApi({
+                start: () => authorizationFlow,
+            }),
+        );
+        await flush();
+
+        // Without a live flow no card states a lock: the reason line exists
+        // only for as long as the lock does.
+        expect(flowLockLines()).toBe(0);
+
+        buttonWithText("Claude Code").click();
+        await flush();
+        buttonWithText("Start the authorization").click();
+        await flush();
+        expect(document.body.textContent).toContain("Authorization URL");
+
+        // The preset card, the definition card, and the identity card each
+        // state the reason exactly once — every grayed control's own card
+        // names the lock, and no card repeats itself per control. This
+        // body-text count pins only that the lines render while the flow is
+        // live and retract when it ends; that the definition card's line
+        // shows with its disclosure closed lives in the source placement,
+        // where the card's lock line renders before the <details>.
+        expect(flowLockLines()).toBe(3);
+
+        buttonWithText("Start over").click();
+        await flush();
+
+        // The reset ends the lock, and the stated reason goes with it.
+        expect(flowLockLines()).toBe(0);
+        expect(labeledInput("Name").disabled).toBe(false);
     });
 
     it("keeps the flow start disabled while the model prefix is invalid, sending nothing", async () => {

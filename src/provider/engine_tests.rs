@@ -301,6 +301,148 @@ async fn provisioning_runs_steps_and_polls_the_operation() {
     mock.shutdown.send(()).ok();
 }
 
+/// Pins the flat form encoding of a provisioning poll (README §5.1, §5.4): the done path names
+/// the single form member carrying the done marker, a non-truthy value keeps the poll running,
+/// both truthy spellings — `true` and `1`, the string renderings of the truthy scalars the JSON
+/// rule accepts — complete it, and the completed response's `result_extract` folds its flat
+/// fields into the working state.
+///
+/// # Panics
+///
+/// Panics when the fixture fails to parse or the poll diverges from the expectation.
+#[tokio::test]
+async fn provisioning_polls_a_form_encoded_operation_to_completion() {
+    for done in ["true", "1"] {
+        let mock = MockUpstream::start(vec![
+            // The step's own response, itself form-encoded and carrying no extractions.
+            "accepted=1".to_string(),
+            // The first poll attempt is still running; the second completes, spelling the done
+            // marker `done` and carrying the flat member `result_extract` folds.
+            "done=false".to_string(),
+            format!("done={done}&project_id=proj-1"),
+        ])
+        .await;
+
+        let steps: Vec<crate::provider::definition::provisioning::ProvisioningStep> =
+            serde_json::from_value(json!([
+                {
+                    "request": {
+                        "method": "POST",
+                        "url": [{"type": "base"}, {"type": "literal", "value": "/onboard"}]
+                    },
+                    "response_encoding": "form",
+                    "poll": {
+                        "request": {
+                            "method": "POST",
+                            "url": [{"type": "base"}, {"type": "literal", "value": "/onboard"}]
+                        },
+                        "response_encoding": "form",
+                        "done_path": ["done"],
+                        "error_path": ["error"],
+                        "result_extract": [
+                            {
+                                "path": ["project_id"],
+                                "target": {"type": "slot", "name": "project"},
+                                "shape": {"type": "string"},
+                                "required": true
+                            }
+                        ],
+                        "interval_ms": 1,
+                        "budget_ms": 5000
+                    }
+                }
+            ]))
+            .unwrap();
+
+        let client = crate::http_client::control_plane();
+
+        let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
+
+        let constants = provisioning::ProvisioningEnv {
+            secret: Some("test-secret"),
+            client_id: "test-client-id",
+            client_secret: None,
+        };
+
+        provisioning::run_steps(&client, &steps, &constants, &mut state)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            state.slots.get("project").map(String::as_str),
+            Some("proj-1"),
+            "the completed form poll folds its flat result field"
+        );
+
+        mock.shutdown.send(()).ok();
+    }
+}
+
+/// Pins the form-encoded poll's error surface (README §5.4): the one form member the error path
+/// names is the terminal failure payload, rendered verbatim after the form decoding, and it
+/// preempts a truthy done marker — a response carrying `done=true` alongside its error member
+/// fails on the payload, never completes.
+///
+/// # Panics
+///
+/// Panics when a fixture lands on the wrong side of its check.
+#[tokio::test]
+async fn a_form_encoded_poll_surfaces_its_error_member_as_the_failure_payload() {
+    let mock = MockUpstream::start(vec![
+        "accepted=1".to_string(),
+        "done=true&error=operation%20failed".to_string(),
+    ])
+    .await;
+
+    let steps: Vec<crate::provider::definition::provisioning::ProvisioningStep> =
+        serde_json::from_value(json!([
+            {
+                "request": {
+                    "method": "POST",
+                    "url": [{"type": "base"}, {"type": "literal", "value": "/onboard"}]
+                },
+                "response_encoding": "form",
+                "poll": {
+                    "request": {
+                        "method": "POST",
+                        "url": [{"type": "base"}, {"type": "literal", "value": "/onboard"}]
+                    },
+                    "response_encoding": "form",
+                    "done_path": ["done"],
+                    "error_path": ["error"],
+                    "interval_ms": 1,
+                    "budget_ms": 5000
+                }
+            }
+        ]))
+        .unwrap();
+
+    let client = crate::http_client::control_plane();
+
+    let mut state = WorkingState::new(BTreeMap::new(), Some(mock.base()));
+
+    let constants = provisioning::ProvisioningEnv {
+        secret: Some("test-secret"),
+        client_id: "test-client-id",
+        client_secret: None,
+    };
+
+    let outcome = provisioning::run_steps(&client, &steps, &constants, &mut state).await;
+
+    let Err(error) = outcome else {
+        panic!("a form poll carrying its error member must fail on the payload");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("failed upstream: operation failed"),
+        "the error member renders verbatim after the form decoding: {error}"
+    );
+
+    mock.shutdown.send(()).ok();
+}
+
 /// Pins the per-request environment rebuild (README §5.4): a step's request resolves the slots
 /// an earlier step extracted, and the poll request resolves the operation slot its own step
 /// placed — slot references never resolve against the flow's initial slots alone, where they

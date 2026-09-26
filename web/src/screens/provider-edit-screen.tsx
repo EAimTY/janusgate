@@ -34,7 +34,7 @@ import {
     ProviderIdentityFields,
 } from "/src/ui/provider-form";
 import { createDeleteAction, createEditForm } from "./edit-form";
-import { createOauthFlow } from "./oauth-flow";
+import { createOauthFlow, type OauthFlow } from "./oauth-flow";
 import { RowNotFound } from "./row-not-found";
 
 /**
@@ -92,6 +92,41 @@ export function ProviderEditScreen(props: {
     // held back while the hold stands — and the hold is stated.
     const { row: provider, isRowHeld } = edit;
 
+    // The OAuth flow's shared state machine, held at the screen's scope —
+    // above the row-keyed content: the screen content remounts on a row the
+    // gateway rewrote (the token-refresh lease moves `expires_at`, which
+    // alone flips the row's identity), and a flow held inside that content
+    // would be discarded silently — the pasted code gone, the gateway's
+    // pending flow row orphaned. The failure channel is the screen's standing
+    // notice, a succeeded completion states the replacement and reloads the
+    // listing, and a gone flow state re-reads it beside the fragment's own
+    // reset. The machine is created for every provider but reached only from
+    // the OAuth credentials card, and the begin addresses the screen's own
+    // provider — the held row is found by this very id.
+    const oauth = createOauthFlow({
+        api: props.api,
+        startAction: "start-oauth",
+        completeAction: "reauthorize",
+        channel: read.showNotice,
+        onGone: read.reload,
+        begin: async () => ({
+            status: "called" as const,
+            outcome: await performManagementCall(() =>
+                props.api.reauthorizeProvider({
+                    provider_id: props.providerId,
+                }),
+            ),
+        }),
+        onSucceeded: () => {
+            read.showNotice({
+                tone: "ok",
+                title: "Credentials replaced.",
+                detail: "The provider's listing now carries the new expiry.",
+            });
+            read.reload();
+        },
+    });
+
     return (
         <ScreenFrame
             read={read}
@@ -138,9 +173,8 @@ export function ProviderEditScreen(props: {
                     >
                         {(oauthRow) => (
                             <CredentialsCard
-                                api={props.api}
                                 provider={oauthRow}
-                                read={read}
+                                oauth={oauth}
                             />
                         )}
                     </Show>
@@ -214,7 +248,19 @@ function withEdits(
           };
 }
 
-/** The provider's editable settings. Saving writes the complete readable state. */
+/**
+ * The inline error a base-carrying row's cleared base URL field states. The
+ * row's stored `base_url` proves its definition evaluates requests against a
+ * base, so the fault is emptiness, not composition — the composition message
+ * would name a spacing fault over a field holding nothing — and the fix is
+ * the stored address back, or the whole form back onto the row (`Revert`).
+ */
+const EMPTY_BASE_URL_ERROR =
+    "This provider's definition evaluates requests against a base URL — restore one, or Revert.";
+
+/**
+ * The provider's editable settings. Saving writes the complete readable state.
+ */
 function DetailsCard(props: {
     readonly api: ManagementApi;
     readonly provider: ProviderResponse;
@@ -271,7 +317,20 @@ function DetailsCard(props: {
     /** Inline composition errors, shown where the value was typed (gateway README §7). */
     const prefixError = (): string | null => modelPrefixError(effectivePrefix());
 
-    const baseUrlError = (): string | null => (isBaseUrlLegal() ? null : baseUrlMessage());
+    /**
+     * The inline error the field states where the value was typed: a cleared
+     * field over a base-carrying row names the row's emptiness rule, a typed
+     * but unroutable value the composition rule. The field cannot open on
+     * either — the gateway stores only legal addresses, so first paint is
+     * always legal and the error answers the operator's own edit.
+     */
+    const baseUrlError = (): string | null => {
+        if (isBaseUrlLegal()) {
+            return null;
+        }
+
+        return trimmedBaseUrl() === "" ? EMPTY_BASE_URL_ERROR : baseUrlMessage();
+    };
 
     const apiKeyError = (): string | null => bearerSecretError(apiKey(), "API key");
 
@@ -431,40 +490,17 @@ function DetailsCard(props: {
     );
 }
 
-/** An OAuth provider's credential health and its reauthorization flow. */
+/**
+ * An OAuth provider's credential health and its reauthorization flow. The
+ * flow's state machine is the screen's (`oauth`), so a keyed remount of this
+ * card on a rewritten row re-renders the live flow's step from the state
+ * above instead of discarding it; the expiry line alone tracks the row this
+ * card receives, keeping the fresh expiry current beside the flow.
+ */
 function CredentialsCard(props: {
-    readonly api: ManagementApi;
     readonly provider: ProviderResponse;
-    readonly read: ScreenRead;
+    readonly oauth: OauthFlow;
 }): JSX.Element {
-    // The OAuth flow's shared state machine: the failure channel is the
-    // screen's standing notice, a succeeded completion states the replacement
-    // and reloads the listing, and a gone flow state re-reads it beside the
-    // fragment's own reset.
-    const oauth = createOauthFlow({
-        api: props.api,
-        startAction: "start-oauth",
-        completeAction: "reauthorize",
-        channel: (notice) => props.read.showNotice(notice),
-        onGone: props.read.reload,
-        begin: async () => ({
-            status: "called" as const,
-            outcome: await performManagementCall(() =>
-                props.api.reauthorizeProvider({
-                    provider_id: props.provider.id,
-                }),
-            ),
-        }),
-        onSucceeded: () => {
-            props.read.showNotice({
-                tone: "ok",
-                title: "Credentials replaced.",
-                detail: "The provider's listing now carries the new expiry.",
-            });
-            props.read.reload();
-        },
-    });
-
     const expiryLine = (): string => {
         if (!isOAuthProviderRow(props.provider) || props.provider.expires_at === null) {
             return "No expiry is stored for this provider.";
@@ -475,7 +511,7 @@ function CredentialsCard(props: {
 
     const submit = (event: SubmitEvent): void => {
         event.preventDefault();
-        void oauth.complete();
+        void props.oauth.complete();
     };
 
     return (
@@ -488,17 +524,17 @@ function CredentialsCard(props: {
                 <p class="text-[13.5px] text-ink-dim">{expiryLine()}</p>
 
                 <Show
-                    when={oauth.flow()}
+                    when={props.oauth.flow()}
                     keyed
                     fallback={
                         <div>
                             <Button
                                 tone="primary"
                                 glyph="key"
-                                isBusy={oauth.isStarting()}
-                                onClick={() => void oauth.start()}
+                                isBusy={props.oauth.isStarting()}
+                                onClick={() => void props.oauth.start()}
                             >
-                                {oauth.isStarting() ? "Starting…" : "Reconnect the account"}
+                                {props.oauth.isStarting() ? "Starting…" : "Reconnect the account"}
                             </Button>
                         </div>
                     }
@@ -507,8 +543,8 @@ function CredentialsCard(props: {
                         startedFlow.grant === "device" ? (
                             <DeviceStep
                                 flow={startedFlow}
-                                onComplete={oauth.completeDevice}
-                                onStartOver={oauth.reset}
+                                onComplete={props.oauth.completeDevice}
+                                onStartOver={props.oauth.reset}
                             />
                         ) : (
                             <form
@@ -518,22 +554,22 @@ function CredentialsCard(props: {
                             >
                                 <AuthorizeStep
                                     flow={startedFlow}
-                                    onStartOver={oauth.reset}
+                                    onStartOver={props.oauth.reset}
                                 >
                                     <TextField
                                         label="Callback URL or authorization code"
-                                        value={oauth.code()}
-                                        onInput={oauth.setCode}
+                                        value={props.oauth.code()}
+                                        onInput={props.oauth.setCode}
                                         placeholder="Paste the whole callback URL"
-                                        isDisabled={oauth.isCompleting()}
+                                        isDisabled={props.oauth.isCompleting()}
                                     />
                                     <div>
                                         <Button
                                             type="submit"
                                             tone="primary"
-                                            isBusy={oauth.isCompleting()}
+                                            isBusy={props.oauth.isCompleting()}
                                         >
-                                            {oauth.isCompleting()
+                                            {props.oauth.isCompleting()
                                                 ? "Replacing…"
                                                 : "Replace the credentials"}
                                         </Button>

@@ -758,6 +758,86 @@ describe("ProviderEditScreen refresh against an open form", () => {
     });
 });
 
+describe("ProviderEditScreen base URL rules", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** Mounts the screen over the base-carrying fixture row. */
+    async function mountBaseCarryingRow(): Promise<void> {
+        disposes.push(
+            render(
+                () => (
+                    <ProviderEditScreen
+                        api={screenApi({
+                            providers: [
+                                provider,
+                            ],
+                            models: [],
+                        })}
+                        providerId={3}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+    }
+
+    it("names the emptiness rule, not the composition rule, when a base-carrying row's URL is cleared", async () => {
+        await mountBaseCarryingRow();
+
+        // The stored row proves its definition evaluates requests against a
+        // base, so the cleared field's fault is emptiness — the composition
+        // message would name a spacing fault over a field holding nothing.
+        typeInto(labeledInput("Upstream base URL"), "");
+        await settle();
+
+        expect(document.body.textContent).toContain(
+            "This provider's definition evaluates requests against a base URL — restore one, or Revert.",
+        );
+        expect(document.body.textContent).not.toContain(
+            "Base URL must be an http:// or https:// address with no spaces.",
+        );
+        expect(buttonWithText("Save changes").disabled).toBe(true);
+    });
+
+    it("names the composition rule for a non-empty invalid URL", async () => {
+        await mountBaseCarryingRow();
+
+        typeInto(labeledInput("Upstream base URL"), "alpha.example");
+        await settle();
+
+        expect(document.body.textContent).toContain(
+            "Base URL must be an http:// or https:// address with no spaces.",
+        );
+        expect(document.body.textContent).not.toContain("restore one, or Revert.");
+        expect(buttonWithText("Save changes").disabled).toBe(true);
+    });
+
+    it("clears the error and opens the save once a valid URL stands again", async () => {
+        await mountBaseCarryingRow();
+
+        typeInto(labeledInput("Upstream base URL"), "alpha.example");
+        await settle();
+        expect(buttonWithText("Save changes").disabled).toBe(true);
+
+        typeInto(labeledInput("Upstream base URL"), "https://alpha.example/v2");
+        await settle();
+
+        expect(document.body.textContent).not.toContain(
+            "Base URL must be an http:// or https:// address with no spaces.",
+        );
+        expect(document.body.textContent).not.toContain("restore one, or Revert.");
+        expect(buttonWithText("Save changes").disabled).toBe(false);
+    });
+});
+
 describe("ProviderEditScreen deletion copy", () => {
     const disposes: Array<() => void> = [];
 
@@ -950,6 +1030,59 @@ describe("ProviderEditScreen reauthorization", () => {
         // The success reload lands: one initial read plus the action's own reload.
         expect(listCount).toBe(2);
         expect(buttonWithText("Reconnect the account")).toBeInstanceOf(HTMLButtonElement);
+    });
+
+    it("keeps a live flow and its pasted code across a read that rewrites the row", async () => {
+        // The token-refresh lease rewrites the row on the gateway: the fresh
+        // `expires_at` flips the row's identity, the screen's keyed content
+        // remounts — and a flow held inside that content would be discarded
+        // silently, paste gone and the gateway's flow row orphaned.
+        const holder = {
+            providers: [
+                {
+                    ...oauthProvider,
+                },
+            ],
+            models: [],
+        };
+        const base = screenApi(holder);
+        const api: ManagementApi = {
+            ...base,
+            reauthorizeProvider: () => Promise.resolve(reauthorizationFlow),
+            completeProviderOauth: () =>
+                Promise.resolve({
+                    status: "succeeded" as const,
+                    provider: {
+                        ...oauthProvider,
+                        expires_at: 1_800_000_000_000_000,
+                    },
+                }),
+        };
+        await mountAndReconnect(api);
+        expect(document.body.textContent).toContain("Expired");
+
+        holder.providers = [
+            {
+                ...oauthProvider,
+                expires_at: 1_900_000_000_000_000,
+            },
+        ];
+        requestRefresh();
+        await settle();
+
+        // The remount happened — the expiry line states the fresh row — yet
+        // the flow survives above it: the paste stands and the completion is
+        // still offered, with no silent reset to the reconnect button.
+        expect(document.body.textContent).toContain("Valid for");
+        expect(labeledInput("Callback URL or authorization code").value).toBe("the-code");
+        expect(buttonWithText("Replace the credentials")).toBeInstanceOf(HTMLButtonElement);
+        expect(document.body.textContent).not.toContain("Reconnect the account");
+
+        // And the completion still lands the replacement over the remount.
+        buttonWithText("Replace the credentials").click();
+        await settle();
+
+        expect(document.body.textContent).toContain("Credentials replaced.");
     });
 
     it("states the paste diagnosis with its fix when the paste carries no code", async () => {

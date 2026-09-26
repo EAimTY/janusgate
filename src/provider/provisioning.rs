@@ -20,7 +20,7 @@ use crate::{
         definition::{
             eval::ValueEnv,
             provisioning::{Poll, ProvisionExtraction, ProvisioningStep},
-            template::ResponseTarget,
+            template::{ResponsePath, ResponseTarget},
         },
         oauth::Error,
     },
@@ -204,68 +204,111 @@ async fn run_poll(
     }
 }
 
-/// Whether the long-running operation at one done path has completed: the boolean `true`, the
-/// number `1`, or the string `true` all count — the upstream-owned done spelling is one of these
-/// truthy shapes.
-fn done_at(
-    body: &DecodedBody,
-    path: &crate::provider::definition::template::ResponsePath,
-) -> Result<bool, Error> {
-    let DecodedBody::Json(json) = body else {
-        return Ok(false);
-    };
+/// One poll-path value resolved out of a decoded poll response: the JSON value at the path, or
+/// the text of the one flat form member the path names (README §5.1: form responses are flat,
+/// one member).
+enum PollValue<'a> {
+    /// The JSON value the path addresses.
+    Json(&'a serde_json::Value),
 
-    let Some(value) = path.resolve(json) else {
+    /// The flat form field's text.
+    Form(&'a str),
+}
+
+/// Resolves one poll path against a decoded body: the JSON member chain, or the single named
+/// member of the flat form encoding. A missing path yields [`None`] — the caller decides
+/// whether that is fatal (the done path) or an absent payload (the error path) — and a
+/// multi-member path against a form body is a malformed definition and fails.
+fn resolve_poll_value<'a>(
+    body: &'a DecodedBody,
+    path: &ResponsePath,
+    role: &str,
+) -> Result<Option<PollValue<'a>>, Error> {
+    match body {
+        DecodedBody::Json(json) => Ok(path.resolve(json).map(PollValue::Json)),
+
+        DecodedBody::Form(fields) => {
+            let [member] = path.0.as_slice() else {
+                return Err(Error::Unavailable {
+                    detail: format!(
+                        "provisioning poll {role} path addresses a flat form field and carries \
+                         exactly one member"
+                    ),
+                });
+            };
+
+            Ok(fields
+                .get(member)
+                .map(|text| PollValue::Form(text.as_str())))
+        }
+    }
+}
+
+/// Whether the long-running operation at one done path has completed: on JSON, the boolean
+/// `true`, the number `1`, or the string `true` all count — the upstream-owned done spelling is
+/// one of these truthy shapes — and on the flat form encoding, the one addressed member reads
+/// `true` or `1`, the string spellings those truthy scalars render in.
+fn done_at(body: &DecodedBody, path: &ResponsePath) -> Result<bool, Error> {
+    let Some(value) = resolve_poll_value(body, path, "done")? else {
         return Err(Error::Unavailable {
             detail: "provisioning poll response lacks its done path".to_string(),
         });
     };
 
     Ok(match value {
-        serde_json::Value::Bool(done) => *done,
-        serde_json::Value::Number(number) => number.as_i64() == Some(1),
-        serde_json::Value::String(text) => text == "true",
-        _ => false,
+        PollValue::Json(json) => match json {
+            serde_json::Value::Bool(done) => *done,
+            serde_json::Value::Number(number) => number.as_i64() == Some(1),
+            serde_json::Value::String(text) => text == "true",
+            _ => false,
+        },
+
+        // A form field carries only text, so the truthy boolean and number scalars surface in
+        // their string spellings.
+        PollValue::Form(text) => text == "true" || text == "1",
     })
 }
 
-/// Reads the failure payload at one error path, when any: an object renders its `status` and
-/// `message` members, any other value renders verbatim.
-fn error_at(
-    body: &DecodedBody,
-    path: &crate::provider::definition::template::ResponsePath,
-) -> Result<Option<String>, Error> {
+/// Reads the failure payload at one error path, when any: on JSON, an object renders its
+/// `status` and `message` members and any other non-`null` value renders verbatim; on the flat
+/// form encoding, the one addressed member renders verbatim — it is already text. An absent or
+/// `null` payload reads as no failure.
+fn error_at(body: &DecodedBody, path: &ResponsePath) -> Result<Option<String>, Error> {
+    // The empty path is the configured no-error-inspection: it addresses nothing by design.
     if path.0.is_empty() {
         return Ok(None);
     }
 
-    let DecodedBody::Json(json) = body else {
+    let Some(value) = resolve_poll_value(body, path, "error")? else {
         return Ok(None);
     };
 
-    let Some(value) = path.resolve(json) else {
-        return Ok(None);
-    };
+    Ok(match value {
+        // A form field is already text: the flat encoding's only shape renders verbatim.
+        PollValue::Form(text) => Some(text.to_string()),
 
-    if value.is_null() {
-        return Ok(None);
-    }
-
-    Ok(Some(match value {
-        serde_json::Value::Object(object) => {
-            let status = object.get("status").and_then(serde_json::Value::as_str);
-            let message = object.get("message").and_then(serde_json::Value::as_str);
-
-            match (status, message) {
-                (Some(status), Some(message)) => format!("{status}: {message}"),
-                (Some(status), None) => status.to_string(),
-                (None, Some(message)) => message.to_string(),
-                (None, None) => value.to_string(),
+        PollValue::Json(json) => {
+            if json.is_null() {
+                return Ok(None);
             }
-        }
 
-        other => other.to_string(),
-    }))
+            Some(match json {
+                serde_json::Value::Object(object) => {
+                    let status = object.get("status").and_then(serde_json::Value::as_str);
+                    let message = object.get("message").and_then(serde_json::Value::as_str);
+
+                    match (status, message) {
+                        (Some(status), Some(message)) => format!("{status}: {message}"),
+                        (Some(status), None) => status.to_string(),
+                        (None, Some(message)) => message.to_string(),
+                        (None, None) => json.to_string(),
+                    }
+                }
+
+                other => other.to_string(),
+            })
+        }
+    })
 }
 
 /// Folds one extraction list into the working state through the shared control-layer fold: a
@@ -418,8 +461,9 @@ mod tests {
         reason = "a fixture landing on the wrong side of its check is the failure report"
     )]
 
-    use super::{ResponseTarget, WorkingState, apply_target};
-    use crate::provider::control::Extracted;
+    use super::{ResponsePath, ResponseTarget, WorkingState, apply_target, done_at, error_at};
+    use crate::provider::control::{DecodedBody, Extracted};
+    use std::collections::BTreeMap;
 
     /// The provisioning fold shares the exchange fold's storage boundary (README §7): slot text
     /// must be routing-safe machine-consumed text, and a mapped `base_url` must additionally
@@ -505,5 +549,49 @@ mod tests {
         value: &str,
     ) -> Result<(), super::Error> {
         apply_target(state, target, Extracted::Text(value.to_string()))
+    }
+
+    /// A flat form response carries no nesting (README §5.1), so a poll path addressing it
+    /// names exactly one member: a multi-member done or error path is a malformed definition
+    /// that fast-fails the poll — never a missing value read as still-running (the done path)
+    /// or as no failure (the error path).
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture lands on the wrong side of its check.
+    #[test]
+    fn a_multi_member_poll_path_against_a_form_body_fast_fails() {
+        let body = DecodedBody::Form(BTreeMap::from([(
+            "status".to_string(),
+            "running".to_string(),
+        )]));
+
+        let Err(done_error) = done_at(
+            &body,
+            &ResponsePath(vec!["result".to_string(), "done".to_string()]),
+        ) else {
+            panic!("a two-member done path against a form body must fail the poll");
+        };
+
+        assert!(
+            done_error
+                .to_string()
+                .contains("done path addresses a flat form field and carries exactly one member"),
+            "{done_error}"
+        );
+
+        let Err(error_path_error) = error_at(
+            &body,
+            &ResponsePath(vec!["result".to_string(), "error".to_string()]),
+        ) else {
+            panic!("a two-member error path against a form body must fail the poll");
+        };
+
+        assert!(
+            error_path_error
+                .to_string()
+                .contains("error path addresses a flat form field and carries exactly one member"),
+            "{error_path_error}"
+        );
     }
 }

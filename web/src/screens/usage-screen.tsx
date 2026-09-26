@@ -10,7 +10,7 @@ import type {
 } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
-import { hrefs, navigate } from "/src/router";
+import { hrefs, navigate, type UsageQuerySubject } from "/src/router";
 import { ReadNotice } from "/src/screens/read-notice";
 import { AppLink } from "/src/ui/app-link";
 import { Button, ButtonLink, SelectField } from "/src/ui/controls";
@@ -41,7 +41,10 @@ import { readUsageEntities, type UsageEntities } from "./usage-read";
 /**
  * Every dispatched request, newest first, under the shared filter its route
  * carries — the same filter the aggregates page narrows, so the two reads of
- * one gateway's accounting always describe the same question. The filter is
+ * one gateway's accounting always describe the same question. The header's
+ * aggregates door carries the route filter's single-entity narrow as the
+ * aggregates page's subject, so a narrowed stream lands asking about that
+ * entity rather than silently totaling the gateway. The filter is
  * the address: applying it navigates, which makes a filtered stream linkable,
  * shareable, and openable by the browser's back button, and leaves the
  * unfiltered stream at exactly `/usage`. The route Match keys this screen, so
@@ -226,6 +229,10 @@ export function UsageScreen(props: {
         navigate(hrefs.usage());
     };
 
+    // The route filter is fixed for the mount — a changed filter is a fresh
+    // mount — so the aggregates subject it carries is read once here.
+    const aggregatesSubject = streamAggregatesSubject(props.filter);
+
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
@@ -233,7 +240,7 @@ export function UsageScreen(props: {
                 description="Every dispatched request, newest first — numbers only, never content."
             >
                 <ButtonLink
-                    href={hrefs.usageQuery()}
+                    href={hrefs.usageQuery(aggregatesSubject)}
                     glyph="activity"
                 >
                     View aggregates
@@ -329,6 +336,11 @@ export function UsageScreen(props: {
                                     title="No requests recorded yet"
                                     description="One row appears per dispatched serving request — the moment the gateway sends upstream. If traffic flows and nothing appears, check the api_logs section in the gateway's configuration file."
                                 >
+                                    {/* This door exists only for the unfiltered
+                                        stream — a filtered answer that matches
+                                        nothing states the filter instead — so
+                                        the link carries no subject: there is
+                                        no narrow to carry. */}
                                     <ButtonLink
                                         href={hrefs.usageQuery()}
                                         glyph="activity"
@@ -394,6 +406,48 @@ export function UsageScreen(props: {
             </Show>
         </div>
     );
+}
+
+/**
+ * The aggregates subject the stream's route filter carries: its entity
+ * narrow, when exactly one of provider, model, or key is named, as the
+ * aggregates page's prefilled subject — so landing on the aggregates page
+ * from a narrowed stream keeps asking about that entity instead of silently
+ * totaling the whole gateway. A filter naming no entity, or more than one,
+ * carries no subject: a subject is one entity, and a compound narrow belongs
+ * to the aggregates page's own filter, not to a link. The window and every
+ * non-entity field stay behind — only the entity subject crosses, the
+ * aggregates page's window semantics being its own.
+ */
+function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | undefined {
+    const named: UsageQuerySubject[] = [];
+
+    // The route parser admits an entity field only when it reads as a row
+    // identifier, so the `Number` here is the same trusted spelling
+    // `buildUsageFilter` puts on the wire.
+    if (filter.providerId !== "") {
+        named.push({
+            dimension: "provider",
+            id: Number(filter.providerId),
+        });
+    }
+
+    if (filter.modelId !== "") {
+        named.push({
+            dimension: "model",
+            id: Number(filter.modelId),
+        });
+    }
+
+    if (filter.apiKeyId !== "") {
+        named.push({
+            dimension: "api_key",
+            id: Number(filter.apiKeyId),
+        });
+    }
+
+    const [subject] = named;
+    return named.length === 1 ? subject : undefined;
 }
 
 /**

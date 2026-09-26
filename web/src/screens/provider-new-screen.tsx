@@ -39,6 +39,14 @@ import { createOauthFlow } from "./oauth-flow";
 import { type ScreenNotice, screenFailureNotice } from "./read";
 
 /**
+ * The one line each editable card states while a live flow holds its fields:
+ * the lock's reason, stated once per card rather than as a hint on every
+ * disabled control.
+ */
+const FLOW_LOCK_NOTICE =
+    "Locked while the authorization is live — the provider is created from what the flow's start already sent.";
+
+/**
  * The creation page: one preset catalog, one definition, one provider. A
  * preset prefills the definition JSON the gateway stores under
  * `provider-definitions:create` — or reuses the stored version untouched —
@@ -464,7 +472,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
      * Whether an OAuth flow is live: the picker, the identity fields, and the
      * definition editing surface lock, because the provider is created from
      * what the flow's start already sent — an edit now would look accepted
-     * and do nothing.
+     * and do nothing. Each editable card states that reason in a single line
+     * (`FLOW_LOCK_NOTICE`) for as long as the flow holds, so no control grays
+     * out silently.
      */
     const isFlowLive = (): boolean => oauth.flow() !== null;
 
@@ -521,6 +531,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     <p class="mt-3 text-[12.5px] leading-snug text-ink-faint">
                         {preset().provenance}
                     </p>
+                    <Show when={isFlowLive()}>
+                        <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>
+                    </Show>
                 </div>
             </Card>
 
@@ -551,6 +564,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                                 {`Stored as version ${current().version}.`}
                             </p>
                         )}
+                    </Show>
+                    <Show when={isFlowLive()}>
+                        <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>
                     </Show>
                     <details class="group mt-2">
                         <summary class="flex cursor-pointer list-none items-center gap-1.5 text-[13px] font-medium text-ink-dim transition-colors duration-150 ease-out hover:text-ink [&::-webkit-details-marker]:hidden">
@@ -614,6 +630,9 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         isDisabled={isBusy() || isFlowLive()}
                     />
                 </div>
+                <Show when={isFlowLive()}>
+                    <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>
+                </Show>
             </Card>
 
             <Switch>
