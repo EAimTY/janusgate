@@ -244,6 +244,47 @@ export function readApiKeys(
     };
 }
 
+/** The entity pair the provider and model screens read alongside their rows. */
+export type ProviderCatalog = {
+    readonly providers: ReadonlyArray<ProviderResponse>;
+    readonly models: ReadonlyArray<ModelResponse>;
+};
+
+/**
+ * The two entity listings a screen reads beside its subject — the provider
+ * and model screens alongside their rows — as one read call: the listings
+ * run in parallel under the cycle's signal and answer as the whole
+ * `ProviderCatalog` pair, so every cycle that ends successfully leaves both
+ * listings loaded. A non-null `providerId` filters the models listing to
+ * that provider's rows; `null` reads every model row.
+ */
+export function readProviderCatalog(
+    api: Pick<ManagementApi, "listProviders" | "listModels">,
+    providerId: number | null,
+): ReadCall<ProviderCatalog> {
+    return {
+        run: async (signal) => {
+            const [providersResult, modelsResult] = await readAll(
+                signal,
+                readProviders(api),
+                readModels(
+                    api,
+                    providerId === null
+                        ? {}
+                        : {
+                              provider_id: providerId,
+                          },
+                ),
+            );
+
+            return {
+                providers: providersResult.providers,
+                models: modelsResult.models,
+            };
+        },
+    };
+}
+
 /**
  * Whether the skeleton window is open: a read is in flight, no read has ever
  * succeeded, and nothing stands in the notice. The notice clause is

@@ -806,6 +806,15 @@ const OAUTH_PRESETS: readonly [
                                 },
                             ],
                         },
+                        {
+                            name: "anthropic-version",
+                            value: [
+                                {
+                                    type: "literal",
+                                    value: "2023-06-01",
+                                },
+                            ],
+                        },
                     ],
                 },
                 extract: {

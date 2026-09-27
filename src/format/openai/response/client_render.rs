@@ -1126,7 +1126,7 @@ fn incomplete_details_reason(reason: IrFinishReason) -> Option<&'static str> {
 mod tests {
     use super::{SseRenderer, render_json_response};
     use crate::{
-        format::ClientSseRenderer as _,
+        format::{ClientSseRenderer as _, aggregated_body_json},
         ir::{IrAggregation, IrEvent, IrUsage},
     };
     use serde_json::Value;
@@ -1290,12 +1290,7 @@ mod tests {
             ..IrAggregation::default()
         };
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the aggregated body always serializes into a JSON value"
-        )]
-        let body = serde_json::to_value(render_json_response("m", &aggregation))
-            .expect("the aggregated body serializes into a JSON value");
+        let body = aggregated_body_json(&render_json_response("m", &aggregation));
 
         assert_eq!(
             body.get("usage"),

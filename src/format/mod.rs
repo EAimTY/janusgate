@@ -735,6 +735,26 @@ where
     serde_json::to_string(value).expect("rendered wire payloads serialize")
 }
 
+/// Serializes an aggregated outward response body into the JSON value the codec test suites assert
+/// against.
+///
+/// The render-is-total invariant: every aggregated body a [`ClientFormat::render_json_response`]
+/// implementation returns is a first-party wire type whose serialization is total — the same
+/// invariant [`render_json`] states for the streaming frames — so the suites share this one
+/// serialization failure path instead of repeating the escape hatch beside every assertion.
+///
+/// # Panics
+///
+/// Panics if `response` fails to serialize, which cannot occur for a rendered wire type.
+#[cfg(test)]
+pub(in crate::format) fn aggregated_body_json<T: Serialize>(response: &T) -> Value {
+    #[expect(
+        clippy::expect_used,
+        reason = "rendered wire types are first-party and serialize totally"
+    )]
+    serde_json::to_value(response).expect("the aggregated body serializes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{RoleRun, UpstreamFormat};

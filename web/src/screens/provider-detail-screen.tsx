@@ -17,9 +17,8 @@ import {
     createPinnedRow,
     createScreenRead,
     isSameProviderRow,
-    readAll,
-    readModels,
-    readProviders,
+    readOne,
+    readProviderCatalog,
     type ScreenNotice,
     screenFailureNotice,
 } from "/src/screens/read";
@@ -69,35 +68,29 @@ export function ProviderDetailScreen(props: {
     // outcome lives on the Models card and survives reads untouched.
     const read = createScreenRead({
         load: async (signal) => {
-            const [providersResult, modelsResult] = await readAll(
-                signal,
-                readProviders(props.api),
-                readModels(props.api, {
-                    provider_id: props.providerId,
-                }),
-            );
+            const catalog = await readOne(signal, readProviderCatalog(props.api, props.providerId));
 
-            setProviders(providersResult.providers);
-            setModels(modelsResult.models);
+            setProviders(catalog.providers);
+            setModels(catalog.models);
 
-            if (!providersResult.providers.some((candidate) => candidate.id === props.providerId)) {
+            if (!catalog.providers.some((candidate) => candidate.id === props.providerId)) {
                 // The subject row is gone: the not-found state takes over,
                 // and the discovery outcome stated on its Models card goes
                 // with it instead of surviving as a stale banner.
                 setDiscoveryNotice(null);
             }
 
-            if (modelsResult.models.length === 0 && autoDiscoveredFor !== props.providerId) {
+            if (catalog.models.length === 0 && autoDiscoveredFor !== props.providerId) {
                 // The decision reads the fetched arrays, not the signals: a
                 // write from this continuation stages until the next flush,
                 // so a read-back here would still see the previous listing.
-                const current = providersResult.providers.find(
+                const current = catalog.providers.find(
                     (candidate) => candidate.id === props.providerId,
                 );
 
                 if (current !== undefined) {
                     autoDiscoveredFor = props.providerId;
-                    void discover(current, modelsResult.models);
+                    void discover(current, catalog.models);
                 }
             }
         },

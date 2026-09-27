@@ -878,7 +878,7 @@ impl ClientSseRenderer for SseRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ir::IrReasoningBlock, test_support::at};
+    use crate::{format::aggregated_body_json, ir::IrReasoningBlock, test_support::at};
     use serde_json::{Value, json};
 
     /// Reads the first rendered frame payload.
@@ -1011,12 +1011,7 @@ mod tests {
             }),
         };
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the aggregated body is under test; a failing render is the failure"
-        )]
-        let body = serde_json::to_value(render_json_response("claude-test", &aggregation))
-            .expect("the aggregated body serializes");
+        let body = aggregated_body_json(&render_json_response("claude-test", &aggregation));
 
         assert_eq!(at(&body, "/id").as_str().map(str::len), Some(40));
         assert!(

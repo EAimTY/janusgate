@@ -9,9 +9,8 @@ import {
     createScreenRead,
     isSameModelRow,
     isSameProviderRow,
-    readAll,
-    readModels,
-    readProviders,
+    readOne,
+    readProviderCatalog,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
@@ -35,14 +34,10 @@ export function ModelDetailScreen(props: {
 
     const read = createScreenRead({
         load: async (signal) => {
-            const [providersResult, modelsResult] = await readAll(
-                signal,
-                readProviders(props.api),
-                readModels(props.api, {}),
-            );
+            const catalog = await readOne(signal, readProviderCatalog(props.api, null));
 
-            setProviders(providersResult.providers);
-            setModels(modelsResult.models);
+            setProviders(catalog.providers);
+            setModels(catalog.models);
         },
     });
 

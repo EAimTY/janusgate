@@ -894,7 +894,10 @@ mod tests {
         super::client_render::{SseRenderer, finish_reason_to_stop, render_json_response},
         *,
     };
-    use crate::{format::ClientSseRenderer, ir::Aggregator};
+    use crate::{
+        format::{ClientSseRenderer, aggregated_body_json},
+        ir::Aggregator,
+    };
     use serde_json::{Value, json};
 
     /// Streams one upstream SSE conversation through the event-name-discriminated parser:
@@ -1133,12 +1136,7 @@ mod tests {
             Some(&block),
         );
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the aggregated body is under test; a failing render is the failure"
-        )]
-        let body = serde_json::to_value(render_json_response("claude-test", &aggregation))
-            .expect("the aggregated body serializes");
+        let body = aggregated_body_json(&render_json_response("claude-test", &aggregation));
 
         assert_eq!(body.pointer("/content/0"), Some(&block));
 

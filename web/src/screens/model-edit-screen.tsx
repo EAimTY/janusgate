@@ -11,9 +11,8 @@ import {
     createScreenRead,
     isSameModelRow,
     isSameProviderRow,
-    readAll,
-    readModels,
-    readProviders,
+    readOne,
+    readProviderCatalog,
     type ScreenRead,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
@@ -60,14 +59,10 @@ export function ModelEditScreen(props: {
     const read = createScreenRead({
         isNoticeKeptOnSuccess: true,
         load: async (signal) => {
-            const [providersResult, modelsResult] = await readAll(
-                signal,
-                readProviders(props.api),
-                readModels(props.api, {}),
-            );
+            const catalog = await readOne(signal, readProviderCatalog(props.api, null));
 
-            setProviders(providersResult.providers);
-            setModels(modelsResult.models);
+            setProviders(catalog.providers);
+            setModels(catalog.models);
             edit.reportReloaded();
         },
     });

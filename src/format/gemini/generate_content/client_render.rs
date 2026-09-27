@@ -453,6 +453,7 @@ impl ClientSseRenderer for SseRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::aggregated_body_json;
 
     /// Verifies aggregated rendering emits the native shape: one `model` candidate with
     /// text plus function calls, a mapped finish reason, and Gemini usage columns.
@@ -485,10 +486,7 @@ mod tests {
             }),
         };
 
-        let rendered = render_json_response("m", &aggregation);
-
-        #[expect(clippy::expect_used, reason = "the rendered body always serializes")]
-        let value = serde_json::to_value(&rendered).expect("the body serializes");
+        let value = aggregated_body_json(&render_json_response("m", &aggregation));
 
         assert_eq!(
             value.pointer("/candidates/0/content/role"),
@@ -564,10 +562,7 @@ mod tests {
             aggregator.ingest(event);
         }
 
-        let rendered = render_json_response("m", &aggregator.finish());
-
-        #[expect(clippy::expect_used, reason = "the rendered body always serializes")]
-        let value = serde_json::to_value(&rendered).expect("the body serializes");
+        let value = aggregated_body_json(&render_json_response("m", &aggregator.finish()));
 
         assert_eq!(
             value.pointer("/promptFeedback/blockReason"),
@@ -598,10 +593,7 @@ mod tests {
             prompt_block_reason: None,
         };
 
-        let rendered = render_json_response("m", &aggregation);
-
-        #[expect(clippy::expect_used, reason = "the rendered body always serializes")]
-        let value = serde_json::to_value(&rendered).expect("the body serializes");
+        let value = aggregated_body_json(&render_json_response("m", &aggregation));
 
         assert_eq!(
             value.pointer("/candidates/0/finishReason"),

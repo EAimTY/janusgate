@@ -261,41 +261,24 @@ macro_rules! route {
             response : $response:ty ,
         }
     ) => {
-        #[doc = concat!(
-            "Route marker for `",
-            $path,
-            "`; the type exists only at the type level, carrying the route's",
-            " `Route` implementation, and is never constructed.",
-        )]
-        $vis struct $route {}
-
-        #[doc = concat!("Registers the `", $path, "` route in the version's registry.")]
-        #[expect(
-            non_upper_case_globals,
-            reason = "the binding static is named after its route marker type"
-        )]
-        #[cfg(feature = "management-api-typescript-bindings")]
-        #[linkme::distributed_slice($registry)]
-        static $route: $crate::management_api::route::RouteBinding =
-            $crate::management_api::route::RouteBinding {
-                method: $crate::management_api::route::route_method::<$route>,
-                path: <$route as $crate::management_api::route::Route>::PATH,
-                request: $crate::management_api::route::request_binding::<$route>,
-                response: $crate::management_api::route::response_binding::<$route>,
-            };
-
-        impl $crate::management_api::route::Route for $route {
-            #[doc = "HTTP method the route answers."]
-            const METHOD: ::http::Method = $method;
-
-            #[doc = concat!("Path `", $path, "` within the version's sub-router.")]
-            const PATH: &'static str = $path;
-
-            #[doc = "Request body type; empty when the route carries no body."]
-            type Request = $request;
-
-            #[doc = "Success response body type."]
-            type Response = $response;
+        $crate::management_api::route::route! {
+            @impl $registry ;
+            $vis $route : {
+                path : $path ,
+                method : $method ,
+                request : $request ,
+                response : $response ,
+            }
+            marker_doc = concat!(
+                "Route marker for `",
+                $path,
+                "`; the type exists only at the type level, carrying the route's",
+                " `Route` implementation, and is never constructed.",
+            ),
+            registration_doc = concat!(
+                "Registers the `", $path, "` route in the version's registry."
+            ),
+            path_doc = concat!("Path `", $path, "` within the version's sub-router."),
         }
     };
 
@@ -310,19 +293,50 @@ macro_rules! route {
             response : $response:ty ,
         }
     ) => {
-        #[doc = concat!(
-            "Route marker for `",
-            stringify!($path),
-            "`; the type exists only at the type level, carrying the route's",
-            " `Route` implementation, and is never constructed.",
-        )]
+        $crate::management_api::route::route! {
+            @impl $registry ;
+            $vis $route : {
+                path : $path ,
+                method : $method ,
+                request : $request ,
+                response : $response ,
+            }
+            marker_doc = concat!(
+                "Route marker for `",
+                stringify!($path),
+                "`; the type exists only at the type level, carrying the route's",
+                " `Route` implementation, and is never constructed.",
+            ),
+            registration_doc = concat!(
+                "Registers the `",
+                stringify!($path),
+                "` route in the version's registry."
+            ),
+            path_doc = concat!("Path `", stringify!($path), "` within the version's sub-router."),
+        }
+    };
+
+    // The shared expansion behind both public arms: the marker doc, the registration doc, and the
+    // `PATH` doc arrive as expressions because a literal `path` embeds its value while an
+    // expression `path` names the constant via `stringify!`. The forwarding calls spell this
+    // macro's path out because an unqualified recursive `route!` resolves in the expansion's
+    // context, where a version's wrapping `route!` shadows this macro.
+    (
+        @impl $registry:path ;
+        $vis:vis $route:ident : {
+            path : $path:expr ,
+            method : $method:expr ,
+            request : $request:ty ,
+            response : $response:ty ,
+        }
+        marker_doc = $marker_doc:expr ,
+        registration_doc = $registration_doc:expr ,
+        path_doc = $path_doc:expr ,
+    ) => {
+        #[doc = $marker_doc]
         $vis struct $route {}
 
-        #[doc = concat!(
-            "Registers the `",
-            stringify!($path),
-            "` route in the version's registry."
-        )]
+        #[doc = $registration_doc]
         #[expect(
             non_upper_case_globals,
             reason = "the binding static is named after its route marker type"
@@ -341,7 +355,7 @@ macro_rules! route {
             #[doc = "HTTP method the route answers."]
             const METHOD: ::http::Method = $method;
 
-            #[doc = concat!("Path `", stringify!($path), "` within the version's sub-router.")]
+            #[doc = $path_doc]
             const PATH: &'static str = $path;
 
             #[doc = "Request body type; empty when the route carries no body."]

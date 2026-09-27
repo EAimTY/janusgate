@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { drainWrites } from "/src/screens/screen-test-support";
-import { currentLocation, hrefs, matchAppRoute, routeTitle } from "./router";
+import { currentLocation, hrefs, isCurrentAddress, matchAppRoute, routeTitle } from "./router";
 import { EMPTY_USAGE_FILTER_DRAFT } from "./usage-filter";
 
 function match(target: string) {
@@ -492,5 +492,28 @@ describe("currentLocation", () => {
             search: "",
         });
         expect(currentLocation()).not.toBe(before);
+    });
+
+    it("reads a trailing-slash address as the address already held", async () => {
+        await traverse("/");
+
+        // A deep link may carry the trailing slash; the location's read point
+        // strips it, so the signal speaks the matcher's and the builders'
+        // slash-less spelling.
+        await traverse("/providers/12/");
+
+        expect(currentLocation()).toEqual({
+            pathname: "/providers/12",
+            search: "",
+        });
+        expect(isCurrentAddress("/providers/12")).toBe(true);
+        expect(isCurrentAddress("/providers/13")).toBe(false);
+
+        // A traversal between the two spellings carries the address already
+        // held: no notification, no keyed remount.
+        const before = currentLocation();
+        await traverse("/providers/12");
+
+        expect(currentLocation()).toBe(before);
     });
 });

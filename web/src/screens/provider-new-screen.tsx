@@ -950,9 +950,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                             />
                             <Show when={definitionError()}>
                                 {(current) => (
-                                    <p class="mt-1 text-[12.5px] text-red-600 dark:text-red-400">
-                                        {current()}
-                                    </p>
+                                    <p class="mt-1 text-[12.5px] text-bad">{current()}</p>
                                 )}
                             </Show>
                             <div class="mt-2 flex justify-end">
@@ -970,7 +968,7 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                         offense itself, and a pointer telling the operator to
                         open it would be impossible to follow. */}
                     <Show when={definitionError() !== null && !isDefinitionOpen()}>
-                        <p class="mt-2 text-[12.5px] text-red-600 dark:text-red-400">
+                        <p class="mt-2 text-[12.5px] text-bad">
                             The connection recipe is invalid — open the Advanced disclosure above
                             for the offending path.
                         </p>

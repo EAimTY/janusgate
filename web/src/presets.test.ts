@@ -488,7 +488,7 @@ describe("generic Gemini presets", () => {
 describe("claude-code preset", () => {
     const claude = findPreset("claude-code");
 
-    it("rides the OAuth beta header on inference and discovery alike", () => {
+    it("rides the OAuth beta and version headers on inference and discovery alike", () => {
         const inferenceHeaders = headerNames(
             (claude.payload as Record<string, unknown>)["inference"] as unknown,
         );
@@ -498,15 +498,17 @@ describe("claude-code preset", () => {
             ] as unknown,
         );
 
-        const beta = (rows: ReturnType<typeof headerNames>): boolean =>
-            rows.some(
-                (row) =>
-                    row.name === "anthropic-beta" &&
-                    JSON.stringify(row.value).includes("oauth-2025-04-20"),
-            );
+        const carriesHeader = (
+            rows: ReturnType<typeof headerNames>,
+            name: string,
+            value: string,
+        ): boolean =>
+            rows.some((row) => row.name === name && JSON.stringify(row.value).includes(value));
 
-        expect(beta(inferenceHeaders)).toBe(true);
-        expect(beta(discoveryHeaders)).toBe(true);
+        expect(carriesHeader(inferenceHeaders, "anthropic-beta", "oauth-2025-04-20")).toBe(true);
+        expect(carriesHeader(discoveryHeaders, "anthropic-beta", "oauth-2025-04-20")).toBe(true);
+        expect(carriesHeader(inferenceHeaders, "anthropic-version", "2023-06-01")).toBe(true);
+        expect(carriesHeader(discoveryHeaders, "anthropic-version", "2023-06-01")).toBe(true);
     });
 
     it("uses PKCE with the hosted paste-back callback", () => {

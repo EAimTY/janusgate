@@ -843,7 +843,10 @@ impl ClientSseRenderer for SseRenderer {
 mod tests {
     use super::*;
     use crate::{
-        format::{ParsedRequest, RouteContext, gemini::interaction::request_parse::parse_request},
+        format::{
+            ParsedRequest, RouteContext, aggregated_body_json,
+            gemini::interaction::request_parse::parse_request,
+        },
         ir::{InvalidRequest, IrFinishReason, IrPart, IrRole},
     };
 
@@ -897,13 +900,7 @@ mod tests {
             }),
         };
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the rendered resource always serializes"
-        )]
-        let rendered: Value =
-            serde_json::to_value(render_json_response("public-model", &aggregation))
-                .expect("the aggregated resource serializes");
+        let rendered = aggregated_body_json(&render_json_response("public-model", &aggregation));
 
         assert_eq!(
             rendered.pointer("/model"),
@@ -1001,13 +998,7 @@ mod tests {
             usage: None,
         };
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the rendered resource always serializes"
-        )]
-        let rendered: Value =
-            serde_json::to_value(render_json_response("public-model", &aggregation))
-                .expect("the aggregated resource serializes");
+        let rendered = aggregated_body_json(&render_json_response("public-model", &aggregation));
 
         #[expect(clippy::expect_used, reason = "the resource carries a step array")]
         let steps = rendered
@@ -1339,13 +1330,7 @@ mod tests {
 
         let aggregation = aggregator.finish();
 
-        #[expect(
-            clippy::expect_used,
-            reason = "the rendered resource always serializes"
-        )]
-        let rendered: Value =
-            serde_json::to_value(render_json_response("public-model", &aggregation))
-                .expect("the aggregated resource serializes");
+        let rendered = aggregated_body_json(&render_json_response("public-model", &aggregation));
 
         // The thinking part's block renders its summary text beside its signature.
         assert_eq!(

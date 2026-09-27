@@ -276,9 +276,17 @@ function matchEntityRoute(
     return match[2] === undefined ? detail(rowId) : edit(rowId);
 }
 
+/**
+ * A trailing slash addresses the same resource, so every pathname the router
+ * reads — matched, compared, or held in the location signal — carries the
+ * slash-less spelling. The root has no slash to strip and stays `/`.
+ */
+function normalizePathname(pathname: string): string {
+    return pathname === "/" ? pathname : pathname.replace(/\/+$/, "");
+}
+
 export function matchAppRoute(pathname: string, search: string): AppRoute {
-    // A trailing slash addresses the same resource.
-    const normalizedPath = pathname !== "/" ? pathname.replace(/\/+$/, "") : pathname;
+    const normalizedPath = normalizePathname(pathname);
 
     if (normalizedPath === "/") {
         return {
@@ -401,9 +409,15 @@ export function matchAppRoute(pathname: string, search: string): AppRoute {
     };
 }
 
+/**
+ * The one read of the browser's location. The pathname is normalized to the
+ * matcher's vocabulary — a trailing slash addresses the same resource — so
+ * the location signal, the same-address comparisons, and the matcher all
+ * speak one spelling of an address.
+ */
 function readLocation(): AppLocation {
     return {
-        pathname: window.location.pathname,
+        pathname: normalizePathname(window.location.pathname),
         search: window.location.search,
     };
 }
