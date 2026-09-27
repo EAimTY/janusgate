@@ -72,7 +72,7 @@ function ProviderRow(props: {
                     <>
                         <Badge
                             tone={props.provider.is_enabled ? "ok" : "muted"}
-                            label={props.provider.is_enabled ? "Enabled" : "Disabled"}
+                            label={props.provider.is_enabled ? "On" : "Off"}
                         />
                         <Show when={credential()}>
                             {(current) => (

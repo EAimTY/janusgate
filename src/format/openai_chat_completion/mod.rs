@@ -6,7 +6,7 @@
 use self::client_render::{ChatCompletionResponse, SseRenderer};
 use crate::{
     format::{ClientFormat, ClientSseRenderer, ParsedRequest, RouteContext},
-    ir::{InvalidRequest, IrAggregation},
+    ir::{InvalidRequest, IrAggregation, IrFinishReason},
 };
 
 mod client_render;
@@ -36,5 +36,26 @@ impl ClientFormat for Format {
 
     fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> Self::JsonResponse {
         client_render::render_json_response(public_id, aggregation)
+    }
+}
+
+/// Maps an OpenAI `finish_reason` string to the canonical reason; unknown values degrade to
+/// [`IrFinishReason::Stop`] rather than failing a healthy stream.
+fn finish_reason_from_openai(value: &str) -> IrFinishReason {
+    match value {
+        "length" => IrFinishReason::Length,
+        "tool_calls" | "function_call" => IrFinishReason::ToolCall,
+        "content_filter" => IrFinishReason::ContentFilter,
+        _ => IrFinishReason::Stop,
+    }
+}
+
+/// Renders the canonical reason as an OpenAI `finish_reason` string.
+fn finish_reason_to_openai(reason: IrFinishReason) -> &'static str {
+    match reason {
+        IrFinishReason::Stop => "stop",
+        IrFinishReason::Length => "length",
+        IrFinishReason::ToolCall => "tool_calls",
+        IrFinishReason::ContentFilter => "content_filter",
     }
 }

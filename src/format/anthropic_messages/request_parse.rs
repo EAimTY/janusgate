@@ -48,6 +48,11 @@ struct InboundRequest {
     #[serde(default)]
     top_p: Option<f64>,
 
+    /// Top-of-distribution truncation, known-but-unsupported: the IR has no top-k slot, so
+    /// present is a 400 naming the field (README §6.6).
+    #[serde(default)]
+    top_k: Option<IgnoredAny>,
+
     /// Function tools advertised to the model.
     #[serde(default)]
     tools: Option<Vec<InboundTool>>,
@@ -408,6 +413,12 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
             "messages",
             "messages must contain at least one message",
         ));
+    }
+
+    // Known-but-unsupported sampling control: the IR carries no top-k slot, so present is a
+    // 400 naming the field rather than the generic unknown-field rejection (README §6.6).
+    if request.top_k.is_some() {
+        return Err(InvalidRequest::field("top_k", "top_k is not supported"));
     }
 
     let instructions = match &request.system {
@@ -1222,10 +1233,10 @@ mod tests {
     }
 
     /// Rejects unsupported and malformed inbound controls exactly where the contract pins them:
-    /// `stop_sequences`, `budget_tokens` (naming the field), `document` blocks, images inside
-    /// tool results, a missing `max_tokens`, a non-`custom` tool `type`, and unknown members —
-    /// while `thinking: disabled` parses into `none` and `enabled`/`adaptive` plus `display`
-    /// controls are accepted and ignored.
+    /// `stop_sequences`, `budget_tokens` and `top_k` (naming the field), `document` blocks,
+    /// images inside tool results, a missing `max_tokens`, a non-`custom` tool `type`, and
+    /// unknown members — while `thinking: disabled` parses into `none` and
+    /// `enabled`/`adaptive` plus `display` controls are accepted and ignored.
     ///
     /// # Panics
     ///
@@ -1258,6 +1269,11 @@ mod tests {
                        "thinking": {"type": "enabled", "budget_tokens": 1000},
                        "messages": [{"role": "user", "content": "hi"}]}),
                 Some("budget_tokens"),
+            ),
+            (
+                json!({"top_k": 40, "model": "m", "max_tokens": 16,
+                       "messages": [{"role": "user", "content": "hi"}]}),
+                Some("top_k"),
             ),
             (
                 json!({"model": "m", "max_tokens": 16, "messages": [
@@ -1305,6 +1321,18 @@ mod tests {
 
             assert_eq!(error.param.as_deref(), param, "wrong param for {error}");
         }
+
+        // The `top_k` rejection is the named known-unsupported row, not the generic
+        // unknown-field accident: the 400 pins the field and its fixed message (README §6.6).
+        let mut body = base();
+
+        set_member(&mut body, "top_k", json!(40));
+
+        #[expect(clippy::expect_used, reason = "top_k is constructed to be rejected")]
+        let error =
+            parse_inbound_request(body.to_string().as_bytes()).expect_err("top_k must be rejected");
+
+        assert_eq!(error.to_string(), "top_k is not supported");
 
         // `thinking: disabled` parses into `none`; `enabled`/`adaptive` and both `display`
         // controls parse without entering the IR.

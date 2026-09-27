@@ -193,7 +193,10 @@ export function HomeScreen(props: {
                 </ButtonLink>
             </PageHeader>
 
-            <ReadNotice read={read} />
+            <ReadNotice
+                read={read}
+                retry={read.reload}
+            />
 
             <Show when={read.isFirstRead()}>
                 <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">

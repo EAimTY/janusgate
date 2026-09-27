@@ -24,39 +24,76 @@ function isGeneratedSecret(value: string): boolean {
     return /^[A-Za-z0-9_-]{43}$/.test(value);
 }
 
-describe("ApiKeySecretField Generate guard", () => {
-    const disposes: Array<() => void> = [];
+const disposes: Array<() => void> = [];
 
-    afterEach(() => {
-        for (const dispose of disposes.reverse()) {
-            dispose();
-        }
-        disposes.length = 0;
-    });
+afterEach(() => {
+    for (const dispose of disposes.reverse()) {
+        dispose();
+    }
+    disposes.length = 0;
+});
 
-    /** Mounts the field over a signal, so the parent's state is observable. */
-    function mountField(initialSecret: string): {
-        readonly secret: () => string;
-    } {
-        const [secret, setSecret] = createSignal(initialSecret);
+/** Mounts the field over a signal, so the parent's state is observable. */
+function mountField(initialSecret: string): {
+    readonly secret: () => string;
+} {
+    const [secret, setSecret] = createSignal(initialSecret);
 
-        disposes.push(
-            render(
-                () => (
-                    <ApiKeySecretField
-                        secret={secret()}
-                        onSecretInput={setSecret}
-                    />
-                ),
-                document.body,
+    disposes.push(
+        render(
+            () => (
+                <ApiKeySecretField
+                    secret={secret()}
+                    onSecretInput={setSecret}
+                />
             ),
-        );
+            document.body,
+        ),
+    );
 
-        return {
-            secret,
-        };
+    return {
+        secret,
+    };
+}
+
+/**
+ * The reveal checkbox living inside its own toggle label — no `for` pairing,
+ * so the lookup walks the labels' contained checkboxes.
+ */
+function revealCheckbox(text: string): HTMLInputElement {
+    for (const candidate of document.querySelectorAll("label")) {
+        const input = candidate.querySelector("input[type='checkbox']");
+
+        if (input instanceof HTMLInputElement && candidate.textContent?.includes(text) === true) {
+            return input;
+        }
     }
 
+    throw new Error(`No checkbox labeled ${text}`);
+}
+
+describe("ApiKeySecretField masking", () => {
+    it("opens masked, stays masked while typed, and reveals only on the checkbox", async () => {
+        mountField("");
+        await settle();
+
+        expect(labeledInput("Key").getAttribute("type")).toBe("password");
+
+        typeInto(labeledInput("Key"), "sk-hand-made");
+        await settle();
+        expect(labeledInput("Key").getAttribute("type")).toBe("password");
+
+        revealCheckbox("Show the key while typing").click();
+        await settle();
+        expect(labeledInput("Key").getAttribute("type")).toBe("text");
+
+        revealCheckbox("Show the key while typing").click();
+        await settle();
+        expect(labeledInput("Key").getAttribute("type")).toBe("password");
+    });
+});
+
+describe("ApiKeySecretField Generate guard", () => {
     it("generates straight into an empty field", async () => {
         const field = mountField("");
         await settle();

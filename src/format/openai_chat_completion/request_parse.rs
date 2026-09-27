@@ -71,23 +71,42 @@ enum MessageIn {
     System {
         /// Instruction text: a plain string or an array of text parts.
         content: StringOrArray<TextPartIn>,
+
+        /// Turn name; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        name: Option<IgnoredAny>,
     },
 
     /// Developer instruction.
     Developer {
         /// Instruction text: a plain string or an array of text parts.
         content: StringOrArray<TextPartIn>,
+
+        /// Turn name; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        name: Option<IgnoredAny>,
     },
 
     /// User turn.
     User {
         /// Text or mixed text/image content.
         content: StringOrArray<UserPartIn>,
+
+        /// Turn name; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        name: Option<IgnoredAny>,
     },
 
     /// Assistant turn. The `reasoning` and `reasoning_content` fields, when present, are accepted
     /// and ignored: they carry no replayable state in a stateless gateway, and the gateway itself
-    /// emits `reasoning_content`, so clients may replay it.
+    /// emits `reasoning_content`, so clients may replay it. The same disposition applies to the
+    /// officially-typed `refusal`, `name`, `audio`, and `annotations` members: the reference
+    /// SDKs' canonical history replay appends each response message's `model_dump()` verbatim as
+    /// the next assistant turn, and that object carries them, so rejecting any of them would 400
+    /// turn two of that replay (README §6.6).
     Assistant {
         /// Text content, when any.
         #[serde(default)]
@@ -96,6 +115,12 @@ enum MessageIn {
         /// Tool invocations made during the turn.
         #[serde(default)]
         tool_calls: Option<Vec<ToolCallIn>>,
+
+        /// The legacy protocol's single invocation, parsed into the ordinary tool-call IR under
+        /// its synthesized stable id; modern `tool_calls` take precedence when both are present
+        /// (README §6.2).
+        #[serde(default)]
+        function_call: Option<ToolCallFunctionIn>,
 
         /// Reasoning text under the OpenRouter/vLLM key; accepted and ignored, because the gateway
         /// itself emits `reasoning_content` and a stateless gateway has no replayable reasoning
@@ -108,6 +133,29 @@ enum MessageIn {
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         reasoning_content: Option<IgnoredAny>,
+
+        /// Upstream refusal text; accepted and ignored: the gateway already renders upstream
+        /// refusal text as ordinary assistant text (README §6.2), so a replayed turn carries it
+        /// with no replayable state behind it (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        refusal: Option<IgnoredAny>,
+
+        /// Turn name; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        name: Option<IgnoredAny>,
+
+        /// Audio output payload; accepted and ignored: a stateless gateway carries no replayable
+        /// audio state (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        audio: Option<IgnoredAny>,
+
+        /// Citation annotations; accepted and ignored (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        annotations: Option<IgnoredAny>,
     },
 
     /// Tool result.
@@ -329,6 +377,11 @@ impl TextPartIn {
     }
 }
 
+/// Call identifier synthesized for the legacy `function_call` protocol: the protocol's single
+/// call occupies the tool-call assembly's default index, and the identifier names that index —
+/// the same stable spelling the upstream direction mints (README §6.2).
+const LEGACY_FUNCTION_CALL_ID: &str = "call_0";
+
 /// Parses a Chat Completions request body into IR.
 ///
 /// # Errors
@@ -343,15 +396,15 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
 
     for message in &request.messages {
         match message {
-            MessageIn::System { content } => {
+            MessageIn::System { content, .. } => {
                 instructions_parts.push(flatten_text_content(content, "system")?);
             }
 
-            MessageIn::Developer { content } => {
+            MessageIn::Developer { content, .. } => {
                 instructions_parts.push(flatten_text_content(content, "developer")?);
             }
 
-            MessageIn::User { content } => {
+            MessageIn::User { content, .. } => {
                 // Only user content carries image parts, so no text-only rejection applies here.
                 let parts = match content {
                     StringOrArray::Text(text) => {
@@ -383,6 +436,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             MessageIn::Assistant {
                 content,
                 tool_calls,
+                function_call,
                 ..
             } => {
                 let mut parts: Vec<IrPart> = Vec::new();
@@ -430,6 +484,25 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
                             thought_signature: tool_call.thought_signature.clone(),
                         });
                     }
+                }
+
+                // A legacy `function_call` is consulted only when the message carries no modern
+                // entry — modern `tool_calls` take precedence, the same assembly rule the
+                // upstream direction applies to `message.function_call` (README §6.2).
+                if tool_calls.as_deref().is_none_or(|calls| calls.is_empty())
+                    && let Some(function_call) = function_call
+                {
+                    // Symmetric with the modern calls above: replayed arguments must encode a
+                    // JSON object, so malformed replays fail here instead of at upstream render
+                    // time.
+                    format::arguments_as_object(&function_call.arguments)?;
+
+                    parts.push(IrPart::ToolCall {
+                        call_id: LEGACY_FUNCTION_CALL_ID.to_string(),
+                        name: function_call.name.clone(),
+                        arguments: function_call.arguments.clone(),
+                        thought_signature: None,
+                    });
                 }
 
                 messages.push(IrMessage {
@@ -865,6 +938,201 @@ mod tests {
                 "unexpected rejection: {error}"
             );
         }
+    }
+
+    /// An assistant turn carrying the officially-current members the gateway cannot honor —
+    /// `refusal`, `name`, `audio`, `annotations` — parses to identical IR as the turn without
+    /// them: the reference SDKs' canonical history replay appends each response message's
+    /// `model_dump()` verbatim as the next assistant turn, so rejecting any of these members
+    /// 400s turn two of that replay (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed requests diverge from the documented IR.
+    #[test]
+    fn assistant_official_members_are_accepted_and_ignored() {
+        #[expect(clippy::expect_used, reason = "the plain body is constructed to parse")]
+        let plain = parse(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "assistant", "content": "hi"}],
+        }))
+        .expect("a plain assistant turn must parse");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the decorated body is constructed to parse"
+        )]
+        let decorated = parse(serde_json::json!({
+            "model": "m",
+            "messages": [{
+                "role": "assistant",
+                "content": "hi",
+                "name": "assistant",
+                "refusal": null,
+                "audio": {"id": "audio_1", "data": "b64", "transcript": "hi"},
+                "annotations": [{"type": "url_citation", "url": "https://example.com"}],
+            }],
+        }))
+        .expect("an assistant turn carrying the official members must parse");
+
+        assert_eq!(decorated.ir.messages, plain.ir.messages);
+    }
+
+    /// `name` on the system, developer, and user messages parses to identical IR as the
+    /// messages without it: the official request-param types carry the member on every one of
+    /// those roles (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed requests diverge from the documented IR.
+    #[test]
+    fn message_name_is_accepted_and_ignored() {
+        #[expect(clippy::expect_used, reason = "the plain body is constructed to parse")]
+        let plain = parse(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "be terse"},
+                {"role": "developer", "content": "no markdown"},
+                {"role": "user", "content": "hi"},
+            ],
+        }))
+        .expect("the plain body must parse");
+
+        #[expect(clippy::expect_used, reason = "the named body is constructed to parse")]
+        let named = parse(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "be terse", "name": "instructions"},
+                {"role": "developer", "content": "no markdown", "name": "policies"},
+                {"role": "user", "content": "hi", "name": "client"},
+            ],
+        }))
+        .expect("a name on every string-carrying role must parse");
+
+        assert_eq!(named.ir.messages, plain.ir.messages);
+
+        assert_eq!(named.ir.instructions, plain.ir.instructions);
+    }
+
+    /// The legacy `function_call` member parses into the ordinary tool-call IR exactly as the
+    /// upstream direction maps the protocol: the single call rides the assembly's default index
+    /// under its synthesized stable id, modern `tool_calls` take precedence when one message
+    /// carries both, and the replayed arguments must encode a JSON object like the modern
+    /// calls' do (README §6.2, §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed requests or rejection diverge from the documented contract.
+    #[test]
+    fn legacy_function_call_parses_into_the_tool_call_ir() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the legacy body is constructed to parse"
+        )]
+        let parsed = parse(serde_json::json!({
+            "model": "m",
+            "messages": [{
+                "role": "assistant",
+                "content": null,
+                "function_call": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"},
+            }],
+        }))
+        .expect("a legacy function_call must parse into the tool-call IR");
+
+        #[expect(clippy::expect_used, reason = "the body carries one assistant message")]
+        let message = parsed.ir.messages.last().expect("the turn must be present");
+
+        assert_eq!(
+            message.parts,
+            vec![IrPart::ToolCall {
+                call_id: "call_0".to_string(),
+                name: "get_weather".to_string(),
+                arguments: "{\"city\": \"Paris\"}".to_string(),
+                thought_signature: None,
+            }],
+        );
+
+        // Modern `tool_calls` take precedence over a legacy call on the same message.
+        #[expect(
+            clippy::expect_used,
+            reason = "the both-present body is constructed to parse"
+        )]
+        let both = parse(serde_json::json!({
+            "model": "m",
+            "messages": [{
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_9",
+                    "type": "function",
+                    "function": {"name": "modern", "arguments": "{}"},
+                }],
+                "function_call": {"name": "legacy", "arguments": "{}"},
+            }],
+        }))
+        .expect("a message carrying both call forms must parse");
+
+        #[expect(clippy::expect_used, reason = "the body carries one assistant message")]
+        let message = both.ir.messages.last().expect("the turn must be present");
+
+        assert_eq!(
+            message.parts,
+            vec![IrPart::ToolCall {
+                call_id: "call_9".to_string(),
+                name: "modern".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            }],
+        );
+
+        // An empty modern array leaves the assembly to the legacy call — the upstream
+        // direction's precedence rule consults the legacy member whenever no modern entry is
+        // assembled (README §6.2).
+        #[expect(
+            clippy::expect_used,
+            reason = "the empty-array body is constructed to parse"
+        )]
+        let empty_modern = parse(serde_json::json!({
+            "model": "m",
+            "messages": [{
+                "role": "assistant",
+                "tool_calls": [],
+                "function_call": {"name": "legacy", "arguments": "{}"},
+            }],
+        }))
+        .expect("a legacy call beside an empty modern array must parse");
+
+        #[expect(clippy::expect_used, reason = "the body carries one assistant message")]
+        let message = empty_modern
+            .ir
+            .messages
+            .last()
+            .expect("the turn must be present");
+
+        assert_eq!(
+            message.parts,
+            vec![IrPart::ToolCall {
+                call_id: "call_0".to_string(),
+                name: "legacy".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            }],
+        );
+
+        // Symmetric with the modern calls: replayed arguments must encode a JSON object.
+        #[expect(
+            clippy::expect_used,
+            reason = "the non-object arguments are constructed to be rejected"
+        )]
+        let error = parse(serde_json::json!({
+            "model": "m",
+            "messages": [{
+                "role": "assistant",
+                "function_call": {"name": "get_weather", "arguments": "\"Paris\""},
+            }],
+        }))
+        .expect_err("non-object legacy arguments must be rejected");
+
+        assert_eq!(error.param.as_deref(), Some("arguments"));
     }
 
     /// `reasoning_effort` parses into the closed seven-value vocabulary (README §6.4): known

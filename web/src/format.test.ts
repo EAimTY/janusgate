@@ -3,6 +3,7 @@ import {
     credentialExpiryLine,
     formatClock,
     formatDuration,
+    formatRefreshStamp,
     formatTokenCount,
     isCredentialExpired,
     nowMicros,
@@ -124,5 +125,28 @@ describe("date-time input bounds", () => {
 describe("formatClock", () => {
     it("prints a wall clock of hours, minutes and seconds", () => {
         expect(formatClock(new Date(1_700_000_000 * 1000))).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    });
+});
+
+describe("formatRefreshStamp", () => {
+    const now = new Date(2026, 8, 27, 14, 0, 0);
+
+    it("prints the bare wall clock for a stamp on today's calendar day", () => {
+        const stamp = formatRefreshStamp(new Date(2026, 8, 27, 13, 59, 30), now);
+
+        expect(stamp).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    });
+
+    it("carries the date beside the clock for a stamp from an earlier day", () => {
+        const stamp = formatRefreshStamp(new Date(2026, 8, 26, 14, 0, 0), now);
+
+        expect(stamp).toContain("2026");
+        expect(stamp).toMatch(/\d{2}:\d{2}:\d{2}$/);
+    });
+
+    it("dates a stamp the calendar day has left, even seconds past midnight", () => {
+        const midnight = new Date(2026, 8, 28, 0, 0, 30);
+
+        expect(formatRefreshStamp(new Date(2026, 8, 27, 23, 59, 59), midnight)).toContain("2026");
     });
 });

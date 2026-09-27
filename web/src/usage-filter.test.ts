@@ -9,6 +9,7 @@ import {
     parseUsageFilterDraft,
     serializeUsageFilterDraft,
     statusError,
+    subjectFilterFields,
     USAGE_QUERY_SUBJECT_DIMENSIONS,
     USAGE_QUERY_SUBJECT_FIELDS,
     type UsageQuerySubjectDimension,
@@ -239,5 +240,25 @@ describe("usageQuerySubjectOfFilter", () => {
                 id: 12,
             });
         }
+    });
+});
+
+describe("subjectFilterFields", () => {
+    it("round-trips every dimension through the table: the id fills its own draft field alone", () => {
+        for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
+            expect(
+                subjectFilterFields({
+                    dimension,
+                    id: 12,
+                }),
+            ).toEqual({
+                ...EMPTY_USAGE_FILTER_FIELDS,
+                [USAGE_QUERY_SUBJECT_FIELDS[dimension].draftField]: "12",
+            });
+        }
+    });
+
+    it("prefills nothing when no subject arrives", () => {
+        expect(subjectFilterFields(null)).toEqual(EMPTY_USAGE_FILTER_FIELDS);
     });
 });

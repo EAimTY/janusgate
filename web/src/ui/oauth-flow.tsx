@@ -9,22 +9,25 @@ import { Glyph } from "/src/ui/glyph";
 import { CopyButton } from "./clipboard";
 
 /**
- * The facts both flow steps print about the live flow: the single-use state
- * that names it and the moment it stops being completable. The app neither
+ * The facts both flow steps print about the live flow: the moment it stops
+ * being completable, read first, and the single-use state that names it —
+ * demoted to a subdued line beneath, because the visitor never acts on the
+ * state and must never mistake it for the thing to paste. The app neither
  * stores the state and the code nor composes any address out of them.
  */
 function FlowFacts(props: { readonly flow: StartProviderOauthResponse }): JSX.Element {
     return (
-        <dl class="flex flex-wrap gap-x-8 gap-y-3">
-            <div>
-                <dt class="text-[12.5px] font-medium text-ink-dim">Single-use state</dt>
-                <dd class="tnum mt-1 break-all text-ink-dim">{props.flow.state}</dd>
-            </div>
-            <div>
-                <dt class="text-[12.5px] font-medium text-ink-dim">Flow expires</dt>
-                <dd class="tnum mt-1 text-ink-dim">{formatTimestamp(props.flow.expires_at)}</dd>
-            </div>
-        </dl>
+        <div class="flex flex-col gap-2">
+            <dl class="flex flex-wrap gap-x-8 gap-y-3">
+                <div>
+                    <dt class="text-[12.5px] font-medium text-ink-dim">Flow expires</dt>
+                    <dd class="tnum mt-1 text-ink-dim">{formatTimestamp(props.flow.expires_at)}</dd>
+                </div>
+            </dl>
+            <p class="text-[12px] text-ink-faint">
+                Single-use state: <span class="tnum break-all">{props.flow.state}</span>
+            </p>
+        </div>
     );
 }
 

@@ -2,12 +2,7 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { formatDuration, formatTimestamp, formatTokenCount, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
-import type {
-    ApiLogOutcome,
-    ApiLogResponse,
-    ListUsageRequest,
-    UsageFilter,
-} from "/src/management-api/generated/v0";
+import type { ApiLogOutcome, ApiLogResponse, UsageFilter } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { apiLogEndpointLabel, apiLogOutcomeLabel } from "/src/management-api/vocabulary";
 import { hrefs, isCurrentAddress, navigate } from "/src/router";
@@ -25,6 +20,7 @@ import {
     hasUsageFilter,
     soleSubject,
     statusError,
+    USAGE_OUTCOME_FAILURES,
     USAGE_QUERY_SUBJECT_DIMENSIONS,
     USAGE_QUERY_SUBJECT_FIELDS,
     USAGE_WINDOW_OPTIONS,
@@ -40,16 +36,22 @@ import {
     usageModelLabel,
     usageProviderLabel,
 } from "./usage-labels";
-import { nextUsagePage, USAGE_PAGE_SIZE, usageCursor } from "./usage-pagination";
-import { readUsageEntities, type UsageEntities } from "./usage-read";
+import { nextUsagePage, usageCursor } from "./usage-pagination";
+import {
+    readUsageEntities,
+    readUsagePage,
+    type UsageEntities,
+    usageListRequest,
+} from "./usage-read";
 
 /**
  * Every dispatched request, newest first, under the shared filter its route
  * carries — the same filter the aggregates page narrows, so the two reads of
  * one gateway's accounting always describe the same question. The header's
- * aggregates door carries the route filter's single-entity narrow as the
- * aggregates page's subject, so a narrowed stream lands asking about that
- * entity rather than silently totaling the gateway. The filter is
+ * aggregates door carries the standing draft's single-entity narrow as the
+ * aggregates page's subject — the same source the aggregates page's own door
+ * carries back — so a narrowed stream lands asking about that entity rather
+ * than silently totaling the gateway. The filter is
  * the address: applying it navigates, which makes a filtered stream linkable,
  * shareable, and openable by the browser's back button, and leaves the
  * unfiltered stream at exactly `/usage`. The route Match keys this screen, so
@@ -105,10 +107,7 @@ export function UsageScreen(props: {
             const [entitiesResult, pageResult] = await readAll(
                 signal,
                 readUsageEntities(props.api),
-                {
-                    action: "list-usage",
-                    run: (cycle) => props.api.listUsage(usageListRequest(filter, null), cycle),
-                },
+                readUsagePage(props.api, usageListRequest(filter, null)),
             );
 
             // The filter is installed only once its rows have landed: a cycle
@@ -234,9 +233,11 @@ export function UsageScreen(props: {
         navigate(hrefs.usage());
     };
 
-    // The route filter is fixed for the mount — a changed filter is a fresh
-    // mount — so the aggregates subject it carries is read once here.
-    const aggregatesSubject = streamAggregatesSubject(props.filter);
+    // The aggregates door follows the standing draft — the same source the
+    // aggregates page's own door carries back — so an operator who narrowed
+    // the form crosses with that narrow even before applying it. A draft
+    // naming no single entity opens the bare aggregates page.
+    const aggregatesSubject = createMemo(() => streamAggregatesSubject(draft()));
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -245,14 +246,17 @@ export function UsageScreen(props: {
                 description="Every dispatched request, newest first — numbers only, never content. A row reporting none of the optional usage figures leaves them off whole: an all-zero tail and an unreported one cannot be told apart here."
             >
                 <ButtonLink
-                    href={hrefs.usageQuery(aggregatesSubject)}
+                    href={hrefs.usageQuery(aggregatesSubject())}
                     glyph="activity"
                 >
                     View aggregates
                 </ButtonLink>
             </PageHeader>
 
-            <ReadNotice read={read} />
+            <ReadNotice
+                read={read}
+                retry={read.reload}
+            />
 
             <Card>
                 <CardHeader
@@ -426,18 +430,18 @@ export function UsageScreen(props: {
 }
 
 /**
- * The aggregates subject the stream's route filter carries: its entity
+ * The aggregates subject the stream's standing draft carries: its entity
  * narrow, when exactly one of provider, model, or key is named, as the
- * aggregates page's prefilled subject — so landing on the aggregates page
- * from a narrowed stream keeps asking about that entity instead of silently
- * totaling the whole gateway. The narrow is read off the wire filter
- * `buildUsageFilter` spells — the one trusted conversion from the form's
- * strings to row ids — so this link's subject cannot drift from the filter
- * the stream runs under. A filter naming no entity, or more than one, carries
- * no subject: a subject is one entity, and a compound narrow belongs to the
- * aggregates page's own filter, not to a link. The window and every
- * non-entity field stay behind — only the entity subject crosses, the
- * aggregates page's window semantics being its own.
+ * aggregates page's prefilled subject — so crossing to the aggregates page
+ * from a stream whose form names an entity keeps asking about that entity
+ * instead of silently totaling the whole gateway, applied or not. The narrow
+ * is read off the wire filter [`buildUsageFilter`] spells — the one trusted
+ * conversion from the form's strings to row ids — so this link's subject
+ * cannot drift from the question the form holds. A draft naming no entity,
+ * or more than one, carries no subject: a subject is one entity, and a
+ * compound narrow belongs to the aggregates page's own filter, not to a
+ * link. The window and every non-entity field stay behind — only the entity
+ * subject crosses, the aggregates page's window semantics being its own.
  */
 function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | undefined {
     const wire = buildUsageFilter(filter);
@@ -460,53 +464,28 @@ function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | 
     return soleSubject(named) ?? undefined;
 }
 
-/**
- * One `usage:list` request: the page size, the cursor when the stream
- * continues, and the filter only when something is chosen — an absent filter
- * is the wire's own spelling of "every row", so the unfiltered stream sends
- * exactly what it always did.
- */
-function usageListRequest(filter: UsageFilter, before: number | null): ListUsageRequest {
-    return {
-        limit: USAGE_PAGE_SIZE,
-        ...(before === null
-            ? {}
-            : {
-                  before,
-              }),
-        ...(Object.keys(filter).length === 0
-            ? {}
-            : {
-                  filter,
-              }),
-    };
-}
-
 /** The badge behind one recorded outcome. */
 function usageOutcomeBadge(outcome: ApiLogOutcome): {
     readonly tone: BadgeTone;
     readonly label: string;
 } {
-    switch (outcome) {
-        case "completed":
-            return {
-                tone: "ok",
-                label: apiLogOutcomeLabel(outcome),
-            };
+    const label = apiLogOutcomeLabel(outcome);
 
-        case "client_aborted":
-            return {
-                tone: "warn",
-                label: apiLogOutcomeLabel(outcome),
-            };
-
-        case "upstream_error":
-        case "internal":
-            return {
-                tone: "bad",
-                label: apiLogOutcomeLabel(outcome),
-            };
+    // The failure tone reads the one shared set — the same one the Failures
+    // filter narrows by and the overview's error figure counts — so a failure
+    // outcome added there turns this badge with the other two views, never
+    // against them.
+    if (USAGE_OUTCOME_FAILURES.includes(outcome)) {
+        return {
+            tone: "bad",
+            label,
+        };
     }
+
+    return {
+        tone: outcome === "completed" ? "ok" : "warn",
+        label,
+    };
 }
 
 /**

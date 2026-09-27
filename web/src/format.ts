@@ -11,7 +11,7 @@ export function nowMicros(): number {
     return Date.now() * 1000;
 }
 
-/** A wall clock of hours, minutes and seconds, as the panel's validity stamp. */
+/** A wall clock of hours, minutes and seconds — the freshness stamp's today shape. */
 export function formatClock(date: Date): string {
     return date.toLocaleTimeString(undefined, {
         hour: "2-digit",
@@ -19,6 +19,21 @@ export function formatClock(date: Date): string {
         second: "2-digit",
         hour12: false,
     });
+}
+
+/**
+ * The shell's freshness stamp for the moment a read succeeded: the bare wall
+ * clock while the stamp sits on today's calendar day, the date beside the
+ * clock once it does not — a day-old read must never read as current. The
+ * day comparison is the local calendar date (`toDateString`), the zone the
+ * wall clock itself prints in. The stamp renders only when a read lands and
+ * never ages on a timer, so the shape must stay truthful without
+ * re-renders — which this static form guarantees.
+ */
+export function formatRefreshStamp(stamp: Date, now: Date): string {
+    return stamp.toDateString() === now.toDateString()
+        ? formatClock(stamp)
+        : `${stamp.toLocaleDateString()} ${formatClock(stamp)}`;
 }
 
 /**
@@ -94,6 +109,18 @@ export function formatDuration(millis: number): string {
     const seconds = Math.floor((millis % 60_000) / 1000);
 
     return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+/**
+ * A moment as the bounds' own spelling — `YYYY-MM-DDTHH:MM` in this browser's
+ * zone, minute precision, the exact shape [`parseDateTimeInputToMicros`] reads
+ * — so a quick-set's fill and the fields' parser can never disagree about
+ * what a filled bound means.
+ */
+export function dateTimeInputValue(date: Date): string {
+    const part = (value: number): string => String(value).padStart(2, "0");
+
+    return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}T${part(date.getHours())}:${part(date.getMinutes())}`;
 }
 
 /**

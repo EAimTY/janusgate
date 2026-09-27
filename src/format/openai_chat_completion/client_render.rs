@@ -515,7 +515,7 @@ impl ClientSseRenderer for SseRenderer {
             IrEvent::Finish(reason) => {
                 vec![self.chunk_frame(
                     Delta::default(),
-                    Some(format::finish_reason_to_openai(*reason)),
+                    Some(super::finish_reason_to_openai(*reason)),
                 )]
             }
 
@@ -591,7 +591,7 @@ pub(super) fn render_json_response(
             message,
             finish_reason: aggregation
                 .finish
-                .map(format::finish_reason_to_openai)
+                .map(super::finish_reason_to_openai)
                 .unwrap_or("stop"),
         }],
         usage: TokenUsage::render(aggregation.usage.unwrap_or_default()),

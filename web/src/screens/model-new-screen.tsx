@@ -6,7 +6,7 @@ import type { ProviderResponse } from "/src/management-api/generated/v0";
 import { routingTokenError } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
-import { ReadNotice } from "/src/screens/read-notice";
+import { ReadNotice, StatedNotice } from "/src/screens/read-notice";
 import { Button, ButtonLink, SelectField, Switch, TextField } from "/src/ui/controls";
 import { EmptyState, Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
@@ -17,7 +17,7 @@ import {
 } from "/src/ui/model-form";
 import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
-import { createScreenRead, readOne, type ScreenNotice } from "./read";
+import { createScreenRead, readOne, readProviders, type ScreenNotice } from "./read";
 
 /**
  * One creation page for a manually added model. When opened from a
@@ -38,9 +38,7 @@ export function ModelNewScreen(props: {
 
     const read = createScreenRead({
         load: async (signal) => {
-            const providersResult = await readOne(signal, {
-                run: (cycle) => props.api.listProviders(cycle),
-            });
+            const providersResult = await readOne(signal, readProviders(props.api));
 
             setProviders(providersResult.providers);
         },
@@ -213,16 +211,7 @@ function ModelCreateForm(props: {
 
     return (
         <>
-            <Show when={failure()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <StatedNotice notice={failure} />
 
             <Notice
                 tone="warn"

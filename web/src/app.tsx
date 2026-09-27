@@ -13,7 +13,7 @@ import {
 import { connectionService } from "/src/connection/app-service";
 import type { Connection } from "/src/connection/model";
 import { hasDirtyForms } from "/src/dirty-form-registry";
-import { formatClock } from "/src/format";
+import { formatRefreshStamp } from "/src/format";
 import { createManagementApi } from "/src/management-api/client";
 import { refreshStamp, requestRefresh, resetRefreshStamp } from "/src/refresh-state";
 import {
@@ -566,7 +566,7 @@ function ContextBar(props: {
                         when={refreshStamp()}
                         fallback="Not refreshed yet"
                     >
-                        {(stamp) => `Updated ${formatClock(stamp())}`}
+                        {(stamp) => `Updated ${formatRefreshStamp(stamp(), new Date())}`}
                     </Show>
                 </span>
                 <button

@@ -9,7 +9,7 @@
 use super::{Error, route};
 use crate::{
     context::Context,
-    provider::definition::{DefinitionPayload, ProviderDefinition, ValidationError},
+    provider::definition::{DefinitionPayload, ProviderDefinition},
     storage, unix_time,
 };
 use axum::{Json, extract::State};
@@ -192,9 +192,7 @@ pub(super) async fn update(
     super::validate_identifier("name", &request.name)?;
 
     let Some(base_version) = NonZeroI64::new(request.base_version) else {
-        return Err(Error::InvalidDefinition(ValidationError::new(
-            "`base_version` must be a positive version number",
-        )));
+        return Err(super::definition_version_invalid("base_version"));
     };
 
     request

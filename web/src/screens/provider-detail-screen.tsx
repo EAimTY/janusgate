@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, onCleanup, Show } from "solid-js";
+import { type Accessor, createMemo, createSignal, onCleanup, Show } from "solid-js";
 import { credentialExpiryLine, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
@@ -29,6 +29,7 @@ import { Badge, Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
 import { credentialBadge } from "/src/ui/providers-table";
+import { StatedNotice } from "./read-notice";
 import { RowNotFound } from "./row-not-found";
 
 /**
@@ -284,7 +285,7 @@ export function ProviderDetailScreen(props: {
                         models={models()}
                         providersById={providersById()}
                         isDiscovering={isDiscovering()}
-                        notice={discoveryNotice()}
+                        notice={discoveryNotice}
                         onDiscover={() => void discover(row, models())}
                     />
 
@@ -369,9 +370,12 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                         </div>
                     )}
                 </Show>
+                {/* The one enabled pair this page speaks: the Details card's
+                    value echoes the header badge's word exactly — the tight
+                    list-row "On/Off" never appears on a detail page. */}
                 <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Enabled</dt>
-                    <dd class="mt-1">{props.provider.is_enabled ? "On" : "Off"}</dd>
+                    <dt class="text-[12.5px] font-medium text-ink-dim">Status</dt>
+                    <dd class="mt-1">{props.provider.is_enabled ? "Enabled" : "Disabled"}</dd>
                 </div>
             </dl>
         </Card>
@@ -388,7 +392,7 @@ function ModelsCard(props: {
     readonly models: ReadonlyArray<ModelResponse>;
     readonly providersById: ReadonlyMap<number, ProviderResponse>;
     readonly isDiscovering: boolean;
-    readonly notice: ScreenNotice | null;
+    readonly notice: Accessor<ScreenNotice | null>;
     readonly onDiscover: () => void;
 }): JSX.Element {
     return (
@@ -401,7 +405,7 @@ function ModelsCard(props: {
                     href={hrefs.modelNew(props.provider.id)}
                     glyph="plus"
                 >
-                    Add model
+                    Create model
                 </ButtonLink>
                 <Button
                     glyph="refresh"
@@ -411,18 +415,10 @@ function ModelsCard(props: {
                     {props.isDiscovering ? "Discovering…" : "Discover models"}
                 </Button>
             </CardHeader>
-            <Show when={props.notice}>
-                {(current) => (
-                    <div class="mt-4">
-                        <Notice
-                            tone={current().tone}
-                            title={current().title}
-                            detail={current().detail}
-                            fix={current().fix}
-                        />
-                    </div>
-                )}
-            </Show>
+            <StatedNotice
+                notice={props.notice}
+                class="mt-4"
+            />
             <div class="mt-4">
                 <Show
                     when={props.models.length > 0}

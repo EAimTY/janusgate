@@ -49,7 +49,7 @@ pub(crate) struct SseParser {
     /// Accumulated size of the frame being assembled: every accepted `data:` line's bytes plus one
     /// join separator per line, an upper bound on the size the frame occupies once its lines are
     /// joined at dispatch. The per-line ingest bound cannot see a frame split across many lines,
-    /// so this is what keeps such frames under [`MAX_FRAME_BYTES`]..
+    /// so this is what keeps such frames under [`MAX_FRAME_BYTES`].
     pending_frame_bytes: usize,
 }
 
@@ -117,7 +117,7 @@ impl SseParser {
     /// Frame assembly state lives on the parser, so a frame whose lines and dispatching blank line
     /// arrive in different chunks is still emitted whole. The frame cap counts every accepted
     /// `data:` line of the frame being assembled, so splitting one oversized frame into many lines
-    /// cannot skirt [`MAX_FRAME_BYTES`]..
+    /// cannot skirt [`MAX_FRAME_BYTES`].
     fn drain_complete_frames(&mut self) -> Result<Vec<SseFrame>, SseParseError> {
         self.strip_leading_bom();
 

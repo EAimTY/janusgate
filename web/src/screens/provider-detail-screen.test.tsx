@@ -323,6 +323,29 @@ describe("ProviderDetailScreen facts", () => {
         disposes.length = 0;
     });
 
+    /** Mounts the screen over one provider row with the discovered model listed. */
+    function mount(row: ProviderResponse): void {
+        disposes.push(
+            render(
+                () => (
+                    <ProviderDetailScreen
+                        api={screenApi({
+                            providers: [
+                                row,
+                            ],
+                            models: [
+                                discoveredModel,
+                            ],
+                            onDiscover: () => undefined,
+                        })}
+                        providerId={5}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
     it("states the stored definition version the provider is bound to", async () => {
         const api = screenApi({
             providers: [
@@ -379,6 +402,41 @@ describe("ProviderDetailScreen facts", () => {
         // the shorter "Static key" alias must not return as a badge beside it.
         expect(bodyText().split("Static API key").length - 1).toBe(1);
         expect(bodyText()).not.toContain("Static key");
+    });
+
+    it("speaks one enabled pair per page — the header badge and the Details card both read Enabled", async () => {
+        mount(provider);
+        await settle();
+
+        // The Details card echoes the header badge's word exactly: both
+        // surfaces count one "Enabled" each, and the tight list-row value
+        // never leaks onto the page.
+        expect(bodyText().split("Enabled").length - 1).toBe(2);
+        expect(bodyText()).not.toContain("Off");
+    });
+
+    it("names a disabled provider Disabled on both surfaces, never Off", async () => {
+        mount({
+            ...provider,
+            is_enabled: false,
+        });
+        await settle();
+
+        expect(bodyText().split("Disabled").length - 1).toBe(2);
+        expect(bodyText()).not.toContain("Enabled");
+        expect(bodyText()).not.toContain("Off");
+    });
+
+    it("opens the model's creation under the same Create model label the models screen uses", async () => {
+        mount(provider);
+        await settle();
+
+        // The creation page's own title is "Create model" — the card's link
+        // must name the destination by the word the destination answers with.
+        // It is a ButtonLink: an anchor, not a button element.
+        const createModel = document.querySelector('a[href="/models/new?provider=5"]');
+        expect(createModel?.textContent).toContain("Create model");
+        expect(bodyText()).not.toContain("Add model");
     });
 });
 

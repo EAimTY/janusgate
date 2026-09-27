@@ -82,7 +82,10 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                 </ButtonLink>
             </PageHeader>
 
-            <ReadNotice read={read} />
+            <ReadNotice
+                read={read}
+                retry={read.reload}
+            />
 
             <SkeletonRows
                 read={read}

@@ -572,6 +572,55 @@ describe("UsageScreen filtering", () => {
         await settle();
     });
 
+    it("follows the standing draft's entity narrow across the aggregates door before it is applied", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        const doorProvider: ProviderResponse = {
+            type: "api_key",
+            provider_definition_name: "generic-openai-chat-completions",
+            provider_definition_version: 1,
+            format: "openai_chat_completion",
+            id: 3,
+            name: "door-provider",
+            model_prefix: "door-",
+            is_enabled: true,
+            base_url: "https://upstream.example.com/v1",
+        };
+        mount(
+            streamApi(holder, {
+                providers: [
+                    doorProvider,
+                ],
+            }),
+        );
+        await settle();
+        answerLastPage(holder, page(1050, 1));
+        await settle();
+
+        // The unfiltered stream's door opens the bare aggregates page.
+        expect(linkTo("/usage/query").textContent).toContain("View aggregates");
+
+        // The operator narrows the form's provider field without applying:
+        // the door crosses with the standing draft's narrow — the same source
+        // the aggregates page's own door carries back — so a narrow the
+        // operator holds in the form cannot be silently dropped by the
+        // crossing.
+        const providerSelect = labeledSelect("Provider");
+        providerSelect.value = "3";
+        providerSelect.dispatchEvent(
+            new Event("change", {
+                bubbles: true,
+            }),
+        );
+        await settle();
+
+        expect(linkTo("/usage/query?provider=3").textContent).toContain("View aggregates");
+        expect(() => linkTo("/usage/query")).toThrow("No link to /usage/query");
+    });
+
     it("lands a window change delivered in the same batch as a field edit", async () => {
         const holder: {
             readonly pages: Array<HeldPage>;

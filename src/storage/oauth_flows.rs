@@ -511,10 +511,11 @@ pub(crate) async fn sweep_expired_flows(database: &Database, now: i64) -> Result
 /// Claims one due pending device flow for polling, stamping the claim and returning the claimed
 /// row: a single conditional `UPDATE … RETURNING`, so competing pollers never double-claim. A
 /// claim older than `claim_stale_before` is recovered — stealable by this claim — covering a
-/// poller that died mid-exchange after the control-request timeout or between its completed
-/// exchange and its commit. The claimed row may carry an exchange checkpoint (see
-/// [`persist_exchange_checkpoint`]), which the claimant resumes from instead of exchanging
-/// again.
+/// poller that died mid-exchange once its claim ages past the caller's staleness window (the
+/// poller passes a window strictly beyond the control-request timeout that bounds every
+/// exchange, README §3) or between its completed exchange and its commit. The claimed row may
+/// carry an exchange checkpoint (see [`persist_exchange_checkpoint`]), which the claimant
+/// resumes from instead of exchanging again.
 ///
 /// # Errors
 ///

@@ -31,6 +31,7 @@ use axum::{
     routing::{self, MethodFilter},
 };
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroI64;
 
 mod api_keys;
 mod error;
@@ -364,14 +365,41 @@ fn validate_base_url(value: &str) -> Result<(), Error> {
     }
 }
 
-/// Builds the rejection for a non-positive `provider_definition_version` — the one spelling every
-/// path that resolves a definition reference shares: the provider write paths
-/// (`providers:create`, `providers:update`) and the OAuth flow paths (`oauth:start`, and
-/// `oauth:reauthorize` with an explicitly named target).
-fn definition_version_invalid() -> Error {
-    Error::InvalidDefinition(crate::provider::definition::ValidationError::new(
-        "`provider_definition_version` must be a positive version number",
-    ))
+/// Builds the rejection for a non-positive definition-version parameter — the one spelling every
+/// path reading one shares: the definition-reference resolution prelude's
+/// `provider_definition_version` (the provider write paths `providers:create` and
+/// `providers:update`, and the OAuth flow paths `oauth:start` and `oauth:reauthorize` with an
+/// explicitly named target) and `provider-definitions:update`'s `base_version`.
+fn definition_version_invalid(param: &'static str) -> Error {
+    Error::InvalidDefinition(crate::provider::definition::ValidationError::new(format!(
+        "`{param}` must be a positive version number"
+    )))
+}
+
+/// Resolves one definition reference (README §7.1): the version must be a positive number and
+/// the exact `(name, version)` pair must exist — the latest version is never substituted. A
+/// non-positive version renders [`definition_version_invalid`], an unknown pair
+/// [`Error::DefinitionNotFound`].
+///
+/// # Errors
+///
+/// Returns [`Error`] for a non-positive version, an unknown definition pair, and storage
+/// failures.
+async fn resolve_definition(
+    database: &crate::database::Database,
+    name: &str,
+    version: i64,
+) -> Result<crate::provider::ProviderDefinition, Error> {
+    let Some(version) = NonZeroI64::new(version) else {
+        return Err(definition_version_invalid("provider_definition_version"));
+    };
+
+    crate::storage::provider_definitions::find_definition(database, name, version)
+        .await?
+        .ok_or_else(|| Error::DefinitionNotFound {
+            name: name.to_string(),
+            version: version.get(),
+        })
 }
 
 /// Builds the shared base-URL 400 template (README §3, §7.1): the effective definition's URLs

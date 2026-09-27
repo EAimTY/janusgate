@@ -1,6 +1,11 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
-import { formatTokenCount, nowMicros, parseDateTimeInputToMicros } from "/src/format";
+import {
+    dateTimeInputValue,
+    formatTokenCount,
+    nowMicros,
+    parseDateTimeInputToMicros,
+} from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     QueryUsageRequest,
@@ -19,6 +24,7 @@ import {
     EMPTY_USAGE_FILTER_FIELDS,
     hasUsageFilterFields,
     statusError,
+    subjectFilterFields,
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
     type UsageFilterFields,
@@ -26,6 +32,7 @@ import {
     windowBoundMicros,
 } from "/src/usage-filter";
 import { isSkeletonWindowOpen, ReadCallFailure, readOne, type ScreenNotice } from "./read";
+import { StatedNotice } from "./read-notice";
 import {
     daysNewestFirst,
     indexUsageEntities,
@@ -48,38 +55,6 @@ function arrivalGroupBy(subject: UsageQuerySubject | null): ReadonlyArray<UsageG
               "day",
               subject.dimension,
           ];
-}
-
-/**
- * The filter fields the address arrives with: the subject's id prefilled
- * into its own field, so the first query already narrows to the subject the
- * aggregates link carried.
- */
-function arrivalFields(subject: UsageQuerySubject | null): UsageFilterFields {
-    if (subject === null) {
-        return EMPTY_USAGE_FILTER_FIELDS;
-    }
-
-    const subjectId = String(subject.id);
-
-    if (subject.dimension === "provider") {
-        return {
-            ...EMPTY_USAGE_FILTER_FIELDS,
-            providerId: subjectId,
-        };
-    }
-
-    if (subject.dimension === "model") {
-        return {
-            ...EMPTY_USAGE_FILTER_FIELDS,
-            modelId: subjectId,
-        };
-    }
-
-    return {
-        ...EMPTY_USAGE_FILTER_FIELDS,
-        apiKeyId: subjectId,
-    };
 }
 
 /**
@@ -107,18 +82,6 @@ function boundError(label: string, value: string): string | null {
     }
 
     return `${label} must be a complete date and time, like 2026-09-23T10:00 — or blank for no bound.`;
-}
-
-/**
- * A moment as the bounds' own spelling — `YYYY-MM-DDTHH:MM` in this browser's
- * zone, minute precision, the exact shape [`parseDateTimeInputToMicros`] reads
- * — so a quick-set's fill and the fields' parser can never disagree about
- * what a filled bound means.
- */
-function dateTimeInputValue(date: Date): string {
-    const part = (value: number): string => String(value).padStart(2, "0");
-
-    return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}T${part(date.getHours())}:${part(date.getMinutes())}`;
 }
 
 /**
@@ -171,7 +134,11 @@ export function UsageQueryScreen(props: {
     // its error without another submit.
     const [hasFromInput, setHasFromInput] = createSignal(false);
     const [hasToInput, setHasToInput] = createSignal(false);
-    const [fields, setFields] = createSignal<UsageFilterFields>(arrivalFields(props.subject));
+    // The arrival subject prefills the shared filter fields through the one
+    // subject→fields derivation — the same one the stream card's *View
+    // requests* door reads — so the first query already narrows to the
+    // subject the aggregates link carried.
+    const [fields, setFields] = createSignal<UsageFilterFields>(subjectFilterFields(props.subject));
     const [buckets, setBuckets] = createSignal<ReadonlyArray<UsageBucket>>([]);
     // The dimensions the displayed buckets were grouped by — the request's own
     // set, not the live switches: a key carries exactly its request's
@@ -286,11 +253,10 @@ export function UsageQueryScreen(props: {
             setResponseDimensions(request.group_by);
             return true;
         } catch (error) {
-            if (error instanceof ReadCallFailure) {
-                setFailure(error.notice);
-                return false;
-            }
-
+            // A failed read propagates its `ReadCallFailure` to the cycle's
+            // one catch — the same treatment the entity listings' failure
+            // already gets — instead of stating it here; an abort dies here
+            // quietly, the cycle that superseded it owning the screen.
             if (!signal.aborted) {
                 throw error;
             }
@@ -390,16 +356,7 @@ export function UsageQueryScreen(props: {
                 </ButtonLink>
             </PageHeader>
 
-            <Show when={failure()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <StatedNotice notice={failure} />
 
             <Card>
                 <CardHeader title="Question" />

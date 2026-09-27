@@ -23,6 +23,20 @@ type VocabularyOption<TValue extends string> = {
 };
 
 /**
+ * A labels record as the options it presents. The record type is exhaustive,
+ * so its keys are exactly the values of `TValue` — the single assertion below
+ * restates what the signature already guarantees.
+ */
+function optionsOf<TValue extends string>(
+    labels: Record<TValue, string>,
+): ReadonlyArray<VocabularyOption<TValue>> {
+    return (Object.keys(labels) as TValue[]).map((value) => ({
+        value,
+        label: labels[value],
+    }));
+}
+
+/**
  * The credential kinds with the label each is presented under. The record
  * type is exhaustive, so a kind added to the generated union fails to compile
  * until it is listed here.
@@ -63,12 +77,8 @@ const UPSTREAM_FORMAT_LABELS: Record<UpstreamFormat, string> = {
 };
 
 /** The upstream wire formats as options; the record type is exhaustive as above. */
-const UPSTREAM_FORMAT_OPTIONS: ReadonlyArray<VocabularyOption<UpstreamFormat>> = Object.entries(
-    UPSTREAM_FORMAT_LABELS,
-).map(([value, label]) => ({
-    value: value as UpstreamFormat,
-    label,
-}));
+const UPSTREAM_FORMAT_OPTIONS: ReadonlyArray<VocabularyOption<UpstreamFormat>> =
+    optionsOf(UPSTREAM_FORMAT_LABELS);
 
 /** The label one wire format is presented under. */
 export function upstreamFormatLabel(format: UpstreamFormat): string {
@@ -126,12 +136,8 @@ const DISCOVERY_STATE_LABELS: Record<DiscoveryState, string> = {
  * so a state added to the generated union fails to compile until it is
  * listed here.
  */
-const DISCOVERY_STATE_OPTIONS: ReadonlyArray<VocabularyOption<DiscoveryState>> = Object.entries(
-    DISCOVERY_STATE_LABELS,
-).map(([value, label]) => ({
-    value: value as DiscoveryState,
-    label,
-}));
+const DISCOVERY_STATE_OPTIONS: ReadonlyArray<VocabularyOption<DiscoveryState>> =
+    optionsOf(DISCOVERY_STATE_LABELS);
 
 /** The label a model row's own `discovery_state` is presented under. */
 export function discoveryStateLabel(state: DiscoveryState): string {
@@ -162,10 +168,7 @@ const API_LOG_OUTCOME_LABELS: Record<ApiLogOutcome, string> = {
 
 /** The recorded request outcomes as filter options; the record type is exhaustive. */
 export const API_LOG_OUTCOME_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogOutcome>> =
-    Object.entries(API_LOG_OUTCOME_LABELS).map(([value, label]) => ({
-        value: value as ApiLogOutcome,
-        label,
-    }));
+    optionsOf(API_LOG_OUTCOME_LABELS);
 
 /** The label one accounting row's own `outcome` is presented under. */
 export function apiLogOutcomeLabel(outcome: ApiLogOutcome): string {
@@ -198,10 +201,7 @@ const API_LOG_ENDPOINT_LABELS: Record<ApiLogEndpointType, string> = {
 
 /** The outward endpoints as filter options; the record type is exhaustive. */
 export const API_LOG_ENDPOINT_OPTIONS: ReadonlyArray<VocabularyOption<ApiLogEndpointType>> =
-    Object.entries(API_LOG_ENDPOINT_LABELS).map(([value, label]) => ({
-        value: value as ApiLogEndpointType,
-        label,
-    }));
+    optionsOf(API_LOG_ENDPOINT_LABELS);
 
 /** The label one accounting row's own `endpoint_type` is presented under. */
 export function apiLogEndpointLabel(endpoint: ApiLogEndpointType): string {
@@ -236,9 +236,5 @@ const USAGE_GROUP_BY_LABELS: Record<UsageGroupBy, string> = {
 };
 
 /** The aggregation dimensions as options; the record type is exhaustive. */
-export const USAGE_GROUP_BY_OPTIONS: ReadonlyArray<VocabularyOption<UsageGroupBy>> = Object.entries(
-    USAGE_GROUP_BY_LABELS,
-).map(([value, label]) => ({
-    value: value as UsageGroupBy,
-    label,
-}));
+export const USAGE_GROUP_BY_OPTIONS: ReadonlyArray<VocabularyOption<UsageGroupBy>> =
+    optionsOf(USAGE_GROUP_BY_LABELS);

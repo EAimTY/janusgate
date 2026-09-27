@@ -28,23 +28,9 @@ import type {
 } from "/src/management-api/generated/v0";
 import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { type ManagementCallOutcome, performManagementCall } from "/src/management-api/outcome";
+import { type ActionBegin, createBeginAction } from "./action-begin";
 import { describeCallFailure } from "./failure";
-import { createDisposalGuard, type ScreenNotice, screenFailureNotice } from "./read";
-
-/**
- * What beginning a flow produced: the screen's own prelude refused and the
- * notice states why, or the gateway's flow-begin call ran and its outcome is
- * the fragment's to report.
- */
-export type OauthFlowBegin =
-    | {
-          readonly status: "blocked";
-          readonly notice: ScreenNotice;
-      }
-    | {
-          readonly status: "called";
-          readonly outcome: ManagementCallOutcome<StartProviderOauthResponse>;
-      };
+import { createDisposalGuard, type ScreenNotice } from "./read";
 
 /**
  * What one completion call's outcome left for the calling grant after the
@@ -180,9 +166,11 @@ export function createOauthFlow(options: {
     readonly completeAction: ActionName;
     /**
      * Begins a flow: the screen's own prelude — a refused one answers
-     * `"blocked"` with its notice — followed by the gateway's flow-begin call.
+     * `"blocked"` with its notice — followed by the gateway's flow-begin
+     * call. The begin settles through the screens' shared begin action
+     * against the flow card's failure signal.
      */
-    readonly begin: () => Promise<OauthFlowBegin>;
+    readonly begin: () => Promise<ActionBegin<StartProviderOauthResponse>>;
     /** What a succeeded completion does with the provider row it answered. */
     readonly onSucceeded: (provider: ProviderResponse) => void;
     /**
@@ -198,7 +186,6 @@ export function createOauthFlow(options: {
 }): OauthFlow {
     const [flow, setFlow] = createSignal<StartProviderOauthResponse | null>(null);
     const [code, setCode] = createSignal("");
-    const [isStarting, setIsStarting] = createSignal(false);
     const [isCompleting, setIsCompleting] = createSignal(false);
     // The flow's stated failure, rendered inside the flow card. The
     // fragment owns the signal outright — no screen channel is passed in —
@@ -220,8 +207,23 @@ export function createOauthFlow(options: {
     // step's loop honors it through the "done" the polled asks return.
     const isDisposed = createDisposalGuard();
 
+    // The flow's begin is the screens' shared begin action: the fragment's
+    // own gates — no OAuth call in flight, no live flow — beside the settle
+    // every begin answers, stated on the flow card's failure signal, with
+    // the answered row installed as the live flow.
+    const beginAction = createBeginAction({
+        action: options.startAction,
+        channel: setFailure,
+        isDisposed,
+        canRun: () => !isBusy() && flow() === null,
+        perform: options.begin,
+        onSucceeded: (started) => {
+            setFlow(started);
+        },
+    });
+
     /** Whether either OAuth call is in flight. */
-    const isBusy = (): boolean => isStarting() || isCompleting();
+    const isBusy = (): boolean => beginAction.isInFlight() || isCompleting();
 
     /**
      * The paste diagnosis beside the callback field: standing only behind a
@@ -339,42 +341,7 @@ export function createOauthFlow(options: {
         };
     };
 
-    const start = async (): Promise<void> => {
-        if (isBusy() || flow() !== null) {
-            return;
-        }
-
-        setFailure(null);
-        setIsStarting(true);
-
-        const begun = await options.begin();
-
-        setIsStarting(false);
-
-        if (isDisposed()) {
-            return;
-        }
-
-        if (begun.status === "blocked") {
-            setFailure(begun.notice);
-            return;
-        }
-
-        if (begun.outcome.status === "aborted") {
-            return;
-        }
-
-        if (begun.outcome.status === "failed") {
-            setFailure(
-                screenFailureNotice(begun.outcome.cause, {
-                    action: options.startAction,
-                }),
-            );
-            return;
-        }
-
-        setFlow(begun.outcome.result);
-    };
+    const start = beginAction.run;
 
     /** Completes an authorization-code flow with the pasted callback. */
     const complete = async (): Promise<void> => {
@@ -523,7 +490,7 @@ export function createOauthFlow(options: {
         flow,
         code,
         setCode,
-        isStarting,
+        isStarting: beginAction.isInFlight,
         isCompleting,
         isBusy,
         failure,

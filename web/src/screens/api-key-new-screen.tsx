@@ -1,15 +1,15 @@
 import type { JSX } from "@solidjs/web";
-import { createSignal, Show } from "solid-js";
+import { createSignal } from "solid-js";
 import type { ManagementApi } from "/src/management-api/client";
 import { bearerSecretError, isBearerSecret } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { hrefs, navigate } from "/src/router";
 import { ApiKeyNameField, ApiKeySecretField, apiKeyNameError } from "/src/ui/api-key-form";
 import { Button, Switch } from "/src/ui/controls";
-import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { createCreateAction } from "./create-form";
 import type { ScreenNotice } from "./read";
+import { StatedNotice } from "./read-notice";
 
 /**
  * One creation page for a serving key: whether it works from the start, a
@@ -64,16 +64,7 @@ export function ApiKeyNewScreen(props: { readonly api: ManagementApi }): JSX.Ele
                 backLabel="API keys"
             />
 
-            <Show when={failure()}>
-                {(current) => (
-                    <Notice
-                        tone={current().tone}
-                        title={current().title}
-                        detail={current().detail}
-                        fix={current().fix}
-                    />
-                )}
-            </Show>
+            <StatedNotice notice={failure} />
 
             <Card>
                 <CardHeader

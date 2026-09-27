@@ -1203,6 +1203,86 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
     });
 });
 
+describe("UsageQueryScreen failed query", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("states the query's diagnosis once and clears it when a later cycle lands", async () => {
+        const holder: HeldListings = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        let isQueryFailing = true;
+        const api = {
+            ...screenApi(holder, () => {}),
+            queryUsage: () =>
+                isQueryFailing
+                    ? Promise.reject(new Error("query refused"))
+                    : Promise.resolve({
+                          buckets: [
+                              dayBucket,
+                          ],
+                      }),
+        };
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The first cycle's query fails: its diagnosis is stated on the
+        // failure channel, the skeleton is gone, and the form stands
+        // re-enabled for the retry.
+        expect(document.body.textContent).toContain("query refused");
+        expect(skeleton()).toBeNull();
+        expect(buttonWithText("Run query").disabled).toBe(false);
+
+        // A later cycle that lands replaces the diagnosis with the answer.
+        isQueryFailing = false;
+        buttonWithText("Run query").click();
+        await settle();
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        expect(document.body.textContent).not.toContain("query refused");
+        expect(document.body.textContent).toContain("2026-09-01");
+    });
+});
+
 describe("UsageQueryScreen clear filters", () => {
     const disposes: Array<() => void> = [];
 

@@ -446,6 +446,31 @@ export const USAGE_QUERY_SUBJECT_FIELDS = {
 } as const satisfies Record<UsageQuerySubjectDimension, UsageQuerySubjectFieldNames>;
 
 /**
+ * The filter fields one subject prefills: its id, spelled as the draft string
+ * it rides as, filled into its dimension's own draft field over the empty
+ * fields — or nothing prefilled, when no subject arrives. The field name is
+ * read from [`USAGE_QUERY_SUBJECT_FIELDS`], the one dimension↔field pairing,
+ * so every derivation that opens a usage page with a subject preselected
+ * fills the same field, and a dimension added to the table is answered here
+ * with no edit.
+ */
+export function subjectFilterFields(subject: UsageQuerySubject | null): UsageFilterFields {
+    if (subject === null) {
+        return EMPTY_USAGE_FILTER_FIELDS;
+    }
+
+    const field = USAGE_QUERY_SUBJECT_FIELDS[subject.dimension].draftField;
+    const narrow: Partial<Record<typeof field, string>> = {
+        [field]: String(subject.id),
+    };
+
+    return {
+        ...EMPTY_USAGE_FILTER_FIELDS,
+        ...narrow,
+    };
+}
+
+/**
  * The sole subject among the candidates one subject walk collected: the one
  * entry when exactly one entity dimension was named, `null` otherwise — none
  * named and several named alike answer no subject, because a subject is

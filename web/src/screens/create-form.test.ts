@@ -2,7 +2,8 @@ import { createRoot } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
 import { ManagementApiError } from "/src/management-api/errors";
 import { ErrorCode } from "/src/management-api/generated/v0";
-import { type CreateActionBegin, createCreateAction } from "./create-form";
+import type { ActionBegin } from "./action-begin";
+import { createCreateAction } from "./create-form";
 import type { ScreenNotice } from "./read";
 import { settle } from "./screen-test-support";
 
@@ -17,7 +18,7 @@ const BLOCKED_NOTICE: ScreenNotice = {
 };
 
 /** The `"called"` begin of a creation that answered `result`. */
-function calledRow(result: CreatedRow): CreateActionBegin<CreatedRow> {
+function calledRow(result: CreatedRow): ActionBegin<CreatedRow> {
     return {
         status: "called",
         outcome: {
@@ -28,7 +29,7 @@ function calledRow(result: CreatedRow): CreateActionBegin<CreatedRow> {
 }
 
 /** The `"called"` begin of a creation whose gateway call failed. */
-function failedRow(cause: unknown): CreateActionBegin<CreatedRow> {
+function failedRow(cause: unknown): ActionBegin<CreatedRow> {
     return {
         status: "called",
         outcome: {
@@ -39,7 +40,7 @@ function failedRow(cause: unknown): CreateActionBegin<CreatedRow> {
 }
 
 /** The `"called"` begin of a creation whose gateway call was aborted. */
-function abortedRow(): CreateActionBegin<CreatedRow> {
+function abortedRow(): ActionBegin<CreatedRow> {
     return {
         status: "called",
         outcome: {
@@ -90,7 +91,7 @@ function mountInRoot<TValue>(mount: () => TValue): {
 describe("createCreateAction", () => {
     it("runs a creation only through its gate, one at a time", async () => {
         let creationCount = 0;
-        let releaseCreation: ((begin: CreateActionBegin<CreatedRow>) => void) | undefined;
+        let releaseCreation: ((begin: ActionBegin<CreatedRow>) => void) | undefined;
         let isGateOpen = false;
 
         const { value: action } = mountInRoot(() =>
@@ -100,7 +101,7 @@ describe("createCreateAction", () => {
                 canRun: () => isGateOpen,
                 perform: () => {
                     creationCount += 1;
-                    return new Promise<CreateActionBegin<CreatedRow>>((resolve) => {
+                    return new Promise<ActionBegin<CreatedRow>>((resolve) => {
                         releaseCreation = resolve;
                     });
                 },
@@ -268,7 +269,7 @@ describe("createCreateAction", () => {
     it("states nothing and lands nowhere when the creation answers after the screen went away", async () => {
         const stated: Array<ScreenNotice | null> = [];
         let landed = 0;
-        let releaseCreation: ((begin: CreateActionBegin<CreatedRow>) => void) | undefined;
+        let releaseCreation: ((begin: ActionBegin<CreatedRow>) => void) | undefined;
 
         const { value: action, dispose } = mountInRoot(() =>
             createCreateAction({
@@ -278,7 +279,7 @@ describe("createCreateAction", () => {
                 },
                 canRun: () => true,
                 perform: () =>
-                    new Promise<CreateActionBegin<CreatedRow>>((resolve) => {
+                    new Promise<ActionBegin<CreatedRow>>((resolve) => {
                         releaseCreation = resolve;
                     }),
                 onCreated: () => {

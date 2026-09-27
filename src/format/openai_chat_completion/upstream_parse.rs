@@ -242,7 +242,7 @@ impl UpstreamParser {
 
                 self.is_finished = true;
 
-                events.push(IrEvent::Finish(format::finish_reason_from_openai(
+                events.push(IrEvent::Finish(super::finish_reason_from_openai(
                     finish_reason,
                 )));
             }
@@ -440,7 +440,7 @@ impl UpstreamEventParser for UpstreamParser {
 
         let finish_reason = primary_choice(&response.choices)
             .and_then(|choice| choice.finish_reason.as_deref())
-            .map(format::finish_reason_from_openai)
+            .map(super::finish_reason_from_openai)
             .unwrap_or(IrFinishReason::Stop);
 
         self.is_finished = true;

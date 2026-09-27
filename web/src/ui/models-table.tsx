@@ -119,7 +119,7 @@ function ModelRow(props: {
                 ? `${props.provider.name} · ${props.model.upstream_id}`
                 : props.model.upstream_id;
 
-        return props.model.id_override !== null ? `${origin} · Custom ID` : origin;
+        return props.model.id_override !== null ? `${origin} · Custom public ID` : origin;
     };
 
     return (

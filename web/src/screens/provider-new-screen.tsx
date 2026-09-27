@@ -33,6 +33,7 @@ import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
 import { createOauthFlow } from "./oauth-flow";
 import { type ScreenNotice, screenFailureNotice } from "./read";
+import { StatedNotice } from "./read-notice";
 
 /**
  * The one line each editable card states while a live flow holds its fields:
@@ -641,37 +642,30 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 backLabel="Providers"
             />
 
-            <Show when={failure()}>
-                {(current) => (
-                    <div class="flex flex-col items-start gap-3">
-                        <Notice
-                            tone={current().notice.tone}
-                            title={current().notice.title}
-                            detail={current().notice.detail}
-                            fix={current().notice.fix}
-                        />
-                        {/* The failed boot read's way back, on the page it
-                            failed — and only there: an action-origin failure
-                            is not the boot read's to recover, and a click
-                            here would rerun a read whose success clears only
-                            a boot failure, leaving the action's diagnosis
-                            standing while retrying nothing. The rerun aborts
-                            the cycle in flight and writes only the listing
-                            signals and the notice, so a live OAuth flow
-                            stands through it untouched. */}
-                        <Show when={current().origin === "boot"}>
-                            <Button
-                                glyph="refresh"
-                                tone="ghost"
-                                isBusy={isBootReading()}
-                                onClick={readBootState}
-                            >
-                                Read again
-                            </Button>
-                        </Show>
-                    </div>
-                )}
-            </Show>
+            <StatedNotice
+                notice={() => failure()?.notice ?? null}
+                class="flex flex-col items-start gap-3"
+            >
+                {/* The failed boot read's way back, on the page it
+                    failed — and only there: an action-origin failure
+                    is not the boot read's to recover, and a click
+                    here would rerun a read whose success clears only
+                    a boot failure, leaving the action's diagnosis
+                    standing while retrying nothing. The rerun aborts
+                    the cycle in flight and writes only the listing
+                    signals and the notice, so a live OAuth flow
+                    stands through it untouched. */}
+                <Show when={failure()?.origin === "boot"}>
+                    <Button
+                        glyph="refresh"
+                        tone="ghost"
+                        isBusy={isBootReading()}
+                        onClick={readBootState}
+                    >
+                        Read again
+                    </Button>
+                </Show>
+            </StatedNotice>
 
             <Card>
                 <CardHeader title="Preset" />

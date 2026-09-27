@@ -29,7 +29,7 @@ use axum_extra::extract::WithRejection;
 use log::info;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, num::NonZeroI64};
+use std::collections::BTreeMap;
 
 route! {
     pub(super) StartProviderOauth: {
@@ -279,18 +279,7 @@ async fn oauth_definition(
     name: &str,
     version: i64,
 ) -> Result<crate::provider::ProviderDefinition, Error> {
-    let Some(version) = NonZeroI64::new(version) else {
-        return Err(super::definition_version_invalid());
-    };
-
-    let Some(definition) =
-        storage::provider_definitions::find_definition(database, name, version).await?
-    else {
-        return Err(Error::DefinitionNotFound {
-            name: name.to_string(),
-            version: version.get(),
-        });
-    };
+    let definition = super::resolve_definition(database, name, version).await?;
 
     if definition.credential_kind() != CredentialKind::OAuth {
         return Err(credential_kind_mismatch(&definition));

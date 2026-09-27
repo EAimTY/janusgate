@@ -193,22 +193,12 @@ async fn handle_create(
         super::validate_base_url(base_url)?;
     }
 
-    let Some(version) = NonZeroI64::new(request.provider_definition_version) else {
-        return Err(super::definition_version_invalid());
-    };
-
-    let Some(definition) = storage::provider_definitions::find_definition(
+    let definition = super::resolve_definition(
         database,
         &request.provider_definition_name,
-        version,
+        request.provider_definition_version,
     )
-    .await?
-    else {
-        return Err(Error::DefinitionNotFound {
-            name: request.provider_definition_name.clone(),
-            version: request.provider_definition_version,
-        });
-    };
+    .await?;
 
     // Only static-key definitions accept a direct write; OAuth credentials are minted by the
     // completion of a flow.
@@ -327,7 +317,9 @@ async fn handle_update(
         (None, None) => None,
 
         _ => {
-            return Err(super::definition_version_invalid());
+            return Err(super::definition_version_invalid(
+                "provider_definition_version",
+            ));
         }
     };
 

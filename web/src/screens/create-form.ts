@@ -1,31 +1,16 @@
-import { type Accessor, createSignal } from "solid-js";
+import type { Accessor } from "solid-js";
 import type { ActionName } from "/src/management-api/diagnosis";
-import type { ManagementCallOutcome } from "/src/management-api/outcome";
-import { createDisposalGuard, type ScreenNotice, screenFailureNotice } from "./read";
-
-/**
- * What a creation's perform step produced: the screen's own prelude refused
- * and the channel states why, or the gateway's creation call ran and its
- * outcome is the action's to report — the same begin shape the OAuth flow's
- * begin step answers.
- */
-export type CreateActionBegin<TResult> =
-    | {
-          readonly status: "blocked";
-          readonly notice: ScreenNotice;
-      }
-    | {
-          readonly status: "called";
-          readonly outcome: ManagementCallOutcome<TResult>;
-      };
+import { type ActionBegin, createBeginAction } from "./action-begin";
+import { createDisposalGuard, type ScreenNotice } from "./read";
 
 /**
  * The creation action the three new screens share: the single-flight
- * creation a form submit runs. It owns the flight signal every screen
- * redeclared and the wiring around the call — an aborted call states
- * nothing; a failed one is diagnosed onto the screen's failure channel
- * under the action's name; a blocked prelude states its own notice there;
- * a succeeded one runs the success tail alone.
+ * creation a form submit runs. The flight flag, the disposal-guard check,
+ * and the settle the answered begin runs are the screens' shared begin
+ * action's (`createBeginAction`): an aborted call states nothing; a failed
+ * one is diagnosed onto the screen's failure channel under the action's
+ * name; a blocked prelude states its own notice there; a succeeded one runs
+ * the success tail alone.
  *
  * Disposal is guarded here, in one home: a call answering after the screen
  * went away states nothing and lands nowhere, the way the OAuth flow and
@@ -45,7 +30,7 @@ export function createCreateAction<TResult>(options: {
      * creation call, wrapped in `performManagementCall`. A screen without a
      * prelude answers the `"called"` arm outright.
      */
-    readonly perform: () => Promise<CreateActionBegin<TResult>>;
+    readonly perform: () => Promise<ActionBegin<TResult>>;
     /** Where the screen goes once the gateway answered the new row. */
     readonly onCreated: (result: TResult) => void;
 }): {
@@ -54,48 +39,18 @@ export function createCreateAction<TResult>(options: {
     /** The form's submit handler: the default prevented, then the creation. */
     readonly submit: (event: SubmitEvent) => void;
 } {
-    const [isCreating, setIsCreating] = createSignal(false);
-
     // The one disposal guard, set when the consuming screen goes away: a
     // call answering afterwards must state nothing and land nowhere.
     const isDisposed = createDisposalGuard();
 
-    const run = async (): Promise<void> => {
-        if (isCreating() || !options.canRun()) {
-            return;
-        }
-
-        options.channel(null);
-        setIsCreating(true);
-
-        const begun = await options.perform();
-
-        setIsCreating(false);
-
-        if (isDisposed()) {
-            return;
-        }
-
-        if (begun.status === "blocked") {
-            options.channel(begun.notice);
-            return;
-        }
-
-        if (begun.outcome.status === "aborted") {
-            return;
-        }
-
-        if (begun.outcome.status === "failed") {
-            options.channel(
-                screenFailureNotice(begun.outcome.cause, {
-                    action: options.action,
-                }),
-            );
-            return;
-        }
-
-        options.onCreated(begun.outcome.result);
-    };
+    const { isInFlight: isCreating, run } = createBeginAction({
+        action: options.action,
+        channel: options.channel,
+        isDisposed,
+        canRun: options.canRun,
+        perform: options.perform,
+        onSucceeded: options.onCreated,
+    });
 
     return {
         isCreating,

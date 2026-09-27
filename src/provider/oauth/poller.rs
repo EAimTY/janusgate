@@ -2,7 +2,8 @@
 //! stored schedule at startup and keeps polling newly started flows (README §3, §7.2).
 //!
 //! Claiming a due flow is one conditional `UPDATE … RETURNING` — the conditional database lease —
-//! and a claim older than the control-request timeout is recovered by the next claimant, so
+//! and a claim older than the claim-staleness window (`CLAIM_STALE_AFTER`, strictly beyond the
+//! control-request timeout that bounds every exchange) is recovered by the next claimant, so
 //! competing pollers never double-exchange an upstream grant concurrently. The lease alone
 //! cannot cover a poller that dies after its exchange completed, so the claimant persists the
 //! exchange checkpoint the moment the exchange completes — before provisioning runs — and a
@@ -35,10 +36,27 @@ use log::{debug, info, warn};
 use reqwest::Client;
 use std::time::Duration;
 
-/// How long a device-flow claim is trusted before another poller steals it: the control-plane
-/// client bounds every exchange attempt at 30 seconds, so a claim older than that belongs to a
-/// poller that died mid-exchange.
-const CLAIM_STALE_AFTER: Duration = http_client::CONTROL_PLANE_TOTAL_TIMEOUT;
+/// How long a device-flow claim is trusted before another poller steals it: twice the
+/// control-plane timeout that bounds every exchange attempt. The first timeout-width covers the
+/// exchange's whole budget; the second is the strict slack the assert below demands, keeping a
+/// claim unstealable until a full extra control-request timeout has elapsed past the latest
+/// instant the exchange can still return — so the holder's claim-conditioned persist, the
+/// completed exchange's checkpoint or the timed-out exchange's retry schedule, always lands on
+/// a live claim instead of being silently discarded by a claimant that recovered the
+/// just-became-stale row first and re-ran the already-consumed grant into a misleading
+/// upstream rejection. The trade-off is one slower stale-claim recovery (a dead poller's flow
+/// is recovered after 60 seconds rather than 30): that delay is the price the checkpoint's
+/// guarantee costs. The same strict-slack demand the sibling refresh lease asserts
+/// (`REFRESH_LEASE_STALE_AFTER` in `refresh.rs`) holds here.
+const CLAIM_STALE_AFTER: Duration =
+    Duration::from_secs(2 * http_client::CONTROL_PLANE_TOTAL_TIMEOUT.as_secs());
+
+// Compile-time guarantee that the claim staleness strictly outlives the control-plane timeout,
+// so a claim is never stealable while its holder's exchange budget is still live and a
+// completed exchange's checkpoint persist always wins over a competing recovery — the same
+// demand the refresh lease asserts in `refresh.rs`.
+const _: () =
+    assert!(http_client::CONTROL_PLANE_TOTAL_TIMEOUT.as_secs() < CLAIM_STALE_AFTER.as_secs());
 
 /// The delay a connection-timeout backoff grows to before it stops doubling.
 const BACKOFF_INTERVAL_CAP_SECONDS: i64 = 120;
@@ -657,6 +675,18 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
+    /// The claim-staleness window in whole seconds, so a fixture stamps claims and derives
+    /// thresholds a known distance inside or past the window the poller actually enforces
+    /// instead of pinning the constant's value in seconds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the staleness window exceeds `i64` seconds — impossible for the
+    /// compile-time `CLAIM_STALE_AFTER` duration, so the conversion keeps the helper total.
+    fn claim_stale_window_seconds() -> i64 {
+        i64::try_from(super::CLAIM_STALE_AFTER.as_secs()).unwrap()
+    }
+
     /// A create flow whose provider name another row already holds terminates as failed with
     /// the gateway-owned `name_conflict` pair instead of being re-claimed and re-failing until
     /// the expiry sweep deletes it (README §7.2).
@@ -983,12 +1013,13 @@ mod tests {
         let now = crate::unix_time::unix_now_micros();
 
         // Two due flows whose claims are fabricated through the same conditional claim the
-        // poller uses: one stamped 31 seconds ago — past the staleness window relative to the
-        // claim call's own instant — and one stamped 29 seconds ago, still inside it. The
-        // fresh fixture's threshold protects the stale stamp, so each stamp lands on its own
-        // row.
-        let stale_at = now - 31 * crate::unix_time::MICROS_PER_SEC;
-        let fresh_at = now - 29 * crate::unix_time::MICROS_PER_SEC;
+        // poller uses: one stamped ten seconds past the staleness window — stale relative to
+        // the claim call's own instant — and one stamped ten seconds inside it. The fresh
+        // fixture's threshold protects the stale stamp, so each stamp lands on its own row.
+        let window = claim_stale_window_seconds();
+
+        let stale_at = now - (window + 10) * crate::unix_time::MICROS_PER_SEC;
+        let fresh_at = now - (window - 10) * crate::unix_time::MICROS_PER_SEC;
 
         for (state_token, claim_at) in [("stale-claim", stale_at), ("fresh-claim", fresh_at)] {
             insert_flow(
@@ -1026,8 +1057,8 @@ mod tests {
             assert_eq!(claimed.state_token, state_token);
         }
 
-        // The poller's claim call derives its threshold from its own instant: the 31-second-old
-        // claim is past the window and is recovered, with a fresh stamp.
+        // The poller's claim call derives its threshold from its own instant: the claim past
+        // the window is recovered, with a fresh stamp.
         #[expect(clippy::expect_used, reason = "the stale claim is recovered")]
         let recovered = claim_next_due_flow(&database)
             .await
@@ -1040,8 +1071,8 @@ mod tests {
             "the recovery stamps a fresh claim"
         );
 
-        // The 29-second-old claim is respected — still inside the window at the call's own
-        // instant — so nothing else is due.
+        // The claim still inside the window is respected — ten seconds of slack remain at the
+        // call's own instant — so nothing else is due.
         assert!(
             claim_next_due_flow(&database).await.unwrap().is_none(),
             "a claim inside the window at the call's own instant is respected"
@@ -1289,9 +1320,9 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        // The claim is stamped 40 seconds in the past — past the staleness window, the state
-        // provisioning longer than the window leaves the row in.
-        let claim_at = now - 40 * crate::unix_time::MICROS_PER_SEC;
+        // The claim is stamped ten seconds past the staleness window — the state provisioning
+        // longer than the window leaves the row in.
+        let claim_at = now - (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
         insert_flow(
             &database,
@@ -1339,14 +1370,15 @@ mod tests {
 
         assert_eq!(restamped.device_poll_started_at, Some(fresh));
 
-        // A competing tick past the staleness window recovers the (fabricated) stale claim.
-        let later = now + 40 * crate::unix_time::MICROS_PER_SEC;
+        // A competing tick whose threshold is derived the way the poller derives it recovers
+        // the (fabricated) stale claim.
+        let later = now + (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
         #[expect(clippy::expect_used, reason = "the stale claim is stolen")]
         let stolen = claim_due_device_flow(
             &database,
             later,
-            now + 10 * crate::unix_time::MICROS_PER_SEC,
+            later - claim_stale_window_seconds() * crate::unix_time::MICROS_PER_SEC,
         )
         .await
         .unwrap()
@@ -1396,9 +1428,9 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        // The claim is stamped 40 seconds in the past — the state provisioning longer than the
-        // 30-second staleness window leaves the row in when the poller returns.
-        let claim_at = now - 40 * crate::unix_time::MICROS_PER_SEC;
+        // The claim is stamped ten seconds past the staleness window — the state provisioning
+        // longer than the window leaves the row in when the poller returns.
+        let claim_at = now - (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
         insert_flow(
             &database,
@@ -1483,7 +1515,7 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        let claim_at = now - 40 * crate::unix_time::MICROS_PER_SEC;
+        let claim_at = now - (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
         insert_flow(
             &database,
@@ -1517,14 +1549,17 @@ mod tests {
             .unwrap()
             .expect("the due flow is claimed");
 
-        // A competing poller tick recovers the stale claim while the first poller is
-        // provisioning.
+        // A competing poller tick recovers the stale claim with the real staleness threshold
+        // while the first poller is provisioning: the claim is ten seconds past the window.
         #[expect(clippy::expect_used, reason = "the stale claim is stolen")]
-        let stolen =
-            claim_due_device_flow(&database, now, now - 30 * crate::unix_time::MICROS_PER_SEC)
-                .await
-                .unwrap()
-                .expect("the stale claim is stolen");
+        let stolen = claim_due_device_flow(
+            &database,
+            now,
+            now - claim_stale_window_seconds() * crate::unix_time::MICROS_PER_SEC,
+        )
+        .await
+        .unwrap()
+        .expect("the stale claim is stolen");
 
         assert_eq!(stolen.id, claimed.id);
 
@@ -1583,9 +1618,9 @@ mod tests {
 
         let now = crate::unix_time::unix_now_micros();
 
-        // The claim is stamped 40 seconds in the past — provisioning outlives the 30-second
-        // staleness window, so the commit re-stamps the claim before the provider write.
-        let claim_at = now - 40 * crate::unix_time::MICROS_PER_SEC;
+        // The claim is stamped ten seconds past the staleness window — provisioning outlives
+        // the window, so the commit re-stamps the claim before the provider write.
+        let claim_at = now - (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
         insert_flow(
             &database,
@@ -2009,15 +2044,15 @@ mod tests {
 
         assert!(is_persisted, "the dying claimant still holds its claim");
 
-        // The restart: the stale claim is recovered past the staleness window, checkpoint
-        // aboard.
-        let later = now + 40 * crate::unix_time::MICROS_PER_SEC;
+        // The restart: the stale claim is recovered once it ages ten seconds past the
+        // staleness window, checkpoint aboard.
+        let later = now + (claim_stale_window_seconds() + 10) * crate::unix_time::MICROS_PER_SEC;
 
         #[expect(clippy::expect_used, reason = "the stale claim is recovered")]
         let recovered = claim_due_device_flow(
             &database,
             later,
-            now + 10 * crate::unix_time::MICROS_PER_SEC,
+            later - claim_stale_window_seconds() * crate::unix_time::MICROS_PER_SEC,
         )
         .await
         .unwrap()

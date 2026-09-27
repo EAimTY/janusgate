@@ -70,7 +70,10 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
                 </ButtonLink>
             </PageHeader>
 
-            <ReadNotice read={read} />
+            <ReadNotice
+                read={read}
+                retry={read.reload}
+            />
 
             <SkeletonRows
                 read={read}

@@ -9,6 +9,7 @@ import { Notice, Skeleton, Stat } from "/src/ui/feedback";
 import { Card, CardHeader } from "/src/ui/layout";
 import {
     EMPTY_USAGE_FILTER_DRAFT,
+    subjectFilterFields,
     USAGE_QUERY_SUBJECT_FIELDS,
     type UsageFilterDraft,
     type UsageQuerySubject,
@@ -41,21 +42,16 @@ function subjectFilter(filter: UsageSubjectFilter): UsageFilter {
 
 /**
  * The stream draft one subject narrows: the unfiltered listing with the
- * subject's id alone filled into its dimension's draft field, the field name
- * read from the shared table — the same pairing the stream route reads back —
- * so the card's two doors can never spell one entity differently. The window
- * and every other field stay at their default: the stream's own semantics
- * are its own.
+ * subject's id alone filled into its dimension's draft field — the shared
+ * [`subjectFilterFields`] derivation, the same one the aggregates page's
+ * arrival reads — so the card's two doors can never spell one entity
+ * differently. The window and every other field stay at their default: the
+ * stream's own semantics are its own.
  */
 function subjectStreamDraft(subject: UsageQuerySubject): UsageFilterDraft {
-    const field = USAGE_QUERY_SUBJECT_FIELDS[subject.dimension].draftField;
-    const narrow: Partial<Record<typeof field, string>> = {
-        [field]: String(subject.id),
-    };
-
     return {
         ...EMPTY_USAGE_FILTER_DRAFT,
-        ...narrow,
+        ...subjectFilterFields(subject),
     };
 }
 

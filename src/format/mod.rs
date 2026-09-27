@@ -524,27 +524,6 @@ where
     }
 }
 
-/// Maps an OpenAI `finish_reason` string to the canonical reason; unknown values degrade to
-/// [`IrFinishReason::Stop`] rather than failing a healthy stream.
-pub(in crate::format) fn finish_reason_from_openai(value: &str) -> IrFinishReason {
-    match value {
-        "length" => IrFinishReason::Length,
-        "tool_calls" | "function_call" => IrFinishReason::ToolCall,
-        "content_filter" => IrFinishReason::ContentFilter,
-        _ => IrFinishReason::Stop,
-    }
-}
-
-/// Renders the canonical reason as an OpenAI `finish_reason` string.
-pub(in crate::format) fn finish_reason_to_openai(reason: IrFinishReason) -> &'static str {
-    match reason {
-        IrFinishReason::Stop => "stop",
-        IrFinishReason::Length => "length",
-        IrFinishReason::ToolCall => "tool_calls",
-        IrFinishReason::ContentFilter => "content_filter",
-    }
-}
-
 /// Parses one client request body into its typed form.
 ///
 /// The protocol's request shapes are concrete types with `deny_unknown_fields`, so one

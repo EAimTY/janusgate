@@ -2,13 +2,17 @@ import type { ManagementApi } from "/src/management-api/client";
 import { ManagementApiError } from "/src/management-api/errors";
 import type {
     ApiKeyResponse,
+    ListUsageRequest,
+    ListUsageResponse,
     ModelResponse,
     ProviderResponse,
     QueryUsageRequest,
     QueryUsageResponse,
+    UsageFilter,
 } from "/src/management-api/generated/v0";
 import { type ReadCall, readAll, readApiKeys, readModels, readProviders } from "./read";
 import { DIMENSION_KEY_FIELD, missingBucketKeyFieldMessage } from "./usage-labels";
+import { USAGE_PAGE_SIZE } from "./usage-pagination";
 
 /** The entity lists a usage screen reads alongside the accounting rows. */
 export type UsageEntities = {
@@ -78,5 +82,42 @@ export function readUsageBuckets(
 
             return result;
         },
+    };
+}
+
+/**
+ * One `usage:list` request: the page size, the cursor when the stream
+ * continues, and the filter only when something is chosen — an absent filter
+ * is the wire's own spelling of "every row", so the unfiltered stream sends
+ * exactly what it always did.
+ */
+export function usageListRequest(filter: UsageFilter, before: number | null): ListUsageRequest {
+    return {
+        limit: USAGE_PAGE_SIZE,
+        ...(before === null
+            ? {}
+            : {
+                  before,
+              }),
+        ...(Object.keys(filter).length === 0
+            ? {}
+            : {
+                  filter,
+              }),
+    };
+}
+
+/**
+ * The usage stream's listing, as one read call run under the cycle's signal:
+ * the carried action names the call a `usage:list`, so its failure diagnoses
+ * as that call's, the way every named read call here does.
+ */
+export function readUsagePage(
+    api: Pick<ManagementApi, "listUsage">,
+    request: ListUsageRequest,
+): ReadCall<ListUsageResponse> {
+    return {
+        action: "list-usage",
+        run: (cycle) => api.listUsage(request, cycle),
     };
 }

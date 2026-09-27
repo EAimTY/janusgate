@@ -58,16 +58,19 @@ export function ApiKeyNameField(props: {
 }
 
 /**
- * The plaintext secret with its two conveniences: Generate mints a fresh
- * value locally, Copy relays the shown value to the clipboard. Generate over
- * an empty field replaces nothing and fires at once; over a typed secret it
- * is destructive — the hand-made value is unrecoverable — so the first click
+ * The plaintext secret with its conveniences: Generate mints a fresh value
+ * locally, Copy relays the shown value to the clipboard, and a reveal turns
+ * the mask off while the operator checks a paste. Generate over an empty
+ * field replaces nothing and fires at once; over a typed secret it is
+ * destructive — the hand-made value is unrecoverable — so the first click
  * arms the same one-click confirm the delete card uses, naming what is lost,
- * and only the confirm replaces. The secret is shown in full — the listing
- * returns it, and the operator needs it to configure clients. The default
- * hint states the creation contract, where the gate requires a secret — a
- * caller stating its own hint (the edit form's write-only contract) owns the
- * whole line.
+ * and only the confirm replaces. The input is masked while typed, like every
+ * pasted secret — the reveal is the field's own transient state and every
+ * mount opens masked — while the listing and detail cards present the stored
+ * secret in full with a copy action, where it is data, not input. The
+ * default hint states the creation contract, where the gate requires a
+ * secret — a caller stating its own hint (the edit form's write-only
+ * contract) owns the whole line.
  */
 export function ApiKeySecretField(props: {
     readonly secret: string;
@@ -77,6 +80,7 @@ export function ApiKeySecretField(props: {
     readonly error?: string | null | undefined;
 }): JSX.Element {
     const [isGenerateArmed, setIsGenerateArmed] = createSignal(false);
+    const [isSecretVisible, setIsSecretVisible] = createSignal(false);
     // The armed state is only ever about the standing text: a field emptied
     // by hand has nothing left to lose, so the confirm yields to the plain
     // Generate button until text stands again.
@@ -91,9 +95,11 @@ export function ApiKeySecretField(props: {
         <div>
             <TextField
                 label="Key"
+                type={isSecretVisible() ? "text" : "password"}
                 value={props.secret}
                 onInput={props.onSecretInput}
                 isDisabled={props.isDisabled ?? false}
+                autocomplete="off"
                 placeholder="sk-… or Generate one"
                 error={props.error}
                 hint={
@@ -101,6 +107,15 @@ export function ApiKeySecretField(props: {
                     requiredHint("Sent as Authorization: Bearer <key> by serving clients.")
                 }
             />
+            <label class="mt-2 flex w-fit cursor-pointer items-center gap-2 text-[13.5px] text-ink-dim">
+                <input
+                    type="checkbox"
+                    class="size-4 accent-(--color-accent)"
+                    checked={isSecretVisible()}
+                    onChange={(event) => setIsSecretVisible(event.currentTarget.checked)}
+                />
+                Show the key while typing
+            </label>
             <div class="mt-2 flex flex-wrap items-center gap-2">
                 <Show
                     when={isTypedSecretArmed()}
