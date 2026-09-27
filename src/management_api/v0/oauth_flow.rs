@@ -549,15 +549,17 @@ async fn complete_authorization_code(
     })
 }
 
-/// Completes one consumed authorization-code flow against its definition: the exchange runs and
-/// its product classifies, the shared completion pipeline folds the outcome through provisioning
-/// into the stored credentials, and the provider write commits — creating the provider, or
-/// atomically replacing the target's credentials, definition reference, and base URL.
+/// Completes one consumed authorization-code flow against its definition: a create flow whose
+/// provider name another row claimed between the begin pre-check and this completion renders the
+/// name-taken conflict before the exchange's round-trip, the exchange runs and its product
+/// classifies, the shared completion pipeline folds the outcome through provisioning into the
+/// stored credentials, and the provider write commits — creating the provider, or atomically
+/// replacing the target's credentials, definition reference, and base URL.
 ///
 /// # Errors
 ///
-/// Returns [`Error`] for exchange failures, provisioning failures, a vanished reauthorization
-/// target, and storage failures.
+/// Returns [`Error`] for a taken create-flow provider name, exchange failures, provisioning
+/// failures, a vanished reauthorization target, and storage failures.
 async fn complete_consumed_flow(
     database: &crate::database::Database,
     control_plane: &Client,
@@ -565,6 +567,22 @@ async fn complete_consumed_flow(
     flow: &OngoingFlow,
     code: &str,
 ) -> Result<Provider, Error> {
+    // A create flow whose provider name another row already holds can never succeed. The
+    // conflict renders the same clean 409 the begin path does, before the exchange's upstream
+    // round-trip (README §7.1); the write's UNIQUE constraint stays the concurrent backstop,
+    // exactly like the device poller's terminal `name_conflict` classification (README §7.2).
+    // The flow row is already consumed either way — this classifies the loss, it does not
+    // un-spend the flow.
+    if flow.purpose == FlowPurposeStorage::Create {
+        let name = flow.provider_name.as_deref().unwrap_or_default();
+
+        if storage::providers::is_provider_name_taken(database, name).await? {
+            return Err(Error::ProviderNameTaken {
+                name: name.to_string(),
+            });
+        }
+    }
+
     let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
         return Err(Error::Internal {
             message: "the consumed flow's definition carries no OAuth credential".to_string(),
@@ -713,12 +731,18 @@ mod tests {
     use crate::{
         format::UpstreamFormat,
         provider::StoredCredentials,
-        storage::oauth_flows::{
-            FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
-            commit_device_success_in_transaction, find_flow_by_state, insert_flow,
+        storage::{
+            oauth_flows::{
+                FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
+                commit_device_success_in_transaction, find_flow_by_state, insert_flow,
+            },
+            provider_definitions::{NewDefinition, insert_definition},
         },
-        test_support,
+        test_support::{
+            self, MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
+        },
     };
+    use serde_json::json;
     use std::collections::BTreeMap;
 
     /// A reauthorization without an explicit target is valid only against an OAuth provider
@@ -1158,5 +1182,130 @@ mod tests {
                  grant rejection"
             );
         };
+    }
+
+    /// An authorization-code create flow whose provider name another row claimed between the
+    /// begin pre-check and the completion answers the name-taken 409, not the provider write's
+    /// generic constraint error (README §7.2): the conflict is classified before the exchange's
+    /// upstream round-trip, and the UNIQUE constraint stays the concurrent backstop. The flow row
+    /// is already consumed either way — the documented consume-then-fail order is unchanged; only
+    /// the rendered body gains the name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the rejection diverges.
+    #[tokio::test]
+    async fn completing_a_create_flow_whose_provider_name_was_taken_renders_the_name_conflict() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        let static_definition = test_support::insert_static_key_definition(
+            &database,
+            "static-def",
+            UpstreamFormat::OpenAiChatCompletion,
+        )
+        .await;
+
+        test_support::insert_provider(
+            &database,
+            &static_definition,
+            "taken",
+            "t-",
+            None,
+            StoredCredentials::ApiKey {
+                api_key: "sk".to_string(),
+            },
+        )
+        .await;
+
+        // The flow's definition exchanges against a live mock so the completion would reach the
+        // provider write if the classification did not fire first: the mock recording pins the
+        // check's placement before the exchange's round-trip.
+        let (mock, recorded) = MockUpstream::start_recording(vec![
+            serde_json::to_string(&json!({"access_token": "exchange-token"})).unwrap(),
+        ])
+        .await;
+
+        let exchange_url = mock.base();
+
+        let payload = test_support::oauth_definition_payload(OAuthDefinitionFixture {
+            format: UpstreamFormat::OpenAiChatCompletion,
+            inference_suffix: Some("/chat/completions"),
+            client_id: "fixture-client",
+            initial_slots: &[],
+            grant: OAuthGrantFixture::AuthorizationCode,
+            exchange_url: &exchange_url,
+            response_fields: vec![],
+            terminal_codes: &["invalid_grant"],
+            refresh: OAuthRefreshFixture::None,
+            provisioning: None,
+        });
+
+        let definition = insert_definition(
+            &database,
+            NewDefinition {
+                name: "oauth-def",
+                base_version: None,
+                payload: &payload,
+                created_at: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+        let now = crate::unix_time::unix_now_micros();
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("taken".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::AuthorizationCode,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: None,
+                device_user_code: None,
+                device_verification_uri: None,
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: None,
+                device_next_poll_at: None,
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        let error = complete_authorization_code(
+            &database,
+            &crate::http_client::control_plane(),
+            "state-token",
+            "code",
+        )
+        .await
+        .unwrap_err();
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent rejection variant is the failure report"
+        )]
+        let Error::ProviderNameTaken { name } = error else {
+            panic!("a completion whose provider name was taken renders the name-taken conflict");
+        };
+
+        assert_eq!(name, "taken");
+
+        // The classification fired before the exchange's round-trip: the mock saw no request.
+        #[expect(
+            clippy::unwrap_used,
+            reason = "a poisoned recorder is a panicking sibling's failure report"
+        )]
+        let seen = recorded.lock().unwrap();
+
+        assert!(seen.is_empty(), "{seen:?}");
     }
 }

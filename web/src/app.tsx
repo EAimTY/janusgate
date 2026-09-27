@@ -237,12 +237,13 @@ function AdminShell(props: { readonly connection: Connection }): JSX.Element {
     // The shell is created per connection: the freshness stamp belongs to the
     // instance the reads answer, so a different connection starts unrefreshed
     // instead of showing the previous instance's stamp until its first read
-    // completes. The shell also always starts at the top — the setup screen
-    // can leave the document scrolled when its form was the last thing on a
-    // short viewport.
-    resetRefreshStamp();
-
+    // completes. The reset is a signal write, so it runs in the settle phase —
+    // a component body is a pure scope and forbids writes — and the keyed
+    // boundary settles it once per shell regardless. The shell also always
+    // starts at the top — the setup screen can leave the document scrolled
+    // when its form was the last thing on a short viewport.
     onSettled(() => {
+        resetRefreshStamp();
         window.scrollTo(0, 0);
     });
 
@@ -476,7 +477,7 @@ function TopBar(): JSX.Element {
 
     return (
         <header class="sticky top-0 z-10 border-b border-rule bg-canvas/90 backdrop-blur">
-            <div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-2 px-4 sm:px-6">
+            <div class="mx-auto flex min-h-14 w-full max-w-6xl items-center gap-2 px-4 py-2 sm:px-6">
                 <AppLink
                     href={hrefs.home()}
                     class="flex items-center gap-2 text-accent"
@@ -588,7 +589,12 @@ function ContextBar(props: {
     );
 }
 
-/** Disconnecting is explicit and confirmed; the token must be re-entered. */
+/**
+ * Disconnecting is explicit and confirmed; the token must be re-entered. The
+ * armed confirm speaks the app's one confirm grammar — the question naming
+ * the cost, the action, and the way back — like every in-page confirm, so
+ * the bar's one armed control states its consequence before it acts.
+ */
 function DisconnectControl(): JSX.Element {
     const [isArmed, setIsArmed] = createSignal(false);
 
@@ -614,7 +620,10 @@ function DisconnectControl(): JSX.Element {
                 </Button>
             }
         >
-            <span class="flex items-center gap-1">
+            <div class="flex flex-wrap items-center gap-2">
+                <p class="w-full text-[13.5px] text-ink-dim">
+                    Forget the stored token? Reconnecting means entering it again.
+                </p>
                 <Button
                     tone="danger"
                     onClick={() => {
@@ -630,7 +639,7 @@ function DisconnectControl(): JSX.Element {
                 >
                     Keep
                 </Button>
-            </span>
+            </div>
         </Show>
     );
 }

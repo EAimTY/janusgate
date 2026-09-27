@@ -9,35 +9,31 @@ import { ModelEditScreen } from "/src/screens/model-edit-screen";
 import {
     buttonWithText,
     labeledInput,
+    modelRow,
     paragraphWithText,
+    providerRow,
     settle,
     stubManagementApi,
     switchWithLabel,
     typeInto,
 } from "./screen-test-support";
 
-const provider: ProviderResponse = {
-    type: "api_key",
+const provider = providerRow({
     provider_definition_name: "generic-openai-responses",
-    provider_definition_version: 1,
     format: "openai_response",
     id: 3,
     name: "alpha",
     model_prefix: "alpha-",
-    is_enabled: true,
     base_url: "https://alpha.example",
-};
+});
 
-const model: ModelResponse = {
+const model = modelRow({
     id: 11,
     provider_id: 3,
     provider: "alpha",
     upstream_id: "gpt-x",
     public_id: "alpha-gpt-x",
-    id_override: null,
-    is_enabled: true,
-    discovery_state: "discovered",
-};
+});
 
 /**
  * A management API standing in for the gateway itself: its listings answer

@@ -47,8 +47,8 @@
 use super::ResponseFormatShape;
 use crate::{
     format::{
-        self, GeminiResponseFormatRejection, ParsedRequest, RouteContext,
-        parse_gemini_response_format,
+        self, ParsedRequest, RouteContext,
+        gemini::{GeminiResponseFormatRejection, parse_gemini_response_format},
     },
     ir::{
         InvalidRequest, IrImage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat, IrRole,
@@ -570,7 +570,7 @@ pub(super) fn parse_request(
                     vec![IrPart::ToolCall {
                         call_id: id,
                         name,
-                        arguments: format::arguments_object_to_text(arguments),
+                        arguments: Value::Object(arguments).to_string(),
                         thought_signature: None,
                     }],
                 );

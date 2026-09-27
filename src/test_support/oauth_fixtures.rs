@@ -146,7 +146,10 @@ pub(crate) struct OAuthDefinitionFixture<'a> {
 /// The skeleton's exchange references the `redirect_uri` value part because the write boundary
 /// requires that of every authorization-code grant (RFC 6749 §4.1.3); the same boundary
 /// requires the device grant's exchange to reference the `device_code` value part (RFC 8628
-/// §3.4), which the device rows carry.
+/// §3.4), which the device rows carry. The skeleton credential never carries a client secret,
+/// so both grants' exchanges and the `Grant` refresh's request carry the `client_id` row the
+/// same boundary requires of a secret-less token or renewal request (RFC 6749 §4.1.3, §3.2.1,
+/// §6).
 ///
 /// The payload is returned unvalidated: some fixtures are deliberately invalid, so validation
 /// stays the caller's decision.
@@ -175,6 +178,7 @@ pub(crate) fn oauth_definition_payload(fixture: OAuthDefinitionFixture<'_>) -> D
                 ]}),
                 json!({"name": "code", "value": [{"type": "authorization_code"}]}),
                 json!({"name": "redirect_uri", "value": [{"type": "redirect_uri"}]}),
+                json!({"name": "client_id", "value": [{"type": "client_id"}]}),
             ],
         ),
 
@@ -188,6 +192,8 @@ pub(crate) fn oauth_definition_payload(fixture: OAuthDefinitionFixture<'_>) -> D
                     {"type": "literal", "value": "urn:ietf:params:oauth:grant-type:device_code"}
                 ]}));
             }
+
+            exchange_fields.push(json!({"name": "client_id", "value": [{"type": "client_id"}]}));
 
             exchange_fields
                 .push(json!({"name": "device_code", "value": [{"type": "device_code"}]}));
@@ -265,7 +271,8 @@ pub(crate) fn oauth_definition_payload(fixture: OAuthDefinitionFixture<'_>) -> D
                         {"name": "grant_type", "value": [
                             {"type": "literal", "value": "refresh_token"}
                         ]},
-                        {"name": "refresh_token", "value": [{"type": "refresh_token"}]}
+                        {"name": "refresh_token", "value": [{"type": "refresh_token"}]},
+                        {"name": "client_id", "value": [{"type": "client_id"}]}
                     ]}
                 }
             });

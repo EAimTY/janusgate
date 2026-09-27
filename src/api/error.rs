@@ -5,9 +5,10 @@
 //! repo's module-local `Error` convention, path-qualified against [`gateway::Error`] and the
 //! management API's own `Error` — and has no coupling to the management API's error domain, which
 //! stays as is. One variant per contract row, each pinning exactly one HTTP status; each wire
-//! format owns one render module (see `crate::format::error_openai`, `error_gemini`,
-//! `error_anthropic`) with a closed `render(&Error)` match, so compiler exhaustiveness forces every
-//! format to render a new variant and a new format is one new render module.
+//! format owns one render module (see `crate::format::openai::error`,
+//! `crate::format::gemini::error`, `crate::format::anthropic::error`) with a closed
+//! `render(&Error)` match, so compiler exhaustiveness forces every format to render a new variant
+//! and a new format is one new render module.
 //!
 //! Domain errors convert in exactly one place: the [`From`] impls below (from [`gateway::Error`]
 //! with its inner conversions for parse, storage, and OAuth failures) live here; surfaces stop

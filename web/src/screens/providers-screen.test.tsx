@@ -3,24 +3,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ProvidersScreen } from "/src/screens/providers-screen";
-import { bodyText, settle, stubListings, stubManagementApi, typeInto } from "./screen-test-support";
-
-/**
- * A provider whose name and credential kind share nothing with its wire
- * format's label, so a search matching it can only be matching the format
- * the row displays.
- */
-const providerRow: ProviderResponse = {
-    type: "api_key",
-    provider_definition_name: "generic-openai-chat-completions",
-    provider_definition_version: 1,
-    format: "openai_chat_completion",
-    id: 4,
-    name: "mix-ops",
-    model_prefix: "mix-",
-    is_enabled: true,
-    base_url: "https://upstream.example.com/v1",
-};
+import {
+    bodyText,
+    providerRow,
+    settle,
+    stubListings,
+    stubManagementApi,
+    typeInto,
+} from "./screen-test-support";
 
 /** A management API whose listings answer from the given rows; every other route rejects. */
 function screenApi(options: {
@@ -58,7 +48,15 @@ describe("ProvidersScreen search", () => {
                     <ProvidersScreen
                         api={screenApi({
                             providers: [
-                                providerRow,
+                                // A provider whose name and credential kind
+                                // share nothing with its wire format's label,
+                                // so a search matching it can only be matching
+                                // the format the row displays.
+                                providerRow({
+                                    id: 4,
+                                    name: "mix-ops",
+                                    model_prefix: "mix-",
+                                }),
                             ],
                             models: [],
                         })}

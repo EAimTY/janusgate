@@ -13,6 +13,7 @@ use crate::{
     provider::{Model, Provider, StoredCredentials, definition::ProviderDefinition},
 };
 use serde::Serialize;
+use std::collections::HashSet;
 
 /// Inserts one provider row through the pooled or transactional executor, returning the new
 /// row's id: the statement is written once for both the pooled creation path and the device
@@ -377,17 +378,64 @@ pub(crate) async fn update_provider(
         replace_credentials_in_transaction(&mut transaction, provider.id, credentials).await?;
     }
 
-    for (new_id, model) in &recomputed {
-        if new_id == &model.public_id {
-            continue;
+    // The recompute writes every changed row onto its new ID. Writing in arbitrary order can
+    // violate `models.public_id` uniqueness mid-loop — moving row `b` onto `xb` while row `xb`
+    // still holds `xb` — so each write waits until its target ID is currently free, and each
+    // completed write vacates the row's previous ID for the rows waiting on it.
+    //
+    // The wait-for relation over the changed rows is acyclic, so the rounds below always make
+    // progress: every changed row recomputes to `new_prefix + upstream_id` from a stored
+    // `old_prefix + upstream_id` (a row with an `id_override` recomputes to its stored override
+    // and never changes), and a changed row can wait only on another changed row — a kept row or
+    // an `id_override` holder still on the target would converge with the waiting row's
+    // recomputed ID, which the pairwise check above rejected, and a foreign holder of the target
+    // was rejected by `ensure_ids_routable` above. Each link of a cycle would satisfy
+    // `new_prefix + upstream_waiting = old_prefix + upstream_waiting_on`, contributing the same
+    // length difference `|new_prefix| - |old_prefix|` to the waited-on upstream; the differences
+    // must sum to zero around the cycle, forcing prefixes of equal length and hence equal
+    // upstreams — one row, which cannot wait on itself. The relation is therefore a union of
+    // simple paths, each headed by a row whose target is free.
+    let mut held: HashSet<&str> = models
+        .iter()
+        .map(|model| model.public_id.as_str())
+        .collect();
+
+    let mut pending: Vec<(&str, &Model)> = recomputed
+        .iter()
+        .filter(|(new_id, model)| new_id != &model.public_id)
+        .map(|(new_id, model)| (new_id.as_str(), *model))
+        .collect();
+
+    while !pending.is_empty() {
+        let mut deferred: Vec<(&str, &Model)> = Vec::new();
+
+        for (new_id, model) in &pending {
+            if held.contains(*new_id) {
+                deferred.push((*new_id, *model));
+
+                continue;
+            }
+
+            transaction
+                .execute(
+                    "UPDATE models SET public_id = ?1 WHERE provider_id = ?2 AND upstream_id = ?3",
+                    params![*new_id, provider.id, model.upstream_id.as_str()],
+                )
+                .await?;
+
+            held.remove(model.public_id.as_str());
         }
 
-        transaction
-            .execute(
-                "UPDATE models SET public_id = ?1 WHERE provider_id = ?2 AND upstream_id = ?3",
-                params![new_id.as_str(), provider.id, model.upstream_id.as_str()],
-            )
-            .await?;
+        // A full round without progress means every remaining row's target is held by another
+        // remaining row — a cycle in the wait-for relation, a stored landscape the validated
+        // management paths cannot have produced per the acyclicity argument above.
+        if deferred.len() == pending.len() {
+            return Err(Error::Drift {
+                message: "the public-ID recompute wait-for relation is cyclic".to_string(),
+            });
+        }
+
+        pending = deferred;
     }
 
     transaction.commit().await?;

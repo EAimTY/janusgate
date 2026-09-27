@@ -2,11 +2,7 @@ import { createRoot, createSignal } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
 import { hasDirtyForms } from "/src/dirty-form-registry";
 import { ManagementApiError } from "/src/management-api/errors";
-import type {
-    ApiKeyResponse,
-    ModelResponse,
-    ProviderResponse,
-} from "/src/management-api/generated/v0";
+import type { ApiKeyResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ErrorCode } from "/src/management-api/generated/v0";
 import { performManagementCall } from "/src/management-api/outcome";
 import { isOAuthProviderRow } from "/src/management-api/vocabulary";
@@ -24,7 +20,7 @@ import {
     readAll,
     readOne,
 } from "./read";
-import { settle } from "./screen-test-support";
+import { apiKeyRow, modelRow, providerRow, settle } from "./screen-test-support";
 
 function gatewayFailure(errno: ErrorCode, message: string): ManagementApiError {
     return new ManagementApiError("gateway", message, {
@@ -510,49 +506,35 @@ describe("createScreenRead", () => {
 });
 
 describe("row-identity predicates", () => {
-    const staticProvider: ProviderResponse = {
-        type: "api_key",
+    const staticProvider = providerRow({
         provider_definition_name: "generic-openai-responses",
-        provider_definition_version: 1,
         format: "openai_response",
         id: 3,
         name: "alpha",
         model_prefix: "alpha-",
-        is_enabled: true,
         base_url: "https://alpha.example",
-    };
+    });
 
-    const oauthProvider: ProviderResponse = {
+    const oauthProvider = providerRow({
         type: "oauth",
         provider_definition_name: "codex",
-        provider_definition_version: 1,
         format: "openai_response",
         base_url: null,
         id: 4,
         name: "codex",
         model_prefix: "codex-",
-        is_enabled: true,
         expires_at: 1_700_000_000_000_000,
-    };
+    });
 
-    const modelRow: ModelResponse = {
+    const identityModelRow = modelRow({
         id: 11,
         provider_id: 3,
         provider: "alpha",
         upstream_id: "gpt-x",
         public_id: "alpha-gpt-x",
-        id_override: null,
-        is_enabled: true,
-        discovery_state: "discovered",
-    };
+    });
 
-    const apiKeyRow: ApiKeyResponse = {
-        id: 7,
-        name: "service-a",
-        key: "sk-live",
-        is_enabled: true,
-        created_at: 1_700_000_000_000_000,
-    };
+    const identityApiKeyRow = apiKeyRow();
 
     it("keeps a static provider row's identity only while every field stands", () => {
         expect(
@@ -631,49 +613,49 @@ describe("row-identity predicates", () => {
 
     it("keeps a model row's identity only while every field stands", () => {
         expect(
-            isSameModelRow(modelRow, {
-                ...modelRow,
+            isSameModelRow(identityModelRow, {
+                ...identityModelRow,
             }),
         ).toBe(true);
         expect(
-            isSameModelRow(modelRow, {
-                ...modelRow,
+            isSameModelRow(identityModelRow, {
+                ...identityModelRow,
                 provider_id: 9,
             }),
         ).toBe(false);
         expect(
-            isSameModelRow(modelRow, {
-                ...modelRow,
+            isSameModelRow(identityModelRow, {
+                ...identityModelRow,
                 provider: "beta",
             }),
         ).toBe(false);
         expect(
-            isSameModelRow(modelRow, {
-                ...modelRow,
+            isSameModelRow(identityModelRow, {
+                ...identityModelRow,
                 upstream_id: "gpt-y",
             }),
         ).toBe(false);
         expect(
-            isSameModelRow(modelRow, {
-                ...modelRow,
+            isSameModelRow(identityModelRow, {
+                ...identityModelRow,
                 public_id: "beta-gpt-x",
             }),
         ).toBe(false);
         expect(
-            isSameModelRow(modelRow, {
-                ...modelRow,
+            isSameModelRow(identityModelRow, {
+                ...identityModelRow,
                 id_override: "beta-gpt-x",
             }),
         ).toBe(false);
         expect(
-            isSameModelRow(modelRow, {
-                ...modelRow,
+            isSameModelRow(identityModelRow, {
+                ...identityModelRow,
                 is_enabled: false,
             }),
         ).toBe(false);
         expect(
-            isSameModelRow(modelRow, {
-                ...modelRow,
+            isSameModelRow(identityModelRow, {
+                ...identityModelRow,
                 discovery_state: "manual",
             }),
         ).toBe(false);
@@ -681,37 +663,37 @@ describe("row-identity predicates", () => {
 
     it("keeps an API-key row's identity only while every field stands", () => {
         expect(
-            isSameApiKeyRow(apiKeyRow, {
-                ...apiKeyRow,
+            isSameApiKeyRow(identityApiKeyRow, {
+                ...identityApiKeyRow,
             }),
         ).toBe(true);
         expect(
-            isSameApiKeyRow(apiKeyRow, {
-                ...apiKeyRow,
+            isSameApiKeyRow(identityApiKeyRow, {
+                ...identityApiKeyRow,
                 name: "service-b",
             }),
         ).toBe(false);
         expect(
-            isSameApiKeyRow(apiKeyRow, {
-                ...apiKeyRow,
+            isSameApiKeyRow(identityApiKeyRow, {
+                ...identityApiKeyRow,
                 key: "sk-next",
             }),
         ).toBe(false);
         expect(
-            isSameApiKeyRow(apiKeyRow, {
-                ...apiKeyRow,
+            isSameApiKeyRow(identityApiKeyRow, {
+                ...identityApiKeyRow,
                 is_enabled: false,
             }),
         ).toBe(false);
         expect(
-            isSameApiKeyRow(apiKeyRow, {
-                ...apiKeyRow,
+            isSameApiKeyRow(identityApiKeyRow, {
+                ...identityApiKeyRow,
                 created_at: 1,
             }),
         ).toBe(false);
         expect(
-            isSameApiKeyRow(apiKeyRow, {
-                ...apiKeyRow,
+            isSameApiKeyRow(identityApiKeyRow, {
+                ...identityApiKeyRow,
                 id: 8,
             }),
         ).toBe(false);
@@ -742,13 +724,9 @@ describe("createHeldRow", () => {
         };
     }
 
-    const key: ApiKeyResponse = {
-        id: 7,
-        name: "service-a",
-        key: "sk-live",
-        is_enabled: true,
+    const key = apiKeyRow({
         created_at: 1,
-    };
+    });
 
     afterEach(() => {
         for (const dispose of mountedDisposes.reverse()) {
@@ -947,13 +925,9 @@ describe("createEditRow", () => {
         };
     }
 
-    const key: ApiKeyResponse = {
-        id: 7,
-        name: "service-a",
-        key: "sk-live",
-        is_enabled: true,
+    const key = apiKeyRow({
         created_at: 1,
-    };
+    });
 
     afterEach(() => {
         for (const dispose of mountedDisposes.reverse()) {
@@ -1043,17 +1017,14 @@ describe("createPinnedRow", () => {
         };
     }
 
-    const provider: ProviderResponse = {
-        type: "api_key",
+    const provider = providerRow({
         provider_definition_name: "generic-openai-responses",
-        provider_definition_version: 1,
         format: "openai_response",
         id: 3,
         name: "alpha",
         model_prefix: "alpha-",
-        is_enabled: true,
         base_url: "https://alpha.example",
-    };
+    });
 
     afterEach(() => {
         for (const dispose of mountedDisposes.reverse()) {

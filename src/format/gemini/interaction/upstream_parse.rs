@@ -369,9 +369,9 @@ struct UsageReport {
 
 impl UsageReport {
     /// Maps the report's members onto the shared family fold
-    /// [`format::fold_gemini_usage`].
+    /// [`format::gemini::fold_gemini_usage`].
     fn into_usage(self) -> IrUsage {
-        format::fold_gemini_usage(
+        format::gemini::fold_gemini_usage(
             self.total_input_tokens,
             self.total_output_tokens,
             self.total_thought_tokens,
@@ -504,7 +504,7 @@ impl UpstreamParser {
 
                 let arguments = call
                     .arguments
-                    .map(format::arguments_object_to_text)
+                    .map(|object| Value::Object(object).to_string())
                     .unwrap_or_default();
 
                 Ok(vec![

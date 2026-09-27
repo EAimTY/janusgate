@@ -21,6 +21,35 @@ export function Card(props: {
     );
 }
 
+/** A detail card's fact grid: label-and-answer pairs over two columns from `sm` up. */
+export function FactList(props: { readonly children: JSX.Element }): JSX.Element {
+    return <dl class="mt-4 grid gap-x-8 gap-y-3 sm:grid-cols-2">{props.children}</dl>;
+}
+
+/**
+ * One fact in a `FactList`: the term naming it and the answer beneath.
+ * `isTabular` sets the answer in tabular numerals — timestamps, counts, and
+ * other aligned figures — and `class` carries the answer's own extras, such
+ * as `break-all` for a long identifier or `text-ink-dim` for a subdued one.
+ */
+export function Fact(props: {
+    readonly label: string;
+    readonly value: JSX.Element;
+    readonly isTabular?: boolean;
+    readonly class?: string | undefined;
+}): JSX.Element {
+    return (
+        <div>
+            <dt class="text-[12.5px] font-medium text-ink-dim">{props.label}</dt>
+            <dd
+                class={joinClass(props.isTabular === true ? "tnum" : "", "mt-1", props.class ?? "")}
+            >
+                {props.value}
+            </dd>
+        </div>
+    );
+}
+
 /** A card's own heading row: title plus the actions that belong to it. */
 export function CardHeader(props: {
     readonly title: string;

@@ -535,7 +535,7 @@ pub(super) fn parse_request(body: &[u8]) -> Result<ParsedRequest, InvalidRequest
             format::reject_tool_choice_without_tools(tools.is_empty())?;
 
             Some(match choice {
-                ToolChoiceIn::Mode(mode) => format::parse_tool_choice_mode(mode)?,
+                ToolChoiceIn::Mode(mode) => format::openai::parse_tool_choice_mode(mode)?,
 
                 ToolChoiceIn::Function { tool_type, name } => {
                     format::reject_non_function_type(tool_type, "tool_choice")?;

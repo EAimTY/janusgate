@@ -172,10 +172,8 @@ export function ModelsScreen(props: {
                 >
                     <div class="flex flex-wrap items-end gap-3">
                         <SearchInput
-                            label="Search"
-                            isLabelVisible={true}
-                            id="models-search"
-                            placeholder="Public or upstream ID, or provider name"
+                            label="Search models"
+                            placeholder="Search by public or upstream ID, or provider name"
                             value={search()}
                             onInput={setSearch}
                             class="min-w-0 flex-1 basis-56 sm:max-w-xs"

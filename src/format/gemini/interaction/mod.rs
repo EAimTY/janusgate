@@ -1,4 +1,5 @@
-//! Gemini Interactions wire codec (`gemini_interaction`).
+//! Gemini Interactions wire codec (`gemini_interaction`), the Interactions family of the Gemini
+//! protocol under [`crate::format::gemini`].
 //!
 //! Speaks the `gemini_interaction` upstream protocol — `POST {base}/v1beta/interactions` — and
 //! serves the outward `POST /interactions` client surface. Both directions share the one wire

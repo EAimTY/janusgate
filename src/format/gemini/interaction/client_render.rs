@@ -801,7 +801,7 @@ impl ClientSseRenderer for SseRenderer {
     /// Renders a mid-stream error as a terminal data frame carrying the Gemini error envelope,
     /// classified once through the shared API error.
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
-        let (_, envelope) = crate::format::error_gemini::render(error);
+        let (_, envelope) = crate::format::gemini::error::render(error);
 
         sse::format_data_frame(&format::render_json(&envelope))
     }
@@ -811,7 +811,7 @@ impl ClientSseRenderer for SseRenderer {
 mod tests {
     use super::*;
     use crate::{
-        format::{ParsedRequest, RouteContext, gemini_interaction::request_parse::parse_request},
+        format::{ParsedRequest, RouteContext, gemini::interaction::request_parse::parse_request},
         ir::{InvalidRequest, IrFinishReason, IrPart, IrRole},
     };
 

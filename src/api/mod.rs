@@ -19,12 +19,7 @@ pub(crate) use self::error::{Error, log_error};
 /// path with the same empty 404 the root router renders. `database` feeds the format
 /// sub-routers' authentication middleware.
 pub(crate) fn router(database: Database) -> Router<Context> {
-    // TODO(axum 0.9): drop this fallback and let the nested fallback of `/openai-v1` inherit from
-    // the root router again. `Router::nest` in axum 0.8 discards a nested router's fallback —
-    // together with every fallback collected from routers nested below it — when the router being
-    // nested declares no fallback of its own (tokio-rs/axum#3138, fixed by tokio-rs/axum#3158 for
-    // 0.9), which would leave that 404 unreachable. The declaration is deliberately the very
-    // handler the root router uses, so an unmapped path is answered identically either way.
+    // The shared empty 404 fallback; see `server::fallback` for the axum 0.9 rationale.
     Router::new()
         .nest("/openai-v1", openai_v1::router(database.clone()))
         .nest("/gemini-v1beta", gemini_v1beta::router(database.clone()))

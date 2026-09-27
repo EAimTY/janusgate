@@ -17,35 +17,31 @@ import {
     buttonWithText,
     cardWithTitle,
     labeledInput,
+    modelRow,
     paragraphWithText,
+    providerRow,
     settle,
     stubManagementApi,
     switchWithLabel,
     typeInto,
 } from "./screen-test-support";
 
-const provider: ProviderResponse = {
-    type: "api_key",
+const provider = providerRow({
     provider_definition_name: "generic-openai-responses",
-    provider_definition_version: 1,
     format: "openai_response",
     id: 3,
     name: "alpha",
     model_prefix: "alpha-",
-    is_enabled: true,
     base_url: "https://alpha.example",
-};
+});
 
-const model: ModelResponse = {
+const model = modelRow({
     id: 11,
     provider_id: 3,
     provider: "alpha",
     upstream_id: "gpt-x",
     public_id: "alpha-gpt-x",
-    id_override: null,
-    is_enabled: true,
-    discovery_state: "discovered",
-};
+});
 
 /**
  * A management API standing in for the gateway itself: its listings answer
@@ -247,18 +243,16 @@ describe("ProviderEditScreen refresh against an open form", () => {
     });
 
     it("restates a typed custom prefix byte-for-byte on an OAuth provider", async () => {
-        const codex: ProviderResponse = {
+        const codex = providerRow({
             type: "oauth",
-            provider_definition_name: "codex",
-            provider_definition_version: 1,
-            format: "openai_response",
-            base_url: null,
             id: 3,
             name: "chatgpt",
             model_prefix: "gpt-",
-            is_enabled: true,
+            provider_definition_name: "codex",
+            format: "openai_response",
+            base_url: null,
             expires_at: null,
-        };
+        });
         const holder = {
             providers: [
                 codex,
@@ -912,6 +906,126 @@ describe("ProviderEditScreen deletion copy", () => {
     });
 });
 
+describe("ProviderEditScreen prefix-change warning", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /** Mounts the screen over the fixture provider with the given models. */
+    function mountWith(models: ReadonlyArray<ModelResponse>): void {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models,
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ProviderEditScreen
+                        api={screenApi(holder)}
+                        providerId={3}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("counts the recomposed public IDs beside the prefix field while the prefix stands changed", async () => {
+        mountWith([
+            model,
+            {
+                ...model,
+                id: 12,
+                upstream_id: "gpt-y",
+                public_id: "hand-named",
+                id_override: "hand-named",
+            },
+        ]);
+        await settle();
+
+        expect(document.body.textContent).not.toContain("Saving recomposes");
+
+        switchWithLabel("Custom model prefix").click();
+        await settle();
+        typeInto(labeledInput("Model prefix"), "q-");
+        await settle();
+
+        // The same predicate the save notice answers with states itself
+        // before the write: only the unoverridden row whose public ID the
+        // submitted prefix would rewrite is counted — the override keeps
+        // its ID under any prefix, so it counts nothing.
+        const warning = paragraphWithText(
+            "Saving recomposes 1 model ID — clients calling the old IDs will 404 until updated.",
+        );
+        expect(cardWithTitle("Settings").contains(warning)).toBe(true);
+    });
+
+    it("counts two recomposed public IDs in the plural", async () => {
+        mountWith([
+            model,
+            {
+                ...model,
+                id: 12,
+                upstream_id: "gpt-y",
+                public_id: "alpha-gpt-y",
+            },
+        ]);
+        await settle();
+
+        switchWithLabel("Custom model prefix").click();
+        await settle();
+        typeInto(labeledInput("Model prefix"), "q-");
+        await settle();
+
+        expect(document.body.textContent).toContain(
+            "Saving recomposes 2 model IDs — clients calling the old IDs will 404 until updated.",
+        );
+    });
+
+    it("warns before the save while a rename moves the derived prefix", async () => {
+        mountWith([
+            model,
+        ]);
+        await settle();
+
+        // The prefix rides the name while the custom switch is off, so the
+        // rename alone stands the warning — no prefix field is open.
+        typeInto(labeledInput("Name"), "beta");
+        await settle();
+
+        expect(document.body.textContent).toContain(
+            "Saving recomposes 1 model ID — clients calling the old IDs will 404 until updated.",
+        );
+    });
+
+    it("states no warning over a dirty form whose prefix is unchanged", async () => {
+        mountWith([
+            model,
+        ]);
+        await settle();
+
+        // The custom switch on over the stored prefix restates it byte for
+        // byte, and the Enabled toggle dirties the form without moving the
+        // prefix: no recomposition stands to warn about.
+        switchWithLabel("Custom model prefix").click();
+        await settle();
+        typeInto(labeledInput("Model prefix"), "alpha-");
+        await settle();
+        switchWithLabel("Enabled").click();
+        await settle();
+
+        expect(document.body.textContent).toContain("Unsaved changes");
+        expect(document.body.textContent).not.toContain("Saving recomposes");
+    });
+});
+
 describe("ProviderEditScreen reauthorization", () => {
     const disposes: Array<() => void> = [];
 
@@ -922,18 +1036,16 @@ describe("ProviderEditScreen reauthorization", () => {
         disposes.length = 0;
     });
 
-    const oauthProvider: ProviderResponse = {
+    const oauthProvider = providerRow({
         type: "oauth",
         expires_at: 1_700_000_000_000_000,
         id: 3,
         name: "chatgpt",
         model_prefix: "gpt-",
-        is_enabled: true,
         provider_definition_name: "codex",
-        provider_definition_version: 1,
         format: "openai_response",
         base_url: null,
-    };
+    });
 
     const reauthorizationFlow: StartProviderOauthResponse = {
         grant: "authorization_code",

@@ -176,8 +176,8 @@ enum ToolChoiceMode {
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] per [`format::resolve_tool_output_name`] and for non-object tool call
-/// arguments.
+/// Returns [`InvalidRequest`] per [`format::gemini::resolve_tool_output_name`] and for non-object
+/// tool call arguments.
 fn render_input(ir: &IrRequest) -> Result<Vec<RenderStep>, InvalidRequest> {
     // The contribution is the message itself, so runs break exactly where the message role
     // changes; each closed run renders whole below.
@@ -267,7 +267,7 @@ fn render_input(ir: &IrRequest) -> Result<Vec<RenderStep>, InvalidRequest> {
                             call_id, content, ..
                         } = part
                         {
-                            let name = format::resolve_tool_output_name(call_id, ir)?;
+                            let name = format::gemini::resolve_tool_output_name(call_id, ir)?;
 
                             steps.push(RenderStep::Typed(TypedStep::FunctionResult {
                                 name,

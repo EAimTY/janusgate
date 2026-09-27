@@ -523,10 +523,14 @@ fn api_log_from_row(row: &Row) -> Result<ApiLog, Error> {
         api_key_id: row.get(1)?,
         provider_id: row.get(2)?,
         model_id: row.get(3)?,
-        endpoint_type: endpoint_type_from_value(row.get_value(4)?)?,
+        endpoint_type: text_enum_column(
+            "endpoint_type",
+            row.get_value(4)?,
+            ApiLogEndpointType::parse,
+        )?,
         is_stream: row.get::<i64>(5)? != 0,
         http_status: row.get(6)?,
-        outcome: outcome_from_value(row.get_value(7)?)?,
+        outcome: text_enum_column("outcome", row.get_value(7)?, ApiLogOutcome::parse)?,
         duration: row.get(8)?,
         input_tokens: row.get(9)?,
         output_tokens: row.get(10)?,
@@ -595,29 +599,21 @@ fn usage_aggregate_from_row(
     }))
 }
 
-/// Reads the `endpoint_type` column, failing with internal drift on anything outside the closed
-/// vocabulary — see [`ApiLogEndpointType::parse`].
-fn endpoint_type_from_value(value: Value) -> Result<ApiLogEndpointType, Error> {
+/// Reads one closed-vocabulary text enum column, failing with internal drift on anything outside
+/// the enum's vocabulary — see the `parse` each call site passes for the accepted spellings. The
+/// parse-failure message spells the kind as the column name with its underscores as spaces.
+fn text_enum_column<T>(
+    column: &'static str,
+    value: Value,
+    parse: fn(&str) -> Option<T>,
+) -> Result<T, Error> {
     match value {
-        Value::Text(text) => ApiLogEndpointType::parse(&text).ok_or_else(|| Error::Drift {
-            message: format!("unknown api log endpoint type `{text}`"),
+        Value::Text(text) => parse(&text).ok_or_else(|| Error::Drift {
+            message: format!("unknown api log {} `{text}`", column.replace('_', " ")),
         }),
 
         _ => Err(Error::Drift {
-            message: "endpoint_type column must be a text value".to_string(),
-        }),
-    }
-}
-
-/// Reads the `outcome` column; see [`ApiLogEndpointType::parse`] for the drift classification.
-fn outcome_from_value(value: Value) -> Result<ApiLogOutcome, Error> {
-    match value {
-        Value::Text(text) => ApiLogOutcome::parse(&text).ok_or_else(|| Error::Drift {
-            message: format!("unknown api log outcome `{text}`"),
-        }),
-
-        _ => Err(Error::Drift {
-            message: "outcome column must be a text value".to_string(),
+            message: format!("{column} column must be a text value"),
         }),
     }
 }
@@ -840,10 +836,18 @@ fn read_key_part(
         UsageGroupBy::Provider => key.provider_id = Some(row.get(column)?),
         UsageGroupBy::ApiKey => key.api_key_id = Some(row.get(column)?),
         UsageGroupBy::EndpointType => {
-            key.endpoint_type = Some(endpoint_type_from_value(row.get_value(column)?)?);
+            key.endpoint_type = Some(text_enum_column(
+                "endpoint_type",
+                row.get_value(column)?,
+                ApiLogEndpointType::parse,
+            )?);
         }
         UsageGroupBy::Outcome => {
-            key.outcome = Some(outcome_from_value(row.get_value(column)?)?);
+            key.outcome = Some(text_enum_column(
+                "outcome",
+                row.get_value(column)?,
+                ApiLogOutcome::parse,
+            )?);
         }
         UsageGroupBy::IsStream => key.is_stream = Some(row.get::<i64>(column)? != 0),
         UsageGroupBy::HttpStatus => key.http_status = row.get(column)?,

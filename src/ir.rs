@@ -224,7 +224,7 @@ impl IrImage {
     }
 
     /// Renders the image back into the OpenAI `image_url` form shared by the Chat Completions and
-    /// Responses codecs; the inverse of [`IrImage::from_url`]..
+    /// Responses codecs; the inverse of [`IrImage::from_url`].
     pub(crate) fn to_url(&self) -> String {
         match self {
             Self::Inline {

@@ -124,7 +124,9 @@ pub(super) async fn migrate(connection: &Connection, registry: Registry, path: &
 /// exist, through the same later migrations an outdated database applies. The fresh-database
 /// decision re-runs inside the write-locked bootstrap transaction: of several opens
 /// bootstrapping one file at once — a shard write racing a shard read — exactly one applies the
-/// DDL, and the others join the version it committed, stamp verification included. A database at
+/// DDL, and the others join the version it committed, stamp verification included. Every
+/// migration step re-checks the stored version inside its own transaction the same way, so two
+/// opens walking one outdated file apply each migration exactly once between them. A database at
 /// a known version first has its stamp verified against `registry` — a mismatch, or a missing
 /// stamp on a file predating it, is fatal — and then applies the migrations of every later
 /// version in order; a database already at the latest version does nothing. Each step — one
@@ -239,11 +241,32 @@ async fn apply_first_version(
 /// The text and the version write must commit atomically: a crash that persisted only part of a
 /// migration would leave the database between versions, which no build can resume.
 ///
+/// Like the fresh-bootstrap decision in [`apply_first_version`], the walk's own version decision
+/// re-runs inside the write-locked bootstrap transaction: the caller selected this migration from
+/// a `user_version` read taken before any lock was held, and a racing bootstrap of the same
+/// outdated file can commit this very migration first — two opens walking one file, a shard write
+/// racing a shard read, serialize on the write lock here. A connection finding the version at or
+/// past `version` inside the transaction aborts its empty transaction and joins the racing walk's
+/// outcome; the stored version can only have moved forward since the caller's read, so
+/// at-or-past the target means this migration is already applied.
+///
 /// # Panics
 ///
-/// Panics if beginning the transaction or executing the batch fails.
+/// Panics if beginning or aborting the transaction, reading `user_version`, or executing the
+/// batch fails.
 async fn apply(connection: &Connection, text: &str, version: i64, path: &str) {
     begin_write_transaction(connection).await;
+
+    if query_user_version(connection).await >= version {
+        rollback_write_transaction(connection).await;
+        debug!(
+            "database {path} already carries schema version {version}; a racing bootstrap \
+                applied its migration"
+        );
+
+        return;
+    }
+
     apply_batch(connection, text, version, path).await;
 }
 
@@ -587,23 +610,12 @@ mod tests {
         Ok(())
     }
 
-    /// Verifies that a fresh database is brought to the latest version through the whole chain —
-    /// the first version's DDL, then every later migration — over a synthetic two-version chain,
-    /// because the real registry holds a single version and cannot exercise the walk past it. A
-    /// second run over the now-current database is a no-op.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the workflow fails, the database does not end at the latest version's declared
-    /// schema, or the second run changes anything.
-    #[tokio::test]
-    async fn fresh_database_walks_the_whole_chain_to_the_latest_version()
-    -> Result<(), Box<dyn StdError>> {
-        let connection = open_memory_connection().await;
-
-        // The synthetic version 1 carries the registry marker like every real registry's version
-        // 1, so the second run's stamp verification sees what a real stamped database carries.
-        let schemas = [
+    /// Builds the synthetic two-version main-registry chain the walk tests exercise: version 1
+    /// carries the registry marker exactly like a real registry's version 1 — so stamp
+    /// verification sees what a real stamped database carries — and version 2 adds a column to
+    /// the synthetic table.
+    fn synthetic_schemas() -> [Schema; 2] {
+        [
             Schema {
                 version: 1,
                 schema: "CREATE TABLE gateway_database_registry (\
@@ -624,7 +636,23 @@ mod tests {
                          CREATE TABLE synthetic (value INTEGER, label TEXT) STRICT;\n",
                 migration: "ALTER TABLE synthetic ADD COLUMN label TEXT;\n",
             },
-        ];
+        ]
+    }
+
+    /// Verifies that a fresh database is brought to the latest version through the whole chain —
+    /// the first version's DDL, then every later migration — over a synthetic two-version chain,
+    /// because the real registry holds a single version and cannot exercise the walk past it. A
+    /// second run over the now-current database is a no-op.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the workflow fails, the database does not end at the latest version's declared
+    /// schema, or the second run changes anything.
+    #[tokio::test]
+    async fn fresh_database_walks_the_whole_chain_to_the_latest_version()
+    -> Result<(), Box<dyn StdError>> {
+        let connection = open_memory_connection().await;
+        let schemas = synthetic_schemas();
 
         bring_up_to_latest(&connection, Registry::Main, &schemas, ":memory:").await;
         assert_eq!(
@@ -678,6 +706,55 @@ mod tests {
         );
 
         assert_eq!(query_user_version(&raced).await, 1);
+
+        Ok(())
+    }
+
+    /// Verifies the migration-walk race: a concurrent bootstrap commits the version-2 migration —
+    /// migration text and version advance — into a version-1 database while
+    /// [`bring_up_to_latest`], whose initial version read already returned 1, waits on the write
+    /// lock. The raced walk must re-check `user_version` inside its own transaction and join the
+    /// committed version instead of re-applying the migration: two opens walking one outdated
+    /// file at once — a shard write racing a shard read — would otherwise both select the same
+    /// migration from the stale outer read, and the loser's duplicate `ALTER TABLE` dies in
+    /// [`apply_batch`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the workflow fails, the database does not end at version 2, or the database does
+    /// not carry version 2's declared schema.
+    #[tokio::test]
+    async fn a_bootstrap_racing_a_committed_migration_joins_its_version()
+    -> Result<(), Box<dyn StdError>> {
+        let schemas = synthetic_schemas();
+        let database = open_memory_database().await;
+        let racer = connect_staging(&database).await;
+        let raced = connect_staging(&database).await;
+
+        // The staging database sits at stamped version 1 — exactly what an outdated file carries.
+        stage(&racer, first_schema(&schemas).schema).await;
+        stage(&racer, "PRAGMA user_version = 1;").await;
+
+        // The racer holds the write lock over staged-but-uncommitted version 2, so the raced
+        // bootstrap's initial version read still sees 1 and selects the same migration.
+        stage(&racer, "BEGIN IMMEDIATE;").await;
+        stage(&racer, last_schema(&schemas).migration).await;
+        stage(&racer, "PRAGMA user_version = 2;").await;
+
+        // The commit lands while the raced walk waits on the lock inside its own transaction,
+        // after its initial read and stamp verification.
+        tokio::join!(
+            async {
+                bring_up_to_latest(&raced, Registry::Main, &schemas, ":memory:").await;
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                stage(&racer, "COMMIT;").await;
+            },
+        );
+
+        assert_eq!(query_user_version(&raced).await, 2);
+        assert_declared_schema(&raced, last_schema(&schemas)).await?;
 
         Ok(())
     }

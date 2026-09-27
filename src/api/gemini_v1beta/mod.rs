@@ -2,7 +2,7 @@
 //! prefix (README §6.3).
 //!
 //! This module owns the shared prefix router: `x-goog-api-key` authentication (header only, no
-//! `?key=`), the format-compliant 404/405 bodies via [`crate::format::error_gemini`], the body
+//! `?key=`), the format-compliant 404/405 bodies via [`crate::format::gemini::error`], the body
 //! limit, and the single `alt=sse` streaming query predicate both endpoint modules enforce. The
 //! shared outward serving pipeline (completion handling, responses, authentication middleware,
 //! fallbacks) lives in [`crate::api::serving`]. Endpoint handlers live in [`generate_content`]
@@ -30,7 +30,7 @@ struct Surface;
 
 impl serving::Surface for Surface {
     fn render_error(error: &Error) -> (StatusCode, impl Serialize) {
-        crate::format::error_gemini::render(error)
+        crate::format::gemini::error::render(error)
     }
 
     fn extract_credential(request: &Request) -> Result<String, serving::AuthRejection> {

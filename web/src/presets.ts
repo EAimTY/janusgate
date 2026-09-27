@@ -1686,6 +1686,14 @@ const OAUTH_PRESETS: readonly [
                                             },
                                         ],
                                     },
+                                    clientId: {
+                                        type: "string",
+                                        expr: [
+                                            {
+                                                type: "client_id",
+                                            },
+                                        ],
+                                    },
                                     code: {
                                         type: "string",
                                         expr: [

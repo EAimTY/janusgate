@@ -23,6 +23,7 @@ import {
     cardWithTitle,
     labeledInput,
     paragraphWithText,
+    providerRow,
     settle,
     stubManagementApi,
     switchWithLabel,
@@ -866,17 +867,14 @@ describe("ProviderNewScreen preset switching over an edited recipe", () => {
 
 /** A provider row of the given name, as the listing answers it. */
 function providerRowNamed(name: string): ProviderResponse {
-    return {
-        type: "api_key",
+    return providerRow({
         id: 1,
         name,
         model_prefix: `${name}-`,
-        is_enabled: true,
         provider_definition_name: "generic-openai-responses",
-        provider_definition_version: 1,
         format: "openai_response",
         base_url: null,
-    };
+    });
 }
 
 /**
@@ -1162,18 +1160,16 @@ function deviceFlow(expiresAtMicros: number): Extract<
 }
 
 /** The provider row a succeeded completion answers with. */
-const createdProvider: ProviderResponse = {
+const createdProvider = providerRow({
     type: "oauth",
     expires_at: 1_700_000_100_000_000,
     id: 7,
     name: "kimi",
     model_prefix: "kimi-",
-    is_enabled: true,
     provider_definition_name: "kimi-code",
-    provider_definition_version: 1,
     format: "openai_chat_completion",
     base_url: null,
-};
+});
 
 function goneFailure(message: string): ManagementApiError {
     return new ManagementApiError("gateway", message, {

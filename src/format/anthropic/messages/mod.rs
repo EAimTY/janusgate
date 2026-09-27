@@ -1,5 +1,6 @@
 //! Anthropic Messages codec: the `anthropic_messages` upstream format and the inbound
-//! `/api/anthropic-v1/messages` client surface (README §§5.8, 6.2–6.6).
+//! `/api/anthropic-v1/messages` client surface (README §§5.8, 6.2–6.6) — the Messages family of
+//! the Anthropic protocol under [`crate::format::anthropic`].
 //!
 //! The family splits by concern: `request_parse` parses the inbound body, `client_render` renders
 //! native Messages completions, `upstream_render` renders the upstream request, and

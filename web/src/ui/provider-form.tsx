@@ -81,7 +81,12 @@ export function ProviderPresetPicker(props: {
  * error is the field's own inline statement; with it off the default is the
  * free-form name's shadow and no prefix input stands, so the alert beside
  * the switch carries the derivation and both escapes instead of the field's
- * message, which would name a control that is not on the page.
+ * message, which would name a control that is not on the page. An edit
+ * screen holding a changed prefix states its blast radius before the save
+ * through `prefixChangeWarning` — the consequence line under the prefix
+ * area, standing in both switch states since the derived prefix moves with
+ * the name too; creation passes nothing, because a first write recomposes
+ * nothing.
  */
 export function ProviderIdentityFields(props: {
     readonly name: string;
@@ -94,6 +99,7 @@ export function ProviderIdentityFields(props: {
     readonly onCustomPrefixInput: (value: string) => void;
     readonly defaultPrefix: string;
     readonly prefixError?: string | null | undefined;
+    readonly prefixChangeWarning?: string | null | undefined;
     readonly isDisabled?: boolean;
 }): JSX.Element {
     return (
@@ -148,6 +154,23 @@ export function ProviderIdentityFields(props: {
                     error={props.prefixError}
                     hint="Used exactly as typed — no separator is added."
                 />
+            </Show>
+            <Show
+                when={props.prefixChangeWarning !== null && props.prefixChangeWarning !== undefined}
+            >
+                {/* The consequence of saving the changed prefix, stated
+                    before the write in the warn voice the form's own status
+                    line uses — never an error, since nothing is wrong yet. */}
+                <p
+                    class="flex items-start gap-1.5 text-[13px] text-warn"
+                    role="status"
+                >
+                    <Glyph
+                        name="alert"
+                        class="mt-0.5 shrink-0"
+                    />
+                    {props.prefixChangeWarning}
+                </p>
             </Show>
         </div>
     );

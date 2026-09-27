@@ -8,19 +8,16 @@ import type { ListProvidersResponse, ProviderResponse } from "/src/management-ap
 import { ErrorCode } from "/src/management-api/generated/v0";
 import { createPinnedRow, createScreenRead, isSameProviderRow, readOne } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
-import { settle, stubManagementApi } from "./screen-test-support";
+import { providerRow, settle, stubManagementApi } from "./screen-test-support";
 
-const provider: ProviderResponse = {
-    type: "api_key",
+const provider = providerRow({
     provider_definition_name: "generic-openai-responses",
-    provider_definition_version: 1,
     format: "openai_response",
     id: 3,
     name: "alpha",
     model_prefix: "alpha-",
-    is_enabled: true,
     base_url: "https://alpha.example",
-};
+});
 
 /**
  * A provider listing whose first answer is held until the test hands it one:

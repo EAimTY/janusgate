@@ -26,7 +26,7 @@ import { EntityUsageCard } from "/src/screens/usage-stats";
 import { AppLink } from "/src/ui/app-link";
 import { Button, ButtonLink } from "/src/ui/controls";
 import { Badge, Notice } from "/src/ui/feedback";
-import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { ModelList } from "/src/ui/models-table";
 import { credentialBadge } from "/src/ui/providers-table";
 import { StatedNotice } from "./read-notice";
@@ -333,51 +333,52 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
     return (
         <Card>
             <CardHeader title="Details" />
-            <dl class="mt-4 grid gap-x-8 gap-y-3 sm:grid-cols-2">
-                <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Type</dt>
-                    <dd class="mt-1">{upstreamFormatLabel(props.provider.format)}</dd>
-                </div>
-                <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Recipe</dt>
-                    <dd class="tnum mt-1 break-all">
-                        {`${props.provider.provider_definition_name} v${props.provider.provider_definition_version}`}
-                    </dd>
-                </div>
-                <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Model prefix</dt>
-                    <dd class="tnum mt-1 break-all">
-                        {props.provider.model_prefix === ""
-                            ? "(empty)"
-                            : props.provider.model_prefix}
-                    </dd>
-                </div>
+            <FactList>
+                <Fact
+                    label="Type"
+                    value={upstreamFormatLabel(props.provider.format)}
+                />
+                <Fact
+                    label="Recipe"
+                    value={`${props.provider.provider_definition_name} v${props.provider.provider_definition_version}`}
+                    isTabular
+                    class="break-all"
+                />
+                <Fact
+                    label="Model prefix"
+                    value={
+                        props.provider.model_prefix === "" ? "(empty)" : props.provider.model_prefix
+                    }
+                    isTabular
+                    class="break-all"
+                />
                 <Show when={baseUrl()}>
                     {(url) => (
-                        <div>
-                            <dt class="text-[12.5px] font-medium text-ink-dim">
-                                Upstream base URL
-                            </dt>
-                            <dd class="tnum mt-1 break-all">{url()}</dd>
-                        </div>
+                        <Fact
+                            label="Upstream base URL"
+                            value={url()}
+                            isTabular
+                            class="break-all"
+                        />
                     )}
                 </Show>
                 <Show when={credentialLine()}>
                     {(line) => (
-                        <div>
-                            <dt class="text-[12.5px] font-medium text-ink-dim">Credentials</dt>
-                            <dd class="mt-1 text-ink-dim">{line()}</dd>
-                        </div>
+                        <Fact
+                            label="Credentials"
+                            value={line()}
+                            class="text-ink-dim"
+                        />
                     )}
                 </Show>
                 {/* The one enabled pair this page speaks: the Details card's
                     value echoes the header badge's word exactly — the tight
                     list-row "On/Off" never appears on a detail page. */}
-                <div>
-                    <dt class="text-[12.5px] font-medium text-ink-dim">Status</dt>
-                    <dd class="mt-1">{props.provider.is_enabled ? "Enabled" : "Disabled"}</dd>
-                </div>
-            </dl>
+                <Fact
+                    label="Status"
+                    value={props.provider.is_enabled ? "Enabled" : "Disabled"}
+                />
+            </FactList>
         </Card>
     );
 }
@@ -414,6 +415,16 @@ function ModelsCard(props: {
                 >
                     {props.isDiscovering ? "Discovering…" : "Discover models"}
                 </Button>
+                {/* The inline list stays unsearchable; the quiet door hands
+                    the visitor the searchable models view filtered to this
+                    provider — the address the home screen's "Review models"
+                    row already speaks. */}
+                <ButtonLink
+                    href={hrefs.models(props.provider.id)}
+                    tone="ghost"
+                >
+                    All models
+                </ButtonLink>
             </CardHeader>
             <StatedNotice
                 notice={props.notice}

@@ -403,8 +403,8 @@ pub(crate) fn render_generate_content_request(
 ///
 /// # Errors
 ///
-/// Returns [`InvalidRequest`] per [`format::resolve_tool_output_name`] and for non-object tool call
-/// arguments.
+/// Returns [`InvalidRequest`] per [`format::gemini::resolve_tool_output_name`] and for non-object
+/// tool call arguments.
 fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, InvalidRequest> {
     match part {
         IrPart::Text { text } => Ok(vec![Part::Text { text }]),
@@ -442,7 +442,7 @@ fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, In
         IrPart::ToolOutput {
             call_id, content, ..
         } => {
-            let name = format::resolve_tool_output_name(call_id, ir)?;
+            let name = format::gemini::resolve_tool_output_name(call_id, ir)?;
 
             let response = match serde_json::from_str::<Value>(content) {
                 Ok(Value::Object(map)) => ToolResult::Object(map),

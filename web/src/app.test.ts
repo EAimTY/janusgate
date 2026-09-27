@@ -1,6 +1,15 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { drainWrites } from "/src/screens/screen-test-support";
-import { guardUnsavedFormsOnLeave } from "./app";
+import { render } from "@solidjs/web";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { connectionService } from "/src/connection/app-service";
+import { hrefs, navigate } from "/src/router";
+import {
+    bodyText,
+    buttonWithText,
+    drainWrites,
+    labeledInput,
+    settle,
+} from "/src/screens/screen-test-support";
+import { App, guardUnsavedFormsOnLeave } from "./app";
 import { type DirtyFormRegistration, registerDirtyForm } from "./dirty-form-registry";
 
 /**
@@ -106,5 +115,88 @@ describe("guardUnsavedFormsOnLeave", () => {
         guardUnsavedFormsOnLeave(event);
 
         expect(cancelCount()).toBe(0);
+    });
+});
+
+/** A management API answer with the given status and JSON body. */
+function jsonResponse(status: number, payload: unknown): Promise<Response> {
+    return Promise.resolve(
+        new Response(JSON.stringify(payload), {
+            status,
+            headers: {
+                "Content-Type": "application/json",
+            },
+        }),
+    );
+}
+
+describe("App disconnect confirm", () => {
+    const gatewayAddress = "https://gateway.example.com";
+    let dispose: (() => void) | undefined;
+
+    afterEach(() => {
+        dispose?.();
+        dispose = undefined;
+        vi.unstubAllGlobals();
+        window.localStorage?.clear();
+        // The service singleton outlives one test, and one forget cannot reset
+        // it — the forgotten address stays as the setup seed — so the second
+        // forget runs from that unconnected state and restores the initial
+        // one. The connection screen suite pins the same dance.
+        connectionService.forget();
+        connectionService.forget();
+    });
+
+    it("asks its consequence in the armed state, and the armed action returns to setup", async () => {
+        // The probe answers; nothing else ever answers, because the shell is
+        // mounted on the new-key route, the one screen that reads nothing.
+        vi.stubGlobal("fetch", (input: RequestInfo | URL) =>
+            String(input).endsWith("/providers:list")
+                ? jsonResponse(200, {
+                      providers: [],
+                  })
+                : new Promise<never>(() => {}),
+        );
+
+        await connectionService.connect({
+            baseUrl: gatewayAddress,
+            token: "any token",
+        });
+
+        navigate(hrefs.apiKeyNew());
+        dispose = render(App, document.body);
+        await settle();
+
+        expect(connectionService.currentConnection()).toEqual({
+            baseUrl: gatewayAddress,
+            token: "any token",
+        });
+
+        // Arming states what arming costs — the bar's one armed control
+        // speaks the same confirm grammar as every in-page confirm: the
+        // question, the action, the way back.
+        buttonWithText("Disconnect").click();
+        await settle();
+
+        expect(bodyText()).toContain(
+            "Forget the stored token? Reconnecting means entering it again.",
+        );
+
+        // Keep steps back to the plain control.
+        buttonWithText("Keep").click();
+        await settle();
+
+        expect(bodyText()).not.toContain("Forget the stored token?");
+        expect(bodyText()).toContain("Disconnect");
+
+        // And the armed action forgets: setup reopens, seeded with the address
+        // the forgotten connection served — never the token.
+        buttonWithText("Disconnect").click();
+        await settle();
+        buttonWithText("Forget token").click();
+        await settle();
+
+        expect(connectionService.currentConnection()).toBeNull();
+        expect(labeledInput("Gateway address").value).toBe(gatewayAddress);
     });
 });

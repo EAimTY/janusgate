@@ -18,10 +18,10 @@ import {
     draftUsageFilter,
     EMPTY_USAGE_FILTER_DRAFT,
     hasUsageFilter,
+    namedSubjects,
     soleSubject,
     statusError,
     USAGE_OUTCOME_FAILURES,
-    USAGE_QUERY_SUBJECT_DIMENSIONS,
     USAGE_QUERY_SUBJECT_FIELDS,
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
@@ -445,23 +445,17 @@ export function UsageScreen(props: {
  */
 function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | undefined {
     const wire = buildUsageFilter(filter);
-    const named: UsageQuerySubject[] = [];
 
-    for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
-        const ids = wire[USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField];
-
-        if (ids !== undefined) {
-            // `buildUsageFilter` names a field with exactly one id — one draft
-            // field, one wire value — so the element read is a proven
-            // invariant of this module's own builder.
-            named.push({
-                dimension,
-                id: ids[0]!,
-            });
-        }
-    }
-
-    return soleSubject(named) ?? undefined;
+    // `buildUsageFilter` names a wire field with exactly one id — one draft
+    // field, one wire value — so the list's first element is the id the walk
+    // reads.
+    return (
+        soleSubject(
+            namedSubjects(
+                (dimension) => wire[USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField]?.[0] ?? null,
+            ),
+        ) ?? undefined
+    );
 }
 
 /** The badge behind one recorded outcome. */

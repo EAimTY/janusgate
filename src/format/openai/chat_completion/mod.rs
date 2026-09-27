@@ -1,4 +1,5 @@
-//! OpenAI Chat Completions protocol codec.
+//! OpenAI Chat Completions protocol codec, the Chat Completions family of the OpenAI protocol
+//! under [`crate::format::openai`].
 //!
 //! Serves the outward `POST /chat/completions` endpoint and speaks the `openai_chat_completion`
 //! upstream protocol.

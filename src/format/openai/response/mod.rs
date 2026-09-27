@@ -1,4 +1,5 @@
-//! OpenAI Responses protocol codec.
+//! OpenAI Responses protocol codec, the Responses family of the OpenAI protocol under
+//! [`crate::format::openai`].
 //!
 //! Serves the outward `POST /responses` endpoint and speaks the `openai_response` upstream protocol
 //! (including the Codex backend).

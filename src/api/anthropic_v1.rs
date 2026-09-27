@@ -3,8 +3,8 @@
 //! `POST /messages` (stream via body `stream: true`, `max_tokens` required per spec) and
 //! `GET /models` per README §6.3. Authentication is `x-api-key` only with the
 //! `anthropic-version` header required present (value not validated). Request parsing and
-//! rendering go through [`crate::format::anthropic_messages`]; errors render through
-//! [`crate::format::error_anthropic`]; the model stays in the body for this surface, so parsing
+//! rendering go through [`crate::format::anthropic::messages`]; errors render through
+//! [`crate::format::anthropic::error`]; the model stays in the body for this surface, so parsing
 //! uses [`crate::format::RouteContext::empty`]; the accounting endpoint is
 //! [`crate::accounting::ApiLogEndpointType::AnthropicMessages`].
 //!
@@ -19,7 +19,10 @@ use crate::{
     api::{Error, log_error, serving},
     context::Context,
     database::Database,
-    format::{RouteContext, anthropic_messages::Format as MessagesFormat, error_anthropic},
+    format::{
+        RouteContext,
+        anthropic::{error, messages::Format as MessagesFormat},
+    },
 };
 use axum::{
     Router,
@@ -39,7 +42,7 @@ struct Surface;
 
 impl serving::Surface for Surface {
     fn render_error(error: &Error) -> (StatusCode, impl Serialize) {
-        error_anthropic::render(error)
+        error::render(error)
     }
 
     fn extract_credential(request: &Request) -> Result<String, serving::AuthRejection> {

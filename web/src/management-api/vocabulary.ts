@@ -47,16 +47,8 @@ const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
 };
 
 /** The credential kinds as options; the record type is exhaustive as above. */
-const CREDENTIAL_KIND_OPTIONS: ReadonlyArray<VocabularyOption<CredentialKind>> = [
-    {
-        value: "api_key",
-        label: CREDENTIAL_KIND_LABELS.api_key,
-    },
-    {
-        value: "oauth",
-        label: CREDENTIAL_KIND_LABELS.oauth,
-    },
-];
+const CREDENTIAL_KIND_OPTIONS: ReadonlyArray<VocabularyOption<CredentialKind>> =
+    optionsOf(CREDENTIAL_KIND_LABELS);
 
 /** The label a provider row's credential kind is presented under. */
 export function credentialKindLabel(kind: CredentialKind): string {

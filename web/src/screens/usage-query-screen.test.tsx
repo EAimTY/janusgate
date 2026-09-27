@@ -3,12 +3,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DAY_MICROS, nowMicros, parseDateTimeInputToMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
-    ApiKeyResponse,
     ListApiKeysResponse,
     ListModelsResponse,
     ListProvidersResponse,
-    ModelResponse,
-    ProviderResponse,
     QueryUsageRequest,
     UsageBucket,
     UsageGroupBy,
@@ -17,52 +14,23 @@ import { requestRefresh } from "/src/refresh-state";
 import type { UsageQuerySubject } from "/src/router";
 import { UsageQueryScreen } from "/src/screens/usage-query-screen";
 import {
+    apiKeyRow,
     buttonWithText,
     labeledInput,
     labeledSelect,
     linkTo,
+    modelRow,
+    providerRow,
     settle,
     stubManagementApi,
     switchWithLabel,
     typeInto,
 } from "./screen-test-support";
 
-const providerRow: ProviderResponse = {
-    type: "api_key",
-    provider_definition_name: "generic-openai-chat-completions",
-    provider_definition_version: 1,
-    format: "openai_chat_completion",
-    id: 1,
-    name: "local",
-    model_prefix: "local-",
-    is_enabled: true,
-    base_url: "https://upstream.example.com/v1",
-};
-
-/** The superseded submit's own answer: the same row under its pre-refresh name. */
-const staleProviderRow: ProviderResponse = {
-    ...providerRow,
+/** The superseded submit's own answer: the canonical provider row under its pre-refresh name. */
+const staleProviderRow = providerRow({
     name: "stale-submit",
-};
-
-const modelRow: ModelResponse = {
-    id: 9,
-    provider_id: 1,
-    provider: "local",
-    upstream_id: "qwen3:32b",
-    public_id: "local-qwen3-32b",
-    id_override: null,
-    is_enabled: true,
-    discovery_state: "discovered",
-};
-
-const apiKeyRow: ApiKeyResponse = {
-    id: 7,
-    name: "service-a",
-    key: "sk-live",
-    is_enabled: true,
-    created_at: 1_700_000_000_000_000,
-};
+});
 
 const dayBucket: UsageBucket = {
     key: {
@@ -462,17 +430,17 @@ describe("UsageQueryScreen submit during the initial read", () => {
 
         answerLast(holder.providers, {
             providers: [
-                providerRow,
+                providerRow(),
             ],
         });
         answerLast(holder.models, {
             models: [
-                modelRow,
+                modelRow(),
             ],
         });
         answerLast(holder.apiKeys, {
             api_keys: [
-                apiKeyRow,
+                apiKeyRow(),
             ],
         });
         await settle();
@@ -557,17 +525,17 @@ describe("UsageQueryScreen refresh racing an in-flight submit", () => {
         // The refresh's cycle answers and its query runs to completion.
         answerLast(holder.providers, {
             providers: [
-                providerRow,
+                providerRow(),
             ],
         });
         answerLast(holder.models, {
             models: [
-                modelRow,
+                modelRow(),
             ],
         });
         answerLast(holder.apiKeys, {
             api_keys: [
-                apiKeyRow,
+                apiKeyRow(),
             ],
         });
         await settle();

@@ -482,15 +482,24 @@ fn ensure_id_routable_against(
     Ok(())
 }
 
-/// Rejects freshly composed public IDs that are already routed by another model row — of any
-/// provider, including another model of the same provider, and regardless of the holder's
-/// discovery state: a `vanished` or `manual` row and an `id_override` holder all keep their public
-/// ID reserved. An ID held by the very row being written is not a collision — the holder is
-/// identified by its natural key `(provider_id, upstream_id)`.
+/// Rejects freshly composed public IDs that a row of another provider routes — the batch
+/// collision check behind [`super::providers::update_provider`]'s whole-provider recompute,
+/// evaluated against the POST-write routed landscape the caller's recompute produces.
 ///
-/// `composed` carries `(public_id, upstream_id)` pairs of the provider identified by `provider_id`.
-/// Runs inside the caller's transaction, so the routed rows it observes cannot interleave with the
-/// caller's writes.
+/// The caller rewrites every row of the provider in the same transaction — a row with an
+/// `id_override` recomputes to its stored override and never moves — so the provider's own
+/// pre-write holders are artifacts of the very write being checked: a same-provider holder of a
+/// composed ID is either the row being written (exempt by its natural key) or a row the same
+/// write moves onto a different ID, vacating the composed one. A same-provider holder keeping
+/// the composed ID would converge with the row being written, which the caller's pairwise
+/// distinctness check has already rejected — so the post-write evaluation reduces to the holders
+/// this write cannot move: a row of another provider routes the composed ID both before and
+/// after the write, and conflicts with nothing written (README §7.1).
+///
+/// `composed` carries `(public_id, upstream_id)` pairs of the provider identified by
+/// `provider_id`; the caller must have rejected pairwise convergence first, because the vacating
+/// argument above rests on it. Runs inside the caller's transaction, so the routed rows it
+/// observes cannot interleave with the caller's writes.
 ///
 /// # Errors
 ///
@@ -502,17 +511,24 @@ async fn ensure_ids_routable(
 ) -> Result<(), Error> {
     let routed = read_routed_holders_in_transaction(transaction).await?;
 
-    for (new_id, upstream_id) in composed {
-        ensure_id_routable_against(&routed, provider_id, new_id, upstream_id)?;
+    for (new_id, _) in composed {
+        if let Some(holder) = routed.get(*new_id)
+            && holder.provider_id != provider_id
+        {
+            return Err(id_collision_error(new_id, holder));
+        }
     }
 
     Ok(())
 }
 
 /// Rejects a freshly composed public ID that is already routed by another model row — the
-/// single-pair form of [`ensure_ids_routable`] with identical collision semantics: of any
-/// provider, regardless of the holder's discovery state, exempting the row being written by its
-/// natural key `(provider_id, upstream_id)`.
+/// single-pair counterpart of [`ensure_ids_routable`], scoped to writes that move no other row:
+/// its callers write one model row apiece, so a holder of the same provider is a genuine
+/// collision here (every holder collides except the row being written, exempted by its natural
+/// key `(provider_id, upstream_id)`), whatever the holder's discovery state. This deliberately
+/// diverges from the batch form, which evaluates only foreign holders because that caller's
+/// whole-provider rewrite vacates the provider's other IDs itself.
 ///
 /// The probe reads only the rows matching the candidate — `models.public_id` is unique, so this is
 /// an indexed single-row read rather than the batch form's full-table scan — and a holder of a
@@ -758,6 +774,97 @@ mod tests {
 
         assert!(!routing.is_effectively_enabled);
         assert!(list_enabled_models_with_owner(&database).await?.is_empty());
+
+        Ok(())
+    }
+
+    /// Verifies the prefix recompute against a shifted same-provider landscape: with an empty
+    /// prefix the rows `b` and `xb` legally hold those IDs, and raising the prefix to `x`
+    /// recomputes row `b` onto `xb` — the ID another of the provider's own rows holds pre-write
+    /// but vacates in the same write (`xb` → `xxb`). The batch collision check consults the
+    /// post-write routed landscape, so the shift succeeds with the recomposed IDs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn prefix_shift_onto_a_vacating_own_row_recomputes_instead_of_conflicting()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "").await?;
+
+        apply_discovered_models(&database, provider_id, &["b".to_string(), "xb".to_string()])
+            .await?;
+
+        let entries = list_model_entries(&database, Some(provider_id)).await?;
+
+        assert_eq!(entry(&entries, "b").model.public_id, "b");
+        assert_eq!(entry(&entries, "xb").model.public_id, "xb");
+
+        update_provider(
+            &database,
+            provider_id,
+            ProviderUpdate {
+                name: "provider-1",
+                model_prefix: "x",
+                base_url: Some("http://localhost:8080"),
+                is_enabled: true,
+                definition: None,
+                credentials: None,
+            },
+        )
+        .await?;
+
+        let entries = list_model_entries(&database, Some(provider_id)).await?;
+
+        assert_eq!(entry(&entries, "b").model.public_id, "xb");
+        assert_eq!(entry(&entries, "xb").model.public_id, "xxb");
+
+        Ok(())
+    }
+
+    /// Verifies that the documented conflict domain survives the post-write evaluation: a
+    /// recomputed public ID a row of another provider holds — a holder the prefix write never
+    /// moves — rejects the whole `providers:update` with a conflict and writes nothing, even when
+    /// the same recompute also shifts an ID between the provider's own rows (README §7.1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if database operations or assertions fail.
+    #[tokio::test]
+    async fn prefix_shift_onto_a_foreign_held_id_conflicts_without_writing()
+    -> Result<(), Box<dyn StdError>> {
+        let (database, _guard) = test_support::create_test_database().await;
+        let provider_id = insert_test_provider(&database, "provider-1", "").await?;
+        let other_provider_id = insert_test_provider(&database, "provider-2", "x").await?;
+
+        apply_discovered_models(&database, provider_id, &["b".to_string(), "xb".to_string()])
+            .await?;
+
+        // The other provider pre-reserves `xxb`, the ID provider-1's `xb` row recomputes to.
+        apply_discovered_models(&database, other_provider_id, &["xb".to_string()]).await?;
+
+        let conflict = update_provider(
+            &database,
+            provider_id,
+            ProviderUpdate {
+                name: "provider-1",
+                model_prefix: "x",
+                base_url: Some("http://localhost:8080"),
+                is_enabled: true,
+                definition: None,
+                credentials: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(conflict, Err(Error::Conflict { .. })));
+
+        // Nothing was written: both of the provider's rows keep their pre-update public IDs.
+        let entries = list_model_entries(&database, Some(provider_id)).await?;
+
+        assert_eq!(entry(&entries, "b").model.public_id, "b");
+        assert_eq!(entry(&entries, "xb").model.public_id, "xb");
 
         Ok(())
     }

@@ -11,8 +11,11 @@ use crate::{
     context::Context,
     database::Database,
     format::{
-        RouteContext, error_openai, openai_chat_completion::Format as ChatCompletionFormat,
-        openai_response::Format as ResponseFormat,
+        RouteContext,
+        openai::{
+            chat_completion::Format as ChatCompletionFormat, error,
+            response::Format as ResponseFormat,
+        },
     },
 };
 use axum::{
@@ -33,7 +36,7 @@ struct Surface;
 
 impl serving::Surface for Surface {
     fn render_error(error: &Error) -> (StatusCode, impl Serialize) {
-        error_openai::render(error)
+        error::render(error)
     }
 
     fn extract_credential(request: &Request) -> Result<String, serving::AuthRejection> {

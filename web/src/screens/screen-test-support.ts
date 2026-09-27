@@ -9,9 +9,10 @@ import type {
 /**
  * Test support the suites share: the full management API stub the screen
  * mounts run against, the entity-listing fragment its suites answer fixture
- * rows from, the shared usage-row fixture their pages are built from, the
- * promise drains the suites' exchanges rely on, and the DOM lookups and
- * keystrokes their user interactions drive.
+ * rows from, the shared entity-row fixtures their listings are built from,
+ * the shared usage-row fixture their pages are built from, the promise drains
+ * the suites' exchanges rely on, and the DOM lookups and keystrokes their
+ * user interactions drive.
  */
 
 /** Rejects the way every route a screen test did not expect must: loudly. */
@@ -90,6 +91,119 @@ export function stubListings(rows: {
                     ...(rows.apiKeys ?? []),
                 ],
             }),
+    };
+}
+
+/** The static-key member of the provider row union. */
+type ApiKeyProviderRow = Extract<
+    ProviderResponse,
+    {
+        type: "api_key";
+    }
+>;
+
+/** The OAuth member of the provider row union. */
+type OauthProviderRow = Extract<
+    ProviderResponse,
+    {
+        type: "oauth";
+    }
+>;
+
+/**
+ * The static-key row the shared provider fixture defaults to: the seed both
+ * union members grow from, since every column but the kind and the OAuth
+ * expiry carries the same type on either side.
+ */
+const defaultProviderRow: ApiKeyProviderRow = {
+    type: "api_key",
+    id: 1,
+    name: "local",
+    model_prefix: "local-",
+    is_enabled: true,
+    provider_definition_name: "generic-openai-chat-completions",
+    provider_definition_version: 1,
+    format: "openai_chat_completion",
+    base_url: "https://upstream.example.com/v1",
+};
+
+/** The columns a suite may override while the row stays a static-key provider. */
+type ApiKeyProviderRowOverrides = Partial<Omit<ApiKeyProviderRow, "type">> & {
+    type?: "api_key";
+};
+
+/**
+ * The columns a suite may override on an OAuth provider row: the kind switch
+ * is required, so an expiry cannot be set without declaring the kind, and a
+ * switch without its expiry does not type-check either.
+ */
+type OauthProviderRowOverrides = Partial<Omit<OauthProviderRow, "type">> & {
+    type: "oauth";
+};
+
+/**
+ * One `providers:list` row the suites share: the canonical row is a static-key
+ * provider, and the overrides adjust the columns a suite's assertions read. A
+ * row overridden into the OAuth kind answers at its member type, so a suite
+ * deriving a second OAuth row from it by spread keeps type-checking.
+ */
+export function providerRow(overrides?: ApiKeyProviderRowOverrides): ProviderResponse;
+export function providerRow(overrides: OauthProviderRowOverrides): OauthProviderRow;
+export function providerRow(
+    overrides: ApiKeyProviderRowOverrides | OauthProviderRowOverrides = {},
+): ProviderResponse {
+    // The kind is destructured ahead of the spread because the union does not
+    // narrow through the member check: the rest object is what either branch
+    // spreads, and each branch's explicit kind and expiry keep the row a
+    // valid union member whatever the rest carries.
+    const { type: kind, ...rest } = overrides;
+
+    if (kind === "oauth") {
+        return {
+            ...defaultProviderRow,
+            type: "oauth",
+            expires_at: null,
+            ...rest,
+        };
+    }
+
+    return {
+        ...defaultProviderRow,
+        ...rest,
+    };
+}
+
+/**
+ * One `models:list` row the suites share: the routing model of the canonical
+ * provider row, with the overrides adjusting the columns a suite's assertions
+ * read.
+ */
+export function modelRow(overrides: Partial<ModelResponse> = {}): ModelResponse {
+    return {
+        id: 9,
+        provider_id: 1,
+        provider: "local",
+        upstream_id: "qwen3:32b",
+        public_id: "local-qwen3-32b",
+        id_override: null,
+        is_enabled: true,
+        discovery_state: "discovered",
+        ...overrides,
+    };
+}
+
+/**
+ * One `api-keys:list` row the suites share: the canonical issued key, with
+ * the overrides adjusting the columns a suite's assertions read.
+ */
+export function apiKeyRow(overrides: Partial<ApiKeyResponse> = {}): ApiKeyResponse {
+    return {
+        id: 7,
+        name: "service-a",
+        key: "sk-live",
+        is_enabled: true,
+        created_at: 1_700_000_000_000_000,
+        ...overrides,
     };
 }
 

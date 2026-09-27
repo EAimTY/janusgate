@@ -761,7 +761,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        format::openai_chat_completion::Format as ChatCompletionFormat, ir::IrFinishReason,
+        format::openai::chat_completion::Format as ChatCompletionFormat, ir::IrFinishReason,
         storage::api_logs::list_api_logs, test_support::TempDirGuard,
     };
     use std::num::NonZero;

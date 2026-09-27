@@ -5,10 +5,7 @@ use super::{
     api::Error as ApiError,
     context::Context,
     database::Database,
-    format::{
-        PayloadError, UpstreamEventParser, UpstreamFormat, anthropic_messages,
-        gemini_generate_content, gemini_interaction, openai_chat_completion, openai_response,
-    },
+    format::{PayloadError, UpstreamEventParser, UpstreamFormat, anthropic, gemini, openai},
     http_body, ids,
     ir::{InvalidRequest, IrEvent, IrRequest},
     provider::{
@@ -408,7 +405,7 @@ fn attach_upstream_body(
             builder,
             env,
             envelope,
-            &openai_response::render_request_body(
+            &openai::response::render_request_body(
                 ir,
                 is_upstream_streaming,
                 &inference.render_options,
@@ -419,21 +416,21 @@ fn attach_upstream_body(
             builder,
             env,
             envelope,
-            &openai_chat_completion::render_request_body(ir, is_upstream_streaming),
+            &openai::chat_completion::render_request_body(ir, is_upstream_streaming),
         ),
 
         UpstreamFormat::GeminiGenerateContent => attach_body(
             builder,
             env,
             envelope,
-            &gemini_generate_content::render_generate_content_request(ir).map_err(Error::from)?,
+            &gemini::generate_content::render_generate_content_request(ir).map_err(Error::from)?,
         ),
 
         UpstreamFormat::GeminiInteraction => attach_body(
             builder,
             env,
             envelope,
-            &gemini_interaction::render_request_body(ir, &ir.model, is_upstream_streaming)
+            &gemini::interaction::render_request_body(ir, &ir.model, is_upstream_streaming)
                 .map_err(Error::from)?,
         ),
 
@@ -441,7 +438,7 @@ fn attach_upstream_body(
             builder,
             env,
             envelope,
-            &anthropic_messages::render_request_body(ir, is_upstream_streaming)
+            &anthropic::messages::render_request_body(ir, is_upstream_streaming)
                 .map_err(Error::from)?,
         ),
     }
@@ -493,15 +490,15 @@ fn serialize_body<T: serde::Serialize>(body: &T) -> serde_json::Value {
 /// Boxes the upstream event parser for the given wire format.
 fn upstream_parser(upstream_format: UpstreamFormat) -> Box<dyn UpstreamEventParser + Send> {
     match upstream_format {
-        UpstreamFormat::OpenAiResponse => Box::new(openai_response::UpstreamParser::new()),
+        UpstreamFormat::OpenAiResponse => Box::new(openai::response::UpstreamParser::new()),
         UpstreamFormat::OpenAiChatCompletion => {
-            Box::new(openai_chat_completion::UpstreamParser::new())
+            Box::new(openai::chat_completion::UpstreamParser::new())
         }
         UpstreamFormat::GeminiGenerateContent => {
-            Box::new(gemini_generate_content::UpstreamParser::new())
+            Box::new(gemini::generate_content::UpstreamParser::new())
         }
-        UpstreamFormat::GeminiInteraction => Box::new(gemini_interaction::UpstreamParser::new()),
-        UpstreamFormat::AnthropicMessages => Box::new(anthropic_messages::UpstreamParser::new()),
+        UpstreamFormat::GeminiInteraction => Box::new(gemini::interaction::UpstreamParser::new()),
+        UpstreamFormat::AnthropicMessages => Box::new(anthropic::messages::UpstreamParser::new()),
     }
 }
 
@@ -1003,7 +1000,7 @@ mod tests {
         reason = "a first-party rendered body always serializes"
     )]
     fn expected_rendered_body(ir: &IrRequest) -> serde_json::Value {
-        serde_json::to_value(openai_chat_completion::render_request_body(ir, false))
+        serde_json::to_value(openai::chat_completion::render_request_body(ir, false))
             .expect("a first-party rendered body serializes")
     }
 

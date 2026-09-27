@@ -5,7 +5,7 @@
 //! the wire contract lives in the type system rather than in assembled JSON.
 
 use crate::{
-    format::{self, ClientSseRenderer, error_openai::OpenAiErrorBody},
+    format::{self, ClientSseRenderer, openai::error::OpenAiErrorBody},
     ids,
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
     sse, unix_time,
@@ -1045,7 +1045,7 @@ impl ClientSseRenderer for SseRenderer {
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
         let mut shell = self.response_shell(ResponseStatus::Failed, Vec::new());
 
-        shell.error = Some(crate::format::error_openai::render_body(error));
+        shell.error = Some(crate::format::openai::error::render_body(error));
 
         self.event_frame("response.failed", ResponseEvent { response: shell })
     }

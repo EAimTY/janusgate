@@ -7,6 +7,7 @@ import { ErrorCode } from "/src/management-api/generated/v0";
 import { requestRefresh } from "/src/refresh-state";
 import { ApiKeyEditScreen } from "/src/screens/api-key-edit-screen";
 import {
+    apiKeyRow,
     buttonWithText,
     labeledInput,
     settle,
@@ -15,13 +16,7 @@ import {
     typeInto,
 } from "./screen-test-support";
 
-const key: ApiKeyResponse = {
-    id: 7,
-    name: "service-a",
-    key: "sk-live",
-    is_enabled: true,
-    created_at: 1_700_000_000_000_000,
-};
+const key = apiKeyRow();
 
 /**
  * A management API standing in for the gateway itself: its key listing

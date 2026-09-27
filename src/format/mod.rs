@@ -1,5 +1,13 @@
 //! Protocol codecs connecting client and upstream wire formats through the IR.
 //!
+//! The tree is organized by protocol: this root holds the items more than one protocol family
+//! consumes plus the two cross-layer vocabulary types ([`UpstreamFormat`], which names all five
+//! families for the provider, storage, and gateway layers, and [`RenderOption`], which types every
+//! provider definition's render options), each protocol parent ([`anthropic`], [`gemini`],
+//! [`openai`]) holds the families speaking that one client/upstream protocol (README §1, §6) plus
+//! the items its families share, and each family directory splits by concern (`request_parse`,
+//! `client_render`, `upstream_render`, `upstream_parse`).
+//!
 //! Two contracts are declared once here. Every outward format implements [`ClientFormat`], which
 //! parses client requests and boxes a [`ClientSseRenderer`] for live streaming (aggregated
 //! rendering is a free function behind the same trait). Every upstream format implements
@@ -19,7 +27,7 @@
 use crate::{
     ir::{
         InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrMessage, IrPart, IrRequest,
-        IrResponseFormat, IrRole, IrToolChoice, IrUsage,
+        IrRole,
     },
     sse::SseFrame,
 };
@@ -34,14 +42,9 @@ use std::{
 };
 use thiserror::Error;
 
-pub(crate) mod anthropic_messages;
-pub(crate) mod error_anthropic;
-pub(crate) mod error_gemini;
-pub(crate) mod error_openai;
-pub(crate) mod gemini_generate_content;
-pub(crate) mod gemini_interaction;
-pub(crate) mod openai_chat_completion;
-pub(crate) mod openai_response;
+pub(crate) mod anthropic;
+pub(crate) mod gemini;
+pub(crate) mod openai;
 
 /// Wire formats an upstream provider may speak: the closed vocabulary from which a
 /// provider definition pins the one format every inference of the definition speaks
@@ -592,42 +595,6 @@ pub(in crate::format) fn arguments_to_object_or_empty(arguments: &str) -> Map<St
     arguments_as_object(arguments).unwrap_or_default()
 }
 
-/// Serializes an arguments object into the JSON-encoded text form the IR carries. Serialization
-/// of a parsed JSON object is total, so no failure path exists.
-pub(in crate::format) fn arguments_object_to_text(object: Map<String, Value>) -> String {
-    Value::Object(object).to_string()
-}
-
-/// Resolves the function name a tool output answers, scanning the conversation for the matching
-/// invocation.
-///
-/// # Errors
-///
-/// Returns [`InvalidRequest`] when no matching tool call exists in the conversation.
-pub(in crate::format) fn resolve_tool_output_name(
-    call_id: &str,
-    ir: &IrRequest,
-) -> Result<String, InvalidRequest> {
-    for message in &ir.messages {
-        for part in &message.parts {
-            if let IrPart::ToolCall {
-                call_id: candidate,
-                name,
-                ..
-            } = part
-                && candidate == call_id
-            {
-                return Ok(name.clone());
-            }
-        }
-    }
-
-    Err(InvalidRequest::field(
-        "messages",
-        format!("Tool output references unknown call_id `{call_id}`"),
-    ))
-}
-
 /// Parses the JSON payload of an upstream SSE frame into a codec's typed upstream shape; the single
 /// home of the malformed-frame rejection shared by every codec's `ingest_frame`.
 ///
@@ -654,25 +621,6 @@ where
 {
     serde_json::from_value(value)
         .map_err(|error| PayloadError::new(format!("malformed upstream payload: {error}")))
-}
-
-/// Parses an OpenAI-family `tool_choice` mode name; shared by both codecs.
-///
-/// # Errors
-///
-/// Returns [`InvalidRequest`] naming `tool_choice` for unknown modes.
-pub(in crate::format) fn parse_tool_choice_mode(
-    mode: &str,
-) -> Result<IrToolChoice, InvalidRequest> {
-    match mode {
-        "auto" => Ok(IrToolChoice::Auto),
-        "none" => Ok(IrToolChoice::None),
-        "required" => Ok(IrToolChoice::Required),
-        other => Err(InvalidRequest::field(
-            "tool_choice",
-            format!("Unknown tool_choice `{other}`"),
-        )),
-    }
 }
 
 /// Rejects an OpenAI-family tool payload whose `type` tag is not `function`.
@@ -715,7 +663,8 @@ pub(in crate::format) fn reject_tool_choice_without_tools(
     Ok(())
 }
 
-/// Validates the OpenAI-family sampling parameter ranges; shared by both codecs.
+/// Validates the sampling parameter ranges the OpenAI and Gemini request shapes share: both
+/// protocols' client surfaces accept `temperature` and `top_p` with the same official bounds.
 ///
 /// # Errors
 ///
@@ -739,80 +688,6 @@ pub(in crate::format) fn validate_sampling_ranges(
     }
 
     Ok(())
-}
-
-/// The synthesized name of a schema-bearing Gemini-family response format: neither Gemini wire
-/// surface has a schema-name slot, so the IR's named-schema form carries this stand-in.
-pub(in crate::format) const GEMINI_RESPONSE_SCHEMA_NAME: &str = "response";
-
-/// The reason a Gemini-family response format is rejected: one of the two failure cells of the
-/// family decision table, which each surface renders into its own wire vocabulary.
-#[derive(Debug)]
-pub(in crate::format) enum GeminiResponseFormatRejection {
-    /// A schema was given for `text/plain`, whose output cannot carry one.
-    SchemaWithoutJsonMime,
-
-    /// The MIME type is not one the gateway renders.
-    UnsupportedMime(String),
-}
-
-/// Decides the response format shared by both Gemini codecs over a present MIME type:
-/// `text/plain` is free-form text, `application/json` is JSON — named-schema under
-/// [`GEMINI_RESPONSE_SCHEMA_NAME`] when a schema rides beside it — and a schema without
-/// `application/json` or any other MIME type is rejected. The absent-MIME-type cells are each
-/// surface's own: GenerateContent treats an absent `responseMimeType` as no response format at
-/// all, and Interactions defaults the `text` member's `mime_type` to `text/plain` before
-/// delegating here.
-///
-/// # Errors
-///
-/// Returns [`GeminiResponseFormatRejection`] for a schema beside a MIME type that cannot carry
-/// one and for a MIME type the gateway does not render.
-pub(in crate::format) fn parse_gemini_response_format(
-    mime_type: &str,
-    schema: Option<&Value>,
-) -> Result<Option<IrResponseFormat>, GeminiResponseFormatRejection> {
-    match (mime_type, schema) {
-        ("text/plain", None) => Ok(Some(IrResponseFormat::Text)),
-
-        ("application/json", None) => Ok(Some(IrResponseFormat::Json)),
-
-        ("application/json", Some(schema)) => Ok(Some(IrResponseFormat::JsonSchema {
-            name: GEMINI_RESPONSE_SCHEMA_NAME.to_string(),
-            schema: schema.clone(),
-        })),
-
-        ("text/plain", Some(_)) => Err(GeminiResponseFormatRejection::SchemaWithoutJsonMime),
-
-        (other, _) => Err(GeminiResponseFormatRejection::UnsupportedMime(
-            other.to_string(),
-        )),
-    }
-}
-
-/// Folds a Gemini-family upstream usage report into [`IrUsage`], shared by both Gemini codecs.
-///
-/// The cross-family invariant: IR output includes reasoning — the reported non-reasoning output
-/// plus the thought tokens — while the reasoning breakdown rides beside it, the cached count rides
-/// beside the input, and Gemini reports no cache-write accounting, so
-/// [`cache_write_tokens`](IrUsage::cache_write_tokens) is always [`None`]. The fold adds with
-/// `saturating_add`: for every token count whose sum fits `u64` — every count a real upstream
-/// reports — the rendered total is the exact sum, and a third-party total can never panic (debug)
-/// or wrap (release) the parser the way a plain add could at overflow.
-pub(in crate::format) fn fold_gemini_usage(
-    input_tokens: u64,
-    output_tokens_excluding_reasoning: u64,
-    reasoning_tokens: Option<u64>,
-    cached_tokens: Option<u64>,
-) -> IrUsage {
-    IrUsage {
-        input_tokens,
-        output_tokens: output_tokens_excluding_reasoning
-            .saturating_add(reasoning_tokens.unwrap_or(0)),
-        cached_tokens,
-        cache_write_tokens: None,
-        reasoning_tokens,
-    }
 }
 
 /// Serializes a rendered outward payload into its wire form.

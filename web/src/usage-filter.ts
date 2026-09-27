@@ -471,6 +471,34 @@ export function subjectFilterFields(subject: UsageQuerySubject | null): UsageFil
 }
 
 /**
+ * The subject candidates one walk over [`USAGE_QUERY_SUBJECT_DIMENSIONS`]
+ * collects, in the walk's order: one entry per dimension whose read names an
+ * id. The callback answers the one id `dimension` names — its wire field's
+ * single value, its route parameter's row identifier — or `null` when it
+ * names none. One id per dimension is this walk's contract, stated here once
+ * instead of proven at each caller; [`soleSubject`] answers the exactly-one
+ * rule over the list.
+ */
+export function namedSubjects(
+    readId: (dimension: UsageQuerySubjectDimension) => number | null,
+): UsageQuerySubject[] {
+    const named: UsageQuerySubject[] = [];
+
+    for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
+        const id = readId(dimension);
+
+        if (id !== null) {
+            named.push({
+                dimension,
+                id,
+            });
+        }
+    }
+
+    return named;
+}
+
+/**
  * The sole subject among the candidates one subject walk collected: the one
  * entry when exactly one entity dimension was named, `null` otherwise — none
  * named and several named alike answer no subject, because a subject is
@@ -509,30 +537,21 @@ type UsageSubjectFilterValues = Readonly<Partial<Record<UsageSubjectWireField, n
 
 /**
  * The aggregates subject one [`UsageSubjectFilter`] names: the dimension
- * whose wire field it carries, and the id under it. The walk follows
- * [`USAGE_QUERY_SUBJECT_DIMENSIONS`] through [`USAGE_QUERY_SUBJECT_FIELDS`] —
- * the same walk the aggregates route's parameters and the stream's subject
- * narrow make, ending in the same [`soleSubject`] rule — so a dimension added
- * to the table is answered here with no edit. The filter's type holds exactly
- * one dimension's field; one naming none cannot exist, and reads as the
- * contract violation it is.
+ * whose wire field it carries, and the id under it. The walk is
+ * [`namedSubjects`] over [`USAGE_QUERY_SUBJECT_DIMENSIONS`] through
+ * [`USAGE_QUERY_SUBJECT_FIELDS`] — the one walk the aggregates route's
+ * parameters and the stream's subject narrow share, ending in the same
+ * [`soleSubject`] rule — so a dimension added to the table is answered here
+ * with no edit. The filter's type holds exactly one dimension's field; one
+ * naming none cannot exist, and reads as the contract violation it is.
  */
 export function usageQuerySubjectOfFilter(filter: UsageSubjectFilter): UsageQuerySubject {
     const values: UsageSubjectFilterValues = filter;
-    const named: UsageQuerySubject[] = [];
-
-    for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
-        const id = values[USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField];
-
-        if (id !== undefined) {
-            named.push({
-                dimension,
-                id,
-            });
-        }
-    }
-
-    const subject = soleSubject(named);
+    const subject = soleSubject(
+        namedSubjects(
+            (dimension) => values[USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField] ?? null,
+        ),
+    );
 
     if (subject === null) {
         throw new ContractViolationError("the usage subject filter names no subject dimension");

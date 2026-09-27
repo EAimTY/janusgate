@@ -1175,6 +1175,10 @@ mod tests {
                                 "value": [{"type": "literal", "value": device_grant_type}]
                             },
                             {
+                                "name": "client_id",
+                                "value": [{"type": "client_id"}]
+                            },
+                            {
                                 "name": "device_code",
                                 "value": [{"type": "device_code"}]
                             }

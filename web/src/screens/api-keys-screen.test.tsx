@@ -3,17 +3,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { ApiKeysScreen } from "/src/screens/api-keys-screen";
-import { bodyText, settle, stubManagementApi, typeInto } from "./screen-test-support";
+import { apiKeyRow, bodyText, settle, stubManagementApi, typeInto } from "./screen-test-support";
 
 /** Builds one listing row whose secret spells its own name out. */
 function keyRow(id: number, name: string, isEnabled: boolean): ApiKeyResponse {
-    return {
+    return apiKeyRow({
         id,
         name,
         key: `sk-${name}`,
         is_enabled: isEnabled,
-        created_at: 1_700_000_000_000_000,
-    };
+    });
 }
 
 /**

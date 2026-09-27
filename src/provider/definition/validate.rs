@@ -471,6 +471,22 @@ impl DefinitionPayload {
             ));
         }
 
+        // RFC 6749 §4.1.3: the token request carries the `client_id` — "REQUIRED, if the client
+        // is not authenticating with the authorization server as described in Section 3.2.1" —
+        // and a credential with no `client_secret` never authenticates at the token endpoint,
+        // so an exchange request that never references the part dies at the upstream with
+        // `invalid_client` on every flow: the same required-carry shape the rules above
+        // enforce. A credential with a client secret authenticates with it — the Basic/body
+        // scheme is the definition's business.
+        if client_secret.is_none() && !request_references(&exchange.request, &ValueExpr::ClientId) {
+            return Err(ValidationError::new(
+                "OAuth credential without a client secret requires the token exchange request \
+                 to reference the `client_id` value part: RFC 6749 §4.1.3 makes the client ID \
+                 REQUIRED when the client is not authenticating with the authorization server \
+                 (§3.2.1), and a credential with no client secret never does",
+            ));
+        }
+
         // RFC 6749 §6: renewing an access token is a `grant_type=refresh_token` request
         // carrying the stored refresh token — `refresh_token` is REQUIRED — and the stage
         // vocabulary already allows the part exactly at the refresh grant, so a grant whose
@@ -488,6 +504,24 @@ impl DefinitionPayload {
                 "refresh grant requires the token refresh request to reference the \
                  `refresh_token` value part: RFC 6749 §6 makes the refresh token REQUIRED in \
                  a refresh-token grant request",
+            ));
+        }
+
+        // RFC 6749 §6: a refresh-token grant request re-authenticates the client the same way
+        // the token endpoint requires (§4.1.3's §3.2.1 rule), so the secret-less credential's
+        // renewal presents its client ID too — a grant whose request never references the part
+        // dies at the upstream with `invalid_client` on every renewal: the same required-carry
+        // shape the refresh-token rule above enforces. A credential with a client secret
+        // authenticates its renewal with it.
+        if let TokenRefresh::Grant { request, .. } = refresh
+            && client_secret.is_none()
+            && !request_references(request, &ValueExpr::ClientId)
+        {
+            return Err(ValidationError::new(
+                "OAuth credential without a client secret requires the token refresh request \
+                 to reference the `client_id` value part: RFC 6749 §6 re-authenticates the \
+                 client as the token endpoint does, making the client ID REQUIRED when no \
+                 secret authenticates (§4.1.3, §3.2.1)",
             ));
         }
 
@@ -3005,6 +3039,122 @@ mod tests {
         outcome.unwrap();
     }
 
+    /// RFC 6749 §4.1.3: the token request carries the client ID — "REQUIRED, if the client is
+    /// not authenticating with the authorization server" (§3.2.1) — and a credential with no
+    /// `client_secret` never authenticates, so a secret-less credential whose exchange request
+    /// never references the `client_id` value part is rejected at the write boundary, symmetric
+    /// to the other required-carry rules, instead of dying at the upstream with `invalid_client`
+    /// on every flow. A credential with a client secret authenticates with it and stays exempt.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the non-conforming secret-less exchange validates.
+    #[test]
+    fn requires_a_secret_less_exchange_to_reference_the_client_id() {
+        // The Antigravity shape's exchange presents the client ID as its third form field;
+        // dropping it — and the credential's secret, which is the RFC's not-authenticating
+        // condition, together with the secret field presenting it — leaves the token endpoint
+        // with no client identification at all.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            let fields = payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap();
+
+            fields.remove(3);
+            fields.remove(2);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("client_id"), "{error}");
+        assert!(error.contains("RFC 6749"), "{error}");
+
+        // The untouched fixture authenticates with its secret and presents the client ID
+        // besides.
+        mutate_and_validate(good_antigravity_json(), |_| {}).unwrap();
+    }
+
+    /// The client-ID rule binds only the secret-less credentials — a credential with a client
+    /// secret authenticates with it, and its exchange may omit the ID — and reads the whole
+    /// exchange request, so the value part satisfies it wherever the stage's expressions live.
+    /// (The JSON-body leaves are covered by the Codex and Claude Code catalog fixtures above.)
+    ///
+    /// # Panics
+    ///
+    /// Panics if a client-ID-carrying secret-less exchange is rejected.
+    #[test]
+    fn accepts_a_secret_less_exchange_referencing_the_client_id() {
+        // The fixture's own form field, once the credential's secret is gone together with the
+        // exchange's secret field presenting it.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            let fields = payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap();
+
+            fields.remove(3);
+        });
+
+        outcome.unwrap();
+
+        // As a query row on the exchange request.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            let fields = payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap();
+
+            fields.remove(3);
+            fields.remove(2);
+
+            payload["credential"]["exchange"]["request"]["query"] = serde_json::json!([
+                { "name": "client_id", "value": [{ "type": "client_id" }] }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // Inside a coalesce's arguments.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            let fields = payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap();
+
+            fields.remove(3);
+
+            let field = &mut fields[2];
+
+            field["value"] = serde_json::json!([
+                {
+                    "type": "coalesce",
+                    "parts": [
+                        { "type": "client_id" },
+                        { "type": "literal", "value": "fallback" }
+                    ]
+                }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // A credential with a client secret authenticates with it: its exchange may omit the
+        // client ID outright.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["exchange"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(2);
+        });
+
+        outcome.unwrap();
+    }
+
     /// RFC 8628 §3.4: the token request carries the flow's device code — `device_code` is
     /// REQUIRED — and under a device grant this same request doubles as the polling request,
     /// so a device exchange that never references the `device_code` value part is rejected at
@@ -3145,6 +3295,122 @@ mod tests {
                     ]
                 }
             ]);
+        });
+
+        outcome.unwrap();
+    }
+
+    /// RFC 6749 §6: a refresh-token grant request re-authenticates the client the same way the
+    /// token endpoint requires (RFC 6749 §4.1.3's §3.2.1 rule), so a secret-less credential
+    /// whose refresh grant never references the `client_id` value part is rejected at the write
+    /// boundary, symmetric to the refresh-token rule above, instead of dying at the upstream
+    /// with `invalid_client` on every renewal. A credential with a client secret authenticates
+    /// its renewal with it and stays exempt.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the non-conforming secret-less refresh grant validates.
+    #[test]
+    fn requires_a_secret_less_refresh_grant_to_reference_the_client_id() {
+        // The Antigravity shape's refresh request presents the client ID as its third form
+        // field; dropping it — and the credential's secret, which is the RFC's
+        // not-authenticating condition, together with the secret field presenting it — leaves
+        // every renewal with no client identification at all.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            let fields = payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap();
+
+            fields.remove(3);
+            fields.remove(2);
+        });
+
+        let error = outcome.unwrap_err();
+
+        assert!(error.contains("client_id"), "{error}");
+        assert!(error.contains("RFC 6749"), "{error}");
+
+        // The untouched fixture authenticates its renewal with its secret and presents the
+        // client ID besides.
+        mutate_and_validate(good_antigravity_json(), |_| {}).unwrap();
+    }
+
+    /// The client-ID rule binds only the secret-less credentials — a credential with a client
+    /// secret authenticates its renewal with it, and its refresh grant may omit the ID — and
+    /// reads the whole refresh request, so the value part satisfies it wherever the stage's
+    /// expressions live.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a client-ID-carrying secret-less refresh grant is rejected.
+    #[test]
+    fn accepts_a_secret_less_refresh_grant_referencing_the_client_id() {
+        // The fixture's own form field, once the credential's secret is gone together with the
+        // refresh request's secret field presenting it.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            let fields = payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap();
+
+            fields.remove(3);
+        });
+
+        outcome.unwrap();
+
+        // As a query row on the refresh request.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            let fields = payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap();
+
+            fields.remove(3);
+            fields.remove(2);
+
+            payload["credential"]["refresh"]["request"]["query"] = serde_json::json!([
+                { "name": "client_id", "value": [{ "type": "client_id" }] }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // Inside a coalesce's arguments.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["client_secret"] = serde_json::Value::Null;
+
+            let fields = payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap();
+
+            fields.remove(3);
+
+            let field = &mut fields[2];
+
+            field["value"] = serde_json::json!([
+                {
+                    "type": "coalesce",
+                    "parts": [
+                        { "type": "client_id" },
+                        { "type": "literal", "value": "fallback" }
+                    ]
+                }
+            ]);
+        });
+
+        outcome.unwrap();
+
+        // A credential with a client secret authenticates its renewal with it: its refresh
+        // grant may omit the client ID outright.
+        let outcome = mutate_and_validate(good_antigravity_json(), |payload| {
+            payload["credential"]["refresh"]["request"]["body"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .remove(2);
         });
 
         outcome.unwrap();
@@ -4295,6 +4561,14 @@ mod tests {
                                             {
                                                 "type": "literal",
                                                 "value": "authorization_code"
+                                            }
+                                        ]
+                                    },
+                                    "clientId": {
+                                        "type": "string",
+                                        "expr": [
+                                            {
+                                                "type": "client_id"
                                             }
                                         ]
                                     },

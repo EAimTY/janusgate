@@ -372,7 +372,7 @@ impl ClientSseRenderer for SseRenderer {
 
     /// Renders a mid-stream error as a terminal SSE frame carrying the Gemini error envelope.
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
-        let (_, envelope) = crate::format::error_gemini::render(error);
+        let (_, envelope) = crate::format::gemini::error::render(error);
 
         crate::sse::format_data_frame(&crate::format::render_json(&envelope))
     }

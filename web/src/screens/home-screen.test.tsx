@@ -2,7 +2,6 @@ import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
-    ApiKeyResponse,
     ModelResponse,
     ProviderResponse,
     QueryUsageRequest,
@@ -10,71 +9,44 @@ import type {
     UsageBucket,
 } from "/src/management-api/generated/v0";
 import { HomeScreen } from "/src/screens/home-screen";
-import { bodyText, linkTo, settle, stubListings, stubManagementApi } from "./screen-test-support";
+import {
+    apiKeyRow,
+    bodyText,
+    linkTo,
+    modelRow,
+    providerRow,
+    settle,
+    stubListings,
+    stubManagementApi,
+} from "./screen-test-support";
 
 const BASE_URL = "https://gateway.example.com";
 
-const providerRow: ProviderResponse = {
-    type: "api_key",
-    provider_definition_name: "generic-openai-chat-completions",
-    provider_definition_version: 1,
-    format: "openai_chat_completion",
-    id: 1,
-    name: "local",
-    model_prefix: "local-",
-    is_enabled: true,
-    base_url: "https://upstream.example.com/v1",
-};
-
-/** One model of the enabled provider: effectively routing, by the gateway's three inputs. */
-const modelRow: ModelResponse = {
-    id: 9,
-    provider_id: 1,
-    provider: "local",
-    upstream_id: "qwen3:32b",
-    public_id: "local-qwen3-32b",
-    id_override: null,
-    is_enabled: true,
-    discovery_state: "discovered",
-};
-
 /** One vanished model: its row exists, but the gateway does not route it. */
-const vanishedModelRow: ModelResponse = {
-    ...modelRow,
+const vanishedModelRow: ModelResponse = modelRow({
     id: 10,
     upstream_id: "qwen3:14b",
     public_id: "local-qwen3-14b",
     discovery_state: "vanished",
-};
-
-const apiKeyRow: ApiKeyResponse = {
-    id: 7,
-    name: "service-a",
-    key: "sk-live",
-    is_enabled: true,
-    created_at: 1_700_000_000_000_000,
-};
+});
 
 /** One OAuth provider whose authorization lapsed long ago. */
-const expiredOauthProviderRow: ProviderResponse = {
+const expiredOauthProviderRow: ProviderResponse = providerRow({
     type: "oauth",
     id: 2,
     name: "codex",
     model_prefix: "codex-",
-    is_enabled: true,
     provider_definition_name: "codex-oauth",
-    provider_definition_version: 1,
     format: "openai_response",
     base_url: null,
     expires_at: 1,
-};
+});
 
 /** A second, enabled provider holding no model rows at all. */
-const emptyProviderRow: ProviderResponse = {
-    ...providerRow,
+const emptyProviderRow: ProviderResponse = providerRow({
     id: 2,
     name: "spare",
-};
+});
 
 function bucket(key: UsageBucket["key"], requests: number): UsageBucket {
     return {
@@ -111,14 +83,14 @@ function overviewApi(
     return stubManagementApi({
         ...stubListings({
             providers: listing.providers ?? [
-                providerRow,
+                providerRow(),
             ],
             models: listing.models ?? [
-                modelRow,
+                modelRow(),
                 vanishedModelRow,
             ],
             apiKeys: [
-                apiKeyRow,
+                apiKeyRow(),
             ],
         }),
         queryUsage: (request): Promise<QueryUsageResponse> => {
@@ -296,7 +268,7 @@ describe("HomeScreen", () => {
         mount(
             overviewApi([], {
                 providers: [
-                    providerRow,
+                    providerRow(),
                 ],
                 models: [
                     vanishedModelRow,
@@ -318,11 +290,11 @@ describe("HomeScreen", () => {
         mount(
             overviewApi([], {
                 providers: [
-                    providerRow,
+                    providerRow(),
                     emptyProviderRow,
                 ],
                 models: [
-                    modelRow,
+                    modelRow(),
                 ],
             }),
         );
@@ -341,10 +313,9 @@ describe("HomeScreen", () => {
         mount(
             overviewApi([], {
                 providers: [
-                    {
-                        ...providerRow,
+                    providerRow({
                         is_enabled: false,
-                    },
+                    }),
                 ],
                 models: [
                     vanishedModelRow,

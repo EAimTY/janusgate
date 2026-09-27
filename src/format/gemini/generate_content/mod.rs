@@ -1,4 +1,5 @@
-//! Gemini GenerateContent protocol codec.
+//! Gemini GenerateContent protocol codec, the GenerateContent family of the Gemini protocol under
+//! [`crate::format::gemini`].
 //!
 //! Speaks the `gemini_generate_content` upstream protocol, both in the Antigravity envelope (§5.2)
 //! and as a bare OpenAI-compatible upstream protocol (§5.3), and serves the inbound Gemini
@@ -14,7 +15,7 @@
 //!   slot); history-replay carve-outs stay minimal — only what the gateway itself emits
 //!   (`thoughtSignature` on `functionCall` parts, gateway-rendered `id` fields, and the `thought`
 //!   flag accepted-and-ignored as plain text);
-//! - [`crate::api::Error`] with [`crate::format::error_gemini`] for both error paths.
+//! - [`crate::api::Error`] with [`crate::format::gemini::error`] for both error paths.
 //!
 //! Rendered payloads are first-party types in their wire shapes, so field presence per request is
 //! declared by `skip_serializing_if` rather than assembled conditionally. Wire shapes follow the

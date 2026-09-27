@@ -16,7 +16,7 @@ import { EntityUsageCard } from "/src/screens/usage-stats";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
-import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { RowNotFound } from "./row-not-found";
 
 /**
@@ -79,7 +79,7 @@ export function ApiKeyDetailScreen(props: {
                     >
                         <Badge
                             tone={row.is_enabled ? "ok" : "muted"}
-                            label={row.is_enabled ? "On" : "Off"}
+                            label={row.is_enabled ? "Enabled" : "Disabled"}
                         />
                         <ButtonLink href={hrefs.apiKeyEdit(row.id)}>Edit API key</ButtonLink>
                     </PageHeader>
@@ -93,20 +93,25 @@ export function ApiKeyDetailScreen(props: {
 
                     <Card>
                         <CardHeader title="Details" />
-                        <dl class="mt-4 grid gap-x-8 gap-y-3 sm:grid-cols-2">
-                            <div>
-                                <dt class="text-[12.5px] font-medium text-ink-dim">Name</dt>
-                                <dd class="mt-1">{row.name}</dd>
-                            </div>
-                            <div>
-                                <dt class="text-[12.5px] font-medium text-ink-dim">Created</dt>
-                                <dd class="tnum mt-1">{formatTimestamp(row.created_at)}</dd>
-                            </div>
-                            <div>
-                                <dt class="text-[12.5px] font-medium text-ink-dim">Enabled</dt>
-                                <dd class="mt-1">{row.is_enabled ? "On" : "Off"}</dd>
-                            </div>
-                        </dl>
+                        <FactList>
+                            <Fact
+                                label="Name"
+                                value={row.name}
+                            />
+                            <Fact
+                                label="Created"
+                                value={formatTimestamp(row.created_at)}
+                                isTabular
+                            />
+                            {/* The one enabled pair this page speaks: the
+                                Details card's Status echoes the header badge's
+                                word exactly — the tight list-row "On/Off"
+                                never appears on a detail page. */}
+                            <Fact
+                                label="Status"
+                                value={row.is_enabled ? "Enabled" : "Disabled"}
+                            />
+                        </FactList>
                     </Card>
 
                     <EntityUsageCard

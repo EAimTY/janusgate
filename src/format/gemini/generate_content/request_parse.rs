@@ -3,7 +3,8 @@
 
 use crate::{
     format::{
-        GeminiResponseFormatRejection, ParsedRequest, RouteContext, parse_gemini_response_format,
+        ParsedRequest, RouteContext,
+        gemini::{GeminiResponseFormatRejection, parse_gemini_response_format},
     },
     ir::{
         InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,

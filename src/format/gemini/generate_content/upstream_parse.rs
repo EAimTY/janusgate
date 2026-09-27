@@ -5,7 +5,7 @@
 //! reads, ignore every member it does not, and default what upstreams legitimately omit.
 
 use crate::{
-    format::{self, PayloadError, UpstreamError, UpstreamEventParser},
+    format::{self, PayloadError, UpstreamError, UpstreamEventParser, gemini::fold_gemini_usage},
     ids,
     ir::{IrEvent, IrFinishReason},
     sse::SseFrame,
@@ -241,7 +241,7 @@ impl UpstreamParser {
         }
 
         if let Some(usage) = &value.usage_metadata {
-            events.push(IrEvent::Usage(format::fold_gemini_usage(
+            events.push(IrEvent::Usage(fold_gemini_usage(
                 usage.prompt_token_count,
                 usage.candidates_token_count,
                 usage.thoughts_token_count,

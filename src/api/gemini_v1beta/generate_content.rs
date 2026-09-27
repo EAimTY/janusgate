@@ -15,13 +15,13 @@
 //! Shared concerns (authentication, 404/405 bodies, body limit, JSON helper, accounting row
 //! id, completion pipeline) live in [`crate::api::serving`] and the prefix module [`super`];
 //! this module owns only the three endpoint handlers, request parsing through
-//! [`crate::format::gemini_generate_content`], and the native model-listing shape.
+//! [`crate::format::gemini::generate_content`], and the native model-listing shape.
 
 use crate::{
     accounting::ApiLogEndpointType,
     api::{Error, log_error, serving},
     context::Context,
-    format::{RouteContext, gemini_generate_content::Format as InboundFormat},
+    format::{RouteContext, gemini::generate_content::Format as InboundFormat},
 };
 use axum::{
     Router,

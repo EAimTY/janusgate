@@ -255,6 +255,22 @@ const EMPTY_BASE_URL_ERROR =
     "This provider's definition evaluates requests against a base URL — restore one, or Revert.";
 
 /**
+ * The models whose public ID saving the given prefix would rewrite: the
+ * unoverridden rows whose stored public ID differs from the ID the prefix
+ * composes over their upstream ID — exactly the rows the gateway recomposes
+ * on the write (gateway README §7). The pre-save warning counts the rows
+ * with this one predicate and the save notice answers whether it recomposes
+ * anything with it, so the operator is warned about precisely what the
+ * write's outcome later states, never a near-copy that can drift.
+ */
+function countRecomposedPublicIds(models: ReadonlyArray<ModelResponse>, prefix: string): number {
+    return models.filter(
+        (model) =>
+            model.id_override === null && model.public_id !== `${prefix}${model.upstream_id}`,
+    ).length;
+}
+
+/**
  * The provider's editable settings. Saving writes the complete readable state.
  */
 function DetailsCard(props: {
@@ -290,6 +306,34 @@ function DetailsCard(props: {
     const effectivePrefix = createMemo(() =>
         isCustomPrefix() ? customPrefix() : defaultModelPrefix(name()),
     );
+
+    // The pre-save warning's gate and count: a prefix off the row the form
+    // opens on (a clause of `isDirty` itself, so a changed prefix never
+    // stands on a pristine form). The count reads the same rows the save
+    // notice will measure — the listing as the gateway holds it now, which a
+    // held row can leave behind — and it is always computable here: this
+    // form renders only once the read cycle that fills both listings has
+    // answered, so the rows are never an unlanded read.
+    const prefixRecompositionCount = createMemo(() => {
+        const prefix = effectivePrefix();
+
+        return prefix === baseline().model_prefix
+            ? null
+            : countRecomposedPublicIds(props.models, prefix);
+    });
+
+    /** The blast radius of saving the changed prefix, stated before the
+     * write in one line: the count of the public IDs it would rewrite.
+     * Nothing stands over a count of zero — the line would name a
+     * consequence that does not exist, the same rule the deletion
+     * confirmation's cascade phrase follows. */
+    const prefixChangeWarning = (): string | null => {
+        const count = prefixRecompositionCount();
+
+        return count === null || count === 0
+            ? null
+            : `Saving recomposes ${count} model ${count === 1 ? "ID" : "IDs"} — clients calling the old IDs will 404 until updated.`;
+    };
 
     const trimmedBaseUrl = (): string => (baseUrl() ?? "").trim();
 
@@ -394,17 +438,13 @@ function DetailsCard(props: {
             ),
         onSucceeded: () => {
             // The warning states a recomposition only when the save actually
-            // recomposes one: the gateway rewrites exactly the unoverridden
-            // models whose composed ID differs from the public ID it already
-            // holds, so the submitted prefix is measured against those rows —
-            // never against this form's first-read baseline, which a held row
-            // can leave behind what the gateway holds now.
-            const prefix = effectivePrefix();
-            const recomposesPublicIds = props.models.some(
-                (model) =>
-                    model.id_override === null &&
-                    model.public_id !== `${prefix}${model.upstream_id}`,
-            );
+            // recomposes one: the submitted prefix is measured against the
+            // rows the gateway holds now — never against this form's
+            // first-read baseline, which a held row can leave behind what
+            // the gateway holds now — through the same predicate the
+            // pre-save warning counted.
+            const recomposesPublicIds =
+                countRecomposedPublicIds(props.models, effectivePrefix()) > 0;
 
             // The write's complete desired state: the update rewrote exactly
             // these fields, so the row they describe is this form's new truth.
@@ -455,6 +495,7 @@ function DetailsCard(props: {
                     onCustomPrefixInput={setCustomPrefix}
                     defaultPrefix={defaultModelPrefix(name())}
                     prefixError={prefixError()}
+                    prefixChangeWarning={prefixChangeWarning()}
                     isDisabled={form.isSaving()}
                 />
 

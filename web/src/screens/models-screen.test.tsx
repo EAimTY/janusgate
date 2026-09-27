@@ -6,38 +6,13 @@ import { ModelsScreen } from "/src/screens/models-screen";
 import {
     bodyText,
     linkTo,
+    modelRow,
+    providerRow,
     settle,
     stubListings,
     stubManagementApi,
     typeInto,
 } from "./screen-test-support";
-
-/**
- * A provider whose name shares nothing with its model's ids, so a search
- * matching the model can only be matching the provider the rows display.
- */
-const providerRow: ProviderResponse = {
-    type: "api_key",
-    provider_definition_name: "generic-openai-chat-completions",
-    provider_definition_version: 1,
-    format: "openai_chat_completion",
-    id: 3,
-    name: "mix-ops",
-    model_prefix: "",
-    is_enabled: true,
-    base_url: "https://upstream.example.com/v1",
-};
-
-const modelRow: ModelResponse = {
-    id: 9,
-    provider_id: 3,
-    provider: "mix-ops",
-    upstream_id: "llama3-70b",
-    public_id: "llama3-70b",
-    id_override: null,
-    is_enabled: true,
-    discovery_state: "discovered",
-};
 
 /**
  * A management API whose listings answer from the given rows; every other
@@ -51,9 +26,9 @@ function screenApi(options: {
     return stubManagementApi(stubListings(options));
 }
 
-/** The models search field, under its fixed element id. */
+/** The models search field, named by its aria-label like every listing's. */
 function searchInput(): HTMLInputElement {
-    const input = document.getElementById("models-search");
+    const input = document.querySelector('input[aria-label="Search models"]');
 
     if (input instanceof HTMLInputElement) {
         return input;
@@ -156,10 +131,23 @@ describe("ModelsScreen search", () => {
                     <ModelsScreen
                         api={screenApi({
                             providers: [
-                                providerRow,
+                                // A provider whose name shares nothing with its
+                                // model's ids, so a search matching the model
+                                // can only be matching the provider the rows
+                                // display.
+                                providerRow({
+                                    id: 3,
+                                    name: "mix-ops",
+                                    model_prefix: "",
+                                }),
                             ],
                             models: [
-                                modelRow,
+                                modelRow({
+                                    provider_id: 3,
+                                    provider: "mix-ops",
+                                    upstream_id: "llama3-70b",
+                                    public_id: "llama3-70b",
+                                }),
                             ],
                         })}
                         providerFilter={null}
@@ -208,7 +196,11 @@ describe("ModelsScreen provider filter", () => {
                     <ModelsScreen
                         api={screenApi({
                             providers: [
-                                providerRow,
+                                providerRow({
+                                    id: 3,
+                                    name: "mix-ops",
+                                    model_prefix: "",
+                                }),
                             ],
                             models: [
                                 ...models,
@@ -241,7 +233,12 @@ describe("ModelsScreen provider filter", () => {
 
     it("names both narrows when a search runs under a filter", async () => {
         mountFiltered(3, [
-            modelRow,
+            modelRow({
+                provider_id: 3,
+                provider: "mix-ops",
+                upstream_id: "llama3-70b",
+                public_id: "llama3-70b",
+            }),
         ]);
         await settle();
 

@@ -20,6 +20,7 @@ import { createScreenRead, readOne } from "./read";
 import { ReadNotice } from "./read-notice";
 import { bucketKeyField, daysNewestFirst } from "./usage-labels";
 import { readUsageBuckets } from "./usage-read";
+import { BucketCell, BucketHeader, UsageDaysUtcNote, UsageTable } from "./usage-table";
 
 /**
  * The subject as the shared `usage` filter the query route carries: the one
@@ -172,65 +173,51 @@ export function EntityUsageCard(props: {
                             />
                         </div>
 
-                        <div class="mt-4 overflow-x-auto">
-                            <table class="tnum w-full min-w-[480px] text-left text-[13px]">
-                                <thead>
-                                    <tr class="text-ink-dim">
-                                        <th
-                                            scope="col"
-                                            class="px-3 py-2 text-[12.5px] font-medium"
-                                        >
-                                            Day
-                                        </th>
-                                        <th
-                                            scope="col"
-                                            class="px-3 py-2 text-right text-[12.5px] font-medium"
-                                        >
-                                            Requests
-                                        </th>
-                                        <th
-                                            scope="col"
-                                            class="px-3 py-2 text-right text-[12.5px] font-medium"
-                                        >
-                                            Input
-                                        </th>
-                                        <th
-                                            scope="col"
-                                            class="px-3 py-2 text-right text-[12.5px] font-medium"
-                                        >
-                                            Output
-                                        </th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <For each={newestFirst()}>
-                                        {(bucket) => (
-                                            <tr class="border-t border-rule">
-                                                <th
-                                                    scope="row"
-                                                    class="px-3 py-2 font-medium"
-                                                >
-                                                    {bucketKeyField(bucket.key.day, "day")}
-                                                </th>
-                                                <td class="px-3 py-2 text-right">
-                                                    {formatTokenCount(bucket.requests)}
-                                                </td>
-                                                <td class="px-3 py-2 text-right">
-                                                    {formatTokenCount(bucket.input_tokens)}
-                                                </td>
-                                                <td class="px-3 py-2 text-right">
-                                                    {formatTokenCount(bucket.output_tokens)}
-                                                </td>
-                                            </tr>
-                                        )}
-                                    </For>
-                                </tbody>
-                            </table>
-                        </div>
+                        <UsageTable
+                            class="mt-4"
+                            minWidthClass="min-w-[480px]"
+                        >
+                            <thead>
+                                <tr class="text-ink-dim">
+                                    <BucketHeader label="Day" />
+                                    <BucketHeader
+                                        label="Requests"
+                                        isNumeric
+                                    />
+                                    <BucketHeader
+                                        label="Input"
+                                        isNumeric
+                                    />
+                                    <BucketHeader
+                                        label="Output"
+                                        isNumeric
+                                    />
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <For each={newestFirst()}>
+                                    {(bucket) => (
+                                        <tr class="border-t border-rule">
+                                            <th
+                                                scope="row"
+                                                class="px-3 py-2 font-medium"
+                                            >
+                                                {bucketKeyField(bucket.key.day, "day")}
+                                            </th>
+                                            <BucketCell value={formatTokenCount(bucket.requests)} />
+                                            <BucketCell
+                                                value={formatTokenCount(bucket.input_tokens)}
+                                            />
+                                            <BucketCell
+                                                value={formatTokenCount(bucket.output_tokens)}
+                                            />
+                                        </tr>
+                                    )}
+                                </For>
+                            </tbody>
+                        </UsageTable>
 
-                        <p class="mt-3 text-[12.5px] text-ink-faint">
-                            Days are UTC — the gateway's own day boundary.
-                        </p>
+                        <UsageDaysUtcNote class="mt-3" />
                     </Show>
 
                     <Show when={read.notice() === null && buckets().length === 0}>

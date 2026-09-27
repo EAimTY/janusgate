@@ -12,33 +12,22 @@ import { ProviderDetailScreen } from "/src/screens/provider-detail-screen";
 import {
     bodyText,
     buttonWithText,
+    linkTo,
+    modelRow,
     paragraphWithText,
+    providerRow,
     settle,
     stubManagementApi,
 } from "./screen-test-support";
 
-const provider: ProviderResponse = {
-    type: "api_key",
-    provider_definition_name: "generic-openai-chat-completions",
-    provider_definition_version: 1,
-    format: "openai_chat_completion",
+const provider = providerRow({
     id: 5,
-    name: "local",
-    model_prefix: "local-",
-    is_enabled: true,
     base_url: "https://upstream.example.com",
-};
+});
 
-const discoveredModel: ModelResponse = {
-    id: 9,
+const discoveredModel = modelRow({
     provider_id: 5,
-    provider: "local",
-    upstream_id: "qwen3:32b",
-    public_id: "local-qwen3-32b",
-    id_override: null,
-    is_enabled: true,
-    discovery_state: "discovered",
-};
+});
 
 /**
  * A management API whose reads answer from fixtures and whose write surface
@@ -438,6 +427,17 @@ describe("ProviderDetailScreen facts", () => {
         expect(createModel?.textContent).toContain("Create model");
         expect(bodyText()).not.toContain("Add model");
     });
+
+    it("hands the searchable models view over as a third door", async () => {
+        mount(provider);
+        await settle();
+
+        // The inline list stays unsearchable; the quiet third door opens the
+        // models screen filtered to this provider — the address the home
+        // screen's "Review models" row already speaks.
+        const allModels = linkTo("/models?provider=5");
+        expect(allModels.textContent).toContain("All models");
+    });
 });
 
 describe("ProviderDetailScreen credential reconnect", () => {
@@ -451,18 +451,16 @@ describe("ProviderDetailScreen credential reconnect", () => {
     });
 
     /** One OAuth provider whose authorization lapsed long ago. */
-    const expiredOauth: ProviderResponse = {
+    const expiredOauth = providerRow({
         type: "oauth",
         id: 5,
         name: "local",
         model_prefix: "local-",
-        is_enabled: true,
         provider_definition_name: "codex-oauth",
-        provider_definition_version: 1,
         format: "openai_response",
         base_url: null,
         expires_at: 1,
-    };
+    });
 
     /** The same provider with an authorization good for decades yet. */
     const validOauth: ProviderResponse = {

@@ -18,7 +18,7 @@ import { EntityUsageCard } from "/src/screens/usage-stats";
 import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge, type BadgeTone, Notice } from "/src/ui/feedback";
-import { Card, CardHeader, PageHeader } from "/src/ui/layout";
+import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
 import { modelDiscoveryBadge, modelServingBadge } from "/src/ui/models-table";
 import { RowNotFound } from "./row-not-found";
 
@@ -167,19 +167,23 @@ function ModelFacts(props: {
 
             <Card>
                 <CardHeader title="Details" />
-                <dl class="mt-4 grid gap-x-8 gap-y-3 sm:grid-cols-2">
-                    <div>
-                        <dt class="text-[12.5px] font-medium text-ink-dim">Public ID</dt>
-                        <dd class="tnum mt-1 break-all">{props.model.public_id}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-[12.5px] font-medium text-ink-dim">Upstream ID</dt>
-                        <dd class="tnum mt-1 break-all">{props.model.upstream_id}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-[12.5px] font-medium text-ink-dim">Provider</dt>
-                        <dd class="mt-1">
-                            {props.provider === null ? (
+                <FactList>
+                    <Fact
+                        label="Public ID"
+                        value={props.model.public_id}
+                        isTabular
+                        class="break-all"
+                    />
+                    <Fact
+                        label="Upstream ID"
+                        value={props.model.upstream_id}
+                        isTabular
+                        class="break-all"
+                    />
+                    <Fact
+                        label="Provider"
+                        value={
+                            props.provider === null ? (
                                 <span class="text-ink-dim">{props.model.provider}</span>
                             ) : (
                                 <AppLink
@@ -188,20 +192,24 @@ function ModelFacts(props: {
                                 >
                                     {props.provider.name}
                                 </AppLink>
-                            )}
-                        </dd>
-                    </div>
-                    <div>
-                        <dt class="text-[12.5px] font-medium text-ink-dim">Discovery</dt>
-                        <dd class="mt-1 text-ink-dim">
-                            {discoveryStateLabel(props.model.discovery_state)}
-                        </dd>
-                    </div>
-                    <div>
-                        <dt class="text-[12.5px] font-medium text-ink-dim">Enabled</dt>
-                        <dd class="mt-1">{props.model.is_enabled ? "On" : "Off"}</dd>
-                    </div>
-                </dl>
+                            )
+                        }
+                    />
+                    <Fact
+                        label="Discovery"
+                        value={discoveryStateLabel(props.model.discovery_state)}
+                        class="text-ink-dim"
+                    />
+                    {/* The one enabled pair this page speaks: the Details
+                        card's Status echoes the enabled vocabulary every
+                        detail page shares — the tight list-row "On/Off" never
+                        appears here, while the header badge stays the
+                        effective-serving ladder above. */}
+                    <Fact
+                        label="Status"
+                        value={props.model.is_enabled ? "Enabled" : "Disabled"}
+                    />
+                </FactList>
             </Card>
 
             <EntityUsageCard

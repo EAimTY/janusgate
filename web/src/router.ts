@@ -3,10 +3,10 @@ import { isRoutingToken } from "/src/management-api/identifiers";
 import { parseRowIdentifier } from "./row-id";
 import {
     EMPTY_USAGE_FILTER_DRAFT,
+    namedSubjects,
     parseUsageFilterDraft,
     serializeUsageFilterDraft,
     soleSubject,
-    USAGE_QUERY_SUBJECT_DIMENSIONS,
     USAGE_QUERY_SUBJECT_FIELDS,
     type UsageFilterDraft,
     type UsageQuerySubject,
@@ -118,22 +118,14 @@ function serializeUsageQuerySubject(subject: UsageQuerySubject): string {
  */
 function parseUsageQuerySubject(search: string): UsageQuerySubject | null {
     const parameters = new URLSearchParams(search);
-    const named: UsageQuerySubject[] = [];
 
-    for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
-        const id = parseRowIdentifier(
-            parameters.get(USAGE_QUERY_SUBJECT_FIELDS[dimension].routeParameter),
-        );
-
-        if (id !== null) {
-            named.push({
-                dimension,
-                id,
-            });
-        }
-    }
-
-    return soleSubject(named);
+    return soleSubject(
+        namedSubjects((dimension) =>
+            parseRowIdentifier(
+                parameters.get(USAGE_QUERY_SUBJECT_FIELDS[dimension].routeParameter),
+            ),
+        ),
+    );
 }
 
 /** Builders for every link the app renders, so no href is written twice. */

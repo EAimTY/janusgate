@@ -2,7 +2,7 @@
 //! SSE frames or an aggregated non-streaming body.
 
 use crate::{
-    format::{self, ClientSseRenderer, error_openai::OpenAiErrorEnvelope},
+    format::{self, ClientSseRenderer, openai::error::OpenAiErrorEnvelope},
     ids,
     ir::{IrAggregation, IrEvent, IrUsage},
     sse, unix_time,
@@ -547,7 +547,7 @@ impl ClientSseRenderer for SseRenderer {
     /// classified once through the shared API error (README §6.7).
     fn error_frame(&mut self, error: &crate::api::Error) -> String {
         let envelope = OpenAiErrorEnvelope {
-            error: crate::format::error_openai::render_body(error),
+            error: crate::format::openai::error::render_body(error),
         };
 
         sse::format_data_frame(&format::render_json(&envelope))

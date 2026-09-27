@@ -4,7 +4,11 @@
 
 use super::{OutBlock, TypedBlock, is_anthropic_block};
 use crate::{
-    format::{ClientSseRenderer, arguments_to_object_or_empty, error_anthropic},
+    format::{
+        ClientSseRenderer,
+        anthropic::error::{AnthropicErrorBody, render_body},
+        arguments_to_object_or_empty,
+    },
     ids,
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
     sse,
@@ -417,7 +421,7 @@ struct StreamErrorPayload {
     kind: &'static str,
 
     /// Rendered error body.
-    error: error_anthropic::AnthropicErrorBody,
+    error: AnthropicErrorBody,
 }
 
 impl SseRenderer {
@@ -860,7 +864,7 @@ impl ClientSseRenderer for SseRenderer {
             "error",
             &StreamErrorPayload {
                 kind: "error",
-                error: error_anthropic::render_body(error),
+                error: render_body(error),
             },
         )
     }

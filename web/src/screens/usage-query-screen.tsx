@@ -40,6 +40,7 @@ import {
     usageDimensionLabel,
 } from "./usage-labels";
 import { readUsageBuckets, readUsageEntities, type UsageEntities } from "./usage-read";
+import { BucketCell, BucketHeader, UsageDaysUtcNote, UsageTable } from "./usage-table";
 
 /**
  * The grouping the address arrives with: the default day dimension, plus the
@@ -496,106 +497,78 @@ export function UsageQueryScreen(props: {
                     }
                 >
                     <Card>
-                        <div class="overflow-x-auto">
-                            <table class="tnum w-full min-w-[640px] text-left text-[13px]">
-                                <thead>
-                                    <tr class="text-ink-dim">
-                                        <BucketHeader label="Bucket" />
-                                        <BucketHeader
-                                            label="Requests"
-                                            isNumeric
-                                        />
-                                        <BucketHeader
-                                            label="Input"
-                                            isNumeric
-                                        />
-                                        <BucketHeader
-                                            label="Output"
-                                            isNumeric
-                                        />
-                                        <BucketHeader
-                                            label="Cached"
-                                            isNumeric
-                                        />
-                                        <BucketHeader
-                                            label="Cache write"
-                                            isNumeric
-                                        />
-                                        <BucketHeader
-                                            label="Reasoning"
-                                            isNumeric
-                                        />
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <For each={displayedBuckets()}>
-                                        {(bucket) => (
-                                            <tr class="border-t border-rule">
-                                                <BucketKeyCell
-                                                    bucket={bucket}
-                                                    dimensions={responseDimensions()}
-                                                    index={index()}
-                                                />
-                                                <BucketCell
-                                                    value={formatTokenCount(bucket.requests)}
-                                                />
-                                                <BucketCell
-                                                    value={formatTokenCount(bucket.input_tokens)}
-                                                />
-                                                <BucketCell
-                                                    value={formatTokenCount(bucket.output_tokens)}
-                                                />
-                                                <BucketCell
-                                                    value={formatTokenCount(bucket.cached_tokens)}
-                                                />
-                                                <BucketCell
-                                                    value={formatTokenCount(
-                                                        bucket.cache_write_tokens,
-                                                    )}
-                                                />
-                                                <BucketCell
-                                                    value={formatTokenCount(
-                                                        bucket.reasoning_tokens,
-                                                    )}
-                                                />
-                                            </tr>
-                                        )}
-                                    </For>
-                                </tbody>
-                            </table>
-                        </div>
+                        <UsageTable minWidthClass="min-w-[640px]">
+                            <thead>
+                                <tr class="text-ink-dim">
+                                    <BucketHeader label="Bucket" />
+                                    <BucketHeader
+                                        label="Requests"
+                                        isNumeric
+                                    />
+                                    <BucketHeader
+                                        label="Input"
+                                        isNumeric
+                                    />
+                                    <BucketHeader
+                                        label="Output"
+                                        isNumeric
+                                    />
+                                    <BucketHeader
+                                        label="Cached"
+                                        isNumeric
+                                    />
+                                    <BucketHeader
+                                        label="Cache write"
+                                        isNumeric
+                                    />
+                                    <BucketHeader
+                                        label="Reasoning"
+                                        isNumeric
+                                    />
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <For each={displayedBuckets()}>
+                                    {(bucket) => (
+                                        <tr class="border-t border-rule">
+                                            <BucketKeyCell
+                                                bucket={bucket}
+                                                dimensions={responseDimensions()}
+                                                index={index()}
+                                            />
+                                            <BucketCell value={formatTokenCount(bucket.requests)} />
+                                            <BucketCell
+                                                value={formatTokenCount(bucket.input_tokens)}
+                                            />
+                                            <BucketCell
+                                                value={formatTokenCount(bucket.output_tokens)}
+                                            />
+                                            <BucketCell
+                                                value={formatTokenCount(bucket.cached_tokens)}
+                                            />
+                                            <BucketCell
+                                                value={formatTokenCount(bucket.cache_write_tokens)}
+                                            />
+                                            <BucketCell
+                                                value={formatTokenCount(bucket.reasoning_tokens)}
+                                            />
+                                        </tr>
+                                    )}
+                                </For>
+                            </tbody>
+                        </UsageTable>
                         <p class="mt-3 text-[12.5px] text-ink-faint">
                             Token totals skip rows where the upstream reported no usage — an absent
                             breakdown never inflates or deflates a total.
                         </p>
                         <Show when={responseDimensions().includes("day")}>
-                            <p class="mt-1 text-[12.5px] text-ink-faint">
-                                Days are UTC — the gateway's own day boundary.
-                            </p>
+                            <UsageDaysUtcNote class="mt-1" />
                         </Show>
                     </Card>
                 </Show>
             </Show>
         </div>
     );
-}
-
-function BucketHeader(props: {
-    readonly label: string;
-    readonly isNumeric?: boolean;
-}): JSX.Element {
-    return (
-        <th
-            scope="col"
-            class={`px-3 py-2 text-[12.5px] font-medium ${props.isNumeric === true ? "text-right" : ""}`}
-        >
-            {props.label}
-        </th>
-    );
-}
-
-function BucketCell(props: { readonly value: string }): JSX.Element {
-    return <td class="px-3 py-2 text-right">{props.value}</td>;
 }
 
 /**

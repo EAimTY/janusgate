@@ -15,13 +15,16 @@ import { UsageScreen } from "/src/screens/usage-screen";
 import { EMPTY_USAGE_FILTER_DRAFT, type UsageFilterDraft } from "/src/usage-filter";
 import {
     API_LOG_CURSOR_BASE,
+    apiKeyRow,
     apiLogRow,
     bodyText,
     buttonWithText,
     labeledInput,
     labeledSelect,
     linkTo,
+    modelRow,
     paragraphWithText,
+    providerRow,
     settle,
     stubListings,
     stubManagementApi,
@@ -578,17 +581,11 @@ describe("UsageScreen filtering", () => {
         } = {
             pages: [],
         };
-        const doorProvider: ProviderResponse = {
-            type: "api_key",
-            provider_definition_name: "generic-openai-chat-completions",
-            provider_definition_version: 1,
-            format: "openai_chat_completion",
+        const doorProvider = providerRow({
             id: 3,
             name: "door-provider",
             model_prefix: "door-",
-            is_enabled: true,
-            base_url: "https://upstream.example.com/v1",
-        };
+        });
         mount(
             streamApi(holder, {
                 providers: [
@@ -667,37 +664,6 @@ describe("UsageScreen row links", () => {
         disposes.length = 0;
     });
 
-    const providerRow: ProviderResponse = {
-        type: "api_key",
-        provider_definition_name: "generic-openai-chat-completions",
-        provider_definition_version: 1,
-        format: "openai_chat_completion",
-        id: 1,
-        name: "local",
-        model_prefix: "local-",
-        is_enabled: true,
-        base_url: "https://upstream.example.com/v1",
-    };
-
-    const modelRow: ModelResponse = {
-        id: 9,
-        provider_id: 1,
-        provider: "local",
-        upstream_id: "qwen3:32b",
-        public_id: "local-qwen3-32b",
-        id_override: null,
-        is_enabled: true,
-        discovery_state: "discovered",
-    };
-
-    const apiKeyRow: ApiKeyResponse = {
-        id: 7,
-        name: "service-a",
-        key: "sk-live",
-        is_enabled: true,
-        created_at: 1_700_000_000_000_000,
-    };
-
     function mount(api: ManagementApi): void {
         disposes.push(
             render(
@@ -723,13 +689,13 @@ describe("UsageScreen row links", () => {
         mount(
             streamApi(holder, {
                 providers: [
-                    providerRow,
+                    providerRow(),
                 ],
                 models: [
-                    modelRow,
+                    modelRow(),
                 ],
                 apiKeys: [
-                    apiKeyRow,
+                    apiKeyRow(),
                 ],
             }),
         );

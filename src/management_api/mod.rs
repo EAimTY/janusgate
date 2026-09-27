@@ -40,13 +40,7 @@ pub fn generate_typescript_bindings(output_target: &Path) {
 /// Constructs the management API router, mounting every version under its prefix and applying the
 /// cross-version CORS policy the `management_api.cors` configuration section configures.
 pub(crate) fn router() -> Router<Context> {
-    // TODO(axum 0.9): drop this fallback and let the version routers' fallbacks inherit from the
-    // root router again. `Router::nest` in axum 0.8 discards a nested router's fallback — together
-    // with every fallback collected from routers nested below it — when the router being nested
-    // declares no fallback of its own (tokio-rs/axum#3138, fixed by tokio-rs/axum#3158 for 0.9),
-    // which would leave v0's 404 unreachable behind this fallback-free parent. The declaration is
-    // deliberately the very handler the root router uses, so an unmapped path is answered
-    // identically either way.
+    // The shared empty 404 fallback; see `server::fallback` for the axum 0.9 rationale.
     Router::new()
         .nest(v0::PREFIX, v0::router())
         .fallback(server::fallback)
