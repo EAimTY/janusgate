@@ -622,7 +622,7 @@ function DisconnectControl(): JSX.Element {
         >
             <div class="flex flex-wrap items-center gap-2">
                 <p class="w-full text-[13.5px] text-ink-dim">
-                    Forget the stored token? Reconnecting means entering it again.
+                    Disconnect and forget the stored token? Reconnecting means entering it again.
                 </p>
                 <Button
                     tone="danger"
@@ -631,7 +631,7 @@ function DisconnectControl(): JSX.Element {
                         goHome();
                     }}
                 >
-                    Forget token
+                    Disconnect
                 </Button>
                 <Button
                     tone="ghost"

@@ -435,7 +435,7 @@ impl UpstreamParser {
 
                 // The walk above recorded every call it recovered into the delivered indices, so
                 // calls recovered from the output array decide the finish mapping too.
-                events.push(IrEvent::Finish(finish_reason_for_response(
+                events.push(IrEvent::finish(finish_reason_for_response(
                     &response,
                     self.has_delivered_call(),
                 )));
@@ -724,7 +724,7 @@ impl UpstreamEventParser for UpstreamParser {
 
         // The output walk above recorded every `function_call` item the body carried into the
         // delivered indices.
-        events.push(IrEvent::Finish(finish_reason_for_response(
+        events.push(IrEvent::finish(finish_reason_for_response(
             &response,
             self.has_delivered_call(),
         )));
@@ -872,7 +872,7 @@ mod tests {
 
         assert!(matches!(events.first(), Some(IrEvent::MessageStart { .. })));
 
-        assert_eq!(events.last(), Some(&IrEvent::Finish(IrFinishReason::Stop)),);
+        assert_eq!(events.last(), Some(&IrEvent::finish(IrFinishReason::Stop)),);
     }
 
     /// A stream frame bearing a top-level error object is a failure even when its `type` is
@@ -1152,7 +1152,7 @@ mod tests {
                 bare_message_start(),
                 IrEvent::TextDelta("first".to_string()),
                 IrEvent::TextDelta("second".to_string()),
-                IrEvent::Finish(IrFinishReason::Stop),
+                IrEvent::finish(IrFinishReason::Stop),
             ],
         );
     }
@@ -1192,7 +1192,7 @@ mod tests {
                 IrEvent::ReasoningDelta("think one".to_string()),
                 IrEvent::TextDelta("answer".to_string()),
                 IrEvent::ReasoningDelta("think two".to_string()),
-                IrEvent::Finish(IrFinishReason::Stop),
+                IrEvent::finish(IrFinishReason::Stop),
             ],
         );
     }
@@ -1250,7 +1250,7 @@ mod tests {
             .ingest_frame(&completed_frame(output))
             .expect("a completed frame parses");
 
-        assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::Stop)]);
+        assert_eq!(events, vec![IrEvent::finish(IrFinishReason::Stop)]);
     }
 
     /// Live deltas keep precedence: text the deltas already delivered is not re-delivered by the
@@ -1307,7 +1307,7 @@ mod tests {
             .ingest_frame(&completed_frame(output))
             .expect("a completed frame parses");
 
-        assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::Stop)]);
+        assert_eq!(events, vec![IrEvent::finish(IrFinishReason::Stop)]);
     }
 
     /// A bare function-call arguments delta as a stream's first event — an upstream that skipped
@@ -1414,7 +1414,7 @@ mod tests {
                     arguments: "{\"city\": \"Paris\"}".to_string(),
                     thought_signature: None,
                 },
-                IrEvent::Finish(IrFinishReason::ToolCall),
+                IrEvent::finish(IrFinishReason::ToolCall),
             ],
         );
     }
@@ -1507,7 +1507,7 @@ mod tests {
             .ingest_frame(&completed_frame(output))
             .expect("a completed frame parses");
 
-        assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::ToolCall)]);
+        assert_eq!(events, vec![IrEvent::finish(IrFinishReason::ToolCall)]);
     }
 
     /// A duplicating upstream that streams `output_item.done` for a function-call item twice
@@ -1578,7 +1578,7 @@ mod tests {
             .ingest_frame(&completed_frame(output))
             .expect("a completed frame parses");
 
-        assert_eq!(events, vec![IrEvent::Finish(IrFinishReason::ToolCall)]);
+        assert_eq!(events, vec![IrEvent::finish(IrFinishReason::ToolCall)]);
     }
 
     /// Live call delivery is per output index: argument bytes streamed for one call exhaust only
@@ -1646,7 +1646,7 @@ mod tests {
                     arguments: "{}".to_string(),
                     thought_signature: None,
                 },
-                IrEvent::Finish(IrFinishReason::ToolCall),
+                IrEvent::finish(IrFinishReason::ToolCall),
             ],
         );
     }

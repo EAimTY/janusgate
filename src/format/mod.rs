@@ -306,7 +306,7 @@ pub(in crate::format) fn degrade_finish_once(is_finished: &mut bool) -> Vec<IrEv
 
     *is_finished = true;
 
-    vec![IrEvent::Finish(IrFinishReason::Stop)]
+    vec![IrEvent::finish(IrFinishReason::Stop)]
 }
 
 /// Emits the canonical two-event announcement of one complete upstream tool call: a

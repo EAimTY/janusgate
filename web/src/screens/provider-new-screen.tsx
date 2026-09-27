@@ -23,7 +23,6 @@ import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { CompletionForm, DeviceStep } from "/src/ui/oauth-flow";
 import {
     CompatibleConnectionFields,
     ProviderIdentityFields,
@@ -32,6 +31,7 @@ import {
 import { requiredHint } from "/src/ui/required-hint";
 import { createCreateAction } from "./create-form";
 import { createOauthFlow } from "./oauth-flow";
+import { CompletionForm, DeviceStep } from "./oauth-flow-view";
 import { type ScreenNotice, screenFailureNotice } from "./read";
 import { StatedNotice } from "./read-notice";
 
@@ -231,7 +231,12 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
             setTakenNames(taken);
 
             if (!isNameTouched()) {
-                setName(suggestion());
+                // The seed computes over the local `taken`, not the
+                // `suggestion` memo: a write from this continuation stages
+                // until the next flush, so a read-back of the memo would
+                // still see the committed empty set and seed a taken base
+                // name without its `-N` suffix.
+                setName(suggestProviderName(preset().suggestedName, taken));
             }
 
             settleBootCall(0, null);
@@ -500,7 +505,12 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         setDefinitionJson(JSON.stringify(nextPreset.payload, null, 2));
 
         if (!isNameTouched()) {
-            setName(suggestion());
+            // The seed computes over the picked preset's own suggestion — the
+            // same local-argument defense the pick's payload prefill uses —
+            // not the `suggestion` memo: a write from this switch stages
+            // until the next flush, so a read-back of the memo would still
+            // see the previous preset's suggestion.
+            setName(suggestProviderName(nextPreset.suggestedName, takenNames()));
         }
     };
 

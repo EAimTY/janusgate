@@ -137,8 +137,8 @@ describe("ConnectionScreen", () => {
         });
         await settle();
 
-        // The standard manual token rotation: Disconnect, then "Forget
-        // token". The forgotten connection's address reopens in the field —
+        // The standard manual token rotation: Disconnect, then the armed
+        // confirm's Disconnect. The forgotten connection's address reopens in the field —
         // the origin need not be retyped — and since nothing was refused, no
         // diagnosis stands. The token structurally cannot travel.
         connectionService.forget();

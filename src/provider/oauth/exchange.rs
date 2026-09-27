@@ -8,8 +8,9 @@
 //! maps its product. The exchange and refresh-grant fold applies the shared machine-consumed
 //! text validators (README §7) before any slot or base-URL value reaches storage, and the
 //! identity-token claim absorption applies the slot validator before a claimed value lands.
+//! Those validators live in this module — the layer's substrate every stage above imports
+//! from — so one contract guards one storage boundary whichever stage extracted the value.
 
-use super::provisioning::{validate_base_url_value, validate_slot_value};
 use crate::{
     provider::{
         Error,
@@ -455,6 +456,50 @@ fn apply_exchange_target(
     }
 
     Ok(())
+}
+
+/// Validates one stored slot value against the shared routing-safe text contract (README §7):
+/// non-empty printable ASCII without whitespace. An upstream value outside the set fails the
+/// stage instead of storing an unusable value. Shared by every OAuth response fold — the
+/// exchange, refresh-grant, and identity-token folds here and the provisioning fold in
+/// [`super::provisioning`] — so one contract guards one storage boundary.
+///
+/// # Errors
+///
+/// Returns [`Error::Unavailable`] when the value carries a character outside the allowed set or
+/// is empty.
+pub(super) fn validate_slot_value(name: &str, value: &str) -> Result<(), Error> {
+    if crate::routing_text::is_routing_safe_text(value) {
+        Ok(())
+    } else {
+        Err(Error::Unavailable {
+            detail: format!(
+                "the upstream reported a `{name}` value outside printable ASCII without whitespace"
+            ),
+        })
+    }
+}
+
+/// Validates one stored base-URL value against the shared base-URL contract of
+/// [`crate::routing_text::is_base_url`] (README §7): routing-safe text plus the non-empty
+/// `http://` or `https://` scheme — the same composition the management boundary enforces on
+/// operator-supplied URLs. Shared by every OAuth response fold — the exchange and refresh-grant
+/// folds here and the provisioning fold in [`super::provisioning`] — so one contract guards one
+/// storage boundary.
+///
+/// # Errors
+///
+/// Returns [`Error::Unavailable`] when the value falls outside the shared base-URL contract.
+pub(super) fn validate_base_url_value(value: &str) -> Result<(), Error> {
+    if crate::routing_text::is_base_url(value) {
+        Ok(())
+    } else {
+        Err(Error::Unavailable {
+            detail: "the upstream reported a `base_url` value outside printable ASCII without \
+                     whitespace or without an `http(s)://` scheme"
+                .to_string(),
+        })
+    }
 }
 
 /// Executes one refresh grant and maps its response through the carried descriptor — the

@@ -104,9 +104,11 @@ struct ModelObject {
     /// Public routing ID (README §3).
     id: String,
 
-    /// The official shape requires `created_at`; the gateway serves no model creation timestamps,
-    /// so it renders the epoch — the same convention the OpenAI surface documents for `created`.
-    created_at: u64,
+    /// The official shape types `created_at` as an RFC 3339 date-time string; the gateway serves
+    /// no model creation timestamps, so it renders the epoch in that string type — the same
+    /// "unknown release date" convention the OpenAI surface expresses through its integer
+    /// `created: 0`.
+    created_at: &'static str,
 }
 
 /// Builds the native model-list page from one effective-model listing: every entry renders its
@@ -120,7 +122,7 @@ fn native_model_page(listed: Vec<(String, String)>) -> ModelList {
             kind: "model",
             display_name: public_id.clone(),
             id: public_id,
-            created_at: 0,
+            created_at: "1970-01-01T00:00:00Z",
         })
         .collect();
 
@@ -202,8 +204,18 @@ mod tests {
             value,
             serde_json::json!({
                 "data": [
-                    {"type": "model", "display_name": "b-model", "id": "b-model", "created_at": 0},
-                    {"type": "model", "display_name": "a-model", "id": "a-model", "created_at": 0},
+                    {
+                        "type": "model",
+                        "display_name": "b-model",
+                        "id": "b-model",
+                        "created_at": "1970-01-01T00:00:00Z",
+                    },
+                    {
+                        "type": "model",
+                        "display_name": "a-model",
+                        "id": "a-model",
+                        "created_at": "1970-01-01T00:00:00Z",
+                    },
                 ],
                 "first_id": "b-model",
                 "has_more": false,

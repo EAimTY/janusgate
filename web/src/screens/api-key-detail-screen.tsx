@@ -14,6 +14,7 @@ import {
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
+import { AppLink } from "/src/ui/app-link";
 import { ButtonLink } from "/src/ui/controls";
 import { Badge } from "/src/ui/feedback";
 import { Card, CardHeader, Fact, FactList, PageHeader } from "/src/ui/layout";
@@ -89,6 +90,21 @@ export function ApiKeyDetailScreen(props: {
                         <div class="mt-4">
                             <ApiKeySecretValue secret={row.key} />
                         </div>
+                        {/* The first-run journey ends on a copied key, which
+                            points nowhere by itself: the surface URLs a client
+                            is aimed at live on the Overview's Endpoints card —
+                            the fact the management API never states. */}
+                        <p class="mt-3 text-[12.5px] text-ink-faint">
+                            Point your client at an endpoint — every surface serves every model; the
+                            URLs are on the{" "}
+                            <AppLink
+                                href={hrefs.home()}
+                                class="font-medium text-accent hover:underline dark:text-accent-strong"
+                            >
+                                Overview
+                            </AppLink>
+                            .
+                        </p>
                     </Card>
 
                     <Card>

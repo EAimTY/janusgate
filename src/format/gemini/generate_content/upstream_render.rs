@@ -7,11 +7,17 @@ use crate::{
     format,
     ir::{InvalidRequest, IrImage, IrPart, IrRequest, IrResponseFormat, IrRole, IrToolChoice},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// The `responseMimeType` value requesting a JSON response.
 const JSON_MIME_TYPE: &str = "application/json";
+
+/// Skip predicate for a borrowed text member that is empty: serde calls the path with the
+/// field behind another reference, so the plain `str::is_empty` does not fit as a path.
+fn is_empty_str(text: &&str) -> bool {
+    text.is_empty()
+}
 
 /// The bare GenerateContentRequest an upstream `:generateContent` action carries (README §5.3).
 #[derive(Debug, Serialize)]
@@ -61,6 +67,23 @@ enum Part<'a> {
     Text {
         /// The text content.
         text: &'a str,
+    },
+
+    /// A thinking part: replayed model reasoning with the signature the upstream issued for
+    /// it. The official `Part` carries the `thought` flag and the `thoughtSignature` beside
+    /// `text` as independent members (`ai.google.dev/api/generate-content`), so a
+    /// signature-only block renders without a text member.
+    Thought {
+        /// The reasoning text, omitted when the block carries none.
+        #[serde(skip_serializing_if = "is_empty_str")]
+        text: &'a str,
+
+        /// Always `true`: the part is model reasoning, never answer text.
+        thought: bool,
+
+        /// The replayable thought signature, omitted when the block carries none.
+        #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<&'a str>,
     },
 
     /// Base64-encoded inline image data.
@@ -459,11 +482,51 @@ fn render_part<'a>(part: &'a IrPart, ir: &IrRequest) -> Result<Vec<Part<'a>>, In
             }])
         }
 
-        // Reasoning blocks carry no Gemini GenerateContent history slot: the text is a response
-        // channel, not a replayable request part for this family, and the opaque payload is
-        // family-bound — cross-family it is dropped (README §6.4).
+        // Same-family bridge: a reasoning block the Gemini family issued renders as the
+        // thinking part the upstream wire pins — the summary text under `thought: true`,
+        // the block's signature riding `thoughtSignature` — because the thinking docs
+        // require clients to resend thought blocks exactly as received, and this is the
+        // only slot the Interactions replay of a `thought` step can cross into
+        // (ai.google.dev/gemini-api/docs/thinking; README §5.7). The opaque payload is
+        // family-bound, so family membership is decided by it: a well-formed Interactions
+        // thought step (`type: "thought"`) is the Gemini-family credential, while a
+        // foreign-family payload — an Anthropic thinking block, an unattributable
+        // text-only block whose signature this upstream could not verify — keeps
+        // rendering nothing (README §6.4).
+        IrPart::Reasoning {
+            text,
+            signature,
+            opaque,
+        } if is_family_thought_step(opaque) => Ok(vec![Part::Thought {
+            text,
+            thought: true,
+            thought_signature: signature.as_deref(),
+        }]),
+
+        // Reasoning blocks of every other provenance carry no Gemini GenerateContent
+        // history slot: the text is a response channel, not a replayable request part for
+        // this family, and the opaque payload is family-bound — cross-family it is dropped
+        // (README §6.4).
         IrPart::Reasoning { .. } => Ok(Vec::new()),
     }
+}
+
+/// Tests the Gemini-family membership of a reasoning block's opaque replay payload: an
+/// object tagged with the Interactions thought-step `type` is Gemini-family state and
+/// bridges onto this wire, anything else — cross-family blocks, unattributed text-only
+/// blocks — drops. The probe is a typed struct mirroring the Interactions codec's own
+/// family test, so the payload is modelled, never walked ad hoc.
+fn is_family_thought_step(opaque: &Value) -> bool {
+    /// Minimal shape probe for the family-membership test.
+    #[derive(Debug, Deserialize)]
+    struct ThoughtProbe {
+        /// Step type tag; anything but the thought tag is a foreign block.
+        #[serde(rename = "type")]
+        step_type: String,
+    }
+
+    // Deserializing from the borrowed value copies only the tag String, never the stored step.
+    ThoughtProbe::deserialize(opaque).is_ok_and(|probe| probe.step_type == "thought")
 }
 
 #[cfg(test)]
@@ -994,6 +1057,131 @@ mod tests {
                 {"fileData": {"fileUri": "https://example.com/cat.png"}},
                 {"text": "now answer"},
             ]}]),
+        );
+    }
+
+    /// A Gemini-family reasoning block bridges onto the thinking part the official upstream
+    /// shape pins: the official `Part` carries `thought` and `thoughtSignature` beside `text`
+    /// (`ai.google.dev/api/generate-content`), and the thinking docs require clients to
+    /// resend thought blocks exactly as received (`ai.google.dev/gemini-api/docs/thinking`) —
+    /// so an Interactions client's replayed `thought` step renders its summary text as
+    /// thinking text with the step's signature riding `thoughtSignature` (README §5.7). A
+    /// signature-only thought step renders the signature part without a text member, the
+    /// official `Part` members being independent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered contents diverge from the pinned bridge.
+    #[test]
+    fn interactions_thought_steps_render_as_thinking_parts_toward_this_upstream() {
+        use crate::format::{ClientFormat, RouteContext, gemini::interaction};
+
+        let body = serde_json::json!({
+            "model": "public-model",
+            "input": [
+                {"type": "thought", "summary": [
+                    {"type": "text", "text": "why"},
+                ], "signature": "sig-1"},
+                {"type": "thought", "signature": "sig-bare"},
+                {"type": "function_call", "id": "call_1", "name": "search", "arguments": {
+                    "q": "hi",
+                }},
+            ],
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the fixture body is constructed to parse"
+        )]
+        let parsed = <interaction::Format as ClientFormat>::parse_request(
+            body.to_string().as_bytes(),
+            &RouteContext::empty(),
+        )
+        .expect("the replayed steps parse");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "a thought-step history is constructed to render"
+        )]
+        let request =
+            render_generate_content_request(&parsed.ir).expect("a thought-step history renders");
+
+        let rendered = request_json(&request);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the rendered request is an object carrying `contents`"
+        )]
+        let contents = &rendered["contents"];
+
+        assert_eq!(
+            contents,
+            &serde_json::json!([
+                {"role": "model", "parts": [
+                    {"text": "why", "thought": true, "thoughtSignature": "sig-1"},
+                    {"thought": true, "thoughtSignature": "sig-bare"},
+                    {"functionCall": {"id": "call_1", "name": "search", "args": {"q": "hi"}}},
+                ]},
+            ]),
+        );
+    }
+
+    /// The bridge never invents state for a foreign family: an Anthropic `thinking` payload
+    /// and an unattributable text-only block keep rendering nothing, their signatures being
+    /// family-bound state this upstream cannot verify (README §6.4) — while the message's
+    /// ordinary parts render on.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a foreign-family block leaks onto the wire.
+    #[test]
+    fn foreign_family_and_unattributed_reasoning_keep_rendering_nothing() {
+        let ir = IrRequest {
+            model: "m".to_string(),
+            messages: vec![IrMessage {
+                role: IrRole::Assistant,
+                parts: vec![
+                    IrPart::Reasoning {
+                        text: "anthropic reasoning".to_string(),
+                        signature: Some("sig-a".to_string()),
+                        opaque: serde_json::json!({
+                            "type": "thinking",
+                            "thinking": "anthropic reasoning",
+                            "signature": "sig-a",
+                        }),
+                    },
+                    IrPart::Reasoning {
+                        text: "unattributed".to_string(),
+                        signature: Some("sig-u".to_string()),
+                        opaque: Value::Null,
+                    },
+                    IrPart::Text {
+                        text: "answer".to_string(),
+                    },
+                ],
+            }],
+            ..IrRequest::default()
+        };
+
+        #[expect(
+            clippy::expect_used,
+            reason = "a mixed history is constructed to render"
+        )]
+        let request = render_generate_content_request(&ir).expect("a mixed history renders");
+
+        let rendered = request_json(&request);
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the rendered request is an object carrying `contents`"
+        )]
+        let contents = &rendered["contents"];
+
+        assert_eq!(
+            contents,
+            &serde_json::json!([
+                {"role": "model", "parts": [{"text": "answer"}]},
+            ]),
         );
     }
 

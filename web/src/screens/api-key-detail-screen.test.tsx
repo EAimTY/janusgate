@@ -74,4 +74,15 @@ describe("ApiKeyDetailScreen facts", () => {
         expect(bodyText()).not.toContain("Enabled");
         expect(bodyText()).not.toContain("Off");
     });
+
+    it("points the freshly copied key's client home, where the endpoint URLs live", async () => {
+        mount(keyRow(true));
+        await settle();
+
+        // The Secret card ends the provider → key → client journey: its one
+        // quiet line names where a client points and links the Overview,
+        // whose Endpoints card carries the surface URLs.
+        expect(bodyText()).toContain("Point your client at an endpoint");
+        expect(document.querySelector('a[href="/"]')?.textContent).toBe("Overview");
+    });
 });

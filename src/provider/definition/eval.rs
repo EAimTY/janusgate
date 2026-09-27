@@ -319,6 +319,29 @@ impl ValueEnv<'_> {
         }
     }
 
+    /// The stage's value for one direct value part, or `None` when the stage does not carry
+    /// that kind. Literal text, slots, and coalesce arguments never name a stage value — the
+    /// evaluator handles those forms explicitly — so only the direct kinds reach this accessor.
+    #[must_use]
+    fn stage_value(&self, part: &ValueExpr) -> Option<&str> {
+        match part {
+            ValueExpr::Secret => self.secret,
+            ValueExpr::ClientId => self.client_id,
+            ValueExpr::ClientSecret => self.client_secret,
+            ValueExpr::AuthorizationCode => self.authorization_code,
+            ValueExpr::CodeVerifier => self.code_verifier,
+            ValueExpr::RedirectUri => self.redirect_uri,
+            ValueExpr::OAuthState => self.oauth_state,
+            ValueExpr::DeviceCode => self.device_code,
+            ValueExpr::RefreshToken => self.refresh_token,
+            ValueExpr::RequestUuid => self.request_uuid,
+            ValueExpr::Model => self.model,
+            ValueExpr::Base => self.base_url,
+
+            ValueExpr::Literal { .. } | ValueExpr::Slot { .. } | ValueExpr::Coalesce { .. } => None,
+        }
+    }
+
     /// Evaluates one value part into `rendered`.
     fn push_part(
         &self,
@@ -362,77 +385,15 @@ impl ValueEnv<'_> {
                 Ok(())
             }
 
-            ValueExpr::Secret => {
-                rendered.push_str(self.secret.ok_or_else(|| missing("secret"))?);
+            // Every remaining part is one direct stage value: absent here means the stage does
+            // not carry it — stored drift the write-time validation already rejected — and the
+            // error names the kind through the shared display-name vocabulary.
+            other => {
+                let value = self
+                    .stage_value(other)
+                    .ok_or_else(|| missing(other.kind().display_name()))?;
 
-                Ok(())
-            }
-
-            ValueExpr::ClientId => {
-                rendered.push_str(self.client_id.ok_or_else(|| missing("client ID"))?);
-
-                Ok(())
-            }
-
-            ValueExpr::ClientSecret => {
-                rendered.push_str(self.client_secret.ok_or_else(|| missing("client secret"))?);
-
-                Ok(())
-            }
-
-            ValueExpr::AuthorizationCode => {
-                rendered.push_str(
-                    self.authorization_code
-                        .ok_or_else(|| missing("authorization code"))?,
-                );
-
-                Ok(())
-            }
-
-            ValueExpr::CodeVerifier => {
-                rendered.push_str(self.code_verifier.ok_or_else(|| missing("PKCE verifier"))?);
-
-                Ok(())
-            }
-
-            ValueExpr::RedirectUri => {
-                rendered.push_str(self.redirect_uri.ok_or_else(|| missing("redirect URI"))?);
-
-                Ok(())
-            }
-
-            ValueExpr::OAuthState => {
-                rendered.push_str(self.oauth_state.ok_or_else(|| missing("state token"))?);
-
-                Ok(())
-            }
-
-            ValueExpr::DeviceCode => {
-                rendered.push_str(self.device_code.ok_or_else(|| missing("device code"))?);
-
-                Ok(())
-            }
-
-            ValueExpr::RefreshToken => {
-                rendered.push_str(self.refresh_token.ok_or_else(|| missing("refresh token"))?);
-
-                Ok(())
-            }
-
-            ValueExpr::RequestUuid => {
-                rendered.push_str(self.request_uuid.ok_or_else(|| missing("request UUID"))?);
-
-                Ok(())
-            }
-
-            ValueExpr::Model => {
-                rendered.push_str(self.model.ok_or_else(|| missing("model"))?);
-
-                Ok(())
-            }
-
-            ValueExpr::Base => {
-                rendered.push_str(self.base_url.ok_or_else(|| missing("base URL"))?);
+                rendered.push_str(value);
 
                 Ok(())
             }

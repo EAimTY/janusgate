@@ -979,7 +979,7 @@ impl ClientSseRenderer for SseRenderer {
                 frames
             }
 
-            IrEvent::Finish(reason) => {
+            IrEvent::Finish { reason, .. } => {
                 self.finish = Some(*reason);
 
                 self.close_open_items()

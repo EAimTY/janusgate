@@ -16,8 +16,20 @@
  * states nothing, navigates nowhere, and re-arms no poll, so the device
  * step's loop, which schedules only on the fragment's `"pending"`, stops by
  * itself (README §6.4).
+ *
+ * The live flow also seats itself in the dirty-form registry (README §6.3):
+ * the approval happens in another tab, so stepping elsewhere in the console
+ * while authorizing is natural — and the flow's state lives in this
+ * fragment, so any in-app navigation discards it silently. A tab close or a
+ * reload cannot be warned at in place, so while a flow stands live the
+ * fragment holds a seat in the registry the shell's `beforeunload` guard
+ * reads: armed on a succeeded begin, disarmed by `discardFlow` — which every
+ * settle, discard, expiry, and failure path runs — and given up by the
+ * disposal cleanup, so no path, including a screen that goes away with its
+ * flow live, can leave the guard armed behind it.
  */
-import { type Accessor, createSignal } from "solid-js";
+import { type Accessor, createSignal, onCleanup } from "solid-js";
+import { registerDirtyForm } from "/src/dirty-form-registry";
 import { nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ActionName, Diagnosis } from "/src/management-api/diagnosis";
@@ -207,6 +219,16 @@ export function createOauthFlow(options: {
     // step's loop honors it through the "done" the polled asks return.
     const isDisposed = createDisposalGuard();
 
+    // The live flow's seat in the leave-guard registry (README §6.3), armed
+    // beside the begin's success below and disarmed by `discardFlow`; the
+    // cleanup gives the seat up when the consuming screen goes away, so a
+    // flow abandoned live cannot leave the `beforeunload` guard armed behind
+    // it — the same owner-owned lifetime every registry seat keeps.
+    const flowRegistration = registerDirtyForm();
+    onCleanup(() => {
+        flowRegistration.unregister();
+    });
+
     // The flow's begin is the screens' shared begin action: the fragment's
     // own gates — no OAuth call in flight, no live flow — beside the settle
     // every begin answers, stated on the flow card's failure signal, with
@@ -219,6 +241,10 @@ export function createOauthFlow(options: {
         perform: options.begin,
         onSucceeded: (started) => {
             setFlow(started);
+            // The flow stands live on the gateway and in this fragment: its
+            // loss to a tab close or a reload is now the leave guard's to
+            // intercept, exactly as an unsaved edit form's is.
+            flowRegistration.reportDirty(true);
         },
     });
 
@@ -241,7 +267,9 @@ export function createOauthFlow(options: {
      * the one read that observed it (gateway README §7.2) — so only a fresh
      * flow can retry. The stated failure and the paste's refusal gate go
      * with the flow; a failure stated afresh after a discard rewrites the
-     * cleared signal.
+     * cleared signal. Every path that ends a flow — a manual discard, a
+     * settle, a gone state, an expiry, a failed exchange — runs this, so it
+     * is also the one place the leave-guard seat disarms.
      */
     const discardFlow = (): void => {
         setFlow(null);
@@ -249,6 +277,7 @@ export function createOauthFlow(options: {
         setHasPasteRefusal(false);
         setFailure(null);
         failedPolls = 0;
+        flowRegistration.reportDirty(false);
     };
 
     /**

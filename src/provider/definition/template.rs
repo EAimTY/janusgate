@@ -131,6 +131,30 @@ pub(crate) enum ValueKind {
     Base,
 }
 
+impl ValueKind {
+    /// The human-readable name of this kind, the one display-name vocabulary shared by the
+    /// write-time validation rejections and the evaluator's missing-value errors.
+    #[must_use]
+    pub(super) fn display_name(self) -> &'static str {
+        match self {
+            Self::Literal => "literal",
+            Self::Secret => "secret",
+            Self::Slot => "slot",
+            Self::ClientId => "client ID",
+            Self::ClientSecret => "client secret",
+            Self::AuthorizationCode => "authorization code",
+            Self::CodeVerifier => "PKCE verifier",
+            Self::RedirectUri => "redirect URI",
+            Self::OAuthState => "state token",
+            Self::DeviceCode => "device code",
+            Self::RefreshToken => "refresh token",
+            Self::RequestUuid => "request UUID",
+            Self::Model => "model",
+            Self::Base => "base URL",
+        }
+    }
+}
+
 impl ValueExpr {
     /// The kind of this expression part; a `Coalesce` is decomposed and its parts are walked by
     /// the caller, so this reports the kinds of the direct expression forms only.

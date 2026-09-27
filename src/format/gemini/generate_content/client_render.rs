@@ -2,17 +2,25 @@
 //! GenerateContent SSE chunks or an aggregated non-streaming body.
 
 use crate::{
-    format::{ClientSseRenderer, arguments_to_object_or_empty},
+    format::{ClientSseRenderer, arguments_to_object_or_empty, gemini::split_gemini_usage},
     ir::{IrAggregation, IrEvent, IrFinishReason, IrUsage},
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// Aggregated non-streaming GenerateContent success body: one candidate plus usage.
+/// Aggregated non-streaming GenerateContent success body: one candidate plus usage — or, for a
+/// prompt-level block, the native blocked shape of `promptFeedback` without candidates.
 #[derive(Debug, Serialize)]
 pub(crate) struct JsonResponse {
-    /// Candidate answers; the gateway serves exactly one.
+    /// Candidate answers; the gateway serves exactly one — none only for a prompt-level
+    /// block, whose native blocked shape carries no candidates at all.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) candidates: Vec<CandidateOut>,
+
+    /// Prompt-level feedback, present exactly when the prompt was blocked and no candidate
+    /// was generated — the native blocked shape.
+    #[serde(rename = "promptFeedback", skip_serializing_if = "Option::is_none")]
+    pub(crate) prompt_feedback: Option<PromptFeedbackOut>,
 
     /// Token accounting in the Gemini shape.
     #[serde(rename = "usageMetadata")]
@@ -25,6 +33,14 @@ pub(crate) struct JsonResponse {
     /// Gateway-minted response identifier.
     #[serde(rename = "responseId")]
     pub(crate) response_id: String,
+}
+
+/// Prompt-level feedback of a blocked prompt, the native blocked shape.
+#[derive(Debug, Serialize)]
+pub(crate) struct PromptFeedbackOut {
+    /// Why the prompt was blocked, the verbatim upstream spelling.
+    #[serde(rename = "blockReason")]
+    pub(crate) block_reason: String,
 }
 
 /// One rendered candidate answer.
@@ -126,6 +142,10 @@ struct StreamChunk {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     candidates: Vec<StreamCandidate>,
 
+    /// Prompt-level block feedback, carried only by the terminal chunk of a blocked stream.
+    #[serde(rename = "promptFeedback", skip_serializing_if = "Option::is_none")]
+    prompt_feedback: Option<PromptFeedbackOut>,
+
     /// Cumulative usage, carried only by the terminal usage chunk.
     #[serde(rename = "usageMetadata", skip_serializing_if = "Option::is_none")]
     usage_metadata: Option<UsageMetadataOut>,
@@ -167,23 +187,38 @@ fn finish_reason_to_gemini(reason: IrFinishReason) -> &'static str {
 }
 
 /// Renders IR usage into the Gemini usage shape: the output total keeps including reasoning
-/// (matching the upstream codec), so the candidates count is the output minus reasoning, and the
-/// official total member is the sum of the members rendered here.
+/// (matching the upstream codec), so the members come from the shared inverse split — the
+/// candidates count is the output minus reasoning — and the official total member is the sum of
+/// the members rendered here.
 fn usage_to_gemini(usage: IrUsage) -> UsageMetadataOut {
-    let reasoning = usage.reasoning_tokens.unwrap_or(0);
-    let candidates = usage.output_tokens.saturating_sub(reasoning);
+    let (input, candidates, reasoning, cached) = split_gemini_usage(&usage);
 
     UsageMetadataOut {
-        prompt_token_count: usage.input_tokens,
+        prompt_token_count: input,
         candidates_token_count: candidates,
-        total_token_count: usage.input_tokens + candidates + reasoning,
-        thoughts_token_count: usage.reasoning_tokens,
-        cached_content_token_count: usage.cached_tokens,
+        total_token_count: input + candidates + reasoning.unwrap_or(0),
+        thoughts_token_count: reasoning,
+        cached_content_token_count: cached,
     }
 }
 
 /// Renders an aggregated completion as a non-streaming GenerateContent response.
 pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation) -> JsonResponse {
+    // A prompt-level block renders the native blocked shape: `promptFeedback` with the
+    // verbatim upstream block reason and no candidates (README §6.3). The detail's presence
+    // is the block flag — the parser sets it exactly on the prompt-block finish.
+    if let Some(block_reason) = &aggregation.prompt_block_reason {
+        return JsonResponse {
+            candidates: Vec::new(),
+            prompt_feedback: Some(PromptFeedbackOut {
+                block_reason: block_reason.clone(),
+            }),
+            usage_metadata: usage_to_gemini(aggregation.usage.unwrap_or_default()),
+            model_version: public_id.to_string(),
+            response_id: format!("gen-{}", crate::ids::new_uuid()),
+        };
+    }
+
     let mut parts: Vec<PartOut> = Vec::new();
 
     if !aggregation.reasoning.is_empty() {
@@ -224,6 +259,7 @@ pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation)
             ),
             index: 0,
         }],
+        prompt_feedback: None,
         usage_metadata: usage_to_gemini(usage),
         model_version: public_id.to_string(),
         response_id: format!("gen-{}", crate::ids::new_uuid()),
@@ -246,6 +282,10 @@ pub(super) struct SseRenderer {
 
     /// Latest usage observed; rendered once terminally.
     usage: Option<IrUsage>,
+
+    /// Verbatim upstream prompt-block reason of a prompt-level block finish; rendered on the
+    /// terminal chunk (README §6.3).
+    prompt_block_reason: Option<String>,
 }
 
 impl SseRenderer {
@@ -256,6 +296,7 @@ impl SseRenderer {
             response_id: format!("gen-{}", crate::ids::new_uuid()),
             is_reasoning_streamed: false,
             usage: None,
+            prompt_block_reason: None,
         }
     }
 
@@ -264,10 +305,12 @@ impl SseRenderer {
         &self,
         candidates: Vec<StreamCandidate>,
         usage: Option<UsageMetadataOut>,
+        prompt_feedback: Option<PromptFeedbackOut>,
     ) -> String {
         let chunk = StreamChunk {
             candidates,
             usage_metadata: usage,
+            prompt_feedback,
             model_version: self.model.clone(),
             response_id: self.response_id.clone(),
         };
@@ -286,6 +329,7 @@ impl SseRenderer {
                 finish_reason: None,
                 index: 0,
             }],
+            None,
             None,
         )
     }
@@ -345,17 +389,33 @@ impl ClientSseRenderer for SseRenderer {
                 thought_signature: thought_signature.clone(),
             }])],
 
-            IrEvent::Finish(reason) => vec![self.chunk_frame(
-                vec![StreamCandidate {
-                    content: ContentOut {
-                        role: "model",
-                        parts: Vec::new(),
-                    },
-                    finish_reason: Some(finish_reason_to_gemini(*reason)),
-                    index: 0,
-                }],
-                None,
-            )],
+            // A prompt-level block renders no candidate at all — the native blocked shape
+            // mirrors `promptFeedback` on the terminal chunk instead (README §6.3) — so the
+            // reason buffers here and the empty-candidate finish chunk renders only for a
+            // candidate-level filter.
+            IrEvent::Finish {
+                reason,
+                prompt_block_reason,
+            } => {
+                if let Some(block_reason) = prompt_block_reason {
+                    self.prompt_block_reason = Some(block_reason.clone());
+
+                    Vec::new()
+                } else {
+                    vec![self.chunk_frame(
+                        vec![StreamCandidate {
+                            content: ContentOut {
+                                role: "model",
+                                parts: Vec::new(),
+                            },
+                            finish_reason: Some(finish_reason_to_gemini(*reason)),
+                            index: 0,
+                        }],
+                        None,
+                        None,
+                    )]
+                }
+            }
 
             IrEvent::Usage(usage) => {
                 self.usage = Some(*usage);
@@ -363,10 +423,23 @@ impl ClientSseRenderer for SseRenderer {
                 Vec::new()
             }
 
-            IrEvent::Done => match self.usage.take() {
-                Some(usage) => vec![self.chunk_frame(Vec::new(), Some(usage_to_gemini(usage)))],
-                None => Vec::new(),
-            },
+            // The terminal chunk renders whenever there is something terminal to carry: the
+            // cumulative usage, or a prompt-level block's feedback when the upstream
+            // reported none.
+            IrEvent::Done => {
+                let usage = self.usage.take();
+
+                if usage.is_some() || self.prompt_block_reason.is_some() {
+                    let prompt_feedback = self
+                        .prompt_block_reason
+                        .take()
+                        .map(|block_reason| PromptFeedbackOut { block_reason });
+
+                    vec![self.chunk_frame(Vec::new(), usage.map(usage_to_gemini), prompt_feedback)]
+                } else {
+                    Vec::new()
+                }
+            }
         }
     }
 
@@ -402,6 +475,7 @@ mod tests {
                 thought_signature: Some("sig".to_string()),
             }],
             finish: Some(IrFinishReason::ToolCall),
+            prompt_block_reason: None,
             usage: Some(IrUsage {
                 input_tokens: 10,
                 output_tokens: 6,
@@ -452,6 +526,156 @@ mod tests {
             value.pointer("/modelVersion"),
             Some(&serde_json::json!("m"))
         );
+    }
+
+    /// A prompt-level block round-trips into the native blocked shape: the parsed
+    /// `promptFeedback.blockReason` rides the IR Finish event to the aggregated body
+    /// verbatim — unmapped — and the body carries no candidates, while the usage still
+    /// renders (README §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the blocked turn renders as a candidate success or drops the block reason.
+    #[test]
+    fn prompt_block_round_trips_to_prompt_feedback_without_candidates() {
+        use crate::{
+            format::{UpstreamEventParser, gemini::generate_content::UpstreamParser},
+            ir::Aggregator,
+        };
+
+        let body = serde_json::json!({
+            "promptFeedback": {"blockReason": "BLOCKLIST"},
+            "usageMetadata": {"promptTokenCount": 3},
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the prompt-blocked body is constructed to parse"
+        )]
+        let events = parser
+            .parse_json_response(body)
+            .expect("a prompt-blocked body parses");
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let rendered = render_json_response("m", &aggregator.finish());
+
+        #[expect(clippy::expect_used, reason = "the rendered body always serializes")]
+        let value = serde_json::to_value(&rendered).expect("the body serializes");
+
+        assert_eq!(
+            value.pointer("/promptFeedback/blockReason"),
+            Some(&serde_json::json!("BLOCKLIST"))
+        );
+        assert!(value.get("candidates").is_none());
+        assert_eq!(
+            value.pointer("/usageMetadata/totalTokenCount"),
+            Some(&serde_json::json!(3))
+        );
+    }
+
+    /// A candidate-level content filter keeps the empty-candidate render: one candidate
+    /// with no parts and the `SAFETY` finish reason, and no `promptFeedback` member.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the filtered candidate render diverges from the native shape.
+    #[test]
+    fn candidate_content_filter_still_renders_empty_candidate() {
+        let aggregation = IrAggregation {
+            text: String::new(),
+            reasoning: String::new(),
+            reasoning_blocks: Vec::new(),
+            tool_calls: Vec::new(),
+            finish: Some(IrFinishReason::ContentFilter),
+            usage: None,
+            prompt_block_reason: None,
+        };
+
+        let rendered = render_json_response("m", &aggregation);
+
+        #[expect(clippy::expect_used, reason = "the rendered body always serializes")]
+        let value = serde_json::to_value(&rendered).expect("the body serializes");
+
+        assert_eq!(
+            value.pointer("/candidates/0/finishReason"),
+            Some(&serde_json::json!("SAFETY"))
+        );
+        assert_eq!(
+            value.pointer("/candidates/0/content/parts"),
+            Some(&serde_json::json!([]))
+        );
+        assert!(value.get("promptFeedback").is_none());
+    }
+
+    /// A streamed prompt-level block renders no candidate chunk at all — not even the
+    /// empty `SAFETY` one — and the terminal chunk mirrors `promptFeedback` beside the
+    /// cumulative usage; with no usage reported the terminal chunk carries the feedback
+    /// alone so the block always surfaces (README §6.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any candidate or finish chunk renders for a blocked stream or the
+    /// terminal chunk drops the feedback.
+    #[test]
+    fn streamed_prompt_block_carries_prompt_feedback_without_candidates() {
+        let mut renderer = SseRenderer::new("m".to_string());
+
+        let finish = renderer.render(&IrEvent::Finish {
+            reason: IrFinishReason::ContentFilter,
+            prompt_block_reason: Some("SAFETY".to_string()),
+        });
+
+        assert!(
+            finish.is_empty(),
+            "a prompt block renders no candidate chunk"
+        );
+
+        renderer.render(&IrEvent::Usage(IrUsage {
+            input_tokens: 4,
+            output_tokens: 0,
+            cached_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
+        }));
+
+        let frames = renderer.render(&IrEvent::Done);
+
+        assert_eq!(frames.len(), 1);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the single rendered frame is asserted above"
+        )]
+        let frame = &frames[0];
+        assert!(frame.contains(r#""promptFeedback":{"blockReason":"SAFETY""#));
+        assert!(frame.contains(r#""promptTokenCount":4"#));
+        assert!(!frame.contains(r#""candidates""#));
+        assert!(!frame.contains("finishReason"));
+
+        // A blocked stream whose upstream reported no usage still terminates with the
+        // feedback frame instead of vanishing.
+        let mut blocked = SseRenderer::new("m".to_string());
+
+        blocked.render(&IrEvent::Finish {
+            reason: IrFinishReason::ContentFilter,
+            prompt_block_reason: Some("SAFETY".to_string()),
+        });
+
+        let frames = blocked.render(&IrEvent::Done);
+
+        assert_eq!(frames.len(), 1);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the single rendered frame is asserted above"
+        )]
+        let frame = &frames[0];
+        assert!(frame.contains(r#""promptFeedback":{"blockReason":"SAFETY""#));
     }
 
     /// Verifies the streaming renderer delivers text live and renders a done-only

@@ -51,7 +51,8 @@ export type ActionContext = {
  * What the panel says about a failure. The kind selects the panel's own
  * explanation; `detail` always carries the gateway's message when the gateway
  * rendered one, and `fix` names a recovery only where the app can be certain
- * of one.
+ * of one — where one failure hides two possible causes, it states each
+ * cause's recovery conditionally instead of claiming either.
  */
 export type Diagnosis = {
     readonly kind:
@@ -156,13 +157,16 @@ function upstreamFix(context: ActionContext): string {
     const { action, isOAuthProvider } = context;
 
     if (action === "discover-models") {
-        // The recovery a discovery refusal names depends on how the provider
-        // authenticates: an OAuth account reconnects, a static key is
-        // corrected in place.
+        // The gateway fails a discovery with the same upstream error whether
+        // the call itself was refused or the upstream answered 200 with an
+        // empty model list — a fresh pre-onboarded account does exactly that
+        // (root README §7.1) — so the fix names both recoveries the
+        // provider's kind admits (an OAuth account reconnects, a static key
+        // is corrected in place) as conditionals and claims neither cause.
         if (isOAuthProvider !== undefined) {
             return isOAuthProvider
-                ? "The provider's authorization expired; reconnect it on the provider's edit page."
-                : "Check the provider's base URL and API key on its edit page.";
+                ? "If the provider's authorization lapsed, reconnect it on the provider's edit page; if the upstream genuinely lists no models yet, add one by hand from this page."
+                : "If the provider's base URL or API key is wrong, correct it on the provider's edit page; if the upstream genuinely lists no models yet, add one by hand from this page.";
         }
 
         return "Check the provider's state and credentials.";

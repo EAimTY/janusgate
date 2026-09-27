@@ -30,7 +30,6 @@ import { Button } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { CompletionForm, DeviceStep } from "/src/ui/oauth-flow";
 import {
     CompatibleConnectionFields,
     ProviderEnabledSwitch,
@@ -38,6 +37,7 @@ import {
 } from "/src/ui/provider-form";
 import { createDeleteAction, createEditForm } from "./edit-form";
 import { createOauthFlow, type OauthFlow } from "./oauth-flow";
+import { CompletionForm, DeviceStep } from "./oauth-flow-view";
 import { RowNotFound } from "./row-not-found";
 
 /**

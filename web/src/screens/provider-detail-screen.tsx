@@ -10,6 +10,7 @@ import {
     isOAuthProviderRow,
     upstreamFormatLabel,
 } from "/src/management-api/vocabulary";
+import { PROVIDER_PRESETS, type ProviderPreset } from "/src/presets";
 import { hrefs } from "/src/router";
 import {
     createPinnedRow,
@@ -330,6 +331,22 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
         return credentialExpiryLine(props.provider.expires_at, nowMicros());
     };
 
+    /**
+     * The catalog preset the stored definition came from, when its name is a
+     * preset id: at creation the operator picked the preset by title, never
+     * by the machine name the gateway stores, so the fact leads with that
+     * title. A name outside the catalog is a hand-authored definition and
+     * states itself alone — no title is ever invented for it.
+     */
+    const definitionPreset = (): ProviderPreset | null =>
+        PROVIDER_PRESETS.find(
+            (candidate) => candidate.id === props.provider.provider_definition_name,
+        ) ?? null;
+
+    /** The stored definition identity: the gateway's `name` plus its version. */
+    const storedDefinition = (): string =>
+        `${props.provider.provider_definition_name} v${props.provider.provider_definition_version}`;
+
     return (
         <Card>
             <CardHeader title="Details" />
@@ -339,8 +356,22 @@ function FactsCard(props: { readonly provider: ProviderResponse }): JSX.Element 
                     value={upstreamFormatLabel(props.provider.format)}
                 />
                 <Fact
-                    label="Recipe"
-                    value={`${props.provider.provider_definition_name} v${props.provider.provider_definition_version}`}
+                    label="Definition"
+                    value={
+                        <Show
+                            when={definitionPreset()}
+                            fallback={storedDefinition()}
+                        >
+                            {(preset) => (
+                                <>
+                                    {preset().title}
+                                    <span class="mt-0.5 block text-[12.5px] leading-snug text-ink-dim">
+                                        {storedDefinition()}
+                                    </span>
+                                </>
+                            )}
+                        </Show>
+                    }
                     isTabular
                     class="break-all"
                 />

@@ -271,7 +271,7 @@ function DeleteCard(props: {
         <ConfirmDeleteCard
             title="Delete this model"
             description="Deleting removes the model at once. Clients calling its public ID start getting 404s."
-            question={`Delete ${props.model.public_id}? A deleted discovered model returns as new on the next discovery — claiming it back from the Create model page keeps it serving under the same ID.`}
+            question={`Delete ${props.model.public_id}? Clients calling it 404 until it exists again — a discovered model returns as new on the next discovery (without a custom public ID); a manual one can be re-added from the Create model page as a new row.`}
             onConfirm={confirmDelete}
         />
     );

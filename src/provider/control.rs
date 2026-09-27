@@ -211,11 +211,38 @@ pub(crate) fn percent_encode_component(component: &str) -> String {
     encoded
 }
 
+/// Appends one pre-rendered query row — `name=value` — to an already-evaluated URL string. The
+/// `?`/`&` join lands in the URL's query component, and a `#` fragment, when the URL carries
+/// one, rides again after the row: RFC 3986 §3 puts the query before the fragment, and an
+/// unencoded `#` can never appear inside a query, so the first `#` is always the fragment
+/// delimiter and a row appended blindly at the end would fold into the fragment and silently
+/// drop from the request.
+///
+/// The row arrives exactly as it must read — the join is this helper's whole contract, so the
+/// percent-encoding stays the caller's: the strict RFC 3986 unreserved-set encoder
+/// ([`percent_encode_component`]) runs upstream of every descriptor-rendered component.
+pub(super) fn append_query_row(url: &mut String, name: &str, value: &str) {
+    let fragment_start = url.find('#').unwrap_or(url.len());
+
+    let has_query = url[..fragment_start].contains('?');
+
+    let mut row = String::with_capacity(1 + name.len() + 1 + value.len());
+
+    row.push_str(if has_query { "&" } else { "?" });
+    row.push_str(name);
+    row.push('=');
+    row.push_str(value);
+
+    url.insert_str(fragment_start, &row);
+}
+
 /// Builds the HTTP request for one control request: the evaluated URL, query, headers, and body.
 /// The executor sets `Content-Type` from the body variant; every other header is an explicit row.
 ///
 /// Query rows render through [`percent_encode_component`] and are appended pre-encoded, so the
 /// client serializes nothing again — a space stays `%20` instead of the form-urlencoded `+`.
+/// The rows join through [`append_query_row`], which keeps them in the query component ahead of
+/// a `#` fragment (RFC 3986 §3) so pagination and request parameters never fold into it.
 ///
 /// # Errors
 ///
@@ -235,10 +262,11 @@ pub(crate) fn build_request(
     };
 
     for row in &request.query {
-        url.push_str(if url.contains('?') { "&" } else { "?" });
-        url.push_str(&percent_encode_component(&row.name));
-        url.push('=');
-        url.push_str(&percent_encode_component(&env.evaluate(&row.value, what)?));
+        append_query_row(
+            &mut url,
+            &percent_encode_component(&row.name),
+            &percent_encode_component(&env.evaluate(&row.value, what)?),
+        );
     }
 
     let mut builder = client.request(method, &url);
@@ -610,6 +638,112 @@ mod tests {
             built.url().query(),
             Some("fixed=1&scope=a%20b%2Bc&label%20key=%C3%A9")
         );
+    }
+
+    /// A control request whose evaluated URL carries a `#` fragment gets its query rows joined
+    /// into the query component before the fragment, and the fragment re-attached after the
+    /// last row (RFC 3986 §3): rows appended after the first `#` would fold into the fragment
+    /// and silently drop from the request.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the built request's URL diverges from the byte-exact expectation.
+    #[test]
+    fn build_request_joins_query_rows_before_a_url_fragment() {
+        let request = ControlRequest {
+            method: ControlMethod::Get,
+            url: StringExpr::literal("https://upstream.example/discovery#tenant"),
+            headers: Vec::new(),
+            query: vec![
+                ParamRow {
+                    name: "scope".to_string(),
+                    value: StringExpr::literal("a b+c"),
+                },
+                ParamRow {
+                    name: "page".to_string(),
+                    value: StringExpr::literal("2"),
+                },
+            ],
+            body: None,
+        };
+
+        let slots = BTreeMap::new();
+
+        let env = ValueEnv::for_exchange(
+            &slots,
+            None,
+            "client-id",
+            None,
+            "code",
+            Some("verifier"),
+            "redirect",
+        );
+
+        let built = build_request(&Client::new(), &request, &env, "test")
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            built.url().as_str(),
+            "https://upstream.example/discovery?scope=a%20b%2Bc&page=2#tenant"
+        );
+
+        assert_eq!(built.url().query(), Some("scope=a%20b%2Bc&page=2"));
+
+        assert_eq!(built.url().fragment(), Some("tenant"));
+    }
+
+    /// The shared query-row join inserts the `?`/`&` separator into the URL's query component
+    /// and re-attaches a `#` fragment after the appended row (RFC 3986 §3): the first `#` is
+    /// always the fragment delimiter, and a `?` inside a fragment never flips the join. The
+    /// join is the helper's whole contract — the row text lands verbatim.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a rendered URL diverges from its byte-exact expectation.
+    #[test]
+    fn append_query_row_joins_into_the_query_before_the_fragment() {
+        let cases = [
+            (
+                "https://upstream.example/discovery",
+                "a",
+                "1",
+                "https://upstream.example/discovery?a=1",
+            ),
+            (
+                "https://upstream.example/discovery?a=1",
+                "b",
+                "2",
+                "https://upstream.example/discovery?a=1&b=2",
+            ),
+            (
+                "https://upstream.example/discovery#tenant",
+                "a",
+                "1",
+                "https://upstream.example/discovery?a=1#tenant",
+            ),
+            (
+                "https://upstream.example/discovery?a=1#tenant",
+                "b",
+                "2",
+                "https://upstream.example/discovery?a=1&b=2#tenant",
+            ),
+            (
+                "https://upstream.example/discovery#tenant?a=1",
+                "b",
+                "2",
+                "https://upstream.example/discovery?b=2#tenant?a=1",
+            ),
+        ];
+
+        for (before, name, value, after) in cases {
+            let mut url = before.to_string();
+
+            append_query_row(&mut url, name, value);
+
+            assert_eq!(url, after, "join mismatch for `{before}`");
+        }
     }
 
     /// Pins the shared field-mapping fold (README §5.1): present values apply in order, a

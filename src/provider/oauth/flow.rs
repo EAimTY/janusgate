@@ -410,6 +410,9 @@ pub(crate) async fn begin_flow(
 /// Builds the authorize URL of an authorization-code grant: the evaluated base URL, the standard
 /// parameters the builder appends itself (`response_type`, `client_id`, `redirect_uri`,
 /// `state`, and the PKCE pair when configured), and the definition's extra parameters in order.
+/// The parameters join through [`control::append_query_row`], which keeps them in the query
+/// component ahead of a `#` fragment in the stored base (RFC 3986 §3) so every authorization
+/// parameter reaches the provider.
 fn build_authorize_url(
     grant: &Grant,
     env: &ValueEnv<'_>,
@@ -435,10 +438,7 @@ fn build_authorize_url(
         })?;
 
     let mut append = |name: &str, value: &str| {
-        url.push_str(if url.contains('?') { "&" } else { "?" });
-        url.push_str(name);
-        url.push('=');
-        url.push_str(&control::percent_encode_component(value));
+        control::append_query_row(&mut url, name, &control::percent_encode_component(value));
     };
 
     append("response_type", "code");
@@ -617,10 +617,16 @@ mod tests {
         reason = "the fixtures are constructed so each unwrap lands on its documented side"
     )]
 
-    use super::{AUTHORIZATION_CODE_TTL, BeginFacts, BeginPurpose, begin_flow};
+    use super::{
+        AUTHORIZATION_CODE_TTL, BeginFacts, BeginPurpose, begin_flow, build_authorize_url,
+    };
     use crate::{
         format::UpstreamFormat,
-        provider::definition::credential::{CredentialAcquisition, Grant},
+        provider::definition::{
+            credential::{CredentialAcquisition, Grant, Pkce},
+            eval::ValueEnv,
+            template::{ParamRow, StringExpr},
+        },
         storage::provider_definitions::{self, NewDefinition},
         test_support::{
             self, MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
@@ -670,6 +676,84 @@ mod tests {
             "expires_in_fallback_seconds": 900
         }))
         .unwrap()
+    }
+
+    /// The authorization-code grant one URL-build test swaps in: the given authorize base, the
+    /// loopback redirect, no PKCE, and one extra parameter whose value carries a space — so the
+    /// rendered URL exercises the standard parameters, the extra parameters, and the strict
+    /// percent encoding in one byte-exact expectation.
+    fn code_grant(authorize_base: &str) -> Grant {
+        Grant::AuthorizationCode {
+            authorize_url: StringExpr::literal(authorize_base),
+            redirect_uri: "https://gateway.example/callback".to_string(),
+            pkce: Pkce::None,
+            extra_params: vec![ParamRow {
+                name: "scope".to_string(),
+                value: StringExpr::literal("read write"),
+            }],
+        }
+    }
+
+    /// The authorize-URL builder joins every appended parameter into the evaluated URL's query
+    /// component — before a `#` fragment when the stored base carries one — and re-attaches the
+    /// fragment after the last parameter (RFC 3986 §3): a parameter appended after the first
+    /// `#` would fold into the fragment and silently drop from the authorization request, so
+    /// `response_type`, `client_id`, `redirect_uri`, the extra parameters, and the trailing
+    /// `state` must all precede it. The fragment case is byte-exact.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the built URL diverges from the byte-exact expectation.
+    #[test]
+    fn authorize_url_joins_parameters_before_a_stored_fragment() {
+        let slots = BTreeMap::new();
+
+        let env = ValueEnv::for_authorize_url(&slots, "client-id", None, "state-token");
+
+        let url = build_authorize_url(
+            &code_grant("https://auth.example/authorize#tenant"),
+            &env,
+            "state-token",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            url,
+            "https://auth.example/authorize?response_type=code&client_id=client-id\
+             &redirect_uri=https%3A%2F%2Fgateway.example%2Fcallback&scope=read%20write\
+             &state=state-token#tenant"
+        );
+    }
+
+    /// The fragment-free rendering is byte-identical to the builder's documented shape: the
+    /// standard parameters in the builder's order (`response_type`, `client_id`,
+    /// `redirect_uri`, the extra parameters in order, `state` appended last), every value
+    /// percent-encoded with the strict RFC 3986 unreserved set, and the plain `?` join.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the built URL diverges from the byte-exact expectation.
+    #[test]
+    fn authorize_url_without_a_fragment_keeps_its_documented_byte_shape() {
+        let slots = BTreeMap::new();
+
+        let env = ValueEnv::for_authorize_url(&slots, "client-id", None, "state-token");
+
+        let url = build_authorize_url(
+            &code_grant("https://auth.example/authorize"),
+            &env,
+            "state-token",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            url,
+            "https://auth.example/authorize?response_type=code&client_id=client-id\
+             &redirect_uri=https%3A%2F%2Fgateway.example%2Fcallback&scope=read%20write\
+             &state=state-token"
+        );
     }
 
     /// The engine's begin orchestration persists the flow row its outcome carries (README §5.3,

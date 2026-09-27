@@ -549,15 +549,15 @@ impl UpstreamParser {
         self.is_finished = true;
 
         match status.as_deref() {
-            Some(STATUS_REQUIRES_ACTION) => Ok(vec![IrEvent::Finish(IrFinishReason::ToolCall)]),
+            Some(STATUS_REQUIRES_ACTION) => Ok(vec![IrEvent::finish(IrFinishReason::ToolCall)]),
 
             Some(STATUS_INCOMPLETE | STATUS_BUDGET_EXCEEDED) => {
-                Ok(vec![IrEvent::Finish(IrFinishReason::Length)])
+                Ok(vec![IrEvent::finish(IrFinishReason::Length)])
             }
 
             // Deliberate: a cancelled interaction ended without failure, and the canonical finish
             // vocabulary has no cancelled member.
-            Some(STATUS_CANCELLED) => Ok(vec![IrEvent::Finish(IrFinishReason::Stop)]),
+            Some(STATUS_CANCELLED) => Ok(vec![IrEvent::finish(IrFinishReason::Stop)]),
 
             Some(STATUS_FAILED) => Err(PayloadError::new(
                 "upstream interaction failed with status `failed`",
@@ -566,7 +566,7 @@ impl UpstreamParser {
             // `completed`, the non-terminal `in_progress`/`queued` (which never terminate a
             // conformant stream), and any future status degrade to a clean stop rather than
             // failing a healthy stream.
-            _ => Ok(vec![IrEvent::Finish(IrFinishReason::Stop)]),
+            _ => Ok(vec![IrEvent::finish(IrFinishReason::Stop)]),
         }
     }
 
@@ -1143,7 +1143,7 @@ mod tests {
         assert_eq!(
             completed,
             vec![
-                IrEvent::Finish(IrFinishReason::ToolCall),
+                IrEvent::finish(IrFinishReason::ToolCall),
                 IrEvent::Usage(IrUsage {
                     input_tokens: 10,
                     // Output includes reasoning; the tool-use total is dropped.
@@ -1591,7 +1591,7 @@ mod tests {
                     arguments: r#"{"q":"hi"}"#.to_string(),
                     thought_signature: None,
                 },
-                IrEvent::Finish(IrFinishReason::Stop),
+                IrEvent::finish(IrFinishReason::Stop),
                 IrEvent::Usage(IrUsage {
                     input_tokens: 7,
                     output_tokens: 9,
@@ -1668,7 +1668,7 @@ mod tests {
                     arguments: r#"{"q":"hi"}"#.to_string(),
                     thought_signature: None,
                 },
-                IrEvent::Finish(IrFinishReason::Stop),
+                IrEvent::finish(IrFinishReason::Stop),
             ],
         );
 
@@ -1732,7 +1732,7 @@ mod tests {
 
         assert_eq!(
             completed,
-            vec![IrEvent::Finish(IrFinishReason::Stop)],
+            vec![IrEvent::finish(IrFinishReason::Stop)],
             "the live deltas already delivered the content",
         );
 
@@ -1770,7 +1770,7 @@ mod tests {
         assert_eq!(
             completed,
             vec![
-                IrEvent::Finish(IrFinishReason::Stop),
+                IrEvent::finish(IrFinishReason::Stop),
                 IrEvent::Usage(IrUsage {
                     input_tokens: 4,
                     output_tokens: 6,
@@ -1816,7 +1816,7 @@ mod tests {
 
             assert_eq!(
                 events.last(),
-                Some(&IrEvent::Finish(finish)),
+                Some(&IrEvent::finish(finish)),
                 "status `{status}` must finish with its documented reason",
             );
         }
@@ -1858,7 +1858,7 @@ mod tests {
 
         assert_eq!(
             parser.finish(),
-            vec![IrEvent::Finish(IrFinishReason::Stop)],
+            vec![IrEvent::finish(IrFinishReason::Stop)],
             "a clean end without a status degrades to stop",
         );
     }

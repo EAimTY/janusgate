@@ -110,7 +110,7 @@ describe("diagnoseFailure", () => {
         expect(diagnosis.fix).toContain("provider's state");
     });
 
-    it("points an OAuth provider's discovery refusal at reconnecting its expired authorization", () => {
+    it("offers an OAuth provider's discovery refusal the reconnect and the manual add without claiming the cause", () => {
         const diagnosis = diagnoseFailure(
             gatewayFailure(ErrorCode.UpstreamError, "upstream answered 502"),
             {
@@ -121,12 +121,14 @@ describe("diagnoseFailure", () => {
         );
 
         expect(diagnosis.kind).toBe("upstream");
-        expect(diagnosis.fix).toContain("authorization expired");
+        expect(diagnosis.fix).toContain("If the provider's authorization lapsed");
         expect(diagnosis.fix).toContain("reconnect");
+        expect(diagnosis.fix).toContain("no models yet");
+        expect(diagnosis.fix).toContain("add one by hand");
         expect(diagnosis.fix).not.toContain("API key");
     });
 
-    it("points a static-key provider's discovery refusal at its connection fields", () => {
+    it("offers a static-key provider's discovery refusal the credential fix and the manual add without claiming the cause", () => {
         const diagnosis = diagnoseFailure(
             gatewayFailure(ErrorCode.UpstreamError, "upstream answered 502"),
             {
@@ -139,6 +141,8 @@ describe("diagnoseFailure", () => {
         expect(diagnosis.kind).toBe("upstream");
         expect(diagnosis.fix).toContain("base URL");
         expect(diagnosis.fix).toContain("API key");
+        expect(diagnosis.fix).toContain("no models yet");
+        expect(diagnosis.fix).toContain("add one by hand");
         expect(diagnosis.fix).not.toContain("reconnect");
     });
 

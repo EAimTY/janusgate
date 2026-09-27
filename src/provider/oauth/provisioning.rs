@@ -8,13 +8,15 @@
 //! repeats its request until the done path turns true, within the wall-clock budget, and folds
 //! the completed operation's result extractions into the same state.
 //!
-//! The module also carries the machine-consumed-text validators every OAuth response fold
-//! applies before storage (README §7): [`validate_slot_value`] and [`validate_base_url_value`]
-//! are the one contract the provisioning fold here and the exchange and refresh-grant folds in
-//! [`super::exchange`] share, so a value an upstream response extracts is validated identically
-//! whichever stage extracted it. They live inside the oauth engine because every production
-//! fold runs there — a provisioning sequence only ever executes under this engine's stages.
+//! The module also carries the machine-consumed-text contract every OAuth response fold applies
+//! before storage (README §7): the fold here shares the validators
+//! [`super::exchange::validate_slot_value`] and [`super::exchange::validate_base_url_value`]
+//! with the exchange and refresh-grant folds in [`super::exchange`], so a value an upstream
+//! response extracts is validated identically whichever stage extracted it. They live in
+//! [`super::exchange`] — the layer's substrate — because every production fold runs inside the
+//! oauth engine: a provisioning sequence only ever executes under this engine's stages.
 
+use super::exchange::{validate_base_url_value, validate_slot_value};
 use crate::{
     provider::{
         Error,
@@ -399,50 +401,6 @@ fn apply_target(
             message: "the provisioning extraction targets a value its stage does not produce"
                 .to_string(),
         }),
-    }
-}
-
-/// Validates one stored slot value against the shared routing-safe text contract (README §7):
-/// non-empty printable ASCII without whitespace. An upstream value outside the set fails the
-/// stage instead of storing an unusable value. Shared by every OAuth response fold — the
-/// provisioning fold here and the exchange and refresh-grant folds in [`super::exchange`] — so
-/// one contract guards one storage boundary.
-///
-/// # Errors
-///
-/// Returns [`Error::Unavailable`] when the value carries a character outside the allowed set or
-/// is empty.
-pub(crate) fn validate_slot_value(name: &str, value: &str) -> Result<(), Error> {
-    if crate::routing_text::is_routing_safe_text(value) {
-        Ok(())
-    } else {
-        Err(Error::Unavailable {
-            detail: format!(
-                "the upstream reported a `{name}` value outside printable ASCII without whitespace"
-            ),
-        })
-    }
-}
-
-/// Validates one stored base-URL value against the shared base-URL contract of
-/// [`crate::routing_text::is_base_url`] (README §7): routing-safe text plus the non-empty
-/// `http://` or `https://` scheme — the same composition the management boundary enforces on
-/// operator-supplied URLs. Shared by every OAuth response fold — the provisioning fold here and
-/// the exchange and refresh-grant folds in [`super::exchange`] — so one contract guards one
-/// storage boundary.
-///
-/// # Errors
-///
-/// Returns [`Error::Unavailable`] when the value falls outside the shared base-URL contract.
-pub(crate) fn validate_base_url_value(value: &str) -> Result<(), Error> {
-    if crate::routing_text::is_base_url(value) {
-        Ok(())
-    } else {
-        Err(Error::Unavailable {
-            detail: "the upstream reported a `base_url` value outside printable ASCII without \
-                     whitespace or without an `http(s)://` scheme"
-                .to_string(),
-        })
     }
 }
 

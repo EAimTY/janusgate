@@ -335,32 +335,33 @@ describe("ProviderDetailScreen facts", () => {
         );
     }
 
-    it("states the stored definition version the provider is bound to", async () => {
-        const api = screenApi({
-            providers: [
-                provider,
-            ],
-            models: [
-                discoveredModel,
-            ],
-            onDiscover: () => undefined,
-        });
-
-        disposes.push(
-            render(
-                () => (
-                    <ProviderDetailScreen
-                        api={api}
-                        providerId={5}
-                    />
-                ),
-                document.body,
-            ),
-        );
+    it("names a preset's definition by the title the operator picked, with the stored id beneath", async () => {
+        // The shared row is bound to the catalog preset
+        // `generic-openai-chat-completions` — at creation the operator saw
+        // its title, so the fact leads with that and keeps the stored
+        // `name vversion` beneath for exact identification.
+        mount(provider);
         await settle();
 
-        expect(bodyText()).toContain("Recipe");
+        expect(bodyText()).toContain("Definition");
+        expect(bodyText()).toContain("OpenAI-compatible Chat Completions API");
         expect(bodyText()).toContain("generic-openai-chat-completions v1");
+        expect(bodyText()).not.toContain("Recipe");
+    });
+
+    it("states a hand-authored definition by its stored name alone, inventing no title", async () => {
+        // A name outside the preset catalog never existed as a pick, so the
+        // fact has only the stored identity to state — and states it plainly.
+        mount({
+            ...provider,
+            provider_definition_name: "my-own-definition",
+            provider_definition_version: 3,
+        });
+        await settle();
+
+        expect(bodyText()).toContain("Definition");
+        expect(bodyText()).toContain("my-own-definition v3");
+        expect(bodyText()).not.toContain("Recipe");
     });
 
     it("names a static key's kind once — on the header line, never as a badge", async () => {

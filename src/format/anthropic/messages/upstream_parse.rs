@@ -681,7 +681,7 @@ impl UpstreamParser {
         if let Some(stop_reason) = &event.delta.stop_reason {
             self.is_finished = true;
 
-            events.push(IrEvent::Finish(finish_reason_from_stop(stop_reason)));
+            events.push(IrEvent::finish(finish_reason_from_stop(stop_reason)));
         }
 
         events
@@ -839,7 +839,7 @@ impl UpstreamEventParser for UpstreamParser {
 
         self.is_finished = true;
 
-        events.push(IrEvent::Finish(
+        events.push(IrEvent::finish(
             message
                 .stop_reason
                 .as_deref()
@@ -1054,7 +1054,7 @@ mod tests {
                     cache_write_tokens: Some(3),
                     reasoning_tokens: Some(7),
                 }),
-                IrEvent::Finish(IrFinishReason::ToolCall),
+                IrEvent::finish(IrFinishReason::ToolCall),
             ],
         );
 
@@ -1285,7 +1285,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(parser.finish(), vec![IrEvent::Finish(IrFinishReason::Stop)]);
+        assert_eq!(parser.finish(), vec![IrEvent::finish(IrFinishReason::Stop)]);
     }
 
     /// Publishes the partial input-side usage report immediately after [`IrEvent::MessageStart`]
@@ -1359,7 +1359,7 @@ mod tests {
             }],
         );
 
-        assert_eq!(parser.finish(), vec![IrEvent::Finish(IrFinishReason::Stop)]);
+        assert_eq!(parser.finish(), vec![IrEvent::finish(IrFinishReason::Stop)]);
 
         // A usage object reporting output totals only carries no input-side column and is not
         // an input report.
@@ -1621,7 +1621,7 @@ mod tests {
                     arguments: r#"{"q":"x"}"#.to_string(),
                     thought_signature: None,
                 },
-                IrEvent::Finish(IrFinishReason::Stop),
+                IrEvent::finish(IrFinishReason::Stop),
                 IrEvent::Usage(IrUsage {
                     input_tokens: 5,
                     output_tokens: 9,

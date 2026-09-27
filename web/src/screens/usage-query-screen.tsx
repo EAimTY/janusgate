@@ -95,9 +95,9 @@ function boundError(label: string, value: string): string | null {
  */
 const HELD_QUERY_NOTICE: ScreenNotice = {
     tone: "warn",
-    title: "The query is held while a field is marked.",
-    detail: "This cycle re-read the entity lists but not the buckets — the standing answer is the last query's, and the marked field names its mistake inline.",
-    fix: "Correct the marked field, then run the query again.",
+    title: "The query did not run — a filter value is invalid.",
+    detail: "The answer below is still the previous query's — the field showing an inline error names the problem.",
+    fix: "Fix that field, then run the query again.",
 };
 
 /**
@@ -113,7 +113,9 @@ const HELD_QUERY_NOTICE: ScreenNotice = {
  * *View requests* door carries the standing filter fields into the stream's
  * draft — the crossing back that opens a failing combination's recorded
  * requests without a filter rebuild — while the From and To bounds stay
- * behind, the stream's own window row governing time there.
+ * behind, the stream's own window row governing time there; while a
+ * hand-typed bound stands set, the door states that trade beside its
+ * label.
  */
 export function UsageQueryScreen(props: {
     readonly api: ManagementApi;
@@ -318,9 +320,11 @@ export function UsageQueryScreen(props: {
         await runCycle(true);
     };
 
+    /** Whether either hand-typed bound holds a value — the View requests door's date trade. */
+    const hasBoundInput = (): boolean => fromInput().trim() !== "" || toInput().trim() !== "";
+
     /** Whether any filter field or bound holds a value — the Clear filters button's visibility. */
-    const isAnyFilterSet = (): boolean =>
-        hasUsageFilterFields(fields()) || fromInput().trim() !== "" || toInput().trim() !== "";
+    const isAnyFilterSet = (): boolean => hasUsageFilterFields(fields()) || hasBoundInput();
 
     /**
      * Resets the filter fields and the bounds — the dimension switches stay,
@@ -354,6 +358,9 @@ export function UsageQueryScreen(props: {
             >
                 <ButtonLink href={hrefs.usage(fieldsStreamDraft(fields()))}>
                     View requests
+                    <Show when={hasBoundInput()}>
+                        <span class="sr-only">{" — From and To do not apply there."}</span>
+                    </Show>
                 </ButtonLink>
             </PageHeader>
 

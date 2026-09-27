@@ -11,6 +11,7 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 /// Parses upstream Chat Completions responses — streamed chunks or a full JSON body — into IR
 /// events.
@@ -26,8 +27,10 @@ pub(crate) struct UpstreamParser {
     /// Tool calls being assembled from deltas.
     pending_tool_calls: Vec<PendingToolCall>,
 
-    /// Whether completed calls were already flushed.
-    has_flushed_calls: bool,
+    /// Indexes of the calls a flush already completed: the flush completes exactly the calls
+    /// opened but not yet completed — including calls opened after the finish chunk — and never
+    /// re-completes an already-completed call index (README §6.2).
+    flushed_call_indexes: BTreeSet<usize>,
 }
 
 /// Tool call being assembled from upstream deltas.
@@ -242,7 +245,7 @@ impl UpstreamParser {
 
                 self.is_finished = true;
 
-                events.push(IrEvent::Finish(super::finish_reason_from_openai(
+                events.push(IrEvent::finish(super::finish_reason_from_openai(
                     finish_reason,
                 )));
             }
@@ -367,25 +370,34 @@ impl UpstreamParser {
         );
     }
 
-    /// Emits [`IrEvent::ToolCallDone`] for every pending call, marking them
-    /// complete.
+    /// Emits [`IrEvent::ToolCallDone`] for every pending call opened but not yet completed, and
+    /// records the completed indexes: the calls buffered when the finish chunk arrives complete
+    /// there, and the calls opened after it complete at the clean end-of-stream flush (README
+    /// §6.3). A delta that reopens an already-completed index keeps streaming deltas into a
+    /// pending entry no flush ever completes — its [`IrEvent::ToolCallDone`] already streamed and
+    /// a repeated one is contract-forbidden (README §6.2) — so the reopened entry is retained
+    /// only to keep accumulating such deltas.
     fn flush_pending_calls(&mut self) -> Vec<IrEvent> {
-        if self.has_flushed_calls {
-            return Vec::new();
+        let mut events = Vec::new();
+        let mut reopened = Vec::new();
+
+        for pending in self.pending_tool_calls.drain(..) {
+            if self.flushed_call_indexes.insert(pending.index) {
+                events.push(IrEvent::ToolCallDone {
+                    index: pending.index,
+                    call_id: pending.call_id,
+                    name: pending.name,
+                    arguments: pending.arguments,
+                    thought_signature: pending.thought_signature,
+                });
+            } else {
+                reopened.push(pending);
+            }
         }
 
-        self.has_flushed_calls = true;
+        self.pending_tool_calls = reopened;
 
-        self.pending_tool_calls
-            .drain(..)
-            .map(|pending| IrEvent::ToolCallDone {
-                index: pending.index,
-                call_id: pending.call_id,
-                name: pending.name,
-                arguments: pending.arguments,
-                thought_signature: pending.thought_signature,
-            })
-            .collect()
+        events
     }
 
     /// Emits [`IrEvent::MessageStart`] once per response.
@@ -445,7 +457,7 @@ impl UpstreamEventParser for UpstreamParser {
 
         self.is_finished = true;
 
-        events.push(IrEvent::Finish(finish_reason));
+        events.push(IrEvent::finish(finish_reason));
 
         if let Some(usage) = &response.usage {
             events.push(usage_event(usage));
@@ -631,7 +643,7 @@ mod tests {
                     id: "c1".to_string(),
                     model: "m".to_string(),
                 },
-                IrEvent::Finish(IrFinishReason::Stop),
+                IrEvent::finish(IrFinishReason::Stop),
             ],
         );
 
@@ -719,7 +731,7 @@ mod tests {
                     arguments: r#"{"city":"Paris"}"#.to_string(),
                     thought_signature: None,
                 },
-                IrEvent::Finish(IrFinishReason::ToolCall),
+                IrEvent::finish(IrFinishReason::ToolCall),
             ],
         );
 
@@ -795,8 +807,106 @@ mod tests {
                     arguments: r#"{"city":"Paris"}"#.to_string(),
                     thought_signature: None,
                 },
-                IrEvent::Finish(IrFinishReason::ToolCall),
+                IrEvent::finish(IrFinishReason::ToolCall),
             ],
         );
+    }
+
+    /// Flushes a call opened after the finish chunk at the clean end-of-stream (README §6.3): the
+    /// finish chunk completes the calls buffered when it arrives, a call opened afterwards
+    /// completes exactly once through the end-of-stream flush, and a delta reopening an
+    /// already-completed index — carried here by the same post-finish chunk — never re-completes
+    /// its call (README §6.2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed events diverge from the flush contract.
+    #[test]
+    fn flushes_a_call_opened_after_the_finish_chunk_at_end_of_stream() {
+        let mut parser = UpstreamParser::new();
+
+        let mut events = Vec::new();
+
+        for data in [
+            // The call buffered when the finish chunk arrives.
+            r#"{"id":"c1","model":"m","choices":[{"index":0,"delta":{
+               "tool_calls":[{"index":0,"id":"call_a","function":{"name":"a",
+               "arguments":"{}"}}]}}]}"#,
+            r#"{"id":"c1","model":"m","choices":[{"index":0,"delta":{},
+               "finish_reason":"tool_calls"}]}"#,
+            // The post-finish chunk: a delta reopening the completed index 0 beside the opening
+            // delta of the new call at index 1.
+            r#"{"id":"c1","model":"m","choices":[{"index":0,"delta":{
+               "tool_calls":[{"index":0,"function":{"arguments":"x"}},
+               {"index":1,"id":"call_b","function":{"name":"b",
+               "arguments":"{\"y\":"}}]}}]}"#,
+            r#"{"id":"c1","model":"m","choices":[{"index":0,"delta":{
+               "tool_calls":[{"index":1,"function":{"arguments":"1}"}}]}}]}"#,
+        ] {
+            #[expect(
+                clippy::expect_used,
+                reason = "the fixture chunks are constructed to parse"
+            )]
+            let ingested = parser.ingest_frame(&frame(data)).expect("the chunk parses");
+
+            events.extend(ingested);
+        }
+
+        assert_eq!(
+            events,
+            vec![
+                IrEvent::MessageStart {
+                    id: "c1".to_string(),
+                    model: "m".to_string(),
+                },
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: Some("call_a".to_string()),
+                    name: Some("a".to_string()),
+                    arguments_delta: "{}".to_string(),
+                },
+                IrEvent::ToolCallDone {
+                    index: 0,
+                    call_id: "call_a".to_string(),
+                    name: "a".to_string(),
+                    arguments: "{}".to_string(),
+                    thought_signature: None,
+                },
+                IrEvent::finish(IrFinishReason::ToolCall),
+                IrEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: None,
+                    name: None,
+                    arguments_delta: "x".to_string(),
+                },
+                IrEvent::ToolCallDelta {
+                    index: 1,
+                    call_id: Some("call_b".to_string()),
+                    name: Some("b".to_string()),
+                    arguments_delta: "{\"y\":".to_string(),
+                },
+                IrEvent::ToolCallDelta {
+                    index: 1,
+                    call_id: None,
+                    name: None,
+                    arguments_delta: "1}".to_string(),
+                },
+            ],
+        );
+
+        // The end-of-stream flush completes exactly the call opened after the finish chunk.
+        assert_eq!(
+            parser.finish(),
+            vec![IrEvent::ToolCallDone {
+                index: 1,
+                call_id: "call_b".to_string(),
+                name: "b".to_string(),
+                arguments: "{\"y\":1}".to_string(),
+                thought_signature: None,
+            }],
+        );
+
+        // A repeated end-of-stream flush is empty: each completed index completes exactly once.
+        assert_eq!(parser.finish(), Vec::new());
     }
 }

@@ -462,7 +462,18 @@ pub(crate) enum IrEvent {
     },
 
     /// The completion finished.
-    Finish(IrFinishReason),
+    Finish {
+        /// Reason the completion finished.
+        reason: IrFinishReason,
+
+        /// Verbatim upstream prompt-block reason, set exactly when the finish is the
+        /// content-filter finish a parser derived from its upstream's prompt-feedback
+        /// channel; every other finish carries [`None`]. Family-bound round-trip detail in
+        /// the [`IrPart::ToolCall`] `thought_signature` mold: the native GenerateContent
+        /// surface renders it as `promptFeedback.blockReason` (README §6.3), every other
+        /// surface ignores it.
+        prompt_block_reason: Option<String>,
+    },
 
     /// Token accounting.
     Usage(IrUsage),
@@ -470,6 +481,17 @@ pub(crate) enum IrEvent {
     /// Terminal marker; always appended by the gateway after the upstream response is fully
     /// consumed, never by parsers.
     Done,
+}
+
+impl IrEvent {
+    /// Builds a plain [`IrEvent::Finish`] carrying no prompt-block detail — the shape of
+    /// every finish but a prompt-level block.
+    pub(crate) fn finish(reason: IrFinishReason) -> Self {
+        Self::Finish {
+            reason,
+            prompt_block_reason: None,
+        }
+    }
 }
 
 /// Token accounting of a completion.
@@ -532,6 +554,10 @@ pub(crate) struct IrAggregation {
 
     /// Reason the completion finished, when reported.
     pub(crate) finish: Option<IrFinishReason>,
+
+    /// Verbatim upstream prompt-block reason when the finish is a prompt-level block
+    /// (README §6.3); [`None`] for every other finish.
+    pub(crate) prompt_block_reason: Option<String>,
 
     /// Token accounting, when reported.
     pub(crate) usage: Option<IrUsage>,
@@ -661,7 +687,13 @@ impl Aggregator {
                 }
             }
 
-            IrEvent::Finish(reason) => self.aggregation.finish = Some(*reason),
+            IrEvent::Finish {
+                reason,
+                prompt_block_reason,
+            } => {
+                self.aggregation.finish = Some(*reason);
+                self.aggregation.prompt_block_reason = prompt_block_reason.clone();
+            }
 
             IrEvent::Usage(usage) => self.aggregation.usage = Some(*usage),
         }

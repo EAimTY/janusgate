@@ -1080,7 +1080,9 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
         // notice names the way out while the standing buckets stay visible
         // beside it.
         expect(queryCount).toBe(1);
-        expect(document.body.textContent).toContain("The query is held while a field is marked.");
+        expect(document.body.textContent).toContain(
+            "The query did not run — a filter value is invalid.",
+        );
         expect(document.body.textContent).toContain("2026-09-01");
     });
 
@@ -1142,7 +1144,9 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
         });
         await settle();
 
-        expect(document.body.textContent).toContain("The query is held while a field is marked.");
+        expect(document.body.textContent).toContain(
+            "The query did not run — a filter value is invalid.",
+        );
 
         // Correcting the field releases the submit, and the successful
         // cycle replaces both the buckets and the notice.
@@ -1165,7 +1169,7 @@ describe("UsageQueryScreen refresh holding on a marked field", () => {
 
         expect(queryCount).toBe(2);
         expect(document.body.textContent).not.toContain(
-            "The query is held while a field is marked.",
+            "The query did not run — a filter value is invalid.",
         );
         expect(document.body.textContent).toContain("2026-09-01");
     });
@@ -1688,21 +1692,31 @@ describe("UsageQueryScreen aggregates-to-stream door", () => {
 
         // The shared filter fields stand set the way an operator's diagnostic
         // question holds them: the arrival subject's provider narrow, the
-        // grouped failure outcome, the stream mode, one status, and a From
-        // bound on top.
+        // grouped failure outcome, the stream mode, and one status.
         chooseSelect("Outcome", "failures");
         chooseSelect("Stream mode", "streamed");
         typeInto(labeledInput("HTTP statuses"), "429");
+        await settle();
+
+        // With no bound set the door reads its bare label — the date trade is
+        // announced only while a From or To bound stands.
+        expect(
+            linkTo("/usage?provider=1&outcome=upstream_error,internal&stream=streamed&status=429")
+                .textContent,
+        ).toBe("View requests");
+
+        // A From bound joins the question.
         typeInto(labeledInput("From"), "2026-09-23T10:00");
         await settle();
 
         // The door crosses to the stream with the shared fields as its draft —
         // the grouped outcome spelled as the pair the stream route reads back —
         // while the From bound stays behind with no stream spelling to become:
-        // the stream's own window row governs time there.
+        // the stream's own window row governs time there. The door states that
+        // trade beside its label, visually hidden.
         expect(
             linkTo("/usage?provider=1&outcome=upstream_error,internal&stream=streamed&status=429")
                 .textContent,
-        ).toBe("View requests");
+        ).toBe("View requests — From and To do not apply there.");
     });
 });

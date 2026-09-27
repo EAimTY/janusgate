@@ -217,7 +217,7 @@ impl UpstreamParser {
             if let Some(finish_reason) = &candidate.finish_reason {
                 self.is_finished = true;
 
-                events.push(IrEvent::Finish(finish_reason_from_gemini(
+                events.push(IrEvent::finish(finish_reason_from_gemini(
                     finish_reason,
                     self.is_call_delivered,
                 )?));
@@ -227,17 +227,20 @@ impl UpstreamParser {
         // A prompt-level block carries `promptFeedback.blockReason` and no candidates, so no
         // `finishReason` ever arrives and the clean end of stream would degrade the block into a
         // successful `Stop`. Upstream sends `promptFeedback` only when no candidate was generated,
-        // so a candidate finish above always wins.
+        // so a candidate finish above always wins. The verbatim block reason rides the finish so
+        // the native render surface can mirror `promptFeedback` (README §6.3).
         if !self.is_finished
-            && value
+            && let Some(block_reason) = value
                 .prompt_feedback
                 .as_ref()
                 .and_then(|feedback| feedback.block_reason.as_deref())
-                .is_some()
         {
             self.is_finished = true;
 
-            events.push(IrEvent::Finish(IrFinishReason::ContentFilter));
+            events.push(IrEvent::Finish {
+                reason: IrFinishReason::ContentFilter,
+                prompt_block_reason: Some(block_reason.to_string()),
+            });
         }
 
         if let Some(usage) = &value.usage_metadata {
@@ -259,13 +262,28 @@ impl UpstreamParser {
     /// Panics if serializing the borrowed `args` map fails, which cannot occur: serializing a JSON
     /// object map is infallible.
     fn ingest_part(&mut self, part: &GeminiPart, events: &mut Vec<IrEvent>) {
-        if let Some(text) = &part.text {
-            let is_thought = part.thought.unwrap_or(false);
+        let is_thought = part.thought.unwrap_or(false);
 
+        if let Some(text) = &part.text {
             events.push(if is_thought {
                 IrEvent::ReasoningDelta(text.clone())
             } else {
                 IrEvent::TextDelta(text.clone())
+            });
+        }
+
+        // A thinking part's `thoughtSignature` is the replayable reasoning state the
+        // thinking docs require clients to resend exactly as received
+        // (`ai.google.dev/gemini-api/docs/thinking`), so it must survive the IR. The
+        // empty-text done closes the delta-delivered block carrying the signature — the
+        // conformant deltas-then-empty-done pairing of README §6.2 — and the Interactions
+        // surface replays it as the signature-bearing thought step. A functionCall part's
+        // signature keeps its own channel below.
+        if is_thought && let Some(signature) = &part.thought_signature {
+            events.push(IrEvent::ReasoningDone {
+                text: String::new(),
+                signature: Some(signature.clone()),
+                opaque: Value::Null,
             });
         }
 
@@ -462,6 +480,103 @@ mod tests {
         assert!(error.to_string().contains("MALFORMED_FUNCTION_CALL"));
     }
 
+    /// A thinking part's `thoughtSignature` is replayable reasoning state the thinking docs
+    /// require clients to resend exactly as received
+    /// (`ai.google.dev/gemini-api/docs/thinking`), so it must survive the IR: the part's text
+    /// streams as the reasoning delta and the empty-text done closes the block carrying the
+    /// signature — the conformant deltas-then-empty-done pairing (README §6.2), the channel
+    /// the Interactions surface replays as a signature-bearing thought step. An unsigned
+    /// thinking part keeps emitting its bare delta with no closing done.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parsed events drop or misplace the signature.
+    #[test]
+    fn thinking_part_signature_survives_into_the_ir() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [
+                    {"text": "hmm", "thought": true, "thoughtSignature": "sig-t"},
+                    {"text": "answer"},
+                ]},
+                "finishReason": "STOP",
+            }],
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the signed thinking part is constructed to parse"
+        )]
+        let events = parser
+            .parse_json_response(body)
+            .expect("a signed thinking part parses");
+
+        let delta_position = events
+            .iter()
+            .position(|event| matches!(event, IrEvent::ReasoningDelta(text) if text == "hmm"));
+
+        let done_position = events.iter().position(|event| {
+            matches!(
+                event,
+                IrEvent::ReasoningDone {
+                    text,
+                    signature: Some(signature),
+                    opaque: Value::Null,
+                } if text.is_empty() && signature == "sig-t"
+            )
+        });
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the signed thinking part is constructed to deliver both events"
+        )]
+        let delta_position = delta_position.expect("the reasoning delta must parse");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the signed thinking part is constructed to deliver both events"
+        )]
+        let done_position = done_position.expect("the signature must close the block");
+
+        assert!(
+            delta_position < done_position,
+            "the done closes the block its delta delivered",
+        );
+
+        // An unsigned thinking part emits no closing done: its stream shape is unchanged.
+        let unsigned = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [
+                    {"text": "hmm", "thought": true},
+                ]},
+                "finishReason": "STOP",
+            }],
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the unsigned thinking part is constructed to parse"
+        )]
+        let events = parser
+            .parse_json_response(unsigned)
+            .expect("an unsigned thinking part parses");
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, IrEvent::ReasoningDelta(text) if text == "hmm")),
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, IrEvent::ReasoningDone { .. })),
+        );
+    }
+
     /// Ordinary finish reasons keep mapping through the now fallible mapper:
     /// a turn cut off by the token limit still parses and reports the
     /// canonical length finish.
@@ -488,7 +603,7 @@ mod tests {
             .parse_json_response(body)
             .expect("a MAX_TOKENS turn parses");
 
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Length)));
+        assert!(events.contains(&IrEvent::finish(IrFinishReason::Length)));
     }
 
     /// A prompt-level block carries `promptFeedback.blockReason` and no
@@ -514,7 +629,12 @@ mod tests {
             .parse_json_response(body.clone())
             .expect("a prompt-blocked body parses");
 
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+        // The verbatim upstream block reason rides the finish so the native render surface
+        // can mirror `promptFeedback` (README §6.3).
+        assert!(events.contains(&IrEvent::Finish {
+            reason: IrFinishReason::ContentFilter,
+            prompt_block_reason: Some("SAFETY".to_string()),
+        }));
         assert!(parser.finish().is_empty(), "no spurious Stop may follow");
 
         let frame = SseFrame {
@@ -532,7 +652,10 @@ mod tests {
             .ingest_frame(&frame)
             .expect("a prompt-blocked frame parses");
 
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+        assert!(events.contains(&IrEvent::Finish {
+            reason: IrFinishReason::ContentFilter,
+            prompt_block_reason: Some("SAFETY".to_string()),
+        }));
     }
 
     /// A turn the upstream flagged for an unsupported language (`LANGUAGE`)
@@ -563,7 +686,7 @@ mod tests {
             .parse_json_response(body.clone())
             .expect("a LANGUAGE-flagged body parses");
 
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+        assert!(events.contains(&IrEvent::finish(IrFinishReason::ContentFilter)));
         assert!(parser.finish().is_empty(), "no spurious Stop may follow");
 
         let frame = SseFrame {
@@ -581,7 +704,7 @@ mod tests {
             .ingest_frame(&frame)
             .expect("a LANGUAGE-flagged frame parses");
 
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+        assert!(events.contains(&IrEvent::finish(IrFinishReason::ContentFilter)));
     }
 
     /// A turn the upstream flagged through one of the image-generation
@@ -618,7 +741,7 @@ mod tests {
                 .parse_json_response(body.clone())
                 .expect("a flagged body parses");
 
-            assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+            assert!(events.contains(&IrEvent::finish(IrFinishReason::ContentFilter)));
             assert!(parser.finish().is_empty(), "no spurious Stop may follow");
 
             let frame = SseFrame {
@@ -634,7 +757,7 @@ mod tests {
             )]
             let events = parser.ingest_frame(&frame).expect("a flagged frame parses");
 
-            assert!(events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+            assert!(events.contains(&IrEvent::finish(IrFinishReason::ContentFilter)));
             assert!(parser.finish().is_empty(), "no spurious Stop may follow");
         }
     }
@@ -719,7 +842,7 @@ mod tests {
             .parse_json_response(body.clone())
             .expect("an unknown finish reason parses");
 
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+        assert!(events.contains(&IrEvent::finish(IrFinishReason::Stop)));
         assert!(parser.finish().is_empty(), "no spurious Stop may follow");
 
         let frame = SseFrame {
@@ -737,7 +860,7 @@ mod tests {
             .ingest_frame(&frame)
             .expect("an unknown finish reason parses");
 
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
+        assert!(events.contains(&IrEvent::finish(IrFinishReason::Stop)));
     }
 
     /// Upstream sends `promptFeedback` only when no candidate was generated,
@@ -767,8 +890,11 @@ mod tests {
             .parse_json_response(body)
             .expect("a finishing candidate parses");
 
-        assert!(events.contains(&IrEvent::Finish(IrFinishReason::Stop)));
-        assert!(!events.contains(&IrEvent::Finish(IrFinishReason::ContentFilter)));
+        assert!(events.contains(&IrEvent::Finish {
+            reason: IrFinishReason::Stop,
+            prompt_block_reason: None,
+        }));
+        assert!(!events.contains(&IrEvent::finish(IrFinishReason::ContentFilter)));
     }
 
     /// The `usageMetadata` breakdown fields flow into the IR usage detail:

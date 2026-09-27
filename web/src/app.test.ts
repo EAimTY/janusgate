@@ -179,21 +179,23 @@ describe("App disconnect confirm", () => {
         await settle();
 
         expect(bodyText()).toContain(
-            "Forget the stored token? Reconnecting means entering it again.",
+            "Disconnect and forget the stored token? Reconnecting means entering it again.",
         );
 
         // Keep steps back to the plain control.
         buttonWithText("Keep").click();
         await settle();
 
-        expect(bodyText()).not.toContain("Forget the stored token?");
+        expect(bodyText()).not.toContain("Disconnect and forget the stored token?");
         expect(bodyText()).toContain("Disconnect");
 
         // And the armed action forgets: setup reopens, seeded with the address
-        // the forgotten connection served — never the token.
+        // the forgotten connection served — never the token. In the armed
+        // state the confirm is the only "Disconnect" button — the trigger it
+        // replaced is unmounted.
         buttonWithText("Disconnect").click();
         await settle();
-        buttonWithText("Forget token").click();
+        buttonWithText("Disconnect").click();
         await settle();
 
         expect(connectionService.currentConnection()).toBeNull();

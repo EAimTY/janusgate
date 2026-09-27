@@ -1078,32 +1078,12 @@ impl<'a> ExpressionWalk<'a> {
                 } else {
                     Err(ValidationError::new(format!(
                         "{what} references `{}`, which the {} stage does not carry",
-                        kind_name(kind),
+                        kind.display_name(),
                         stage_name(self.stage)
                     )))
                 }
             }
         }
-    }
-}
-
-/// The human-readable name of a value kind, rendered by rejections.
-fn kind_name(kind: ValueKind) -> &'static str {
-    match kind {
-        ValueKind::Literal => "literal",
-        ValueKind::Secret => "secret",
-        ValueKind::Slot => "slot",
-        ValueKind::ClientId => "client ID",
-        ValueKind::ClientSecret => "client secret",
-        ValueKind::AuthorizationCode => "authorization code",
-        ValueKind::CodeVerifier => "PKCE verifier",
-        ValueKind::RedirectUri => "redirect URI",
-        ValueKind::OAuthState => "state token",
-        ValueKind::DeviceCode => "device code",
-        ValueKind::RefreshToken => "refresh token",
-        ValueKind::RequestUuid => "request UUID",
-        ValueKind::Model => "model",
-        ValueKind::Base => "base URL",
     }
 }
 

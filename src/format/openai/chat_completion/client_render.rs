@@ -512,7 +512,7 @@ impl ClientSseRenderer for SseRenderer {
                 }
             }
 
-            IrEvent::Finish(reason) => {
+            IrEvent::Finish { reason, .. } => {
                 vec![self.chunk_frame(
                     Delta::default(),
                     Some(super::finish_reason_to_openai(*reason)),

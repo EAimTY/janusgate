@@ -662,6 +662,65 @@ describe("ProviderNewScreen creation", () => {
     });
 });
 
+describe("ProviderNewScreen name seeding", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("seeds the untouched name field with the picked preset's own suggestion", async () => {
+        disposes.push(render(() => <ProviderNewScreen api={screenApi()} />, document.body));
+        await settle();
+
+        // The boot read answers an empty gateway: the fresh page's seed is
+        // the default preset's bare suggestion.
+        expect(labeledInput("Name").value).toBe(PROVIDER_PRESETS[0].suggestedName);
+
+        buttonWithText("Claude Code").click();
+        await settle();
+        expect(labeledInput("Name").value).toBe(presetById("claude-code").suggestedName);
+
+        // A second untouched pick seeds its own preset's suggestion, never
+        // the previous pick's: the field takes the write's own inputs, not a
+        // memo read back before the scheduler flushed the preset switch.
+        buttonWithText("Devin").click();
+        await settle();
+        expect(labeledInput("Name").value).toBe(presetById("devin").suggestedName);
+    });
+
+    it("seeds the suffixed suggestion when the boot read answers a taken base name", async () => {
+        const baseName = PROVIDER_PRESETS[0].suggestedName;
+        disposes.push(
+            render(
+                () => (
+                    <ProviderNewScreen
+                        api={screenApi([], {
+                            providers: () =>
+                                Promise.resolve({
+                                    providers: [
+                                        providerRowNamed(baseName),
+                                    ],
+                                }),
+                        })}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The boot read's seed computes over the names it just wrote: the
+        // committed taken-names set still reads empty at write time, so a
+        // memo read-back would seed the bare, already-taken base — a
+        // guaranteed conflict on submit.
+        expect(labeledInput("Name").value).toBe(`${baseName}-1`);
+    });
+});
+
 describe("ProviderNewScreen preset switching over an edited recipe", () => {
     const disposes: Array<() => void> = [];
 

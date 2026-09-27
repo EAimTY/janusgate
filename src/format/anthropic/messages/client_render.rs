@@ -810,7 +810,7 @@ impl ClientSseRenderer for SseRenderer {
                 frames
             }
 
-            IrEvent::Finish(reason) => {
+            IrEvent::Finish { reason, .. } => {
                 self.finish = Some(*reason);
 
                 // No terminal delta here: cross-format upstreams deliver usage after the
@@ -979,6 +979,7 @@ mod tests {
                 thought_signature: None,
             }],
             finish: Some(IrFinishReason::ToolCall),
+            prompt_block_reason: None,
             usage: Some(IrUsage {
                 input_tokens: 4,
                 output_tokens: 8,
@@ -1153,7 +1154,7 @@ mod tests {
         // Cross-format upstreams report usage after the finish reason: Finish only records the
         // stop reason and closes open blocks, and the terminal delta rides Done carrying the
         // final usage report.
-        let finish = renderer.render(&IrEvent::Finish(IrFinishReason::Stop));
+        let finish = renderer.render(&IrEvent::finish(IrFinishReason::Stop));
 
         assert!(finish.is_empty());
 
@@ -1234,7 +1235,7 @@ mod tests {
         });
 
         // The finish resolves the still-buffered head with zeros and closes no block.
-        let finish = renderer.render(&IrEvent::Finish(IrFinishReason::Stop));
+        let finish = renderer.render(&IrEvent::finish(IrFinishReason::Stop));
         let failure = vec![renderer.error_frame(&crate::api::Error::Internal)];
 
         assert_eq!(kinds(&finish), ["message_start"]);
@@ -1296,7 +1297,7 @@ mod tests {
 
         // The finish closes the text block the delta opened; the partial stands as the last
         // observation, so the terminal delta carries it.
-        let finish = renderer.render(&IrEvent::Finish(IrFinishReason::Stop));
+        let finish = renderer.render(&IrEvent::finish(IrFinishReason::Stop));
 
         assert_eq!(kinds(&finish), ["content_block_stop"]);
 

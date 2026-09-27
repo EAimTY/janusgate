@@ -836,7 +836,7 @@ mod tests {
                 cache_write_tokens: None,
                 reasoning_tokens: None,
             }),
-            IrEvent::Finish(IrFinishReason::Stop),
+            IrEvent::finish(IrFinishReason::Stop),
             IrEvent::Done,
         ];
 

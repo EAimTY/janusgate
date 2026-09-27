@@ -21,7 +21,7 @@ use super::{
     RenderStep, STATUS_COMPLETED, STATUS_IN_PROGRESS, STATUS_INCOMPLETE, STATUS_REQUIRES_ACTION,
 };
 use crate::{
-    format::{self, ClientSseRenderer},
+    format::{self, ClientSseRenderer, gemini::split_gemini_usage},
     ids,
     ir::{IrAggregation, IrFinishReason, IrUsage},
     sse,
@@ -74,19 +74,17 @@ struct OutUsage {
 }
 
 impl OutUsage {
-    /// Splits an IR usage report back into the Interactions members, the total rendered as the
-    /// sum of the members the gateway emits.
+    /// Splits an IR usage report back into the Interactions members through the shared Gemini
+    /// split, the total rendered as the sum of the members the gateway emits.
     fn from_usage(usage: &IrUsage) -> Self {
-        let output = usage
-            .output_tokens
-            .saturating_sub(usage.reasoning_tokens.unwrap_or(0));
+        let (input, output, thought, cached) = split_gemini_usage(usage);
 
         Self {
-            total_input_tokens: usage.input_tokens,
+            total_input_tokens: input,
             total_output_tokens: output,
-            total_tokens: usage.input_tokens + output + usage.reasoning_tokens.unwrap_or(0),
-            total_thought_tokens: usage.reasoning_tokens,
-            total_cached_tokens: usage.cached_tokens,
+            total_tokens: input + output + thought.unwrap_or(0),
+            total_thought_tokens: thought,
+            total_cached_tokens: cached,
         }
     }
 }
@@ -139,6 +137,20 @@ pub(super) fn render_json_response(public_id: &str, aggregation: &IrAggregation)
     }
 
     for call in &aggregation.tool_calls {
+        // The official `function_call` step carries no signature member (README §5.7), so a
+        // tool call carrying one — a GenerateContent upstream reports the replayable
+        // signature on the `functionCall` part — synthesizes the signature-bearing thought
+        // step beside its call, the step the official wire designates for replayable
+        // signatures. `summary` is optional on the official ThoughtStep
+        // (`ai.google.dev/api/interactions-api`), so the honest minimal form carries the
+        // signature alone.
+        if let Some(signature) = &call.thought_signature {
+            steps.push(RenderStep::Typed(super::TypedStep::Thought {
+                summary: Vec::new(),
+                signature: Some(signature.clone()),
+            }));
+        }
+
         steps.push(RenderStep::Typed(super::TypedStep::FunctionCall {
             id: call.call_id.clone(),
             name: call.name.clone(),
@@ -608,17 +620,21 @@ impl ClientSseRenderer for SseRenderer {
                         frames.push(stop_frame(open.index));
                     }
 
-                    // A done carrying the full text with no prior deltas reopens the block, so
-                    // the text rides the stream before the stop closes it.
-                    None if !text.is_empty() => {
+                    // A done carrying the full text with no prior deltas reopens the block, so the
+                    // text rides the stream before the stop closes it; a signature-only done
+                    // reopens it too, the signature being the replayable state that must reach the
+                    // stream even when the block carries no summary text.
+                    None if !text.is_empty() || signature.is_some() => {
                         let index = self.open_thought_step(&mut frames);
 
-                        frames.push(delta_frame(
-                            index,
-                            OutDelta::ThoughtSummary {
-                                content: SummaryContent::Text { text },
-                            },
-                        ));
+                        if !text.is_empty() {
+                            frames.push(delta_frame(
+                                index,
+                                OutDelta::ThoughtSummary {
+                                    content: SummaryContent::Text { text },
+                                },
+                            ));
+                        }
 
                         if let Some(signature) = signature {
                             frames
@@ -721,9 +737,25 @@ impl ClientSseRenderer for SseRenderer {
                 call_id,
                 name,
                 arguments,
-                thought_signature: _,
+                thought_signature,
             } => {
                 let mut frames = self.ensure_created();
+
+                // The official function_call step carries no signature member (README §5.7),
+                // so a signature-bearing done streams the signature-only thought step ahead of
+                // the call's frames — the step the official wire designates for replayable
+                // signatures, opened and closed around the signature delta just as a streamed
+                // thought step closes.
+                if let Some(signature) = thought_signature {
+                    let thought_index = self.next_index();
+
+                    frames.push(start_frame(thought_index, StartStep::Thought {}));
+                    frames.push(delta_frame(
+                        thought_index,
+                        OutDelta::ThoughtSignature { signature },
+                    ));
+                    frames.push(stop_frame(thought_index));
+                }
 
                 match self
                     .open_calls
@@ -775,7 +807,7 @@ impl ClientSseRenderer for SseRenderer {
                 frames
             }
 
-            IrEvent::Finish(reason) => {
+            IrEvent::Finish { reason, .. } => {
                 let mut frames = self.ensure_created();
 
                 self.finish = Some(*reason);
@@ -855,6 +887,7 @@ mod tests {
                 thought_signature: Some("sig-call".to_string()),
             }],
             finish: Some(IrFinishReason::ToolCall),
+            prompt_block_reason: None,
             usage: Some(IrUsage {
                 input_tokens: 10,
                 output_tokens: 28,
@@ -896,9 +929,18 @@ mod tests {
                 "content": [{"type": "text", "text": "hello"}],
             })),
         );
-        // The official function_call step carries the arguments object and no signature member.
+        // The official function_call step carries the arguments object and no signature member:
+        // the call's signature renders as the signature-only thought step beside it — the
+        // step the official wire designates for replayable signatures (summary optional).
         assert_eq!(
             rendered.pointer("/steps/3"),
+            Some(&serde_json::json!({
+                "type": "thought",
+                "signature": "sig-call",
+            })),
+        );
+        assert_eq!(
+            rendered.pointer("/steps/4"),
             Some(&serde_json::json!({
                 "type": "function_call",
                 "id": "call_1",
@@ -907,8 +949,8 @@ mod tests {
             })),
         );
         assert!(
-            rendered.pointer("/steps/4").is_none(),
-            "the resource renders exactly four steps",
+            rendered.pointer("/steps/5").is_none(),
+            "the resource renders exactly five steps",
         );
 
         assert_eq!(
@@ -955,6 +997,7 @@ mod tests {
                 thought_signature: None,
             }],
             finish: Some(IrFinishReason::ToolCall),
+            prompt_block_reason: None,
             usage: None,
         };
 
@@ -1103,7 +1146,7 @@ mod tests {
             arguments: r#"{"q":"hi"}"#.to_string(),
             thought_signature: None,
         }));
-        frames.extend(renderer.render(&IrEvent::Finish(IrFinishReason::Stop)));
+        frames.extend(renderer.render(&IrEvent::finish(IrFinishReason::Stop)));
         frames.extend(renderer.render(&IrEvent::Usage(IrUsage {
             input_tokens: 5,
             output_tokens: 6,
@@ -1247,6 +1290,189 @@ mod tests {
             reconciled.join("").contains("1}"),
             "the residual bytes the deltas did not deliver must stream",
         );
+    }
+
+    /// A GenerateContent upstream's signature state crosses to this surface through its
+    /// official home: a thinking part's `thoughtSignature` parses into a reasoning block and
+    /// a `functionCall` part's `thoughtSignature` rides the IR tool call, and both render as
+    /// signature-bearing `thought` steps — the step the official Interactions wire designates
+    /// for replayable signatures, its `summary` being optional
+    /// (`ai.google.dev/api/interactions-api`) — before the `function_call` step, which
+    /// carries no signature member (README §5.7).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rendered steps diverge from the pinned bridge.
+    #[test]
+    fn generate_content_signatures_render_as_signature_thought_steps() {
+        use crate::{
+            format::{UpstreamEventParser, gemini::generate_content::UpstreamParser},
+            ir::Aggregator,
+        };
+
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [
+                    {"text": "hmm", "thought": true, "thoughtSignature": "sig-t"},
+                    {"functionCall": {"id": "fc-1", "name": "search", "args": {"q": "hi"}},
+                     "thoughtSignature": "sig-call"},
+                ]},
+                "finishReason": "STOP",
+            }],
+        });
+
+        let mut parser = UpstreamParser::new();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the signed upstream body is constructed to parse"
+        )]
+        let events = parser
+            .parse_json_response(body)
+            .expect("the signed upstream body parses");
+
+        let mut aggregator = Aggregator::default();
+
+        for event in &events {
+            aggregator.ingest(event);
+        }
+
+        let aggregation = aggregator.finish();
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the rendered resource always serializes"
+        )]
+        let rendered: Value =
+            serde_json::to_value(render_json_response("public-model", &aggregation))
+                .expect("the aggregated resource serializes");
+
+        // The thinking part's block renders its summary text beside its signature.
+        assert_eq!(
+            rendered.pointer("/steps/0"),
+            Some(&serde_json::json!({
+                "type": "thought",
+                "summary": [{"type": "text", "text": "hmm"}],
+                "signature": "sig-t",
+            })),
+        );
+
+        // The call's signature synthesizes the minimal signature-only thought step, the
+        // official `summary` being optional.
+        assert_eq!(
+            rendered.pointer("/steps/1"),
+            Some(&serde_json::json!({
+                "type": "thought",
+                "signature": "sig-call",
+            })),
+        );
+
+        assert_eq!(
+            rendered.pointer("/steps/2"),
+            Some(&serde_json::json!({
+                "type": "function_call",
+                "id": "fc-1",
+                "name": "search",
+                "arguments": {"q": "hi"},
+            })),
+        );
+        assert!(
+            rendered.pointer("/steps/3").is_none(),
+            "the resource renders exactly three steps",
+        );
+    }
+
+    /// The streaming renderer carries a signature-bearing done the same way: a done carrying
+    /// a tool-call signature opens the signature-only thought step and closes it ahead of
+    /// the call's frames — an open call streams the thought step before its residual and
+    /// stop — and a signature-only reasoning done with no open block still streams its
+    /// signature, the state the thinking docs require surviving.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the frame sequences diverge from the pinned bridge.
+    #[test]
+    fn signature_bearing_dones_stream_the_thought_step() {
+        use crate::ir::IrEvent;
+
+        let mut renderer = SseRenderer::new("public-model".to_string());
+
+        renderer.render(&IrEvent::MessageStart {
+            id: String::new(),
+            model: String::new(),
+        });
+
+        let done_only = renderer.render(&IrEvent::ToolCallDone {
+            index: 0,
+            call_id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: r#"{"q":"hi"}"#.to_string(),
+            thought_signature: Some("sig-call".to_string()),
+        });
+
+        assert_eq!(
+            event_names(&done_only),
+            vec![
+                super::super::EVENT_STEP_START,
+                super::super::EVENT_STEP_DELTA,
+                super::super::EVENT_STEP_STOP,
+                super::super::EVENT_STEP_START,
+                super::super::EVENT_STEP_DELTA,
+                super::super::EVENT_STEP_STOP,
+            ],
+            "the thought step streams ahead of the call's frames",
+        );
+        assert!(
+            done_only
+                .join("")
+                .contains(r#""type":"thought_signature","signature":"sig-call""#),
+        );
+
+        // A done for a call already opened by deltas streams the thought step, then the
+        // residual bytes and the call's stop.
+        renderer.render(&IrEvent::ToolCallDelta {
+            index: 1,
+            call_id: Some("call_2".to_string()),
+            name: Some("calc".to_string()),
+            arguments_delta: r#"{"a":"#.to_string(),
+        });
+
+        let reconciled = renderer.render(&IrEvent::ToolCallDone {
+            index: 1,
+            call_id: "call_2".to_string(),
+            name: "calc".to_string(),
+            arguments: r#"{"a":1}"#.to_string(),
+            thought_signature: Some("sig-2".to_string()),
+        });
+
+        assert_eq!(
+            event_names(&reconciled),
+            vec![
+                super::super::EVENT_STEP_START,
+                super::super::EVENT_STEP_DELTA,
+                super::super::EVENT_STEP_STOP,
+                super::super::EVENT_STEP_DELTA,
+                super::super::EVENT_STEP_STOP,
+            ],
+            "the thought step streams before the open call's residual and stop",
+        );
+
+        // A signature-only reasoning done reopens a thought step to carry its signature.
+        let signature_only = renderer.render(&IrEvent::ReasoningDone {
+            text: String::new(),
+            signature: Some("sig-t".to_string()),
+            opaque: Value::Null,
+        });
+
+        assert_eq!(
+            event_names(&signature_only),
+            vec![
+                super::super::EVENT_STEP_START,
+                super::super::EVENT_STEP_DELTA,
+                super::super::EVENT_STEP_STOP,
+            ],
+        );
+        assert!(signature_only.join("").contains(r#""signature":"sig-t""#));
     }
 
     /// The mid-stream error frame carries the Gemini error envelope in a data-only frame.

@@ -359,6 +359,30 @@ describe("ModelEditScreen refresh against an open form", () => {
         expect(document.body.textContent).toContain("Model not found");
     });
 
+    it("arms deletion with the true consequence and recoveries, never a same-ID claim", async () => {
+        const holder = {
+            providers: [
+                provider,
+            ],
+            models: [
+                model,
+            ],
+        };
+        mount(holder);
+        await settle();
+
+        buttonWithText("Delete…").click();
+        await settle();
+
+        // The armed question is where the operator decides: nothing survives
+        // the deletion to claim back — both recoveries return a new row with
+        // a fresh identity, and a discovered rebuild carries no custom public
+        // ID (README §7.1).
+        expect(paragraphWithText("Delete alpha-gpt-x?").textContent).toBe(
+            "Delete alpha-gpt-x? Clients calling it 404 until it exists again — a discovered model returns as new on the next discovery (without a custom public ID); a manual one can be re-added from the Create model page as a new row.",
+        );
+    });
+
     it("reloads the listing when a delete answers gone", async () => {
         const holder = {
             providers: [

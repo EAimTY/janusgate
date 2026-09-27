@@ -3,10 +3,21 @@ import { type Accessor, onCleanup, Show } from "solid-js";
 import { appConfig } from "/src/config";
 import { formatTimestamp } from "/src/format";
 import type { StartProviderOauthResponse } from "/src/management-api/generated/v0";
-import type { OauthFlow } from "/src/screens/oauth-flow";
+import { CopyButton } from "/src/ui/clipboard";
 import { Button, buttonClass, TextField } from "/src/ui/controls";
 import { Glyph } from "/src/ui/glyph";
-import { CopyButton } from "./clipboard";
+import type { OauthFlow } from "./oauth-flow";
+
+/**
+ * The one navigation warning both live steps state beside their own
+ * guidance: the flow's state lives in the mounted screen, so any in-app
+ * navigation discards it — and since the approval happens in another tab,
+ * stepping elsewhere in the console while authorizing is exactly the move
+ * the visitor is tempted into. A tab close or a reload is the leave-guard
+ * registry's to warn for (README §6.3); the in-app move is this sentence's.
+ */
+const NAVIGATION_WARNING =
+    "Stay on this page until the flow completes — navigating within the console discards the flow.";
 
 /**
  * The facts both flow steps print about the live flow: the moment it stops
@@ -78,7 +89,7 @@ export function AuthorizeStep(props: {
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
                 The state is single-use and the flow expires quickly — finish promptly after
-                approving access.
+                approving access. {NAVIGATION_WARNING}
             </p>
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
@@ -264,7 +275,7 @@ export function DeviceStep(props: {
 
             <p class="max-w-[70ch] text-[13px] text-ink-faint">
                 Approve the code at the verification page; this page keeps asking the gateway for
-                the outcome and moves on as soon as the flow completes.
+                the outcome and moves on as soon as the flow completes. {NAVIGATION_WARNING}
             </p>
 
             <div class="h-px w-full bg-rule" />
