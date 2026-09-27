@@ -67,7 +67,11 @@ function subjectStreamDraft(subject: UsageQuerySubject): UsageFilterDraft {
  * diagnosis in place, like every other card that reads, and a failed re-read
  * keeps the last-good totals and table standing beside it; the no-requests
  * empty state — the claim a failure cannot prove — stands only where a read
- * succeeded and found nothing.
+ * succeeded and found nothing. A failed first read carries the *Read again*
+ * action beside its diagnosis — the card's own reload wired as the notice's
+ * retry, the same in-place recovery the list screens state — so the recovery
+ * never rests solely on the shell's *Refresh*; a failed re-read states itself
+ * without the action, exactly as the frame's gate renders it.
  *
  * The buckets arrive through `readUsageBuckets`, which proved inside the read
  * cycle that every key carries the `day` its request asked for; the
@@ -139,7 +143,10 @@ export function EntityUsageCard(props: {
             </CardHeader>
 
             <div class="mt-4">
-                <ReadNotice read={read} />
+                <ReadNotice
+                    read={read}
+                    retry={read.reload}
+                />
 
                 <Show when={read.isFirstRead()}>
                     <div class="grid gap-3 sm:grid-cols-3">

@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ManagementApiError } from "/src/management-api/errors";
 import { ErrorCode } from "/src/management-api/generated/v0";
 import type { ActionContext, Reachability } from "./diagnosis";
-import { diagnoseFailure } from "./diagnosis";
+import { diagnoseFailure, probeReachability } from "./diagnosis";
 
 const context: ActionContext = {
     baseUrl: "https://gateway.example.com",
@@ -367,5 +367,44 @@ describe("diagnoseFailure", () => {
 
         expect(diagnosis.kind).toBe("unknown");
         expect(diagnosis.detail).toBe("bug");
+    });
+});
+
+describe("probeReachability", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("answers unknown for an aborted probe, not unreached", async () => {
+        // The signal must reach the request for a cancellation to end it:
+        // the stub only rejects once the carried signal fires, so a dropped
+        // signal would hang this test rather than pass it.
+        const controller = new AbortController();
+        vi.stubGlobal(
+            "fetch",
+            (_url: unknown, init?: RequestInit) =>
+                new Promise<never>((_resolve, reject) => {
+                    init?.signal?.addEventListener("abort", () => {
+                        reject(new DOMException("This operation was aborted", "AbortError"));
+                    });
+                }),
+        );
+
+        const pending = probeReachability("https://gateway.example.com", controller.signal);
+        controller.abort();
+
+        await expect(pending).resolves.toBe("unknown");
+    });
+
+    it("reads a deadline's TimeoutError expiry as unknown, never as nothing answered", async () => {
+        // `AbortSignal.timeout` aborts with a `TimeoutError` reason, which
+        // the fetch then rejects with — a shape that must stay distinct from
+        // the network's own `TypeError` refusal, or an expired deadline would
+        // sharpen "no answer yet" into "nothing answered".
+        vi.stubGlobal("fetch", () =>
+            Promise.reject(new DOMException("The signal timed out", "TimeoutError")),
+        );
+
+        await expect(probeReachability("https://gateway.example.com")).resolves.toBe("unknown");
     });
 });

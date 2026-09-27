@@ -66,7 +66,10 @@ export function ModelNewScreen(props: {
                 backLabel={backLabel()}
             />
 
-            <ReadNotice read={read} />
+            <ReadNotice
+                read={read}
+                retry={read.reload}
+            />
 
             <Show when={read.isFirstRead()}>
                 <Skeleton class="h-64 w-full rounded-2xl" />

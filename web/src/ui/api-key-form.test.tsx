@@ -33,8 +33,12 @@ afterEach(() => {
     disposes.length = 0;
 });
 
-/** Mounts the field over a signal, so the parent's state is observable. */
-function mountField(initialSecret: string): {
+/** Mounts the field over a signal, so the parent's state is observable. The
+ * confirm subject defaults to the creation context's "typed". */
+function mountField(
+    initialSecret: string,
+    generateConfirmSubject: "typed" | "current" = "typed",
+): {
     readonly secret: () => string;
 } {
     const [secret, setSecret] = createSignal(initialSecret);
@@ -45,6 +49,7 @@ function mountField(initialSecret: string): {
                 <ApiKeySecretField
                     secret={secret()}
                     onSecretInput={setSecret}
+                    generateConfirmSubject={generateConfirmSubject}
                 />
             ),
             document.body,
@@ -116,6 +121,21 @@ describe("ApiKeySecretField Generate guard", () => {
 
         expect(labeledInput("Key").value).toBe("sk-hand-made");
         expect(document.body.textContent).toContain("Replace the typed secret?");
+    });
+
+    it("names the standing secret as the caller's subject names it", async () => {
+        // The edit form opens prefilled with the row's currently-serving
+        // secret — nothing was typed — so its confirm must name the current
+        // value the save will retire, not a typed one.
+        mountField("sk-serving-secret", "current");
+        await settle();
+
+        buttonWithText("Generate").click();
+        await settle();
+
+        expect(labeledInput("Key").value).toBe("sk-serving-secret");
+        expect(document.body.textContent).toContain("Replace the current secret?");
+        expect(document.body.textContent).not.toContain("Replace the typed secret?");
     });
 
     it("replaces the typed secret only on the confirm's click", async () => {

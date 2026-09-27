@@ -8,7 +8,8 @@ import { ErrorCode } from "/src/management-api/generated/v0";
  * - `reached` — a cross-origin no-CORS request to the origin was answered, so
  *   the network path works and a blocked fetch is the browser's CORS layer.
  * - `unreached` — that request failed too, so nothing answered.
- * - `unknown` — no probe ran, or it was cancelled.
+ * - `unknown` — no probe ran, or it was cancelled or timed out; a deadline is
+ *   never read as an answer about the network.
  */
 export type Reachability = "reached" | "unreached" | "unknown";
 

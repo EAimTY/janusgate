@@ -629,7 +629,8 @@ mod tests {
         },
         storage::provider_definitions::{self, NewDefinition},
         test_support::{
-            self, MockUpstream, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
+            self, MockUpstream, OAuthDefinitionFixture, OAuthDeviceAuthorizationFixture,
+            OAuthGrantFixture, OAuthRefreshFixture,
         },
     };
     use serde_json::json;
@@ -868,6 +869,7 @@ mod tests {
             initial_slots: &[],
             grant: OAuthGrantFixture::Device {
                 has_grant_type_field: true,
+                authorization: OAuthDeviceAuthorizationFixture::default(),
             },
             exchange_url: &exchange_url,
             response_fields: vec![],

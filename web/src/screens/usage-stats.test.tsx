@@ -94,6 +94,17 @@ function answerLastQuery(
     });
 }
 
+/** The card's Read-again action, or null where no action stands. */
+function readAgainButton(): HTMLButtonElement | null {
+    for (const candidate of document.querySelectorAll("button")) {
+        if (candidate.textContent?.includes("Read again") === true) {
+            return candidate as HTMLButtonElement;
+        }
+    }
+
+    return null;
+}
+
 describe("EntityUsageCard read failures", () => {
     const disposes: Array<() => void> = [];
 
@@ -148,6 +159,50 @@ describe("EntityUsageCard read failures", () => {
         expect(bodyText()).toContain("re-read refused");
         expect(bodyText()).toContain("2026-09-01");
         expect(bodyText()).not.toContain("No requests recorded for this provider yet.");
+
+        // The failure stands beside last-good content, so it states itself
+        // without the Read again action — the action belongs to a failure
+        // that left nothing else standing.
+        expect(readAgainButton()).toBeNull();
+    });
+
+    it("offers the failed first read a Read again action that re-runs the card's read", async () => {
+        const holder: {
+            readonly queries: Array<HeldQuery>;
+        } = {
+            queries: [],
+        };
+        mount(heldQueryApi(holder));
+        await settle();
+        holder.queries.at(-1)?.refuse(new Error("first read refused"));
+        await settle();
+
+        // The first read closed the skeleton with nothing else on the page,
+        // so the diagnosis stands with the Read again action beside it — the
+        // card's own recovery, not a trip to the shell's Refresh.
+        expect(bodyText()).toContain("first read refused");
+        expect(readAgainButton()).not.toBeNull();
+
+        readAgainButton()?.click();
+        await settle();
+
+        // The click re-ran the card's own read: a second query is in flight
+        // under the still-standing diagnosis, and the action waits for the
+        // cycle it started.
+        expect(holder.queries).toHaveLength(2);
+        expect(bodyText()).toContain("first read refused");
+        expect(readAgainButton()?.disabled).toBe(true);
+
+        answerLastQuery(holder, [
+            dayBucket,
+        ]);
+        await settle();
+
+        // The re-read landed: the diagnosis it cleared went with it, the day
+        // table stands, and the action stood down — no notice, no action.
+        expect(bodyText()).not.toContain("first read refused");
+        expect(bodyText()).toContain("2026-09-01");
+        expect(readAgainButton()).toBeNull();
     });
 
     it("states the empty state only where a read succeeded and found nothing", async () => {

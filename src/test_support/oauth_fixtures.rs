@@ -10,7 +10,10 @@
     reason = "a fixture that cannot parse is a test bug, and the panic is the failure report"
 )]
 
-use crate::{format::UpstreamFormat, provider::definition::DefinitionPayload};
+use crate::{
+    format::UpstreamFormat,
+    provider::definition::{DefinitionPayload, template::ResponseEncoding},
+};
 use serde_json::{Value, json};
 
 /// The unreachable fixture token endpoint the fixed OAuth definition fixtures exchange and
@@ -65,20 +68,61 @@ impl OAuthResponseField {
     }
 }
 
-/// The grant kind of an OAuth definition fixture, carrying the kind's fixed fixture parameters:
-/// the authorization-code grant's authorize URL, redirect URI, and absent PKCE, and the device
-/// grant's authorization request, response mapping, and expiry fallback.
+/// The grant kind of an OAuth definition fixture, carrying the kind's fixture parameters:
+/// the authorization-code grant's authorize URL, redirect URI, and absent PKCE, and the
+/// device grant's fixed exchange form and expiry fallback alongside the authorization
+/// step's deltas.
 pub(crate) enum OAuthGrantFixture {
     /// The authorization-code grant, whose exchange posts the `grant_type`, `code`, and
     /// `redirect_uri` form rows.
     AuthorizationCode,
 
     /// The device grant, whose exchange posts the `device_code` form row plus the device
-    /// `grant_type` literal row when `has_grant_type_field` holds.
+    /// `grant_type` literal row when `has_grant_type_field` holds, and whose authorization
+    /// step varies by `authorization`.
     Device {
         /// Whether the exchange's form declares the device `grant_type` literal row.
         has_grant_type_field: bool,
+
+        /// The authorization step's deltas over the skeleton's fixed request and row set.
+        authorization: OAuthDeviceAuthorizationFixture,
     },
+}
+
+/// The device grant's authorization-step deltas: the skeleton's fixed step posts the request
+/// carrying the `client_id` form body and maps the required `device_code` and `user_code` rows
+/// plus the optional `verification_uri` row off a form-encoded response, and these members vary
+/// the request's URL and body, the response's wire encoding, the `verification_uri` row's
+/// requiredness, and the optional `expires_in` row.
+pub(crate) struct OAuthDeviceAuthorizationFixture {
+    /// The literal URL the authorization request posts to.
+    pub(crate) request_url: &'static str,
+
+    /// Whether the authorization request declares the `client_id` form body.
+    pub(crate) has_client_id_body: bool,
+
+    /// The wire encoding the authorization response arrives in.
+    pub(crate) response_encoding: ResponseEncoding,
+
+    /// Whether the `verification_uri` response row is required.
+    pub(crate) is_verification_uri_required: bool,
+
+    /// Whether the authorization response declares the optional `expires_in` row mapping the
+    /// `expires_in_seconds` target.
+    pub(crate) has_expires_in_field: bool,
+}
+
+impl Default for OAuthDeviceAuthorizationFixture {
+    /// The skeleton's fixed authorization-step parameters.
+    fn default() -> Self {
+        Self {
+            request_url: "http://127.0.0.1:1/device",
+            has_client_id_body: true,
+            response_encoding: ResponseEncoding::Form,
+            is_verification_uri_required: false,
+            has_expires_in_field: false,
+        }
+    }
 }
 
 /// The refresh mode of an OAuth definition fixture.
@@ -138,7 +182,7 @@ pub(crate) struct OAuthDefinitionFixture<'a> {
 }
 
 /// Builds one OAuth [`DefinitionPayload`] fixture from the shared skeleton — the given format
-/// and inference URL, the grant's fixed fixture parameters, a form exchange whose response maps
+/// and inference URL, the grant's fixture parameters, a form exchange whose response maps
 /// the `access_token` target required plus [`OAuthDefinitionFixture::response_fields`] under
 /// [`OAuthDefinitionFixture::terminal_codes`], and the refresh mode — so every OAuth definition
 /// fixture in the crate restates only its deltas.
@@ -184,7 +228,54 @@ pub(crate) fn oauth_definition_payload(fixture: OAuthDefinitionFixture<'_>) -> D
 
         OAuthGrantFixture::Device {
             has_grant_type_field,
+            authorization,
         } => {
+            let response_encoding = match authorization.response_encoding {
+                ResponseEncoding::Form => "form",
+                ResponseEncoding::Json => "json",
+            };
+
+            let authorization_request = match authorization.has_client_id_body {
+                true => json!({
+                    "method": "POST",
+                    "url": [{"type": "literal", "value": authorization.request_url}],
+                    "body": {"kind": "form", "fields": [
+                        {"name": "client_id", "value": [{"type": "client_id"}]}
+                    ]}
+                }),
+
+                false => json!({
+                    "method": "POST",
+                    "url": [{"type": "literal", "value": authorization.request_url}]
+                }),
+            };
+
+            let mut authorization_response_fields = vec![
+                json!({
+                    "path": ["device_code"],
+                    "target": {"type": "device_code"},
+                    "required": true
+                }),
+                json!({
+                    "path": ["user_code"],
+                    "target": {"type": "user_code"},
+                    "required": true
+                }),
+                json!({
+                    "path": ["verification_uri"],
+                    "target": {"type": "verification_uri"},
+                    "required": authorization.is_verification_uri_required
+                }),
+            ];
+
+            if authorization.has_expires_in_field {
+                authorization_response_fields.push(json!({
+                    "path": ["expires_in"],
+                    "target": {"type": "expires_in_seconds"},
+                    "required": false
+                }));
+            }
+
             let mut exchange_fields = Vec::new();
 
             if has_grant_type_field {
@@ -202,32 +293,10 @@ pub(crate) fn oauth_definition_payload(fixture: OAuthDefinitionFixture<'_>) -> D
                 json!({
                     "type": "device",
                     "authorization": {
-                        "request": {
-                            "method": "POST",
-                            "url": [{"type": "literal", "value": "http://127.0.0.1:1/device"}],
-                            "body": {"kind": "form", "fields": [
-                                {"name": "client_id", "value": [{"type": "client_id"}]}
-                            ]}
-                        },
+                        "request": authorization_request,
                         "response": {
-                            "encoding": "form",
-                            "fields": [
-                                {
-                                    "path": ["device_code"],
-                                    "target": {"type": "device_code"},
-                                    "required": true
-                                },
-                                {
-                                    "path": ["user_code"],
-                                    "target": {"type": "user_code"},
-                                    "required": true
-                                },
-                                {
-                                    "path": ["verification_uri"],
-                                    "target": {"type": "verification_uri"},
-                                    "required": false
-                                }
-                            ]
+                            "encoding": response_encoding,
+                            "fields": authorization_response_fields
                         }
                     },
                     "expires_in_fallback_seconds": 900

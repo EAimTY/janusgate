@@ -19,8 +19,9 @@ mod oauth_fixtures;
 pub(crate) use self::{
     mock_upstream::{MockAction, MockUpstream},
     oauth_fixtures::{
-        FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
-        OAuthResponseField, OAuthTarget, oauth_definition_payload,
+        FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthDeviceAuthorizationFixture,
+        OAuthGrantFixture, OAuthRefreshFixture, OAuthResponseField, OAuthTarget,
+        oauth_definition_payload,
     },
 };
 use crate::{

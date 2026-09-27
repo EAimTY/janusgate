@@ -801,6 +801,13 @@ function expectProvisionExtractions(value: unknown, context: string): Array<Prov
     );
 }
 
+/** The terminal status codes of an exchange or a grant-mode token refresh. */
+function expectTerminalCodes(value: unknown, context: string): Array<string> {
+    return expectArray(value, context).map((code, index) =>
+        expectString(code, `${context}[${index}]`),
+    );
+}
+
 /** The long-running operation poll of a provisioning step (README §5.4). */
 function expectPoll(value: unknown, context: string): Poll {
     const record = expectRecord(value, context);
@@ -1195,10 +1202,10 @@ function expectExchange(value: unknown, context: string): Exchange {
     return {
         request: expectControlRequest(Reflect.get(record, "request"), `${context}.request`),
         response: expectResponseDescriptor(Reflect.get(record, "response"), `${context}.response`),
-        terminal_codes: expectArray(
+        terminal_codes: expectTerminalCodes(
             Reflect.get(record, "terminal_codes"),
             `${context}.terminal_codes`,
-        ).map((code, index) => expectString(code, `${context}.terminal_codes[${index}]`)),
+        ),
     };
 }
 
@@ -1227,10 +1234,10 @@ function expectTokenRefresh(value: unknown, context: string): TokenRefresh {
         > = {
             type: "grant",
             request: expectControlRequest(Reflect.get(record, "request"), `${context}.request`),
-            terminal_codes: expectArray(
+            terminal_codes: expectTerminalCodes(
                 Reflect.get(record, "terminal_codes"),
                 `${context}.terminal_codes`,
-            ).map((code, index) => expectString(code, `${context}.terminal_codes[${index}]`)),
+            ),
         };
 
         const response = Reflect.get(record, "response");

@@ -58,23 +58,36 @@ export function ApiKeyNameField(props: {
 }
 
 /**
+ * What the standing text is, as the Generate confirm's question names it:
+ * a creation field opens empty, so text standing there was typed, while the
+ * edit form opens prefilled with the row's currently-serving secret.
+ */
+type GenerateConfirmSubject = "typed" | "current";
+
+/**
  * The plaintext secret with its conveniences: Generate mints a fresh value
  * locally, Copy relays the shown value to the clipboard, and a reveal turns
  * the mask off while the operator checks a paste. Generate over an empty
- * field replaces nothing and fires at once; over a typed secret it is
- * destructive — the hand-made value is unrecoverable — so the first click
- * arms the same one-click confirm the delete card uses, naming what is lost,
- * and only the confirm replaces. The input is masked while typed, like every
- * pasted secret — the reveal is the field's own transient state and every
- * mount opens masked — while the listing and detail cards present the stored
- * secret in full with a copy action, where it is data, not input. The
- * default hint states the creation contract, where the gate requires a
- * secret — a caller stating its own hint (the edit form's write-only
- * contract) owns the whole line.
+ * field replaces nothing and fires at once; over a standing secret it is
+ * destructive — what stands there is unrecoverable — so the first click
+ * arms the same one-click confirm the delete card uses, naming what is
+ * lost, and only the confirm replaces. The question's subject is the
+ * caller's context (`generateConfirmSubject`): a creation field opens
+ * empty, so text standing there was typed, while the edit form opens
+ * prefilled with the row's currently-serving secret, nothing about which is
+ * typed — its confirm names the current value its Save will retire. The
+ * input is masked while typed, like every pasted secret — the reveal is the
+ * field's own transient state and every mount opens masked — while the
+ * listing and detail cards present the stored secret in full with a copy
+ * action, where it is data, not input. The default hint states the creation
+ * contract, where the gate requires a secret — a caller stating its own
+ * hint (the edit form, which states the rotation cost instead) owns the
+ * whole line.
  */
 export function ApiKeySecretField(props: {
     readonly secret: string;
     readonly onSecretInput: (value: string) => void;
+    readonly generateConfirmSubject?: GenerateConfirmSubject;
     readonly isDisabled?: boolean;
     readonly hint?: string | null | undefined;
     readonly error?: string | null | undefined;
@@ -84,7 +97,11 @@ export function ApiKeySecretField(props: {
     // The armed state is only ever about the standing text: a field emptied
     // by hand has nothing left to lose, so the confirm yields to the plain
     // Generate button until text stands again.
-    const isTypedSecretArmed = (): boolean => isGenerateArmed() && props.secret !== "";
+    const isStandingSecretArmed = (): boolean => isGenerateArmed() && props.secret !== "";
+    // The confirm names what stands in the field; the typed value is the
+    // field's own default subject, creation's contract.
+    const generateConfirmSubject = (): GenerateConfirmSubject =>
+        props.generateConfirmSubject ?? "typed";
 
     const generate = (): void => {
         props.onSecretInput(generateApiKey());
@@ -118,7 +135,7 @@ export function ApiKeySecretField(props: {
             </label>
             <div class="mt-2 flex flex-wrap items-center gap-2">
                 <Show
-                    when={isTypedSecretArmed()}
+                    when={isStandingSecretArmed()}
                     fallback={
                         <Button
                             glyph="key"
@@ -131,7 +148,9 @@ export function ApiKeySecretField(props: {
                         </Button>
                     }
                 >
-                    <p class="w-full text-[13.5px] text-ink-dim">Replace the typed secret?</p>
+                    <p class="w-full text-[13.5px] text-ink-dim">
+                        Replace the {generateConfirmSubject()} secret?
+                    </p>
                     <Button
                         tone="danger"
                         glyph="key"

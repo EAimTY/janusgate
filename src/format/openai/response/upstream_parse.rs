@@ -31,14 +31,14 @@ pub(crate) struct UpstreamParser {
     /// `response.output_item.added` opening carries the item skeleton without argument bytes and
     /// delivers no call content, so it never exhausts the terminal output array's copy of the
     /// call (README §6.3).
-    delivered_call_indices: Vec<usize>,
+    delivered_call_indices: IndexRecord,
 
     /// Output indices whose function call a [`IrEvent::ToolCallDone`] already completed: a
     /// streamed done item for an already-completed index is suppressed instead of re-emitting
     /// the completion (README §6.2). This record is narrower than the delivered-call record —
     /// streamed argument bytes deliver content without completing the call, and the streamed
     /// done item must still deliver that completion.
-    completed_call_indices: Vec<usize>,
+    completed_call_indices: IndexRecord,
 
     /// Whether a finish was already emitted; `finish` degrades a stream that ends without one
     /// through [`format::degrade_finish_once`].
@@ -242,6 +242,35 @@ enum SummaryPart {
     Other,
 }
 
+/// Exactly-once record of output indices: an index is recorded at most once, so whatever the
+/// record guards — a recovered item, a delivered or completed call — never happens twice for the
+/// same index while distinct indices each record exactly once. Queries and writes scan the
+/// recorded indices linearly, and a repeat write for an already-recorded index is a no-op.
+#[derive(Debug, Default)]
+struct IndexRecord {
+    /// The recorded indices, in first-recorded order.
+    indices: Vec<usize>,
+}
+
+impl IndexRecord {
+    /// Whether `index` is already recorded.
+    fn is_recorded(&self, index: usize) -> bool {
+        self.indices.contains(&index)
+    }
+
+    /// Records `index`; a repeat for the same index is ignored.
+    fn record(&mut self, index: usize) {
+        if !self.indices.contains(&index) {
+            self.indices.push(index);
+        }
+    }
+
+    /// Whether nothing is recorded yet.
+    fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+}
+
 /// Exactly-once fallback-recovery state for one output kind: whether live delta events already
 /// delivered the kind — exhausting every fallback source for it — and the output indices whose item
 /// a fallback source, a streamed `output_item.done` item or a terminal output-array item, already
@@ -253,7 +282,7 @@ struct FallbackRecovery {
     is_delivered: bool,
 
     /// Output indices whose item a fallback source already delivered.
-    recovered_indices: Vec<usize>,
+    recovered_indices: IndexRecord,
 }
 
 /// Origin of an upstream output item, deciding how it maps to IR events.
@@ -277,15 +306,13 @@ impl FallbackRecovery {
     /// fallback source for the kind, and a fallback delivery for `index` exhausts further sources
     /// for the same item.
     fn can_recover(&self, index: usize) -> bool {
-        !self.is_delivered && !self.recovered_indices.contains(&index)
+        !self.is_delivered && !self.recovered_indices.is_recorded(index)
     }
 
     /// Records that a fallback source recovered the item at `index`; repeats for further parts of
     /// the same item are ignored.
     fn record(&mut self, index: usize) {
-        if !self.recovered_indices.contains(&index) {
-            self.recovered_indices.push(index);
-        }
+        self.recovered_indices.record(index);
     }
 }
 
@@ -626,26 +653,22 @@ impl UpstreamParser {
     /// Whether the function call at `index` was already delivered — by a content-bearing live
     /// event, or by the terminal walk's own recovery of the index.
     fn is_call_delivered(&self, index: usize) -> bool {
-        self.delivered_call_indices.contains(&index)
+        self.delivered_call_indices.is_recorded(index)
     }
 
     /// Records the function call at `index` as delivered; repeats for the same index are ignored.
     fn record_call_delivered(&mut self, index: usize) {
-        if !self.delivered_call_indices.contains(&index) {
-            self.delivered_call_indices.push(index);
-        }
+        self.delivered_call_indices.record(index);
     }
 
     /// Whether a [`IrEvent::ToolCallDone`] already completed the function call at `index`.
     fn is_call_completed(&self, index: usize) -> bool {
-        self.completed_call_indices.contains(&index)
+        self.completed_call_indices.is_recorded(index)
     }
 
     /// Records the function call at `index` as completed; repeats for the same index are ignored.
     fn record_call_completed(&mut self, index: usize) {
-        if !self.completed_call_indices.contains(&index) {
-            self.completed_call_indices.push(index);
-        }
+        self.completed_call_indices.record(index);
     }
 
     /// Whether the turn delivered any function call, deciding the canonical tool-call finish.

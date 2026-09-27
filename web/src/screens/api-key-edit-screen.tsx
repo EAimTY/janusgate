@@ -37,10 +37,23 @@ export function ApiKeyEditScreen(props: {
         () => keys().find((candidate) => candidate.id === props.apiKeyId) ?? null,
     );
 
-    // One memo for both consumers — the save notice's last-enabled wording and
-    // the delete card's blast-radius question read the same figure.
-    const enabledCount = createMemo(
-        () => keys().filter((candidate) => candidate.is_enabled).length,
+    // The enabled count over the OTHER keys: the save notice's last-enabled
+    // wording reads it at the moment the save settles, and the delete card's
+    // blast-radius question reads it beside the row's own enabledness. Both
+    // judge a row the form may hold against a listing that may already answer
+    // a write: a refresh read in flight when Save was clicked may land after
+    // the gateway applied the write, so the standing listing can already
+    // answer the post-write state — where the saved row itself has left the
+    // enabled count, and its figure there proves nothing about the others.
+    // Excluding the row by id is correct under both orderings: a pre-write
+    // listing still counts the row enabled, but the id filter drops it; a
+    // post-write listing has already dropped it from the enabled set. Each
+    // question's row-side half — whether this row is enabled — comes from the
+    // row prop, not the listing.
+    const otherEnabledCount = createMemo(
+        () =>
+            keys().filter((candidate) => candidate.is_enabled && candidate.id !== props.apiKeyId)
+                .length,
     );
 
     // The held row with its save-settling latch: an open form with unsaved
@@ -100,7 +113,7 @@ export function ApiKeyEditScreen(props: {
                     <SettingsCard
                         api={props.api}
                         apiKey={row}
-                        enabledCount={enabledCount()}
+                        otherEnabledCount={otherEnabledCount()}
                         read={read}
                         onDirtyChange={edit.reportFormDirty}
                         onSaved={edit.reportSaved}
@@ -109,7 +122,7 @@ export function ApiKeyEditScreen(props: {
                     <DangerCard
                         api={props.api}
                         apiKey={row}
-                        isLastEnabled={row.is_enabled && enabledCount() <= 1}
+                        isLastEnabled={row.is_enabled && otherEnabledCount() === 0}
                         read={read}
                     />
                 </>
@@ -122,7 +135,7 @@ export function ApiKeyEditScreen(props: {
 function SettingsCard(props: {
     readonly api: ManagementApi;
     readonly apiKey: ApiKeyResponse;
-    readonly enabledCount: number;
+    readonly otherEnabledCount: number;
     readonly read: ScreenRead;
     readonly onDirtyChange: (isDirty: boolean) => void;
     readonly onSaved: () => void;
@@ -188,8 +201,12 @@ function SettingsCard(props: {
             return {
                 tone: "ok",
                 title: `${name()} saved.`,
+                // The blast radius reads the OTHER keys' enablement at the
+                // moment this notice is built: the standing listing may
+                // already answer the write being reported, so the saved
+                // row's own figure there proves nothing about the others.
                 detail:
-                    !isEnabled() && props.apiKey.is_enabled && props.enabledCount <= 1
+                    !isEnabled() && props.apiKey.is_enabled && props.otherEnabledCount === 0
                         ? "This was the last enabled key: the gateway now serves nothing until a key is turned on."
                         : null,
             };
@@ -225,6 +242,10 @@ function SettingsCard(props: {
                     secret={secret()}
                     onSecretInput={setSecret}
                     isDisabled={form.isSaving()}
+                    // The field opens prefilled with the row's serving
+                    // secret — nothing was typed — so the confirm names the
+                    // current value this save will retire.
+                    generateConfirmSubject="current"
                     hint="Replacing the secret revokes the old value on save."
                     error={secretError()}
                 />

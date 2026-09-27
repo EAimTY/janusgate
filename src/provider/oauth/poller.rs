@@ -658,12 +658,14 @@ mod tests {
         process, schedule_retry,
     };
     use crate::{
+        format::UpstreamFormat,
         http_client,
         provider::{
             StoredCredentials,
             definition::{
                 credential::{CredentialAcquisition, OAuthRecipe},
                 eval::ValueEnv,
+                template::ResponseEncoding,
             },
         },
         storage,
@@ -671,7 +673,11 @@ mod tests {
             FlowOutcome, FlowPurpose, claim_due_device_flow, find_flow_by_state,
             persist_exchange_checkpoint, restamp_claim,
         },
-        test_support::{self, FlowFixtureDelta, MockUpstream},
+        test_support::{
+            self, FlowFixtureDelta, MockUpstream, OAuthDefinitionFixture,
+            OAuthDeviceAuthorizationFixture, OAuthGrantFixture, OAuthRefreshFixture,
+            oauth_definition_payload,
+        },
     };
     use std::collections::BTreeMap;
 
@@ -1028,115 +1034,46 @@ mod tests {
         token_url: &str,
         has_failing_provisioning: bool,
     ) -> crate::provider::ProviderDefinition {
-        let device_grant_type = "urn:ietf:params:oauth:grant-type:device_code";
-
-        // The optional provisioning member splices into the wholesale payload; when the fixture
-        // carries no provisioning, the explicit `null` member deserializes to `None` like an
-        // absent one.
-        let provisioning = has_failing_provisioning.then(|| {
-            serde_json::json!([
-                {
-                    "request": {
-                        "method": "POST",
-                        "url": [{"type": "literal", "value": format!("{token_url}/provision")}]
-                    },
-                    "response_encoding": "json",
-                    "extract": [
-                        {
-                            "path": ["machine"],
-                            "target": {"type": "slot", "name": "machine"},
-                            "shape": {"type": "string"},
-                            "required": true
-                        }
-                    ]
-                }
-            ])
-        });
-
-        let payload_json = serde_json::json!({
-            "format": "openai_chat_completion",
-            "inference": {
-                "url": [{"type": "base"}, {"type": "literal", "value": "/chat/completions"}],
-                "upstream_streaming": "match_client"
+        let payload = oauth_definition_payload(OAuthDefinitionFixture {
+            format: UpstreamFormat::OpenAiChatCompletion,
+            inference_suffix: Some("/chat/completions"),
+            client_id: "fixture-client",
+            initial_slots: &[],
+            grant: OAuthGrantFixture::Device {
+                has_grant_type_field: true,
+                authorization: OAuthDeviceAuthorizationFixture {
+                    request_url: "https://example.test/device/code",
+                    has_client_id_body: false,
+                    response_encoding: ResponseEncoding::Json,
+                    is_verification_uri_required: true,
+                    has_expires_in_field: true,
+                },
             },
-            "credential": {
-                "type": "oauth",
-                "client_id": "fixture-client",
-                "grant": {
-                    "type": "device",
-                    "authorization": {
+            exchange_url: token_url,
+            response_fields: vec![],
+            terminal_codes: &["access_denied"],
+            refresh: OAuthRefreshFixture::None,
+            provisioning: has_failing_provisioning.then(|| {
+                serde_json::json!([
+                    {
                         "request": {
                             "method": "POST",
                             "url": [{"type": "literal",
-                                     "value": "https://example.test/device/code"}]
+                                     "value": format!("{token_url}/provision")}]
                         },
-                        "response": {
-                            "encoding": "json",
-                            "fields": [
-                                {
-                                    "path": ["device_code"],
-                                    "target": {"type": "device_code"},
-                                    "required": true
-                                },
-                                {
-                                    "path": ["user_code"],
-                                    "target": {"type": "user_code"},
-                                    "required": true
-                                },
-                                {
-                                    "path": ["verification_uri"],
-                                    "target": {"type": "verification_uri"},
-                                    "required": true
-                                },
-                                {
-                                    "path": ["expires_in"],
-                                    "target": {"type": "expires_in_seconds"},
-                                    "required": false
-                                }
-                            ]
-                        }
-                    },
-                    "expires_in_fallback_seconds": 900
-                },
-                "exchange": {
-                    "request": {
-                        "method": "POST",
-                        "url": [{"type": "literal", "value": token_url}],
-                        "body": {"kind": "form", "fields": [
+                        "response_encoding": "json",
+                        "extract": [
                             {
-                                "name": "grant_type",
-                                "value": [{"type": "literal", "value": device_grant_type}]
-                            },
-                            {
-                                "name": "client_id",
-                                "value": [{"type": "client_id"}]
-                            },
-                            {
-                                "name": "device_code",
-                                "value": [{"type": "device_code"}]
-                            }
-                        ]}
-                    },
-                    "response": {
-                        "encoding": "json",
-                        "fields": [
-                            {
-                                "path": ["access_token"],
-                                "target": {"type": "access_token"},
+                                "path": ["machine"],
+                                "target": {"type": "slot", "name": "machine"},
+                                "shape": {"type": "string"},
                                 "required": true
                             }
                         ]
-                    },
-                    "terminal_codes": ["access_denied"]
-                },
-                "refresh": {"type": "none"}
-            },
-            "provisioning": provisioning
+                    }
+                ])
+            }),
         });
-
-        #[expect(clippy::unwrap_used, reason = "the fixture payload always parses")]
-        let payload: crate::provider::definition::DefinitionPayload =
-            serde_json::from_value(payload_json).unwrap();
 
         #[expect(
             clippy::unwrap_used,

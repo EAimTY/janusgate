@@ -175,6 +175,83 @@ describe("ModelsScreen search", () => {
     });
 });
 
+describe("ModelsScreen count line", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    /**
+     * Five models of one provider, two of them qwen: the fraction a standing
+     * search reports needs a needle that narrows the listing without
+     * emptying it.
+     */
+    const models: ReadonlyArray<ModelResponse> = [
+        "qwen3-32b",
+        "qwen3-8b",
+        "llama3-70b",
+        "llama3-8b",
+        "mistral-7b",
+    ].map((publicId) =>
+        modelRow({
+            provider_id: 3,
+            provider: "mix-ops",
+            public_id: publicId,
+            upstream_id: publicId,
+        }),
+    );
+
+    function mount(): void {
+        disposes.push(
+            render(
+                () => (
+                    <ModelsScreen
+                        api={screenApi({
+                            providers: [
+                                providerRow({
+                                    id: 3,
+                                    name: "mix-ops",
+                                    model_prefix: "",
+                                }),
+                            ],
+                            models,
+                        })}
+                        providerFilter={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("states the plain count until a search stands, then the fraction", async () => {
+        mount();
+        await settle();
+
+        // With no search every row is visible, so a fraction would read as a
+        // narrowed table and send the operator looking for the narrowing.
+        expect(bodyText()).toContain("5 models");
+        expect(bodyText()).not.toContain("of 5 models");
+
+        typeInto(searchInput(), "qwen");
+        await settle();
+
+        // Under a search the fraction carries the narrowing the search made.
+        expect(bodyText()).toContain("2 of 5 models");
+
+        typeInto(searchInput(), "");
+        await settle();
+
+        // Clearing the search returns the line to the plain count.
+        expect(bodyText()).toContain("5 models");
+        expect(bodyText()).not.toContain("of 5 models");
+    });
+});
+
 describe("ModelsScreen provider filter", () => {
     const disposes: Array<() => void> = [];
 

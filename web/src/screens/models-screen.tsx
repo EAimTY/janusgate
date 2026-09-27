@@ -89,6 +89,21 @@ export function ModelsScreen(props: {
         });
     });
 
+    // The count line is the plain count while the whole listing shows — an
+    // "x of y" fraction over it would read as a narrowed table and send the
+    // operator looking for the narrowing — and keeps the fraction only while
+    // a search stands, the narrow it then reports.
+    const countLine = createMemo(() => {
+        const total = models().length;
+        const totalNoun = total === 1 ? "model" : "models";
+
+        if (search().trim() === "") {
+            return `${total} ${totalNoun}`;
+        }
+
+        return `${visibleModels().length} of ${total} ${totalNoun}`;
+    });
+
     // The provider listing is the authority on a filter's subject's
     // existence: a filtered model listing for an id the listing no longer
     // carries answers an empty list, so that emptiness proves nothing about
@@ -204,7 +219,7 @@ export function ModelsScreen(props: {
                             class="text-[12.5px] text-ink-faint"
                             role="status"
                         >
-                            {`${visibleModels().length} of ${models().length} ${models().length === 1 ? "model" : "models"}`}
+                            {countLine()}
                         </p>
                         <ModelList
                             models={visibleModels()}

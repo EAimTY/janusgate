@@ -296,8 +296,8 @@ mod tests {
         },
         storage as storage_cr,
         test_support::{
-            self, FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthGrantFixture,
-            OAuthRefreshFixture, oauth_definition_payload,
+            self, FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthDeviceAuthorizationFixture,
+            OAuthGrantFixture, OAuthRefreshFixture, oauth_definition_payload,
         },
     };
     use std::error::Error as StdError;
@@ -344,6 +344,7 @@ mod tests {
             initial_slots: &[],
             grant: OAuthGrantFixture::Device {
                 has_grant_type_field: false,
+                authorization: OAuthDeviceAuthorizationFixture::default(),
             },
             exchange_url: FIXTURE_TOKEN_URL,
             response_fields: vec![],
@@ -420,6 +421,7 @@ mod tests {
             initial_slots: &[],
             grant: OAuthGrantFixture::Device {
                 has_grant_type_field: false,
+                authorization: OAuthDeviceAuthorizationFixture::default(),
             },
             exchange_url: FIXTURE_TOKEN_URL,
             response_fields: vec![],

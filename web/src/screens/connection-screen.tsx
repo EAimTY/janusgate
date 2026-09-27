@@ -1,6 +1,11 @@
 import type { JSX } from "@solidjs/web";
 import { createEffect, createSignal, Show } from "solid-js";
-import { connectionService } from "/src/connection/app-service";
+import {
+    ConnectionProbeCancelled,
+    cancelConnectionProbe,
+    connectionService,
+    PROBE_TIMEOUT_MS,
+} from "/src/connection/app-service";
 import { normalizeBaseUrl } from "/src/connection/model";
 import { type Diagnosis, diagnoseFailure, probeReachability } from "/src/management-api/diagnosis";
 import { CopyButton } from "/src/ui/clipboard";
@@ -33,6 +38,29 @@ export function ConnectionScreen(): JSX.Element {
     const state = connectionService.connectionState;
     const isVerifying = (): boolean => state().status === "verifying";
 
+    /**
+     * Returns the form to its pristine state: both fields empty, no inline
+     * errors, no diagnosis — exactly what a first visit renders.
+     */
+    const resetForm = (): void => {
+        setBaseUrl("");
+        setToken("");
+        setHasSubmitted(false);
+        setIsTokenVisible(false);
+        setDiagnosis(null);
+    };
+
+    /**
+     * Ends the probe in flight and reopens the form pristine. The fields
+     * empty at once so the interrupted attempt is gone from the screen
+     * immediately; the aborted probe's landing is then recognized by its
+     * cause below, so no failure is ever seeded from a cancelled attempt.
+     */
+    const cancelProbe = (): void => {
+        resetForm();
+        cancelConnectionProbe();
+    };
+
     /** The address field's inline error, open only once a submit was made. */
     const baseUrlError = (): string | null => {
         if (!hasSubmitted()) {
@@ -53,6 +81,17 @@ export function ConnectionScreen(): JSX.Element {
             return current.status === "unconnected" ? current : null;
         },
         (unconnected) => {
+            // A cancelled probe lands here like any refusal — the service
+            // records every probe outcome — but cancellation is control
+            // flow, never a failure: the interrupted form reopens pristine,
+            // bypassing the seeding below entirely. The recognition is the
+            // landing's cause, so a genuine refusal after the cancel seeds
+            // exactly as it always did.
+            if (unconnected?.failure?.cause instanceof ConnectionProbeCancelled) {
+                resetForm();
+                return;
+            }
+
             // The refusal seeds from the address its failure carried — a
             // mid-session 401's, so the field reopens with it and a later
             // edit of the field cannot misattribute the failure — and a
@@ -93,20 +132,26 @@ export function ConnectionScreen(): JSX.Element {
 
             // The probe separates "nothing is listening" from "the browser blocked
             // the response"; it is only worth a request while the answer is open.
+            // It carries the connection probe's own deadline, so a blackhole
+            // address cannot leave the refinement pending minutes after the
+            // screen gave up; the flag still discards an answer that outlives
+            // this diagnosis.
             let isCurrent = true;
 
-            void probeReachability(attempted).then((reachability) => {
-                if (!isCurrent) {
-                    return;
-                }
+            void probeReachability(attempted, AbortSignal.timeout(PROBE_TIMEOUT_MS)).then(
+                (reachability) => {
+                    if (!isCurrent) {
+                        return;
+                    }
 
-                setDiagnosis(
-                    diagnoseFailure(failure.cause ?? failure.message, {
-                        ...context,
-                        reachability,
-                    }),
-                );
-            });
+                    setDiagnosis(
+                        diagnoseFailure(failure.cause ?? failure.message, {
+                            ...context,
+                            reachability,
+                        }),
+                    );
+                },
+            );
 
             return () => {
                 isCurrent = false;
@@ -242,6 +287,14 @@ export function ConnectionScreen(): JSX.Element {
                         >
                             {isVerifying() ? "Probing the gateway…" : "Connect"}
                         </Button>
+                        <Show when={isVerifying()}>
+                            <Button
+                                tone="ghost"
+                                onClick={cancelProbe}
+                            >
+                                Cancel
+                            </Button>
+                        </Show>
                     </div>
                 </form>
             </div>

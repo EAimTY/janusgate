@@ -8,8 +8,9 @@ use crate::{
     format::UpstreamFormat,
     provider::StoredCredentials,
     test_support::{
-        self, FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthGrantFixture, OAuthRefreshFixture,
-        OAuthResponseField, OAuthTarget, oauth_definition_payload,
+        self, FIXTURE_TOKEN_URL, OAuthDefinitionFixture, OAuthDeviceAuthorizationFixture,
+        OAuthGrantFixture, OAuthRefreshFixture, OAuthResponseField, OAuthTarget,
+        oauth_definition_payload,
     },
 };
 use std::error::Error as StdError;
@@ -81,6 +82,7 @@ pub(crate) fn oauth_definition() -> crate::provider::definition::ProviderDefinit
         initial_slots: &[],
         grant: OAuthGrantFixture::Device {
             has_grant_type_field: true,
+            authorization: OAuthDeviceAuthorizationFixture::default(),
         },
         exchange_url: FIXTURE_TOKEN_URL,
         response_fields: vec![OAuthResponseField::new(

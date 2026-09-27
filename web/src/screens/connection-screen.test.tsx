@@ -2,7 +2,7 @@ import { render } from "@solidjs/web";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { connectionService } from "/src/connection/app-service";
 import { ConnectionScreen } from "/src/screens/connection-screen";
-import { labeledInput, settle, typeInto } from "./screen-test-support";
+import { buttonWithText, labeledInput, settle, typeInto } from "./screen-test-support";
 
 /**
  * The connection screen runs against the application's real connection
@@ -194,6 +194,152 @@ describe("ConnectionScreen", () => {
             baseUrl: gatewayAddress,
             token: "replacement token",
         });
+    });
+
+    it("returns the form pristine when the operator cancels a probing submit", async () => {
+        // The probe hangs until its abort signal fires, so only the Cancel
+        // control can end it: the assertions pin that the control aborts the
+        // in-flight request and that the interrupted form reopens pristine —
+        // no seeded address, no failure notice — rather than as a refusal.
+        vi.stubGlobal(
+            "fetch",
+            (_url: unknown, init?: RequestInit) =>
+                new Promise<never>((_resolve, reject) => {
+                    init?.signal?.addEventListener("abort", () => {
+                        reject(new DOMException("This operation was aborted", "AbortError"));
+                    });
+                }),
+        );
+
+        dispose = render(() => <ConnectionScreen />, document.body);
+        await settle();
+
+        typeInto(labeledInput("Gateway address"), gatewayAddress);
+        typeInto(labeledInput("Management token"), "any token");
+        await settle();
+        submitConnectionForm();
+        await settle();
+
+        // While probing, the form holds the candidate and offers the escape.
+        expect(labeledInput("Gateway address").value).toBe(gatewayAddress);
+        expect(labeledInput("Management token").value).toBe("any token");
+        expect(labeledInput("Gateway address").disabled).toBe(true);
+        buttonWithText("Cancel");
+
+        buttonWithText("Cancel").click();
+        await settle();
+
+        // Pristine: both fields empty and enabled, no notice anywhere, and
+        // the submit button back to its plain Connect label — alone, since
+        // the Cancel control exists only while a probe is in flight.
+        expect(labeledInput("Gateway address").value).toBe("");
+        expect(labeledInput("Management token").value).toBe("");
+        expect(labeledInput("Gateway address").disabled).toBe(false);
+        expect(labeledInput("Management token").disabled).toBe(false);
+        expect(document.querySelector("[role='alert']")).toBeNull();
+        expect(document.body.textContent).not.toContain("cancelled");
+        expect(
+            [
+                ...document.querySelectorAll("button"),
+            ]
+                .map((button) => button.textContent ?? "")
+                .filter((label) => label.trim() !== ""),
+        ).toEqual([
+            "Copy",
+            "Connect",
+        ]);
+    });
+
+    it("seeds a later refused submit normally after a cancellation", async () => {
+        // The cancellation bypasses the seeding for its own landing only: a
+        // genuine refusal after it seeds the address exactly as any refusal
+        // does.
+        vi.stubGlobal(
+            "fetch",
+            (_url: unknown, init?: RequestInit) =>
+                new Promise<never>((_resolve, reject) => {
+                    init?.signal?.addEventListener("abort", () => {
+                        reject(new DOMException("This operation was aborted", "AbortError"));
+                    });
+                }),
+        );
+
+        dispose = render(() => <ConnectionScreen />, document.body);
+        await settle();
+
+        typeInto(labeledInput("Gateway address"), gatewayAddress);
+        typeInto(labeledInput("Management token"), "any token");
+        await settle();
+        submitConnectionForm();
+        await settle();
+        buttonWithText("Cancel").click();
+        await settle();
+
+        expect(labeledInput("Gateway address").value).toBe("");
+
+        // The retry is a genuine refusal: the gateway rejects the token, and
+        // the field reopens seeded with the address the attempt carried.
+        vi.stubGlobal("fetch", () =>
+            jsonResponse(401, {
+                errno: 2,
+                message: "invalid management token",
+            }),
+        );
+        typeInto(labeledInput("Gateway address"), gatewayAddress);
+        typeInto(labeledInput("Management token"), "replacement token");
+        await settle();
+        submitConnectionForm();
+        await settle();
+
+        expect(labeledInput("Gateway address").value).toBe(gatewayAddress);
+        expect(document.body.textContent).toContain("invalid management token");
+        expect(connectionService.currentConnection()).toBeNull();
+    });
+
+    it("carries the probe deadline into the reachability request", async () => {
+        // The no-answer refinement probes the origin on its own, and that
+        // request must carry the connection probe's deadline like the connect
+        // call does, or the sharper "nothing answered" wording could arrive
+        // minutes after the screen gave up. The wiring is pinned here, not
+        // the wall clock.
+        vi.stubGlobal("location", {
+            ...window.location,
+            origin: "https://admin.example.com",
+        });
+
+        const requests: Array<{
+            url: string;
+            init: RequestInit;
+        }> = [];
+        vi.stubGlobal("fetch", (url: string | URL, init?: RequestInit) => {
+            requests.push({
+                url: String(url),
+                init: init ?? {},
+            });
+
+            // The connect probe refuses the way a blocked fetch does, so the
+            // failure lands as "no answer" and the reachability probe issues.
+            if (String(url).endsWith("/providers:list")) {
+                return Promise.reject(new TypeError("Failed to fetch"));
+            }
+
+            return new Promise<never>(() => {});
+        });
+
+        dispose = render(() => <ConnectionScreen />, document.body);
+        await settle();
+
+        typeInto(labeledInput("Gateway address"), gatewayAddress);
+        typeInto(labeledInput("Management token"), "any token");
+        await settle();
+        submitConnectionForm();
+        await settle();
+
+        const reachability = requests.find((request) => request.url === `${gatewayAddress}/`);
+
+        expect(reachability).toBeDefined();
+        expect(reachability?.init.signal).toBeInstanceOf(AbortSignal);
+        expect(document.body.textContent).toContain(`No answer from ${gatewayAddress}.`);
     });
 
     it("diagnoses an HTTPS page's HTTP gateway address without issuing the doomed probe", async () => {
