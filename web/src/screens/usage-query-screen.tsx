@@ -251,6 +251,14 @@ export function UsageQueryScreen(props: {
 
             const result = await readOne(signal, readUsageBuckets(props.api, request));
 
+            if (signal.aborted) {
+                // Superseded after the read resolved but before this
+                // continuation ran: the cycle is dead either way, and the
+                // newer cycle owns the screen — nothing installs, not even
+                // the standing failure's lift.
+                return false;
+            }
+
             setFailure(null);
             setBuckets(result.buckets);
             setResponseDimensions(request.group_by);
@@ -286,7 +294,17 @@ export function UsageQueryScreen(props: {
         setIsQuerying(isSubmit);
 
         try {
-            setEntities(await readOne(call.signal, readUsageEntities(props.api)));
+            const listings = await readOne(call.signal, readUsageEntities(props.api));
+
+            if (call.signal.aborted) {
+                // Superseded after the listings resolved but before this
+                // continuation ran: the cycle is dead either way, and the
+                // newer cycle owns the screen — nothing installs, and the
+                // query below is never asked on the dead signal.
+                return;
+            }
+
+            setEntities(listings);
 
             if (await runQuery(call.signal)) {
                 setHasRead(true);

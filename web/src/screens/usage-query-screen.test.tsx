@@ -7,6 +7,7 @@ import type {
     ListModelsResponse,
     ListProvidersResponse,
     QueryUsageRequest,
+    QueryUsageResponse,
     UsageBucket,
     UsageGroupBy,
 } from "/src/management-api/generated/v0";
@@ -481,6 +482,107 @@ describe("UsageQueryScreen refresh racing an in-flight submit", () => {
         expect(queryCount).toBe(1);
         expect(document.body.textContent).toContain("local");
         expect(document.body.textContent).not.toContain("stale-submit");
+    });
+});
+
+describe("UsageQueryScreen a resolved query superseded before its continuation runs", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("installs nothing from the dead cycle and lets the superseding submit own the screen", async () => {
+        const holder: HeldListings = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+        const queries: Array<HeldCall<QueryUsageResponse>> = [];
+        const api = stubManagementApi({
+            listProviders: (signal) => heldCall(signal, holder.providers),
+            listModels: (_request, signal) => heldCall(signal, holder.models),
+            listApiKeys: (signal) => heldCall(signal, holder.apiKeys),
+            queryUsage: (_request, signal) => heldCall(signal, queries),
+        });
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={api}
+                        subject={null}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The initial cycle's listings answer and its query call is held.
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        expect(skeleton()).not.toBeNull();
+        expect(queries).toHaveLength(1);
+
+        // The held query resolves, and a submit supersedes its cycle inside
+        // the same synchronous block — before the resolved answer's
+        // continuation gets to run. The held call's abort rejection cannot
+        // reach this window: the read succeeded, and only the continuation's
+        // own signal check stands between it and the screen.
+        answerLast(queries, {
+            buckets: [
+                dayBucket({
+                    key: {
+                        day: "2026-09-02",
+                    },
+                }),
+            ],
+        });
+        buttonWithText("Run query").click();
+        await settle();
+
+        // The dead cycle installed nothing — not even `hasRead`: the
+        // skeleton window the superseding submit raised stands over it.
+        expect(skeleton()).not.toBeNull();
+        expect(buttonWithText("Querying…").disabled).toBe(true);
+
+        // The superseding submit's cycle answers whole and owns the screen.
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // Its query is the one now held; answering it lands the cycle.
+        expect(queries).toHaveLength(2);
+        answerLast(queries, {
+            buckets: [
+                providerBucket,
+            ],
+        });
+        await settle();
+
+        expect(skeleton()).toBeNull();
+        expect(buttonWithText("Run query").disabled).toBe(false);
+        expect(document.body.textContent).toContain("2026-09-01");
     });
 });
 

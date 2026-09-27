@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, Show } from "solid-js";
+import { type Accessor, createMemo, createSignal, Show } from "solid-js";
 import { credentialExpiryLine, nowMicros } from "/src/format";
 import { toUpdateProviderRequest } from "/src/management-api/adapters";
 import type { ManagementApi } from "/src/management-api/client";
@@ -13,7 +13,7 @@ import {
 } from "/src/management-api/identifiers";
 import { performManagementCall } from "/src/management-api/outcome";
 import { defaultModelPrefix } from "/src/management-api/provider-defaults";
-import { isOAuthProviderRow } from "/src/management-api/vocabulary";
+import { credentialStanding, isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { hrefs, navigate } from "/src/router";
 import {
     createEditRow,
@@ -163,6 +163,7 @@ export function ProviderEditScreen(props: {
                         {(oauthRow) => (
                             <CredentialsCard
                                 provider={oauthRow}
+                                latestProvider={latestProvider}
                                 oauth={oauth}
                             />
                         )}
@@ -535,25 +536,56 @@ function DetailsCard(props: {
 }
 
 /**
+ * The credential standing that names a state the gateway cannot use as
+ * stored — expired, or never fresh: the same lapsed verdict the provider
+ * detail page's reconnect notice gates on. The Credentials card's reconnect
+ * offer gates on it read over the gateway's latest row, so a current
+ * credential is never invited into a second authorization flow.
+ */
+function isCredentialLapsed(provider: ProviderResponse): boolean {
+    const standing = credentialStanding(provider);
+
+    return standing === "expired" || standing === "never-fresh";
+}
+
+/**
  * An OAuth provider's credential health and its reauthorization flow. The
  * flow's state machine is the screen's (`oauth`), so a keyed remount of this
  * card on a rewritten row re-renders the live flow's step from the state
  * above instead of discarding it, and the flow's failures state themselves
- * here, beside the step and buttons that took the action; the expiry line
- * alone tracks the row this card receives, keeping the fresh expiry current
- * beside the flow.
+ * here, beside the step and buttons that took the action. The expiry line and
+ * the reconnect offer are display-only facts, so they track the gateway's
+ * latest row rather than the row this card is mounted on: a succeeded flow's
+ * reload lands its fresh credential beside the flow's own ok notice even
+ * while the dirty settings form holds the older row — and a current
+ * credential is never left stating it lapsed, nor offered a second flow.
  */
 function CredentialsCard(props: {
     readonly provider: ProviderResponse;
+    readonly latestProvider: Accessor<ProviderResponse | null>;
     readonly oauth: OauthFlow;
 }): JSX.Element {
+    // The row the card's display-only facts read: the listing's latest answer,
+    // never the row the dirty settings form holds — the hold exists to keep
+    // the form's edits, and it must not pin the credential's stated health to
+    // a row the gateway has already replaced. The held row stands in only for
+    // the `null` the accessor's type admits: an answer without this row hands
+    // the screen to its not-found branch, which unmounts this card. The card's
+    // own identity — the row the keyed remount keys on and the actions address
+    // — stays the held one above.
+    const credentialRow = (): ProviderResponse => props.latestProvider() ?? props.provider;
+
     const expiryLine = (): string => {
-        if (!isOAuthProviderRow(props.provider) || props.provider.expires_at === null) {
+        const row = credentialRow();
+
+        if (!isOAuthProviderRow(row) || row.expires_at === null) {
             return "No expiry is stored for this provider.";
         }
 
-        return credentialExpiryLine(props.provider.expires_at, nowMicros());
+        return credentialExpiryLine(row.expires_at, nowMicros());
     };
+
+    const isReconnectOffered = (): boolean => isCredentialLapsed(credentialRow());
 
     return (
         <Card>
@@ -583,16 +615,20 @@ function CredentialsCard(props: {
                     when={props.oauth.flow()}
                     keyed
                     fallback={
-                        <div>
-                            <Button
-                                tone="primary"
-                                glyph="key"
-                                isBusy={props.oauth.isStarting()}
-                                onClick={() => void props.oauth.start()}
-                            >
-                                {props.oauth.isStarting() ? "Starting…" : "Reconnect the account"}
-                            </Button>
-                        </div>
+                        <Show when={isReconnectOffered()}>
+                            <div>
+                                <Button
+                                    tone="primary"
+                                    glyph="key"
+                                    isBusy={props.oauth.isStarting()}
+                                    onClick={() => void props.oauth.start()}
+                                >
+                                    {props.oauth.isStarting()
+                                        ? "Starting…"
+                                        : "Reconnect the account"}
+                                </Button>
+                            </div>
+                        </Show>
                     }
                 >
                     {(startedFlow) =>

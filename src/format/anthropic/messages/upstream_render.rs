@@ -11,9 +11,12 @@
 //! (README §6.4).
 
 use super::{ImageSourceOut, OutBlock, TypedBlock, is_anthropic_block};
-use crate::ir::{
-    InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
-    IrRole, IrToolChoice,
+use crate::{
+    format::RoleRun,
+    ir::{
+        InvalidRequest, IrImage, IrMessage, IrPart, IrReasoningLevel, IrRequest, IrResponseFormat,
+        IrRole, IrToolChoice,
+    },
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -266,32 +269,28 @@ pub(crate) fn render_request_body<'a>(
     })
 }
 
-/// Groups IR messages into strictly alternating user/assistant turns: consecutive same-role IR
-/// messages merge, and turns whose rendered content is empty are not emitted. Well-formed
+/// Groups IR messages into strictly alternating user/assistant turns through the shared role-run
+/// accumulator: consecutive same-role IR messages merge into one run, and a turn whose rendered
+/// content is empty is not emitted — [`render_message`] renders nothing to push for it. Well-formed
 /// requests open with a user turn, which the merge preserves.
 ///
 /// # Errors
 ///
 /// Returns [`InvalidRequest`] when a tool call's arguments do not encode a JSON object.
 fn render_messages(ir: &IrRequest) -> Result<Vec<UpstreamMessage>, InvalidRequest> {
-    let mut messages: Vec<UpstreamMessage> = Vec::new();
+    let mut runs = RoleRun::<UpstreamRole, OutBlock>::default();
 
     for message in &ir.messages {
-        let Some((role, blocks)) = render_message(message)? else {
-            continue;
-        };
-
-        match messages.last_mut() {
-            Some(open) if open.role == role => open.content.extend(blocks),
-
-            _ => messages.push(UpstreamMessage {
-                role,
-                content: blocks,
-            }),
+        if let Some((role, blocks)) = render_message(message)? {
+            runs.push(role, blocks);
         }
     }
 
-    Ok(messages)
+    Ok(runs
+        .into_runs()
+        .into_iter()
+        .map(|(role, content)| UpstreamMessage { role, content })
+        .collect())
 }
 
 /// Renders one IR message into its turn side and blocks; [`None`] when the message renders no

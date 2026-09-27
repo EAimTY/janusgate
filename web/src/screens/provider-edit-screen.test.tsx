@@ -1222,6 +1222,73 @@ describe("ProviderEditScreen reauthorization", () => {
         expect(buttonWithText("Reconnect the account")).toBeInstanceOf(HTMLButtonElement);
     });
 
+    it("states the fresh expiry beside a succeeded flow over a held row, and stands the reconnect offer down", async () => {
+        const holder = {
+            providers: [
+                oauthProvider,
+            ],
+            models: [],
+        };
+        const base = screenApi(holder);
+        const api: ManagementApi = {
+            ...base,
+            reauthorizeProvider: () => Promise.resolve(reauthorizationFlow),
+            completeProviderOauth: () =>
+                Promise.resolve({
+                    status: "succeeded" as const,
+                    provider: {
+                        ...oauthProvider,
+                        expires_at: 1_900_000_000_000_000,
+                    },
+                }),
+        };
+        disposes.push(
+            render(
+                () => (
+                    <ProviderEditScreen
+                        api={api}
+                        providerId={3}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        // The settings form stands dirty, so the reload the succeeded
+        // completion triggers keeps the pre-reconnect row held behind it.
+        typeInto(labeledInput("Model prefix"), "gpt2-");
+        await settle();
+
+        // The gateway reauthorized: its listing now answers the fresh row
+        // with the current credential. Nothing reads it yet — the answer
+        // lands with the reload the succeeded completion itself triggers.
+        holder.providers = [
+            {
+                ...oauthProvider,
+                expires_at: 1_900_000_000_000_000,
+            },
+        ];
+
+        buttonWithText("Reconnect the account").click();
+        await settle();
+        typeInto(labeledInput("Callback URL or authorization code"), "the-code");
+        await settle();
+        buttonWithText("Replace the credentials").click();
+        await settle();
+
+        // The flow's ok notice and the dirty form's Save-or-Revert hold stand
+        // together, and the card states the credential the gateway now holds —
+        // the fresh expiry, never the held row's lapsed sentence — offering no
+        // second flow over a credential that is current.
+        expect(document.body.textContent).toContain("Credentials replaced.");
+        expect(document.body.textContent).toContain("changed on the gateway");
+        expect(labeledInput("Model prefix").value).toBe("gpt2-");
+        expect(document.body.textContent).toContain("Valid for");
+        expect(document.body.textContent).not.toContain("Expired");
+        expect(document.body.textContent).not.toContain("Reconnect the account");
+    });
+
     it("keeps a live flow and its pasted code across a read that rewrites the row", async () => {
         // The token-refresh lease rewrites the row on the gateway: the fresh
         // `expires_at` flips the row's identity, the screen's keyed content
