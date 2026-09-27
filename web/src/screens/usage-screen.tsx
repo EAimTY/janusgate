@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
-import { formatTimestamp, formatTokenCount, nowMicros } from "/src/format";
+import { formatDuration, formatTimestamp, formatTokenCount, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type {
     ApiLogOutcome,
@@ -23,6 +23,7 @@ import {
     draftUsageFilter,
     EMPTY_USAGE_FILTER_DRAFT,
     hasUsageFilter,
+    soleSubject,
     statusError,
     USAGE_QUERY_SUBJECT_DIMENSIONS,
     USAGE_QUERY_SUBJECT_FIELDS,
@@ -241,7 +242,7 @@ export function UsageScreen(props: {
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
                 title="Usage"
-                description="Every dispatched request, newest first — numbers only, never content."
+                description="Every dispatched request, newest first — numbers only, never content. A row reporting none of the optional usage figures leaves them off whole: an all-zero tail and an unreported one cannot be told apart here."
             >
                 <ButtonLink
                     href={hrefs.usageQuery(aggregatesSubject)}
@@ -456,8 +457,7 @@ function streamAggregatesSubject(filter: UsageFilterDraft): UsageQuerySubject | 
         }
     }
 
-    const [subject] = named;
-    return named.length === 1 ? subject : undefined;
+    return soleSubject(named) ?? undefined;
 }
 
 /**
@@ -580,10 +580,39 @@ function UsageRow(props: {
             </p>
             <p class="tnum mt-1 text-[12.5px] text-ink-faint">
                 {props.row.http_status === null ? "—" : props.row.http_status}
-                {` · ${props.row.duration} ms · in ${formatTokenCount(props.row.input_tokens)} · out ${formatTokenCount(props.row.output_tokens)} · cached ${formatTokenCount(props.row.cached_tokens)} · cache write ${formatTokenCount(props.row.cache_write_tokens)} · reasoning ${formatTokenCount(props.row.reasoning_tokens)}`}
+                {` · ${formatDuration(props.row.duration)} · in ${formatTokenCount(props.row.input_tokens)} · out ${formatTokenCount(props.row.output_tokens)}${optionalTokenTail(
+                    props.row.cached_tokens,
+                    props.row.cache_write_tokens,
+                    props.row.reasoning_tokens,
+                )}`}
             </p>
         </li>
     );
+}
+
+/**
+ * The optional token figures' tail — cached, cache write, reasoning — as the
+ * row prints it when at least one of the three is a reported non-zero,
+ * measured zeros and unreported dashes included verbatim; an empty string
+ * when none is. An upstream that never reports the breakdown would
+ * otherwise end every one of its rows in `· cached 0 · cache write 0 ·
+ * reasoning 0`, printing measured zeros nothing measured. The suppression
+ * gives up the per-row reading of a measured all-zero tail beside an
+ * unreported one — the stream's standing description states that trade once,
+ * rather than every row carrying figures that say nothing.
+ */
+function optionalTokenTail(
+    cachedTokens: number | null,
+    cacheWriteTokens: number | null,
+    reasoningTokens: number | null,
+): string {
+    const isReportedNonZero = (value: number | null): boolean => value !== null && value !== 0;
+
+    return isReportedNonZero(cachedTokens) ||
+        isReportedNonZero(cacheWriteTokens) ||
+        isReportedNonZero(reasoningTokens)
+        ? ` · cached ${formatTokenCount(cachedTokens)} · cache write ${formatTokenCount(cacheWriteTokens)} · reasoning ${formatTokenCount(reasoningTokens)}`
+        : "";
 }
 
 const DELETED_ENTITY_TITLE = "This row is no longer listed.";

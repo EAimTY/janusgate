@@ -10,7 +10,7 @@ import type {
 import { USAGE_GROUP_BY_OPTIONS } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { hrefs, type UsageQuerySubject } from "/src/router";
-import { Button, Switch, TextField } from "/src/ui/controls";
+import { Button, ButtonLink, Switch, TextField } from "/src/ui/controls";
 import { Notice, Skeleton } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
 import { UsageFilterControls } from "/src/ui/usage-filter-controls";
@@ -20,6 +20,7 @@ import {
     hasUsageFilterFields,
     statusError,
     USAGE_WINDOW_OPTIONS,
+    type UsageFilterDraft,
     type UsageFilterFields,
     type UsageWindowChoice,
     windowBoundMicros,
@@ -82,6 +83,20 @@ function arrivalFields(subject: UsageQuerySubject | null): UsageFilterFields {
 }
 
 /**
+ * The stream draft the page's filter fields become: the fields cross
+ * verbatim — both pages hold the shared filter in the one
+ * [`UsageFilterFields`] vocabulary, single values on each side — while the
+ * From and To bounds stay behind with no stream spelling to become, the
+ * stream's own window row governing time there instead.
+ */
+function fieldsStreamDraft(fields: UsageFilterFields): UsageFilterDraft {
+    return {
+        ...fields,
+        window: "all",
+    };
+}
+
+/**
  * The raw verdict on one hand-typed bound: any non-blank value must be a
  * complete date and time. The submit gate reads it ungated, and each field's
  * inline error reads it once that field was typed in.
@@ -130,7 +145,11 @@ const HELD_QUERY_NOTICE: ScreenNotice = {
  * The address may carry a subject — one entity dimension and its row — which
  * arrives through the route's payload: the route Match keys this screen, so
  * every address is a fresh mount that opens with that dimension grouped
- * beside the day and its id filled into the filter field.
+ * beside the day and its id filled into the filter field. The header's
+ * *View requests* door carries the standing filter fields into the stream's
+ * draft — the crossing back that opens a failing combination's recorded
+ * requests without a filter rebuild — while the From and To bounds stay
+ * behind, the stream's own window row governing time there.
  */
 export function UsageQueryScreen(props: {
     readonly api: ManagementApi;
@@ -365,7 +384,11 @@ export function UsageQueryScreen(props: {
                 description="One bucket per dimension combination inside the filter — counts and token sums, never content."
                 backHref={hrefs.usage()}
                 backLabel="Usage"
-            />
+            >
+                <ButtonLink href={hrefs.usage(fieldsStreamDraft(fields()))}>
+                    View requests
+                </ButtonLink>
+            </PageHeader>
 
             <Show when={failure()}>
                 {(current) => (

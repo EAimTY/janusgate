@@ -12,6 +12,7 @@ use crate::{
     database::{Database, Error as DatabaseError, Transaction, params},
     provider::{Model, Provider, StoredCredentials, definition::ProviderDefinition},
 };
+use serde::Serialize;
 
 /// Inserts one provider row through the pooled or transactional executor, returning the new
 /// row's id: the statement is written once for both the pooled creation path and the device
@@ -469,36 +470,74 @@ pub(crate) async fn persist_renewed_credentials_for_lease(
     Ok(changes == 1)
 }
 
-/// Persists a reprovisioning outcome — the new access token, its expiry, and optionally a new
-/// base URL — while the caller still owns the refresh lease stamped `lease_started_at`. The
-/// merge happens in SQL over the stored document, so the durable slots and refresh token a
+/// The JSON merge patch one reprovisioning outcome applies to the stored credentials document:
+/// the members every reprovisioning rewrites, plus the optional rotation. The patch is a typed
+/// document whose `refresh_token` member is present only when the provisioning sequence
+/// extracted a rotation — merge-patch semantics leave an absent member untouched, so an absent
+/// extraction patches nothing, exactly like an omitted rotation in the grant path (README §3).
+#[derive(Serialize)]
+struct ReprovisionPatch<'a> {
+    /// The renewed access token.
+    access_token: &'a str,
+
+    /// The renewed expiry; a `null` member deletes the stored one under merge-patch semantics,
+    /// the no-scheduled-refresh state the renewal path's runtime guard never produces.
+    expires_at: Option<i64>,
+
+    /// The rotated refresh token; serialized only when present, so the stored token survives a
+    /// rotationless reprovisioning verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<&'a str>,
+
+    /// The cleared lease stamp, always serialized — as the explicit JSON `null` the merge
+    /// needs, so the patch never depends on `json_set`'s handling of SQL NULL.
+    refresh_started_at: Option<i64>,
+}
+
+/// Persists a reprovisioning outcome — the new access token, its expiry, a refresh-token
+/// rotation the sequence extracted when it carried one, and optionally a new base URL — while
+/// the caller still owns the refresh lease stamped `lease_started_at`. An absent rotation
+/// omits the patch's `refresh_token` member, leaving the stored token untouched (README §3).
+/// The merge happens in SQL over the stored document, so the durable slots and refresh token a
 /// concurrent write renewed are never read stale into Rust and overwritten.
 ///
 /// # Errors
 ///
 /// Returns [`Error`] when the update fails.
+///
+/// # Panics
+///
+/// Panics if the reprovision patch fails to serialize, which cannot occur: the patch is a
+/// struct of strings and numbers, a shape serde_json always renders.
 pub(crate) async fn persist_reprovision_for_lease(
     database: &Database,
     provider_id: i64,
     lease_started_at: i64,
     access_token: &str,
     expires_at: Option<i64>,
+    refresh_token: Option<&str>,
     base_url: Option<&str>,
 ) -> Result<bool, Error> {
-    // The patch document carries the JSON-null lease stamp explicitly, so the merge never
-    // depends on json_set's handling of SQL NULL.
-    let patch = serde_json::json!({
-        "access_token": access_token,
-        "expires_at": expires_at,
-        "refresh_started_at": null,
-    });
+    let patch = ReprovisionPatch {
+        access_token,
+        expires_at,
+        refresh_token,
+        refresh_started_at: None,
+    };
+
+    #[expect(
+        clippy::expect_used,
+        reason = "the reprovision patch always serializes: it is a struct of strings and \
+                  numbers"
+    )]
+    let patch = serde_json::to_string(&patch).expect("reprovision patch serializes");
 
     let changes = database
         .execute(
             "UPDATE providers SET credentials = json_patch(credentials, ?1), \
              base_url = COALESCE(?2, base_url) \
              WHERE id = ?3 AND json_extract(credentials, '$.refresh_started_at') = ?4",
-            params![patch.to_string(), base_url, provider_id, lease_started_at],
+            params![patch, base_url, provider_id, lease_started_at],
         )
         .await?;
 
@@ -823,6 +862,8 @@ mod tests {
 
         transaction.commit().await?;
 
+        // The rotationless persist omits the patch's `refresh_token` member, so the merge
+        // leaves the stored token untouched (README §3).
         assert!(
             persist_reprovision_for_lease(
                 &database,
@@ -830,6 +871,7 @@ mod tests {
                 lease,
                 "provisioned",
                 Some(9_000_000),
+                None,
                 Some("http://new-base.example"),
             )
             .await?

@@ -19,7 +19,7 @@
 use crate::{
     ir::{
         InvalidRequest, IrAggregation, IrEvent, IrFinishReason, IrMessage, IrPart, IrRequest,
-        IrResponseFormat, IrRole, IrToolChoice,
+        IrResponseFormat, IrRole, IrToolChoice, IrUsage,
     },
     sse::SseFrame,
 };
@@ -808,6 +808,31 @@ pub(in crate::format) fn parse_gemini_response_format(
         (other, _) => Err(GeminiResponseFormatRejection::UnsupportedMime(
             other.to_string(),
         )),
+    }
+}
+
+/// Folds a Gemini-family upstream usage report into [`IrUsage`], shared by both Gemini codecs.
+///
+/// The cross-family invariant: IR output includes reasoning — the reported non-reasoning output
+/// plus the thought tokens — while the reasoning breakdown rides beside it, the cached count rides
+/// beside the input, and Gemini reports no cache-write accounting, so
+/// [`cache_write_tokens`](IrUsage::cache_write_tokens) is always [`None`]. The fold adds with
+/// `saturating_add`: for every token count whose sum fits `u64` — every count a real upstream
+/// reports — the rendered total is the exact sum, and a third-party total can never panic (debug)
+/// or wrap (release) the parser the way a plain add could at overflow.
+pub(in crate::format) fn fold_gemini_usage(
+    input_tokens: u64,
+    output_tokens_excluding_reasoning: u64,
+    reasoning_tokens: Option<u64>,
+    cached_tokens: Option<u64>,
+) -> IrUsage {
+    IrUsage {
+        input_tokens,
+        output_tokens: output_tokens_excluding_reasoning
+            .saturating_add(reasoning_tokens.unwrap_or(0)),
+        cached_tokens,
+        cache_write_tokens: None,
+        reasoning_tokens,
     }
 }
 

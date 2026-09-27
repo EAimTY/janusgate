@@ -11,7 +11,7 @@ use log::info;
 use serde::{Deserialize, Serialize};
 
 route! {
-    pub ListApiKeys: {
+    pub(super) ListApiKeys: {
         path: "/api-keys:list",
         method: http::Method::POST,
         request: ListApiKeysRequest,
@@ -20,7 +20,7 @@ route! {
 }
 
 route! {
-    pub CreateApiKey: {
+    pub(super) CreateApiKey: {
         path: "/api-keys:create",
         method: http::Method::POST,
         request: CreateApiKeyRequest,
@@ -29,7 +29,7 @@ route! {
 }
 
 route! {
-    pub UpdateApiKey: {
+    pub(super) UpdateApiKey: {
         path: "/api-keys:update",
         method: http::Method::POST,
         request: UpdateApiKeyRequest,
@@ -38,7 +38,7 @@ route! {
 }
 
 route! {
-    pub DeleteApiKey: {
+    pub(super) DeleteApiKey: {
         path: "/api-keys:delete",
         method: http::Method::POST,
         request: DeleteApiKeyRequest,
@@ -51,7 +51,7 @@ route! {
 /// to configure clients.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ApiKeyResponse {
+pub(super) struct ApiKeyResponse {
     /// API key row identifier.
     pub id: i64,
 
@@ -85,13 +85,13 @@ impl ApiKeyResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListApiKeysRequest {}
+pub(super) struct ListApiKeysRequest {}
 
 /// The `api-keys:list` success body (README §7.1).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListApiKeysResponse {
+pub(super) struct ListApiKeysResponse {
     /// Every stored API key, ordered by row id.
     pub api_keys: Vec<ApiKeyResponse>,
 }
@@ -101,7 +101,7 @@ pub struct ListApiKeysResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct CreateApiKeyRequest {
+pub(super) struct CreateApiKeyRequest {
     /// Human label; must be non-empty, need not be unique.
     pub name: String,
 
@@ -119,7 +119,7 @@ pub struct CreateApiKeyRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct UpdateApiKeyRequest {
+pub(super) struct UpdateApiKeyRequest {
     /// Addressed API key row.
     pub api_key_id: i64,
 
@@ -138,7 +138,7 @@ pub struct UpdateApiKeyRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct DeleteApiKeyRequest {
+pub(super) struct DeleteApiKeyRequest {
     /// Addressed API key row.
     pub api_key_id: i64,
 }
@@ -147,7 +147,7 @@ pub struct DeleteApiKeyRequest {
 /// the facts the caller cannot know (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ApiKeyEnvelope {
+pub(super) struct ApiKeyEnvelope {
     /// The created API key row.
     pub api_key: ApiKeyResponse,
 }

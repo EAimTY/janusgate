@@ -1,7 +1,7 @@
-import { type Accessor, createSignal, onCleanup } from "solid-js";
+import { type Accessor, createSignal } from "solid-js";
 import type { ActionName } from "/src/management-api/diagnosis";
 import type { ManagementCallOutcome } from "/src/management-api/outcome";
-import { type ScreenNotice, screenFailureNotice } from "./read";
+import { createDisposalGuard, type ScreenNotice, screenFailureNotice } from "./read";
 
 /**
  * What a creation's perform step produced: the screen's own prelude refused
@@ -58,10 +58,7 @@ export function createCreateAction<TResult>(options: {
 
     // The one disposal guard, set when the consuming screen goes away: a
     // call answering afterwards must state nothing and land nowhere.
-    let isDisposed = false;
-    onCleanup(() => {
-        isDisposed = true;
-    });
+    const isDisposed = createDisposalGuard();
 
     const run = async (): Promise<void> => {
         if (isCreating() || !options.canRun()) {
@@ -75,7 +72,7 @@ export function createCreateAction<TResult>(options: {
 
         setIsCreating(false);
 
-        if (isDisposed) {
+        if (isDisposed()) {
             return;
         }
 

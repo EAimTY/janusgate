@@ -23,7 +23,7 @@ import { Button, TextField } from "/src/ui/controls";
 import { Notice } from "/src/ui/feedback";
 import { Glyph } from "/src/ui/glyph";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { AuthorizeStep, DeviceStep } from "/src/ui/oauth-flow";
+import { CompletionForm, DeviceStep } from "/src/ui/oauth-flow";
 import {
     CompatibleConnectionFields,
     ProviderIdentityFields,
@@ -41,6 +41,23 @@ import { type ScreenNotice, screenFailureNotice } from "./read";
  */
 const FLOW_LOCK_NOTICE =
     "Locked while the authorization is live — the provider is created from what the flow's start already sent.";
+
+/**
+ * Where the page's standing failure came from: the boot read's cycle, or
+ * the static creation path's action. The origin decides both what renders
+ * beside the failure — the Read-again recovery is the boot read's alone —
+ * and what may clear it: the shared read harness's two-origin rule
+ * (`read.ts`), applied to the page's locally-owned notice, so a boot cycle
+ * that answers clears only a boot failure and a creation's diagnosis
+ * survives the re-read that never retried the creation.
+ */
+type FailureOrigin = "boot" | "action";
+
+/** The page's standing failure, paired with the origin its clearing reads. */
+type StandingFailure = {
+    readonly notice: ScreenNotice;
+    readonly origin: FailureOrigin;
+};
 
 /**
  * The creation page: one preset catalog, one definition, one provider. A
@@ -69,11 +86,12 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     // is not yet a mistake (the api-key forms' untouched-name gate).
     const [hasBaseUrlInput, setHasBaseUrlInput] = createSignal(false);
     const [apiKey, setApiKey] = createSignal("");
-    // The page's standing notice: the boot read's failures and the static
-    // creation path's outcomes. The OAuth flow's failures never reach it —
-    // the flow fragment states its own inside the Connect card — so the two
+    // The page's standing failure: the boot read's failures and the static
+    // creation path's outcomes, each stamped with the origin its clearing
+    // reads (see `FailureOrigin`). The OAuth flow's failures never reach it
+    // — the flow fragment states its own inside the Connect card — so the
     // channels cannot render one outcome twice.
-    const [failure, setFailure] = createSignal<ScreenNotice | null>(null);
+    const [failure, setFailure] = createSignal<StandingFailure | null>(null);
     /** Whether the boot read's cycle is in flight — the read-again button's busy state. */
     const [isBootReading, setIsBootReading] = createSignal(true);
 
@@ -156,12 +174,16 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         // which this boot read mirrors without adopting it), never whichever
         // continuation happened to settle last.
         let settledCount = 0;
-        const failureCauses: Array<unknown | null> = [
+        // Each declared call's slot holds its failure cause, `null` marking
+        // the call's success; the none-case lives in the settle's `find`
+        // predicate — `undefined` when every slot still reads `null` — not
+        // in the array's element type.
+        const failureCauses: Array<unknown> = [
             null,
             null,
         ];
 
-        const settleBootCall = (index: 0 | 1, failureCause: unknown | null): void => {
+        const settleBootCall = (index: 0 | 1, failureCause: unknown): void => {
             settledCount += 1;
             failureCauses[index] = failureCause;
 
@@ -176,10 +198,20 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 const firstFailure = failureCauses.find((cause) => cause !== null);
 
                 if (firstFailure === undefined) {
-                    setFailure(null);
+                    // The cycle read: it clears only a boot-origin failure —
+                    // a creation diagnosis the cycle never retried survives
+                    // the re-read (the two-origin rule).
+                    setFailure((current) => (current?.origin === "boot" ? null : current));
                     reportRefresh();
                 } else {
-                    setFailure(screenFailureNotice(firstFailure));
+                    // The cycle failed: its diagnosis replaces whatever
+                    // stands — the newest cycle's failure is the current
+                    // fact, and the boot-origin stamp brings the Read-again
+                    // recovery with it.
+                    setFailure({
+                        notice: screenFailureNotice(firstFailure),
+                        origin: "boot",
+                    });
                 }
             }
         };
@@ -507,12 +539,31 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         setArmedPresetId(null);
     };
 
+    /**
+     * The static creation path's failure channel: a stated notice stands
+     * with the action's origin, and the action's own clear — the pre-run
+     * `null` — lifts only an action-origin failure, never the boot read's
+     * (the two-origin rule: an action states its own or clears its own).
+     */
+    const reportCreationFailure = (notice: ScreenNotice | null): void => {
+        setFailure((current) => {
+            if (notice !== null) {
+                return {
+                    notice,
+                    origin: "action",
+                };
+            }
+
+            return current?.origin === "action" ? null : current;
+        });
+    };
+
     // The static-key creation's shared action: the page's prelude ensures the
     // definition first — a refused ensure states its notice and no provider
     // call runs — and a succeeded creation lands on the new provider's page.
     const create = createCreateAction({
         action: "create-provider",
-        channel: setFailure,
+        channel: reportCreationFailure,
         canRun: () => canCreateStatic() && !oauth.isBusy(),
         perform: async () => {
             const ensured = await ensureDefinition();
@@ -548,12 +599,13 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
     const isBusy = (): boolean => create.isCreating() || oauth.isBusy();
 
     /**
-     * Whether an OAuth flow is live: the picker, the identity fields, and the
-     * definition editing surface lock, because the provider is created from
-     * what the flow's start already sent — an edit now would look accepted
-     * and do nothing. Each editable card states that reason in a single line
-     * (`FLOW_LOCK_NOTICE`) for as long as the flow holds, so no control grays
-     * out silently.
+     * Whether an OAuth flow is live: the picker, the identity fields, the
+     * definition editing surface, and the base-URL field lock, because the
+     * provider is created from what the flow's start already sent — an edit
+     * now would look accepted and do nothing. Each editable card states that
+     * reason in a single line (`FLOW_LOCK_NOTICE`) for as long as the flow
+     * holds — the Connect card's line standing beside its one locked field —
+     * so no control grays out silently.
      */
     const isFlowLive = (): boolean => oauth.flow() !== null;
 
@@ -580,11 +632,6 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
         return live !== null && live.grant === "device" ? live : null;
     });
 
-    const submitOauth = (event: SubmitEvent): void => {
-        event.preventDefault();
-        void oauth.complete();
-    };
-
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
@@ -598,24 +645,30 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 {(current) => (
                     <div class="flex flex-col items-start gap-3">
                         <Notice
-                            tone={current().tone}
-                            title={current().title}
-                            detail={current().detail}
-                            fix={current().fix}
+                            tone={current().notice.tone}
+                            title={current().notice.title}
+                            detail={current().notice.detail}
+                            fix={current().notice.fix}
                         />
                         {/* The failed boot read's way back, on the page it
-                            failed: rerunning `readBootState` — the read
-                            aborts the cycle in flight and writes only the
-                            listing signals and the notice, so a live OAuth
-                            flow stands through it untouched. */}
-                        <Button
-                            glyph="refresh"
-                            tone="ghost"
-                            isBusy={isBootReading()}
-                            onClick={readBootState}
-                        >
-                            Read again
-                        </Button>
+                            failed — and only there: an action-origin failure
+                            is not the boot read's to recover, and a click
+                            here would rerun a read whose success clears only
+                            a boot failure, leaving the action's diagnosis
+                            standing while retrying nothing. The rerun aborts
+                            the cycle in flight and writes only the listing
+                            signals and the notice, so a live OAuth flow
+                            stands through it untouched. */}
+                        <Show when={current().origin === "boot"}>
+                            <Button
+                                glyph="refresh"
+                                tone="ghost"
+                                isBusy={isBootReading()}
+                                onClick={readBootState}
+                            >
+                                Read again
+                            </Button>
+                        </Show>
                     </div>
                 )}
             </Show>
@@ -671,6 +724,189 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                 </div>
             </Card>
 
+            <Card>
+                <CardHeader title="Identity" />
+                <div class="mt-4 flex max-w-2xl flex-col gap-4">
+                    <ProviderIdentityFields
+                        name={name()}
+                        namePlaceholder={suggestion()}
+                        onNameInput={inputName}
+                        isCustomPrefix={isCustomPrefix()}
+                        onCustomPrefixToggle={setIsCustomPrefix}
+                        customPrefix={customPrefix()}
+                        onCustomPrefixInput={setCustomPrefix}
+                        defaultPrefix={defaultModelPrefix(resolvedName())}
+                        prefixError={prefixError()}
+                        isDisabled={isBusy() || isFlowLive()}
+                    />
+                </div>
+                <Show when={isFlowLive()}>
+                    <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>
+                </Show>
+            </Card>
+
+            {/* The credential path follows the preset's grant: an OAuth
+                grant renders the Connect card, and the grant-less static
+                path — the only other case — is the Switch's fallback. */}
+            <Switch
+                fallback={
+                    <Card>
+                        <CardHeader
+                            title="Connection"
+                            description="The key is write-only — the gateway never returns it."
+                        />
+                        <form
+                            novalidate={true}
+                            class="mt-4 flex max-w-2xl flex-col gap-4"
+                            onSubmit={create.submit}
+                        >
+                            <CompatibleConnectionFields
+                                hasBaseUrl={needsBaseUrl()}
+                                baseUrl={baseUrl()}
+                                apiKey={apiKey()}
+                                onBaseUrlInput={inputBaseUrl}
+                                onApiKeyInput={setApiKey}
+                                baseUrlError={baseUrlError()}
+                                apiKeyError={apiKeyError()}
+                                isDisabled={create.isCreating()}
+                            />
+                            <div>
+                                <Button
+                                    type="submit"
+                                    tone="primary"
+                                    isDisabled={!canCreateStatic()}
+                                    isBusy={create.isCreating()}
+                                >
+                                    {create.isCreating() ? "Creating…" : "Create provider"}
+                                </Button>
+                            </div>
+                        </form>
+                    </Card>
+                }
+            >
+                <Match when={preset().grant !== null}>
+                    <Card>
+                        <CardHeader
+                            title="Connect the account"
+                            description="Approve access where the flow points, then let it complete. This app never stores the credentials."
+                        />
+                        {/* The flow's failures state themselves where its step
+                            and buttons stand — a refused begin or exchange, a
+                            failed outcome poll, a flow's expiry — never on
+                            the page's read-level notice above the cards. */}
+                        <Show when={oauth.failure()}>
+                            {(current) => (
+                                <div class="mt-4">
+                                    <Notice
+                                        tone="bad"
+                                        title={current().title}
+                                        detail={current().detail}
+                                        fix={current().fix}
+                                    />
+                                </div>
+                            )}
+                        </Show>
+                        <Show
+                            when={oauth.flow() === null}
+                            fallback={
+                                <div class="mt-4">
+                                    {/* The flow is live and the recipe
+                                        addresses the base: the field stays
+                                        on the page carrying the value the
+                                        flow's start sent, disabled under
+                                        the same single-line lock reason
+                                        every locked card states — what the
+                                        start sent stays readable without
+                                        being editable. */}
+                                    <Show when={needsBaseUrl()}>
+                                        <div class="mb-4 max-w-2xl">
+                                            <TextField
+                                                label="Upstream base URL"
+                                                type="url"
+                                                value={baseUrl()}
+                                                onInput={inputBaseUrl}
+                                                placeholder="https://upstream.example.com/v1"
+                                                isDisabled={true}
+                                            />
+                                        </div>
+                                        <p class="mt-3 text-[12.5px] text-ink-faint">
+                                            {FLOW_LOCK_NOTICE}
+                                        </p>
+                                    </Show>
+                                    <Show
+                                        when={startedAuthorizationCode()}
+                                        keyed
+                                        fallback={
+                                            <Show
+                                                when={startedDevice()}
+                                                keyed
+                                            >
+                                                {(deviceFlow) => (
+                                                    <DeviceStep
+                                                        flow={deviceFlow}
+                                                        onComplete={oauth.completeDevice}
+                                                        onStartOver={oauth.reset}
+                                                    />
+                                                )}
+                                            </Show>
+                                        }
+                                    >
+                                        {(authorizationFlow) => (
+                                            <CompletionForm
+                                                flow={oauth}
+                                                startedFlow={authorizationFlow}
+                                                busyLabel="Connecting…"
+                                                submitLabel="Connect the account"
+                                                isSubmittable={canComplete}
+                                                class="flex max-w-2xl flex-col gap-4"
+                                            />
+                                        )}
+                                    </Show>
+                                </div>
+                            }
+                        >
+                            <div class="mt-4">
+                                <Show when={needsBaseUrl()}>
+                                    {/* The edited recipe addresses the base,
+                                        so the flow start needs the URL it
+                                        stores — the static path's field, the
+                                        requirement stated quietly from first
+                                        paint and the error only once typed. */}
+                                    <div class="mb-4 max-w-2xl">
+                                        <TextField
+                                            label="Upstream base URL"
+                                            type="url"
+                                            value={baseUrl()}
+                                            onInput={inputBaseUrl}
+                                            placeholder="https://upstream.example.com/v1"
+                                            isDisabled={isBusy()}
+                                            error={baseUrlError()}
+                                            hint={requiredHint(
+                                                "The upstream address this definition's requests evaluate against — the gateway refuses a flow start without one.",
+                                            )}
+                                        />
+                                    </div>
+                                </Show>
+                                <Button
+                                    tone="primary"
+                                    isDisabled={!canComplete()}
+                                    isBusy={oauth.isStarting()}
+                                    onClick={() => void oauth.start()}
+                                >
+                                    {oauth.isStarting() ? "Starting…" : "Start the authorization"}
+                                </Button>
+                            </div>
+                        </Show>
+                    </Card>
+                </Match>
+            </Switch>
+
+            {/* The definition stands last, below the required fields: it is
+                the advanced surface — prefilled by the preset and rarely
+                opened — while the identity and credential fields above are
+                the path every creation walks. The card's placement is
+                presentation only: every gate derives from the definition
+                payload memo, never from the DOM order. */}
             <Card>
                 <CardHeader
                     title="Definition"
@@ -754,179 +990,6 @@ export function ProviderNewScreen(props: { readonly api: ManagementApi }): JSX.E
                     </Show>
                 </div>
             </Card>
-
-            <Card>
-                <CardHeader title="Identity" />
-                <div class="mt-4 flex max-w-2xl flex-col gap-4">
-                    <ProviderIdentityFields
-                        name={name()}
-                        namePlaceholder={suggestion()}
-                        onNameInput={inputName}
-                        isCustomPrefix={isCustomPrefix()}
-                        onCustomPrefixToggle={setIsCustomPrefix}
-                        customPrefix={customPrefix()}
-                        onCustomPrefixInput={setCustomPrefix}
-                        defaultPrefix={defaultModelPrefix(resolvedName())}
-                        prefixError={prefixError()}
-                        isDisabled={isBusy() || isFlowLive()}
-                    />
-                </div>
-                <Show when={isFlowLive()}>
-                    <p class="mt-3 text-[12.5px] text-ink-faint">{FLOW_LOCK_NOTICE}</p>
-                </Show>
-            </Card>
-
-            <Switch>
-                <Match when={preset().grant !== null}>
-                    <Card>
-                        <CardHeader
-                            title="Connect the account"
-                            description="Approve access where the flow points, then let it complete. This app never stores the credentials."
-                        />
-                        {/* The flow's failures state themselves where its step
-                            and buttons stand — a refused begin or exchange, a
-                            failed outcome poll, a flow's expiry — never on
-                            the page's read-level notice above the cards. */}
-                        <Show when={oauth.failure()}>
-                            {(current) => (
-                                <div class="mt-4">
-                                    <Notice
-                                        tone="bad"
-                                        title={current().title}
-                                        detail={current().detail}
-                                        fix={current().fix}
-                                    />
-                                </div>
-                            )}
-                        </Show>
-                        <Show
-                            when={oauth.flow() === null}
-                            fallback={
-                                <div class="mt-4">
-                                    <Show
-                                        when={startedAuthorizationCode()}
-                                        keyed
-                                        fallback={
-                                            <Show
-                                                when={startedDevice()}
-                                                keyed
-                                            >
-                                                {(deviceFlow) => (
-                                                    <DeviceStep
-                                                        flow={deviceFlow}
-                                                        onComplete={oauth.completeDevice}
-                                                        onStartOver={oauth.reset}
-                                                    />
-                                                )}
-                                            </Show>
-                                        }
-                                    >
-                                        {(authorizationFlow) => (
-                                            <form
-                                                novalidate={true}
-                                                class="flex max-w-2xl flex-col gap-4"
-                                                onSubmit={submitOauth}
-                                            >
-                                                <AuthorizeStep
-                                                    flow={authorizationFlow}
-                                                    onStartOver={oauth.reset}
-                                                >
-                                                    <TextField
-                                                        label="Callback URL or authorization code"
-                                                        value={oauth.code()}
-                                                        onInput={oauth.setCode}
-                                                        placeholder="Paste the whole callback URL"
-                                                        isDisabled={oauth.isCompleting()}
-                                                        error={oauth.pasteError()}
-                                                    />
-                                                    <div>
-                                                        <Button
-                                                            type="submit"
-                                                            tone="primary"
-                                                            isDisabled={!canComplete()}
-                                                            isBusy={oauth.isCompleting()}
-                                                        >
-                                                            {oauth.isCompleting()
-                                                                ? "Connecting…"
-                                                                : "Connect the account"}
-                                                        </Button>
-                                                    </div>
-                                                </AuthorizeStep>
-                                            </form>
-                                        )}
-                                    </Show>
-                                </div>
-                            }
-                        >
-                            <div class="mt-4">
-                                <Show when={needsBaseUrl()}>
-                                    {/* The edited recipe addresses the base,
-                                        so the flow start needs the URL it
-                                        stores — the static path's field, the
-                                        requirement stated quietly from first
-                                        paint and the error only once typed. */}
-                                    <div class="mb-4 max-w-2xl">
-                                        <TextField
-                                            label="Upstream base URL"
-                                            type="url"
-                                            value={baseUrl()}
-                                            onInput={inputBaseUrl}
-                                            placeholder="https://upstream.example.com/v1"
-                                            isDisabled={isBusy()}
-                                            error={baseUrlError()}
-                                            hint={requiredHint(
-                                                "The upstream address this definition's requests evaluate against — the gateway refuses a flow start without one.",
-                                            )}
-                                        />
-                                    </div>
-                                </Show>
-                                <Button
-                                    tone="primary"
-                                    isDisabled={!canComplete()}
-                                    isBusy={oauth.isStarting()}
-                                    onClick={() => void oauth.start()}
-                                >
-                                    {oauth.isStarting() ? "Starting…" : "Start the authorization"}
-                                </Button>
-                            </div>
-                        </Show>
-                    </Card>
-                </Match>
-                <Match when={true}>
-                    <Card>
-                        <CardHeader
-                            title="Connection"
-                            description="The key is write-only — the gateway never returns it."
-                        />
-                        <form
-                            novalidate={true}
-                            class="mt-4 flex max-w-2xl flex-col gap-4"
-                            onSubmit={create.submit}
-                        >
-                            <CompatibleConnectionFields
-                                hasBaseUrl={needsBaseUrl()}
-                                baseUrl={baseUrl()}
-                                apiKey={apiKey()}
-                                onBaseUrlInput={inputBaseUrl}
-                                onApiKeyInput={setApiKey}
-                                baseUrlError={baseUrlError()}
-                                apiKeyError={apiKeyError()}
-                                isDisabled={create.isCreating()}
-                            />
-                            <div>
-                                <Button
-                                    type="submit"
-                                    tone="primary"
-                                    isDisabled={!canCreateStatic()}
-                                    isBusy={create.isCreating()}
-                                >
-                                    {create.isCreating() ? "Creating…" : "Create provider"}
-                                </Button>
-                            </div>
-                        </form>
-                    </Card>
-                </Match>
-            </Switch>
         </div>
     );
 }

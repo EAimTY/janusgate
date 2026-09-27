@@ -7,7 +7,7 @@ import type {
     QueryUsageRequest,
     QueryUsageResponse,
 } from "/src/management-api/generated/v0";
-import { type ReadCall, readAll } from "./read";
+import { type ReadCall, readAll, readApiKeys, readModels, readProviders } from "./read";
 import { DIMENSION_KEY_FIELD, missingBucketKeyFieldMessage } from "./usage-labels";
 
 /** The entity lists a usage screen reads alongside the accounting rows. */
@@ -31,15 +31,9 @@ export function readUsageEntities(
         run: async (signal) => {
             const [providersResult, modelsResult, apiKeysResult] = await readAll(
                 signal,
-                {
-                    run: (cycle) => api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) => api.listModels({}, cycle),
-                },
-                {
-                    run: (cycle) => api.listApiKeys(cycle),
-                },
+                readProviders(api),
+                readModels(api, {}),
+                readApiKeys(api),
             );
 
             return {

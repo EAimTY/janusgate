@@ -144,6 +144,38 @@ pub(crate) struct BeganFlow {
     pub(crate) facts: BeginFacts,
 }
 
+/// The flow row's grant-varying fields: what one grant kind alone determines — its grant type,
+/// its PKCE verifier, the device grant's stored codes and schedule, and the row's expiry. The
+/// identity fields the grants share are stamped once where the row literal is built.
+struct GrantFlowFields {
+    /// The grant kind the flow runs.
+    grant_type: FlowGrant,
+
+    /// The PKCE verifier of an authorization-code flow.
+    code_verifier: Option<String>,
+
+    /// The device code issued by the authorization response.
+    device_code: Option<String>,
+
+    /// The human-readable user code.
+    device_user_code: Option<String>,
+
+    /// The verification URI, when the response carried one.
+    device_verification_uri: Option<String>,
+
+    /// The verification URI carrying the user code, when carried.
+    device_verification_uri_complete: Option<String>,
+
+    /// The stored poll interval, in seconds.
+    device_poll_interval_seconds: Option<i64>,
+
+    /// The first attempt instant, in UTC microseconds.
+    device_next_poll_at: Option<i64>,
+
+    /// The flow's expiry, in UTC microseconds.
+    expires_at: i64,
+}
+
 /// Begins one flow against its definition (README §5.3, §7.1): mints the state token and the
 /// optional PKCE verifier, builds the authorize URL or executes the device authorization,
 /// resolves the expiry, and persists the flow row whose stored facts the outcome carries.
@@ -206,10 +238,10 @@ pub(crate) async fn begin_flow(
         ),
     };
 
-    // The per-grant begin persists the row and yields the one fact storage cannot recover: the
-    // authorization-code grant's authorize URL. The device grant's verification facts exist
-    // only as the row's stored columns, so no fact is computed twice.
-    let (new_flow, authorize_url) = match grant {
+    // The per-grant match yields the row's grant-varying fields plus the one fact storage
+    // cannot recover: the authorization-code grant's authorize URL. The device grant's
+    // verification facts exist only as the row's stored columns, so no fact is computed twice.
+    let (grant_fields, authorize_url) = match grant {
         Grant::AuthorizationCode { pkce, .. } => {
             let code_verifier = match pkce {
                 Pkce::S256 => Some(random_url_safe(64)),
@@ -226,19 +258,8 @@ pub(crate) async fn begin_flow(
             let authorize_url =
                 build_authorize_url(grant, &env, &state_token, code_verifier.as_deref())?;
 
-            let expires_at = unix_time::unix_now_micros() + AUTHORIZATION_CODE_TTL;
-
-            let new_flow = NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token,
-                purpose,
-                provider_name,
-                model_prefix,
-                base_url,
-                target_provider_id,
+            let grant_fields = GrantFlowFields {
                 grant_type: FlowGrant::AuthorizationCode,
-                slots,
                 code_verifier,
                 device_code: None,
                 device_user_code: None,
@@ -246,10 +267,10 @@ pub(crate) async fn begin_flow(
                 device_verification_uri_complete: None,
                 device_poll_interval_seconds: None,
                 device_next_poll_at: None,
-                expires_at,
+                expires_at: unix_time::unix_now_micros() + AUTHORIZATION_CODE_TTL,
             };
 
-            (new_flow, Some(authorize_url))
+            (grant_fields, Some(authorize_url))
         }
 
         Grant::Device {
@@ -292,36 +313,59 @@ pub(crate) async fn begin_flow(
                         .to_string(),
                 })?;
 
-            let new_flow = NewFlow {
-                definition_name: definition.name.clone(),
-                definition_version: definition.version,
-                state_token,
-                purpose,
-                provider_name,
-                model_prefix,
-                base_url,
-                target_provider_id,
+            let device_next_poll_at =
+                unix_time::seconds_from_now(interval).ok_or_else(|| Error::Unavailable {
+                    detail: "malformed device authorization response: `interval` overflow"
+                        .to_string(),
+                })?;
+
+            let grant_fields = GrantFlowFields {
                 grant_type: FlowGrant::Device,
-                slots,
                 code_verifier: None,
                 device_code: Some(device.device_code),
                 device_user_code: Some(device.user_code),
                 device_verification_uri: device.verification_uri,
                 device_verification_uri_complete: device.verification_uri_complete,
                 device_poll_interval_seconds: Some(interval),
-                device_next_poll_at: Some(unix_time::seconds_from_now(interval).ok_or_else(
-                    || {
-                        Error::Unavailable {
-                            detail: "malformed device authorization response: `interval` overflow"
-                                .to_string(),
-                        }
-                    },
-                )?),
+                device_next_poll_at: Some(device_next_poll_at),
                 expires_at,
             };
 
-            (new_flow, None)
+            (grant_fields, None)
         }
+    };
+
+    let GrantFlowFields {
+        grant_type,
+        code_verifier,
+        device_code,
+        device_user_code,
+        device_verification_uri,
+        device_verification_uri_complete,
+        device_poll_interval_seconds,
+        device_next_poll_at,
+        expires_at,
+    } = grant_fields;
+
+    let new_flow = NewFlow {
+        definition_name: definition.name.clone(),
+        definition_version: definition.version,
+        state_token,
+        purpose,
+        provider_name,
+        model_prefix,
+        base_url,
+        target_provider_id,
+        grant_type,
+        slots,
+        code_verifier,
+        device_code,
+        device_user_code,
+        device_verification_uri,
+        device_verification_uri_complete,
+        device_poll_interval_seconds,
+        device_next_poll_at,
+        expires_at,
     };
 
     // The stored row is the response's source of truth: the state token, the expiry, and the

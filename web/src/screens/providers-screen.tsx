@@ -5,7 +5,7 @@ import type { ModelResponse, ProviderResponse } from "/src/management-api/genera
 import { modelCountsByProvider } from "/src/management-api/serving";
 import { credentialKindLabel, upstreamFormatLabel } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
-import { createScreenRead, readAll } from "/src/screens/read";
+import { createScreenRead, readAll, readModels, readProviders } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { ButtonLink, SearchInput } from "/src/ui/controls";
 import { EmptyState, Notice } from "/src/ui/feedback";
@@ -28,12 +28,8 @@ export function ProvidersScreen(props: { readonly api: ManagementApi }): JSX.Ele
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
-                {
-                    run: (cycle) => props.api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) => props.api.listModels({}, cycle),
-                },
+                readProviders(props.api),
+                readModels(props.api, {}),
             );
 
             setProviders(providersResult.providers);

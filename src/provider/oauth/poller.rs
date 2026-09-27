@@ -3,8 +3,12 @@
 //!
 //! Claiming a due flow is one conditional `UPDATE … RETURNING` — the conditional database lease —
 //! and a claim older than the control-request timeout is recovered by the next claimant, so
-//! competing pollers and restarts never double-exchange an upstream grant. Only the current
-//! claimant persists the result or next schedule: every persist conditions on the claim stamp.
+//! competing pollers never double-exchange an upstream grant concurrently. The lease alone
+//! cannot cover a poller that dies after its exchange completed, so the claimant persists the
+//! exchange checkpoint the moment the exchange completes — before provisioning runs — and a
+//! claim recovered with a checkpoint aboard resumes into provisioning and commit from it,
+//! never re-presenting the consumed device code. Only the current claimant persists the result
+//! or next schedule: every persist conditions on the claim stamp.
 
 use super::{
     completion,
@@ -97,9 +101,12 @@ async fn claim_next_due_flow(database: &Database) -> Result<Option<OngoingFlow>,
     .await
 }
 
-/// Drives one claimed flow's poll attempt: executes the definition's exchange request, classifies
-/// the outcome, schedules the next attempt, and — on a completed exchange — provisions and
-/// commits the provider write together with the terminal outcome in one transaction.
+/// Drives one claimed flow's poll attempt. A flow whose row carries an exchange checkpoint — a
+/// previous claimant's completed exchange — resumes straight into provisioning and commit from
+/// it; otherwise the definition's exchange request executes, the outcome is classified, and the
+/// next attempt is scheduled. A completed exchange is checkpointed before provisioning runs, so
+/// a restart between the exchange and its commit resumes from the checkpoint instead of
+/// re-presenting the consumed device code.
 async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Result<(), Error> {
     let Some(definition) = storage::provider_definitions::find_definition(
         database,
@@ -150,6 +157,28 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         )
         .await;
     };
+
+    // A flow whose row carries an exchange checkpoint has already consumed its grant: a
+    // previous claimant completed the exchange and died before its commit, and the stale-claim
+    // recovery handed the flow here. Resuming from the checkpoint — never re-presenting the
+    // device code — is what keeps a restart from turning the user-approved grant into a
+    // misleading upstream rejection (README §3, §7.2). A checkpoint the row carries but no
+    // longer parses is storage drift: it fails the flow terminally — clearing itself with the
+    // terminal persist — instead of looping the reclaim.
+    if let Some(checkpoint) = &flow.device_exchange_checkpoint {
+        let Ok(outcome) = serde_json::from_str::<ExchangeOutcome>(checkpoint) else {
+            return persist_terminal(
+                database,
+                flow,
+                flow.device_poll_started_at,
+                "internal_error",
+                "the flow's stored exchange checkpoint is malformed",
+            )
+            .await;
+        };
+
+        return commit_success(database, http, flow, &definition, outcome).await;
+    }
 
     let env = ValueEnv::for_device_poll(
         &flow.slots,
@@ -226,9 +255,65 @@ async fn process(database: &Database, http: &Client, flow: &OngoingFlow) -> Resu
         }
 
         ExchangeProduct::Completed(outcome) => {
-            commit_success(database, http, flow, &definition, outcome).await
+            let is_checkpointed = checkpoint_completed_exchange(database, flow, &outcome).await?;
+
+            if is_checkpointed {
+                commit_success(database, http, flow, &definition, outcome).await
+            } else {
+                Ok(())
+            }
         }
     }
+}
+
+/// Persists one completed exchange's checkpoint before its commit (README §3, §7.2): the mapped
+/// token fields ride the flow row under the held claim, so a restart that recovers the claim
+/// resumes into provisioning and commit from the checkpoint instead of re-presenting the
+/// consumed device code. A lost claim is ordinary contention: the winner owns the row and its
+/// own exchange, so the discard is logged and the caller abandons its outcome.
+///
+/// # Errors
+///
+/// Returns [`storage::Error`] when the checkpoint persist fails or [`Error::Internal`] when the
+/// claimed flow carries no claim stamp — a claimed flow always does.
+///
+/// # Panics
+///
+/// Panics if the exchange outcome fails to serialize, which cannot occur: the outcome is a
+/// struct of optional strings, integers, and string maps, a shape serde_json always renders.
+async fn checkpoint_completed_exchange(
+    database: &Database,
+    flow: &OngoingFlow,
+    outcome: &ExchangeOutcome,
+) -> Result<bool, Error> {
+    let claim = flow.device_poll_started_at.ok_or_else(|| Error::Internal {
+        message: "the claimed flow carries no claim stamp".to_string(),
+    })?;
+
+    #[expect(
+        clippy::expect_used,
+        reason = "the checkpoint always serializes: the outcome is a struct of optional \
+                  strings, integers, and string maps"
+    )]
+    let checkpoint_json =
+        serde_json::to_string(outcome).expect("the exchange checkpoint always serializes");
+
+    let is_persisted = storage::oauth_flows::persist_exchange_checkpoint(
+        database,
+        flow.id,
+        claim,
+        &checkpoint_json,
+    )
+    .await?;
+
+    if !is_persisted {
+        debug!(
+            "device flow {} lost its claim; exchange outcome discarded",
+            flow.id
+        );
+    }
+
+    Ok(is_persisted)
 }
 
 /// Schedules the next attempt after a failed transport round-trip: a timeout doubles only the
@@ -354,7 +439,9 @@ async fn persist_terminal(
 /// the commit transaction itself — after the re-stamp — fails the flow the same terminal way
 /// with the gateway-owned `commit_failed` pair, because the exchange is consumed upstream
 /// either way; a claim the re-stamp finds stolen abandons the provider write, leaving the
-/// newer state untouched.
+/// newer state untouched. The exchange checkpoint the caller persisted before this pipeline
+/// rides through it: the success commit clears it together with the outcome, and every terminal
+/// persist clears it with the terminal row.
 async fn commit_success(
     database: &Database,
     http: &Client,
@@ -548,14 +635,23 @@ mod tests {
         reason = "the fixtures are constructed so each unwrap lands on its documented side"
     )]
 
-    use super::{ExchangeOutcome, claim_next_due_flow, commit_success, process, schedule_retry};
+    use super::{
+        ExchangeOutcome, ExchangeProduct, claim_next_due_flow, commit_success, execute_exchange,
+        process, schedule_retry,
+    };
     use crate::{
         http_client,
-        provider::StoredCredentials,
+        provider::{
+            StoredCredentials,
+            definition::{
+                credential::{CredentialAcquisition, OAuthRecipe},
+                eval::ValueEnv,
+            },
+        },
         storage,
         storage::oauth_flows::{
             FlowGrant, FlowOutcome, FlowPurpose, NewFlow, claim_due_device_flow,
-            find_flow_by_state, insert_flow, restamp_claim,
+            find_flow_by_state, insert_flow, persist_exchange_checkpoint, restamp_claim,
         },
         test_support::{self, MockUpstream},
     };
@@ -1795,5 +1891,195 @@ mod tests {
             reclaims.is_none(),
             "a terminal flow is never re-claimed for another exchange"
         );
+    }
+
+    /// A restart between a completed exchange and its commit never re-presents the consumed
+    /// device code (README §3, §7.2): the dying claimant persists the exchange checkpoint the
+    /// moment its exchange completes — before provisioning — and drops before its commit, the
+    /// stale-claim recovery hands the flow to the next claimant with the checkpoint riding the
+    /// row, and that claimant resumes into provisioning and commit from the checkpoint. The
+    /// upstream that already issued the tokens sees no second token request — a re-presented
+    /// device code earns a terminal rejection that would turn the user-approved grant into a
+    /// misleading `upstream_rejected` failure — and the committed credentials carry the
+    /// checkpoint's token.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the restart diverges from the contract.
+    #[tokio::test]
+    async fn a_restart_after_a_completed_exchange_commits_from_the_persisted_checkpoint() {
+        let (database, _guard) = test_support::create_test_database().await;
+
+        // The mock's first response completes the dying claimant's exchange; the second is the
+        // terminal rejection a re-presented device code would earn from an RFC 8628 token
+        // endpoint — any re-exchange flips the flow to a failed `upstream_rejected`.
+        let (mock, requests) = MockUpstream::start_recording(vec![
+            serde_json::to_string(&serde_json::json!({"access_token": "exchange-token"})).unwrap(),
+            serde_json::to_string(&serde_json::json!({"error": "access_denied"})).unwrap(),
+        ])
+        .await;
+
+        let definition =
+            insert_device_poll_definition(&database, "device-def", &mock.base(), false).await;
+
+        let now = crate::unix_time::unix_now_micros();
+
+        insert_flow(
+            &database,
+            NewFlow {
+                definition_name: definition.name.clone(),
+                definition_version: definition.version,
+                state_token: "state-token".to_string(),
+                purpose: FlowPurpose::Create,
+                provider_name: Some("created".to_string()),
+                model_prefix: Some(String::new()),
+                base_url: None,
+                target_provider_id: None,
+                grant_type: FlowGrant::Device,
+                slots: BTreeMap::new(),
+                code_verifier: None,
+                device_code: Some("device-code".to_string()),
+                device_user_code: Some("user-code".to_string()),
+                device_verification_uri: Some("https://verify.example".to_string()),
+                device_verification_uri_complete: None,
+                device_poll_interval_seconds: Some(5),
+                device_next_poll_at: Some(now - 1),
+                expires_at: now + 600 * crate::unix_time::MICROS_PER_SEC,
+            },
+        )
+        .await
+        .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the due flow is claimed")]
+        let claimed = claim_due_device_flow(&database, now, now - 1)
+            .await
+            .unwrap()
+            .expect("the due flow is claimed");
+
+        // Leg 1 — the claimant that dies: it exchanges, persists the checkpoint, and never
+        // reaches its commit; the completed exchange survives only as the row's checkpoint.
+        #[expect(
+            clippy::panic,
+            reason = "the fixture definition carries an OAuth credential"
+        )]
+        let CredentialAcquisition::OAuth(recipe) = &definition.payload.credential else {
+            panic!("the fixture definition carries an OAuth credential");
+        };
+
+        let OAuthRecipe {
+            client_id,
+            client_secret,
+            exchange,
+            ..
+        } = &**recipe;
+
+        let env = ValueEnv::for_device_poll(
+            &claimed.slots,
+            claimed.base_url.as_deref(),
+            client_id.as_str(),
+            client_secret.as_deref(),
+            claimed.device_code.as_deref(),
+        );
+
+        let product = execute_exchange(&http_client::control_plane(), exchange, &env)
+            .await
+            .unwrap();
+
+        #[expect(
+            clippy::panic,
+            reason = "the mock's first response maps an access token"
+        )]
+        let ExchangeProduct::Completed(outcome) = product else {
+            panic!("the fixture exchange completes");
+        };
+
+        #[expect(clippy::expect_used, reason = "the claimed flow carries its stamp")]
+        let claim = claimed
+            .device_poll_started_at
+            .expect("the held claim stamps");
+
+        #[expect(clippy::unwrap_used, reason = "the checkpoint always serializes")]
+        let checkpoint_json = serde_json::to_string(&outcome).unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "the checkpoint persist executes")]
+        let is_persisted =
+            persist_exchange_checkpoint(&database, claimed.id, claim, &checkpoint_json)
+                .await
+                .unwrap();
+
+        assert!(is_persisted, "the dying claimant still holds its claim");
+
+        // The restart: the stale claim is recovered past the staleness window, checkpoint
+        // aboard.
+        let later = now + 40 * crate::unix_time::MICROS_PER_SEC;
+
+        #[expect(clippy::expect_used, reason = "the stale claim is recovered")]
+        let recovered = claim_due_device_flow(
+            &database,
+            later,
+            now + 10 * crate::unix_time::MICROS_PER_SEC,
+        )
+        .await
+        .unwrap()
+        .expect("the stale claim is recovered");
+
+        assert_eq!(recovered.id, claimed.id);
+
+        assert!(
+            recovered.device_exchange_checkpoint.is_some(),
+            "the recovered row carries the dying claimant's checkpoint"
+        );
+
+        // Leg 2 — the recovered claimant drives `process`: it must commit from the checkpoint
+        // without a second token request.
+        process(&database, &http_client::control_plane(), &recovered)
+            .await
+            .unwrap();
+
+        let token_requests = requests.lock().unwrap().join(" ");
+
+        assert_eq!(
+            token_requests, "POST /",
+            "the consumed grant is never re-presented to the upstream"
+        );
+
+        #[expect(clippy::expect_used, reason = "the flow row persists")]
+        let settled = find_flow_by_state(&database, "state-token", later)
+            .await
+            .unwrap()
+            .expect("the flow row persists");
+
+        assert_eq!(
+            settled.outcome,
+            Some(FlowOutcome::Succeeded),
+            "the restart commits the approved grant instead of failing it"
+        );
+
+        assert_eq!(
+            settled.device_exchange_checkpoint, None,
+            "the commit clears the checkpoint it completes"
+        );
+
+        assert_eq!(settled.device_poll_started_at, None);
+
+        #[expect(clippy::expect_used, reason = "the provider write committed")]
+        let provider = storage::providers::find_provider(&database, "created")
+            .await
+            .unwrap()
+            .expect("the provider write committed");
+
+        assert_eq!(
+            provider.credentials,
+            StoredCredentials::OAuth {
+                access_token: "exchange-token".to_string(),
+                refresh_token: None,
+                slots: BTreeMap::new(),
+                expires_at: None,
+                refresh_started_at: None,
+            },
+            "the committed credentials carry the checkpoint's token"
+        );
+
+        mock.shutdown.send(()).ok();
     }
 }

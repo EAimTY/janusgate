@@ -4,14 +4,13 @@ import { formatTimestamp } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
-import { createScreenRead, readOne } from "/src/screens/read";
+import { createScreenRead, readApiKeys, readOne } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
-import { AppLink } from "/src/ui/app-link";
 import { CopyButton } from "/src/ui/clipboard";
 import { ButtonLink, SearchInput } from "/src/ui/controls";
 import { Badge, EmptyState, Notice } from "/src/ui/feedback";
-import { Glyph } from "/src/ui/glyph";
 import { PageHeader } from "/src/ui/layout";
+import { RowLink } from "/src/ui/row-link";
 import { SkeletonRows } from "./skeleton-rows";
 
 /**
@@ -26,9 +25,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
 
     const read = createScreenRead({
         load: async (signal) => {
-            const keysResult = await readOne(signal, {
-                run: (cycle) => props.api.listApiKeys(cycle),
-            });
+            const keysResult = await readOne(signal, readApiKeys(props.api));
 
             setKeys(keysResult.api_keys);
         },
@@ -47,13 +44,28 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
         );
     });
 
-    // The count line counts the enabled rows the search leaves visible, so a
-    // standing search narrows its claim to the screen; with no search the
-    // visible rows are the whole listing, and the denominator stays the whole
-    // listing either way, like the models screen's "X of Y models".
+    // The count line's numerator counts the enabled rows among the visible
+    // ones while its denominator is always the whole listing — two facts that
+    // diverge under a standing search, where the sentence shape alone would
+    // read as visible over total, the meaning the models screen's identical
+    // "X of Y models" carries. A standing search therefore states both facts
+    // ("2 keys shown · 1 of 5 enabled"); with no search the visible rows are
+    // the whole listing, and the plain sentence holds.
     const visibleEnabledCount = createMemo(
         () => visibleKeys().filter((row) => row.is_enabled).length,
     );
+
+    const countLine = createMemo(() => {
+        const total = keys().length;
+        const totalNoun = total === 1 ? "key" : "keys";
+        const shown = visibleKeys().length;
+
+        if (search().trim() === "") {
+            return `${visibleEnabledCount()} of ${total} ${totalNoun} enabled`;
+        }
+
+        return `${shown} ${shown === 1 ? "key" : "keys"} shown · ${visibleEnabledCount()} of ${total} ${totalNoun} enabled`;
+    });
 
     return (
         <div class="rise-in flex flex-col gap-5">
@@ -118,7 +130,7 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
                             class="text-[12.5px] text-ink-faint"
                             role="status"
                         >
-                            {`${visibleEnabledCount()} of ${keys().length} ${keys().length === 1 ? "key" : "keys"} enabled`}
+                            {countLine()}
                         </p>
                         <ul class="flex flex-col gap-2">
                             <For each={visibleKeys()}>{(row) => <ApiKeyRow apiKey={row} />}</For>
@@ -132,37 +144,25 @@ export function ApiKeysScreen(props: { readonly api: ManagementApi }): JSX.Eleme
 
 function ApiKeyRow(props: { readonly apiKey: ApiKeyResponse }): JSX.Element {
     return (
-        <li class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-rule bg-surface px-4 py-3.5">
-            <AppLink
-                href={hrefs.apiKeyDetail(props.apiKey.id)}
-                class="group flex min-w-0 flex-1 basis-48 items-center gap-4"
-            >
-                <span class="min-w-0 flex-1">
-                    <span class="block truncate text-[14.5px] font-semibold">
-                        {props.apiKey.name}
-                    </span>
-                    <span class="tnum mt-0.5 block truncate text-[12.5px] text-ink-faint">
-                        {`Created ${formatTimestamp(props.apiKey.created_at)}`}
-                    </span>
-                    <span class="tnum mt-1 block truncate text-[12.5px] text-ink-dim">
-                        {props.apiKey.key}
-                    </span>
-                </span>
-                <span class="flex shrink-0 items-center gap-2">
-                    <Badge
-                        tone={props.apiKey.is_enabled ? "ok" : "muted"}
-                        label={props.apiKey.is_enabled ? "On" : "Off"}
-                    />
-                    <Glyph
-                        name="chev-right"
-                        class="text-ink-faint transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink-dim"
-                    />
-                </span>
-            </AppLink>
-            <CopyButton
-                value={props.apiKey.key}
-                subject="the secret here"
-            />
-        </li>
+        <RowLink
+            href={hrefs.apiKeyDetail(props.apiKey.id)}
+            primary={
+                <span class="block truncate text-[14.5px] font-semibold">{props.apiKey.name}</span>
+            }
+            secondary={`Created ${formatTimestamp(props.apiKey.created_at)}`}
+            tertiary={props.apiKey.key}
+            badges={
+                <Badge
+                    tone={props.apiKey.is_enabled ? "ok" : "muted"}
+                    label={props.apiKey.is_enabled ? "On" : "Off"}
+                />
+            }
+            trailing={
+                <CopyButton
+                    value={props.apiKey.key}
+                    subject="the secret here"
+                />
+            }
+        />
     );
 }

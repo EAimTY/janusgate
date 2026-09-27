@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
     credentialExpiryLine,
     formatClock,
+    formatDuration,
     formatTokenCount,
     isCredentialExpired,
     nowMicros,
@@ -77,6 +78,30 @@ describe("formatTokenCount", () => {
 
     it("groups large counts", () => {
         expect(formatTokenCount(1_234_567)).toBe("1,234,567");
+    });
+});
+
+describe("formatDuration", () => {
+    it("prints a duration under a minute as one decimal of seconds", () => {
+        expect(formatDuration(8_100)).toBe("8.1s");
+        expect(formatDuration(120)).toBe("0.1s");
+        expect(formatDuration(0)).toBe("0.0s");
+    });
+
+    it("floors the sub-minute tenth rather than rolling over to the boundary", () => {
+        // 59_999 ms rounds up to a full minute's worth of tenths; the
+        // sub-minute shape must not print "60.0s" where the next shape calls
+        // the same duration "1m 00s".
+        expect(formatDuration(59_999)).toBe("59.9s");
+    });
+
+    it("prints a minute and above as minutes and zero-padded seconds", () => {
+        expect(formatDuration(60_000)).toBe("1m 00s");
+        expect(formatDuration(123_000)).toBe("2m 03s");
+    });
+
+    it("keeps counting in minutes past the hour", () => {
+        expect(formatDuration(3_725_000)).toBe("62m 05s");
     });
 });
 

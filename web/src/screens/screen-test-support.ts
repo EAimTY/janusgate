@@ -1,11 +1,17 @@
 import type { ManagementApi } from "/src/management-api/client";
-import type { ApiLogResponse } from "/src/management-api/generated/v0";
+import type {
+    ApiKeyResponse,
+    ApiLogResponse,
+    ModelResponse,
+    ProviderResponse,
+} from "/src/management-api/generated/v0";
 
 /**
  * Test support the suites share: the full management API stub the screen
- * mounts run against, the shared usage-row fixture their pages are built
- * from, the promise drains the suites' exchanges rely on, and the DOM
- * lookups and keystrokes their user interactions drive.
+ * mounts run against, the entity-listing fragment its suites answer fixture
+ * rows from, the shared usage-row fixture their pages are built from, the
+ * promise drains the suites' exchanges rely on, and the DOM lookups and
+ * keystrokes their user interactions drive.
  */
 
 /** Rejects the way every route a screen test did not expect must: loudly. */
@@ -50,6 +56,40 @@ export function stubManagementApi(overrides: Partial<ManagementApi>): Management
         createApiKey: overrides.createApiKey ?? (() => refusedRoute("createApiKey")),
         updateApiKey: overrides.updateApiKey ?? (() => refusedRoute("updateApiKey")),
         deleteApiKey: overrides.deleteApiKey ?? (() => refusedRoute("deleteApiKey")),
+    };
+}
+
+/**
+ * The entity-listing fragment of the route table: each of the three listings
+ * answers from the given rows — a kind left out answers empty — wrapped the
+ * way the wire answers it. Suites spread this fragment over their own
+ * remaining overrides inside `stubManagementApi`, keeping their other stub
+ * members local.
+ */
+export function stubListings(rows: {
+    readonly providers?: ReadonlyArray<ProviderResponse>;
+    readonly models?: ReadonlyArray<ModelResponse>;
+    readonly apiKeys?: ReadonlyArray<ApiKeyResponse>;
+}): Partial<ManagementApi> {
+    return {
+        listProviders: () =>
+            Promise.resolve({
+                providers: [
+                    ...(rows.providers ?? []),
+                ],
+            }),
+        listModels: () =>
+            Promise.resolve({
+                models: [
+                    ...(rows.models ?? []),
+                ],
+            }),
+        listApiKeys: () =>
+            Promise.resolve({
+                api_keys: [
+                    ...(rows.apiKeys ?? []),
+                ],
+            }),
     };
 }
 

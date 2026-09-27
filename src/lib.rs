@@ -24,7 +24,7 @@ mod http_client;
 mod ids;
 mod ir;
 mod logging;
-pub mod management_api;
+mod management_api;
 mod provider;
 mod routing_text;
 mod security;
@@ -35,6 +35,9 @@ mod storage;
 #[cfg(test)]
 mod test_support;
 mod unix_time;
+
+#[cfg(feature = "management-api-typescript-bindings")]
+pub use management_api::generate_typescript_bindings;
 
 /// Global application configuration loader, installed once during process startup, hot-reloaded by
 /// its watcher task, and accessible throughout the crate without synchronization overhead.

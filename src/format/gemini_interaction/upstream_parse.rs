@@ -368,18 +368,15 @@ struct UsageReport {
 }
 
 impl UsageReport {
-    /// Folds the report into IR usage: output includes reasoning (as in the GenerateContent
-    /// codec), the reasoning breakdown rides beside it, and there is no cache-write accounting.
+    /// Maps the report's members onto the shared family fold
+    /// [`format::fold_gemini_usage`].
     fn into_usage(self) -> IrUsage {
-        IrUsage {
-            input_tokens: self.total_input_tokens,
-            output_tokens: self
-                .total_output_tokens
-                .saturating_add(self.total_thought_tokens.unwrap_or(0)),
-            cached_tokens: self.total_cached_tokens,
-            cache_write_tokens: None,
-            reasoning_tokens: self.total_thought_tokens,
-        }
+        format::fold_gemini_usage(
+            self.total_input_tokens,
+            self.total_output_tokens,
+            self.total_thought_tokens,
+            self.total_cached_tokens,
+        )
     }
 }
 

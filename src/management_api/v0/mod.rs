@@ -40,59 +40,35 @@ mod provider_definitions;
 mod providers;
 mod usage;
 
-// This version's public wire surface: every route marker and every route's request and response
-// payload types. Nested wire shapes — provider and model rows, captured credentials — stay private,
-// and the route contract itself is shared at [`crate::management_api::Route`].
-pub use self::{
-    api_keys::{
-        ApiKeyEnvelope, ApiKeyResponse, CreateApiKey, CreateApiKeyRequest, DeleteApiKey,
-        DeleteApiKeyRequest, ListApiKeys, ListApiKeysRequest, ListApiKeysResponse, UpdateApiKey,
-        UpdateApiKeyRequest,
-    },
-    error::{ErrorCode, ErrorResponse},
-    models::{
-        CreateModel, CreateModelRequest, DeleteModel, DeleteModelRequest, DiscoverModels,
-        DiscoverModelsRequest, DiscoverModelsResponse, ListModels, ListModelsRequest,
-        ListModelsResponse, ModelEnvelope, ModelResponse, UpdateModel, UpdateModelRequest,
-    },
-    oauth_flow::{
-        CompleteProviderOauth, CompleteProviderOauthRequest, ReauthorizeProvider,
-        ReauthorizeProviderRequest, StartProviderOauth, StartProviderOauthRequest,
-        StartProviderOauthResponse,
-    },
+// The route markers this version's router mounts, plus the error body the bindings export besides
+// the route payloads; every other payload type stays in the file of the route declaring it, and
+// the route contract itself is shared at `crate::management_api::Route`.
+#[cfg(feature = "management-api-typescript-bindings")]
+use self::error::ErrorResponse;
+use self::{
+    api_keys::{CreateApiKey, DeleteApiKey, ListApiKeys, UpdateApiKey},
+    models::{CreateModel, DeleteModel, DiscoverModels, ListModels, UpdateModel},
+    oauth_flow::{CompleteProviderOauth, ReauthorizeProvider, StartProviderOauth},
     provider_definitions::{
-        CreateProviderDefinition, CreateProviderDefinitionRequest, DefinitionEnvelope,
-        DefinitionResponse, ListProviderDefinitions, ListProviderDefinitionsRequest,
-        ListProviderDefinitionsResponse, UpdateProviderDefinition, UpdateProviderDefinitionRequest,
+        CreateProviderDefinition, ListProviderDefinitions, UpdateProviderDefinition,
     },
-    providers::{
-        CreateProvider, CreateProviderRequest, DeleteProvider, DeleteProviderRequest,
-        ListProviders, ListProvidersRequest, ListProvidersResponse, UpdateProvider,
-        UpdateProviderRequest,
-    },
-    usage::{
-        ApiLogResponse, ListUsage, ListUsageRequest, ListUsageResponse, QueryUsage,
-        QueryUsageRequest, QueryUsageResponse, UsageBucket, UsageBucketKey,
-    },
+    providers::{CreateProvider, DeleteProvider, ListProviders, UpdateProvider},
+    usage::{ListUsage, QueryUsage},
 };
-/// Re-exported so this version's payloads declare the two-state field adapters of README §7.0
-/// rule 2 through their own version module: `Nullable` marks a required-nullable field and
-/// `absent_keeps` the absent-keeps `deserialize_with` function, both defined once in the
-/// shared crate-root module `crate::serde_helpers`.
-pub use crate::serde_helpers::Nullable;
-pub(crate) use crate::serde_helpers::absent_keeps;
-/// Re-exported for the one shared usage filter, defined with the storage reads it configures:
-/// this version's usage payloads declare it, and its `serde` field attributes keep the
-/// absent-keeps wire strictness through the shared `crate::serde_helpers` adapters.
-pub(crate) use crate::storage::api_logs::UsageFilter;
-pub use crate::{
-    accounting::{ApiLogEndpointType, ApiLogOutcome, UsageGroupBy},
-    provider::{CredentialKind, DiscoveryState},
+/// The private import through which this version's payloads declare required-nullable fields
+/// (README §7.0 rule 2), defined once in the shared crate-root module `crate::serde_helpers`.
+use crate::serde_helpers::Nullable;
+/// The private import of the one shared usage filter this version's usage payloads declare,
+/// defined with the storage reads it configures in `crate::storage::api_logs`.
+use crate::storage::api_logs::UsageFilter;
+use crate::{
+    accounting::{ApiLogEndpointType, ApiLogOutcome},
+    serde_helpers::absent_keeps,
 };
 
 /// URL prefix this version is mounted at, relative to the management API router. Its version
 /// segment also names this version's TypeScript bindings file.
-pub const PREFIX: &str = "/v0";
+pub(super) const PREFIX: &str = "/v0";
 
 /// Every route of this version, collected link-time; iteration order is unspecified, so the
 /// bindings generator sorts before rendering. This version's `route!` macro registers into it, and
@@ -431,7 +407,7 @@ fn stored_base_url_required(definition: &crate::provider::ProviderDefinition) ->
 /// rule 7): an empty JSON object, shared by reference like every other response shape.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct EmptyResponse {}
+struct EmptyResponse {}
 
 /// A provider row in its management wire shape: a union discriminated by the row's credential
 /// kind — the one field set a row carries — with the exact definition pair, the derived wire
@@ -441,7 +417,7 @@ pub struct EmptyResponse {}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum ProviderResponse {
+enum ProviderResponse {
     /// An OAuth account: the row carries the expiry of its current access token.
     #[serde(rename = "oauth")]
     OAuth {
@@ -466,7 +442,7 @@ pub enum ProviderResponse {
 impl ProviderResponse {
     /// Renders one provider row; credentials are never read.
     #[must_use]
-    pub(crate) fn from_provider(provider: &crate::provider::Provider) -> Self {
+    fn from_provider(provider: &crate::provider::Provider) -> Self {
         let shared = SharedProviderFields {
             id: provider.id,
             name: provider.name.clone(),
@@ -491,7 +467,7 @@ impl ProviderResponse {
 /// The field set both credential kinds share, flattened into each union member.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct SharedProviderFields {
+struct SharedProviderFields {
     /// Provider row identifier.
     id: i64,
 
@@ -521,7 +497,7 @@ pub struct SharedProviderFields {
 /// server-assigned row identity and the exchange's expiry — the facts the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ProviderEnvelope {
+struct ProviderEnvelope {
     /// The created provider row.
     pub provider: ProviderResponse,
 }

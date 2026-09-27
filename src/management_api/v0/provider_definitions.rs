@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroI64;
 
 route! {
-    pub ListProviderDefinitions: {
+    pub(super) ListProviderDefinitions: {
         path: "/provider-definitions:list",
         method: http::Method::POST,
         request: ListProviderDefinitionsRequest,
@@ -28,7 +28,7 @@ route! {
 }
 
 route! {
-    pub CreateProviderDefinition: {
+    pub(super) CreateProviderDefinition: {
         path: "/provider-definitions:create",
         method: http::Method::POST,
         request: CreateProviderDefinitionRequest,
@@ -37,7 +37,7 @@ route! {
 }
 
 route! {
-    pub UpdateProviderDefinition: {
+    pub(super) UpdateProviderDefinition: {
         path: "/provider-definitions:update",
         method: http::Method::POST,
         request: UpdateProviderDefinitionRequest,
@@ -49,14 +49,14 @@ route! {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListProviderDefinitionsRequest {}
+pub(super) struct ListProviderDefinitionsRequest {}
 
 /// The `provider-definitions:list` success body: every stored version, ordered by name then
 /// version. The latest version of a name is the client's derivation (`MAX(version)` over the
 /// listing), never a movable alias the server substitutes.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListProviderDefinitionsResponse {
+pub(super) struct ListProviderDefinitionsResponse {
     /// Every stored definition version.
     pub provider_definitions: Vec<DefinitionResponse>,
 }
@@ -66,7 +66,7 @@ pub struct ListProviderDefinitionsResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct CreateProviderDefinitionRequest {
+pub(super) struct CreateProviderDefinitionRequest {
     /// The new definition's name; must be non-empty.
     pub name: String,
 
@@ -81,7 +81,7 @@ pub struct CreateProviderDefinitionRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct UpdateProviderDefinitionRequest {
+pub(super) struct UpdateProviderDefinitionRequest {
     /// The definition name whose history the successor version extends.
     pub name: String,
 
@@ -97,7 +97,7 @@ pub struct UpdateProviderDefinitionRequest {
 /// the payload, and the creation timestamp.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct DefinitionResponse {
+pub(super) struct DefinitionResponse {
     /// The definition name; versions accumulate under it.
     pub name: String,
 
@@ -115,7 +115,7 @@ pub struct DefinitionResponse {
 impl DefinitionResponse {
     /// Renders one stored definition version.
     #[must_use]
-    pub(crate) fn from_definition(definition: &ProviderDefinition) -> Self {
+    fn from_definition(definition: &ProviderDefinition) -> Self {
         Self {
             name: definition.name.clone(),
             version: definition.version.get(),
@@ -129,7 +129,7 @@ impl DefinitionResponse {
 /// the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct DefinitionEnvelope {
+pub(super) struct DefinitionEnvelope {
     /// The stored definition version.
     pub provider_definition: DefinitionResponse,
 }

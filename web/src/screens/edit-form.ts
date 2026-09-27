@@ -1,7 +1,7 @@
 import { type Accessor, createEffect, createSignal, onCleanup } from "solid-js";
 import type { ActionName } from "/src/management-api/diagnosis";
 import { performManagementCall } from "/src/management-api/outcome";
-import type { ScreenNotice, ScreenRead } from "./read";
+import { createDisposalGuard, type ScreenNotice, type ScreenRead } from "./read";
 
 /**
  * The save-and-dirt wiring of one settings form, shared by the three edit
@@ -61,10 +61,7 @@ export function createEditForm<TResult>(options: {
     // The one disposal guard, set when the consuming screen goes away: a
     // call answering afterwards must state nothing, re-baseline nothing,
     // and reload nothing.
-    let isDisposed = false;
-    onCleanup(() => {
-        isDisposed = true;
-    });
+    const isDisposed = createDisposalGuard();
 
     const save = async (): Promise<void> => {
         if (isSaving() || !options.canSave()) {
@@ -77,7 +74,7 @@ export function createEditForm<TResult>(options: {
 
         setIsSaving(false);
 
-        if (isDisposed) {
+        if (isDisposed()) {
             return;
         }
 
@@ -134,15 +131,12 @@ export function createDeleteAction(options: {
     // The one disposal guard, set when the consuming screen goes away: a
     // call answering afterwards must state nothing, reload nothing, and
     // navigate nowhere (README §6.4).
-    let isDisposed = false;
-    onCleanup(() => {
-        isDisposed = true;
-    });
+    const isDisposed = createDisposalGuard();
 
     return async (): Promise<boolean> => {
         const outcome = await performManagementCall(options.perform);
 
-        if (isDisposed) {
+        if (isDisposed()) {
             return false;
         }
 

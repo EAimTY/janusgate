@@ -12,14 +12,14 @@
 //!     -- <output-directory>
 //! ```
 
-use janusgate::management_api;
+use janusgate::generate_typescript_bindings;
 use lexopt::{Arg as Argument, Parser as ArgumentsParser};
 use std::path::PathBuf;
 
 fn main() {
     let output_directory = parse_output_directory();
 
-    management_api::generate_typescript_bindings(&output_directory);
+    generate_typescript_bindings(&output_directory);
 }
 
 /// Parses the single output-directory argument.

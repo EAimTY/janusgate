@@ -73,16 +73,19 @@ describe("ApiKeysScreen count line", () => {
         // whole listing.
         expect(bodyText()).toContain("2 of 5 keys enabled");
 
+        // Under a standing search the numerator and the denominator diverge,
+        // so the line states both facts instead of reading as visible over
+        // total, the shape the models screen's sentence means.
         typeInto(searchInput(), "alpha");
         await settle();
-        expect(bodyText()).toContain("1 of 5 keys enabled");
+        expect(bodyText()).toContain("1 key shown · 1 of 5 keys enabled");
 
         // The numerator counts enabled rows among the visible ones, not the
         // visible rows themselves: the single row a disabled match leaves is
         // counted as off, and the denominator stays the whole listing.
         typeInto(searchInput(), "beta");
         await settle();
-        expect(bodyText()).toContain("0 of 5 keys enabled");
+        expect(bodyText()).toContain("1 key shown · 0 of 5 keys enabled");
 
         typeInto(searchInput(), "");
         await settle();

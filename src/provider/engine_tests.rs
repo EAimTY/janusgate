@@ -861,6 +861,7 @@ fn completion_flow(base: String) -> crate::storage::oauth_flows::OngoingFlow {
         device_poll_interval_seconds: None,
         device_next_poll_at: None,
         device_poll_started_at: None,
+        device_exchange_checkpoint: None,
         outcome: None,
         result_provider_id: None,
         failure_code: None,

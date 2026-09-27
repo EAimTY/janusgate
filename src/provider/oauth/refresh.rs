@@ -396,6 +396,7 @@ async fn persistence(
         Renewal::Reprovision {
             access_token,
             expires_at,
+            refresh_token,
             base_url,
         } => storage::providers::persist_reprovision_for_lease(
             database,
@@ -403,6 +404,7 @@ async fn persistence(
             lease_started_at,
             access_token,
             Some(*expires_at),
+            refresh_token.as_deref(),
             base_url.as_deref(),
         )
         .await
@@ -427,6 +429,12 @@ enum Renewal {
         /// one, so a renewal never persists a `null` over a known expiry.
         expires_at: i64,
 
+        /// The refresh token the reprovisioning sequence extracted, when it rotated one; the
+        /// persist carries the member only when present, so an absent extraction leaves the
+        /// stored token in place — the reprovisioning arm's mirror of the grant arm's
+        /// retention of an omitted rotation (README §3).
+        refresh_token: Option<String>,
+
         /// The renewed base URL, when provisioning supplied one.
         base_url: Option<String>,
     },
@@ -437,7 +445,7 @@ enum Renewal {
 /// The grant arm reads the stored refresh token and slots, decodes its response through the
 /// declared mapping (or the exchange mapping), and retains an omitted refresh token; the
 /// reprovisioning arm runs the provisioning sequence over the stored slots and may update the
-/// access token, expiry, and base URL together.
+/// access token, expiry, refresh token, and base URL together.
 ///
 /// # Errors
 ///
@@ -564,6 +572,7 @@ async fn renew_and_build_state(http: &Client, provider: &Provider) -> Result<Ren
             Ok(Renewal::Reprovision {
                 access_token,
                 expires_at,
+                refresh_token: state.refresh_token,
                 base_url: state.base_url,
             })
         }
@@ -701,6 +710,323 @@ mod tests {
         assert!(message.contains("no expiry"), "{message}");
 
         mock.shutdown.send(()).ok();
+    }
+
+    /// Inserts one reprovision-renewal definition whose single provisioning step posts to
+    /// `token_url` and extracts the access token and the future expiry — plus a rotated
+    /// refresh token when `with_rotation` holds — for the reprovision-renewal tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the payload does not parse, validate, or insert — a broken fixture is the
+    /// failure report.
+    async fn insert_reprovision_definition(
+        database: &Database,
+        name: &str,
+        token_url: &str,
+        with_rotation: bool,
+    ) -> crate::provider::ProviderDefinition {
+        let mut extract = vec![
+            serde_json::json!({
+                "path": ["token"],
+                "target": {"type": "access_token"},
+                "shape": {"type": "string"},
+                "required": true
+            }),
+            serde_json::json!({
+                "path": ["expiry"],
+                "target": {"type": "expires_at_unix_seconds"},
+                "shape": {"type": "integer"},
+                "required": true
+            }),
+        ];
+
+        if with_rotation {
+            extract.push(serde_json::json!({
+                "path": ["refresh"],
+                "target": {"type": "refresh_token"},
+                "shape": {"type": "string"},
+                "required": true
+            }));
+        }
+
+        let payload = oauth_definition_payload(OAuthDefinitionFixture {
+            format: UpstreamFormat::OpenAiChatCompletion,
+            inference_suffix: Some("/chat/completions"),
+            client_id: "fixture-client",
+            initial_slots: &[],
+            grant: OAuthGrantFixture::AuthorizationCode,
+            exchange_url: FIXTURE_TOKEN_URL,
+            response_fields: vec![],
+            terminal_codes: &["invalid_grant"],
+            refresh: OAuthRefreshFixture::Reprovision,
+            provisioning: Some(serde_json::json!([{
+                "request": {
+                    "method": "POST",
+                    "url": [{"type": "literal", "value": token_url}]
+                },
+                "response_encoding": "json",
+                "extract": extract
+            }])),
+        });
+
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the fixture definition always validates"
+        )]
+        payload.validate().unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "the fixture definition always inserts")]
+        storage::provider_definitions::insert_definition(
+            database,
+            storage::provider_definitions::NewDefinition {
+                name,
+                base_version: None,
+                payload: &payload,
+                created_at: 1,
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A reprovisioning renewal whose sequence extracts a rotated refresh token persists the
+    /// new token over the stored one under the lease (README §3): the working state folds the
+    /// extraction, and the lease-conditioned reprovision persist carries it, so the next
+    /// renewal never replays a token the upstream may have revoked on rotation (RFC 6749
+    /// §10.4).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or the renewal does not persist the rotation.
+    #[tokio::test]
+    async fn a_reprovision_renewal_persists_an_extracted_refresh_token_rotation() {
+        let db_path = std::env::temp_dir().join(format!(
+            "janusgate-refresh-repro-rotation-test-{}.db",
+            rand::random::<u64>()
+        ));
+
+        #[expect(clippy::unwrap_used, reason = "non-zero literal")]
+        let one = NonZero::new(1_usize).unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
+        let database = Database::open(&db_path, Registry::Main, one, POOL_WAIT)
+            .await
+            .unwrap();
+
+        let expiry_seconds = unix_time::unix_now_micros() / unix_time::MICROS_PER_SEC + 3_600;
+
+        let mock = MockUpstream::start(vec![
+            serde_json::to_string(&serde_json::json!(
+                {"token": "renewed", "refresh": "rotated", "expiry": expiry_seconds}
+            ))
+            .unwrap(),
+        ])
+        .await;
+
+        let definition = insert_reprovision_definition(
+            &database,
+            "reprovision-rotation-def",
+            &mock.base(),
+            true,
+        )
+        .await;
+
+        let provider = crate::test_support::insert_provider(
+            &database,
+            &definition,
+            "rotated",
+            "r-",
+            None,
+            StoredCredentials::OAuth {
+                access_token: "elapsed".to_string(),
+                refresh_token: Some("stored".to_string()),
+                slots: BTreeMap::new(),
+                expires_at: Some(unix_time::unix_now_micros() - 1),
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        let now = unix_time::unix_now_micros();
+
+        let mut transaction = database.transaction().await.unwrap();
+
+        #[expect(clippy::expect_used, reason = "the elapsed token acquires the lease")]
+        let lease = storage::providers::try_acquire_refresh_lease(
+            &mut transaction,
+            provider.id,
+            now,
+            now - 1,
+            0,
+        )
+        .await
+        .unwrap()
+        .expect("the elapsed token acquires the lease");
+
+        transaction.commit().await.unwrap();
+
+        renew_and_store(&database, &http_client::control_plane(), &provider, lease)
+            .await
+            .unwrap();
+
+        #[expect(clippy::expect_used, reason = "the provider row persists")]
+        let settled = storage::providers::find_provider_by_id(&database, provider.id)
+            .await
+            .unwrap()
+            .expect("the provider row persists");
+
+        #[expect(
+            clippy::panic,
+            reason = "a divergent credential kind is the failure report"
+        )]
+        let StoredCredentials::OAuth {
+            access_token,
+            refresh_token,
+            refresh_started_at,
+            ..
+        } = settled.credentials
+        else {
+            panic!("the renewed row carries OAuth credentials");
+        };
+
+        assert_eq!(access_token, "renewed", "the reprovisioning persisted");
+
+        assert_eq!(
+            refresh_token.as_deref(),
+            Some("rotated"),
+            "the extracted rotation replaces the stored refresh token"
+        );
+
+        assert_eq!(refresh_started_at, None, "the persist clears the lease");
+
+        mock.shutdown.send(()).ok();
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// A reprovisioning renewal whose sequence extracts no refresh token leaves the stored one
+    /// untouched, in both stored shapes (README §3): a pinned token survives for the next
+    /// renewal, and an unpinned one stays unpinned — an absent extraction patches nothing,
+    /// exactly like an omitted rotation in the grant path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixtures fail to insert or a renewal does not retain the stored shape.
+    #[tokio::test]
+    async fn a_reprovision_without_a_refresh_extraction_retains_the_stored_refresh_token() {
+        let db_path = std::env::temp_dir().join(format!(
+            "janusgate-refresh-repro-retain-test-{}.db",
+            rand::random::<u64>()
+        ));
+
+        #[expect(clippy::unwrap_used, reason = "non-zero literal")]
+        let one = NonZero::new(1_usize).unwrap();
+
+        #[expect(clippy::unwrap_used, reason = "fresh test database opens cleanly")]
+        let database = Database::open(&db_path, Registry::Main, one, POOL_WAIT)
+            .await
+            .unwrap();
+
+        let expiry_seconds = unix_time::unix_now_micros() / unix_time::MICROS_PER_SEC + 3_600;
+
+        let response = serde_json::to_string(
+            &serde_json::json!({"token": "renewed", "expiry": expiry_seconds}),
+        )
+        .unwrap();
+
+        let mock = MockUpstream::start(vec![response.clone(), response]).await;
+
+        let definition =
+            insert_reprovision_definition(&database, "reprovision-retain-def", &mock.base(), false)
+                .await;
+
+        let pinned = crate::test_support::insert_provider(
+            &database,
+            &definition,
+            "pinned",
+            "p-",
+            None,
+            StoredCredentials::OAuth {
+                access_token: "elapsed".to_string(),
+                refresh_token: Some("stored".to_string()),
+                slots: BTreeMap::new(),
+                expires_at: Some(unix_time::unix_now_micros() - 1),
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        let unpinned = crate::test_support::insert_provider(
+            &database,
+            &definition,
+            "unpinned",
+            "u-",
+            None,
+            StoredCredentials::OAuth {
+                access_token: "elapsed".to_string(),
+                refresh_token: None,
+                slots: BTreeMap::new(),
+                expires_at: Some(unix_time::unix_now_micros() - 1),
+                refresh_started_at: None,
+            },
+        )
+        .await;
+
+        for (provider, expected) in [(pinned, Some("stored")), (unpinned, None)] {
+            let now = unix_time::unix_now_micros();
+
+            let mut transaction = database.transaction().await.unwrap();
+
+            #[expect(clippy::expect_used, reason = "the elapsed token acquires the lease")]
+            let lease = storage::providers::try_acquire_refresh_lease(
+                &mut transaction,
+                provider.id,
+                now,
+                now - 1,
+                0,
+            )
+            .await
+            .unwrap()
+            .expect("the elapsed token acquires the lease");
+
+            transaction.commit().await.unwrap();
+
+            renew_and_store(&database, &http_client::control_plane(), &provider, lease)
+                .await
+                .unwrap();
+
+            #[expect(clippy::expect_used, reason = "the provider row persists")]
+            let settled = storage::providers::find_provider_by_id(&database, provider.id)
+                .await
+                .unwrap()
+                .expect("the provider row persists");
+
+            #[expect(
+                clippy::panic,
+                reason = "a divergent credential kind is the failure report"
+            )]
+            let StoredCredentials::OAuth {
+                access_token,
+                refresh_token,
+                ..
+            } = settled.credentials
+            else {
+                panic!("the renewed row carries OAuth credentials");
+            };
+
+            assert_eq!(access_token, "renewed", "the reprovisioning persisted");
+
+            assert_eq!(
+                refresh_token.as_deref(),
+                expected,
+                "an absent extraction leaves the stored refresh token shape untouched"
+            );
+        }
+
+        mock.shutdown.send(()).ok();
+
+        let _ = std::fs::remove_file(&db_path);
     }
 
     /// Inserts one refresh-grant definition whose grant posts to `refresh_url`, for the lease

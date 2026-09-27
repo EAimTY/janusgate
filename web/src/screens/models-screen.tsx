@@ -4,7 +4,7 @@ import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { indexRowsById } from "/src/management-api/serving";
 import { hrefs, navigate } from "/src/router";
-import { createScreenRead, readAll } from "/src/screens/read";
+import { createScreenRead, readAll, readModels, readProviders } from "/src/screens/read";
 import { ReadNotice } from "/src/screens/read-notice";
 import { ButtonLink, SearchInput, SelectField } from "/src/ui/controls";
 import { EmptyState, Notice } from "/src/ui/feedback";
@@ -31,20 +31,15 @@ export function ModelsScreen(props: {
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
-                {
-                    run: (cycle) => props.api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) =>
-                        props.api.listModels(
-                            props.providerFilter === null
-                                ? {}
-                                : {
-                                      provider_id: props.providerFilter,
-                                  },
-                            cycle,
-                        ),
-                },
+                readProviders(props.api),
+                readModels(
+                    props.api,
+                    props.providerFilter === null
+                        ? {}
+                        : {
+                              provider_id: props.providerFilter,
+                          },
+                ),
             );
 
             setProviders(providersResult.providers);

@@ -16,6 +16,8 @@ import {
     createScreenRead,
     isSameProviderRow,
     readAll,
+    readModels,
+    readProviders,
     type ScreenNotice,
     screenFailureNotice,
 } from "/src/screens/read";
@@ -66,18 +68,10 @@ export function ProviderDetailScreen(props: {
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
-                {
-                    run: (cycle) => props.api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) =>
-                        props.api.listModels(
-                            {
-                                provider_id: props.providerId,
-                            },
-                            cycle,
-                        ),
-                },
+                readProviders(props.api),
+                readModels(props.api, {
+                    provider_id: props.providerId,
+                }),
             );
 
             setProviders(providersResult.providers);

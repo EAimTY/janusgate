@@ -28,15 +28,16 @@
 //!
 //! `ongoing_oauth_flows` carries the whole flow lifecycle: its target (a provider to create, or
 //! one to reauthorize), its grant kind with the grant-specific columns (the PKCE verifier of an
-//! authorization-code flow; the device code, verification URIs, and poll schedule of a device
-//! flow), the working slots and base URL, the expiry, and the terminal outcome. *Ongoing* means
-//! unconsumed: a terminal device result stays until the management client retrieves it or the
-//! flow expires. The cross-column `CHECK`s pin the lifecycle states — a `create` flow names its
-//! new provider, a `reauthorize` flow names its target provider, a device flow carries its
-//! schedule exactly while it is pending, a terminal outcome is either a result provider or a
-//! failure pair, never both, and a terminal outcome exists only on a device flow: an
-//! authorization-code flow is deleted by the atomic consume of its first completion attempt, so
-//! its terminal state is never persisted.
+//! authorization-code flow; the device code, verification URIs, poll schedule, and exchange
+//! checkpoint of a device flow), the working slots and base URL, the expiry, and the terminal
+//! outcome. *Ongoing* means unconsumed: a terminal device result stays until the management
+//! client retrieves it or the flow expires. The cross-column `CHECK`s pin the lifecycle states —
+//! a `create` flow names its new provider, a `reauthorize` flow names its target provider, a
+//! device flow carries its schedule exactly while it is pending, the exchange checkpoint of a
+//! completed exchange exists exactly on a claimed pending device flow, a terminal outcome is
+//! either a result provider or a failure pair, never both, and a terminal outcome exists only on
+//! a device flow: an authorization-code flow is deleted by the atomic consume of its first
+//! completion attempt, so its terminal state is never persisted.
 //!
 //! Every integer identity a foreign reference can point at — `providers.id`, `api_keys.id`, and
 //! `models.id` — is an `INTEGER PRIMARY KEY AUTOINCREMENT` key, so SQLite never reuses a deleted
@@ -48,11 +49,12 @@
 //! internal objects excluded from the structural schema comparison.
 //!
 //! The JSON columns — `provider_definitions.inference`/`credential`/`provisioning`/`discovery`,
-//! `providers.credentials`, and `ongoing_oauth_flows.slots` — carry only `json_valid` checks:
-//! their shapes are descriptor contracts the management write boundary enforces through Rust's
-//! concrete serde types, not column invariants. Text formats are likewise enforced at the
-//! management or upstream-discovery ingestion boundary instead of by column checks, so routing
-//! tokens, secrets, and base URLs validate in one place, before any database write.
+//! `providers.credentials`, and `ongoing_oauth_flows.slots`/`device_exchange_checkpoint` — carry
+//! only `json_valid` checks: their shapes are descriptor contracts the management write boundary
+//! enforces through Rust's concrete serde types, not column invariants. Text formats are
+//! likewise enforced at the management or upstream-discovery ingestion boundary instead of by
+//! column checks, so routing tokens, secrets, and base URLs validate in one place, before any
+//! database write.
 
 use super::Schema;
 
@@ -147,6 +149,9 @@ CREATE TABLE ongoing_oauth_flows (
     ),
     device_next_poll_at INTEGER NULL,
     device_poll_started_at INTEGER NULL,
+    device_exchange_checkpoint TEXT NULL CHECK (
+        device_exchange_checkpoint IS NULL OR json_valid(device_exchange_checkpoint)
+    ),
     outcome TEXT NULL CHECK (outcome IN ('succeeded', 'failed')),
     result_provider_id INTEGER NULL CHECK (
         result_provider_id IS NULL OR result_provider_id > 0
@@ -177,6 +182,9 @@ CREATE TABLE ongoing_oauth_flows (
     ),
     CHECK (outcome IS NULL OR device_poll_started_at IS NULL),
     CHECK (outcome IS NULL OR grant_type = 'device'),
+    CHECK (device_exchange_checkpoint IS NULL OR grant_type = 'device'),
+    CHECK (device_exchange_checkpoint IS NULL OR device_poll_started_at IS NOT NULL),
+    CHECK (outcome IS NULL OR device_exchange_checkpoint IS NULL),
     CHECK (
         (outcome IS NULL AND result_provider_id IS NULL
          AND failure_code IS NULL AND failure_message IS NULL)
@@ -586,8 +594,9 @@ mod tests {
 
     /// Verifies the cross-column lifecycle `CHECK`s of `ongoing_oauth_flows` (README §3): a
     /// `create` flow names its new provider, a `reauthorize` flow names its target provider, a
-    /// device flow carries its schedule exactly while it is pending, a terminal outcome is
-    /// either a result provider or a failure pair, never both, and a terminal outcome exists
+    /// device flow carries its schedule exactly while it is pending, the exchange checkpoint of
+    /// a completed exchange exists exactly on a claimed pending device flow, a terminal outcome
+    /// is either a result provider or a failure pair, never both, and a terminal outcome exists
     /// only on a device flow — an authorization-code flow is deleted by the atomic consume of
     /// its first completion attempt, so its terminal state is never persisted — while every
     /// conforming state combination writes cleanly.
@@ -816,6 +825,70 @@ mod tests {
             .await;
 
         assert_constraint_violation(outcome, "target_provider_id");
+
+        // An exchange checkpoint on an unclaimed flow: the checkpoint records a completed
+        // exchange whose commit a crashed claimant still owes, so it exists exactly while the
+        // claim that produced it is held (README §3).
+        let outcome = connection
+            .execute_batch(
+                "UPDATE ongoing_oauth_flows SET device_exchange_checkpoint = \
+                 '{\"access_token\":\"t\"}' WHERE state_token = 'st-2';",
+            )
+            .await;
+
+        assert_constraint_violation(outcome, "device_exchange_checkpoint");
+
+        // The claim stamps first, so the following checkpoint probes isolate the column.
+        connection
+            .execute_batch(
+                "UPDATE ongoing_oauth_flows SET device_poll_started_at = 600 \
+                 WHERE state_token = 'st-2';",
+            )
+            .await?;
+
+        // A non-JSON checkpoint: only JSON syntax is a column invariant; the payload's shape is
+        // the poller's serde contract, not a schema check. A rejected statement leaves the row
+        // untouched, so the claim survives for the conforming write below.
+        let outcome = connection
+            .execute_batch(
+                "UPDATE ongoing_oauth_flows SET device_exchange_checkpoint = 'not json' \
+                 WHERE state_token = 'st-2';",
+            )
+            .await;
+
+        assert_constraint_violation(outcome, "device_exchange_checkpoint");
+
+        // A claimed pending device flow carrying its checkpoint is exactly the state a crash
+        // between the exchange and the commit leaves behind: it writes cleanly.
+        connection
+            .execute_batch(
+                "UPDATE ongoing_oauth_flows SET device_exchange_checkpoint = \
+                 '{\"access_token\":\"t\"}' WHERE state_token = 'st-2';",
+            )
+            .await?;
+
+        // A terminal row carrying a checkpoint: every terminal persist clears the checkpoint
+        // together with the claim and the schedule, so a checkpoint past the outcome is drift.
+        let outcome = connection
+            .execute_batch(
+                "UPDATE ongoing_oauth_flows SET device_exchange_checkpoint = \
+                 '{\"access_token\":\"t\"}' WHERE state_token = 'st-3';",
+            )
+            .await;
+
+        assert_constraint_violation(outcome, "device_exchange_checkpoint");
+
+        // A checkpoint on an authorization-code flow: the checkpoint is a device-poller fact —
+        // the synchronous authorization-code completion consumes its row at the first
+        // completion attempt and holds no claim to resume (README §3).
+        let outcome = connection
+            .execute_batch(
+                "UPDATE ongoing_oauth_flows SET device_exchange_checkpoint = \
+                 '{\"access_token\":\"t\"}' WHERE state_token = 'st-1';",
+            )
+            .await;
+
+        assert_constraint_violation(outcome, "device_exchange_checkpoint");
 
         Ok(())
     }

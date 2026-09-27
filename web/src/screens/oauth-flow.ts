@@ -17,18 +17,19 @@
  * step's loop, which schedules only on the fragment's `"pending"`, stops by
  * itself (README §6.4).
  */
-import { type Accessor, createSignal, onCleanup } from "solid-js";
+import { type Accessor, createSignal } from "solid-js";
 import { nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ActionName, Diagnosis } from "/src/management-api/diagnosis";
 import type {
+    CompleteProviderOauthResponse,
     ProviderResponse,
     StartProviderOauthResponse,
 } from "/src/management-api/generated/v0";
 import { extractAuthorizationCode } from "/src/management-api/oauth-code";
 import { type ManagementCallOutcome, performManagementCall } from "/src/management-api/outcome";
 import { describeCallFailure } from "./failure";
-import { type ScreenNotice, screenFailureNotice } from "./read";
+import { createDisposalGuard, type ScreenNotice, screenFailureNotice } from "./read";
 
 /**
  * What beginning a flow produced: the screen's own prelude refused and the
@@ -43,6 +44,28 @@ export type OauthFlowBegin =
     | {
           readonly status: "called";
           readonly outcome: ManagementCallOutcome<StartProviderOauthResponse>;
+      };
+
+/**
+ * What one completion call's outcome left for the calling grant after the
+ * shared settle ran: either a shared arm already acted — an aborted ask
+ * states nothing, a gone flow state resets, a failed exchange burns the
+ * flow, and a succeeded one installs the provider — or one of the two
+ * grant-owned answers remains. The failed-but-not-gone diagnosis is stated
+ * verbatim by the authorization-code caller and ridden out under the device
+ * caller's poll budget; the pending answer is the device grant's to keep
+ * polling, and one the authorization-code caller can never legally receive.
+ */
+type CompletionSettlement =
+    | {
+          readonly kind: "settled";
+      }
+    | {
+          readonly kind: "failed";
+          readonly diagnosis: Diagnosis;
+      }
+    | {
+          readonly kind: "pending";
       };
 
 /** The OAuth flow state machine one provider screen consumes. */
@@ -195,10 +218,7 @@ export function createOauthFlow(options: {
     // The one disposal guard, set when the consuming screen goes away: a call
     // answering afterwards must state nothing and re-arm nothing. The device
     // step's loop honors it through the "done" the polled asks return.
-    let isDisposed = false;
-    onCleanup(() => {
-        isDisposed = true;
-    });
+    const isDisposed = createDisposalGuard();
 
     /** Whether either OAuth call is in flight. */
     const isBusy = (): boolean => isStarting() || isCompleting();
@@ -260,6 +280,65 @@ export function createOauthFlow(options: {
         setFailure(flowFailedNotice(failureMessage));
     };
 
+    /**
+     * The completion settle both grants share: it owns the four arms whose
+     * behavior does not differ by grant — the aborted ask states nothing,
+     * the gone flow state resets (`failGoneFlow`), the failed exchange burns
+     * the flow (`failExchange`), and the succeeded one installs the provider
+     * (`discardFlow` plus `onSucceeded`) — and hands the two grant-owned
+     * answers back for the caller to translate into its own continuation.
+     * Each arm acts at most once: the caller-owned arms touch no flow state
+     * at all, so `discardFlow` runs exactly as often as before the settle
+     * was shared.
+     */
+    const settleCompletionOutcome = (
+        outcome: ManagementCallOutcome<CompleteProviderOauthResponse>,
+    ): CompletionSettlement => {
+        if (outcome.status === "aborted") {
+            return {
+                kind: "settled",
+            };
+        }
+
+        if (outcome.status === "failed") {
+            const diagnosis = completionDiagnosis(outcome.cause);
+
+            if (diagnosis.kind === "gone") {
+                failGoneFlow(diagnosis);
+
+                return {
+                    kind: "settled",
+                };
+            }
+
+            return {
+                kind: "failed",
+                diagnosis,
+            };
+        }
+
+        if (outcome.result.status === "failed") {
+            failExchange(outcome.result.failure_message);
+
+            return {
+                kind: "settled",
+            };
+        }
+
+        if (outcome.result.status === "succeeded") {
+            discardFlow();
+            options.onSucceeded(outcome.result.provider);
+
+            return {
+                kind: "settled",
+            };
+        }
+
+        return {
+            kind: "pending",
+        };
+    };
+
     const start = async (): Promise<void> => {
         if (isBusy() || flow() !== null) {
             return;
@@ -272,7 +351,7 @@ export function createOauthFlow(options: {
 
         setIsStarting(false);
 
-        if (isDisposed) {
+        if (isDisposed()) {
             return;
         }
 
@@ -333,56 +412,37 @@ export function createOauthFlow(options: {
 
         // The answer names the flow that was live when the ask left; a flow
         // replaced or abandoned since is not the answer's to act on.
-        if (isDisposed || flow()?.state !== startedFlow.state) {
+        if (isDisposed() || flow()?.state !== startedFlow.state) {
             return;
         }
 
-        if (outcome.status === "aborted") {
-            return;
-        }
+        const settlement = settleCompletionOutcome(outcome);
 
-        if (outcome.status === "failed") {
-            const diagnosis = completionDiagnosis(outcome.cause);
-
-            if (diagnosis.kind === "gone") {
-                failGoneFlow(diagnosis);
-
-                return;
-            }
-
+        if (settlement.kind === "failed") {
             setFailure({
                 tone: "bad",
-                title: diagnosis.title,
-                detail: diagnosis.detail,
-                fix: diagnosis.fix,
+                title: settlement.diagnosis.title,
+                detail: settlement.diagnosis.detail,
+                fix: settlement.diagnosis.fix,
             });
 
             return;
         }
 
-        if (outcome.result.status === "failed") {
-            failExchange(outcome.result.failure_message);
-            return;
+        if (settlement.kind === "pending") {
+            // The ask carried the `authorization_code` grant, whose exchange the
+            // gateway answers synchronously (gateway README §7.2); `pending` is
+            // the device grant's answer alone, so receiving it here breaks the
+            // contract and is fatal rather than silently ignored.
+            throw new Error("The authorization-code completion answered pending.");
         }
-
-        if (outcome.result.status === "succeeded") {
-            discardFlow();
-            options.onSucceeded(outcome.result.provider);
-            return;
-        }
-
-        // The ask carried the `authorization_code` grant, whose exchange the
-        // gateway answers synchronously (gateway README §7.2); `pending` is
-        // the device grant's answer alone, so receiving it here breaks the
-        // contract and is fatal rather than silently ignored.
-        throw new Error("The authorization-code completion answered pending.");
     };
 
     /** One device-poll ask; the step panel schedules the next one on `"pending"`. */
     const completeDevice = async (): Promise<"pending" | "done"> => {
         const startedFlow = flow();
 
-        if (isDisposed || startedFlow === null || startedFlow.grant !== "device") {
+        if (isDisposed() || startedFlow === null || startedFlow.grant !== "device") {
             return "done";
         }
 
@@ -410,23 +470,13 @@ export function createOauthFlow(options: {
         // A poll answering after the screen went away — or for a flow that is
         // no longer the live one — acts on nothing, and the "done" it returns
         // is what stops the step panel's loop.
-        if (isDisposed || flow()?.state !== startedFlow.state) {
+        if (isDisposed() || flow()?.state !== startedFlow.state) {
             return "done";
         }
 
-        if (outcome.status === "aborted") {
-            return "done";
-        }
+        const settlement = settleCompletionOutcome(outcome);
 
-        if (outcome.status === "failed") {
-            const diagnosis = completionDiagnosis(outcome.cause);
-
-            if (diagnosis.kind === "gone") {
-                failGoneFlow(diagnosis);
-
-                return "done";
-            }
-
+        if (settlement.kind === "failed") {
             // The flow is still pending on the gateway: state the failure
             // without the fresh-flow recovery — which would claim a live flow
             // dead — and re-arm the loop, until too many polls fail in a row.
@@ -438,7 +488,7 @@ export function createOauthFlow(options: {
                 setFailure({
                     tone: "bad",
                     title: "The outcome poll kept failing, so this page stopped asking.",
-                    detail: diagnosis.detail,
+                    detail: settlement.diagnosis.detail,
                     fix: FRESH_FLOW_FIX,
                 });
 
@@ -448,14 +498,14 @@ export function createOauthFlow(options: {
             setFailure({
                 tone: "bad",
                 title: "The last outcome poll failed.",
-                detail: diagnosis.detail,
+                detail: settlement.diagnosis.detail,
                 fix: POLL_RETRY_FIX,
             });
 
             return "pending";
         }
 
-        if (outcome.result.status === "pending") {
+        if (settlement.kind === "pending") {
             if (failedPolls > 0) {
                 // A poll answered again: the stated failure is stale, and the
                 // recovered loop clears it.
@@ -464,16 +514,6 @@ export function createOauthFlow(options: {
 
             failedPolls = 0;
             return "pending";
-        }
-
-        if (outcome.result.status === "failed") {
-            failExchange(outcome.result.failure_message);
-            return "done";
-        }
-
-        if (outcome.result.status === "succeeded") {
-            discardFlow();
-            options.onSucceeded(outcome.result.provider);
         }
 
         return "done";

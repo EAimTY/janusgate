@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroI64;
 
 route! {
-    pub ListProviders: {
+    pub(super) ListProviders: {
         path: "/providers:list",
         method: http::Method::POST,
         request: ListProvidersRequest,
@@ -22,7 +22,7 @@ route! {
 }
 
 route! {
-    pub CreateProvider: {
+    pub(super) CreateProvider: {
         path: "/providers:create",
         method: http::Method::POST,
         request: CreateProviderRequest,
@@ -31,7 +31,7 @@ route! {
 }
 
 route! {
-    pub UpdateProvider: {
+    pub(super) UpdateProvider: {
         path: "/providers:update",
         method: http::Method::POST,
         request: UpdateProviderRequest,
@@ -40,7 +40,7 @@ route! {
 }
 
 route! {
-    pub DeleteProvider: {
+    pub(super) DeleteProvider: {
         path: "/providers:delete",
         method: http::Method::POST,
         request: DeleteProviderRequest,
@@ -52,12 +52,12 @@ route! {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListProvidersRequest {}
+pub(super) struct ListProvidersRequest {}
 
 /// The `providers:list` success body (README §7.1).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListProvidersResponse {
+pub(super) struct ListProvidersResponse {
     /// Every stored provider, ordered by name.
     pub providers: Vec<ProviderResponse>,
 }
@@ -68,7 +68,7 @@ pub struct ListProvidersResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct CreateProviderRequest {
+pub(super) struct CreateProviderRequest {
     /// The definition name the provider binds to.
     pub provider_definition_name: String,
 
@@ -101,7 +101,7 @@ pub struct CreateProviderRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct UpdateProviderRequest {
+pub(super) struct UpdateProviderRequest {
     /// Addressed provider row.
     pub provider_id: i64,
 
@@ -143,7 +143,7 @@ pub struct UpdateProviderRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct DeleteProviderRequest {
+pub(super) struct DeleteProviderRequest {
     /// Addressed provider row.
     pub provider_id: i64,
 }

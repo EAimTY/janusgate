@@ -60,7 +60,7 @@ const UNREADABLE_BODY_MESSAGE: &str = "request body could not be read";
     ts(repr(enum))
 )]
 #[repr(u16)]
-pub enum ErrorCode {
+pub(super) enum ErrorCode {
     /// The request itself is malformed or unsupported.
     #[as_status_code(StatusCode::BAD_REQUEST)]
     InvalidRequest = 1,
@@ -363,7 +363,7 @@ pub(super) enum Error {
 /// the bindings can publish it.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ErrorResponse {
+pub(super) struct ErrorResponse {
     /// Numeric `errno` discriminant of the `ErrorCode` category.
     pub errno: ErrorCode,
 

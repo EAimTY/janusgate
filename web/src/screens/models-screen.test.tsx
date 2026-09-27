@@ -3,7 +3,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ModelsScreen } from "/src/screens/models-screen";
-import { bodyText, linkTo, settle, stubManagementApi, typeInto } from "./screen-test-support";
+import {
+    bodyText,
+    linkTo,
+    settle,
+    stubListings,
+    stubManagementApi,
+    typeInto,
+} from "./screen-test-support";
 
 /**
  * A provider whose name shares nothing with its model's ids, so a search
@@ -33,7 +40,7 @@ const modelRow: ModelResponse = {
 };
 
 /**
- * A management API whose two listings answer from fixtures; every other
+ * A management API whose listings answer from the given rows; every other
  * route rejects, so an unexpected call fails the test loudly instead of
  * hanging it.
  */
@@ -41,20 +48,7 @@ function screenApi(options: {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
 }): ManagementApi {
-    return stubManagementApi({
-        listProviders: () =>
-            Promise.resolve({
-                providers: [
-                    ...options.providers,
-                ],
-            }),
-        listModels: () =>
-            Promise.resolve({
-                models: [
-                    ...options.models,
-                ],
-            }),
-    });
+    return stubManagementApi(stubListings(options));
 }
 
 /** The models search field, under its fixed element id. */

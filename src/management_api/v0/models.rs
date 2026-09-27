@@ -16,7 +16,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 route! {
-    pub ListModels: {
+    pub(super) ListModels: {
         path: "/models:list",
         method: http::Method::POST,
         request: ListModelsRequest,
@@ -25,7 +25,7 @@ route! {
 }
 
 route! {
-    pub DiscoverModels: {
+    pub(super) DiscoverModels: {
         path: "/models:discover",
         method: http::Method::POST,
         request: DiscoverModelsRequest,
@@ -34,7 +34,7 @@ route! {
 }
 
 route! {
-    pub CreateModel: {
+    pub(super) CreateModel: {
         path: "/models:create",
         method: http::Method::POST,
         request: CreateModelRequest,
@@ -43,7 +43,7 @@ route! {
 }
 
 route! {
-    pub UpdateModel: {
+    pub(super) UpdateModel: {
         path: "/models:update",
         method: http::Method::POST,
         request: UpdateModelRequest,
@@ -52,7 +52,7 @@ route! {
 }
 
 route! {
-    pub DeleteModel: {
+    pub(super) DeleteModel: {
         path: "/models:delete",
         method: http::Method::POST,
         request: DeleteModelRequest,
@@ -68,7 +68,7 @@ route! {
 /// returns (README §7.0 rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ModelResponse {
+pub(super) struct ModelResponse {
     /// Row identifier; the address of `models:update` and `models:delete`.
     pub id: i64,
 
@@ -117,7 +117,7 @@ impl ModelResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListModelsRequest {
+pub(super) struct ListModelsRequest {
     /// Owning provider row identifier filter.
     #[serde(
         default,
@@ -133,7 +133,7 @@ pub struct ListModelsRequest {
 /// (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListModelsResponse {
+pub(super) struct ListModelsResponse {
     /// Every stored model, ordered by public ID.
     pub models: Vec<ModelResponse>,
 }
@@ -143,7 +143,7 @@ pub struct ListModelsResponse {
 /// transaction-recomputed facts the caller cannot know.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct DiscoverModelsResponse {
+pub(super) struct DiscoverModelsResponse {
     /// The provider's model rows as stored by the refresh, all states included.
     pub models: Vec<ModelResponse>,
 }
@@ -152,7 +152,7 @@ pub struct DiscoverModelsResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct DiscoverModelsRequest {
+pub(super) struct DiscoverModelsRequest {
     /// Provider whose model rows the refresh reapplies.
     pub provider_id: i64,
 }
@@ -164,7 +164,7 @@ pub struct DiscoverModelsRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct CreateModelRequest {
+pub(super) struct CreateModelRequest {
     /// Owning provider row identifier.
     pub provider_id: i64,
 
@@ -192,7 +192,7 @@ pub struct CreateModelRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct UpdateModelRequest {
+pub(super) struct UpdateModelRequest {
     /// Addressed model row.
     pub model_id: i64,
 
@@ -211,7 +211,7 @@ pub struct UpdateModelRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct DeleteModelRequest {
+pub(super) struct DeleteModelRequest {
     /// Addressed model row.
     pub model_id: i64,
 }
@@ -221,7 +221,7 @@ pub struct DeleteModelRequest {
 /// so it is not client-computable (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ModelEnvelope {
+pub(super) struct ModelEnvelope {
     /// The applied model row.
     pub model: ModelResponse,
 }

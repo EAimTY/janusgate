@@ -5,6 +5,7 @@ import {
     EMPTY_USAGE_FILTER_DRAFT,
     parseUsageFilterDraft,
     serializeUsageFilterDraft,
+    soleSubject,
     USAGE_QUERY_SUBJECT_DIMENSIONS,
     USAGE_QUERY_SUBJECT_FIELDS,
     type UsageFilterDraft,
@@ -132,8 +133,7 @@ function parseUsageQuerySubject(search: string): UsageQuerySubject | null {
         }
     }
 
-    const [subject] = named;
-    return named.length === 1 ? (subject ?? null) : null;
+    return soleSubject(named);
 }
 
 /** Builders for every link the app renders, so no href is written twice. */

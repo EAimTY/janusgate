@@ -187,6 +187,23 @@ struct FunctionResponseIn {
     /// Invocation identifier the gateway emits for replay pairing.
     #[serde(default)]
     id: Option<String>,
+
+    /// The official media channel on tool results, known-but-unsupported: presence is a
+    /// 400 naming the field (the IR tool output has no media channel; README §6.6).
+    #[serde(default)]
+    parts: Option<IgnoredAny>,
+
+    /// Non-blocking scheduling control for resumable calls, accepted-and-ignored: the
+    /// stateless gateway schedules nothing downstream (README §6.6).
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    scheduling: Option<String>,
+
+    /// Continuation marker for multi-part results, accepted-and-ignored: the stateless
+    /// gateway never continues a tool result across turns (README §6.6).
+    #[serde(default, alias = "willContinue")]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    will_continue: Option<bool>,
 }
 
 /// One advertised tool group: function declarations only.
@@ -563,6 +580,15 @@ fn parse_user_content(
         if let Some(shared) = parse_shared_payload(part)? {
             text_parts.push(shared);
         } else if let Some(response) = part.function_response.as_ref() {
+            // `parts` is the official media channel on tool results; the IR tool output has
+            // no media channel, so any present member is a 400 naming it (README §6.6).
+            if response.parts.is_some() {
+                return Err(InvalidRequest::field(
+                    "parts",
+                    "Media content inside tool results is not supported",
+                ));
+            }
+
             let call_id = resolve_response_call_id(response, call_registry);
 
             messages.push(IrMessage {
@@ -1527,6 +1553,81 @@ mod tests {
         .expect_err("an image inside a tool result must fail");
 
         assert_eq!(error.param.as_deref(), Some("functionResponse"));
+    }
+
+    /// Verifies the official `functionResponse` companion members: the media channel `parts`
+    /// is a 400 naming `parts` whenever present (the IR tool output has no media channel),
+    /// while the non-blocking scheduling controls `scheduling` and `willContinue` are
+    /// accepted-and-ignored (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the rejection or the parsed tool output diverges from the contract.
+    #[test]
+    fn maps_function_response_companions() {
+        #[expect(
+            clippy::expect_used,
+            reason = "the decorated result is constructed to fail"
+        )]
+        let error = parse_body(serde_json::json!({
+            "contents": [
+                {"role": "user", "parts": [
+                    {"functionResponse": {
+                        "name": "lint",
+                        "response": {"ok": true},
+                        "parts": [{"mime_type": "image/png", "data": "aGVsbG8="}],
+                    }},
+                ]},
+            ],
+        }))
+        .expect_err("media parts inside a tool result must fail");
+
+        assert_eq!(error.param.as_deref(), Some("parts"));
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the decorated result is constructed to parse"
+        )]
+        let parsed = parse_body(serde_json::json!({
+            "contents": [
+                {"role": "user", "parts": [
+                    {"functionResponse": {
+                        "name": "lint",
+                        "response": {"ok": true},
+                        "scheduling": "WHEN_IDLE",
+                        "willContinue": true,
+                    }},
+                ]},
+            ],
+        }))
+        .expect("a scheduling-decorated tool result must parse");
+
+        assert_eq!(parsed.ir.messages.len(), 1);
+
+        #[expect(clippy::expect_used, reason = "the tool message is asserted above")]
+        let message = parsed.ir.messages.first().expect("the tool message parses");
+
+        assert_eq!(message.role, IrRole::Tool);
+        assert_eq!(message.parts.len(), 1);
+
+        #[expect(clippy::indexing_slicing, reason = "the single part is asserted above")]
+        match &message.parts[0] {
+            IrPart::ToolOutput {
+                content, is_error, ..
+            } => {
+                assert_eq!(content, r#"{"ok":true}"#);
+                assert!(!is_error);
+            }
+            other => {
+                #[expect(
+                    clippy::panic,
+                    reason = "a part of another kind fails the mapping under test"
+                )]
+                {
+                    panic!("expected a tool output, got {other:?}")
+                }
+            }
+        }
     }
 
     /// Verifies unknown fields are 400s carrying serde's member name.

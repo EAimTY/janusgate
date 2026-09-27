@@ -17,7 +17,7 @@ use ts_rs::{Config, Dependency, TS, TypeVisitor};
 /// concrete wire payload types it exchanges. Every request and response payload is a named type
 /// unique across its version; a route that carries no request body declares an empty request
 /// struct. Routes are declared through their version's `route!` macro, never by hand.
-pub trait Route {
+pub(super) trait Route {
     /// HTTP method the route answers.
     const METHOD: Method;
 

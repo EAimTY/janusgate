@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, num::NonZeroI64};
 
 route! {
-    pub StartProviderOauth: {
+    pub(super) StartProviderOauth: {
         path: "/oauth:start",
         method: http::Method::POST,
         request: StartProviderOauthRequest,
@@ -41,7 +41,7 @@ route! {
 }
 
 route! {
-    pub CompleteProviderOauth: {
+    pub(super) CompleteProviderOauth: {
         path: "/oauth:complete",
         method: http::Method::POST,
         request: CompleteProviderOauthRequest,
@@ -50,7 +50,7 @@ route! {
 }
 
 route! {
-    pub ReauthorizeProvider: {
+    pub(super) ReauthorizeProvider: {
         path: "/oauth:reauthorize",
         method: http::Method::POST,
         request: ReauthorizeProviderRequest,
@@ -63,7 +63,7 @@ route! {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct StartProviderOauthRequest {
+pub(super) struct StartProviderOauthRequest {
     /// The definition name the flow authorizes against.
     pub provider_definition_name: String,
 
@@ -88,7 +88,7 @@ pub struct StartProviderOauthRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ReauthorizeProviderRequest {
+pub(super) struct ReauthorizeProviderRequest {
     /// Provider whose credentials the flow replaces.
     pub provider_id: i64,
 
@@ -111,7 +111,7 @@ pub struct ReauthorizeProviderRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "grant", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum CompleteProviderOauthRequest {
+pub(super) enum CompleteProviderOauthRequest {
     /// Completes an authorization-code flow with the pasted code.
     AuthorizationCode {
         /// State token returned by `oauth:start` or `oauth:reauthorize`.
@@ -134,7 +134,7 @@ pub enum CompleteProviderOauthRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "grant", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum StartProviderOauthResponse {
+pub(super) enum StartProviderOauthResponse {
     /// An authorization-code flow: the administrator opens the URL and pastes the redirected
     /// code back through `oauth:complete`.
     AuthorizationCode {
@@ -176,7 +176,7 @@ pub enum StartProviderOauthResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub enum CompleteProviderOauthResponse {
+pub(super) enum CompleteProviderOauthResponse {
     /// The flow's provider write committed; the row is the exchange's product.
     Succeeded {
         /// The created or reauthorized provider row.

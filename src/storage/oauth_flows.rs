@@ -5,8 +5,11 @@
 //! exchange, or the management client retrieving a terminal device result) or by the expiry
 //! sweep — never by any other path. A terminal device result stays until the management client
 //! retrieves it or the flow expires. Device polling claims a due flow with a conditional lease
-//! (`device_poll_started_at`), so competing pollers and restarts never double-exchange an
-//! upstream grant.
+//! (`device_poll_started_at`), so competing pollers never double-exchange an upstream grant
+//! concurrently; the lease alone cannot cover a poller that dies after its exchange completed,
+//! so the claimant persists the exchange checkpoint the moment the exchange completes, and a
+//! restart that recovers the claim resumes from it into provisioning and commit instead of
+//! re-presenting the consumed device code (README §3, §7.2).
 
 use super::Error;
 use crate::{
@@ -21,8 +24,8 @@ const FLOW_COLUMNS: &str = "id, provider_definition_name, provider_definition_ve
      state_token, purpose, provider_name, model_prefix, base_url, target_provider_id, \
      grant_type, slots, code_verifier, device_code, device_user_code, \
      device_verification_uri, device_verification_uri_complete, device_poll_interval_seconds, \
-     device_next_poll_at, device_poll_started_at, outcome, result_provider_id, failure_code, \
-     failure_message, expires_at";
+     device_next_poll_at, device_poll_started_at, device_exchange_checkpoint, outcome, \
+     result_provider_id, failure_code, failure_message, expires_at";
 
 /// What a flow is for: creating a new provider, or reauthorizing (and optionally rebinding) one
 /// existing provider.
@@ -176,6 +179,12 @@ pub(crate) struct OngoingFlow {
     /// The claim stamp of the poller currently exchanging.
     pub(crate) device_poll_started_at: Option<i64>,
 
+    /// The JSON checkpoint of the exchange the held claim completed: the mapped token fields,
+    /// persisted before provisioning runs, so a restart that recovers the claim resumes into
+    /// provisioning and commit instead of re-presenting the consumed device code. `None` until
+    /// an exchange completes under the claim.
+    pub(crate) device_exchange_checkpoint: Option<String>,
+
     /// The terminal outcome; `None` while pending.
     pub(crate) outcome: Option<FlowOutcome>,
 
@@ -294,16 +303,17 @@ fn flow_from_row(row: &crate::database::Row) -> Result<OngoingFlow, Error> {
         device_poll_interval_seconds: row.get(16)?,
         device_next_poll_at: row.get(17)?,
         device_poll_started_at: row.get(18)?,
-        outcome: match row.get::<Option<String>>(19)? {
+        device_exchange_checkpoint: row.get(19)?,
+        outcome: match row.get::<Option<String>>(20)? {
             Some(text) => Some(FlowOutcome::parse(&text).ok_or_else(|| Error::Drift {
                 message: "flow outcome column carries an unknown value".to_string(),
             })?),
             None => None,
         },
-        result_provider_id: row.get(20)?,
-        failure_code: row.get(21)?,
-        failure_message: row.get(22)?,
-        expires_at: row.get(23)?,
+        result_provider_id: row.get(21)?,
+        failure_code: row.get(22)?,
+        failure_message: row.get(23)?,
+        expires_at: row.get(24)?,
     })
 }
 
@@ -396,6 +406,7 @@ pub(crate) async fn insert_flow(database: &Database, flow: NewFlow) -> Result<On
         device_poll_interval_seconds,
         device_next_poll_at,
         device_poll_started_at: None,
+        device_exchange_checkpoint: None,
         outcome: None,
         result_provider_id: None,
         failure_code: None,
@@ -498,9 +509,12 @@ pub(crate) async fn sweep_expired_flows(database: &Database, now: i64) -> Result
 }
 
 /// Claims one due pending device flow for polling, stamping the claim and returning the claimed
-/// row: a single conditional `UPDATE … RETURNING`, so competing pollers and restarts never
-/// double-claim. A claim older than `claim_stale_before` is recovered — stealable by this claim —
-/// covering a poller that died mid-exchange after the control-request timeout.
+/// row: a single conditional `UPDATE … RETURNING`, so competing pollers never double-claim. A
+/// claim older than `claim_stale_before` is recovered — stealable by this claim — covering a
+/// poller that died mid-exchange after the control-request timeout or between its completed
+/// exchange and its commit. The claimed row may carry an exchange checkpoint (see
+/// [`persist_exchange_checkpoint`]), which the claimant resumes from instead of exchanging
+/// again.
 ///
 /// # Errors
 ///
@@ -559,12 +573,42 @@ pub(crate) async fn restamp_claim(
     Ok((changes == 1).then_some(new_claim))
 }
 
+/// Persists the checkpoint of one completed exchange while the caller still owns the claim
+/// stamped `claim_started_at`: the mapped token fields ride the flow row, so a restart that
+/// recovers the claim resumes into provisioning and commit instead of re-presenting the
+/// consumed device code to the upstream (README §3, §7.2). `false` means the claim was lost —
+/// the winner owns the row, and the caller discards its outcome like every persist.
+///
+/// # Errors
+///
+/// Returns [`Error`] when the update fails.
+pub(crate) async fn persist_exchange_checkpoint(
+    database: &Database,
+    flow_id: i64,
+    claim_started_at: i64,
+    checkpoint_json: &str,
+) -> Result<bool, Error> {
+    let changes = database
+        .execute(
+            "UPDATE ongoing_oauth_flows SET device_exchange_checkpoint = ?1 \
+             WHERE id = ?2 AND device_poll_started_at = ?3 AND outcome IS NULL",
+            params![checkpoint_json, flow_id, claim_started_at],
+        )
+        .await?;
+
+    Ok(changes == 1)
+}
+
 /// Persists one poll attempt's outcome while the caller still owns the claim stamped
 /// `claim_started_at`: either the next schedule (an `authorization_pending` or backoff retry, the
 /// interval optionally raised permanently), or the terminal failure with its gateway-owned code
 /// and message. A terminal persist also drops the next-poll instant, which a device flow carries
-/// exactly while it is pending (README §3). `None` means the claim was lost — a concurrent commit
-/// superseded this poller — and the computed schedule was discarded.
+/// exactly while it is pending (README §3). Both arms clear any exchange checkpoint: a retry is
+/// only ever scheduled for an exchange that did not complete, and a terminal outcome ends the
+/// flow, so the recorded exchange is never resumed — the row a released claim or a terminal
+/// outcome leaves behind carries no checkpoint, exactly as the schema pins it. `None` means the
+/// claim was lost — a concurrent commit superseded this poller — and the computed schedule was
+/// discarded.
 ///
 /// # Errors
 ///
@@ -583,7 +627,8 @@ pub(crate) async fn persist_device_poll(
             database
                 .execute(
                     "UPDATE ongoing_oauth_flows SET device_next_poll_at = ?1, \
-                     device_poll_interval_seconds = ?2, device_poll_started_at = NULL \
+                     device_poll_interval_seconds = ?2, device_poll_started_at = NULL, \
+                     device_exchange_checkpoint = NULL \
                      WHERE id = ?3 AND device_poll_started_at = ?4 AND outcome IS NULL",
                     params![next_poll_at, interval_seconds, flow_id, claim_started_at],
                 )
@@ -595,7 +640,7 @@ pub(crate) async fn persist_device_poll(
                 .execute(
                     "UPDATE ongoing_oauth_flows SET outcome = 'failed', failure_code = ?1, \
                      failure_message = ?2, device_next_poll_at = NULL, \
-                     device_poll_started_at = NULL \
+                     device_poll_started_at = NULL, device_exchange_checkpoint = NULL \
                      WHERE id = ?3 AND device_poll_started_at = ?4 AND outcome IS NULL",
                     params![code, message, flow_id, claim_started_at],
                 )
@@ -632,7 +677,8 @@ pub(crate) enum DevicePollOutcome {
 /// Commits a successful device flow inside the caller's transaction: the outcome update is part
 /// of the same transaction as the provider write, so the provider and the consumable result
 /// appear together. The commit also drops the next-poll instant, which a device flow carries
-/// exactly while it is pending (README §3).
+/// exactly while it is pending (README §3), and the exchange checkpoint, whose recorded
+/// exchange the commit itself completes — a terminal row carries neither.
 ///
 /// The update conditions on the claim stamp, so only the poller that won the exchange can commit
 /// the success; `false` means the claim was lost and the caller's provider write must be
@@ -650,7 +696,8 @@ pub(crate) async fn commit_device_success_in_transaction(
     let changes = transaction
         .execute(
             "UPDATE ongoing_oauth_flows SET outcome = 'succeeded', result_provider_id = ?1, \
-             device_next_poll_at = NULL, device_poll_started_at = NULL \
+             device_next_poll_at = NULL, device_poll_started_at = NULL, \
+             device_exchange_checkpoint = NULL \
              WHERE id = ?2 AND device_poll_started_at = ?3 AND outcome IS NULL",
             params![result_provider_id, flow_id, claim_started_at],
         )

@@ -128,6 +128,12 @@ enum InboundUserBlock {
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         cache_control: Option<IgnoredAny>,
+
+        /// Citations replayed from a citations-enabled upstream turn, accepted and ignored:
+        /// the stateless gateway renders no citations downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        citations: Option<IgnoredAny>,
     },
 
     /// Image segment.
@@ -177,6 +183,12 @@ enum InboundAssistantBlock {
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         cache_control: Option<IgnoredAny>,
+
+        /// Citations replayed from a citations-enabled upstream turn, accepted and ignored:
+        /// the stateless gateway renders no citations downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        citations: Option<IgnoredAny>,
     },
 
     /// Tool invocation segment.
@@ -239,6 +251,12 @@ struct InboundTextBlock {
     #[serde(default)]
     #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
     cache_control: Option<IgnoredAny>,
+
+    /// Citations replayed from a citations-enabled upstream turn, accepted and ignored: the
+    /// stateless gateway renders no citations downstream (README §6.6).
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+    citations: Option<IgnoredAny>,
 }
 
 /// Image source of an inbound image block.
@@ -276,6 +294,12 @@ enum InboundToolResultPart {
         #[serde(default)]
         #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
         cache_control: Option<IgnoredAny>,
+
+        /// Citations replayed from a citations-enabled upstream turn, accepted and ignored:
+        /// the stateless gateway renders no citations downstream (README §6.6).
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        citations: Option<IgnoredAny>,
     },
 
     /// Image segment, known-but-unsupported in tool results.
@@ -1097,6 +1121,103 @@ mod tests {
                 description: Some("City weather".to_string()),
                 parameters: Some(json!({"type": "object"})),
             }],
+        );
+    }
+
+    /// Text-block `citations` — the official replay member on every request text shape —
+    /// parse to the same IR as their absence on all four shapes (user text, assistant text,
+    /// system text block, `tool_result` text part): typed clients replay citations-bearing
+    /// history verbatim, and the stateless gateway renders no citations downstream
+    /// (README §6.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if either body fails to parse or the two IRs diverge.
+    #[test]
+    fn accepts_and_ignores_text_block_citations() {
+        let plain = json!({
+            "model": "claude-test",
+            "max_tokens": 128,
+            "system": [{"type": "text", "text": "be terse"}],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "sky?"},
+                    {"type": "tool_result", "tool_use_id": "call_1",
+                     "content": [{"type": "text", "text": "sunny"}]},
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "sun"},
+                ]},
+            ],
+        });
+
+        let citations = json!([{
+            "type": "char_location",
+            "cited_text": "the sky is blue",
+            "document_index": 0,
+            "document_title": "weather",
+            "start_char_index": 0,
+            "end_char_index": 15,
+        }]);
+
+        let decorated = json!({
+            "model": "claude-test",
+            "max_tokens": 128,
+            "system": [{"type": "text", "text": "be terse", "citations": citations}],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "sky?", "citations": citations},
+                    {"type": "tool_result", "tool_use_id": "call_1",
+                     "content": [{"type": "text", "text": "sunny",
+                                  "citations": citations}]},
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "sun", "citations": citations},
+                ]},
+            ],
+        });
+
+        #[expect(clippy::expect_used, reason = "the plain body is constructed to parse")]
+        let plain =
+            parse_inbound_request(plain.to_string().as_bytes()).expect("the plain body parses");
+
+        #[expect(
+            clippy::expect_used,
+            reason = "the decorated body is constructed to parse"
+        )]
+        let decorated = parse_inbound_request(decorated.to_string().as_bytes())
+            .expect("the decorated body parses");
+
+        // The citations carry no semantics, so both parses land on the same IR, byte for
+        // byte across every IR member.
+        assert_eq!(plain.ir.model, decorated.ir.model);
+        assert_eq!(plain.ir.instructions, decorated.ir.instructions);
+        assert_eq!(plain.ir.messages, decorated.ir.messages);
+        assert_eq!(plain.ir.tools, decorated.ir.tools);
+        assert_eq!(plain.ir.tool_choice, decorated.ir.tool_choice);
+        assert_eq!(plain.ir.temperature, decorated.ir.temperature);
+        assert_eq!(plain.ir.top_p, decorated.ir.top_p);
+        assert_eq!(plain.ir.max_output_tokens, decorated.ir.max_output_tokens);
+        assert_eq!(plain.ir.response_format, decorated.ir.response_format);
+        assert_eq!(plain.ir.reasoning_effort, decorated.ir.reasoning_effort);
+        assert_eq!(plain.is_streaming, decorated.is_streaming);
+
+        // Sanity: the shared system array and the text/tool-output/assistant runs parse to
+        // their expected IR values, so the parity above compares real content rather than
+        // two empty shells.
+        assert_eq!(plain.ir.instructions.as_deref(), Some("be terse"));
+        assert_eq!(plain.ir.messages.len(), 3);
+
+        #[expect(clippy::expect_used, reason = "the body carries a tool message")]
+        let tool = plain.ir.messages.get(1).expect("the tool message parses");
+
+        assert_eq!(
+            part(&tool.parts, 0),
+            &IrPart::ToolOutput {
+                call_id: "call_1".to_string(),
+                content: "sunny".to_string(),
+                is_error: false,
+            },
         );
     }
 

@@ -17,9 +17,9 @@ use std::path::Path;
 #[cfg(feature = "management-api-typescript-bindings")]
 mod bindings;
 mod route;
-pub mod v0;
+mod v0;
 
-pub use self::route::Route;
+use self::route::Route;
 
 /// Generates every management API version's TypeScript bindings into one `<version>.ts` file per
 /// version, directly in `output_target`, which may be relative or absolute and is created when

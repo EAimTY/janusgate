@@ -21,21 +21,25 @@ import {
     labeledInput,
     labeledSelect,
     linkTo,
+    paragraphWithText,
     settle,
+    stubListings,
     stubManagementApi,
     typeInto,
 } from "./screen-test-support";
 
 /**
- * One accounting row whose only distinguishing rendering is `<duration> ms`:
- * every stream assertion below marks rows by that number. The shared row's
- * token columns are blanked and its duration is the offset, so a page's
- * cursor derives from the same stamp the durations read by.
+ * One accounting row whose only distinguishing exact rendering is
+ * `in <offset>`: every stream assertion below marks rows by that number. The
+ * shared row's duration is the offset too, but the row prints durations as
+ * human durations, whose rounding can collide across offsets; the input
+ * count never rounds. The remaining token columns are blanked, so the row's
+ * optional figures stay out of these assertions' way.
  */
 function logRow(offset: number): ApiLogResponse {
     return apiLogRow(offset, {
         duration: offset,
-        input_tokens: null,
+        input_tokens: offset,
         output_tokens: null,
     });
 }
@@ -102,24 +106,7 @@ function streamApi(
     } = {},
 ): ManagementApi {
     return stubManagementApi({
-        listProviders: () =>
-            Promise.resolve({
-                providers: [
-                    ...(entities.providers ?? []),
-                ],
-            }),
-        listModels: () =>
-            Promise.resolve({
-                models: [
-                    ...(entities.models ?? []),
-                ],
-            }),
-        listApiKeys: () =>
-            Promise.resolve({
-                api_keys: [
-                    ...(entities.apiKeys ?? []),
-                ],
-            }),
+        ...stubListings(entities),
         listUsage: (request, signal) => heldPage(signal, request, holder.pages),
     });
 }
@@ -207,9 +194,9 @@ describe("UsageScreen stream continuation", () => {
 
         // The refreshed stream replaced the old one whole: the stale page's
         // rows appear neither appended nor duplicated.
-        expect(bodyText()).toContain("5000 ms");
-        expect(bodyText()).not.toContain("1050 ms");
-        expect(bodyText()).not.toContain("950 ms");
+        expect(bodyText()).toContain("in 5,000");
+        expect(bodyText()).not.toContain("in 1,050");
+        expect(bodyText()).not.toContain("in 950");
         expect(bodyText()).toContain("That is every recorded row.");
         expect(bodyText()).not.toContain("Load more");
     });
@@ -251,7 +238,7 @@ describe("UsageScreen stream continuation", () => {
         await settle();
 
         // The refresh's stream lands untouched by the refused click.
-        expect(bodyText()).toContain("5000 ms");
+        expect(bodyText()).toContain("in 5,000");
         expect(bodyText()).toContain("That is every recorded row.");
     });
 
@@ -289,7 +276,7 @@ describe("UsageScreen stream continuation", () => {
         expect(failure).toBeDefined();
         const container = failure?.parentElement;
         expect(container?.contains(buttonWithText("Load more"))).toBe(true);
-        expect(container?.textContent).not.toContain("1050 ms");
+        expect(container?.textContent).not.toContain("in 1,050");
 
         buttonWithText("Load more").click();
         await settle();
@@ -301,8 +288,8 @@ describe("UsageScreen stream continuation", () => {
         answerLastPage(holder, page(950, 3));
         await settle();
 
-        expect(bodyText()).toContain("950 ms");
-        expect(bodyText()).toContain("948 ms");
+        expect(bodyText()).toContain("in 950");
+        expect(bodyText()).toContain("in 948");
         expect(bodyText()).toContain("That is every recorded row.");
         expect(bodyText()).not.toContain("page load refused");
     });
@@ -715,5 +702,130 @@ describe("UsageScreen row links", () => {
         // leads nowhere.
         expect(bodyText()).toContain("Deleted provider");
         expect(() => linkTo("/providers/2")).toThrow("No link to /providers/2");
+    });
+});
+
+describe("UsageScreen row figures", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+
+        disposes.length = 0;
+    });
+
+    function mount(api: ManagementApi): void {
+        disposes.push(
+            render(
+                () => (
+                    <UsageScreen
+                        api={api}
+                        filter={EMPTY_USAGE_FILTER_DRAFT}
+                    />
+                ),
+                document.body,
+            ),
+        );
+    }
+
+    it("omits the optional token tail when none of its figures is reported non-zero", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder));
+        await settle();
+
+        // Three rows covering the whole suppression surface: the unreported
+        // breakdown, the measured all-zero one, and a mixed zero-and-null
+        // one. None carries a reported non-zero figure, so none may end in
+        // the three-figure tail — a tail of measured-looking zeros no
+        // upstream measured.
+        answerLastPage(holder, [
+            apiLogRow(30, {
+                cached_tokens: null,
+                cache_write_tokens: null,
+                reasoning_tokens: null,
+            }),
+            apiLogRow(20, {
+                cached_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            }),
+            apiLogRow(10, {
+                cached_tokens: 0,
+                cache_write_tokens: null,
+                reasoning_tokens: null,
+            }),
+        ]);
+        await settle();
+
+        for (const figure of [
+            "cached 0",
+            "cache write",
+            "reasoning",
+        ]) {
+            expect(bodyText()).not.toContain(figure);
+        }
+
+        // The suppression is stated once, on the stream's standing
+        // description: the measured-all-zero reading it gives up is a
+        // documented trade, not a silent one.
+        expect(bodyText()).toContain("cannot be told apart");
+    });
+
+    it("renders the optional token tail whole when any figure is reported", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder));
+        await settle();
+
+        // One reported reasoning figure among zeros and unreported columns:
+        // the tail renders whole, the measured zero and the unreported
+        // dashes exactly as they always did.
+        answerLastPage(holder, [
+            apiLogRow(30, {
+                cached_tokens: 0,
+                cache_write_tokens: null,
+                reasoning_tokens: 8,
+            }),
+        ]);
+        await settle();
+
+        const figures = paragraphWithText("reasoning 8").textContent ?? "";
+        expect(figures).toContain("cached 0");
+        expect(figures).toContain("cache write —");
+        expect(figures).toContain("reasoning 8");
+    });
+
+    it("prints a row's duration as a human duration, not raw milliseconds", async () => {
+        const holder: {
+            readonly pages: Array<HeldPage>;
+        } = {
+            pages: [],
+        };
+        mount(streamApi(holder));
+        await settle();
+
+        answerLastPage(holder, [
+            apiLogRow(30, {
+                duration: 8_100,
+            }),
+            apiLogRow(20, {
+                duration: 123_000,
+            }),
+        ]);
+        await settle();
+
+        const short = paragraphWithText("8.1s");
+        expect(short.textContent).toContain("in 10");
+        expect(bodyText()).toContain("2m 03s");
+        expect(bodyText()).not.toContain(" ms");
     });
 });

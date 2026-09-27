@@ -174,43 +174,34 @@ const NAV_ITEMS: ReadonlyArray<{
     },
 ];
 
-function navKeyOfRoute(name: string): NavKey | null {
-    if (name === "home") {
-        return "overview";
-    }
+/**
+ * The nav tab each route highlights: a route belongs to its section's tab —
+ * each creation, detail, and edit screen to its listing's — while the routes
+ * no tab owns, today only the not-found fallback, answer `null` and leave
+ * every tab unhighlighted. Keyed exhaustively by the route-name union, so a
+ * route added to `AppRoute` fails to compile until it declares its tab.
+ */
+const ROUTE_NAV_KEYS: Record<AppRoute["name"], NavKey | null> = {
+    home: "overview",
+    providers: "providers",
+    providerNew: "providers",
+    providerDetail: "providers",
+    providerEdit: "providers",
+    models: "models",
+    modelNew: "models",
+    modelDetail: "models",
+    modelEdit: "models",
+    apiKeys: "keys",
+    apiKeyNew: "keys",
+    apiKeyDetail: "keys",
+    apiKeyEdit: "keys",
+    usage: "usage",
+    usageQuery: "usage",
+    notFound: null,
+};
 
-    if (
-        name === "providers" ||
-        name === "providerNew" ||
-        name === "providerDetail" ||
-        name === "providerEdit"
-    ) {
-        return "providers";
-    }
-
-    if (
-        name === "models" ||
-        name === "modelNew" ||
-        name === "modelDetail" ||
-        name === "modelEdit"
-    ) {
-        return "models";
-    }
-
-    if (
-        name === "apiKeys" ||
-        name === "apiKeyNew" ||
-        name === "apiKeyDetail" ||
-        name === "apiKeyEdit"
-    ) {
-        return "keys";
-    }
-
-    if (name === "usage" || name === "usageQuery") {
-        return "usage";
-    }
-
-    return null;
+function navKeyOfRoute(name: AppRoute["name"]): NavKey | null {
+    return ROUTE_NAV_KEYS[name];
 }
 
 /**

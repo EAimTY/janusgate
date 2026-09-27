@@ -178,6 +178,7 @@ impl StringExpr {
     }
 
     /// Builds the expression carrying the single value part.
+    #[cfg(test)]
     #[must_use]
     pub fn single(part: ValueExpr) -> Self {
         Self(vec![part])
@@ -437,61 +438,6 @@ pub enum ResponseTarget {
     /// The access token's absolute expiry, rendered by the upstream in Unix seconds
     /// (provisioning only).
     ExpiresAtUnixSeconds,
-}
-
-impl ResponseTarget {
-    /// The per-stage closed subsets of the target vocabulary (README §5.3, §5.4).
-    #[must_use]
-    pub fn stage_allows(&self, stage: ResponseStage) -> bool {
-        use ResponseStage::*;
-
-        match stage {
-            DeviceAuthorization => matches!(
-                self,
-                Self::DeviceCode
-                    | Self::UserCode
-                    | Self::VerificationUri
-                    | Self::VerificationUriComplete
-                    | Self::ExpiresInSeconds
-                    | Self::IntervalSeconds
-            ),
-
-            Exchange | Refresh => matches!(
-                self,
-                Self::AccessToken
-                    | Self::RefreshToken
-                    | Self::ExpiresInSeconds
-                    | Self::IdToken
-                    | Self::BaseUrl
-                    | Self::Slot { .. }
-            ),
-
-            Provisioning => matches!(
-                self,
-                Self::Slot { .. }
-                    | Self::AccessToken
-                    | Self::RefreshToken
-                    | Self::BaseUrl
-                    | Self::ExpiresAtUnixSeconds
-            ),
-        }
-    }
-}
-
-/// The response stages a shared [`ResponseTarget`] is validated against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResponseStage {
-    /// The device authorization response.
-    DeviceAuthorization,
-
-    /// The token exchange response.
-    Exchange,
-
-    /// The refresh response, whether its own mapping or the exchange's.
-    Refresh,
-
-    /// A provisioning response.
-    Provisioning,
 }
 
 #[cfg(test)]

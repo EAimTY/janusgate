@@ -143,12 +143,6 @@ pub enum Grant {
 }
 
 impl Grant {
-    /// Whether this grant is the authorization-code grant.
-    #[must_use]
-    pub const fn is_authorization_code(&self) -> bool {
-        matches!(self, Self::AuthorizationCode { .. })
-    }
-
     /// Whether this grant is the device grant.
     #[must_use]
     pub const fn is_device(&self) -> bool {

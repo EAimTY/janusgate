@@ -68,16 +68,14 @@ pub(crate) async fn run_discovery(
     discovery: &Discovery,
     env: &ValueEnv<'_>,
 ) -> Result<Vec<String>, Error> {
-    let mut ids = Vec::new();
-
     let mut request = discovery.request.clone();
 
-    match &discovery.pagination {
+    let ids = match &discovery.pagination {
         None | Some(Pagination::None) => {
             let body =
                 control::execute(http, &request, env, encoding_of(discovery), "upstream").await?;
 
-            ids = extract_ids(&body, &discovery.extract)?;
+            extract_ids(&body, &discovery.extract)?
         }
 
         Some(Pagination::Token {
@@ -85,45 +83,36 @@ pub(crate) async fn run_discovery(
             response_path,
             max_pages,
         }) => {
-            // `Some` while the fetched page still reports a next page: a budget that ends on
-            // `Some` fails the refresh below instead of delivering a truncated list.
-            let mut next_page = None;
+            walk_pages(
+                http,
+                &mut request,
+                env,
+                discovery,
+                request_param,
+                *max_pages,
+                |body| {
+                    let token_value = value_at(body, response_path);
 
-            for _ in 0..max_pages.get() {
-                let body =
-                    control::execute(http, &request, env, encoding_of(discovery), "upstream")
-                        .await?;
+                    // A present, non-null token that is not a usable string is a malformed
+                    // page, not the end of the walk: reading it as absent would pass the
+                    // budget check and deliver a truncated list. The failure mirrors the
+                    // cursor mode's missing-last-identifier guard.
+                    if token_value
+                        .is_some_and(|value| !matches!(value, Json::String(_) | Json::Null))
+                    {
+                        return Err(Error::Unavailable {
+                            detail: "model discovery page carries a malformed next-page token"
+                                .to_string(),
+                        });
+                    }
 
-                ids.extend(extract_ids(&body, &discovery.extract)?);
-
-                let token_value = value_at(&body, response_path);
-
-                // A present, non-null token that is not a usable string is a malformed page, not
-                // the end of the walk: reading it as absent would pass the budget check below and
-                // deliver a truncated list. The failure mirrors the cursor mode's
-                // missing-last-identifier guard.
-                if token_value.is_some_and(|value| !matches!(value, Json::String(_) | Json::Null)) {
-                    return Err(Error::Unavailable {
-                        detail: "model discovery page carries a malformed next-page token"
-                            .to_string(),
-                    });
-                }
-
-                next_page = token_value
-                    .and_then(Json::as_str)
-                    .filter(|token| !token.is_empty())
-                    .map(str::to_string);
-
-                let Some(token) = &next_page else {
-                    break;
-                };
-
-                set_query_param(&mut request, request_param, token);
-            }
-
-            if next_page.is_some() {
-                return Err(page_budget_exhausted(*max_pages));
-            }
+                    Ok(token_value
+                        .and_then(Json::as_str)
+                        .filter(|token| !token.is_empty())
+                        .map(str::to_string))
+                },
+            )
+            .await?
         }
 
         Some(Pagination::Cursor {
@@ -132,40 +121,36 @@ pub(crate) async fn run_discovery(
             request_param,
             max_pages,
         }) => {
-            // `true` while the fetched page still reports more pages: a budget that ends on
-            // `true` fails the refresh below instead of delivering a truncated list.
-            let mut has_more = false;
+            walk_pages(
+                http,
+                &mut request,
+                env,
+                discovery,
+                request_param,
+                *max_pages,
+                |body| {
+                    let has_more =
+                        value_at(body, has_more_path).is_some_and(control::is_truthy_scalar);
 
-            for _ in 0..max_pages.get() {
-                let body =
-                    control::execute(http, &request, env, encoding_of(discovery), "upstream")
-                        .await?;
+                    if !has_more {
+                        return Ok(None);
+                    }
 
-                ids.extend(extract_ids(&body, &discovery.extract)?);
+                    let Some(last_id) = value_at(body, last_id_path)
+                        .and_then(Json::as_str)
+                        .map(str::to_string)
+                    else {
+                        return Err(Error::Unavailable {
+                            detail: "model discovery page lacks its last identifier".to_string(),
+                        });
+                    };
 
-                has_more = value_at(&body, has_more_path).is_some_and(control::is_truthy_scalar);
-
-                if !has_more {
-                    break;
-                }
-
-                let Some(last_id) = value_at(&body, last_id_path)
-                    .and_then(Json::as_str)
-                    .map(str::to_string)
-                else {
-                    return Err(Error::Unavailable {
-                        detail: "model discovery page lacks its last identifier".to_string(),
-                    });
-                };
-
-                set_query_param(&mut request, request_param, &last_id);
-            }
-
-            if has_more {
-                return Err(page_budget_exhausted(*max_pages));
-            }
+                    Ok(Some(last_id))
+                },
+            )
+            .await?
         }
-    }
+    };
 
     // Every discovered identifier is validated before any row is written (README §7): one
     // unroutable identifier fails the whole refresh. The routing-token composition — routing-safe
@@ -177,6 +162,54 @@ pub(crate) async fn run_discovery(
         return Err(Error::Unavailable {
             detail: format!("model discovery reported the unroutable identifier `{invalid}`"),
         });
+    }
+
+    Ok(ids)
+}
+
+/// Walks one paginated discovery against its page budget: each iteration fetches one page
+/// through the control engine, extracts its identifiers, and asks the mode's continuation
+/// reader for the next request-param value — `None` ends the walk. A budget that ends while
+/// the last fetched page still reports a continuation fails the refresh instead of delivering
+/// a truncated list (README §5.5).
+///
+/// # Errors
+///
+/// Returns [`Error`] when a page fetch or extraction fails, when the continuation reader
+/// rejects a malformed page, or when the budget ends on an indicated continuation.
+async fn walk_pages(
+    http: &Client,
+    request: &mut ControlRequest,
+    env: &ValueEnv<'_>,
+    discovery: &Discovery,
+    request_param: &str,
+    max_pages: NonZeroU64,
+    mut continuation_of: impl FnMut(&control::DecodedBody) -> Result<Option<String>, Error>,
+) -> Result<Vec<String>, Error> {
+    let encoding = encoding_of(discovery);
+
+    let mut ids = Vec::new();
+
+    // `Some` while the last fetched page still reports a continuation: a budget that ends on
+    // `Some` fails below instead of delivering a truncated list.
+    let mut continuation = None;
+
+    for _ in 0..max_pages.get() {
+        let body = control::execute(http, request, env, encoding, "upstream").await?;
+
+        ids.extend(extract_ids(&body, &discovery.extract)?);
+
+        continuation = continuation_of(&body)?;
+
+        let Some(param_value) = &continuation else {
+            break;
+        };
+
+        set_query_param(request, request_param, param_value);
+    }
+
+    if continuation.is_some() {
+        return Err(page_budget_exhausted(max_pages));
     }
 
     Ok(ids)

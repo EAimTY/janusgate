@@ -1,9 +1,10 @@
 import type { JSX } from "@solidjs/web";
-import { onCleanup, Show } from "solid-js";
+import { type Accessor, onCleanup, Show } from "solid-js";
 import { appConfig } from "/src/config";
 import { formatTimestamp } from "/src/format";
 import type { StartProviderOauthResponse } from "/src/management-api/generated/v0";
-import { Button, buttonClass } from "/src/ui/controls";
+import type { OauthFlow } from "/src/screens/oauth-flow";
+import { Button, buttonClass, TextField } from "/src/ui/controls";
 import { Glyph } from "/src/ui/glyph";
 import { CopyButton } from "./clipboard";
 
@@ -96,6 +97,76 @@ export function AuthorizeStep(props: {
                 </Button>
             </div>
         </div>
+    );
+}
+
+/**
+ * The completion form both OAuth cards hang under the live authorization-code
+ * step: the pasted callback field and the submit button that completes the
+ * flow — the step's facts and intro stand in `AuthorizeStep` above it, and
+ * each card owns the layout around the form and the flow's own stated
+ * failure. The submit is the flow machine's `complete`, so the paste
+ * diagnosis, the busy state, and the completion failure are the machine's
+ * own; the button is disabled beside them only where the caller passes a
+ * gate. The form's classes stay the caller's, because the two cards cap the
+ * form's width differently.
+ */
+export function CompletionForm(props: {
+    /** The screen's flow machine the form completes and resets. */
+    readonly flow: OauthFlow;
+    /** The live flow narrowed to the authorization-code grant. */
+    readonly startedFlow: Extract<
+        StartProviderOauthResponse,
+        {
+            grant: "authorization_code";
+        }
+    >;
+    /** The submit button's label while the completion call runs. */
+    readonly busyLabel: string;
+    /** The submit button's label while it stands ready. */
+    readonly submitLabel: string;
+    /**
+     * Extra completion submittability beside the machine's own guards — the
+     * creation card's definition, prefix, and base-URL gate. Absent, the
+     * button is never disabled beyond the in-flight state.
+     */
+    readonly isSubmittable?: Accessor<boolean> | undefined;
+    /** The form's layout classes, owned by the card whose width the form fills. */
+    readonly class?: string | undefined;
+}): JSX.Element {
+    return (
+        <form
+            novalidate={true}
+            class={props.class}
+            onSubmit={(event) => {
+                event.preventDefault();
+                void props.flow.complete();
+            }}
+        >
+            <AuthorizeStep
+                flow={props.startedFlow}
+                onStartOver={props.flow.reset}
+            >
+                <TextField
+                    label="Callback URL or authorization code"
+                    value={props.flow.code()}
+                    onInput={props.flow.setCode}
+                    placeholder="Paste the whole callback URL"
+                    isDisabled={props.flow.isCompleting()}
+                    error={props.flow.pasteError()}
+                />
+                <div>
+                    <Button
+                        type="submit"
+                        tone="primary"
+                        isDisabled={props.isSubmittable?.() === false}
+                        isBusy={props.flow.isCompleting()}
+                    >
+                        {props.flow.isCompleting() ? props.busyLabel : props.submitLabel}
+                    </Button>
+                </div>
+            </AuthorizeStep>
+        </form>
     );
 }
 

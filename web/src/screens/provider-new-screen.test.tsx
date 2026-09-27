@@ -617,6 +617,48 @@ describe("ProviderNewScreen creation", () => {
         expect(document.body.textContent).not.toContain("Choose a provider name");
         expect(sent).toHaveLength(0);
     });
+
+    it("states a refused creation's diagnosis with no Read again, and it survives a boot re-read", async () => {
+        const sent: CreateProviderRequest[] = [];
+        const api: ManagementApi = {
+            ...screenApi(sent),
+            createProviderDefinition: () =>
+                Promise.reject(
+                    new ManagementApiError("gateway", "definition name already stored", {
+                        errno: ErrorCode.Conflict,
+                        httpStatus: 409,
+                    }),
+                ),
+        };
+        disposes.push(render(() => <ProviderNewScreen api={api} />, document.body));
+        await settle();
+
+        typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
+        typeInto(labeledInput("Upstream API key"), "sk-test");
+        await settle();
+        buttonWithText("Create provider").click();
+        await settle();
+
+        // The refused ensure's diagnosis stands on the page-top notice — the
+        // creation action's own channel — and no Read again stands beside it:
+        // the boot read is not what failed, and rerunning it would not retry
+        // the refused ensure.
+        expect(document.body.textContent).toContain("definition name already stored");
+        expect(
+            [
+                ...document.querySelectorAll("button"),
+            ].some((candidate) => candidate.textContent?.includes("Read again") === true),
+        ).toBe(false);
+
+        // The refresh pulse re-runs the boot read, which answers — and
+        // clears only a boot-origin failure: the creation's diagnosis
+        // survives a re-read that never retried the action.
+        requestRefresh();
+        await settle();
+
+        expect(document.body.textContent).toContain("definition name already stored");
+        expect(sent).toHaveLength(0);
+    });
 });
 
 describe("ProviderNewScreen preset switching over an edited recipe", () => {
@@ -1449,6 +1491,46 @@ describe("ProviderNewScreen OAuth flow", () => {
         // The reset ends the lock, and the stated reason goes with it.
         expect(flowLockLines()).toBe(0);
         expect(labeledInput("Name").disabled).toBe(false);
+    });
+
+    it("keeps the upstream base URL on the page, disabled under the lock notice, while a flow stands live", async () => {
+        vi.useFakeTimers();
+        mountScreen(
+            oauthScreenApi({
+                start: () => authorizationFlow,
+            }),
+        );
+        await flush();
+        buttonWithText("Claude Code").click();
+        await flush();
+
+        // The untouched Claude Code recipe pins its endpoints: no base-URL
+        // field before the recipe addresses the base.
+        expect(
+            [
+                ...document.querySelectorAll("label"),
+            ].map((label) => label.textContent),
+        ).not.toContain("Upstream base URL");
+
+        // The recipe edited to address the base opens the field, and the
+        // typed address is what the flow's start sends.
+        typeInto(definitionEditor(), JSON.stringify(baseAddressedPayload()));
+        await flush();
+        typeInto(labeledInput("Upstream base URL"), "https://upstream.example.com");
+        await flush();
+        buttonWithText("Start the authorization").click();
+        await flush();
+        expect(document.body.textContent).toContain("Authorization URL");
+
+        // The flow is live: the field stays on the page carrying the value
+        // the start sent — disabled, with the same single-line lock reason
+        // every locked card states naming why — so what went out remains
+        // readable without being editable. The count is the preset,
+        // definition, and identity cards' lines plus this field's own.
+        const baseUrlInput = labeledInput("Upstream base URL");
+        expect(baseUrlInput.disabled).toBe(true);
+        expect(baseUrlInput.value).toBe("https://upstream.example.com");
+        expect(flowLockLines()).toBe(4);
     });
 
     it("keeps the flow start disabled while the model prefix is invalid, sending nothing", async () => {

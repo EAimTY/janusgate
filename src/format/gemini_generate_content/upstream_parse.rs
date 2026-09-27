@@ -7,7 +7,7 @@
 use crate::{
     format::{self, PayloadError, UpstreamError, UpstreamEventParser},
     ids,
-    ir::{IrEvent, IrFinishReason, IrUsage},
+    ir::{IrEvent, IrFinishReason},
     sse::SseFrame,
 };
 use serde::Deserialize;
@@ -241,16 +241,12 @@ impl UpstreamParser {
         }
 
         if let Some(usage) = &value.usage_metadata {
-            let reasoning_tokens = usage.thoughts_token_count;
-
-            events.push(IrEvent::Usage(IrUsage {
-                input_tokens: usage.prompt_token_count,
-                output_tokens: usage.candidates_token_count + reasoning_tokens.unwrap_or(0),
-                cached_tokens: usage.cached_content_token_count,
-                // Gemini reports no cache-write accounting.
-                cache_write_tokens: None,
-                reasoning_tokens,
-            }));
+            events.push(IrEvent::Usage(format::fold_gemini_usage(
+                usage.prompt_token_count,
+                usage.candidates_token_count,
+                usage.thoughts_token_count,
+                usage.cached_content_token_count,
+            )));
         }
 
         Ok(events)
@@ -412,6 +408,7 @@ fn finish_reason_from_gemini(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::IrUsage;
 
     /// A turn whose upstream reported `MALFORMED_FUNCTION_CALL` is a failed
     /// generation, not a successful completion: both the JSON body and the

@@ -10,7 +10,7 @@ import type {
     UsageBucket,
 } from "/src/management-api/generated/v0";
 import { HomeScreen } from "/src/screens/home-screen";
-import { bodyText, linkTo, settle, stubManagementApi } from "./screen-test-support";
+import { bodyText, linkTo, settle, stubListings, stubManagementApi } from "./screen-test-support";
 
 const BASE_URL = "https://gateway.example.com";
 
@@ -109,29 +109,18 @@ function overviewApi(
     } = {},
 ): ManagementApi {
     return stubManagementApi({
-        listProviders: () =>
-            Promise.resolve({
-                providers: [
-                    ...(listing.providers ?? [
-                        providerRow,
-                    ]),
-                ],
-            }),
-        listModels: () =>
-            Promise.resolve({
-                models: [
-                    ...(listing.models ?? [
-                        modelRow,
-                        vanishedModelRow,
-                    ]),
-                ],
-            }),
-        listApiKeys: () =>
-            Promise.resolve({
-                api_keys: [
-                    apiKeyRow,
-                ],
-            }),
+        ...stubListings({
+            providers: listing.providers ?? [
+                providerRow,
+            ],
+            models: listing.models ?? [
+                modelRow,
+                vanishedModelRow,
+            ],
+            apiKeys: [
+                apiKeyRow,
+            ],
+        }),
         queryUsage: (request): Promise<QueryUsageResponse> => {
             requests.push(request);
 

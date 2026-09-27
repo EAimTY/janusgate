@@ -20,6 +20,7 @@ import {
     buttonWithText,
     labeledInput,
     labeledSelect,
+    linkTo,
     settle,
     stubManagementApi,
     switchWithLabel,
@@ -1590,5 +1591,70 @@ describe("UsageQueryScreen displayed bucket order", () => {
             "Completed",
         ]);
         expect(document.body.textContent).not.toContain("Days are UTC");
+    });
+});
+
+describe("UsageQueryScreen aggregates-to-stream door", () => {
+    const disposes: Array<() => void> = [];
+
+    afterEach(() => {
+        for (const dispose of disposes.reverse()) {
+            dispose();
+        }
+        disposes.length = 0;
+    });
+
+    it("carries the shared filter fields into the stream draft the header door's href spells, bounds behind", async () => {
+        const holder: HeldListings = {
+            providers: [],
+            models: [],
+            apiKeys: [],
+        };
+
+        disposes.push(
+            render(
+                () => (
+                    <UsageQueryScreen
+                        api={screenApi(holder, () => {})}
+                        subject={{
+                            dimension: "provider",
+                            id: 1,
+                        }}
+                    />
+                ),
+                document.body,
+            ),
+        );
+        await settle();
+
+        answerLast(holder.providers, {
+            providers: [],
+        });
+        answerLast(holder.models, {
+            models: [],
+        });
+        answerLast(holder.apiKeys, {
+            api_keys: [],
+        });
+        await settle();
+
+        // The shared filter fields stand set the way an operator's diagnostic
+        // question holds them: the arrival subject's provider narrow, the
+        // grouped failure outcome, the stream mode, one status, and a From
+        // bound on top.
+        chooseSelect("Outcome", "failures");
+        chooseSelect("Stream mode", "streamed");
+        typeInto(labeledInput("HTTP statuses"), "429");
+        typeInto(labeledInput("From"), "2026-09-23T10:00");
+        await settle();
+
+        // The door crosses to the stream with the shared fields as its draft —
+        // the grouped outcome spelled as the pair the stream route reads back —
+        // while the From bound stays behind with no stream spelling to become:
+        // the stream's own window row governs time there.
+        expect(
+            linkTo("/usage?provider=1&outcome=upstream_error,internal&stream=streamed&status=429")
+                .textContent,
+        ).toBe("View requests");
     });
 });

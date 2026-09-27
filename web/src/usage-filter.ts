@@ -446,6 +446,20 @@ export const USAGE_QUERY_SUBJECT_FIELDS = {
 } as const satisfies Record<UsageQuerySubjectDimension, UsageQuerySubjectFieldNames>;
 
 /**
+ * The sole subject among the candidates one subject walk collected: the one
+ * entry when exactly one entity dimension was named, `null` otherwise — none
+ * named and several named alike answer no subject, because a subject is
+ * exactly one entity dimension. Every derivation that gathers subject
+ * candidates ends in this one rule, so the exactly-one reading can never
+ * drift between the derivations that share it.
+ */
+export function soleSubject(named: ReadonlyArray<UsageQuerySubject>): UsageQuerySubject | null {
+    const [subject] = named;
+
+    return named.length === 1 ? (subject ?? null) : null;
+}
+
+/**
  * Which recorded rows the stats count: exactly one subject's, named by its
  * wire filter field. Derived from [`USAGE_QUERY_SUBJECT_FIELDS`], so the
  * shape stays the wire spelling of the dimension table rather than a parallel
@@ -473,23 +487,31 @@ type UsageSubjectFilterValues = Readonly<Partial<Record<UsageSubjectWireField, n
  * whose wire field it carries, and the id under it. The walk follows
  * [`USAGE_QUERY_SUBJECT_DIMENSIONS`] through [`USAGE_QUERY_SUBJECT_FIELDS`] —
  * the same walk the aggregates route's parameters and the stream's subject
- * narrow make — so a dimension added to the table is answered here with no
- * edit. The filter's type holds exactly one dimension's field; one naming
- * none cannot exist, and reads as the contract violation it is.
+ * narrow make, ending in the same [`soleSubject`] rule — so a dimension added
+ * to the table is answered here with no edit. The filter's type holds exactly
+ * one dimension's field; one naming none cannot exist, and reads as the
+ * contract violation it is.
  */
 export function usageQuerySubjectOfFilter(filter: UsageSubjectFilter): UsageQuerySubject {
     const values: UsageSubjectFilterValues = filter;
+    const named: UsageQuerySubject[] = [];
 
     for (const dimension of USAGE_QUERY_SUBJECT_DIMENSIONS) {
         const id = values[USAGE_QUERY_SUBJECT_FIELDS[dimension].wireField];
 
         if (id !== undefined) {
-            return {
+            named.push({
                 dimension,
                 id,
-            };
+            });
         }
     }
 
-    throw new ContractViolationError("the usage subject filter names no subject dimension");
+    const subject = soleSubject(named);
+
+    if (subject === null) {
+        throw new ContractViolationError("the usage subject filter names no subject dimension");
+    }
+
+    return subject;
 }

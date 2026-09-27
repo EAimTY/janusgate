@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { Show } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import { Button, TextField } from "/src/ui/controls";
 import { CopyButton } from "./clipboard";
 import { requiredHint } from "./required-hint";
@@ -59,11 +59,15 @@ export function ApiKeyNameField(props: {
 
 /**
  * The plaintext secret with its two conveniences: Generate mints a fresh
- * value locally, Copy relays the shown value to the clipboard. The secret is
- * shown in full — the listing returns it, and the operator needs it to
- * configure clients. The default hint states the creation contract, where
- * the gate requires a secret — a caller stating its own hint (the edit
- * form's write-only contract) owns the whole line.
+ * value locally, Copy relays the shown value to the clipboard. Generate over
+ * an empty field replaces nothing and fires at once; over a typed secret it
+ * is destructive — the hand-made value is unrecoverable — so the first click
+ * arms the same one-click confirm the delete card uses, naming what is lost,
+ * and only the confirm replaces. The secret is shown in full — the listing
+ * returns it, and the operator needs it to configure clients. The default
+ * hint states the creation contract, where the gate requires a secret — a
+ * caller stating its own hint (the edit form's write-only contract) owns the
+ * whole line.
  */
 export function ApiKeySecretField(props: {
     readonly secret: string;
@@ -72,6 +76,17 @@ export function ApiKeySecretField(props: {
     readonly hint?: string | null | undefined;
     readonly error?: string | null | undefined;
 }): JSX.Element {
+    const [isGenerateArmed, setIsGenerateArmed] = createSignal(false);
+    // The armed state is only ever about the standing text: a field emptied
+    // by hand has nothing left to lose, so the confirm yields to the plain
+    // Generate button until text stands again.
+    const isTypedSecretArmed = (): boolean => isGenerateArmed() && props.secret !== "";
+
+    const generate = (): void => {
+        props.onSecretInput(generateApiKey());
+        setIsGenerateArmed(false);
+    };
+
     return (
         <div>
             <TextField
@@ -86,14 +101,37 @@ export function ApiKeySecretField(props: {
                     requiredHint("Sent as Authorization: Bearer <key> by serving clients.")
                 }
             />
-            <div class="mt-2 flex flex-wrap gap-2">
-                <Button
-                    glyph="key"
-                    isDisabled={props.isDisabled ?? false}
-                    onClick={() => props.onSecretInput(generateApiKey())}
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+                <Show
+                    when={isTypedSecretArmed()}
+                    fallback={
+                        <Button
+                            glyph="key"
+                            isDisabled={props.isDisabled ?? false}
+                            onClick={() =>
+                                props.secret === "" ? generate() : setIsGenerateArmed(true)
+                            }
+                        >
+                            Generate
+                        </Button>
+                    }
                 >
-                    Generate
-                </Button>
+                    <p class="w-full text-[13.5px] text-ink-dim">Replace the typed secret?</p>
+                    <Button
+                        tone="danger"
+                        glyph="key"
+                        isDisabled={props.isDisabled ?? false}
+                        onClick={generate}
+                    >
+                        Replace it
+                    </Button>
+                    <Button
+                        isDisabled={props.isDisabled ?? false}
+                        onClick={() => setIsGenerateArmed(false)}
+                    >
+                        Keep it
+                    </Button>
+                </Show>
                 <Show when={props.secret !== ""}>
                     <CopyButton
                         value={props.secret}

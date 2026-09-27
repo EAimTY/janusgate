@@ -10,6 +10,8 @@ import {
     isSameModelRow,
     isSameProviderRow,
     readAll,
+    readModels,
+    readProviders,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
@@ -35,12 +37,8 @@ export function ModelDetailScreen(props: {
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
-                {
-                    run: (cycle) => props.api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) => props.api.listModels({}, cycle),
-                },
+                readProviders(props.api),
+                readModels(props.api, {}),
             );
 
             setProviders(providersResult.providers);

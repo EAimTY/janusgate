@@ -24,6 +24,7 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The polling interval a device authorization response implies when it reports none: five
@@ -204,7 +205,14 @@ pub(super) fn absorb_exchange_slots(
 }
 
 /// The product of one token exchange (README §5.3).
-#[derive(Debug, Clone, Default)]
+///
+/// The outcome serializes: the device poller persists a completed exchange as the flow row's
+/// checkpoint the moment it completes, so a restart that recovers the claim resumes from the
+/// checkpoint instead of re-presenting the consumed device code (README §3, §7.2). The values
+/// it carries are already validated — the mapping fold validated the machine-consumed slots and
+/// base URL at the storage boundary — and only the gateway writes the checkpoint, so
+/// deserialization re-imposes no validation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct ExchangeOutcome {
     /// The access token, when the response mapped it.
     pub(crate) access_token: Option<String>,

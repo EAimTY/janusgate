@@ -4,7 +4,13 @@ import { formatTimestamp } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ApiKeyResponse } from "/src/management-api/generated/v0";
 import { hrefs } from "/src/router";
-import { createPinnedRow, createScreenRead, isSameApiKeyRow, readOne } from "/src/screens/read";
+import {
+    createPinnedRow,
+    createScreenRead,
+    isSameApiKeyRow,
+    readApiKeys,
+    readOne,
+} from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { EntityUsageCard } from "/src/screens/usage-stats";
 import { ApiKeySecretValue } from "/src/ui/api-key-form";
@@ -26,9 +32,7 @@ export function ApiKeyDetailScreen(props: {
 
     const read = createScreenRead({
         load: async (signal) => {
-            const keysResult = await readOne(signal, {
-                run: (cycle) => props.api.listApiKeys(cycle),
-            });
+            const keysResult = await readOne(signal, readApiKeys(props.api));
 
             setKeys(keysResult.api_keys);
         },

@@ -77,6 +77,26 @@ export function formatTokenCount(value: number | null): string {
 }
 
 /**
+ * A request duration (milliseconds) as a human duration in the same
+ * unit-attaching style as the credential distances: one tenth-floor second
+ * under a minute (`8.1s`), whole minutes and zero-padded seconds at and
+ * above it (`2m 03s`). Minutes keep counting past the hour — a single
+ * request's duration needs no third unit. The tenth is floored, not
+ * rounded, so a duration below the minute never prints as a "60.0s" the
+ * composite shape would have called "1m 00s".
+ */
+export function formatDuration(millis: number): string {
+    if (millis < 60_000) {
+        return `${(Math.floor(millis / 100) / 10).toFixed(1)}s`;
+    }
+
+    const minutes = Math.floor(millis / 60_000);
+    const seconds = Math.floor((millis % 60_000) / 1000);
+
+    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+/**
  * A `datetime-local` value as UTC microseconds. Blank or malformed input
  * reads as `null` — no bound — so a half-typed filter never narrows the
  * listing to nothing.

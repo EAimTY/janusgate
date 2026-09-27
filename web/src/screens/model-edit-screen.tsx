@@ -12,6 +12,8 @@ import {
     isSameModelRow,
     isSameProviderRow,
     readAll,
+    readModels,
+    readProviders,
     type ScreenRead,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
@@ -56,12 +58,8 @@ export function ModelEditScreen(props: {
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
-                {
-                    run: (cycle) => props.api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) => props.api.listModels({}, cycle),
-                },
+                readProviders(props.api),
+                readModels(props.api, {}),
             );
 
             setProviders(providersResult.providers);

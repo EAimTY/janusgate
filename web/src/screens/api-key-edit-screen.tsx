@@ -9,6 +9,7 @@ import {
     createEditRow,
     createScreenRead,
     isSameApiKeyRow,
+    readApiKeys,
     readOne,
     type ScreenRead,
 } from "/src/screens/read";
@@ -53,9 +54,7 @@ export function ApiKeyEditScreen(props: {
     const read = createScreenRead({
         isNoticeKeptOnSuccess: true,
         load: async (signal) => {
-            const keysResult = await readOne(signal, {
-                run: (cycle) => props.api.listApiKeys(cycle),
-            });
+            const keysResult = await readOne(signal, readApiKeys(props.api));
 
             setKeys(keysResult.api_keys);
             edit.reportReloaded();

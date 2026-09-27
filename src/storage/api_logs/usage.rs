@@ -61,15 +61,17 @@ impl ApiLogStore {
 
     /// The retained shard days a read with `filter` must consider, ascending: the directory
     /// listing narrowed by the filter's time window — the window's `from` is inclusive and its
-    /// `to` exclusive, so the last candidate day is the day of `to - 1`.
-    fn candidate_days(&self, filter: &UsageFilter) -> Result<Vec<ShardDay>, Error> {
+    /// `to` exclusive, so the last candidate day is the day of `to - 1`. The listing runs on
+    /// the blocking thread pool (README §3 *ApiLog Shard Store*).
+    async fn candidate_days(&self, filter: &UsageFilter) -> Result<Vec<ShardDay>, Error> {
         let lower = filter.from.map(ShardDay::of_started_at);
         let upper = filter
             .to
             .map(|to| ShardDay::of_started_at(to.saturating_sub(1)));
 
         Ok(self
-            .retained_days()?
+            .retained_days()
+            .await?
             .into_iter()
             .filter(|day| {
                 lower.is_none_or(|lower| *day >= lower) && upper.is_none_or(|upper| *day <= upper)
@@ -104,7 +106,7 @@ impl ApiLogStore {
 
         let mut page = Vec::new();
 
-        for day in self.candidate_days(filter)?.into_iter().rev() {
+        for day in self.candidate_days(filter).await?.into_iter().rev() {
             let Some(database) = self.open_shard_for_read(day).await? else {
                 continue;
             };
@@ -192,7 +194,7 @@ impl ApiLogStore {
             merged.insert(UsageBucketKey::default(), UsageAggregate::default());
         }
 
-        for day in self.candidate_days(&selection.filter)? {
+        for day in self.candidate_days(&selection.filter).await? {
             let Some(database) = self.open_shard_for_read(day).await? else {
                 continue;
             };

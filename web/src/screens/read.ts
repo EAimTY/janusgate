@@ -1,9 +1,14 @@
 import { type Accessor, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { registerDirtyForm } from "/src/dirty-form-registry";
+import type { ManagementApi } from "/src/management-api/client";
 import type { ActionName } from "/src/management-api/diagnosis";
 import { isAbortFailure } from "/src/management-api/errors";
 import type {
     ApiKeyResponse,
+    ListApiKeysResponse,
+    ListModelsRequest,
+    ListModelsResponse,
+    ListProvidersResponse,
     ModelResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
@@ -125,6 +130,41 @@ export async function readOne<TResult>(
 }
 
 /**
+ * The entity listings' named read calls, the way the usage domain names its
+ * reads (`readUsageEntities`): a screen's cycle spells its subject as intent
+ * instead of hand-writing the arrow over the client's method, and screens
+ * reading several listings compose the named calls under one `readAll`.
+ */
+
+/** The providers listing, as one read call run under the cycle's signal. */
+export function readProviders(
+    api: Pick<ManagementApi, "listProviders">,
+): ReadCall<ListProvidersResponse> {
+    return {
+        run: (cycle) => api.listProviders(cycle),
+    };
+}
+
+/** The models listing for the given request, as one read call run under the cycle's signal. */
+export function readModels(
+    api: Pick<ManagementApi, "listModels">,
+    request: ListModelsRequest,
+): ReadCall<ListModelsResponse> {
+    return {
+        run: (cycle) => api.listModels(request, cycle),
+    };
+}
+
+/** The serving keys listing, as one read call run under the cycle's signal. */
+export function readApiKeys(
+    api: Pick<ManagementApi, "listApiKeys">,
+): ReadCall<ListApiKeysResponse> {
+    return {
+        run: (cycle) => api.listApiKeys(cycle),
+    };
+}
+
+/**
  * Whether the skeleton window is open: a read is in flight, no read has ever
  * succeeded, and nothing stands in the notice. The notice clause is
  * load-bearing — it keeps a standing failure visible while its re-read runs
@@ -140,6 +180,24 @@ export function isSkeletonWindowOpen(
     notice: ScreenNotice | null,
 ): boolean {
     return isReading && !hasRead && notice === null;
+}
+
+/**
+ * The one disposal guard the fragments that own late-answering calls — the
+ * OAuth flow, the creation, the save, the confirmed delete — install and
+ * read back: whether the reactive owner this runs in has gone away, so a
+ * call answering afterwards states nothing and acts on nothing (README
+ * §6.4). Must run inside a reactive owner: the `onCleanup` it registers
+ * belongs to the caller's owner, the way every lifecycle registration here
+ * does.
+ */
+export function createDisposalGuard(): () => boolean {
+    let isDisposed = false;
+    onCleanup(() => {
+        isDisposed = true;
+    });
+
+    return () => isDisposed;
 }
 
 /** One mounted screen's read cycle: what every screen shares around its reads. */

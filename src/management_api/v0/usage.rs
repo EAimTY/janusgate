@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use vec1::Vec1;
 
 route! {
-    pub ListUsage: {
+    pub(super) ListUsage: {
         path: "/usage:list",
         method: http::Method::POST,
         request: ListUsageRequest,
@@ -26,7 +26,7 @@ route! {
 }
 
 route! {
-    pub QueryUsage: {
+    pub(super) QueryUsage: {
         path: "/usage:query",
         method: http::Method::POST,
         request: QueryUsageRequest,
@@ -52,7 +52,7 @@ const FILTER_VALUES_CAP: usize = 100;
 /// entity list routes (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ApiLogResponse {
+pub(super) struct ApiLogResponse {
     /// Dispatch-start instant in UTC microseconds; the `usage:list` pagination cursor.
     pub started_at: i64,
 
@@ -128,7 +128,7 @@ impl ApiLogResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListUsageRequest {
+pub(super) struct ListUsageRequest {
     /// Page size; absent means the default of 100, and a present value outside `1..=1000` is
     /// rejected with 400.
     #[serde(
@@ -165,7 +165,7 @@ pub struct ListUsageRequest {
 /// per-shard rowid breaking ties.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct ListUsageResponse {
+pub(super) struct ListUsageResponse {
     /// One page of accounting rows, newest first.
     pub api_logs: Vec<ApiLogResponse>,
 }
@@ -176,7 +176,7 @@ pub struct ListUsageResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct QueryUsageRequest {
+pub(super) struct QueryUsageRequest {
     /// Bucketing dimensions in request order; `[]` aggregates one total bucket. A repeated
     /// dimension is rejected with 400 naming the field.
     pub group_by: Vec<UsageGroupBy>,
@@ -197,7 +197,7 @@ pub struct QueryUsageRequest {
 /// form — its nullable mirror (rule 2).
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct UsageBucketKey {
+pub(super) struct UsageBucketKey {
     /// The UTC day of `started_at`, `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "management-api-typescript-bindings", ts(optional))]
@@ -271,7 +271,7 @@ impl UsageBucketKey {
 /// a number. No name rides along (rule 7).
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct UsageBucket {
+pub(super) struct UsageBucket {
     /// Bucket key: exactly the requested dimensions, in request order.
     pub key: UsageBucketKey,
 
@@ -313,7 +313,7 @@ impl UsageBucket {
 /// request order, `NULL` first.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "management-api-typescript-bindings", derive(ts_rs::TS))]
-pub struct QueryUsageResponse {
+pub(super) struct QueryUsageResponse {
     /// One bucket per distinct requested-dimension combination inside the filter.
     pub buckets: Vec<UsageBucket>,
 }

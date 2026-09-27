@@ -20,15 +20,17 @@ import {
     createScreenRead,
     isSameProviderRow,
     readAll,
+    readModels,
+    readProviders,
     type ScreenRead,
 } from "/src/screens/read";
 import { ScreenFrame } from "/src/screens/screen-frame";
 import { ConfirmDeleteCard } from "/src/ui/confirm-delete-card";
-import { Button, TextField } from "/src/ui/controls";
+import { Button } from "/src/ui/controls";
 import { DirtyFormFooter, HoldNotice } from "/src/ui/dirty-form-footer";
 import { Notice } from "/src/ui/feedback";
 import { Card, CardHeader, PageHeader } from "/src/ui/layout";
-import { AuthorizeStep, DeviceStep } from "/src/ui/oauth-flow";
+import { CompletionForm, DeviceStep } from "/src/ui/oauth-flow";
 import {
     CompatibleConnectionFields,
     ProviderEnabledSwitch,
@@ -68,18 +70,10 @@ export function ProviderEditScreen(props: {
         load: async (signal) => {
             const [providersResult, modelsResult] = await readAll(
                 signal,
-                {
-                    run: (cycle) => props.api.listProviders(cycle),
-                },
-                {
-                    run: (cycle) =>
-                        props.api.listModels(
-                            {
-                                provider_id: props.providerId,
-                            },
-                            cycle,
-                        ),
-                },
+                readProviders(props.api),
+                readModels(props.api, {
+                    provider_id: props.providerId,
+                }),
             );
 
             setProviders(providersResult.providers);
@@ -510,11 +504,6 @@ function CredentialsCard(props: {
         return credentialExpiryLine(props.provider.expires_at, nowMicros());
     };
 
-    const submit = (event: SubmitEvent): void => {
-        event.preventDefault();
-        void props.oauth.complete();
-    };
-
     return (
         <Card>
             <CardHeader
@@ -563,36 +552,13 @@ function CredentialsCard(props: {
                                 onStartOver={props.oauth.reset}
                             />
                         ) : (
-                            <form
-                                novalidate={true}
+                            <CompletionForm
+                                flow={props.oauth}
+                                startedFlow={startedFlow}
+                                busyLabel="Replacing…"
+                                submitLabel="Replace the credentials"
                                 class="flex flex-col gap-4"
-                                onSubmit={submit}
-                            >
-                                <AuthorizeStep
-                                    flow={startedFlow}
-                                    onStartOver={props.oauth.reset}
-                                >
-                                    <TextField
-                                        label="Callback URL or authorization code"
-                                        value={props.oauth.code()}
-                                        onInput={props.oauth.setCode}
-                                        placeholder="Paste the whole callback URL"
-                                        isDisabled={props.oauth.isCompleting()}
-                                        error={props.oauth.pasteError()}
-                                    />
-                                    <div>
-                                        <Button
-                                            type="submit"
-                                            tone="primary"
-                                            isBusy={props.oauth.isCompleting()}
-                                        >
-                                            {props.oauth.isCompleting()
-                                                ? "Replacing…"
-                                                : "Replace the credentials"}
-                                        </Button>
-                                    </div>
-                                </AuthorizeStep>
-                            </form>
+                            />
                         )
                     }
                 </Show>

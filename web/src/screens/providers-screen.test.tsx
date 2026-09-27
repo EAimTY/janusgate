@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { ProvidersScreen } from "/src/screens/providers-screen";
-import { bodyText, settle, stubManagementApi, typeInto } from "./screen-test-support";
+import { bodyText, settle, stubListings, stubManagementApi, typeInto } from "./screen-test-support";
 
 /**
  * A provider whose name and credential kind share nothing with its wire
@@ -22,25 +22,12 @@ const providerRow: ProviderResponse = {
     base_url: "https://upstream.example.com/v1",
 };
 
-/** A management API whose two listings answer from fixtures; every other route rejects. */
+/** A management API whose listings answer from the given rows; every other route rejects. */
 function screenApi(options: {
     readonly providers: ReadonlyArray<ProviderResponse>;
     readonly models: ReadonlyArray<ModelResponse>;
 }): ManagementApi {
-    return stubManagementApi({
-        listProviders: () =>
-            Promise.resolve({
-                providers: [
-                    ...options.providers,
-                ],
-            }),
-        listModels: () =>
-            Promise.resolve({
-                models: [
-                    ...options.models,
-                ],
-            }),
-    });
+    return stubManagementApi(stubListings(options));
 }
 
 /** The provider search field, named by its aria-label. */

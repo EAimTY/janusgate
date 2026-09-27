@@ -202,8 +202,10 @@ impl ApiLogStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] when the shard cannot be opened or the insert fails. The caller logs
-    /// and swallows every failure: recording never enters any HTTP error domain.
+    /// Returns [`Error`] when the shard cannot be opened or the insert fails — a shard open
+    /// that panics, a damaged shard file's failed schema bootstrap most commonly, classifies
+    /// as a recording failure like any other open failure. The caller logs and swallows every
+    /// failure: recording never enters any HTTP error domain.
     pub(super) async fn record(&self, write: ApiLogWrite) -> Result<(), Error> {
         let database = self
             .shard_for_write(ShardDay::of_started_at(write.started_at))
@@ -218,9 +220,10 @@ impl ApiLogStore {
     ///
     /// The asynchronous lock is held across the whole decision, so concurrent writers
     /// serialize on cache misses only; the returned handle is pooled and used outside the
-    /// lock. The lock is held on the executor thread while the miss's blocking filesystem
-    /// work — the shard open and the retention sweep — runs on the blocking thread pool, so
-    /// no syscall ever blocks a worker thread and the get-or-open serialization is unchanged.
+    /// lock. Every blocking filesystem step of a miss — the existence probe and the shard
+    /// open inside it, and the retention sweep — runs on the blocking thread pool while the
+    /// lock stays held, so no syscall of this decision ever blocks a worker thread and the
+    /// get-or-open serialization is unchanged.
     async fn shard_for_write(&self, day: ShardDay) -> Result<Database, Error> {
         let mut hot = self.inner.hot.lock().await;
 
@@ -233,8 +236,7 @@ impl ApiLogStore {
         }
 
         let path = self.shard_path(day);
-        let is_new = !path.exists();
-        let database = Self::open_shard_blocking(path).await?;
+        let (database, is_new) = Self::open_shard_blocking(path).await?;
 
         if is_new {
             // Creating a new file is the sweep's only trigger; opening an existing shard for
@@ -279,46 +281,74 @@ impl ApiLogStore {
         Ok(database)
     }
 
-    /// Opens one shard database on the blocking thread pool: [`Database::open`] creates the
-    /// file and its parent directory and runs the engine open and the shard schema bootstrap
-    /// synchronously inside Turso, so the open future is driven to completion off the async
-    /// executor thread. The caller holds the store lock across the call, so the get-or-open
-    /// serialization is unchanged.
+    /// Opens one day's shard database on the blocking thread pool, reporting alongside the
+    /// opened database whether the open found no file at its path — the sweep's `is_new`
+    /// trigger. The existence probe sits directly before [`Database::open`] on the blocking
+    /// thread — which creates the file and its parent directory and runs the engine open and
+    /// the shard schema bootstrap synchronously inside Turso — so the probe, the open future,
+    /// and the open's panic containment all live off the async executor thread, and a file
+    /// that appears or vanishes between the probe and the open keeps exactly the documented
+    /// edge behavior of the probe's answer. The caller holds the store lock across the call,
+    /// so the get-or-open serialization is unchanged.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] exactly when [`Database::open`] fails.
+    /// Returns [`Error`] when [`Database::open`] fails, and classifies a panicked open — a
+    /// damaged shard file failing its schema bootstrap, most commonly — as a recording
+    /// failure the caller logs and swallows (README §3 *ApiLog Shard Store*): the shard write
+    /// path is best-effort accounting, so the panic never resumes into the request pipeline,
+    /// where it would kill served responses and lose their rows. The startup and
+    /// main-database open paths are unaffected and stay fatal.
     ///
     /// # Panics
     ///
-    /// Resumes a panic of the underlying open — a failed schema bootstrap, a failed
-    /// migration, or an unknown stored schema version, per [`Database::open`].
-    async fn open_shard_blocking(path: PathBuf) -> Result<Database, Error> {
+    /// Never in practice: the underlying open's panics are classified as recording failures
+    /// above, and the final arm only marks the open task's cancellation — possible only while
+    /// the runtime is shutting down — as unreachable.
+    async fn open_shard_blocking(path: PathBuf) -> Result<(Database, bool), Error> {
         let runtime = tokio::runtime::Handle::current();
 
         let opened = tokio::task::spawn_blocking(move || {
-            runtime.block_on(Database::open(
+            let is_new = !path.exists();
+
+            let opened = runtime.block_on(Database::open(
                 path,
                 Registry::ApiLogShard,
                 shard_write_pool_connections(),
                 SHARD_POOL_WAIT,
-            ))
+            ));
+
+            (is_new, opened)
         })
         .await;
 
         match opened {
-            Ok(outcome) => outcome.map_err(Error::from),
+            Ok((is_new, outcome)) => outcome
+                .map(|database| (database, is_new))
+                .map_err(Error::from),
 
-            // A panic in the open is fatal by contract: resume it rather than mask it as an
-            // ordinary open failure.
+            // A panicked open is a recording failure at this best-effort boundary: the panic
+            // payload's message, when it carries one, classifies as drift — stored file state
+            // that violates the shard registry's contract — and the caller logs and swallows
+            // the error like any other open failure.
             Err(join_error) if join_error.is_panic() => {
-                std::panic::resume_unwind(join_error.into_panic())
+                let payload = join_error.into_panic();
+
+                let detail = payload
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic payload".to_string());
+
+                Err(Error::Drift {
+                    message: format!("the shard database open panicked: {detail}"),
+                })
             }
 
             #[expect(
                 clippy::unreachable,
-                reason = "the open task is never aborted, and a panic inside it is resumed in \
-                          the arm above; only runtime shutdown can cancel the task"
+                reason = "the open task is never aborted, and a panic inside it is classified \
+                          in the arm above; only runtime shutdown can cancel the task"
             )]
             Err(join_error) => {
                 unreachable!("the shard-open blocking task cannot be cancelled: {join_error}")
@@ -405,9 +435,40 @@ impl ApiLogStore {
     }
 
     /// Every shard day the directory currently holds, ascending. An absent directory reads as
-    /// empty; an unreadable one fails the read explicitly.
-    pub(super) fn retained_days(&self) -> Result<Vec<ShardDay>, Error> {
-        let entries = match std::fs::read_dir(&self.inner.directory) {
+    /// empty; an unreadable one fails the read explicitly. The walk runs on the blocking
+    /// thread pool, like the sweep: the directory listing is a syscall that must never block
+    /// a worker thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] when the directory exists but cannot be listed.
+    pub(super) async fn retained_days(&self) -> Result<Vec<ShardDay>, Error> {
+        let directory = self.inner.directory.clone();
+
+        match tokio::task::spawn_blocking(move || Self::retained_days_blocking(directory)).await {
+            Ok(days) => days,
+
+            // A panic in the walk is a bug: resume it on this thread, where it fails fast
+            // instead of being masked as tolerated maintenance damage.
+            Err(join_error) if join_error.is_panic() => {
+                std::panic::resume_unwind(join_error.into_panic())
+            }
+
+            #[expect(
+                clippy::unreachable,
+                reason = "the retained-days walk task is never aborted, and a panic inside it \
+                          is resumed in the arm above; only runtime shutdown can cancel the task"
+            )]
+            Err(join_error) => {
+                unreachable!("the retained-days walk task cannot be cancelled: {join_error}")
+            }
+        }
+    }
+
+    /// The blocking body of [`ApiLogStore::retained_days`]: lists the directory and parses
+    /// every shard filename, ascending.
+    fn retained_days_blocking(directory: PathBuf) -> Result<Vec<ShardDay>, Error> {
+        let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
 
             Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
@@ -992,6 +1053,89 @@ mod tests {
             api_keys::find_api_key_by_id(&database, api_key.id).await?,
             Some(api_key)
         );
+
+        Ok(())
+    }
+
+    /// Verifies the best-effort accounting boundary against a damaged shard file (README §3
+    /// *ApiLog Shard Store*): a shard whose open panics inside its schema bootstrap — here a
+    /// file stamped for the main registry, which the shard open's stamp verification rejects
+    /// fatally — classifies as a recording failure. `record` answers `Err` instead of resuming
+    /// the panic into the caller's task, the finalization swallows it without surfacing
+    /// anywhere, and a write into a healthy shard still succeeds afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a database operation or assertion fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the damaged shard's panic resumes anywhere or a later operation fails.
+    #[tokio::test]
+    async fn swallows_a_panicked_shard_open() -> Result<(), Box<dyn StdError>> {
+        let (store, _guard) = test_support::create_test_store(90);
+        let damaged_day = ShardDay::of_started_at(unix_time::unix_now_micros());
+
+        // Plant a main-registry database at the shard path and drop its pool: the store's
+        // shard-registry open of this file then hits the stamp verification, which panics by
+        // contract (README §3 *Database Abstraction & Connection Pooling*).
+        drop(
+            Database::open(
+                store.shard_path(damaged_day),
+                Registry::Main,
+                shard_write_pool_connections(),
+                SHARD_POOL_WAIT,
+            )
+            .await?,
+        );
+
+        // The write path reports the panicked open as an ordinary recording failure.
+        let outcome = store
+            .record(test_support::write(
+                day_start(damaged_day) + 100,
+                1,
+                1,
+                1,
+                [None; 5],
+            ))
+            .await;
+
+        assert!(
+            outcome.is_err(),
+            "a panicked shard open must classify as a recording failure, not resume"
+        );
+
+        // The finalization boundary swallows it: this call returns no Result and must not panic.
+        finalize_api_log(
+            Some(&store),
+            &ApiLogDraft {
+                started_at: Some(day_start(damaged_day) + 100),
+                api_key_id: 3,
+                provider_id: 5,
+                model_id: 7,
+                endpoint_type: ApiLogEndpointType::OpenaiResponses,
+                is_stream: false,
+            },
+            ApiLogOutcome::Completed,
+            Some(200),
+            Some(crate::ir::IrUsage::default()),
+        )
+        .await;
+
+        // One damaged shard must not poison the store: a healthy day's shard still records.
+        let healthy_day = ShardDay::of_started_at(unix_time::unix_now_micros() - MICROS_PER_DAY);
+        store
+            .record(test_support::write(
+                day_start(healthy_day) + 100,
+                1,
+                1,
+                1,
+                [None; 5],
+            ))
+            .await?;
+
+        let rows = read_all(&test_support::open_shard(&store, healthy_day).await).await?;
+        assert_eq!(rows.len(), 1, "the healthy shard keeps recording");
 
         Ok(())
     }
