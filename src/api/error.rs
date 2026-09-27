@@ -11,7 +11,7 @@
 //! and a new format is one new render module.
 //!
 //! Domain errors convert in exactly one place: the [`From`] impls below (from [`gateway::Error`]
-//! with its inner conversions for parse, storage, and OAuth failures) live here; surfaces stop
+//! with its inner conversions for parse, storage, and provider failures) live here; surfaces stop
 //! owning domain-to-contract classification. The request-accounting classification (`outcome` +
 //! status) derives from the same variant through [`Error::accounting`], collapsing the parallel
 //! mapping tables — HTTP response, stream frame, accounting — into one.
@@ -257,8 +257,8 @@ impl From<GatewayError> for Error {
 
             GatewayError::Unavailable { detail } => Self::UpstreamUnavailable { message: detail },
 
-            // The OAuth classification lives once, in `From<ProviderError>`.
-            GatewayError::OAuth(error) => Self::from(error),
+            // The provider-failure classification lives once, in `From<ProviderError>`.
+            GatewayError::Provider(error) => Self::from(error),
 
             GatewayError::Storage(_) | GatewayError::Internal { .. } => Self::Internal,
         }
@@ -385,7 +385,7 @@ mod tests {
             Error::from(GatewayError::Internal {
                 message: "storage drift".to_string(),
             }),
-            Error::from(GatewayError::OAuth(ProviderError::NotFound {
+            Error::from(GatewayError::Provider(ProviderError::NotFound {
                 message: "provider vanished during token refresh".to_string(),
             })),
             Error::from(StorageError::Drift {

@@ -1713,10 +1713,12 @@ describe("UsageQueryScreen aggregates-to-stream door", () => {
         // the grouped outcome spelled as the pair the stream route reads back —
         // while the From bound stays behind with no stream spelling to become:
         // the stream's own window row governs time there. The door states that
-        // trade beside its label, visually hidden.
-        expect(
-            linkTo("/usage?provider=1&outcome=upstream_error,internal&stream=streamed&status=429")
-                .textContent,
-        ).toBe("View requests — From and To do not apply there.");
+        // trade beside its label as visible text — no screen-reader-only
+        // aside, the sentence sighted operators read too.
+        const door = linkTo(
+            "/usage?provider=1&outcome=upstream_error,internal&stream=streamed&status=429",
+        );
+        expect(door.textContent).toBe("View requests — From and To do not apply there.");
+        expect(door.querySelector(".sr-only")).toBeNull();
     });
 });

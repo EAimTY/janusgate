@@ -247,7 +247,9 @@ pub(super) fn append_query_row(url: &mut String, name: &str, value: &str) {
 /// # Errors
 ///
 /// Returns [`ControlFailure::Unavailable`] when an expression references a value the stage does
-/// not carry, or when a `GET` request is configured with a body — stored drift.
+/// not carry. A `GET` request never carries a body — the definition write boundary rejects that
+/// configuration outright (the "a GET control request never carries a body" validation) — so no
+/// runtime method check exists or is needed here.
 pub(crate) fn build_request(
     client: &Client,
     request: &ControlRequest,

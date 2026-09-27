@@ -1,6 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { credentialExpiryLine, isCredentialExpired, nowMicros } from "/src/format";
+import { credentialExpiryLine, nowMicros } from "/src/format";
 import type { ManagementApi } from "/src/management-api/client";
 import type { ModelResponse, ProviderResponse } from "/src/management-api/generated/v0";
 import { OUTWARD_SURFACES } from "/src/management-api/outward-surfaces";
@@ -9,7 +9,12 @@ import {
     isModelEffectivelyServing,
     servingModelCountsByProvider,
 } from "/src/management-api/serving";
-import { credentialKindLabel, isOAuthProviderRow } from "/src/management-api/vocabulary";
+import {
+    credentialKindLabel,
+    credentialStanding,
+    isOAuthProviderRow,
+    type OauthProviderRow,
+} from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
 import {
     buildOverviewDailySeries,
@@ -497,14 +502,6 @@ function servingGapAttention(
           };
 }
 
-/** The OAuth member of the provider row union — the only kind carrying an expiry. */
-type OauthProviderRow = Extract<
-    ProviderResponse,
-    {
-        type: "oauth";
-    }
->;
-
 /**
  * The lapsed-credential wording itself: expired, or never fresh — `null`
  * while the credential still holds. Takes the OAuth member of the row union,
@@ -514,6 +511,11 @@ function lapsedCredentialAttention(provider: OauthProviderRow): {
     readonly label: string;
     readonly detail: string;
 } | null {
+    // The missing-expiry check restates the standing's own never-fresh
+    // predicate — `credentialStanding` defines never-fresh as exactly this
+    // absent column — so the narrow below is no second verdict; the
+    // expired-or-valid decision is the standing's alone, and the narrowed
+    // column feeds the expired line's absolute instant.
     if (provider.expires_at === null) {
         return {
             label: "Credential not fresh",
@@ -521,7 +523,7 @@ function lapsedCredentialAttention(provider: OauthProviderRow): {
         };
     }
 
-    if (!isCredentialExpired(provider.expires_at, nowMicros())) {
+    if (credentialStanding(provider) !== "expired") {
         return null;
     }
 

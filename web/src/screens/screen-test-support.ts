@@ -5,6 +5,7 @@ import type {
     ModelResponse,
     ProviderResponse,
 } from "/src/management-api/generated/v0";
+import type { OauthProviderRow } from "/src/management-api/vocabulary";
 
 /**
  * Test support the suites share: the full management API stub the screen
@@ -99,14 +100,6 @@ type ApiKeyProviderRow = Extract<
     ProviderResponse,
     {
         type: "api_key";
-    }
->;
-
-/** The OAuth member of the provider row union. */
-type OauthProviderRow = Extract<
-    ProviderResponse,
-    {
-        type: "oauth";
     }
 >;
 

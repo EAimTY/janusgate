@@ -1154,7 +1154,7 @@ mod tests {
             clippy::panic,
             reason = "a divergent rejection variant is the failure report"
         )]
-        let Error::OAuth(crate::provider::Error::Unavailable { .. }) = retry else {
+        let Error::Provider(crate::provider::Error::Unavailable { .. }) = retry else {
             panic!(
                 "the retrying authorization-code completion reaches its exchange, not a state or \
                  grant rejection"

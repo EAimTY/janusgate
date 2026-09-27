@@ -40,10 +40,12 @@ afterEach(() => {
 });
 
 /** Mounts the field over a signal, so the parent's state is observable. The
- * confirm subject defaults to the creation context's "typed". */
+ * confirm subject defaults to the creation context's "typed", the reveal
+ * label to creation's "Show the key while typing". */
 function mountField(
     initialSecret: string,
     generateConfirmSubject: "typed" | "current" = "typed",
+    revealLabel?: string,
 ): {
     readonly secret: () => string;
 } {
@@ -56,6 +58,7 @@ function mountField(
                     secret={secret()}
                     onSecretInput={setSecret}
                     generateConfirmSubject={generateConfirmSubject}
+                    revealLabel={revealLabel}
                 />
             ),
             document.body,
@@ -99,6 +102,25 @@ describe("ApiKeySecretField masking", () => {
         expect(labeledInput("Key").getAttribute("type")).toBe("text");
 
         revealCheckbox("Show the key while typing").click();
+        await settle();
+        expect(labeledInput("Key").getAttribute("type")).toBe("password");
+    });
+
+    it("labels the reveal as the caller's context names it", async () => {
+        // The edit form opens prefilled with the currently-serving secret —
+        // the reveal is how the operator inspects that live value before
+        // rotating — so its label names the current key, not the act of
+        // typing.
+        mountField("sk-serving-secret", "current", "Show the current key");
+        await settle();
+
+        expect(document.body.textContent).not.toContain("Show the key while typing");
+
+        revealCheckbox("Show the current key").click();
+        await settle();
+        expect(labeledInput("Key").getAttribute("type")).toBe("text");
+
+        revealCheckbox("Show the current key").click();
         await settle();
         expect(labeledInput("Key").getAttribute("type")).toBe("password");
     });

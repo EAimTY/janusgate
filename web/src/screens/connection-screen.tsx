@@ -38,12 +38,27 @@ export function ConnectionScreen(): JSX.Element {
     const state = connectionService.connectionState;
     const isVerifying = (): boolean => state().status === "verifying";
 
+    // Whether this setup visit's address field was seeded by the connection
+    // state — e.g. a mid-session 401's dying address, a forget's served
+    // address, or any refused probe's restated address.
+    // The seed exists precisely so the reconnect never demands an origin
+    // retype, so once one landed, the interrupted-attempt reset below keeps
+    // the field's address; only a visit that never received a seed (a
+    // pristine first visit) clears it. A plain variable, not a signal: it
+    // guards the reset, and nothing renders from it.
+    let isAddressSeeded = false;
+
     /**
-     * Returns the form to its pristine state: both fields empty, no inline
-     * errors, no diagnosis — exactly what a first visit renders.
+     * Closes out the interrupted attempt: the token, the reveal state, the
+     * fields' inline errors, and any diagnosis clear at once. The address
+     * clears only when nothing seeded it — exactly a pristine first visit's
+     * hand-typed address — while a seeded address survives, because losing it
+     * would demand the origin retype the seed exists to spare.
      */
     const resetForm = (): void => {
-        setBaseUrl("");
+        if (!isAddressSeeded) {
+            setBaseUrl("");
+        }
         setToken("");
         setHasSubmitted(false);
         setIsTokenVisible(false);
@@ -51,9 +66,8 @@ export function ConnectionScreen(): JSX.Element {
     };
 
     /**
-     * Ends the probe in flight and reopens the form pristine. The fields
-     * empty at once so the interrupted attempt is gone from the screen
-     * immediately; the aborted probe's landing is then recognized by its
+     * Ends the probe in flight and closes out the interrupted attempt
+     * (`resetForm`). The aborted probe's landing is then recognized by its
      * cause below, so no failure is ever seeded from a cancelled attempt.
      */
     const cancelProbe = (): void => {
@@ -83,10 +97,10 @@ export function ConnectionScreen(): JSX.Element {
         (unconnected) => {
             // A cancelled probe lands here like any refusal — the service
             // records every probe outcome — but cancellation is control
-            // flow, never a failure: the interrupted form reopens pristine,
-            // bypassing the seeding below entirely. The recognition is the
-            // landing's cause, so a genuine refusal after the cancel seeds
-            // exactly as it always did.
+            // flow, never a failure: the interrupted form closes out through
+            // the reset above, bypassing the seeding below entirely. The
+            // recognition is the landing's cause, so a genuine refusal after
+            // the cancel seeds exactly as it always did.
             if (unconnected?.failure?.cause instanceof ConnectionProbeCancelled) {
                 resetForm();
                 return;
@@ -105,6 +119,7 @@ export function ConnectionScreen(): JSX.Element {
 
             if (seedBaseUrl !== null) {
                 setBaseUrl(seedBaseUrl);
+                isAddressSeeded = true;
             }
 
             const failure = unconnected?.failure ?? null;
@@ -132,29 +147,38 @@ export function ConnectionScreen(): JSX.Element {
 
             // The probe separates "nothing is listening" from "the browser blocked
             // the response"; it is only worth a request while the answer is open.
-            // It carries the connection probe's own deadline, so a blackhole
-            // address cannot leave the refinement pending minutes after the
-            // screen gave up; the flag still discards an answer that outlives
-            // this diagnosis.
+            // This diagnosis owns its probe: a re-run of this effect (a newer
+            // refusal) or the screen going away aborts it, so superseded
+            // diagnoses never leave an in-flight probe behind (README §6.4).
+            // The connection probe's deadline stays on as the secondary
+            // backstop, forwarding its abort into the same controller —
+            // whichever fires first ends the request — so a blackhole address
+            // cannot leave the refinement pending minutes after the screen
+            // gave up. The flag still discards an answer that outlives this
+            // diagnosis, the aborted probe's "unknown" included.
             let isCurrent = true;
+            const refinementController = new AbortController();
+            const deadline = AbortSignal.timeout(PROBE_TIMEOUT_MS);
+            deadline.addEventListener("abort", () => {
+                refinementController.abort(deadline.reason);
+            });
 
-            void probeReachability(attempted, AbortSignal.timeout(PROBE_TIMEOUT_MS)).then(
-                (reachability) => {
-                    if (!isCurrent) {
-                        return;
-                    }
+            void probeReachability(attempted, refinementController.signal).then((reachability) => {
+                if (!isCurrent) {
+                    return;
+                }
 
-                    setDiagnosis(
-                        diagnoseFailure(failure.cause ?? failure.message, {
-                            ...context,
-                            reachability,
-                        }),
-                    );
-                },
-            );
+                setDiagnosis(
+                    diagnoseFailure(failure.cause ?? failure.message, {
+                        ...context,
+                        reachability,
+                    }),
+                );
+            });
 
             return () => {
                 isCurrent = false;
+                refinementController.abort();
             };
         },
     );

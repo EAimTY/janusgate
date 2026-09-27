@@ -351,11 +351,12 @@ pub(super) enum Error {
     #[error(transparent)]
     Storage(#[from] StorageError),
 
-    /// The provider's OAuth token endpoint failed. Upstream model discovery reports through this
-    /// variant too: discovery and the token stages reject on the same upstream surface and share
-    /// one failure vocabulary ([`ProviderError`]).
+    /// The provider control engine failed: the device authorization, the token exchange and its
+    /// refreshes, a flow stage, or the upstream model discovery — all report through the engine's
+    /// one shared failure vocabulary ([`ProviderError`]), so all of them travel through this
+    /// variant.
     #[error(transparent)]
-    OAuth(#[from] ProviderError),
+    Provider(#[from] ProviderError),
 }
 
 /// The flat management error body every failed management request renders (README §7). It is part
@@ -394,7 +395,8 @@ impl Error {
             | Self::ApiKeyNotFound { .. }
             | Self::UnknownOauthState
             | Self::OauthGrantMismatch { .. }
-            | Self::ProviderVanishedDuringReauthorization { .. } => ErrorCode::NotFound,
+            | Self::ProviderVanishedDuringReauthorization { .. }
+            | Self::DefinitionNotFound { .. } => ErrorCode::NotFound,
 
             Self::MethodNotAllowed { .. } => ErrorCode::MethodNotAllowed,
 
@@ -404,8 +406,7 @@ impl Error {
             | Self::MalformedAuthorizationCode
             | Self::Validation { .. }
             | Self::InvalidDefinition(_)
-            | Self::CredentialKindMismatch { .. }
-            | Self::DefinitionNotFound { .. } => ErrorCode::InvalidRequest,
+            | Self::CredentialKindMismatch { .. } => ErrorCode::InvalidRequest,
 
             Self::Internal { .. } => ErrorCode::Internal,
 
@@ -418,7 +419,7 @@ impl Error {
                 ErrorCode::UpstreamError
             }
 
-            Self::OAuth(error) => match error {
+            Self::Provider(error) => match error {
                 ProviderError::NotFound { .. } => ErrorCode::NotFound,
 
                 ProviderError::Rejected { .. }
@@ -491,7 +492,7 @@ impl From<Error> for ErrorResponse {
             Error::Storage(
                 StorageError::Busy { .. } | StorageError::Drift { .. } | StorageError::Database(_),
             )
-            | Error::OAuth(ProviderError::Internal { .. }) => INTERNAL_MESSAGE.to_string(),
+            | Error::Provider(ProviderError::Internal { .. }) => INTERNAL_MESSAGE.to_string(),
 
             _ => error.to_string(),
         };
@@ -776,7 +777,7 @@ mod tests {
                     name: "acme".to_string(),
                     version: 2,
                 },
-                ErrorCode::InvalidRequest,
+                ErrorCode::NotFound,
             ),
             (
                 Error::CredentialKindMismatch {

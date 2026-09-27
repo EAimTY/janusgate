@@ -530,9 +530,15 @@ describe("UsageScreen filtering", () => {
         });
         await settle();
 
-        expect(linkTo("/usage/query?provider=3").textContent).toContain("View aggregates");
-        expect(linkTo("/usage/query?model=9").textContent).toContain("View aggregates");
-        expect(linkTo("/usage/query?key=7").textContent).toContain("View aggregates");
+        // The 24h window stays behind — the aggregates page totals all time —
+        // so that door states the trade beside its label, while a draft
+        // holding nothing beyond the one entity narrow reads its bare label:
+        // there, nothing the operator set stays behind.
+        expect(linkTo("/usage/query?provider=3").textContent).toBe(
+            "View aggregates — the window and every other filter stay behind.",
+        );
+        expect(linkTo("/usage/query?model=9").textContent).toBe("View aggregates");
+        expect(linkTo("/usage/query?key=7").textContent).toBe("View aggregates");
 
         for (const held of holder.pages) {
             held.answer({
@@ -561,7 +567,11 @@ describe("UsageScreen filtering", () => {
         mount(streamApi(holder));
         await settle();
 
-        expect(linkTo("/usage/query").textContent).toContain("View aggregates");
+        // The compound narrow crosses no subject and everything set stays
+        // behind, so the bare page's door states that trade beside its label.
+        expect(linkTo("/usage/query").textContent).toBe(
+            "View aggregates — the window and every other filter stay behind.",
+        );
         expect(() => linkTo("/usage/query?provider=3")).toThrow(
             "No link to /usage/query?provider=3",
         );
@@ -597,8 +607,10 @@ describe("UsageScreen filtering", () => {
         answerLastPage(holder, page(1050, 1));
         await settle();
 
-        // The unfiltered stream's door opens the bare aggregates page.
-        expect(linkTo("/usage/query").textContent).toContain("View aggregates");
+        // The unfiltered stream's door opens the bare aggregates page, its
+        // bare label stating no trade — nothing the operator set stays
+        // behind.
+        expect(linkTo("/usage/query").textContent).toBe("View aggregates");
 
         // The operator narrows the form's provider field without applying:
         // the door crosses with the standing draft's narrow — the same source
@@ -614,7 +626,9 @@ describe("UsageScreen filtering", () => {
         );
         await settle();
 
-        expect(linkTo("/usage/query?provider=3").textContent).toContain("View aggregates");
+        // The provider narrow alone crosses — the window and the rest stand
+        // untouched — so the door still reads its bare label.
+        expect(linkTo("/usage/query?provider=3").textContent).toBe("View aggregates");
         expect(() => linkTo("/usage/query")).toThrow("No link to /usage/query");
     });
 

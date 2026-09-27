@@ -29,7 +29,9 @@ pub(crate) struct MessagesResponse {
     /// Always `assistant`.
     role: &'static str,
 
-    /// Response content: thinking blocks first, then text, then tool calls.
+    /// Response content: reasoning blocks first — replayable same-family blocks verbatim,
+    /// every other reasoning block's text as an ordinary text block (README §5.8) — then the
+    /// answer text, then tool calls.
     content: Vec<OutBlock>,
 
     /// Public model name the client addressed.
@@ -124,9 +126,12 @@ pub(super) fn render_json_response(model: &str, aggregation: &IrAggregation) -> 
         if is_anthropic_block(&block.opaque) {
             content.push(OutBlock::Verbatim(block.opaque.clone()));
         } else if !block.text.is_empty() {
-            content.push(OutBlock::Typed(TypedBlock::Thinking {
-                thinking: block.text.clone(),
-                signature: block.signature.clone(),
+            // Not family-replayable — a foreign-family block, or a signature-less `thinking`
+            // shape the official schema forbids — so the reasoning text rides the ordinary text
+            // channel: conformant on every surface and replayable without a trap, where a
+            // synthesized `thinking` block without its signature is neither (README §5.8).
+            content.push(OutBlock::Typed(TypedBlock::Text {
+                text: block.text.clone(),
             }));
         }
     }
@@ -946,15 +951,18 @@ mod tests {
             .collect()
     }
 
-    /// Renders one aggregated Messages response: thinking replays verbatim, text and tool calls
-    /// follow in order, the stop reason and cache columns ride through, and reasoning text is
-    /// never duplicated between blocks and prose.
+    /// Renders one aggregated Messages response: only replayable same-family blocks — a
+    /// signature-bearing `thinking` and a `redacted_thinking`, which carries no signature by
+    /// design — round-trip verbatim, while every other reasoning block (foreign-family, or a
+    /// signature-less `thinking` shape the official schema forbids) degrades to an ordinary
+    /// `text` block; text and tool calls follow in order, the stop reason and cache columns ride
+    /// through, and reasoning text is never duplicated between blocks and prose.
     ///
     /// # Panics
     ///
     /// Panics if the rendered body diverges from the native shape.
     #[test]
-    fn renders_the_aggregated_response_without_duplicating_reasoning() {
+    fn renders_the_aggregated_response_with_conformant_reasoning_blocks() {
         let opaque: Value = json!({
             "type": "thinking",
             "thinking": "upstream",
@@ -970,7 +978,21 @@ mod tests {
                     signature: Some("up-sig".to_string()),
                     opaque,
                 },
+                // A same-family `thinking` shape whose signature is missing: not replayable,
+                // so the text degrades to the ordinary text channel.
+                crate::ir::IrReasoningBlock {
+                    text: "synthetic".to_string(),
+                    signature: None,
+                    opaque: json!({"type": "thinking", "thinking": "synthetic"}),
+                },
                 IrReasoningBlock::text_only("foreign thought".to_string()),
+                // A redacted block carries `data` and no signature member by design: it
+                // replays verbatim unchanged.
+                crate::ir::IrReasoningBlock {
+                    text: String::new(),
+                    signature: None,
+                    opaque: json!({"type": "redacted_thinking", "data": "enc"}),
+                },
             ],
             tool_calls: vec![crate::ir::IrAggregatedToolCall {
                 call_id: "call_1".to_string(),
@@ -1008,13 +1030,16 @@ mod tests {
         assert_eq!(at(&body, "/stop_reason"), &json!("tool_use"));
         assert_eq!(at(&body, "/stop_sequence"), &Value::Null);
 
-        // The verbatim block replays exactly; the foreign block synthesizes thinking; the
-        // reasoning text appears only inside thinking blocks, never as prose.
+        // The signature-bearing thinking block and the redacted block replay exactly; the
+        // signature-less and foreign reasoning blocks degrade to ordinary text blocks; the
+        // reasoning text appears only inside those blocks, never duplicated as prose.
         assert_eq!(
             at(&body, "/content"),
             &json!([
                 {"type": "thinking", "thinking": "upstream", "signature": "up-sig"},
-                {"type": "thinking", "thinking": "foreign thought"},
+                {"type": "text", "text": "synthetic"},
+                {"type": "text", "text": "foreign thought"},
+                {"type": "redacted_thinking", "data": "enc"},
                 {"type": "text", "text": "answer"},
                 {"type": "tool_use", "id": "call_1", "name": "search",
                  "input": {"q": "x"}},

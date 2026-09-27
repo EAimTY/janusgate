@@ -84,9 +84,11 @@ pub(crate) enum Error {
         detail: String,
     },
 
-    /// Token acquisition failed (the lease-guarded refresh).
+    /// The provider control engine failed: token refresh, model discovery, a flow stage, or a
+    /// lease failure — [`ProviderError`] is that engine's one shared failure vocabulary, so all
+    /// of them travel through this variant.
     #[error(transparent)]
-    OAuth(#[from] ProviderError),
+    Provider(#[from] ProviderError),
 
     /// Storage failed under the pipeline: routing lookup, lease driving, or credentials
     /// persistence.

@@ -1,10 +1,10 @@
 import type { JSX } from "@solidjs/web";
 import { For, Show } from "solid-js";
-import { isCredentialExpired, nowMicros } from "/src/format";
 import type { ProviderResponse } from "/src/management-api/generated/v0";
 import {
+    type CredentialStanding,
     credentialKindLabel,
-    isOAuthProviderRow,
+    credentialStanding,
     upstreamFormatLabel,
 } from "/src/management-api/vocabulary";
 import { hrefs } from "/src/router";
@@ -22,35 +22,39 @@ type CredentialBadge = {
 };
 
 /**
- * The one glance at a credential that can go stale: a fresh OAuth login reads
- * `Valid`, one past its expiry `Expired`, and one with no stored expiry was
- * never fresh — `Stale`, titled with the sentence the provider's page states,
- * since a bare word nowhere explains itself. A static key never expires, and
- * the row's own line already names its kind, so it earns no credential badge
- * and this answers `null` for it.
+ * The badge each non-null credential standing is presented under. The record
+ * type is exhaustive, so a standing added to the vocabulary fails to compile
+ * until it is listed here.
+ */
+const CREDENTIAL_STANDING_BADGES: Record<Exclude<CredentialStanding, null>, CredentialBadge> = {
+    valid: {
+        tone: "ok",
+        label: "Valid",
+    },
+    expired: {
+        tone: "warn",
+        label: "Expired",
+    },
+    "never-fresh": {
+        tone: "warn",
+        label: "Stale",
+        title: "The OAuth credentials were never fresh.",
+    },
+};
+
+/**
+ * The one glance at a credential that can go stale, read off the vocabulary's
+ * single standing derivation: a fresh OAuth login reads `Valid`, one past its
+ * expiry `Expired`, and one with no stored expiry was never fresh — `Stale`,
+ * titled with the sentence the provider's page states, since a bare word
+ * nowhere explains itself. A static key never expires, and the row's own line
+ * already names its kind, so it earns no credential badge and this answers
+ * `null` for it.
  */
 export function credentialBadge(provider: ProviderResponse): CredentialBadge | null {
-    if (!isOAuthProviderRow(provider)) {
-        return null;
-    }
+    const standing = credentialStanding(provider);
 
-    if (provider.expires_at === null) {
-        return {
-            tone: "warn",
-            label: "Stale",
-            title: "The OAuth credentials were never fresh.",
-        };
-    }
-
-    return isCredentialExpired(provider.expires_at, nowMicros())
-        ? {
-              tone: "warn",
-              label: "Expired",
-          }
-        : {
-              tone: "ok",
-              label: "Valid",
-          };
+    return standing === null ? null : CREDENTIAL_STANDING_BADGES[standing];
 }
 
 /**

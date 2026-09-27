@@ -25,7 +25,6 @@ import type {
     ProviderResponse,
 } from "/src/management-api/generated/v0";
 import { type ManagementCallOutcome, performManagementCall } from "/src/management-api/outcome";
-import { isOAuthProviderRow } from "/src/management-api/vocabulary";
 import { refreshRequest, reportRefresh } from "/src/refresh-state";
 import { describeCallFailure, type FailureCall } from "/src/screens/failure";
 import type { NoticeTone } from "/src/ui/feedback";
@@ -619,49 +618,40 @@ export function createPinnedRow<TRow>(
 }
 
 /**
- * Whether a fresh read answers the same row the screen already holds,
- * content and all. An equal row keeps its identity, so a refresh that
+ * Whether two rows of one generated wire shape are field-for-field equal. The
+ * comparison walks every key the previous row carries and requires the fresh
+ * row to carry exactly those keys with equal values, so a tagged union's
+ * members — whose key sets differ — never answer equal. Every field of every
+ * row response is a primitive (string, number, boolean, or null), so per-key
+ * `===` is the whole comparison; were a row ever to grow a structured field,
+ * equal content in distinct instances would compare unequal, degrading
+ * benignly to adopting the fresh row — never to keeping a stale one.
+ */
+function isSameRowFields<TRow extends object>(previous: TRow, fresh: TRow): boolean {
+    const previousKeys = Object.keys(previous) as (keyof TRow)[];
+    const freshKeys = Object.keys(fresh) as (keyof TRow)[];
+    return (
+        previousKeys.length === freshKeys.length &&
+        previousKeys.every((key) => previous[key] === fresh[key])
+    );
+}
+
+/**
+ * Whether a fresh read answers the same provider row the screen already
+ * holds, content and all. An equal row keeps its identity, so a refresh that
  * changes nothing never remounts — and never resets — a form opened on the
  * row (README §6.3's one-pattern reads must not cost an operator input).
  */
 export function isSameProviderRow(previous: ProviderResponse, fresh: ProviderResponse): boolean {
-    return (
-        previous.type === fresh.type &&
-        previous.id === fresh.id &&
-        previous.name === fresh.name &&
-        previous.model_prefix === fresh.model_prefix &&
-        previous.is_enabled === fresh.is_enabled &&
-        previous.provider_definition_name === fresh.provider_definition_name &&
-        previous.provider_definition_version === fresh.provider_definition_version &&
-        previous.format === fresh.format &&
-        previous.base_url === fresh.base_url &&
-        (isOAuthProviderRow(previous)
-            ? isOAuthProviderRow(fresh) && previous.expires_at === fresh.expires_at
-            : !isOAuthProviderRow(fresh))
-    );
+    return isSameRowFields(previous, fresh);
 }
 
 /** Whether a fresh read answers the same model row, content and all. */
 export function isSameModelRow(previous: ModelResponse, fresh: ModelResponse): boolean {
-    return (
-        previous.id === fresh.id &&
-        previous.provider_id === fresh.provider_id &&
-        previous.provider === fresh.provider &&
-        previous.upstream_id === fresh.upstream_id &&
-        previous.public_id === fresh.public_id &&
-        previous.id_override === fresh.id_override &&
-        previous.is_enabled === fresh.is_enabled &&
-        previous.discovery_state === fresh.discovery_state
-    );
+    return isSameRowFields(previous, fresh);
 }
 
 /** Whether a fresh read answers the same serving-key row, content and all. */
 export function isSameApiKeyRow(previous: ApiKeyResponse, fresh: ApiKeyResponse): boolean {
-    return (
-        previous.id === fresh.id &&
-        previous.name === fresh.name &&
-        previous.key === fresh.key &&
-        previous.is_enabled === fresh.is_enabled &&
-        previous.created_at === fresh.created_at
-    );
+    return isSameRowFields(previous, fresh);
 }

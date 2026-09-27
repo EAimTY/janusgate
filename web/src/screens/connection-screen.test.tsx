@@ -296,6 +296,60 @@ describe("ConnectionScreen", () => {
         expect(connectionService.currentConnection()).toBeNull();
     });
 
+    it("keeps the seeded address when the operator cancels a probing resubmit", async () => {
+        // The mid-session 401 seeds the address precisely so the reconnect
+        // never demands an origin retype — and cancelling the hanging
+        // resubmit is no reason to lose it: the token, the errors, and the
+        // diagnosis clear, while the seeded address stays.
+        vi.stubGlobal("fetch", () =>
+            jsonResponse(200, {
+                providers: [],
+            }),
+        );
+        dispose = render(() => <ConnectionScreen />, document.body);
+        await settle();
+
+        await connectionService.connect({
+            baseUrl: gatewayAddress,
+            token: "dying token",
+        });
+        await settle();
+        vi.stubGlobal("fetch", () =>
+            jsonResponse(401, {
+                errno: 2,
+                message: "invalid management token",
+            }),
+        );
+        connectionService.reportUnauthorized("invalid management token");
+        await settle();
+
+        expect(labeledInput("Gateway address").value).toBe(gatewayAddress);
+
+        // The resubmit hangs until its abort signal fires, so only the
+        // Cancel control can end it.
+        vi.stubGlobal(
+            "fetch",
+            (_url: unknown, init?: RequestInit) =>
+                new Promise<never>((_resolve, reject) => {
+                    init?.signal?.addEventListener("abort", () => {
+                        reject(new DOMException("This operation was aborted", "AbortError"));
+                    });
+                }),
+        );
+        typeInto(labeledInput("Management token"), "any token");
+        await settle();
+        submitConnectionForm();
+        await settle();
+        buttonWithText("Cancel").click();
+        await settle();
+
+        expect(labeledInput("Gateway address").value).toBe(gatewayAddress);
+        expect(labeledInput("Management token").value).toBe("");
+        expect(labeledInput("Management token").disabled).toBe(false);
+        expect(document.querySelector("[role='alert']")).toBeNull();
+        expect(document.body.textContent).not.toContain("invalid management token");
+    });
+
     it("carries the probe deadline into the reachability request", async () => {
         // The no-answer refinement probes the origin on its own, and that
         // request must carry the connection probe's deadline like the connect
@@ -340,6 +394,52 @@ describe("ConnectionScreen", () => {
         expect(reachability).toBeDefined();
         expect(reachability?.init.signal).toBeInstanceOf(AbortSignal);
         expect(document.body.textContent).toContain(`No answer from ${gatewayAddress}.`);
+    });
+
+    it("aborts the reachability refinement when the screen goes away", async () => {
+        // The refinement probe is owned by the diagnosis that issued it: when
+        // the screen goes away the probe is aborted like every in-flight call
+        // (README §6.4), never left running toward an address that may never
+        // answer.
+        vi.stubGlobal("location", {
+            ...window.location,
+            origin: "https://admin.example.com",
+        });
+
+        const reachabilityRequests: Array<{
+            signal: AbortSignal | null | undefined;
+        }> = [];
+        vi.stubGlobal("fetch", (url: string | URL, init?: RequestInit) => {
+            // The connect probe refuses the way a blocked fetch does, so the
+            // failure lands as "no answer" and the reachability probe issues.
+            if (String(url).endsWith("/providers:list")) {
+                return Promise.reject(new TypeError("Failed to fetch"));
+            }
+
+            reachabilityRequests.push({
+                signal: init?.signal,
+            });
+            return new Promise<never>(() => {});
+        });
+
+        dispose = render(() => <ConnectionScreen />, document.body);
+        await settle();
+
+        typeInto(labeledInput("Gateway address"), gatewayAddress);
+        typeInto(labeledInput("Management token"), "any token");
+        await settle();
+        submitConnectionForm();
+        await settle();
+
+        const reachability = reachabilityRequests.at(0);
+
+        expect(reachability?.signal).toBeInstanceOf(AbortSignal);
+        expect(reachability?.signal?.aborted).toBe(false);
+
+        dispose?.();
+        dispose = undefined;
+
+        expect(reachability?.signal?.aborted).toBe(true);
     });
 
     it("diagnoses an HTTPS page's HTTP gateway address without issuing the doomed probe", async () => {

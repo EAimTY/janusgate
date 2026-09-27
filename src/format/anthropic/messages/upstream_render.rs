@@ -340,10 +340,12 @@ fn render_message(
             for part in &message.parts {
                 match part {
                     IrPart::Reasoning { opaque, .. } => {
-                        // A same-family thinking/redacted block replays verbatim — the API
-                        // verifies the signature and rejects a modified block with a 400. A
-                        // foreign-family payload carries no signature the API can verify, so
-                        // nothing renders for it (see the function contract above).
+                        // A replayable same-family thinking/redacted block replays verbatim —
+                        // a thinking block needs its non-blank signature, which the API
+                        // verifies, rejecting a modified block with a 400. Every other
+                        // payload — foreign-family, or a signature-less thinking shape —
+                        // carries no signature the API can verify, so nothing renders for
+                        // it (see the function contract above).
                         if is_anthropic_block(opaque) {
                             reasoning.push(OutBlock::Verbatim(opaque.clone()));
                         }

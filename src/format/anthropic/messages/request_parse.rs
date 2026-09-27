@@ -53,6 +53,17 @@ struct InboundRequest {
     #[serde(default)]
     top_k: Option<IgnoredAny>,
 
+    /// Cross-request diagnostics (`diagnostics.previous_message_id` foremost),
+    /// known-but-unsupported: it references a prior response's message state, which a stateless
+    /// gateway never carries, so present is a 400 naming the field (README §6.6).
+    #[serde(default)]
+    diagnostics: Option<IgnoredAny>,
+
+    /// Inference-region routing constraint, known-but-unsupported: a stateless gateway cannot
+    /// honor a region pin downstream, so present is a 400 naming the field (README §6.6).
+    #[serde(default)]
+    inference_geo: Option<IgnoredAny>,
+
     /// Function tools advertised to the model.
     #[serde(default)]
     tools: Option<Vec<InboundTool>>,
@@ -369,23 +380,37 @@ struct InboundToolChoice {
     disable_parallel_tool_use: Option<bool>,
 }
 
-/// Legacy thinking control.
+/// Legacy thinking control — the official `ThinkingConfig` union: `disabled` carries its `type`
+/// alone, while `enabled`/`adaptive` each add the display control, and only `enabled` adds the
+/// legacy budget (README §6.4).
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InboundThinking {
-    /// Control type: `disabled` parses into `none`, `enabled`/`adaptive` are accepted and
-    /// ignored.
-    #[serde(rename = "type")]
-    kind: String,
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum InboundThinking {
+    /// The native off spelling: parses into `none` (§6.4). An empty struct variant rather than a
+    /// unit one: a unit variant would silently swallow unknown members instead of denying them.
+    Disabled {},
 
-    /// Legacy numeric budget mechanism, rejected naming the field like Gemini `thinkingBudget`.
-    #[serde(default)]
-    budget_tokens: Option<IgnoredAny>,
+    /// Accepted and ignored; its `budget_tokens` is the legacy numeric mechanism, a 400 naming
+    /// the field, and its `display` never enters the IR.
+    Enabled {
+        /// Legacy numeric budget mechanism, rejected naming the field like Gemini
+        /// `thinkingBudget`.
+        #[serde(default)]
+        budget_tokens: Option<IgnoredAny>,
 
-    /// Display control, accepted and ignored: display never enters the IR.
-    #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
-    display: Option<IgnoredAny>,
+        /// Display control, accepted and ignored: display never enters the IR.
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        display: Option<IgnoredAny>,
+    },
+
+    /// Accepted and ignored, like `enabled` minus the budget member the official variant lacks.
+    Adaptive {
+        /// Display control, accepted and ignored: display never enters the IR.
+        #[serde(default)]
+        #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
+        display: Option<IgnoredAny>,
+    },
 }
 
 /// The synthesized name of a schema-bearing Anthropic response format: the Messages wire carries
@@ -406,11 +431,6 @@ struct InboundOutputConfig {
     /// Structured-outputs schema, parsed into the IR response format.
     #[serde(default)]
     format: Option<InboundOutputFormat>,
-
-    /// Display control, accepted and ignored like its `thinking` sibling.
-    #[serde(default)]
-    #[expect(dead_code, reason = "accepted and ignored per README §6.6")]
-    display: Option<IgnoredAny>,
 }
 
 /// The inbound `output_config.format` member — the official `JSONOutputFormat`, whose only
@@ -448,6 +468,22 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
     // 400 naming the field rather than the generic unknown-field rejection (README §6.6).
     if request.top_k.is_some() {
         return Err(InvalidRequest::field("top_k", "top_k is not supported"));
+    }
+
+    // Known-but-unsupported envelope controls: both are 400s naming their field rather than
+    // generic unknown-field rejections (README §6.6).
+    if request.diagnostics.is_some() {
+        return Err(InvalidRequest::field(
+            "diagnostics",
+            "diagnostics is not supported; the gateway carries no cross-request message state",
+        ));
+    }
+
+    if request.inference_geo.is_some() {
+        return Err(InvalidRequest::field(
+            "inference_geo",
+            "inference_geo is not supported; the gateway cannot pin inference to a region",
+        ));
     }
 
     let instructions = match &request.system {
@@ -594,31 +630,27 @@ pub(super) fn parse_inbound_request(body: &[u8]) -> Result<ParsedRequest, Invali
         }
     };
 
+    // The legacy numeric budget mechanism survives parsing only on the variant where the
+    // official member exists: a 400 naming the field, like Gemini `thinkingBudget` (README §6.6).
+    if let Some(InboundThinking::Enabled {
+        budget_tokens: Some(_),
+        ..
+    }) = &request.thinking
+    {
+        return Err(InvalidRequest::field(
+            "budget_tokens",
+            "budget_tokens is not supported; use output_config.effort",
+        ));
+    }
+
     let thinking_effort = match &request.thinking {
         None => None,
 
-        Some(thinking) => {
-            if thinking.budget_tokens.is_some() {
-                return Err(InvalidRequest::field(
-                    "budget_tokens",
-                    "budget_tokens is not supported; use output_config.effort",
-                ));
-            }
+        // The native off spelling parses into `none` (§6.4).
+        Some(InboundThinking::Disabled {}) => Some(IrReasoningLevel::None),
 
-            match thinking.kind.as_str() {
-                "disabled" => Some(IrReasoningLevel::None),
-
-                // Accepted and ignored: no replayable state, no IR slot.
-                "enabled" | "adaptive" => None,
-
-                other => {
-                    return Err(InvalidRequest::field(
-                        "thinking",
-                        format!("Unknown thinking type `{other}`"),
-                    ));
-                }
-            }
-        }
+        // Accepted and ignored: no replayable state, no IR slot.
+        Some(InboundThinking::Enabled { .. } | InboundThinking::Adaptive { .. }) => None,
     };
 
     let output_effort = request
@@ -1384,10 +1416,11 @@ mod tests {
     }
 
     /// Rejects unsupported and malformed inbound controls exactly where the contract pins them:
-    /// `stop_sequences`, `budget_tokens` and `top_k` (naming the field), `document` blocks,
-    /// images inside tool results, a missing `max_tokens`, a non-`custom` tool `type`, and
-    /// unknown members — while `thinking: disabled` parses into `none` and
-    /// `enabled`/`adaptive` plus `display` controls are accepted and ignored.
+    /// `stop_sequences`, `budget_tokens` and `top_k` (naming the field), `diagnostics` and
+    /// `inference_geo` (naming the field), `document` blocks, images inside tool results, a
+    /// missing `max_tokens`, a non-`custom` tool `type`, and unknown members — while
+    /// `thinking: disabled` parses into `none` and the `enabled`/`adaptive` variants plus their
+    /// official `display` member are accepted and ignored.
     ///
     /// # Panics
     ///
@@ -1425,6 +1458,30 @@ mod tests {
                 json!({"top_k": 40, "model": "m", "max_tokens": 16,
                        "messages": [{"role": "user", "content": "hi"}]}),
                 Some("top_k"),
+            ),
+            (
+                json!({"diagnostics": {"previous_message_id": "msg_1"}, "model": "m",
+                       "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}),
+                Some("diagnostics"),
+            ),
+            (
+                json!({"inference_geo": "us", "model": "m", "max_tokens": 16,
+                       "messages": [{"role": "user", "content": "hi"}]}),
+                Some("inference_geo"),
+            ),
+            // The official `OutputConfig` carries exactly `effort` and `format`; a `display`
+            // member is unknown and rejected like any other unknown field (README §6.6).
+            (
+                json!({"output_config": {"effort": "low", "display": "none"}, "model": "m",
+                       "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}),
+                None,
+            ),
+            // The official `ThinkingConfigDisabled` carries its `type` alone; a `display`
+            // member is unknown and rejected like any other unknown field (README §6.4).
+            (
+                json!({"thinking": {"type": "disabled", "display": "summary"}, "model": "m",
+                       "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}),
+                None,
             ),
             (
                 json!({"model": "m", "max_tokens": 16, "messages": [
@@ -1473,20 +1530,37 @@ mod tests {
             assert_eq!(error.param.as_deref(), param, "wrong param for {error}");
         }
 
-        // The `top_k` rejection is the named known-unsupported row, not the generic
-        // unknown-field accident: the 400 pins the field and its fixed message (README §6.6).
-        let mut body = base();
+        // The named known-unsupported rows pin their fixed messages: each 400 names its field
+        // rather than landing in the generic unknown-field accident (README §6.6).
+        for (member, value, message) in [
+            ("top_k", json!(40), "top_k is not supported"),
+            (
+                "diagnostics",
+                json!({"previous_message_id": "msg_1"}),
+                "diagnostics is not supported; the gateway carries no cross-request message state",
+            ),
+            (
+                "inference_geo",
+                json!("us"),
+                "inference_geo is not supported; the gateway cannot pin inference to a region",
+            ),
+        ] {
+            let mut body = base();
 
-        set_member(&mut body, "top_k", json!(40));
+            set_member(&mut body, member, value);
 
-        #[expect(clippy::expect_used, reason = "top_k is constructed to be rejected")]
-        let error =
-            parse_inbound_request(body.to_string().as_bytes()).expect_err("top_k must be rejected");
+            #[expect(
+                clippy::expect_used,
+                reason = "each known-unsupported control is constructed to be rejected"
+            )]
+            let error = parse_inbound_request(body.to_string().as_bytes())
+                .expect_err("the known-unsupported control must be rejected");
 
-        assert_eq!(error.to_string(), "top_k is not supported");
+            assert_eq!(error.to_string(), message);
+        }
 
-        // `thinking: disabled` parses into `none`; `enabled`/`adaptive` and both `display`
-        // controls parse without entering the IR.
+        // `thinking: disabled` parses into `none`; `enabled`/`adaptive` and their official
+        // `display` member parse without entering the IR.
         for (thinking, output_config, expected) in [
             (
                 Some(json!({"type": "disabled"})),
@@ -1501,8 +1575,13 @@ mod tests {
                 None,
             ),
             (
+                Some(json!({"type": "adaptive", "display": "omitted"})),
                 None,
-                Some(json!({"effort": "low", "display": "none"})),
+                None,
+            ),
+            (
+                None,
+                Some(json!({"effort": "low"})),
                 Some(IrReasoningLevel::Low),
             ),
         ] {

@@ -79,6 +79,10 @@ type GenerateConfirmSubject = "typed" | "current";
  * empty, so text standing there was typed, while the edit form opens
  * prefilled with the row's currently-serving secret, nothing about which is
  * typed — its confirm names the current value its Save will retire. The
+ * reveal's label is the caller's context too (`revealLabel`): creation
+ * labels it for the typing it reveals, while the edit form's field opens
+ * holding the live value, where the reveal is how the operator inspects the
+ * currently-serving secret before rotating. The
  * input is masked while typed, like every pasted secret — the reveal is the
  * field's own transient state and every mount opens masked — while the
  * listing and detail cards present the stored secret in full with a copy
@@ -91,6 +95,7 @@ export function ApiKeySecretField(props: {
     readonly secret: string;
     readonly onSecretInput: (value: string) => void;
     readonly generateConfirmSubject?: GenerateConfirmSubject;
+    readonly revealLabel?: string | undefined;
     readonly isDisabled?: boolean;
     readonly hint?: string | null | undefined;
     readonly error?: string | null | undefined;
@@ -103,9 +108,11 @@ export function ApiKeySecretField(props: {
     // Generate button until text stands again.
     const isStandingSecretArmed = (): boolean => isGenerateArmed() && props.secret !== "";
     // The confirm names what stands in the field; the typed value is the
-    // field's own default subject, creation's contract.
+    // field's own default subject, creation's contract. The reveal's label
+    // follows the same default: creation's typing.
     const generateConfirmSubject = (): GenerateConfirmSubject =>
         props.generateConfirmSubject ?? "typed";
+    const revealLabel = (): string => props.revealLabel ?? "Show the key while typing";
 
     const generate = (): void => {
         props.onSecretInput(generateApiKey());
@@ -135,7 +142,7 @@ export function ApiKeySecretField(props: {
                     checked={isSecretVisible()}
                     onChange={(event) => setIsSecretVisible(event.currentTarget.checked)}
                 />
-                Show the key while typing
+                {revealLabel()}
             </label>
             <div class="mt-2 flex flex-wrap items-center gap-2">
                 <Show

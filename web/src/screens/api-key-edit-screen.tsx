@@ -244,8 +244,11 @@ function SettingsCard(props: {
                     isDisabled={form.isSaving()}
                     // The field opens prefilled with the row's serving
                     // secret — nothing was typed — so the confirm names the
-                    // current value this save will retire.
+                    // current value this save will retire, and the reveal is
+                    // how the operator inspects that live value before
+                    // rotating.
                     generateConfirmSubject="current"
+                    revealLabel="Show the current key"
                     hint="Replacing the secret revokes the old value on save."
                     error={secretError()}
                 />

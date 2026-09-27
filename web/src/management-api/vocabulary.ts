@@ -1,3 +1,4 @@
+import { isCredentialExpired, nowMicros } from "/src/format";
 import { ContractViolationError } from "/src/management-api/errors";
 
 import type {
@@ -101,17 +102,50 @@ export function findUpstreamFormat(value: unknown): UpstreamFormat | null {
     return findOption(UPSTREAM_FORMAT_OPTIONS, value);
 }
 
-/**
- * Whether a stored row is an OAuth account: exactly the variant carrying
- * `expires_at`. Narrows the row, so the expiry is readable past the guard.
- */
-export function isOAuthProviderRow(provider: ProviderResponse): provider is Extract<
+/** The OAuth member of the provider row union — the only kind carrying an expiry. */
+export type OauthProviderRow = Extract<
     ProviderResponse,
     {
         type: "oauth";
     }
-> {
+>;
+
+/**
+ * Whether a stored row is an OAuth account: exactly the variant carrying
+ * `expires_at`. Narrows the row, so the expiry is readable past the guard.
+ */
+export function isOAuthProviderRow(provider: ProviderResponse): provider is OauthProviderRow {
     return provider.type === "oauth";
+}
+
+/**
+ * A provider row's credential standing — the one verdict every credential
+ * presentation branches on: `"valid"` while a stored OAuth expiry still
+ * holds, `"expired"` once it has passed, `"never-fresh"` when an OAuth row
+ * stores no expiry at all, and `null` for a static-key row, which never
+ * expires and so has no credential standing to state.
+ */
+export type CredentialStanding = "valid" | "expired" | "never-fresh" | null;
+
+/**
+ * Derives a provider row's credential standing from its own columns — the
+ * single home of the verdict the providers table's credential badge, the
+ * provider page's reconnect notice, and the overview's lapsed-credential
+ * attention each branch on, so the three presentations cannot drift. An
+ * OAuth row with no stored expiry was never fresh, an expiry already past
+ * at the reading moment is expired, one still ahead is valid, and a static
+ * key — which never expires — states no standing at all.
+ */
+export function credentialStanding(provider: ProviderResponse): CredentialStanding {
+    if (!isOAuthProviderRow(provider)) {
+        return null;
+    }
+
+    if (provider.expires_at === null) {
+        return "never-fresh";
+    }
+
+    return isCredentialExpired(provider.expires_at, nowMicros()) ? "expired" : "valid";
 }
 
 const DISCOVERY_STATE_LABELS: Record<DiscoveryState, string> = {

@@ -7,6 +7,7 @@ import { performManagementCall } from "/src/management-api/outcome";
 import { indexRowsById } from "/src/management-api/serving";
 import {
     credentialKindLabel,
+    credentialStanding,
     isOAuthProviderRow,
     upstreamFormatLabel,
 } from "/src/management-api/vocabulary";
@@ -254,12 +255,12 @@ export function ProviderDetailScreen(props: {
                         reauthorization runs — named and linked the way the
                         overview's attention rows name it, not left to a bare
                         badge beside a generic edit button. */}
-                    <Show when={lapsedCredentialLabel(row)}>
-                        {(label) => (
+                    <Show when={lapsedCredentialStanding(row)}>
+                        {(standing) => (
                             <Notice
                                 tone="warn"
                                 title={
-                                    label() === "Expired"
+                                    standing() === "expired"
                                         ? "The OAuth credentials have expired."
                                         : "The OAuth credentials were never fresh."
                                 }
@@ -304,17 +305,18 @@ export function ProviderDetailScreen(props: {
 }
 
 /**
- * The credential badge's word when it names a credential the gateway cannot
- * use as stored — `Expired`, or the never-fresh `Stale` — and `null` when it
- * does not: a valid OAuth login needs no reconnect, and a static key, which
- * never expires, earns no credential badge at all. The page's reconnect line
- * gates on exactly this, so the notice and the header badge can never
- * disagree about whether a fix is called for.
+ * The credential's standing when it names a state the gateway cannot use as
+ * stored — `expired`, or the never-fresh standing — and `null` when it does
+ * not: a valid OAuth login needs no reconnect, and a static key, which never
+ * expires, earns no credential badge at all. The page's reconnect line gates
+ * on the standing, never on a badge's rendered word, so a renamed label
+ * cannot silently detach the notice — and the notice and the header badge can
+ * never disagree about whether a fix is called for.
  */
-function lapsedCredentialLabel(provider: ProviderResponse): "Expired" | "Stale" | null {
-    const label = credentialBadge(provider)?.label;
+function lapsedCredentialStanding(provider: ProviderResponse): "expired" | "never-fresh" | null {
+    const standing = credentialStanding(provider);
 
-    return label === "Expired" || label === "Stale" ? label : null;
+    return standing === "expired" || standing === "never-fresh" ? standing : null;
 }
 
 /** What this provider is, read-only: every change lives on the edit page. */

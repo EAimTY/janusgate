@@ -114,7 +114,7 @@ const HELD_QUERY_NOTICE: ScreenNotice = {
  * draft — the crossing back that opens a failing combination's recorded
  * requests without a filter rebuild — while the From and To bounds stay
  * behind, the stream's own window row governing time there; while a
- * hand-typed bound stands set, the door states that trade beside its
+ * hand-typed bound stands set, the door states that trade visibly beside its
  * label.
  */
 export function UsageQueryScreen(props: {
@@ -359,7 +359,10 @@ export function UsageQueryScreen(props: {
                 <ButtonLink href={hrefs.usage(fieldsStreamDraft(fields()))}>
                     View requests
                     <Show when={hasBoundInput()}>
-                        <span class="sr-only">{" — From and To do not apply there."}</span>
+                        {/* The stated trade, muted but visible — the same
+                            sentence every crossing door states while what it
+                            drops stands set. */}
+                        <span class="text-ink-faint">{" — From and To do not apply there."}</span>
                     </Show>
                 </ButtonLink>
             </PageHeader>

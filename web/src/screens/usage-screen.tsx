@@ -22,6 +22,7 @@ import {
     soleSubject,
     statusError,
     USAGE_OUTCOME_FAILURES,
+    USAGE_QUERY_SUBJECT_DIMENSIONS,
     USAGE_QUERY_SUBJECT_FIELDS,
     USAGE_WINDOW_OPTIONS,
     type UsageFilterDraft,
@@ -51,7 +52,9 @@ import {
  * aggregates door carries the standing draft's single-entity narrow as the
  * aggregates page's subject — the same source the aggregates page's own door
  * carries back — so a narrowed stream lands asking about that entity rather
- * than silently totaling the gateway. The filter is
+ * than silently totaling the gateway, while the window and every other filter
+ * stay the aggregates page's own; the door states that trade visibly beside
+ * its label exactly while the draft holds one. The filter is
  * the address: applying it navigates, which makes a filtered stream linkable,
  * shareable, and openable by the browser's back button, and leaves the
  * unfiltered stream at exactly `/usage`. The route Match keys this screen, so
@@ -239,6 +242,36 @@ export function UsageScreen(props: {
     // naming no single entity opens the bare aggregates page.
     const aggregatesSubject = createMemo(() => streamAggregatesSubject(draft()));
 
+    /**
+     * Whether the standing draft holds anything the aggregates door leaves
+     * behind — the trade the door states beside its label, the mirror of the
+     * aggregates page's own door. The crossing carries the single-entity
+     * narrow alone: the window and every other filter field stay the
+     * aggregates page's own, so the door states that trade exactly while the
+     * draft holds one of them.
+     */
+    const isFilterLeftBehind = (): boolean => {
+        // The one draft field the crossing carries; `aggregatesSubject` is
+        // undefined exactly when no entity field is set or a compound narrow
+        // stands, and then every set field counts.
+        const subject = aggregatesSubject();
+        const carriedField =
+            subject === undefined ? null : USAGE_QUERY_SUBJECT_FIELDS[subject.dimension].draftField;
+
+        return (
+            draft().window !== "all" ||
+            draft().endpointType !== "" ||
+            draft().outcome !== "" ||
+            draft().streamChoice !== "" ||
+            draft().statusInput !== "" ||
+            USAGE_QUERY_SUBJECT_DIMENSIONS.some((dimension) => {
+                const field = USAGE_QUERY_SUBJECT_FIELDS[dimension].draftField;
+
+                return field !== carriedField && draft()[field] !== "";
+            })
+        );
+    };
+
     return (
         <div class="rise-in flex flex-col gap-5">
             <PageHeader
@@ -250,6 +283,16 @@ export function UsageScreen(props: {
                     glyph="activity"
                 >
                     View aggregates
+                    <Show when={isFilterLeftBehind()}>
+                        {/* The stated trade, muted but visible — the same
+                            pattern as the aggregates page's own door: the
+                            narrow the destination shows is already its
+                            subject, so the sentence names what stayed
+                            behind. */}
+                        <span class="text-ink-faint">
+                            {" — the window and every other filter stay behind."}
+                        </span>
+                    </Show>
                 </ButtonLink>
             </PageHeader>
 

@@ -113,6 +113,12 @@ describe("ApiKeyEditScreen refresh against an open form", () => {
         mount(holder);
         await settle();
 
+        // The field opens prefilled with the serving secret, so the reveal
+        // names the current key — the way the operator inspects the live
+        // value before rotating — never creation's typing label.
+        expect(document.body.textContent).toContain("Show the current key");
+        expect(document.body.textContent).not.toContain("Show the key while typing");
+
         const name = labeledInput("Name");
         typeInto(name, "renamed");
         await settle();

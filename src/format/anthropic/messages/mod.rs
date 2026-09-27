@@ -167,17 +167,85 @@ struct OpaqueKind {
     #[serde(default)]
     #[serde(rename = "type")]
     kind: Option<String>,
+
+    /// Upstream signature, when the fragment is a signature-bearing `thinking` block.
+    #[serde(default)]
+    signature: Option<String>,
 }
 
 /// Reports whether the opaque fragment is a same-family thinking/redacted block whose payload
 /// replays verbatim; every other fragment — cross-family state or bare text — is not.
+///
+/// A `thinking` fragment qualifies only with a non-blank `signature`: the official
+/// `ThinkingBlockParam` requires the upstream's own signature, so a missing or blank one is not
+/// replayable state and both render surfaces degrade it exactly like a foreign-family fragment
+/// (README §5.8). A `redacted_thinking` fragment carries `data` and no signature member by
+/// design, so it always qualifies.
 fn is_anthropic_block(opaque: &Value) -> bool {
     let Ok(probe) = serde_json::from_value::<OpaqueKind>(opaque.clone()) else {
         return false;
     };
 
-    matches!(
-        probe.kind.as_deref(),
-        Some("thinking") | Some("redacted_thinking")
-    )
+    match probe.kind.as_deref() {
+        Some("redacted_thinking") => true,
+        Some("thinking") => probe
+            .signature
+            .is_some_and(|signature| !signature.trim().is_empty()),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Gates family replay on the signature the official API verifies: a signature-bearing
+    /// `thinking` fragment and a signature-less-by-design `redacted_thinking` fragment are
+    /// replayable, while a `thinking` fragment with a missing, empty, or blank signature — the
+    /// synthetic shape the API would reject with a 400 — is not, and neither is any non-thinking
+    /// fragment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the predicate disagrees with the replayability contract.
+    #[test]
+    fn family_replay_requires_the_thinking_signature() {
+        // Signature-bearing same-family blocks replay.
+        assert!(is_anthropic_block(&json!({
+            "type": "thinking",
+            "thinking": "x",
+            "signature": "sig",
+        })));
+        // Redacted blocks carry `data` and no signature member by design.
+        assert!(is_anthropic_block(
+            &json!({"type": "redacted_thinking", "data": "enc"})
+        ));
+
+        // A `thinking` shape without a signature — or with an empty or blank one — is synthetic
+        // state the API cannot verify, so it is not family-replayable.
+        assert!(!is_anthropic_block(
+            &json!({"type": "thinking", "thinking": "x"})
+        ));
+        assert!(!is_anthropic_block(&json!({
+            "type": "thinking",
+            "thinking": "x",
+            "signature": "",
+        })));
+        assert!(!is_anthropic_block(&json!({
+            "type": "thinking",
+            "thinking": "x",
+            "signature": "   ",
+        })));
+
+        // Non-thinking fragments stay foreign.
+        assert!(!is_anthropic_block(&Value::Null));
+        assert!(!is_anthropic_block(&json!({"type": "text", "text": "x"})));
+        // A non-string signature member is not the official shape.
+        assert!(!is_anthropic_block(&json!({
+            "type": "thinking",
+            "thinking": "x",
+            "signature": 1,
+        })));
+    }
 }

@@ -380,7 +380,7 @@ function DetailsCard(props: {
     const isConnectionValid = (): boolean =>
         !isStatic() || (isBaseUrlLegal() && (apiKey() === "" || isBearerSecret(apiKey())));
 
-    const isDirty = createMemo(() => {
+    const isDirty = (): boolean => {
         const baselineRow = baseline();
 
         return (
@@ -389,7 +389,7 @@ function DetailsCard(props: {
             effectivePrefix() !== baselineRow.model_prefix ||
             (isStatic() && (trimmedBaseUrl() !== (baselineRow.base_url ?? "") || apiKey() !== ""))
         );
-    });
+    };
 
     // A name is the administrator's choice, stored verbatim (gateway README
     // §7): the only rule is non-empty — an emptied field must not reach the
